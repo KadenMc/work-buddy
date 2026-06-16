@@ -112,12 +112,16 @@ def send_message(
     priority: str = "normal",
     status: str = "pending",
     tags: list[str] | None = None,
+    disposition: str | None = None,
 ) -> dict | None:
     """Send a message via the HTTP service.
 
     ``status`` defaults to ``'pending'``; pass a terminal status (e.g.
     ``'resolved'``) for fire-and-forget notifications that should not block a
     recipient's Stop hook.
+
+    ``disposition`` declares Stop-hook intent — ``"actionable"`` (may block) or
+    ``"acknowledgement"`` (never blocks). Omit to let the service infer it.
     """
     payload: dict[str, Any] = {
         "sender": sender,
@@ -139,6 +143,8 @@ def send_message(
         payload["status"] = status
     if tags:
         payload["tags"] = tags
+    if disposition is not None:
+        payload["disposition"] = disposition
 
     return _request("POST", "/messages", payload)
 

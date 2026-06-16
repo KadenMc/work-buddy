@@ -629,6 +629,7 @@ class RetrySweep:
                         # surface once.
                         status="resolved",
                         tags=["retry", "success"],
+                        disposition="acknowledgement",
                     )
             except Exception as exc:
                 logger.warning("Failed to notify agent session: %s", exc)
@@ -673,6 +674,7 @@ class RetrySweep:
                         }),
                         priority="high",
                         tags=["retry", "exhausted"],
+                        disposition="actionable",
                     )
             except Exception as exc:
                 logger.warning("Failed to notify agent session: %s", exc)

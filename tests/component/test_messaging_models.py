@@ -4,6 +4,8 @@ import pytest
 from datetime import datetime, timezone, timedelta
 from freezegun import freeze_time
 
+import sqlite3
+
 from work_buddy.messaging.models import (
     create_message,
     get_message,
@@ -15,6 +17,10 @@ from work_buddy.messaging.models import (
     create_reply,
     summarize_pending,
     _format_age,
+    _classify_disposition,
+    _migrate,
+    DISPOSITION_ACTIONABLE,
+    DISPOSITION_ACKNOWLEDGEMENT,
 )
 
 
@@ -271,3 +277,155 @@ class TestSummarizePending:
         create_message(conn, sender="a", recipient="b", type="task", subject="Hi")
         result = summarize_pending(conn, "b", session="s1", include_instructions=True)
         assert "/tmp/wb/resolve" in result
+
+    @freeze_time("2026-04-12T12:00:00+00:00")
+    def test_acknowledgement_never_blocks_stop_hook(self, tmp_messaging_db):
+        """An acknowledgement message is excluded from the Stop path even unread+high."""
+        conn, _ = tmp_messaging_db
+        create_message(
+            conn, sender="notification-system", recipient="b",
+            type="result", subject="Plumbing", priority="high",
+            disposition=DISPOSITION_ACKNOWLEDGEMENT,
+        )
+        first = summarize_pending(conn, "b", session="s1", include_instructions=False, unread_only=True)
+        assert first == ""  # no unread tax
+        second = summarize_pending(conn, "b", session="s1", include_instructions=False, unread_only=True)
+        assert second == ""
+
+    @freeze_time("2026-04-12T12:00:00+00:00")
+    def test_acknowledgement_visible_in_context_summary(self, tmp_messaging_db):
+        """Excluded only from the Stop path: non-blocking summaries still show it."""
+        conn, _ = tmp_messaging_db
+        create_message(
+            conn, sender="notification-system", recipient="b",
+            type="result", subject="PlumbingCtx", priority="high",
+            disposition=DISPOSITION_ACKNOWLEDGEMENT,
+        )
+        summary = summarize_pending(conn, "b", session="s1", include_instructions=False, unread_only=False)
+        assert "PlumbingCtx" in summary
+
+    @freeze_time("2026-04-12T12:00:00+00:00")
+    def test_actionable_high_blocks_until_resolved(self, tmp_messaging_db):
+        """An actionable high-priority message still blocks until resolved."""
+        conn, _ = tmp_messaging_db
+        msg = create_message(
+            conn, sender="a", recipient="b", type="task", subject="DoThis",
+            priority="high", disposition=DISPOSITION_ACTIONABLE,
+        )
+        first = summarize_pending(conn, "b", session="s1", include_instructions=False, unread_only=True)
+        assert "DoThis" in first
+        second = summarize_pending(conn, "b", session="s1", include_instructions=False, unread_only=True)
+        assert "DoThis" in second  # high + read still blocks
+        update_status(conn, msg["id"], "resolved")
+        third = summarize_pending(conn, "b", session="s1", include_instructions=False, unread_only=True)
+        assert third == ""
+
+    @freeze_time("2026-04-12T12:00:00+00:00")
+    def test_null_disposition_treated_actionable(self, tmp_messaging_db):
+        """A legacy row with NULL disposition must still block (no silent regression)."""
+        conn, _ = tmp_messaging_db
+        # Insert a row directly with NULL disposition, bypassing create_message.
+        conn.execute(
+            """INSERT INTO messages
+               (id, thread_id, sender, recipient, type, priority, status,
+                subject, created_at, updated_at, disposition)
+               VALUES ('legacy-1', 'thr-legacy-1', 'a', 'b', 'task', 'high',
+                       'pending', 'LegacyHigh', '2026-04-12T11:59:00+00:00',
+                       '2026-04-12T11:59:00+00:00', NULL)""",
+        )
+        conn.commit()
+        result = summarize_pending(conn, "b", session="s1", include_instructions=False, unread_only=True)
+        assert "LegacyHigh" in result
+
+
+class TestMessageDisposition:
+    def test_classify_consent_grant_subject(self):
+        assert _classify_disposition("result", "consent_grant", []) == DISPOSITION_ACKNOWLEDGEMENT
+
+    def test_classify_consent_callback_tag(self):
+        assert _classify_disposition(
+            "result", "anything", ["consent-callback", "from-obsidian"]
+        ) == DISPOSITION_ACKNOWLEDGEMENT
+
+    def test_classify_consent_notification_response_body(self):
+        body = '{"source": "notification_response", "title": "Consent: bundle:task_create"}'
+        assert _classify_disposition(
+            "result", "notification_response", ["notification-callback", "agent-ingest"], body=body
+        ) == DISPOSITION_ACKNOWLEDGEMENT
+
+    def test_classify_terminal_status_is_ack(self):
+        assert _classify_disposition("retry_success", "Retry succeeded", ["retry"], status="resolved") == DISPOSITION_ACKNOWLEDGEMENT
+
+    def test_classify_plain_request_is_actionable(self):
+        body = '{"source": "notification_response", "title": "Pick a venue?"}'
+        assert _classify_disposition(
+            "result", "notification_response", ["notification-callback", "agent-ingest"], body=body
+        ) == DISPOSITION_ACTIONABLE
+
+    def test_classify_default_actionable(self):
+        assert _classify_disposition("task", "Do the thing", []) == DISPOSITION_ACTIONABLE
+
+    def test_create_message_infers_when_unset(self, tmp_messaging_db):
+        conn, _ = tmp_messaging_db
+        ack = create_message(conn, sender="obsidian-consent-modal", recipient="b",
+                             type="result", subject="consent_grant")
+        act = create_message(conn, sender="a", recipient="b", type="task", subject="Real work")
+        assert ack["disposition"] == DISPOSITION_ACKNOWLEDGEMENT
+        assert act["disposition"] == DISPOSITION_ACTIONABLE
+
+    def test_create_message_explicit_wins(self, tmp_messaging_db):
+        conn, _ = tmp_messaging_db
+        # Subject would infer actionable, but explicit acknowledgement overrides.
+        msg = create_message(conn, sender="a", recipient="b", type="task",
+                            subject="Real work", disposition=DISPOSITION_ACKNOWLEDGEMENT)
+        assert msg["disposition"] == DISPOSITION_ACKNOWLEDGEMENT
+
+    def test_reply_defaults_to_acknowledgement(self, tmp_messaging_db):
+        conn, _ = tmp_messaging_db
+        parent = create_message(conn, sender="a", recipient="b", type="task", subject="Q")
+        reply = create_reply(conn, parent["id"], sender="b", body="ok")
+        assert reply["disposition"] == DISPOSITION_ACKNOWLEDGEMENT
+
+
+class TestDispositionMigration:
+    def test_migrate_adds_and_backfills_disposition(self, tmp_path):
+        """An old-schema DB gains the column and backfills consent rows as ack."""
+        db = tmp_path / "old.db"
+        conn = sqlite3.connect(str(db))
+        conn.row_factory = sqlite3.Row
+        # Old schema: messages table WITHOUT disposition.
+        conn.executescript(
+            """CREATE TABLE messages (
+                   id TEXT PRIMARY KEY, thread_id TEXT, sender TEXT NOT NULL,
+                   sender_session TEXT, recipient TEXT NOT NULL, recipient_session TEXT,
+                   type TEXT NOT NULL, priority TEXT NOT NULL DEFAULT 'normal',
+                   status TEXT NOT NULL DEFAULT 'pending', subject TEXT NOT NULL,
+                   body TEXT, in_reply_to TEXT, created_at TEXT NOT NULL,
+                   updated_at TEXT, tags TEXT);
+               CREATE TABLE message_reads (
+                   message_id TEXT NOT NULL, session_id TEXT NOT NULL,
+                   read_at TEXT NOT NULL, PRIMARY KEY (message_id, session_id));"""
+        )
+        conn.execute(
+            "INSERT INTO messages (id, sender, recipient, type, status, subject, created_at) "
+            "VALUES ('c1', 'obsidian-consent-modal', 'work-buddy', 'result', 'pending', 'consent_grant', '2026-04-12T11:00:00+00:00')"
+        )
+        conn.execute(
+            "INSERT INTO messages (id, sender, recipient, type, status, subject, created_at) "
+            "VALUES ('r1', 'a', 'work-buddy', 'task', 'pending', 'Real work', '2026-04-12T11:00:00+00:00')"
+        )
+        conn.commit()
+
+        _migrate(conn)  # adds column + backfills
+
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()}
+        assert "disposition" in cols
+        c1 = conn.execute("SELECT disposition FROM messages WHERE id='c1'").fetchone()[0]
+        r1 = conn.execute("SELECT disposition FROM messages WHERE id='r1'").fetchone()[0]
+        assert c1 == DISPOSITION_ACKNOWLEDGEMENT
+        assert r1 == DISPOSITION_ACTIONABLE
+
+        # Re-running is a no-op (column already present).
+        _migrate(conn)
+        assert conn.execute("SELECT disposition FROM messages WHERE id='c1'").fetchone()[0] == DISPOSITION_ACKNOWLEDGEMENT
+        conn.close()

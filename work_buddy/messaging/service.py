@@ -156,6 +156,7 @@ def send_message():
         status=data.get("status", "pending"),
         in_reply_to=data.get("in_reply_to"),
         tags=tags,
+        disposition=data.get("disposition"),
     )
     return jsonify(msg), 201
 

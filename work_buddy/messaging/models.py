@@ -9,6 +9,52 @@ from typing import Any
 
 from work_buddy.config import load_config
 
+# Message disposition — the sender-declared intent that drives Stop-hook
+# block-worthiness. It is orthogonal to ``priority`` (which sets blocking
+# *intensity* among actionable messages — see ``BLOCK_UNTIL_RESOLVED_PRIORITIES``).
+#   "actionable":      the agent must see/handle it; may block the Stop hook. Default.
+#   "acknowledgement": an auto-ack of something already handled in-band; never blocks.
+# Distinct from ``agent_ingest.resolve_event``'s "ack"/"process" disposition, which
+# records what the agent *did* with an event; this field is the sender's *intent*.
+DISPOSITION_ACTIONABLE = "actionable"
+DISPOSITION_ACKNOWLEDGEMENT = "acknowledgement"
+
+
+def _classify_disposition(
+    type: str,
+    subject: str,
+    tags: list[str] | None,
+    status: str = "pending",
+    body: str | None = None,
+) -> str:
+    """Infer a message's disposition from known plumbing signals.
+
+    The fallback when a caller does not declare a disposition (e.g. the Obsidian
+    plugin's out-of-band ``consent_grant`` POST), and the rule used to backfill
+    legacy rows. Conservative: anything not recognised as plumbing is
+    ``actionable`` so the Stop hook never silently stops blocking what it used to.
+    """
+    tags = tags or []
+    # A non-pending message is already handled — never an action item.
+    if status and status != "pending":
+        return DISPOSITION_ACKNOWLEDGEMENT
+    # Consent decisions echoed back for the sidecar to record are plumbing the
+    # gateway already handled in-band: the Obsidian-modal fallback posts subject
+    # ``consent_grant``/tag ``consent-callback``; the notification-system path
+    # posts a ``notification_response`` whose body title is "Consent: <op>".
+    if subject == "consent_grant" or "consent-callback" in tags:
+        return DISPOSITION_ACKNOWLEDGEMENT
+    if body:
+        try:
+            payload = json.loads(body)
+            title = payload.get("title", "") if isinstance(payload, dict) else ""
+            if isinstance(title, str) and title.startswith("Consent:"):
+                return DISPOSITION_ACKNOWLEDGEMENT
+        except (ValueError, TypeError):
+            pass
+    return DISPOSITION_ACTIONABLE
+
+
 _SCHEMA = """\
 CREATE TABLE IF NOT EXISTS messages (
     id                TEXT PRIMARY KEY,
@@ -25,7 +71,8 @@ CREATE TABLE IF NOT EXISTS messages (
     in_reply_to       TEXT,
     created_at        TEXT NOT NULL,
     updated_at        TEXT,
-    tags              TEXT
+    tags              TEXT,
+    disposition       TEXT
 );
 
 CREATE TABLE IF NOT EXISTS message_reads (
@@ -80,6 +127,24 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE message_reads ADD COLUMN reader_project TEXT")
         conn.commit()
 
+    # v2: add disposition to messages and backfill existing rows from the
+    # classifier, so legacy plumbing (consent callbacks already in the inbox)
+    # stops blocking the Stop hook too. Guarded by the column check → idempotent.
+    mcols = {r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()}
+    if "disposition" not in mcols:
+        conn.execute("ALTER TABLE messages ADD COLUMN disposition TEXT")
+        for r in conn.execute(
+            "SELECT id, type, subject, tags, status, body FROM messages"
+        ).fetchall():
+            row_tags = json.loads(r["tags"]) if r["tags"] else []
+            disp = _classify_disposition(
+                r["type"], r["subject"], row_tags, status=r["status"], body=r["body"]
+            )
+            conn.execute(
+                "UPDATE messages SET disposition = ? WHERE id = ?", (disp, r["id"])
+            )
+        conn.commit()
+
 
 def _generate_id(sender: str) -> str:
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
@@ -110,6 +175,7 @@ def create_message(
     status: str = "pending",
     in_reply_to: str | None = None,
     tags: list[str] | None = None,
+    disposition: str | None = None,
 ) -> dict[str, Any]:
     """Insert a new message and return it as a dict.
 
@@ -117,6 +183,12 @@ def create_message(
     notifications (e.g. the retry sweep's success FYIs) pass a terminal status
     such as ``'resolved'`` so the message never enters the pending/block path and
     is pruned on the normal TTL.
+
+    ``disposition`` declares whether this message is an action item for the agent
+    (``"actionable"`` — may block the Stop hook) or an auto-acknowledgement of
+    something already handled in-band (``"acknowledgement"`` — never blocks).
+    Senders that know their intent should pass it; when omitted it is inferred by
+    ``_classify_disposition`` (conservative default ``"actionable"``).
     """
     msg_id = _generate_id(sender)
     now = _now_iso()
@@ -124,19 +196,23 @@ def create_message(
     if thread_id is None:
         thread_id = f"thr-{msg_id}"
 
+    if disposition is None:
+        disposition = _classify_disposition(type, subject, tags, status=status, body=body)
+
     conn.execute(
         """\
         INSERT INTO messages
             (id, thread_id, sender, sender_session, recipient,
              recipient_session, type, priority, status, subject,
-             body, in_reply_to, created_at, updated_at, tags)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             body, in_reply_to, created_at, updated_at, tags, disposition)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             msg_id, thread_id, sender, sender_session, recipient,
             recipient_session, type, priority, status, subject,
             body, in_reply_to, now, now,
             json.dumps(tags) if tags else None,
+            disposition,
         ),
     )
     conn.commit()
@@ -277,11 +353,15 @@ def create_reply(
     type: str = "ack",
     priority: str = "normal",
     tags: list[str] | None = None,
+    disposition: str = DISPOSITION_ACKNOWLEDGEMENT,
 ) -> dict[str, Any] | None:
     """Reply to an existing message, inheriting thread_id and swapping sender/recipient.
 
     recipient_session defaults to None (broadcast to any session in the project).
     Pass the parent's sender_session explicitly if you want to target that specific session.
+
+    Replies default to ``acknowledgement`` disposition (a confirmation, not an
+    action item); pass ``disposition="actionable"`` for a reply the recipient must act on.
     """
     parent = get_message(conn, parent_id)
     if parent is None:
@@ -300,6 +380,7 @@ def create_reply(
         priority=priority,
         in_reply_to=parent_id,
         tags=tags,
+        disposition=disposition,
     )
 
 
@@ -338,6 +419,11 @@ def summarize_pending(
     next render returns empty and the block releases. The non-blocking summaries
     (SessionStart / UserPromptSubmit) leave it False and still show read-but-recent
     messages as context.
+
+    Block-worthiness is gated first by ``disposition``: on the Stop path
+    (``unread_only=True``) ``acknowledgement`` messages are excluded outright —
+    they are auto-acks of work already handled in-band and must never block. Only
+    ``actionable`` messages reach the unread/priority logic below.
     """
     if ttl_days is None:
         from work_buddy.config import load_config
@@ -356,17 +442,26 @@ def summarize_pending(
     filtered = []
     new_count = 0
     for m in msgs:
+        # Disposition gates block-worthiness first: acknowledgement messages are
+        # auto-acks of work already handled in-band (consent grants, FYIs) and
+        # must never block the Stop hook. They still appear in the non-blocking
+        # context summaries (unread_only=False) for visibility.
+        disposition = m.get("disposition") or DISPOSITION_ACTIONABLE
+        if unread_only and disposition == DISPOSITION_ACKNOWLEDGEMENT:
+            continue
+
         recipient_readers = _get_recipient_readers(conn, m["id"], recipient)
         is_read = len(recipient_readers) > 0
         m["_read"] = is_read
         m["_readers"] = recipient_readers
 
-        # Unread messages always surface. For the non-blocking summaries
-        # (unread_only=False) also keep read messages within the TTL window so
-        # SessionStart/UserPromptSubmit retain recent context. The Stop hook
-        # passes unread_only=True: a read message is dropped (it surfaced once,
-        # now releases) UNLESS it is high/urgent priority, which keeps blocking
-        # until resolved — /tmp/wb/resolve is the discoverable exit.
+        # Among actionable messages: unread ones always surface. For the
+        # non-blocking summaries (unread_only=False) also keep read messages
+        # within the TTL window so SessionStart/UserPromptSubmit retain recent
+        # context. The Stop hook passes unread_only=True: a read message is
+        # dropped (it surfaced once, now releases) UNLESS it is high/urgent
+        # priority, which keeps blocking until resolved — /tmp/wb/resolve is the
+        # discoverable exit.
         if not is_read:
             new_count += 1
             filtered.append(m)

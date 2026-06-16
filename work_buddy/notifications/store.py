@@ -252,6 +252,16 @@ def dispatch_callback(notification: Notification) -> dict | None:
     results = []
     session_id = notification.callback_session_id
 
+    # A consent decision echoed back is plumbing the gateway already handled
+    # in-band → acknowledgement (never blocks the recipient's Stop hook). A
+    # genuine request/question answer is actionable — the agent must ingest the
+    # user's response.
+    is_consent = (
+        notification.title.startswith("Consent:")
+        or "consent" in (notification.tags or [])
+    )
+    disposition = "acknowledgement" if is_consent else "actionable"
+
     # Always dispatch via messaging if there's a callback or session target.
     # This is the AgentIngest delivery path — hooks will pick it up.
     if notification.callback:
@@ -260,6 +270,7 @@ def dispatch_callback(notification: Notification) -> dict | None:
             notification.title,
             notification.notification_id,
             recipient_session=session_id,
+            disposition=disposition,
         ))
     elif session_id:
         # No explicit callback but we have a session — create a minimal
@@ -269,6 +280,7 @@ def dispatch_callback(notification: Notification) -> dict | None:
             notification.title,
             notification.notification_id,
             recipient_session=session_id,
+            disposition=disposition,
         ))
 
     # Legacy path: also attempt session resume if configured.
@@ -386,12 +398,17 @@ def _dispatch_via_messaging(
     title: str,
     notification_id: str,
     recipient_session: str | None = None,
+    disposition: str = "actionable",
 ) -> dict:
     """Dispatch a callback via the messaging service.
 
     If *recipient_session* is provided, the message is targeted to that
     specific session.  The AgentIngest hooks (PostToolUse / Stop) will
     pick it up during the agent's turn via session-filtered queries.
+
+    *disposition* declares Stop-hook intent: ``"acknowledgement"`` for a consent
+    echo the gateway already handled in-band (never blocks), ``"actionable"`` for
+    a genuine response the agent must ingest. Defaults to ``"actionable"``.
     """
     from work_buddy.logging_config import get_logger
 
@@ -416,6 +433,7 @@ def _dispatch_via_messaging(
             priority="high",
             tags=["notification-callback", "agent-ingest"],
             recipient_session=recipient_session,
+            disposition=disposition,
         )
         logger.info(
             "Dispatched notification callback via messaging: %s (notification=%s)",
