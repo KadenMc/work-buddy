@@ -64,6 +64,11 @@ The `collect` step writes a bundle directory. Read EVERY relevant file before dr
 
 If you produce a draft Log that mentions only one project across an active multi-hour day, treat that as a smell and re-check sources 1, 2, and 3 before presenting it to the user.
 
+### Timestamp semantics across the bundle
+
+- **All bundle timestamps are local wall-clock time** (the configured `timezone` / `USER_TZ`), with no "UTC" label. Times in `git_summary.md`, `chat_summary.md`, `claude_session_summary.md`, and `obsidian_summary.md` sit on one local timeline, so they can be compared and ordered directly — and they line up with the journal's own local Sign-In, office-arrival, and Log times. Place events at the local time shown.
+- **Chat and SpecStory sessions are windowed by real conversation time**, not file mtime. A Claude Code session's window membership comes from its message-derived start/end; a SpecStory session's from its filename stamp. A session resumed today but whose conversation happened days ago will NOT appear in today's window — and `chat_summary.md` labels every session with its real start/end, so a session header's date is the date the conversation actually happened.
+
 ## Before writing
 
 Present entries to user and wait for explicit approval. User may edit, reword, add, or remove. Do NOT call journal_write until approved.

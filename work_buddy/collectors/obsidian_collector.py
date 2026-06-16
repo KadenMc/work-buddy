@@ -5,6 +5,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from work_buddy.timefmt import format_local, to_local_naive
+
 
 # Sections we want to extract from daily journal files
 JOURNAL_SECTIONS = [
@@ -190,7 +192,7 @@ def _get_recent_files(
             rel = md_file.relative_to(vault_root)
             results.append({
                 "path": str(rel),
-                "modified": mtime.strftime("%Y-%m-%d %H:%M"),
+                "modified": to_local_naive(mtime).strftime("%Y-%m-%d %H:%M"),
             })
 
     results.sort(key=lambda x: x["modified"], reverse=True)
@@ -478,7 +480,7 @@ def collect(cfg: dict[str, Any]) -> tuple[str, str]:
     lines = [
         "# Obsidian Summary",
         "",
-        f"*Collected: {now.strftime('%Y-%m-%d %H:%M UTC')}*",
+        f"*Collected: {to_local_naive(now).strftime('%Y-%m-%d %H:%M')}*",
         f"*Vault: `{vault_root}`*",
         "",
     ]
@@ -538,7 +540,7 @@ def collect(cfg: dict[str, Any]) -> tuple[str, str]:
     task_lines = [
         "# Tasks Summary",
         "",
-        f"*Collected: {now.strftime('%Y-%m-%d %H:%M UTC')}*",
+        f"*Collected: {to_local_naive(now).strftime('%Y-%m-%d %H:%M')}*",
         f"*Source: `tasks/master-task-list.md`*",
         "",
     ]
@@ -559,11 +561,8 @@ def collect(cfg: dict[str, Any]) -> tuple[str, str]:
         task_lines.append("")
         for evt in task_events:
             ts = evt["changed_at"]
-            # Format: HH:MM — task description (old_state → new_state)
-            try:
-                t = datetime.fromisoformat(ts).strftime("%H:%M")
-            except (ValueError, TypeError):
-                t = ts[:16] if ts else "??:??"
+            # Format: HH:MM (local) — task description (old_state → new_state)
+            t = format_local(ts, "%H:%M", fallback=ts[:16] if ts else "??:??")
             desc = evt["task_id"]
             old = evt.get("old_state") or "new"
             new = evt["new_state"]

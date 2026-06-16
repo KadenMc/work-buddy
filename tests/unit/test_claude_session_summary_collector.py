@@ -163,6 +163,31 @@ def test_collector_groups_by_project(co_env) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Timezone — session times render in the user's local zone
+# ---------------------------------------------------------------------------
+
+
+def test_format_time_range_renders_local(monkeypatch) -> None:
+    """_format_time_range converts UTC message timestamps to local wall-clock."""
+    from zoneinfo import ZoneInfo
+
+    import work_buddy.config as config
+    from work_buddy.collectors.claude_session_summary_collector import (
+        _format_time_range,
+    )
+
+    monkeypatch.setattr(config, "_USER_TZ_CACHE", ZoneInfo("America/Toronto"))
+
+    # 10:42–11:31 UTC → 06:42–07:31 local (UTC-4).
+    assert (
+        _format_time_range("2026-05-27T10:42:00Z", "2026-05-27T11:31:00Z")
+        == "2026-05-27 06:42–07:31"
+    )
+    # Both endpoints absent → the "—" sentinel.
+    assert _format_time_range(None, None) == "—"
+
+
+# ---------------------------------------------------------------------------
 # Context source registration
 # ---------------------------------------------------------------------------
 
