@@ -508,7 +508,7 @@ def test_aggregator_project_filter_matches_path_or_basename(tmp_path):
     root = tmp_path / "agents"
     _write_session(
         root, "2026-04-25T10-00-00_a",
-        manifest={"short_id": "a", "project": "C:\\Vaults\\SecondBrain\\repos\\work-buddy"},
+        manifest={"short_id": "a", "project": "C:\\Code\\MyVault\\repos\\work-buddy"},
         entries=[{"timestamp": "2026-04-25T10:00:00",
                    "model": "claude-sonnet-4-6", "task_id": "t",
                    "input_tokens": 100, "output_tokens": 50,
@@ -519,7 +519,7 @@ def test_aggregator_project_filter_matches_path_or_basename(tmp_path):
     s1 = costs_mod.get_costs_summary(agents_dir=root, project="work-buddy")
     assert s1["session_count"] == 1
     # Match by middle path component
-    s2 = costs_mod.get_costs_summary(agents_dir=root, project="SecondBrain")
+    s2 = costs_mod.get_costs_summary(agents_dir=root, project="MyVault")
     assert s2["session_count"] == 1
     # Case-insensitive
     s3 = costs_mod.get_costs_summary(agents_dir=root, project="WORK-BUDDY")
