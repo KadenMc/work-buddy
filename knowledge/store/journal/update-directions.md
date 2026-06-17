@@ -2,7 +2,7 @@
 name: Journal Update Directions
 kind: directions
 description: How to detect activity and append journal Log entries — format, synthesis rules, approval flow
-summary: 'Format: ''* <TIME> - <description>. #wb/journal/log''. One entry per distinct activity. Present to user for approval before writing. Near-real-time event log, not summaries.'
+summary: 'Format: ''* <TIME> - #projects/<slug> — <description>. #wb/journal/log''. One entry per distinct activity, minute-level timestamps. REQUIRED before writing: dedupe against existing Log entries (journal_state per target day) AND get explicit user approval; journal_write is consent-gated by the Obsidian bridge. Near-real-time event log, not summaries.'
 trigger: user wants to update their journal with recent activity
 command: wb-journal-update
 workflow: daily-journal/update-journal
@@ -69,9 +69,14 @@ If you produce a draft Log that mentions only one project across an active multi
 - **All bundle timestamps are local wall-clock time** (the configured `timezone` / `USER_TZ`), with no "UTC" label. Times in `git_summary.md`, `chat_summary.md`, `claude_session_summary.md`, and `obsidian_summary.md` sit on one local timeline, so they can be compared and ordered directly — and they line up with the journal's own local Sign-In, office-arrival, and Log times. Place events at the local time shown.
 - **Chat and SpecStory sessions are windowed by real conversation time**, not file mtime. A Claude Code session's window membership comes from its message-derived start/end; a SpecStory session's from its filename stamp. A session resumed today but whose conversation happened days ago will NOT appear in today's window — and `chat_summary.md` labels every session with its real start/end, so a session header's date is the date the conversation actually happened.
 
-## Before writing
+## Approval + dedup — REQUIRED before any write
 
-Present entries to user and wait for explicit approval. User may edit, reword, add, or remove. Do NOT call journal_write until approved.
+Two gates stand between a draft and `journal_write`. Both are mandatory every run, including backfills:
+
+1. **Dedupe against what is already there.** Before presenting, call `journal_state` for **each target day** and read its existing Log entries. Drop any draft entry whose activity is already logged (same activity/time). When backfilling a multi-day window, whole days are often already covered — skip those days entirely. The write must be idempotent and safe to re-run.
+2. **Get explicit user approval.** Present the deduped entries (grouped by day; name the days you are skipping as already-covered) and wait for an explicit go-ahead. The user may edit, reword, add, or remove. Do NOT call `journal_write` until they approve — a verbal "looks good / proceed" counts; silence does not.
+
+Note: `journal_write` is itself **consent-gated by the Obsidian bridge** — each call raises a surface consent prompt (Obsidian / dashboard / Telegram), separate from the in-chat approval above. For a multi-day backfill, tell the user they can approve once with "Allow always (this session)" so the writes do not stack one prompt per day.
 
 ## Calling journal_write
 
