@@ -131,7 +131,7 @@ Every scope below is browsable with `mcp__work-buddy__wb_run("agent_docs", {"sco
 
 | Scope | Contents |
 |---|---|
-| `tasks/` | Create, assign, toggle, triage, weekly review, namespace tags |
+| `tasks/` | Create, assign, toggle, triage, archive, weekly review, namespace tags |
 | `contracts/` | Commitments, health, WIP limits, constraints |
 | `projects/` | Registry, observations, memory bank |
 | `entities/` | Entity registry — authored names, hierarchical tags, aliases, federated `entity_resolve`, append-only reference index |
