@@ -101,6 +101,20 @@ def test_drain_type_filter_advances_offset(wired):
     assert store.get_offset("c1") == store.max_seq()  # but offset advanced past both
 
 
+def test_drain_type_prefix_routes(wired):
+    store, _ = wired
+    proc = _Recorder()
+    dispatcher.register_consumer(
+        DurableConsumer(id="src", processor=proc, type_prefix="ai.workbuddy.source.")
+    )
+    changed = new_event("/wb/source/nvda", "ai.workbuddy.source.nvda.changed", {})
+    dispatcher.publish(new_event("/wb/test", "ai.workbuddy.schedule.tick", {}))
+    dispatcher.publish(changed)
+    dispatcher.drain()
+    assert proc.seen == [changed.id]  # only the prefixed type ran
+    assert store.get_offset("src") == store.max_seq()  # offset advanced past both
+
+
 def test_drain_poison_event_goes_to_dlq(wired, monkeypatch):
     store, _ = wired
     monkeypatch.setattr(dispatcher, "MAX_ATTEMPTS", 3)

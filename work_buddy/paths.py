@@ -62,6 +62,7 @@ RESOURCES: dict[str, str] = {
     # Vault recon — periodic reconnaissance ledger
     "vault_recon":               "vault_recon",
     "user_jobs":                 "user_jobs",
+    "event_sources":             "event_sources",  # user-authored event-source .md files
 
     # Databases — persistent stores
     "db/messages":               "db/messages.db",

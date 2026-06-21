@@ -38,9 +38,11 @@ READ_LIMIT = 200     # per-consumer batch cap per drain tick (backpressure)
 class DurableConsumer:
     """A registered handler the drain delivers events to.
 
-    ``types=None`` means "all types"; otherwise the consumer only runs for
-    events whose ``type`` is in the set (its offset still advances past the
-    rest, so a narrow consumer never re-reads events it doesn't handle).
+    ``types=None`` and ``type_prefix=None`` means "all types"; otherwise the
+    consumer only runs for events whose ``type`` is in ``types`` OR starts with
+    ``type_prefix`` (its offset still advances past the rest, so a narrow
+    consumer never re-reads events it doesn't handle). ``type_prefix`` suits a
+    family of dynamically-named types, e.g. ``ai.workbuddy.source.``.
     """
 
     id: str
@@ -48,6 +50,7 @@ class DurableConsumer:
     consent_action: str | None = None
     consent_weight: str = "low"
     types: frozenset[str] | None = None
+    type_prefix: str | None = None
 
 
 # --- module state ----------------------------------------------------------
@@ -90,6 +93,17 @@ def clear_consumers() -> None:
     _attempts.clear()
 
 
+def _consumer_handles(consumer: DurableConsumer, event_type: str) -> bool:
+    """Whether ``consumer`` should run for ``event_type`` (exact-set OR prefix)."""
+    if consumer.types is None and consumer.type_prefix is None:
+        return True
+    if consumer.types is not None and event_type in consumer.types:
+        return True
+    if consumer.type_prefix is not None and event_type.startswith(consumer.type_prefix):
+        return True
+    return False
+
+
 # --- publish ---------------------------------------------------------------
 
 
@@ -125,7 +139,7 @@ def drain() -> dict[str, int]:
         last = store.get_offset(consumer.id)
         for seq, event in store.read_since(last, limit=READ_LIMIT):
             # Type filter: advance past events this consumer doesn't handle.
-            if consumer.types is not None and event.type not in consumer.types:
+            if not _consumer_handles(consumer, event.type):
                 store.commit_offset(consumer.id, seq)
                 continue
 
