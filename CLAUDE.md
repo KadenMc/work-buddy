@@ -146,6 +146,7 @@ Every scope below is browsable with `mcp__work-buddy__wb_run("agent_docs", {"sco
 | `websearch/` | General web search via provider seam (Jina default + keyless ddgs fallback), trafilatura/Jina-reader extraction, evidence-cards, broker-admitted LOCAL_FAST classify |
 | `threads/` | Multi-turn agent-user threads |
 | `notifications/` | Notify, request, consent, surfaces |
+| `events/` | Durable in-process delivery spine for event-shaped facts — CloudEvents-superset envelope, SQLite log (dedup + offsets + DLQ), one drain thread, consent gate; `event_publish` to emit |
 | `services/` | Messaging, memory (Hindsight), dashboard, sidecar |
 | `features/` | Preferences and feature opt-in |
 | `operations/` | Gateway, agent sessions |

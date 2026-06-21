@@ -97,6 +97,10 @@ dev_notes: |-
 
 The dashboard updates in real time from server-pushed events delivered over Server-Sent Events. Each event mutates only the specific DOM nodes it concerns; a panel is never wholesale-rewritten in response to an event. This preserves user state — focused inputs, scroll position, drilled-in `<details>`, chip rails — across every update.
 
+## Relationship to the durable Events backbone
+
+This bus is the **lossy real-time UI** layer — drop-oldest, no durability, no dedup — and is **not** the durable delivery spine. The first-class `events` backbone (`work_buddy.events`) owns at-least-once, deduped, offset-tracked delivery of *event-shaped facts* to reacting consumers; it uses this bus only as its immediate, best-effort **UI projection** (its `publish()` fans out here via `publish_auto`). Rule of thumb: reliable *reactions* read the durable `events` log; live *UI* reads this bus.
+
 ## Surfaces
 
 * **Python**
