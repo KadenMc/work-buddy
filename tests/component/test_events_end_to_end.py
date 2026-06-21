@@ -76,3 +76,66 @@ def test_schedule_tick_advances_offset_without_notifying(spine):
 
     assert notes == []                                       # type-filtered out
     assert store.get_offset(CONSUMER_ID) == store.max_seq()  # but offset advanced
+
+
+def _source_fm(payload):
+    return {
+        "kind": "event_source",
+        "source": {"type": "fake", "url": "x", "interval": "5m"},
+        "extract": {"mode": "json_path", "path": "$.ceo"},
+        "condition": "event.data != prev.data",
+        "action": {"name": "notify"},
+        "allowed_actions": ["notify"],
+        "enabled": True,
+        "fake_payload": payload,
+    }
+
+
+@pytest.mark.component
+def test_source_change_reacts_end_to_end(tmp_path, monkeypatch):
+    """A real poll → publish source.changed → drain → source-action consumer
+    evaluates the condition and notifies — the full source reaction path."""
+    import work_buddy.events.sources.loader as loader_mod
+    from work_buddy.events.consumers.source_action import register_source_action
+    from work_buddy.events.sources import poller as P
+    from work_buddy.events.sources.definition import from_frontmatter
+
+    monkeypatch.setattr(evstore, "_db_path", lambda: tmp_path / "events.db")
+    dispatcher.set_store(evstore.EventStore())
+    dispatcher.clear_consumers()
+    notes: list = []
+    monkeypatch.setattr(dash_events, "publish_auto", lambda t, p=None: None)
+    monkeypatch.setattr(nstore, "create_notification", lambda n: notes.append(n) or n)
+
+    class _NoDeliver:
+        def deliver(self, notif, mark_delivered_fn=None):
+            return {}
+
+    monkeypatch.setattr(
+        ndisp.SurfaceDispatcher, "from_config", classmethod(lambda cls: _NoDeliver())
+    )
+
+    src_a = from_frontmatter("nvda", _source_fm({"ceo": "A"}))
+    src_b = from_frontmatter("nvda", _source_fm({"ceo": "B"}))
+    # The consumer resolves the def by name; condition/action are identical, so
+    # returning the baseline def is fine (only fetch uses fake_payload).
+    monkeypatch.setattr(loader_mod, "load_event_sources", lambda directory=None: ([src_a], []))
+    register_source_action()
+
+    state_dir = tmp_path / "state"
+    P.poll_source(src_a, state_directory=state_dir)   # baseline: silent, no emit
+    dispatcher.drain()
+    assert dispatcher._store().count() == 0
+    assert notes == []
+
+    P.poll_source(src_b, state_directory=state_dir)   # change: publishes source.changed
+    assert dispatcher._store().count() == 1
+    dispatcher.drain()                                # consumer reacts → notify
+    assert len(notes) == 1
+    assert "nvda" in notes[0].title
+
+    dispatcher.drain()                                # exactly once
+    assert len(notes) == 1
+
+    dispatcher.clear_consumers()
+    dispatcher.set_store(None)

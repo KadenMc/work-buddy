@@ -968,14 +968,18 @@ def run(foreground: bool = True) -> None:
     _emit_event_tick = None
     try:
         from work_buddy.events.consumers.notify_demo import register_notify_demo
+        from work_buddy.events.consumers.source_action import register_source_action
         from work_buddy.events.drain import EventDrain
         from work_buddy.events.producers.cron import emit_schedule_tick
 
         register_notify_demo()
+        register_source_action()
         event_drain = EventDrain()
         event_drain.start()
         _emit_event_tick = emit_schedule_tick
-        logger.info("events backbone started (drain + notify-demo + cron adapter)")
+        logger.info(
+            "events backbone started (drain + notify-demo + source-action + cron adapter)"
+        )
     except Exception as _events_exc:  # pragma: no cover — defensive
         logger.warning(
             "events backbone failed to start (non-fatal): %s",
