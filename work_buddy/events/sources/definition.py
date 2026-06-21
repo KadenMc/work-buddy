@@ -39,6 +39,20 @@ def parse_interval(value: Any) -> int | None:
     return int(m.group(1)) * _UNIT_SECONDS[m.group(2)]
 
 
+def parse_debounce(value: Any) -> tuple[int, int] | None:
+    """``"2/3"`` → ``(2, 3)`` — fire on ≥2 of the last 3 verdicts. Returns
+    ``None`` on anything invalid; requires ``1 <= n <= m``."""
+    if not isinstance(value, str):
+        return None
+    m = re.fullmatch(r"\s*(\d+)\s*/\s*(\d+)\s*", value)
+    if not m:
+        return None
+    n, total = int(m.group(1)), int(m.group(2))
+    if total < 1 or n < 1 or n > total:
+        return None
+    return n, total
+
+
 @dataclass(frozen=True)
 class EventSourceDef:
     """A loaded, validated event source. ``name`` is the ``.md`` file stem."""
@@ -61,6 +75,7 @@ class EventSourceDef:
     max_per_hour: int | None = None
     enabled: bool = True
     event_type: str = ""                # reverse-DNS; derived if unset
+    semantic: dict[str, Any] | None = None  # Tier-3 semantic-LLM gate (optional)
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -97,6 +112,7 @@ def from_frontmatter(name: str, fm: dict[str, Any]) -> EventSourceDef:
         max_per_hour=rate.get("max_per_hour"),
         enabled=bool(fm.get("enabled", True)),
         event_type=str(fm.get("event_type") or f"ai.workbuddy.source.{name}.changed"),
+        semantic=fm.get("semantic") or None,
         raw=fm,
     )
 
@@ -122,6 +138,7 @@ def build_source_fm(
     cursor_from: str = "now",
     enabled: bool = True,
     event_type: str | None = None,
+    semantic: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build an ``event_source`` frontmatter dict from structured fields — the
     inverse of :func:`from_frontmatter`, used by the ``event_source_create`` op
@@ -150,7 +167,41 @@ def build_source_fm(
         fm["cursor"] = {"from": cursor_from}
     if event_type:
         fm["event_type"] = event_type
+    if semantic:
+        fm["semantic"] = semantic
     return fm
+
+
+def _validate_semantic(semantic: Any) -> list[str]:
+    """Validate an optional Tier-3 ``semantic`` block (the semantic-LLM gate)."""
+    if not isinstance(semantic, dict):
+        return ["semantic must be a mapping (e.g. {question: '...', cooldown: '1h'})."]
+    errors: list[str] = []
+    question = semantic.get("question")
+    if not question or not isinstance(question, str) or not question.strip():
+        errors.append("semantic.question is required and must be a non-empty string.")
+    query = semantic.get("query")
+    if query is not None and not isinstance(query, str):
+        errors.append("semantic.query must be a string.")
+    cooldown = semantic.get("cooldown")
+    if cooldown is not None and parse_interval(cooldown) is None:
+        errors.append(f"semantic.cooldown {cooldown!r} is invalid (use e.g. '30m', '1h', '1d').")
+    debounce = semantic.get("debounce")
+    if debounce is not None and parse_debounce(debounce) is None:
+        errors.append(
+            f"semantic.debounce {debounce!r} is invalid (use 'N/M' with 1 <= N <= M, e.g. '2/3')."
+        )
+    min_conf = semantic.get("min_confidence")
+    if min_conf is not None and (
+        isinstance(min_conf, bool)
+        or not isinstance(min_conf, (int, float))
+        or not 0.0 <= float(min_conf) <= 1.0
+    ):
+        errors.append("semantic.min_confidence must be a number in [0.0, 1.0].")
+    max_results = semantic.get("max_results")
+    if max_results is not None and (not isinstance(max_results, int) or isinstance(max_results, bool) or max_results < 1):
+        errors.append("semantic.max_results must be a positive integer.")
+    return errors
 
 
 def validate_source_fm(name: str, fm: dict[str, Any]) -> list[str]:
@@ -219,5 +270,9 @@ def validate_source_fm(name: str, fm: dict[str, Any]) -> list[str]:
     autonomy = str(fm.get("autonomy", "notify_only"))
     if autonomy not in AUTONOMY:
         errors.append(f"autonomy {autonomy!r} invalid (known: {sorted(AUTONOMY)}).")
+
+    semantic = fm.get("semantic")
+    if semantic is not None:
+        errors.extend(_validate_semantic(semantic))
 
     return errors

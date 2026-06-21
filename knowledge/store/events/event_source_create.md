@@ -67,6 +67,10 @@ parameters:
     type: str
     description: Override the emitted event type (defaults to ai.workbuddy.source.<name>.changed)
     required: false
+  semantic:
+    type: dict
+    description: 'Optional Tier-3 semantic-LLM gate, layered on top of the CEL condition. Keys: question (required, the classify prompt), query (web-search query; defaults to question), cooldown (e.g. ''1h'', post-fire suppression), debounce (''N/M'', e.g. ''2/3''), min_confidence (0..1), max_results (int). Fires only when a local model judges the searched evidence relevant.'
+    required: false
   overwrite:
     type: bool
     description: Replace an existing source of the same name (default false)

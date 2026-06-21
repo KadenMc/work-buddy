@@ -45,6 +45,19 @@ asks for something outside this set (a push webhook, an auto-executing action,
 another source type), say it isn't supported yet and stop — never fabricate a
 source that fails validation.
 
+## The Tier-3 semantic gate (optional)
+
+For "only notify me if it's *material*" intents, add a `semantic` block on top of
+the CEL condition: `{question: "<the materiality question>", query: "<web-search
+query>", cooldown: "1h", debounce: "2/3", min_confidence: 0.0}`. Only `question`
+is required (`query` defaults to it). It runs **after** CEL passes — CEL is the
+cheap prefilter, the semantic gate web-searches and asks a local model. Use it
+when the change-detection (CEL) can't express the judgement ("is this news
+material?", "is this a real outage vs. a blip?"). It needs websearch reachable and
+a local model loaded; if either is unavailable the gate **fails closed** (never
+fires) rather than erroring. Recommend a `cooldown` so an ongoing story doesn't
+re-notify.
+
 ## The dry-run is the safety gate
 
 `event_source_dry_run` previews the proposed source with **zero side effects** —
@@ -52,7 +65,9 @@ no file, no publish, no action. Run it on the proposal *before* writing anything
 and only call `event_source_create` after the user confirms. A brand-new source's
 first observation is a silent baseline, so `would_fire: false` on the preview is
 normal — read the dry-run as "the fetch, extraction, and condition are sound,"
-then activate.
+then activate. The semantic gate is **reported but not run** by default (it's a
+real search + LLM call); pass `run_semantic: true` to actually evaluate it in the
+preview.
 
 ## Scope + autonomy
 

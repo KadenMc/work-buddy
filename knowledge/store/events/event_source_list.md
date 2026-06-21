@@ -1,7 +1,7 @@
 ---
 name: Event Source List
 kind: capability
-description: List authored event sources — name, type, interval, enabled state, action, condition, and autonomy — plus any sources that failed validation and why. Read-only.
+description: List authored event sources — name, type, interval, enabled state, action, condition, semantic (Tier-3 gate present?), and autonomy — plus any sources that failed validation and why. Read-only.
 capability_name: event_source_list
 category: events
 op: op.wb.event_source_list

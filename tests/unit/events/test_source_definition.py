@@ -7,9 +7,12 @@ import pytest
 from work_buddy.events.sources.definition import (
     EventSourceDef,
     from_frontmatter,
+    parse_debounce,
     parse_interval,
     validate_source_fm,
 )
+
+_SEMANTIC = {"question": "Is there material news?", "query": "nvda news", "cooldown": "1h", "debounce": "2/3"}
 
 VALID_FM = {
     "kind": "event_source",
@@ -91,3 +94,45 @@ def test_unknown_source_type():
 def test_wrong_kind():
     fm = {**VALID_FM, "kind": "event_sauce"}
     assert any("kind" in e for e in validate_source_fm("x", fm))
+
+
+# --- Tier-3 semantic block ----------------------------------------------------
+
+@pytest.mark.parametrize("raw,expected", [("2/3", (2, 3)), ("1/1", (1, 1)), (" 3 / 5 ", (3, 5))])
+def test_parse_debounce_ok(raw, expected):
+    assert parse_debounce(raw) == expected
+
+
+@pytest.mark.parametrize("raw", ["", "2", "2/0", "4/3", "0/3", "a/b", 3, None])
+def test_parse_debounce_bad(raw):
+    assert parse_debounce(raw) is None
+
+
+def test_valid_semantic_block_has_no_errors():
+    assert validate_source_fm("nvda", {**VALID_FM, "semantic": _SEMANTIC}) == []
+
+
+def test_from_frontmatter_carries_semantic():
+    d = from_frontmatter("nvda", {**VALID_FM, "semantic": _SEMANTIC})
+    assert d.semantic == _SEMANTIC
+    assert from_frontmatter("nvda", VALID_FM).semantic is None  # absent → None
+
+
+def test_semantic_missing_question():
+    fm = {**VALID_FM, "semantic": {"query": "x"}}
+    assert any("question" in e for e in validate_source_fm("x", fm))
+
+
+def test_semantic_bad_cooldown():
+    fm = {**VALID_FM, "semantic": {"question": "q", "cooldown": "soon"}}
+    assert any("cooldown" in e for e in validate_source_fm("x", fm))
+
+
+def test_semantic_bad_debounce():
+    fm = {**VALID_FM, "semantic": {"question": "q", "debounce": "5/3"}}
+    assert any("debounce" in e for e in validate_source_fm("x", fm))
+
+
+def test_semantic_bad_min_confidence():
+    fm = {**VALID_FM, "semantic": {"question": "q", "min_confidence": 1.5}}
+    assert any("min_confidence" in e for e in validate_source_fm("x", fm))

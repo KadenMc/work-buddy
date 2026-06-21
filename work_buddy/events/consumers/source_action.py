@@ -101,6 +101,12 @@ class SourceActionProcessor:
                     text=f"rate-limited (>= {source.max_per_hour}/h) — {source.name} auto-suspended"
                 )
 
+        # Tier-3 semantic-LLM gate (expensive — runs last, after every cheap gate,
+        # so a search + local-model call never happens for a fire a cheaper gate
+        # already closed).
+        if source.semantic and not self._semantic_passes(source, event):
+            return ProcessorResult(text="semantic condition not met")
+
         result = action.run(event, source, ctx)
 
         if source.max_per_hour is not None:
@@ -164,6 +170,21 @@ class SourceActionProcessor:
                 )
                 return False
             self._cel_cache[source.condition] = cond
+        return cond.evaluate(event, None, ConditionContext())
+
+    def _semantic_passes(self, source, event) -> bool:
+        # Fresh per fire: construction is just config parsing, so this always
+        # honours the current `semantic` block (no stale-config cache).
+        from work_buddy.events.conditions.semantic_llm import SemanticLlmCondition
+
+        try:
+            cond = SemanticLlmCondition(source)
+        except Exception:  # noqa: BLE001 — malformed semantic block → fail-closed
+            logger.warning(
+                "source-action: %s has an invalid semantic block — treating as not-met",
+                source.name,
+            )
+            return False
         return cond.evaluate(event, None, ConditionContext())
 
 
