@@ -961,6 +961,27 @@ def run(foreground: bool = True) -> None:
     jobs_watcher = JobsWatcher(scheduler)
     jobs_watcher.start()
 
+    # --- Events backbone: register the demo consumer + start the
+    # single event-drain thread + the thin cron producer. All best-effort —
+    # a backbone failure must never take down the rest of the sidecar.
+    event_drain = None
+    _emit_event_tick = None
+    try:
+        from work_buddy.events.consumers.notify_demo import register_notify_demo
+        from work_buddy.events.drain import EventDrain
+        from work_buddy.events.producers.cron import emit_schedule_tick
+
+        register_notify_demo()
+        event_drain = EventDrain()
+        event_drain.start()
+        _emit_event_tick = emit_schedule_tick
+        logger.info("events backbone started (drain + notify-demo + cron adapter)")
+    except Exception as _events_exc:  # pragma: no cover — defensive
+        logger.warning(
+            "events backbone failed to start (non-fatal): %s",
+            _events_exc, exc_info=True,
+        )
+
     # --- Initialize message poller ---
     from work_buddy.sidecar.dispatch.router import MessagePoller
 
@@ -1020,6 +1041,16 @@ def run(foreground: bool = True) -> None:
                 scheduler.tick()
                 scheduler.update_state(state)
 
+                # 2b. Events backbone — thin CronAdapter emits a (throttled)
+                # schedule.tick event onto the spine. Additive; never raises up.
+                if _emit_event_tick is not None:
+                    try:
+                        _emit_event_tick(scheduler)
+                    except Exception:
+                        logger.debug(
+                            "cron event adapter failed (non-fatal)", exc_info=True
+                        )
+
                 # 3. Message polling
                 poller.poll()
 
@@ -1063,6 +1094,8 @@ def run(foreground: bool = True) -> None:
         logger.info("Keyboard interrupt — shutting down.")
     finally:
         jobs_watcher.stop()
+        if event_drain is not None:
+            event_drain.stop()
         monitor.stop()
         event_log.emit("daemon_stop", "daemon", "Sidecar shutting down")
         state.events = event_log.recent(50)
