@@ -18,7 +18,7 @@ BASE_FM = {
 }
 
 
-def _src(*, condition=None, allowed=("notify",), action="notify", max_per_hour=None):
+def _src(*, condition=None, allowed=("notify",), action="notify", max_per_hour=None, semantic=None):
     fm = {
         **BASE_FM,
         "condition": condition,
@@ -27,6 +27,8 @@ def _src(*, condition=None, allowed=("notify",), action="notify", max_per_hour=N
     }
     if max_per_hour is not None:
         fm["rate_limit"] = {"max_per_hour": max_per_hour}
+    if semantic is not None:
+        fm["semantic"] = semantic
     return from_frontmatter("nvda", fm)
 
 
@@ -118,6 +120,35 @@ def test_rate_limit_under_threshold_fires_and_records(monkeypatch):
     SourceActionProcessor().run(_evt("B", "A"), RunContext(seq=1))
     assert len(fired) == 1                    # action ran
     assert recorded == ["nvda"]              # and the fire was recorded
+
+
+def test_semantic_gate_pass_fires(monkeypatch):
+    fired = []
+    _install(monkeypatch, _src(semantic={"question": "material?"}), fired)
+    monkeypatch.setattr(SourceActionProcessor, "_semantic_passes", lambda self, s, e: True)
+    SourceActionProcessor().run(_evt("B", "A"), RunContext(seq=1))
+    assert len(fired) == 1
+
+
+def test_semantic_gate_fail_suppresses(monkeypatch):
+    fired = []
+    _install(monkeypatch, _src(semantic={"question": "material?"}), fired)
+    monkeypatch.setattr(SourceActionProcessor, "_semantic_passes", lambda self, s, e: False)
+    r = SourceActionProcessor().run(_evt("B", "A"), RunContext(seq=1))
+    assert fired == []
+    assert "semantic" in r.text
+
+
+def test_no_semantic_block_skips_the_gate(monkeypatch):
+    fired = []
+    _install(monkeypatch, _src(), fired)  # no semantic block
+    called = []
+    monkeypatch.setattr(
+        SourceActionProcessor, "_semantic_passes", lambda self, s, e: called.append(1) or True
+    )
+    SourceActionProcessor().run(_evt("B", "A"), RunContext(seq=1))
+    assert len(fired) == 1
+    assert called == []  # the expensive gate is never consulted when no block is configured
 
 
 def test_known_actions_match_validator_allowlist():

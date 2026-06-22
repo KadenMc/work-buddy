@@ -13,7 +13,11 @@ parameters:
     required: false
   proposal:
     type: dict
-    description: The structured event_source_create fields (name, source_type, interval, extract_*, condition, action, ...), to preview a not-yet-saved source — what /wb-event-new's dry-run step passes. Provide either name or proposal.
+    description: The structured event_source_create fields (name, source_type, interval, extract_*, condition, action, semantic, ...), to preview a not-yet-saved source — what /wb-event-new's dry-run step passes. Provide either name or proposal.
+    required: false
+  run_semantic:
+    type: bool
+    description: If true, actually evaluate the Tier-3 semantic gate (a real web search + local-model call). Default false — the semantic block is only reported (semantic_pending), keeping the preview cheap and side-effect-free.
     required: false
 mutates_state: false
 retry_policy: none

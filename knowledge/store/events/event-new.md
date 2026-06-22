@@ -124,6 +124,10 @@ shows a real preview before anything is written or fires.
 - **condition**: a CEL predicate over `event.data` / `prev.data` (and the `current`
   shorthand). The action fires only when it is true. `abs()` is available for
   threshold conditions.
+- **semantic** (optional Tier-3): an LLM gate layered *on top of* the CEL condition
+  — `{question, query, cooldown, debounce, min_confidence}`. Add it only for "is
+  this *material*?" judgements CEL can't express; it web-searches and asks a local
+  model, runs only after CEL passes, and fails closed.
 
 Never invent a source type, action, or autonomy the registry doesn't have. If the
 user wants something outside this set, say so plainly and stop — don't fabricate a
@@ -175,6 +179,10 @@ Notes:
   `event.data != prev.data` when watching a single value.
 - Keep `action` inside `allowed_actions` — the source is scoped to exactly the
   actions you list.
+- For "only if it's *material*" intents, add an optional `semantic` block to the
+  proposal, e.g. `"semantic": {"question": "Is there material news that could move
+  NVDA?", "query": "NVDA news", "cooldown": "1h"}`. It runs after the CEL condition;
+  omit it for pure threshold/equality watches.
 
 Advance with `{"name": "<name>", "proposal": { ...the full param set... }}`.
 
@@ -196,6 +204,12 @@ baseline — `would_fire` is normally `false` on a brand-new source (it fires on
 *next* change), so read this step as "did the fetch + extraction + condition
 *compile and produce a sane value*," not "will it fire right now." If `ok` is
 `false`, surface the validation error and loop back to `propose` to fix the draft.
+
+If the proposal has a `semantic` block, the dry-run **reports** it
+(`semantic_configured`, `semantic_pending`) but does not evaluate it by default. To
+actually test the gate (a real web search + local-model call), pass
+`{"proposal": <…>, "run_semantic": true}` — only do so when the user wants to
+confirm the materiality judgement before activating.
 
 Advance with the dry-run result.
 

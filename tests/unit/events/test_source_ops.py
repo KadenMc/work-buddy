@@ -150,3 +150,81 @@ def test_dry_run_proposal_rejects_invalid():
         proposal={"name": "s", "source_type": "bogus", "interval": "6h"}
     )
     assert out["ok"] is False
+
+
+# --- Tier-3 semantic block (build + dry-run integration) ----------------------
+
+def test_build_source_fm_with_semantic_validates():
+    fm = build_source_fm(
+        source_type="fake",
+        interval="6h",
+        extract_mode="json_path",
+        extract_path="$.p",
+        condition="event.data != prev.data",
+        action="notify",
+        allowed_actions=["notify"],
+        semantic={"question": "material?", "cooldown": "1h"},
+    )
+    assert fm["semantic"] == {"question": "material?", "cooldown": "1h"}
+    assert validate_source_fm("nvda", fm) == []
+
+
+_SEMANTIC_PROPOSAL = {
+    "name": "nvda",
+    "source_type": "http_poll",
+    "url": "https://x/q.json",
+    "interval": "6h",
+    "extract_mode": "json_path",
+    "extract_path": "$.p",
+    "condition": "event.data != prev.data",
+    "action": "notify",
+    "allowed_actions": ["notify"],
+    "semantic": {"question": "material?", "query": "nvda news"},
+}
+
+
+def _stub_poll_change(monkeypatch):
+    import work_buddy.events.sources.poller as P
+
+    monkeypatch.setattr(
+        P, "dry_run",
+        lambda s, **kw: {"changed": True, "is_first": False, "value": "B", "prev": "A",
+                         "would_emit": {"type": s.event_type}},
+    )
+
+
+def test_dry_run_semantic_pending_without_opt_in(monkeypatch):
+    import work_buddy.mcp_server.ops.events_ops as ops
+
+    _stub_poll_change(monkeypatch)
+    out = ops.event_source_dry_run(proposal=_SEMANTIC_PROPOSAL)  # run_semantic defaults False
+    assert out["semantic_configured"] is True
+    assert out["semantic_question"] == "material?"
+    assert out.get("semantic_pending") is True
+    assert "semantic_passed" not in out  # the LLM was not called
+
+
+def test_dry_run_evaluates_semantic_when_opted_in(monkeypatch):
+    from types import SimpleNamespace
+
+    import work_buddy.events.conditions.semantic_llm as S
+    import work_buddy.mcp_server.ops.events_ops as ops
+
+    _stub_poll_change(monkeypatch)
+    monkeypatch.setattr(S, "_do_search", lambda q, mr: [SimpleNamespace(url="x", title="x")])
+
+    monkeypatch.setattr(
+        S, "_do_classify",
+        lambda question, h, *, watch_label: SimpleNamespace(relevant=True, confidence=1.0),
+    )
+    out = ops.event_source_dry_run(proposal=_SEMANTIC_PROPOSAL, run_semantic=True)
+    assert out["semantic_passed"] is True
+    assert out["would_fire"] is True
+
+    monkeypatch.setattr(
+        S, "_do_classify",
+        lambda question, h, *, watch_label: SimpleNamespace(relevant=False, confidence=1.0),
+    )
+    out = ops.event_source_dry_run(proposal=_SEMANTIC_PROPOSAL, run_semantic=True)
+    assert out["semantic_passed"] is False
+    assert out["would_fire"] is False  # CEL passed but semantic gated it off

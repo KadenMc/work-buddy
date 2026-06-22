@@ -57,12 +57,14 @@ def event_sources_poll() -> dict[str, Any]:
 _DRY_RUN_BUILD_KEYS = frozenset({
     "source_type", "interval", "url", "extract_mode", "extract_path", "condition",
     "action", "action_params", "allowed_actions", "autonomy", "max_per_hour",
-    "cursor_from", "enabled", "event_type",
+    "cursor_from", "enabled", "event_type", "semantic",
 })
 
 
 def event_source_dry_run(
-    name: str | None = None, proposal: dict[str, Any] | None = None
+    name: str | None = None,
+    proposal: dict[str, Any] | None = None,
+    run_semantic: bool = False,
 ) -> dict[str, Any]:
     """Preview a source without side effects: fetch → diff → evaluate condition,
     but **never** publish, run an action, or advance the cursor. Returns the
@@ -114,8 +116,8 @@ def event_source_dry_run(
         "error": result.get("error"),
     }
 
-    cond_passed = True
-    if src.condition and would_emit is not None:
+    evt = None
+    if would_emit is not None:
         evt = new_event(
             src.source_uri,
             src.event_type,
@@ -126,6 +128,9 @@ def event_source_dry_run(
             },
             modality="pull",
         )
+
+    cond_passed = True
+    if src.condition and evt is not None:
         try:
             cond_passed = CelCondition(src.condition).evaluate(evt, None, ConditionContext())
         except Exception as exc:  # noqa: BLE001
@@ -133,7 +138,32 @@ def event_source_dry_run(
             out["condition_error"] = str(exc)
         out["condition_passed"] = cond_passed
 
-    out["would_fire"] = bool(would_emit is not None and cond_passed)
+    out["would_fire"] = bool(evt is not None and cond_passed)
+
+    # Tier-3 semantic gate: reported always; only *evaluated* when the caller
+    # opts in (it makes a real search + local-LLM call). The evaluation uses an
+    # ephemeral state dir so a preview never pollutes real cooldown/cursor state.
+    if src.semantic:
+        out["semantic_configured"] = True
+        out["semantic_question"] = src.semantic.get("question")
+        if run_semantic and out["would_fire"] and evt is not None:
+            import tempfile
+            from pathlib import Path
+
+            from work_buddy.events.conditions.semantic_llm import SemanticLlmCondition
+
+            try:
+                with tempfile.TemporaryDirectory() as td:
+                    sem = SemanticLlmCondition(src, state_directory=Path(td)).evaluate(
+                        evt, None, ConditionContext()
+                    )
+            except Exception as exc:  # noqa: BLE001
+                sem = False
+                out["semantic_error"] = str(exc)
+            out["semantic_passed"] = bool(sem)
+            out["would_fire"] = bool(out["would_fire"] and sem)
+        else:
+            out["semantic_pending"] = True
     return out
 
 
@@ -153,6 +183,7 @@ def event_source_create(
     cursor_from: str = "now",
     enabled: bool = True,
     event_type: str | None = None,
+    semantic: dict[str, Any] | None = None,
     overwrite: bool = False,
 ) -> dict[str, Any]:
     """Author an event source: build + validate its frontmatter, then write
@@ -176,6 +207,7 @@ def event_source_create(
         cursor_from=cursor_from,
         enabled=enabled,
         event_type=event_type,
+        semantic=semantic,
     )
     return write_event_source(sources_dir(), name, fm, overwrite=overwrite)
 
@@ -196,6 +228,7 @@ def event_source_list() -> dict[str, Any]:
                 "action": d.action_name,
                 "allowed_actions": list(d.allowed_actions),
                 "condition": d.condition,
+                "semantic": bool(d.semantic),
                 "autonomy": d.autonomy,
             }
             for d in defs
