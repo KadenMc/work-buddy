@@ -59,7 +59,7 @@ Three core constructs, with design heuristics for deciding between them:
 
 - **Capabilities** — atomic Python functions registered in `registry.py`. Single operation, reusable from anywhere. Invoked via `wb_run("name", params)`, executes immediately.
 - **Workflows** — `kind: workflow` units, one Markdown file per workflow under `knowledge/store/`. Multi-step procedures requiring ordering, user decisions, or state threading. Started via `wb_run("name")`, advanced via `wb_advance(run_id, result)`.
-- **Auto-run steps** — workflow steps marked `auto_run` in the unit's frontmatter. The conductor executes these transparently in a subprocess; the agent never sees them. Use for deterministic code (config loading, data formatting) that needs no agent reasoning.
+- **Auto-run steps** — workflow steps marked `auto_run` in the unit's frontmatter. The conductor executes these transparently in a subprocess; the agent never sees them. Use for deterministic code (config loading, data formatting) that needs no agent reasoning. A subprocess that times out is retried once automatically (transient host contention is the dominant cause); set `auto_run.retry_on_timeout: false` for steps that mutate external state where a second attempt would not be idempotent (git commits, outbound message sends, source-pipeline drives).
 
 **Decision heuristic.** Can you write a unit test with a fixed expected output? → Capability. Does the "correct" output depend on interpretation, user input, or synthesis? → Workflow step. Is the step itself deterministic with no side effects? → Auto-run step.
 

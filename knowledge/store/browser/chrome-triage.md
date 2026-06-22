@@ -18,6 +18,10 @@ steps:
       engagement_window: 24h
       include_summaries: true
     timeout: 240
+    # The source pipeline drives outbound effects (summary persistence,
+    # downstream task creation) whose idempotency under partial completion
+    # is not audited — disable retry until that audit lands.
+    retry_on_timeout: false
   visibility:
     mode: summary
   invokes: []

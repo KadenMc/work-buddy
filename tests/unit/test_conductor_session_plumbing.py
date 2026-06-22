@@ -9,6 +9,7 @@ own bootstrap session.
 from __future__ import annotations
 
 import json
+import subprocess
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -140,3 +141,115 @@ def test_execute_auto_run_falls_back_to_env_when_no_session(monkeypatch):
 # the agent_session_id kwarg, and start_workflow stores it on the DAG,
 # and advance_workflow reads dag.agent_session_id, the chain holds.
 # The live E2E verification in session transcripts covers that path.
+
+
+# ---------------------------------------------------------------------------
+# Transient-timeout retry
+# ---------------------------------------------------------------------------
+#
+# When a subprocess hits ``subprocess.TimeoutExpired``, the conductor retries
+# the call once before failing the step. This absorbs transient host
+# contention (cold imports, concurrent registry rebuilds, antivirus scans).
+# Crashes, invalid-JSON outputs, and other failure modes never retry — they
+# signal real bugs. Per-step ``retry_on_timeout: false`` disables the retry
+# for non-idempotent callables (git commits, outbound message sends).
+
+
+def _spec(retry_on_timeout: bool = True) -> dict:
+    """Minimal AutoRun spec for these tests."""
+    return {
+        "callable": "work_buddy.obsidian.tasks.store.counts_by_state",
+        "kwargs": {},
+        "timeout": 5,
+        "retry_on_timeout": retry_on_timeout,
+    }
+
+
+def _timeout_exc(stderr: str = "") -> subprocess.TimeoutExpired:
+    return subprocess.TimeoutExpired(
+        cmd=["python", "-m", "subprocess_runner"], timeout=5, stderr=stderr,
+    )
+
+
+def test_execute_auto_run_retries_once_on_timeout(monkeypatch):
+    """First attempt times out; second returns success — overall success."""
+    calls = {"n": 0}
+
+    def _fake_run(cmd, input=None, **_kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise _timeout_exc()
+        return _FakeCompletedProcess()
+
+    monkeypatch.setattr(conductor.subprocess, "run", _fake_run)
+
+    result = conductor._execute_auto_run(
+        step_id="dummy", spec=_spec(), step_results={},
+    )
+
+    assert calls["n"] == 2, "transient timeout should be retried once"
+    assert result["success"] is True
+
+
+def test_execute_auto_run_fails_after_second_timeout(monkeypatch):
+    """Both attempts time out; step fails with a timeout error."""
+    calls = {"n": 0}
+
+    def _fake_run(cmd, input=None, **_kwargs):
+        calls["n"] += 1
+        raise _timeout_exc()
+
+    monkeypatch.setattr(conductor.subprocess, "run", _fake_run)
+
+    result = conductor._execute_auto_run(
+        step_id="dummy", spec=_spec(), step_results={},
+    )
+
+    assert calls["n"] == 2, "both attempts must run before the step fails"
+    assert result["success"] is False
+    assert "timed out" in result["error"]
+    assert "2 attempts" in result["error"], (
+        "error message should disclose that retries were exhausted"
+    )
+
+
+def test_execute_auto_run_respects_retry_on_timeout_false(monkeypatch):
+    """retry_on_timeout=false makes the timeout terminal on the first try."""
+    calls = {"n": 0}
+
+    def _fake_run(cmd, input=None, **_kwargs):
+        calls["n"] += 1
+        raise _timeout_exc()
+
+    monkeypatch.setattr(conductor.subprocess, "run", _fake_run)
+
+    result = conductor._execute_auto_run(
+        step_id="dummy",
+        spec=_spec(retry_on_timeout=False),
+        step_results={},
+    )
+
+    assert calls["n"] == 1, "opt-out must skip the retry"
+    assert result["success"] is False
+    assert "timed out" in result["error"]
+
+
+def test_execute_auto_run_does_not_retry_on_crash(monkeypatch):
+    """A non-timeout failure (subprocess crash) is terminal — no retry."""
+    calls = {"n": 0}
+
+    def _fake_run(cmd, input=None, **_kwargs):
+        calls["n"] += 1
+        return _FakeCompletedProcess(
+            stdout="", stderr="Traceback (most recent call last):\nBoom", returncode=1,
+        )
+
+    monkeypatch.setattr(conductor.subprocess, "run", _fake_run)
+
+    result = conductor._execute_auto_run(
+        step_id="dummy", spec=_spec(), step_results={},
+    )
+
+    assert calls["n"] == 1, "crashes signal real bugs and must not retry"
+    assert result["success"] is False
+    assert "crashed" in result["error"]

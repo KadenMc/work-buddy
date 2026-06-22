@@ -26,3 +26,14 @@ def fake_scan_changes() -> dict[str, Any]:
         "summary": "fifty items",
         "meta": {"total": 50, "kind": "fake"},
     }
+
+
+def fake_scan_raises() -> dict[str, Any]:
+    """Always raise — used to drive the conductor's failure response path.
+
+    The subprocess runner converts the exception into a ``{"success":
+    False, "error": ..., "traceback": ...}`` reply, which the conductor
+    then routes to ``fail_task`` and, when no downstream step can run,
+    to ``_build_blocked_response``.
+    """
+    raise RuntimeError("synthetic scan failure")
