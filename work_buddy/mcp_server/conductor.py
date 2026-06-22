@@ -202,6 +202,7 @@ def start_workflow(
                 "kwargs": step.auto_run.kwargs,
                 "input_map": step.auto_run.input_map,
                 "timeout": step.auto_run.timeout,
+                "retry_on_timeout": step.auto_run.retry_on_timeout,
             }
         if step.result_schema is not None:
             meta["result_schema"] = step.result_schema
@@ -263,6 +264,15 @@ def start_workflow(
     if dag.initial_params:  # type: ignore[attr-defined]
         response["initial_params"] = dag.initial_params  # type: ignore[attr-defined]
 
+    # If the first ``_build_response`` already terminated the workflow
+    # (e.g. a single auto_run step that succeeded or failed), pop the
+    # active-run entry. ``advance_workflow`` does this cleanup on its own
+    # terminal path; ``start_workflow`` needs the same hook so a workflow
+    # that ends synchronously doesn't leak into ``_ACTIVE_RUNS``.
+    if response.get("type") in ("workflow_complete", "workflow_blocked"):
+        with _ACTIVE_RUNS_LOCK:
+            _ACTIVE_RUNS.pop(run_id, None)
+
     return response
 
 
@@ -297,7 +307,13 @@ def advance_workflow(
     if not running:
         available = dag.next_available()
         if not available:
-            return _build_complete_response(workflow_run_id, dag)
+            # ``next_available() == []`` covers two distinct end states:
+            # all nodes reached a terminal state (true completion), or a
+            # failed step left its descendants unreachable. ``is_complete``
+            # is the strict predicate that distinguishes them.
+            if dag.is_complete():
+                return _build_complete_response(workflow_run_id, dag)
+            return _build_blocked_response(workflow_run_id, dag)
         task = available[0]
         dag.start_task(task["task_id"])
         return _build_response(workflow_run_id, dag)
@@ -381,14 +397,16 @@ def advance_workflow(
         return result
 
     # Build response — auto_run steps are consumed transparently inside.
-    # The auto_run chain may complete the workflow, producing a
-    # ``workflow_complete`` response.  Pass ``prior_step_id`` so
-    # ``_build_response`` includes the just-completed step's result in
-    # ``step_results`` for continuity (no post-hoc override needed).
+    # The auto_run chain may complete the workflow (``workflow_complete``)
+    # or wedge it on a failed step (``workflow_blocked``); both are
+    # terminal and the active-run entry can be cleaned up.  Pass
+    # ``prior_step_id`` so ``_build_response`` includes the just-completed
+    # step's result in ``step_results`` for continuity (no post-hoc
+    # override needed).
     response = _build_response(workflow_run_id, dag, prior_step_id=current_id)
 
-    if response.get("type") == "workflow_complete":
-        # Auto-run chain finished the workflow — clean up
+    if response.get("type") in ("workflow_complete", "workflow_blocked"):
+        # Auto-run chain reached a terminal state — clean up
         with _ACTIVE_RUNS_LOCK:
             _ACTIVE_RUNS.pop(workflow_run_id, None)
         return response
@@ -1116,7 +1134,12 @@ def _build_response(
     while True:
         available = dag.next_available()
         if not available:
-            resp = _build_complete_response(run_id, dag)
+            # Distinguish true completion from a blocked workflow — see
+            # the comment in ``advance_workflow``.
+            if dag.is_complete():
+                resp = _build_complete_response(run_id, dag)
+            else:
+                resp = _build_blocked_response(run_id, dag)
             if auto_ran:
                 resp["auto_ran"] = auto_ran
                 resp["step_results"] = _visibility_filter_results(dag)
@@ -1505,6 +1528,7 @@ def _execute_auto_run(
     dotted_path = spec.get("callable", "")
     kwargs = dict(spec.get("kwargs") or {})
     timeout = spec.get("timeout", 30)
+    retry_on_timeout = spec.get("retry_on_timeout", True)
 
     # --- Safety: only allow work_buddy.* imports ---
     if not dotted_path.startswith("work_buddy."):
@@ -1562,30 +1586,56 @@ def _execute_auto_run(
         step_id, dotted_path, timeout,
     )
 
-    # --- Launch subprocess ---
-    try:
-        proc = subprocess.run(
-            cmd,
-            input=json.dumps(payload),
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            cwd=str(repo_root),
-        )
-    except subprocess.TimeoutExpired as exc:
-        stderr_text = getattr(exc, "stderr", "") or ""
-        if stderr_text:
-            logger.warning(
-                "auto_run[%s]: stderr before timeout:\n%s",
-                step_id, stderr_text.strip(),
+    # --- Launch subprocess (with one retry on TimeoutExpired) ---
+    # A timeout typically signals transient host contention (cold imports,
+    # concurrent registry rebuilds, antivirus scans) rather than a real bug
+    # in the callable. Retrying once absorbs that transient and keeps the
+    # workflow advancing. Other failure modes (subprocess crash, invalid
+    # JSON output) signal real bugs and never retry.
+    #
+    # Set ``retry_on_timeout: false`` on the AutoRun spec for steps that
+    # mutate external state where a second attempt would not be idempotent.
+    max_attempts = 2 if retry_on_timeout else 1
+    proc = None
+    last_timeout_exc: subprocess.TimeoutExpired | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            proc = subprocess.run(
+                cmd,
+                input=json.dumps(payload),
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=str(repo_root),
             )
-        logger.warning(
-            "auto_run[%s]: %s timed out after %ds", step_id, dotted_path, timeout,
-        )
-        return {
-            "success": False,
-            "error": f"auto_run {dotted_path!r} timed out after {timeout}s",
-        }
+            break
+        except subprocess.TimeoutExpired as exc:
+            last_timeout_exc = exc
+            stderr_text = getattr(exc, "stderr", "") or ""
+            if stderr_text:
+                logger.warning(
+                    "auto_run[%s]: stderr before timeout (attempt %d/%d):\n%s",
+                    step_id, attempt, max_attempts, stderr_text.strip(),
+                )
+            if attempt < max_attempts:
+                logger.warning(
+                    "auto_run[%s]: %s timed out after %ds — retrying once",
+                    step_id, dotted_path, timeout,
+                )
+                continue
+            logger.warning(
+                "auto_run[%s]: %s timed out after %ds (%d attempts)",
+                step_id, dotted_path, timeout, attempt,
+            )
+            return {
+                "success": False,
+                "error": (
+                    f"auto_run {dotted_path!r} timed out after {timeout}s "
+                    f"({attempt} attempt{'s' if attempt > 1 else ''})"
+                ),
+            }
+    # Loop always either breaks with proc set or returns; this is defensive.
+    assert proc is not None, "subprocess loop exited without proc or return"
 
     # --- Log subprocess stderr (diagnostics) ---
     if proc.stderr:
@@ -1666,6 +1716,70 @@ def _build_complete_response(run_id: str, dag: WorkflowDAG) -> dict[str, Any]:
         "workflow_run_id": run_id,
         "summary": dag.summary(),
         "progress": f"{total}/{total} steps completed",
+        "step_results": _visibility_filter_results(dag),
+        "diagram": _dag_to_mermaid(dag),
+    }
+
+
+def _build_blocked_response(run_id: str, dag: WorkflowDAG) -> dict[str, Any]:
+    """Build the response for a workflow that terminated with a failed step.
+
+    Distinguished from ``_build_complete_response`` so callers (agents,
+    sidecar dispatchers, dashboards) can tell "workflow finished
+    successfully" apart from "workflow died because a step failed and
+    everything downstream is unreachable." Both states share the property
+    that no step is currently AVAILABLE, but only the first one means the
+    work was done.
+    """
+    # Persist DAG state and revoke the run grant — same lifecycle hygiene
+    # as the success path. A blocked run is just as "over" as a complete
+    # one from a consent / cleanup perspective.
+    dag.save()
+
+    from work_buddy.consent import revoke_workflow_run
+    wf_name = getattr(dag, "workflow_name", None) or (
+        (getattr(dag, "name", "") or "").split(":", 1)[0] if ":" in (getattr(dag, "name", "") or "") else getattr(dag, "name", "")
+    )
+    revoke_workflow_run(
+        wf_name,
+        run_id,
+        session_id=getattr(dag, "agent_session_id", None),
+        reason="blocked",
+    )
+
+    # Honest counts for the response envelope (the embedded ``summary``
+    # markdown already carries per-node status; this surfaces it to
+    # callers that don't parse the markdown).
+    total = dag._graph.number_of_nodes()
+    completed = 0
+    failed_ids: list[str] = []
+    for node_id, data in dag._graph.nodes(data=True):
+        status = data.get("status")
+        if status == "completed":
+            completed += 1
+        elif status == "failed":
+            failed_ids.append(node_id)
+
+    # First failure message — read the ``result`` field, which ``fail_task``
+    # writes as ``"FAILED: <error>"``. Surface the cleanest version we can.
+    first_error = ""
+    if failed_ids:
+        first_failed = failed_ids[0]
+        result_str = str(dag._graph.nodes[first_failed].get("result", "")).strip()
+        if result_str.startswith("FAILED: "):
+            result_str = result_str[len("FAILED: "):]
+        first_error = f"{first_failed}: {result_str}" if result_str else first_failed
+
+    return {
+        "type": "workflow_blocked",
+        "workflow_run_id": run_id,
+        "summary": dag.summary(),
+        "progress": (
+            f"{completed}/{total} steps completed "
+            f"(blocked: {len(failed_ids)} failed)"
+        ),
+        "failed_steps": failed_ids,
+        "error": first_error,
         "step_results": _visibility_filter_results(dag),
         "diagram": _dag_to_mermaid(dag),
     }

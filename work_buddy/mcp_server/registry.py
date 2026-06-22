@@ -177,6 +177,12 @@ class AutoRun:
     kwargs: dict[str, Any] = field(default_factory=dict)
     input_map: dict[str, str] = field(default_factory=dict)  # kwarg_name → step_id
     timeout: int = 30  # seconds
+    # When the subprocess hits the timeout, the conductor retries it once
+    # before failing the step. Set ``False`` for steps that mutate external
+    # state where a second attempt would not be idempotent (e.g. git commits,
+    # outbound message sends). Read-only and overwrite-idempotent callables
+    # — the common case — leave this at the default.
+    retry_on_timeout: bool = True
 
 
 @dataclass
@@ -1428,6 +1434,7 @@ def _discover_workflows_from_store() -> list[WorkflowDefinition]:
                     kwargs=auto_run_raw.get("kwargs") or {},
                     input_map=auto_run_raw.get("input_map") or {},
                     timeout=auto_run_raw.get("timeout", 30),
+                    retry_on_timeout=auto_run_raw.get("retry_on_timeout", True),
                 )
 
             # Reconstruct ResultVisibility from dict

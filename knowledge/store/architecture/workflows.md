@@ -57,9 +57,10 @@ steps:
     step_type: code
     auto_run:
       callable: work_buddy.morning.get_morning_config  # dotted import path
-      kwargs: {}         # optional static keyword args
-      input_map: {}      # optional: {kwarg_name: step_id} wires prior results into kwargs
-      timeout: 30        # seconds (default 30)
+      kwargs: {}              # optional static keyword args
+      input_map: {}           # optional: {kwarg_name: step_id} wires prior results into kwargs
+      timeout: 30             # seconds (default 30)
+      retry_on_timeout: true  # default true; set false for non-idempotent steps
 ```
 
 **When to use auto_run:** The step is deterministic, has no side effects, needs no agent reasoning, and produces data consumed by later steps. Examples: config loading, phase resolution, data formatting.
@@ -67,6 +68,8 @@ steps:
 **When NOT to use auto_run:** The step requires LLM reasoning, user interaction, consent, or calls external services that may fail and need agent-mediated recovery.
 
 **Safety:** Only `work_buddy.*` import paths are allowed. Failed auto_run steps are marked FAILED with the error surfaced to the agent. A 30s default timeout prevents runaway calls.
+
+**Transient-timeout retry:** Subprocess timeouts (`subprocess.TimeoutExpired`) are usually transient — cold imports, concurrent registry rebuilds, antivirus scans. The conductor retries the subprocess once before failing the step, so a single contended host doesn't surface a flake to the agent. Each attempt gets the full `timeout`; worst-case wall time is two attempts. Crashes and invalid-JSON failures never retry — they signal real bugs. Set `retry_on_timeout: false` for steps that mutate external state (git commits, outbound message sends, source-pipeline drives) where a second attempt would not be idempotent.
 
 **Data threading:** Every response from the conductor includes `step_results: {step_id: result}` — a map of all completed step results (auto_run and agent-completed). The `input_map` field lets auto_run steps consume upstream results declaratively: `input_map: {cfg: load-config}` passes the `load-config` result as the `cfg` kwarg.
 
@@ -145,6 +148,17 @@ Starting a workflow grants blanket consent for all its steps (grant_workflow_con
 - Step results over 50K chars are capped with a summary (_cap_step_results)
 - Timed-out auto_run steps produce timeout_recovery hints with re-poll instructions
 - Smart trimming: only relevant predecessor results are sent to each step (not all results)
+
+## Terminal response types
+
+A workflow ends in one of two terminal envelopes, returned by `start_workflow` / `advance_workflow` / `wb_advance` when no step is available to run next:
+
+- `type: "workflow_complete"` — every node reached `completed` (or `skipped`). The work was done. Field `progress: "N/N steps completed"`.
+- `type: "workflow_blocked"` — a step failed and its descendants are unreachable. Fields: `progress: "<done>/<total> steps completed (blocked: <n> failed)"`, `failed_steps: [<step_id>, …]`, `error: "<first_failed_id>: <first_error_message>"`. The work was not done; the caller needs to act on the failure (retry the workflow, fix the underlying cause, or escalate).
+
+Both states are terminal — the active-run entry is cleaned up and the workflow-run consent grant is revoked. They share `summary`, `step_results`, and `diagram` fields, so non-discriminating consumers (e.g. read-only logs) can use either uniformly; discriminating consumers (agents, dispatchers) should branch on `type`.
+
+`fail_task` cascades downstream `pending` nodes to `blocked` so the embedded diagram and `summary()` markdown agree about why those nodes won't run — no node sits in `pending` once an upstream has failed.
 
 ## Slash commands
 

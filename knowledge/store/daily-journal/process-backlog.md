@@ -15,6 +15,9 @@ steps:
     callable: work_buddy.pipelines.run_source_pipeline
     kwargs:
       source: journal_backlog
+    # The source pipeline drives outbound effects whose idempotency under
+    # partial completion is not audited — disable retry until that lands.
+    retry_on_timeout: false
   visibility:
     mode: summary
   invokes: []

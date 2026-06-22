@@ -19,6 +19,9 @@ steps:
       max_messages: 50
       unread_only: true
     timeout: 240
+    # The source pipeline drives outbound effects whose idempotency under
+    # partial completion is not audited — disable retry until that lands.
+    retry_on_timeout: false
   visibility:
     mode: summary
   invokes: []

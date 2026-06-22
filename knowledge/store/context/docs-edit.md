@@ -49,6 +49,10 @@ steps:
     input_map:
       resolve: resolve
     timeout: 60
+    # Commit mutates the knowledge store (git commit, index rebuild) — a
+    # second attempt after a timeout could duplicate the commit. Fail the
+    # step instead of retrying.
+    retry_on_timeout: false
 tags:
 - docs
 - editing

@@ -302,6 +302,11 @@ class WorkflowDAG:
         data["status"] = TaskStatus.FAILED.value
         data["completed_at"] = datetime.now(timezone.utc).isoformat()
         data["result"] = f"FAILED: {error}"
+        # Re-classify downstream PENDING nodes as BLOCKED so the DAG's
+        # diagram, summary, and any consumer that inspects per-node status
+        # agree about why those nodes won't run. ``complete_task`` and
+        # ``skip_task`` already do this for the success path.
+        self._update_availability()
         logger.error(f"Task failed: {task_id} — {error}")
         self._save()
 

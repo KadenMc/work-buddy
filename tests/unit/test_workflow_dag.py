@@ -125,6 +125,53 @@ class TestDAGTransitions:
         dag.complete_task("b")
         assert dag.is_complete()
 
+    def test_fail_task_cascades_pending_to_blocked(self):
+        """A failed upstream re-classifies its PENDING descendants as BLOCKED.
+
+        Without this cascade, ``b`` would sit at PENDING after ``a`` fails —
+        an inconsistent state where the diagram says "blocked" but the
+        node status says "pending." The conductor's ``next_available()``
+        returns [] in either case, so the cascade is mainly about
+        consumer-visible honesty.
+        """
+        dag = WorkflowDAG(name="test:t-fail-cascade", description="test")
+        dag.add_task("a", name="A")
+        dag.add_task("b", name="B", depends_on=["a"])
+        dag.start_task("a")
+        dag.fail_task("a", error="boom")
+        assert dag.get_task("a")["status"] == TaskStatus.FAILED.value
+        assert dag.get_task("b")["status"] == TaskStatus.BLOCKED.value
+
+    def test_is_complete_false_after_failure_with_blocked_downstream(self):
+        """``is_complete`` must NOT return True when a step failed and a
+        downstream step is sitting at BLOCKED (it never ran). This is the
+        strict predicate the conductor uses to distinguish a successful
+        workflow from one that died on a failed step.
+        """
+        dag = WorkflowDAG(name="test:t-not-complete-on-fail", description="test")
+        dag.add_task("a", name="A")
+        dag.add_task("b", name="B", depends_on=["a"])
+        dag.start_task("a")
+        dag.fail_task("a", error="boom")
+        # ``b`` is BLOCKED (cascaded above), not in the accepted set.
+        assert not dag.is_complete()
+
+    def test_is_complete_true_when_all_terminal(self):
+        """``is_complete`` is True when every node is completed, skipped, or
+        failed — even if some failed. The conductor branches on this to
+        emit ``workflow_complete`` (all-success) vs ``workflow_blocked``
+        (has-failure) and adjusts terminal counters accordingly.
+        """
+        dag = WorkflowDAG(name="test:t-complete-with-failure", description="test")
+        dag.add_task("a", name="A")
+        dag.add_task("b", name="B")  # independent, no dep on a
+        dag.start_task("a")
+        dag.fail_task("a", error="boom")
+        dag.start_task("b")
+        dag.complete_task("b")
+        # a=FAILED, b=COMPLETED — every node terminal — is_complete is True.
+        assert dag.is_complete()
+
     def test_get_all_results(self):
         dag = WorkflowDAG(name="test:t13", description="test")
         dag.add_task("a", name="A")

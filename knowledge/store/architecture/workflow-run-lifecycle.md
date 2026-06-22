@@ -22,7 +22,20 @@ parents:
 - architecture/workflows
 ---
 
-The conductor holds in-flight runs in an in-memory map — `_ACTIVE_RUNS` in `work_buddy/mcp_server/conductor.py`, keyed by `workflow_run_id`. A run is added at `start_workflow` and, left alone, removed only when it completes. Three mechanisms keep that map bounded and recoverable.
+The conductor holds in-flight runs in an in-memory map — `_ACTIVE_RUNS` in `work_buddy/mcp_server/conductor.py`, keyed by `workflow_run_id`. A run is added at `start_workflow` and removed on any **terminal state**: successful completion, blocked-by-failure, or explicit cancel. Three mechanisms keep that map bounded and recoverable.
+
+## Terminal states
+
+A run is terminal when no step is available to advance. Two flavors:
+
+- **Complete** (`type: "workflow_complete"`) — every node in completed / skipped / failed AND `dag.is_complete()` is true. Triggers `_build_complete_response`.
+- **Blocked** (`type: "workflow_blocked"`) — at least one step failed and its descendants are unreachable. Triggers `_build_blocked_response`, which surfaces honest progress counts (`<done>/<total> steps completed (blocked: <n> failed)`), a `failed_steps` list, and an `error` field naming the first failure.
+
+Both states share lifecycle cleanup: persist the DAG, revoke the `workflow_run` consent grant, pop from `_ACTIVE_RUNS`. The distinction matters to consumers — agents, dispatchers, the sidecar executor — who should treat blocked workflows as failures (retry, escalate) rather than successes. `executor.py`'s DAG-walking dispatch loop exits on both states.
+
+## fail_task cascades
+
+When `fail_task` marks a step FAILED, it re-runs `_update_availability` so pending downstream nodes flip to BLOCKED. This keeps the DAG's per-node status, the rendered Mermaid diagram, and the `summary()` markdown consistent: no node sits in PENDING once an upstream has failed.
 
 ## Cancel
 

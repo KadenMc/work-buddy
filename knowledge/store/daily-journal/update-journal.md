@@ -19,7 +19,7 @@ steps:
     kwargs: {}
     input_map:
       target: __params__.target
-    timeout: 30
+    timeout: 90
   invokes: []
 - id: collect
   name: Collect fresh context (scoped to activity window)

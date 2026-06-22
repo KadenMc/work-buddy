@@ -385,3 +385,101 @@ def test_auto_ran_ledger_has_corresponding_step_results_in_real_response(
         )
     finally:
         conductor._ACTIVE_RUNS.pop(resp.get("workflow_run_id"), None)
+
+
+# ---------------------------------------------------------------------------
+# Blocked-workflow response invariants
+# ---------------------------------------------------------------------------
+#
+# When an auto_run step fails and its descendants are unreachable, the
+# conductor emits ``type: "workflow_blocked"`` instead of
+# ``"workflow_complete"``. The envelope carries honest progress counts and
+# names the failed step(s) so callers can act on the failure rather than
+# treat it as a successful finish.
+
+
+@pytest.fixture
+def failing_auto_run_workflow():
+    """Register a 2-step workflow whose auto_run step always raises.
+
+    Same shape as ``minimal_auto_run_workflow`` but the auto_run callable
+    raises a synthetic error, exercising the failure-path response.
+    """
+    from work_buddy.mcp_server.registry import (
+        AutoRun,
+        ResultVisibility,
+        WorkflowDefinition,
+        WorkflowStep,
+        get_registry,
+    )
+
+    name = "test_failing_auto_run"
+    wf = WorkflowDefinition(
+        name=name,
+        description="Test fixture: auto_run step always raises.",
+        workflow_file="test:in-memory",
+        execution="main",
+        steps=[
+            WorkflowStep(
+                id="scan",
+                name="Scan (auto_run that fails)",
+                step_type="code",
+                depends_on=[],
+                instruction="",
+                auto_run=AutoRun(
+                    callable="work_buddy.mcp_server._test_fakes.fake_scan_raises",
+                    kwargs={},
+                    input_map={},
+                    timeout=15,
+                    # Don't waste time retrying — a deterministic crash
+                    # would just fail twice.
+                    retry_on_timeout=False,
+                ),
+                visibility=ResultVisibility(mode="full"),
+            ),
+            WorkflowStep(
+                id="report",
+                name="Report (reasoning, never reached)",
+                step_type="reasoning",
+                depends_on=["scan"],
+                instruction="Read scan and report.",
+            ),
+        ],
+    )
+    registry = get_registry()
+    registry[name] = wf
+    yield name
+    registry.pop(name, None)
+
+
+def test_blocked_response_after_auto_run_failure(failing_auto_run_workflow):
+    """A failing auto_run leaves the workflow blocked, not complete.
+
+    Before the fix, this case returned ``type: "workflow_complete"`` with
+    ``progress: "N/N steps completed"`` because the conductor routed on
+    ``next_available() == []`` rather than ``is_complete()``. The new
+    envelope honestly labels the workflow blocked and names the failed
+    step in the ``error`` and ``failed_steps`` fields.
+    """
+    from work_buddy.mcp_server import conductor
+
+    resp = conductor.start_workflow(failing_auto_run_workflow)
+    try:
+        assert resp.get("type") == "workflow_blocked", (
+            f"failed auto_run must yield workflow_blocked, got: {resp.get('type')!r}"
+        )
+        assert "scan" in (resp.get("failed_steps") or []), (
+            f"failed_steps must name the failed step: {resp.get('failed_steps')}"
+        )
+        # The progress string carries honest counts.
+        progress = resp.get("progress", "")
+        assert "0/2 steps completed" in progress, progress
+        assert "blocked: 1 failed" in progress, progress
+        # The error field surfaces the first failure with the underlying
+        # subprocess error message.
+        err = resp.get("error", "")
+        assert err.startswith("scan:"), err
+        # And the standard tree-shape invariant still holds.
+        assert_no_duplicated_subtrees(resp)
+    finally:
+        conductor._ACTIVE_RUNS.pop(resp.get("workflow_run_id"), None)

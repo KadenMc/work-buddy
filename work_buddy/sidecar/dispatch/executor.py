@@ -160,7 +160,12 @@ def _execute_workflow(name: str, params: dict[str, Any] | None = None) -> dict[s
         # Walk the DAG, auto-advancing what we can
         while True:
             current = response.get("current_step")
-            if current is None or response.get("type") == "workflow_complete":
+            # Exit on either terminal state: ``workflow_complete`` (all
+            # steps succeeded) or ``workflow_blocked`` (a step failed and
+            # downstream is unreachable). Both mean no more work to drive.
+            if current is None or response.get("type") in (
+                "workflow_complete", "workflow_blocked",
+            ):
                 break
 
             step_id = current["id"]
