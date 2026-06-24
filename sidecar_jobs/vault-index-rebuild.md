@@ -1,7 +1,7 @@
 ---
-schedule: "*/5 * * * *"  # every 5 minutes
+schedule: "4-59/5 * * * *"  # minute 4 of each 5-min cycle — heaviest index build, isolated on its own minute
 recurring: true
-jitter_seconds: 75  # distinct offset from ir-index's 90 so the two 5-min jobs don't pile up
+jitter_seconds: 45  # intra-minute de-sync only; the minute-4 offset does the coarse spread off the other index crons
 type: capability
 capability: vault_index
 params:
