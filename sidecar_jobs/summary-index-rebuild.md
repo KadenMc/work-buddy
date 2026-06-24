@@ -1,7 +1,7 @@
 ---
-schedule: "*/5 * * * *"  # every 5 minutes
+schedule: "1-59/5 * * * *"  # minute 1 of each 5-min cycle — staggered off ir-index (min 0) and vault-index (min 4)
 recurring: true
-jitter_seconds: 105  # spread 5-minute pile-ups; lands off the other index crons
+jitter_seconds: 45  # intra-minute de-sync only; the minute-1 offset does the coarse spread
 type: capability
 capability: ir_index
 params:
