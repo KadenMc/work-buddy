@@ -79,6 +79,7 @@ Return 'None detected' or pattern names with one-line evidence.
 - Each MIT is a concrete, completable action.
 - Present proposed MITs for review before creating.
 - Include `#tasker/state/focused` in task_text (interim workaround for Dataview visibility, see t-abe6ea4b).
+- Pass `summary` with a context paragraph for each MIT: what it is, why it is the right focus today, and any handoff notes a future agent will need. A focused task without a note is a continuity gap.
 
 ## Persist-Briefing guidelines
 
