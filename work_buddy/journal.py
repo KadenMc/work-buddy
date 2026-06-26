@@ -437,6 +437,19 @@ def read_journal_state(target: str | None = None) -> dict[str, Any]:
     else:
         collect_until = user_now().strftime("%Y-%m-%dT%H:%M:%S")
 
+    # Anchor non-empty section text with the target date and weekday so the
+    # content stays unambiguous when surfaced outside this dict (e.g. quoted
+    # in a briefing read after midnight). Empty sections are passed through
+    # so callers can still distinguish "missing section" from "section with
+    # only the header." target_date is also returned as its own field, so
+    # callers that read this dict whole still get the date as structured data.
+    weekday = target_date_obj.strftime("%A")
+    journal_header = f"Journal for {resolved.date} ({weekday})\n\n"
+    if log_section:
+        log_section = journal_header + log_section
+    if sign_in_section:
+        sign_in_section = journal_header + sign_in_section
+
     return {
         "target_date": resolved.date,
         "ambiguous": False,
