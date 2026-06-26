@@ -657,11 +657,25 @@ def _append_to_journal_locked(
     sorted_entries = sorted(entries, key=lambda e: _effective_minutes(e[0]))
 
     # Insert each entry chronologically — re-read content after each insert
-    # because offsets shift
+    # because offsets shift. Two skip paths:
+    #   - already_present: the formatted line is already in the file. This is
+    #     the replay-safety guard: if the original write actually landed but
+    #     the post-write verifier returned ObsidianPostWriteUncertain, a retry
+    #     sees the entries in the file and skips them. No duplicate is written.
+    #     The file is the source of truth; no separate cache needed because
+    #     journal entries have no minted identity to preserve.
+    #   - skipped: no valid chronological insertion point. Distinct from
+    #     already_present so callers can distinguish "we already did this"
+    #     from "we could not figure out where to insert this."
     inserted_count = 0
-    skipped = []
+    skipped: list[str] = []
+    already_present: list[str] = []
+    first_inserted_line: str | None = None
     for time_str, description in sorted_entries:
         formatted_line = _format_log_entry(time_str, description)
+        if formatted_line in file_content:
+            already_present.append(time_str)
+            continue
         insertion_point = _find_chronological_insertion_point(file_content, time_str)
         if insertion_point is None:
             skipped.append(time_str)
@@ -680,8 +694,29 @@ def _append_to_journal_locked(
 
         file_content = before + formatted_line + after
         inserted_count += 1
+        if first_inserted_line is None:
+            first_inserted_line = formatted_line.strip("\n")
 
     if inserted_count == 0:
+        # All entries already in the file -> success (the work is done, this
+        # is the replay-safety guard firing). All entries unfindable -> failure.
+        # Mixed -> still success if any landed previously, since the caller's
+        # intent (those lines exist in the journal) is satisfied.
+        if already_present:
+            result: dict[str, Any] = {
+                "success": True,
+                "file": str(journal_file),
+                "entries_written": 0,
+                "already_present": already_present,
+                "message": (
+                    f"All {len(already_present)} entries already in the journal "
+                    f"(replay-safe no-op). Times: {already_present}"
+                ),
+            }
+            if skipped:
+                result["skipped"] = skipped
+                result["message"] += f" {len(skipped)} entries had no insertion point: {skipped}"
+            return result
         return {
             "success": False,
             "file": str(journal_file),
@@ -699,11 +734,31 @@ def _append_to_journal_locked(
     # be swallowed into a direct write: a blanket ``except Exception`` that
     # falls back to disk would diverge an open editor from disk and wedge the
     # note with a persistent 409 editor_dirty.
+    #
+    # write_mode='insert' is verifier-only: the bridge call still PUTs the
+    # full file content; we change the post-write verification semantics from
+    # "the file's full sha256 must match what we sent" to "this substring must
+    # be present in the file." The journal is concurrently touched by Obsidian
+    # itself, the Tasks plugin, Datacore, and the Linter, all of which can
+    # mutate unrelated regions of the file between the bridge write and the
+    # verifier's read-back. Full-file sha256 mismatches in that case and the
+    # PWU recovery path needlessly re-runs this capability, which without the
+    # already_present guard above used to land duplicate entries. See the
+    # explicit guidance in obsidian/bridge.py write_file docstring (the master
+    # task list, archives, journals).
+    #
+    # content_hint MUST be set explicitly: the default for insert mode is the
+    # first 256 chars of the file content, which for a journal is stable
+    # frontmatter identical across writes -> the verifier would always falsely
+    # return "verified." We pass the first inserted line, which is by
+    # construction not in the pre-write file (the already_present check above
+    # filtered it out), so verify succeeds iff our write actually landed.
     vault_rel_path = f"journal/{date_str}.md"
     from work_buddy.obsidian.vault_writer import vault_write
 
     ok = vault_write(
-        vault_rel_path, journal_file, file_content, write_mode="replace",
+        vault_rel_path, journal_file, file_content,
+        write_mode="insert", content_hint=first_inserted_line,
     )
     if not ok:
         # Only reachable when Obsidian was down AND the direct filesystem
@@ -728,9 +783,14 @@ def _append_to_journal_locked(
         "entries_written": inserted_count,
         "message": f"Appended {inserted_count} entries to Log section of {date_str} journal.",
     }
+    if already_present:
+        result["already_present"] = already_present
+        result["message"] += (
+            f" Skipped {len(already_present)} already-present: {already_present}"
+        )
     if skipped:
         result["skipped"] = skipped
-        result["message"] += f" Skipped {len(skipped)}: {skipped}"
+        result["message"] += f" Skipped {len(skipped)} (no insertion point): {skipped}"
     return result
 
 
