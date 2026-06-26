@@ -2,7 +2,7 @@
 name: Journal Update Directions
 kind: directions
 description: How to detect activity and append journal Log entries — format, synthesis rules, approval flow
-summary: 'Format: ''* <TIME> - #projects/<slug> — <description>. #wb/journal/log''. One entry per distinct activity, minute-level timestamps. REQUIRED before writing: dedupe against existing Log entries (journal_state per target day) AND get explicit user approval; journal_write is consent-gated by the Obsidian bridge. Near-real-time event log, not summaries.'
+summary: 'Format: ''* <TIME> - #projects/<slug> — <description>. #wb/journal/log'' — the #projects/<slug> prefix is applied only when the activity is attributable to a registered project (attribution is always attempted); a genuine non-project entry carries no project tag. One entry per distinct activity, minute-level timestamps. REQUIRED before writing: dedupe against existing Log entries (journal_state per target day) AND get explicit user approval; journal_write is consent-gated by the Obsidian bridge. Near-real-time event log, not summaries.'
 trigger: user wants to update their journal with recent activity
 command: wb-journal-update
 workflow: daily-journal/update-journal
@@ -37,11 +37,12 @@ Target date: Defaults to today. If past midnight (00:00-04:00) and no date speci
 
 The Log is a near-real-time event log, not a high-level summary. Each entry anchors a thing that happened at a specific time.
 
-Format: * <TIME> - #projects/<slug> — <description>. #wb/journal/log
+Format (attributed):     * <TIME> - #projects/<slug> — <description>. #wb/journal/log
+Format (unattributable): * <TIME> - <description>. #wb/journal/log   (no project tag — only after a genuine failed match)
 - Bullet is '* ' (asterisk space), NOT '- '
 - Single line per entry -- no sub-bullets, no nesting
 - Terse, specific -- match the user's journal voice
-- Each entry MUST be prefixed with `#projects/<slug>` where `<slug>` is the project the activity belongs to. The slug must come from `project_list` (canonical registry slug). If activity cannot be attributed to a registered project, prefix `#projects/unknown` and flag for the user during approval.
+- Attribution is mandatory effort, but the tag is conditional output. For EVERY entry you MUST attempt attribution: run `project_list`, check aliases, and actively decide which registered project the activity belongs to. When a project matches, prefix `#projects/<slug>` using the canonical registry slug from `project_list` (NOT an alias). Only after a genuine, attempted-and-failed match may an entry be left untagged — omission is the conclusion of attribution work, never a shortcut to skip it. Never use `#projects/unknown` or any placeholder slug. Every untagged entry MUST be surfaced to the user at approval (see "Approval + dedup" below).
 
 Rules:
 1. One entry per distinct activity -- a commit, a completed task, a bug fix. If 6 things happened, produce ~4-6 entries.
@@ -74,19 +75,19 @@ If you produce a draft Log that mentions only one project across an active multi
 Two gates stand between a draft and `journal_write`. Both are mandatory every run, including backfills:
 
 1. **Dedupe against what is already there.** Before presenting, call `journal_state` for **each target day** and read its existing Log entries. Drop any draft entry whose activity is already logged (same activity/time). When backfilling a multi-day window, whole days are often already covered — skip those days entirely. The write must be idempotent and safe to re-run.
-2. **Get explicit user approval.** Present the deduped entries (grouped by day; name the days you are skipping as already-covered) and wait for an explicit go-ahead. The user may edit, reword, add, or remove. Do NOT call `journal_write` until they approve — a verbal "looks good / proceed" counts; silence does not.
+2. **Get explicit user approval.** Present the deduped entries (grouped by day; name the days you are skipping as already-covered) and wait for an explicit go-ahead. The user may edit, reword, add, or remove. Do NOT call `journal_write` until they approve — a verbal "looks good / proceed" counts; silence does not. When presenting, you MUST also call out every entry you left **unattributed** ("N entries I couldn't attribute to a project: …") so the omissions are visible and auditable — never omit a project tag silently.
 
 Note: `journal_write` is itself **consent-gated by the Obsidian bridge** — each call raises a surface consent prompt (Obsidian / dashboard / Telegram), separate from the in-chat approval above. For a multi-day backfill, tell the user they can approve once with "Allow always (this session)" so the writes do not stack one prompt per day.
 
 ## Calling journal_write
 
-The `entries` parameter is a JSON string containing a list of `[time, description]` tuples — NOT pre-formatted vault lines. The function handles vault formatting (bullets, tags) internally. Each `description` should INCLUDE the `#projects/<slug>` prefix.
+The `entries` parameter is a JSON string containing a list of `[time, description]` tuples — NOT pre-formatted vault lines. The function handles vault formatting (bullets, tags) internally. Each `description` should INCLUDE the `#projects/<slug>` prefix when the entry was attributed; entries you deliberately left unattributed (after a failed match) carry no project prefix.
 
 Example:
 ```
 mcp__work-buddy__wb_run("journal_write", {
   "target": "2026-04-15",
-  "entries": "[[\"6:08 PM\", \"#projects/work-buddy — Fixed consent nesting bug.\"], [\"7:52 PM\", \"#projects/electricrag — Added grader run for 32 ECG batch.\"]]"
+  "entries": "[[\"6:08 PM\", \"#projects/work-buddy — Fixed consent nesting bug.\"], [\"7:52 PM\", \"#projects/ecg-inquiry — Added grader run for 32 ECG batch.\"]]"
 })
 ```
 
@@ -98,6 +99,7 @@ Do NOT pass pre-formatted strings like `* 6:08 PM - Description. #wb/journal/log
 - Don't include raw git hashes or file paths unless they add meaning
 - Don't add entries to sections other than Log
 - Don't synthesize from a single source — always cross-reference git + chat + claude_session_summary + obsidian
-- Don't omit the `#projects/<slug>` prefix — if you don't know the slug, run `project_list` and resolve it
+- Don't omit a project tag out of laziness — you MUST run `project_list` and attempt resolution first; omit only after a genuine failed match, and always flag the omission at approval
+- Don't invent `#projects/unknown` or any placeholder slug for non-project activity — a genuine life event simply carries no project tag
 
 --- context from: obsidian/bridge ---
