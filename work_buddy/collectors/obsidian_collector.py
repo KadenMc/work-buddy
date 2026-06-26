@@ -138,8 +138,16 @@ def _get_journal_entries(
             content = file_path.read_text(encoding="utf-8", errors="replace")
             sections = _extract_sections(content)
             if sections:
+                # Carry the weekday alongside the ISO date so downstream
+                # renderers can disambiguate the journal even when surfaced
+                # out of file-context (e.g. quoted in a briefing read after
+                # midnight). The file name carries the date implicitly, but
+                # the rendered context surface usually loses that anchor.
+                weekday = current.strftime("%A")
                 entries.append({
                     "date": current.isoformat(),
+                    "weekday": weekday,
+                    "header": f"Journal for {current.isoformat()} ({weekday})",
                     "sections": sections,
                 })
         current -= timedelta(days=1)
@@ -512,7 +520,11 @@ def collect(cfg: dict[str, Any]) -> tuple[str, str]:
             lines.append(f"## Journal (last {journal_days} days)")
         lines.append("")
         for entry in journal_entries:
-            lines.append(f"### {entry['date']}")
+            # Header carries date + weekday so this block is unambiguous when
+            # read in isolation. Falls back to the raw date for entries that
+            # predate the header field (defensive against partial updates).
+            heading = entry.get("header") or entry["date"]
+            lines.append(f"### {heading}")
             lines.append("")
             for sec_name, sec_body in entry["sections"].items():
                 lines.append(f"**{sec_name}:**")

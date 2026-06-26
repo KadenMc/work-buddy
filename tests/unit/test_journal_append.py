@@ -112,3 +112,114 @@ def test_append_refuses_direct_write_when_obsidian_running(tmp_path, monkeypatch
 
     # Disk untouched — the open editor cannot have diverged.
     assert journal_file.read_text(encoding="utf-8") == before
+
+
+def test_append_idempotent_on_replay(tmp_path, monkeypatch):
+    """Replay safety: calling _append_to_journal_locked twice with identical
+    entries must land each entry only once. This is the regression guard for
+    the post-write-uncertain replay-duplication failure mode: a bridge write
+    that actually landed but reported ObsidianPostWriteUncertain triggers a
+    retry, and without this guard the retry re-inserts every entry.
+
+    The first call lands the entries. The second call sees them already in
+    the file via the formatted_line-in-file check and short-circuits to a
+    success response with already_present populated and entries_written=0.
+    """
+    import work_buddy.obsidian.bridge as bridge_mod
+
+    monkeypatch.setattr(bridge_mod, "is_available", lambda: False, raising=False)
+    monkeypatch.setattr(bridge_mod, "is_obsidian_running", lambda: False, raising=False)
+
+    journal_file = _make_journal(tmp_path)
+    entries = [
+        ("2:15 PM", "Idempotent test entry one"),
+        ("3:30 PM", "Idempotent test entry two"),
+    ]
+
+    first = _append_to_journal_locked(entries, journal_file, "2026-04-16")
+    assert first["success"] is True
+    assert first["entries_written"] == 2
+    assert first.get("already_present", []) == []
+
+    # Simulate a PWU-triggered replay: same entries, same file (which now
+    # already contains them).
+    second = _append_to_journal_locked(entries, journal_file, "2026-04-16")
+    assert second["success"] is True
+    assert second["entries_written"] == 0
+    assert second.get("already_present") == ["2:15 PM", "3:30 PM"]
+
+    # File must contain each entry exactly once.
+    content = journal_file.read_text(encoding="utf-8")
+    assert content.count("Idempotent test entry one") == 1
+    assert content.count("Idempotent test entry two") == 1
+
+
+def test_append_mixed_already_present_and_new(tmp_path, monkeypatch):
+    """A replay that includes a partial overlap with file state: some entries
+    are already present (from a prior write that landed), some are genuinely
+    new. The new ones must land; the already-present ones must be reported in
+    already_present without producing duplicates.
+    """
+    import work_buddy.obsidian.bridge as bridge_mod
+
+    monkeypatch.setattr(bridge_mod, "is_available", lambda: False, raising=False)
+    monkeypatch.setattr(bridge_mod, "is_obsidian_running", lambda: False, raising=False)
+
+    journal_file = _make_journal(tmp_path)
+    # Pre-seed one entry as if a prior write had landed it.
+    _append_to_journal_locked(
+        [("2:15 PM", "Already there")],
+        journal_file,
+        "2026-04-16",
+    )
+
+    mixed = [
+        ("2:15 PM", "Already there"),
+        ("4:00 PM", "Genuinely new"),
+    ]
+    result = _append_to_journal_locked(mixed, journal_file, "2026-04-16")
+    assert result["success"] is True
+    assert result["entries_written"] == 1
+    assert result.get("already_present") == ["2:15 PM"]
+
+    content = journal_file.read_text(encoding="utf-8")
+    assert content.count("Already there") == 1
+    assert content.count("Genuinely new") == 1
+
+
+def test_append_passes_insert_mode_witness_to_vault_write(tmp_path, monkeypatch):
+    """The vault_write call must use write_mode='insert' with an explicit
+    content_hint drawn from the first inserted line. The default insert hint
+    (first 256 chars of the file content) would always be stable journal
+    frontmatter and would cause the post-write verifier to always return
+    'verified' regardless of whether the write landed.
+    """
+    from work_buddy import journal as jmod
+
+    captured: dict = {}
+
+    def fake_vault_write(vault_rel_path, abs_path, content, *, write_mode, content_hint=None):
+        captured["write_mode"] = write_mode
+        captured["content_hint"] = content_hint
+        # Mimic a successful filesystem write so the rest of the function
+        # proceeds normally.
+        abs_path.write_text(content, encoding="utf-8")
+        return True
+
+    # Patch the import inside _append_to_journal_locked (it does a local
+    # `from work_buddy.obsidian.vault_writer import vault_write`).
+    import work_buddy.obsidian.vault_writer as vw
+    monkeypatch.setattr(vw, "vault_write", fake_vault_write, raising=False)
+
+    journal_file = _make_journal(tmp_path)
+    entries = [("2:15 PM", "Witness check entry")]
+    result = _append_to_journal_locked(entries, journal_file, "2026-04-16")
+
+    assert result["success"] is True
+    assert captured["write_mode"] == "insert"
+    # Witness should be the formatted line for our new entry, which contains
+    # the bullet, the timestamp, and the description.
+    assert captured["content_hint"] is not None
+    assert "2:15 PM" in captured["content_hint"]
+    assert "Witness check entry" in captured["content_hint"]
+    assert "#wb/journal/log" in captured["content_hint"]
