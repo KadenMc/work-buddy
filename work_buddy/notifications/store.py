@@ -418,6 +418,15 @@ def _dispatch_via_messaging(
 
     try:
         from work_buddy.messaging.client import send_message
+        from work_buddy.messaging.models import DISPOSITION_ACKNOWLEDGEMENT
+
+        # Acknowledgement echoes are auto-acks of a consent decision the gateway
+        # already recorded in-band: born resolved so they never enter the
+        # pending/block path or accumulate in the inbox. A genuine actionable
+        # response stays pending until the agent ingests and resolves it.
+        born_status = (
+            "resolved" if disposition == DISPOSITION_ACKNOWLEDGEMENT else "pending"
+        )
 
         result = send_message(
             sender="notification-system",
@@ -431,6 +440,7 @@ def _dispatch_via_messaging(
                 "params": params,
             }),
             priority="high",
+            status=born_status,
             tags=["notification-callback", "agent-ingest"],
             recipient_session=recipient_session,
             disposition=disposition,

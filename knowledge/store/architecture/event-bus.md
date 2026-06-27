@@ -1,14 +1,14 @@
 ---
 name: Dashboard Event Bus
 kind: concept
-description: In-process pub/sub + SSE stream + cross-process bridge that powers real-time dashboard updates without a global panel-refresh timer.
+description: In-process pub/sub + SSE stream + localhost cross-process ingress that powers real-time dashboard updates without a global panel-refresh timer.
 tags:
 - dashboard
 - sse
 - event-bus
 - real-time
 - pub-sub
-- messaging-bridge
+- cross-process-events
 - smart-refresh
 aliases:
 - event bus
@@ -17,7 +17,7 @@ aliases:
 - real-time updates
 - /api/events
 - publish_auto
-- messaging bridge
+- internal bus
 parents:
 - architecture
 - architecture
@@ -70,19 +70,15 @@ dev_notes: |-
 
   ## ``appendCard`` and ``removeCard`` coordinate via ``_pendingRemovals``
 
-  In-process events have ~0 ms delivery latency; cross-process events poll-cycle through the messaging bridge (~500 ms). A ``pool.entry_state_changed`` for a just-submitted entry can therefore arrive before the corresponding ``pool.entry_added``. ``removeCard`` records the key in a closure-local ``_pendingRemovals`` Set when the target card is absent; ``appendCard`` consults that set first and discards a late add for an already-resolved entry. Tasks / Settings / Costs use morphdom-merge refresh which is naturally idempotent against this race.
+  In-process events have ~0 ms delivery latency; cross-process events arrive via a best-effort POST to ``/internal/bus`` — low latency, but a separate request from the in-process publish. A ``pool.entry_state_changed`` for a just-submitted entry can therefore still arrive before the corresponding ``pool.entry_added``. ``removeCard`` records the key in a closure-local ``_pendingRemovals`` Set when the target card is absent; ``appendCard`` consults that set first and discards a late add for an already-resolved entry. Tasks / Settings / Costs use morphdom-merge refresh which is naturally idempotent against this race.
 
-  ## Bridge filter is ``status='pending'``
+  ## Cross-process publishes go straight to the dashboard
 
-  ``messaging_bridge`` queries ``messaging.client.query_messages(recipient='dashboard', status='pending', ...)``. The messaging schema (``messaging/models.py``) creates rows with ``status='pending'`` (default in the column definition). ``'unread'`` is a per-reader read-tracking concept on a different table, NOT the row's lifecycle status. Terminal status is ``'resolved'`` (matches the existing acknowledge poller in ``service.py``).
-
-  ## Cross-process publishes survive messaging-service restarts
-
-  ``publish_cross_process`` POSTs to localhost:5123. The messaging client auto-starts the service if it's down. The bridge's poll loop catches and logs query failures without dying. A messaging-service restart does NOT disconnect the browser SSE — only cross-process delivery latency briefly spikes.
+  ``publish_cross_process`` POSTs ``{event_type, payload}`` to the dashboard's loopback-only ``POST /internal/bus`` endpoint, which re-publishes on the in-process bus. No durable store sits in the path: an event that arrives while no browser is subscribed is dropped, matching the bus's best-effort, no-replay contract. A dashboard that is down drops the event silently — the publisher never blocks and never auto-spawns the dashboard. The endpoint is gated to ``127.0.0.1`` / ``::1`` because the dashboard has no auth and can be bound to ``0.0.0.0`` / published over Tailscale.
 
   ## Layering: clarify/, tasks/, health/, llm/ all import work_buddy.dashboard.events
 
-  The bus is structurally part of the dashboard layer because the dashboard is the consumer, but publishers across multiple layers (clarify/, obsidian/tasks/, health/, llm/, tools.py) import ``events.publish_auto``. This is a soft layer break, accepted because the bus is a single function call, not a UI dependency. If the layering ever needs to be cleaner, move ``events.py`` to ``work_buddy/events.py``; ``messaging_bridge.py`` stays in ``dashboard/`` (dashboard-process-specific).
+  The bus is structurally part of the dashboard layer because the dashboard is the consumer, but publishers across multiple layers (clarify/, obsidian/tasks/, health/, llm/, tools.py) import ``events.publish_auto``. This is a soft layer break, accepted because the bus is a single function call, not a UI dependency. If the layering ever needs to be cleaner, move ``events.py`` to ``work_buddy/events.py``.
 
   ## ``EventBus.subscribe()`` registers on first iteration
 
@@ -106,14 +102,14 @@ This bus is the **lossy real-time UI** layer — drop-oldest, no durability, no 
 * **Python**
   * ``work_buddy.dashboard.events.EventBus`` — thread-safe in-process pub/sub with per-subscriber bounded ``deque`` + ``threading.Condition``.
   * ``events.publish(event_type, payload)`` — in-process publish.
-  * ``events.publish_cross_process(event_type, payload)`` — POSTs ``bus.event`` to messaging service (port 5123).
+  * ``events.publish_cross_process(event_type, payload)`` — POSTs ``{event_type, payload}`` to the dashboard's loopback ``/internal/bus`` endpoint.
   * ``events.publish_auto(event_type, payload)`` — routes by process flag (``mark_dashboard_process()`` set in ``service.main()``).
   * ``events.start_heartbeat(interval, bus)`` — publishes ``bus.heartbeat`` every ``interval`` seconds (default 10 s).
-  * ``dashboard.messaging_bridge.start_messaging_bridge(...)`` — daemon polling the messaging service for ``bus.event`` rows at 500 ms cadence and republishing on the in-process bus.
   * ``work_buddy.clarify.capabilities.triage_review_pool.compose_entry_presentation_group(entry)`` — single-entry presentation composer used by ``ClarifyPool.submit`` / ``submit_raw`` for fat-add events.
 
 * **HTTP**
   * ``GET /api/events`` — SSE stream. No read-only gate. ``Cache-Control: no-cache``, ``X-Accel-Buffering: no``. 15 s idle keepalive comment to defeat intermediary idle-close.
+  * ``POST /internal/bus`` — loopback-only ingress for cross-process publishers. Validates ``event_type`` and re-publishes ``{event_type, payload}`` on the in-process bus. Gated to ``127.0.0.1`` / ``::1``; exempt from the read-only gate (UI-refresh events must flow even in display-only mode).
 
 * **Browser**
   * ``window.eventBus.{on, off, isConnected, lastHeartbeat}`` — per-event-type dispatcher.
@@ -152,7 +148,7 @@ This bus is the **lossy real-time UI** layer — drop-oldest, no durability, no 
 
 ## Replay semantics
 
-The in-process bus does not replay events from before a subscriber registered. The cross-process bridge drains every pending ``bus.event`` row currently in the messaging-service inbox on each poll, including events fired while the dashboard was down. Browser sees events from the in-process bus AFTER its ``EventSource`` reconnects. The browser's ``visibilitychange`` listener refreshes the active tab when it returns to foreground after a backgrounded period.
+The in-process bus does not replay events from before a subscriber registered. Cross-process events are delivered by a live POST to ``/internal/bus`` with no durable buffer, so an event fired while the dashboard is down — or before the browser's ``EventSource`` connects — is simply not seen. The browser sees events from the in-process bus only AFTER its ``EventSource`` connects. The browser's ``visibilitychange`` listener refreshes the active tab when it returns to foreground after a backgrounded period.
 
 ## Refresh patterns per surface
 

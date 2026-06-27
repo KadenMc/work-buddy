@@ -21,19 +21,15 @@ All three tiers call ``check_messages.sh`` with different modes.  The
 script queries the messaging service for session-targeted messages
 tagged ``agent-ingest`` and/or ``notification-callback``.
 
-Disposition model
-~~~~~~~~~~~~~~~~~
+Block-worthiness and clearing
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-When an agent receives ingest events (especially via the Stop hook), it
-resolves each with a disposition:
-
-- **process** — handle it now (continue working)
-- **defer** — leave for the next session to handle
-- **ack** — acknowledge receipt, no action needed (informational)
-- **redirect** — forward to another session/agent
-
-Not every message is a task.  Informational events (e.g., context shared
-between collaborating sessions) only need acknowledgment.
+Whether a surfaced event blocks the Stop hook is decided by its
+sender-declared ``disposition`` (``actionable`` vs ``acknowledgement``) plus
+read state and priority — see the ``messaging/block-semantics`` knowledge
+unit. An agent clears a still-blocking event by resolving it
+(``/tmp/wb/resolve`` or the ``update_message_status`` capability); reading it
+is enough to release a normal-priority one on the next Stop.
 
 Future: Channels
 ~~~~~~~~~~~~~~~~
@@ -107,40 +103,3 @@ def create_ingest_event(
     )
 
 
-def resolve_event(
-    message_id: str,
-    disposition: str,
-    details: str = "",
-) -> dict | None:
-    """Mark an ingest event with the agent's chosen disposition.
-
-    Parameters
-    ----------
-    message_id:
-        The messaging-service message ID.
-    disposition:
-        One of ``process``, ``defer``, ``ack``, ``redirect``.
-    details:
-        Optional context (e.g., redirect target session ID).
-
-    This updates the message status so subsequent hook checks no longer
-    surface it.
-    """
-    from work_buddy.messaging.client import update_status
-
-    # ``process`` and ``ack`` → mark as read (handled).
-    # ``defer`` → leave as pending (next session picks it up).
-    # ``redirect`` → leave as pending but re-target.
-    if disposition in ("process", "ack"):
-        return update_status(message_id, "read")
-    elif disposition == "defer":
-        # Nothing to do — message stays pending for the next session.
-        return {"status": "deferred", "message_id": message_id}
-    elif disposition == "redirect":
-        # Re-targeting requires updating recipient_session.
-        # For now, log and leave pending — the redirect target session
-        # will pick it up via its own hooks once we add re-targeting
-        # support to the messaging API.
-        return {"status": "redirect_pending", "message_id": message_id, "details": details}
-    else:
-        raise ValueError(f"Unknown disposition: {disposition!r}. Expected: process, defer, ack, redirect")

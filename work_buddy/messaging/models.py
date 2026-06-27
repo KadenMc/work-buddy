@@ -14,8 +14,6 @@ from work_buddy.config import load_config
 # *intensity* among actionable messages — see ``BLOCK_UNTIL_RESOLVED_PRIORITIES``).
 #   "actionable":      the agent must see/handle it; may block the Stop hook. Default.
 #   "acknowledgement": an auto-ack of something already handled in-band; never blocks.
-# Distinct from ``agent_ingest.resolve_event``'s "ack"/"process" disposition, which
-# records what the agent *did* with an event; this field is the sender's *intent*.
 DISPOSITION_ACTIONABLE = "actionable"
 DISPOSITION_ACKNOWLEDGEMENT = "acknowledgement"
 
@@ -555,16 +553,29 @@ def _format_age(iso_timestamp: str) -> str:
 # + Delete + retention_predicate(keep pending) + SessionTagged
 # (sender_session, recipient_session) artifact under "messages".
 #
-# The retention predicate keeps `status == 'pending'` rows regardless
-# of age — matching the existing prune_messages_db status guard.
+# The retention predicate protects only *actionable* pending messages from the
+# age-based sweep. Acknowledgement-disposition rows (auto-acks of in-band-handled
+# work — consent echoes, fire-and-forget FYIs) carry no standing obligation, so
+# they reap on the normal TTL even while pending instead of accumulating forever.
 
 import logging as _logging
 _logger = _logging.getLogger(__name__)
 
 
-def _messages_keep_pending(record: dict) -> bool:
-    """Return True (keep) for messages still in flight."""
-    return record.get("status") == "pending"
+def _messages_retention(record: dict) -> bool:
+    """Return True (keep) for messages that must survive the age-based sweep.
+
+    Keeps a row only while it is an unresolved *action item*: status still
+    ``pending`` and disposition ``actionable`` (the conservative default a
+    missing disposition resolves to). Acknowledgements are auto-acks of work
+    already handled in-band and carry no obligation, so they fall through to the
+    TTL even while pending. Resolved/terminal rows are never kept here.
+    """
+    return (
+        record.get("status") == "pending"
+        and (record.get("disposition") or DISPOSITION_ACTIONABLE)
+        == DISPOSITION_ACTIONABLE
+    )
 
 
 def _register_messages_artifact() -> None:
@@ -599,7 +610,7 @@ def _register_messages_artifact() -> None:
                     default_ttl_days=30,
                 ),
                 action=Delete(),
-                retention_predicate=_messages_keep_pending,
+                retention_predicate=_messages_retention,
             ),
             provenance=SessionTagged(
                 session_columns=["sender_session", "recipient_session"],

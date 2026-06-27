@@ -177,10 +177,10 @@ def api_events():
     """Server-Sent Events stream of dashboard events.
 
     Single connection per browser tab. Subscribers receive every event
-    published to the in-process bus (and, via the messaging bridge,
-    every cross-process event). The browser's native ``EventSource``
-    reconnects automatically on disconnect; the bus does not replay
-    events from before the reconnect.
+    published to the in-process bus — both same-process publishers and
+    cross-process publishers that POST to ``/internal/bus``. The browser's
+    native ``EventSource`` reconnects automatically on disconnect; the bus
+    does not replay events from before the reconnect.
 
     No read-only gate: this is a pure read endpoint.
     """
@@ -192,6 +192,35 @@ def api_events():
     resp.headers["X-Accel-Buffering"] = "no"  # nginx-friendly; harmless on Tailscale
     resp.headers["Connection"] = "keep-alive"
     return resp
+
+
+@app.post("/internal/bus")
+def internal_bus():
+    """Localhost-only ingress for cross-process event-bus publishers.
+
+    The sidecar process cannot reach this Flask process's in-process bus
+    directly, so ``events.publish_cross_process`` POSTs ``{event_type,
+    payload}`` here and this handler re-publishes it on the shared bus the
+    SSE endpoint streams from. Best-effort and fire-and-forget: nothing is
+    persisted, and an event that arrives while no browser is subscribed is
+    simply dropped.
+
+    Gated to loopback callers. The dashboard has no auth and can be bound to
+    0.0.0.0 / published over Tailscale, so a remote caller must never be able
+    to inject bus events. Exempt from the read-only gate — UI-refresh events
+    must keep flowing even when the dashboard is display-only.
+    """
+    if request.remote_addr not in ("127.0.0.1", "::1"):
+        return jsonify({"error": "loopback only"}), 403
+
+    data = request.get_json(silent=True) or {}
+    event_type = data.get("event_type")
+    if not isinstance(event_type, str) or not event_type:
+        return jsonify({"error": "event_type required"}), 400
+
+    from work_buddy.dashboard.events import get_bus
+    get_bus().publish(event_type, data.get("payload"))
+    return jsonify({"status": "ok"})
 
 
 # ---------------------------------------------------------------------------
@@ -4760,15 +4789,8 @@ def main():
     except Exception as exc:
         logger.warning("Fleet poller failed to start: %s", exc)
 
-    # Start the cross-process bridge: pulls ``bus.event`` messages
-    # from the messaging service (port 5123) and republishes them on
-    # the in-process bus. Sidecar publishers (cron jobs, IR rebuilds,
-    # service-health monitor) reach the dashboard via this bridge.
-    from work_buddy.dashboard.messaging_bridge import start_messaging_bridge
-    start_messaging_bridge()
-
     from work_buddy.web.access_log_filter import install_probe_log_filter
-    install_probe_log_filter(["/health"])
+    install_probe_log_filter(["/health", "/internal/bus"])
 
     # Pre-warm the /api/state cache on a background thread. The first
     # build runs a requirement sweep + probe reads and takes 10s+; doing

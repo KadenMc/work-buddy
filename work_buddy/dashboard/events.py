@@ -5,10 +5,11 @@ ledger) call ``publish(event_type, payload)`` after a successful write.
 The SSE endpoint (``GET /api/events`` in ``service.py``) creates a
 subscriber and streams events to one EventSource client.
 
-Cross-process events flow through the messaging service on port 5123
-and are bridged into this bus by ``dashboard/messaging_bridge.py``;
-publishers there use a sibling helper rather than ``publish``. From the
-subscriber's perspective the two sources are indistinguishable.
+Cross-process events (published from the sidecar process) are POSTed
+straight to the dashboard's localhost-only ``/internal/bus`` endpoint,
+which re-publishes them on this bus; publishers there use
+``publish_cross_process`` rather than ``publish``. From the subscriber's
+perspective the two sources are indistinguishable.
 
 Single-process, single-user. The bus is process-local — if the
 dashboard is ever deployed with multiple workers, replace this with an
@@ -212,7 +213,7 @@ def publish_auto(event_type: str, payload: Any = None) -> None:
     Use this from cross-cutting mutators (e.g. ``ClarifyPool``) that
     can be called from either the dashboard process or the sidecar
     process. The dashboard process publishes in-process (zero IPC);
-    every other process routes through the messaging-service bridge.
+    every other process posts to the dashboard's ``/internal/bus`` endpoint.
 
     Never raises — like the underlying ``publish_cross_process``,
     failures here must not propagate into a primary-work failure.
@@ -232,17 +233,19 @@ _PUBLISH_HTTP_TIMEOUT = 0.5  # seconds — keep tiny; fail fast when service is 
 def publish_cross_process(event_type: str, payload: Any = None) -> bool:
     """Publish from a process other than the dashboard's.
 
-    Routes the event through the messaging service so the dashboard's
-    bridge consumer (``dashboard/messaging_bridge.py``) can pick it up
-    and re-publish on the in-process bus.
+    POSTs the event straight to the dashboard's localhost-only
+    ``/internal/bus`` endpoint, which re-publishes it on the in-process
+    bus the SSE endpoint streams from.
 
-    Returns ``True`` on apparent delivery to the messaging service,
-    ``False`` if the service can't be reached. Cross-process events
-    are best-effort by contract — primary work must NOT block on
-    delivery, and the publisher must NOT auto-spawn the messaging
-    service. We post directly via ``urllib`` with a short timeout so
-    publishers add at most a few hundred milliseconds in the worst
-    case (service down) and ~5 ms in the happy path.
+    Returns ``True`` on apparent delivery, ``False`` if the dashboard
+    can't be reached. Cross-process events are best-effort by contract —
+    primary work must NOT block on delivery, and the publisher must NOT
+    auto-spawn the dashboard. We post directly via ``urllib`` with a short
+    timeout so publishers add at most a few hundred milliseconds in the
+    worst case (dashboard down) and ~5 ms in the happy path. No durable
+    store sits in the path: an event that reaches no live subscriber is
+    dropped, which is the standing contract (the browser never replays
+    events from before it connected).
 
     Use this from sidecar-process callers (cron jobs, IR rebuilds,
     email triage, service-health monitor). In-process callers should
@@ -252,25 +255,25 @@ def publish_cross_process(event_type: str, payload: Any = None) -> bool:
     from urllib.error import URLError
     from urllib.request import Request, urlopen
 
-    body = _json.dumps({
-        "sender": "sidecar",
-        "recipient": "dashboard",
-        "type": "bus.event",
-        "subject": event_type,
-        "body": _json.dumps({"event_type": event_type, "payload": payload}),
-    }).encode("utf-8")
+    body = _json.dumps({"event_type": event_type, "payload": payload}).encode("utf-8")
 
-    # Resolve port from config lazily; fall back to the documented
+    # Resolve the dashboard port lazily; fall back to the documented
     # default. Keep this best-effort so a missing config doesn't break
     # primary work.
     try:
         from work_buddy.config import load_config
-        port = load_config().get("messaging", {}).get("service_port", 5123)
+        port = (
+            load_config()
+            .get("sidecar", {})
+            .get("services", {})
+            .get("dashboard", {})
+            .get("port", 5127)
+        )
     except Exception:
-        port = 5123
+        port = 5127
 
     req = Request(
-        f"http://localhost:{port}/messages",
+        f"http://127.0.0.1:{port}/internal/bus",
         data=body,
         method="POST",
     )
@@ -280,7 +283,7 @@ def publish_cross_process(event_type: str, payload: Any = None) -> bool:
         with urlopen(req, timeout=_PUBLISH_HTTP_TIMEOUT) as resp:
             return 200 <= resp.status < 300
     except URLError:
-        # Service not reachable. Drop the event silently.
+        # Dashboard not reachable. Drop the event silently.
         return False
     except Exception:
         logger.debug(

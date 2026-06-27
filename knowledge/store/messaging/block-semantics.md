@@ -49,10 +49,6 @@ and terminal statuses → `acknowledgement`; everything else → `actionable`). 
 rows are backfilled by the same rule on migration, and a missing/NULL disposition is
 treated as `actionable` so nothing silently stops blocking.
 
-(Distinct from `agent_ingest.resolve_event`'s `disposition` argument — "ack"/"process"
-— which records what the agent *did* with an ingest event; this field is the sender's
-*intent*.)
-
 ## How an actionable message blocks (the read/priority axis)
 
 Among `actionable` messages, blocking is governed by read state and priority:
@@ -72,8 +68,18 @@ message can block at all; priority decides *how hard* an actionable one blocks.
 
 A message in any non-`pending` status never blocks: it is excluded at the query level
 and pruned on the normal TTL. Fire-and-forget notifications use this — the retry sweep
-emits `retry_success` as `status="resolved"` (also `acknowledgement`), so it never
-enters the pending/block path at all.
+emits `retry_success` as `status="resolved"`, and the notification system emits
+acknowledgement consent echoes as `status="resolved"` too — so neither enters the
+pending/block path at all.
+
+## Disposition also governs retention
+
+The age-based artifact sweep keeps a `pending` row from being reaped only while it is
+`actionable`. `acknowledgement` rows are not pinned: they reap on the normal 30-day TTL
+even while pending, so auto-acks of in-band-handled work cannot accumulate in the inbox
+forever. `actionable` pending messages (genuine action items) are retained until they
+are resolved. See `_messages_retention` in `work_buddy/messaging/models.py`. This is the
+same `disposition` field that gates blocking, reused as the retention signal.
 
 ## Clearing a message that is blocking
 
