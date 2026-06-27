@@ -16,7 +16,8 @@ steps:
   depends_on: []
   auto_run:
     callable: work_buddy.journal.read_journal_state
-    kwargs: {}
+    kwargs:
+      create_on_read: true
     input_map:
       target: __params__.target
     timeout: 90

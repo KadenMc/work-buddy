@@ -53,20 +53,28 @@ def journal_path_for_date(date_str: str | None = None, vault_root: Path | None =
 # ---------------------------------------------------------------------------
 
 def ensure_journal_exists(
-    vault_root: Path, date_str: str | None = None,
+    vault_root: Path, date_str: str | None = None, create: bool = True,
 ) -> dict[str, Any]:
     """Ensure the journal file for the target date exists.
 
-    For today: triggers the Obsidian "Daily notes: Open today's daily note"
-    command, which creates the file from template if it doesn't exist.
+    When ``create`` is True (the default) and the file is missing:
+      - For today: triggers the Obsidian "Daily notes: Open today's daily note"
+        command, which creates the file from template.
+      - For any other date: creation is impossible (Obsidian's daily-notes
+        command only works for today), so this returns an ``error`` describing
+        the "needed but impossible" situation.
 
-    For other dates: checks if the file exists. If not, reports that it must
-    be created manually (Obsidian's daily-notes command only works for today).
+    When ``create`` is False, a missing file is reported as a benign absence
+    (``exists=False`` with ``error=None``) and Obsidian is never invoked --
+    reading journal state must not have the side effect of creating a file.
 
-    Requires Obsidian to be running with the Local REST API plugin.
+    Requires Obsidian to be running with the Local REST API plugin (only when
+    ``create`` is True and today's note must be created).
 
     Returns:
-        Dict with ``exists``, ``file``, ``created``, ``message`` keys.
+        Dict with ``exists``, ``file``, ``created``, ``message``, ``error``
+        keys. ``error`` is None unless creation was needed but failed or was
+        impossible.
     """
     if date_str is None:
         date_str = user_now().strftime("%Y-%m-%d")
@@ -80,9 +88,24 @@ def ensure_journal_exists(
             "file": str(journal_file),
             "created": False,
             "message": f"Journal for {date_str} already exists.",
+            "error": None,
         }
 
-    # File doesn't exist — try to create it via Obsidian
+    # File doesn't exist.
+    if not create:
+        # Read-only path: a missing journal is fine, nothing to grab.
+        return {
+            "exists": False,
+            "file": str(journal_file),
+            "created": False,
+            "message": (
+                f"Journal for {date_str} does not exist and was not "
+                "auto-created (create disabled for this read)."
+            ),
+            "error": None,
+        }
+
+    # create=True: the caller needs the journal present.
     if date_str == today_str:
         try:
             from work_buddy.obsidian.commands import ObsidianCommands
@@ -103,16 +126,19 @@ def ensure_journal_exists(
                     "file": str(journal_file),
                     "created": True,
                     "message": f"Created today's journal ({date_str}) via Obsidian daily notes command.",
+                    "error": None,
                 }
             else:
+                msg = (
+                    f"Triggered Obsidian daily notes command but journal file "
+                    f"for {date_str} was not created. Check Obsidian."
+                )
                 return {
                     "exists": False,
                     "file": str(journal_file),
                     "created": False,
-                    "message": (
-                        f"Triggered Obsidian daily notes command but journal file "
-                        f"for {date_str} was not created. Check Obsidian."
-                    ),
+                    "message": msg,
+                    "error": msg,
                 }
         except (RuntimeError, ObsidianError) as e:
             return {
@@ -120,18 +146,21 @@ def ensure_journal_exists(
                 "file": str(journal_file),
                 "created": False,
                 "message": str(e),
+                "error": str(e),
             }
     else:
-        # Past date — can't auto-create from template
+        # Non-today date: needed but impossible (Obsidian templates today only).
+        msg = (
+            f"Journal for {date_str} doesn't exist and can't be auto-created. "
+            "Obsidian only templates today's note, so journals for any other "
+            "date can't be auto-created."
+        )
         return {
             "exists": False,
             "file": str(journal_file),
             "created": False,
-            "message": (
-                f"Journal for {date_str} does not exist. "
-                f"Obsidian can only auto-create today's note from template. "
-                f"Open Obsidian and manually create the note, or target a date that exists."
-            ),
+            "message": msg,
+            "error": msg,
         }
 
 
@@ -327,7 +356,9 @@ def collect_scoped_context(journal_state: dict[str, Any] | None = None) -> dict[
     }
 
 
-def read_journal_state(target: str | None = None) -> dict[str, Any]:
+def read_journal_state(
+    target: str | None = None, create_on_read: bool = False,
+) -> dict[str, Any]:
     """Read the journal for a target date and return everything needed for the DAG.
 
     This is the programmatic entry point for the ``read-journal`` DAG task.
@@ -336,6 +367,14 @@ def read_journal_state(target: str | None = None) -> dict[str, Any]:
 
     Args:
         target: "today", "yesterday", YYYY-MM-DD, or None (auto-detect).
+        create_on_read: When True, ensure the journal exists (creating today's
+            note via Obsidian if missing); callers that need a journal present
+            (update-journal, /wb-morning) opt in. When False (the default), a
+            missing journal is reported as a benign absence (``exists=False``,
+            ``error=None``) and no file is created -- ad-hoc reads must not
+            pollute the vault with empty journals. Creation is only possible for
+            today; ``create_on_read=True`` on a missing non-today date returns
+            an ``error`` ("needed but impossible").
 
     Returns:
         Dict with keys:
@@ -372,8 +411,10 @@ def read_journal_state(target: str | None = None) -> dict[str, Any]:
             "sign_in_section": None,
         }
 
-    # 2. Ensure journal file exists
-    ensure_result = ensure_journal_exists(vault_root, resolved.date)
+    # 2. Ensure journal file exists (only when the caller opts in)
+    ensure_result = ensure_journal_exists(
+        vault_root, resolved.date, create=create_on_read,
+    )
 
     if not ensure_result["exists"]:
         return {
@@ -382,7 +423,7 @@ def read_journal_state(target: str | None = None) -> dict[str, Any]:
             "hint": "",
             "exists": False,
             "created": False,
-            "error": ensure_result["message"],
+            "error": ensure_result.get("error"),
             "collect_since": None,
             "collect_until": None,
             "last_log_ts": None,
