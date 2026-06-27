@@ -11,6 +11,10 @@ parameters:
     type: str
     description: 'Date target: ''today'', ''yesterday'', or YYYY-MM-DD'
     required: false
+  create_on_read:
+    type: bool
+    description: When true, ensure the journal exists (creates today's note via Obsidian if missing). Default false - a missing journal reads as exists=false with no file created. Creation is only possible for today.
+    required: false
 param_aliases:
   target_date: target
   date: target

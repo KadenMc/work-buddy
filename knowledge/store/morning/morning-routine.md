@@ -146,7 +146,7 @@ parents:
 
 **Procedure:**
 
-0. **Ensure today's journal exists.** Call `mcp__work-buddy__wb_run("journal_state", {"target": "today"})` â€” if the result shows `exists: false`, the journal needs creating via Obsidian.
+0. **Ensure today's journal exists.** Call `mcp__work-buddy__wb_run("journal_state", {"target": "today", "create_on_read": true})` â€” if the result shows `exists: false`, the journal needs creating via Obsidian.
 
 1. Get the configured lookback window: `hours = step_results["load-config"].get("morning", {}).get("context_hours", 24)` (default: 24).
 
