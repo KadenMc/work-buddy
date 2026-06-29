@@ -503,6 +503,47 @@ def task_search(
     }
 
 
+def task_list(
+    *,
+    state: str | None = None,
+    include_done: bool = False,
+    include_archived: bool = False,
+    limit: int = 500,
+) -> dict[str, Any]:
+    """List tasks from the SQLite store (bridge-independent).
+
+    The enumeration complement to :func:`task_search`: instead of a text
+    match it returns the whole (filtered) set. With no arguments it
+    returns every LIVE, non-archived, OPEN task — the natural input to a
+    full-list review such as the completeness sweep. Works even when the
+    Obsidian bridge is down, since it reads the store directly.
+
+    Args:
+        state: Exact ``state`` filter ('inbox' / 'focused' / 'done' / …).
+            None applies no state filter, subject to ``include_done``. An
+            explicit ``state`` overrides ``include_done``.
+        include_done: When False (default) and ``state`` is None, exclude
+            completed tasks.
+        include_archived: Include archived tasks (default False).
+        limit: Maximum results (default 500 — high so a full-list sweep is
+            not silently truncated).
+
+    Returns:
+        Dict with ``count`` and ``tasks`` keys. ``tasks`` are full
+        ``task_metadata`` rows ordered oldest-created first.
+    """
+    rows = store.list_tasks(
+        state=state,
+        include_done=include_done,
+        include_archived=include_archived,
+        limit=limit,
+    )
+    return {
+        "count": len(rows),
+        "tasks": rows,
+    }
+
+
 def get_inbox_count() -> int:
     """Get total inbox task count from both store and inline tags."""
     return len(get_tasks_by_state("inbox"))

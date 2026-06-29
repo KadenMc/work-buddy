@@ -995,6 +995,66 @@ def search_by_description(
         conn.close()
 
 
+def list_tasks(
+    *,
+    state: str | None = None,
+    include_done: bool = False,
+    include_archived: bool = False,
+    include_deleted: bool = False,
+    limit: int = 500,
+) -> list[dict[str, Any]]:
+    """Enumerate task records from the store, oldest-created first.
+
+    The "give me the whole (filtered) set" complement to
+    :func:`search_by_description`'s text match. With its defaults it
+    returns every LIVE, non-archived, OPEN task — the natural input to a
+    full-list review. Bridge-independent: reads the store directly, so a
+    stale bridge or an Obsidian that isn't running doesn't block it.
+
+    Args:
+        state: Exact ``state`` filter (e.g. ``'inbox'``, ``'focused'``,
+            ``'done'``). None applies no state filter, subject to
+            ``include_done`` below. An explicit ``state`` is authoritative
+            (it overrides ``include_done``).
+        include_done: When False (default) and ``state`` is None, exclude
+            ``state='done'`` rows.
+        include_archived: Include rows with ``archived_at`` set.
+        include_deleted: Include soft-deleted rows (``deleted_at`` set).
+        limit: Maximum rows (default 500 — high so a full-list sweep is
+            not silently truncated).
+
+    Returns:
+        List of full ``task_metadata`` row dicts, ordered ``created_at``
+        ascending (backlog oldest-first).
+    """
+    clauses: list[str] = []
+    params: list[Any] = []
+
+    if state is not None:
+        clauses.append("state = ?")
+        params.append(state)
+    elif not include_done:
+        clauses.append("state != 'done'")
+
+    if not include_archived:
+        clauses.append("archived_at IS NULL")
+    if not include_deleted:
+        clauses.append("deleted_at IS NULL")
+
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            f"""SELECT * FROM task_metadata{where}
+                ORDER BY created_at ASC LIMIT ?""",
+            params + [int(limit)],
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
 def get_history(task_id: str) -> list[dict[str, Any]]:
     """Get state change history for a task, newest first."""
     conn = get_connection()

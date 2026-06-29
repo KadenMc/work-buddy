@@ -27,6 +27,8 @@ parents:
 
 There are TWO ways to search tasks. Pick by what you want to find.
 
+Note: to *list* tasks (the whole filtered set) rather than search by text, use `task_list`. `task_search` with an empty query intentionally returns nothing.
+
 ## task_search - search by description text (Slice 3, store-only)
 
 Looks at the `description` column of `task_metadata` - the human-readable task line text (`Fix the auth bug`, `Refactor the dashboard`, ...). Bridge-independent: works even when Obsidian isn't running. Cheap, deterministic, no embedding service.
