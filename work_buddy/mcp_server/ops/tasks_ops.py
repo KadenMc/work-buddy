@@ -67,6 +67,7 @@ def _register() -> None:
     register_op("op.wb.task_review_inbox", manager.review_inbox)
     register_op("op.wb.task_stale_check", manager.stale_check)
     register_op("op.wb.task_search", manager.task_search)
+    register_op("op.wb.task_list", manager.task_list)
     register_op("op.wb.weekly_review_data", manager.weekly_review_data)
     # Mutator ops route through the WorkItem write port (``work_item.task_adapter``
     # — the surface ``Task`` instance methods also delegate to) so no task
