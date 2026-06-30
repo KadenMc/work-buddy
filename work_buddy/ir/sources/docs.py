@@ -11,12 +11,13 @@ import time
 from pathlib import Path
 from typing import Any
 
+from work_buddy import paths
 from work_buddy.ir.sources.base import Document
 from work_buddy.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-_STORE_DIR = Path(__file__).resolve().parent.parent.parent.parent / "knowledge" / "store"
+_STORE_DIR = paths.asset_root() / "knowledge" / "store"
 
 
 class DocsSource:

@@ -7,17 +7,17 @@ running when work-buddy calls it.
 import json
 import subprocess
 import time
-from pathlib import Path
 from typing import Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from work_buddy.config import load_config
 from work_buddy.logging_config import get_logger
+from work_buddy import paths
 
 logger = get_logger(__name__)
 
-_REPO_ROOT = Path(__file__).parent.parent.parent
+_REPO_ROOT = paths.repo_root()
 
 
 def _base_url(cfg: dict[str, Any] | None = None) -> str:

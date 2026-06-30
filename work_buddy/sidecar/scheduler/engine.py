@@ -166,20 +166,22 @@ class Scheduler:
         ``<data_root>/user_jobs/`` (gitignored, configurable via
         ``paths.data_root``).
         """
+        from work_buddy.paths import asset_root, repo_root
+
         sidecar_cfg = config.get("sidecar", {})
         repos_parent = Path(config.get("repos_root", ".")).parent
-        repo_root = Path(__file__).parent.parent.parent.parent
 
-        # System dir
+        # System dir. Shipped jobs; fall back to the asset root so it
+        # resolves in a checkout where ``repos_root`` is unset.
         system_dir = repos_parent / sidecar_cfg.get("jobs_dir", "sidecar_jobs")
         if not system_dir.is_dir():
-            system_dir = repo_root / sidecar_cfg.get("jobs_dir", "sidecar_jobs")
+            system_dir = asset_root() / sidecar_cfg.get("jobs_dir", "sidecar_jobs")
 
         # User dir — explicit override wins; otherwise default under data_root
         user_override = sidecar_cfg.get("user_jobs_dir") or ""
         if user_override:
             user_path = Path(user_override)
-            user_dir = user_path if user_path.is_absolute() else repo_root / user_path
+            user_dir = user_path if user_path.is_absolute() else repo_root() / user_path
         else:
             user_dir = data_dir("user_jobs")
 

@@ -105,7 +105,7 @@ def test_result_is_memoized_on_unchanged_mtime(fake_repo, monkeypatch):
     import yaml
 
     _write(fake_repo / "config.yaml", "paths:\n  data_root: '.data'\n")
-    monkeypatch.setattr(pmod, "_data_root_cache", None)
+    monkeypatch.setattr(pmod, "_paths_section_cache", None)
 
     calls = {"n": 0}
     real_safe_load = yaml.safe_load
@@ -130,7 +130,7 @@ def test_mtime_change_invalidates_cache(fake_repo, monkeypatch):
 
     cfg = fake_repo / "config.yaml"
     _write(cfg, "paths:\n  data_root: '.data'\n")
-    monkeypatch.setattr(pmod, "_data_root_cache", None)
+    monkeypatch.setattr(pmod, "_paths_section_cache", None)
     assert pmod._load_data_root_from_config() == ".data"
 
     # Rewrite with a different value and force a distinct mtime so the

@@ -15,6 +15,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from work_buddy import paths
+
 
 def _cfg() -> dict[str, Any]:
     """Load config lazily to avoid circular imports at module level."""
@@ -27,9 +29,9 @@ def _vault_root() -> Path:
     return Path(_cfg().get("vault_root", ""))
 
 
-def _repo_root() -> Path:
-    """Work-buddy repo root."""
-    return Path(__file__).parent.parent.parent
+def _config_dir() -> Path:
+    """Directory holding config.yaml / config.local.yaml / .env."""
+    return paths.config_dir()
 
 
 def _obsidian_config_dir(vault: Path | None = None) -> Path:
@@ -70,7 +72,7 @@ def check_lmstudio_reachable() -> dict[str, Any]:
 
 def check_config_yaml_exists() -> dict[str, Any]:
     """Check that config.yaml exists in the repo root."""
-    path = _repo_root() / "config.yaml"
+    path = _config_dir() / "config.yaml"
     if path.exists():
         return {"ok": True, "detail": f"config.yaml found at {path}"}
     return {"ok": False, "detail": f"config.yaml not found at {path}"}
@@ -78,10 +80,10 @@ def check_config_yaml_exists() -> dict[str, Any]:
 
 def check_config_local_exists() -> dict[str, Any]:
     """Check that config.local.yaml exists."""
-    path = _repo_root() / "config.local.yaml"
+    path = _config_dir() / "config.local.yaml"
     if path.exists():
         return {"ok": True, "detail": f"config.local.yaml found at {path}"}
-    example = _repo_root() / "config.local.yaml.example"
+    example = _config_dir() / "config.local.yaml.example"
     hint = " (config.local.yaml.example exists — copy it)" if example.exists() else ""
     return {"ok": False, "detail": f"config.local.yaml not found{hint}"}
 
@@ -180,7 +182,7 @@ def check_anthropic_api_key() -> dict[str, Any]:
         }
 
     # Fall back to scanning the repo .env file — runner.py does this too.
-    repo_env = _repo_root() / ".env"
+    repo_env = _config_dir() / ".env"
     if repo_env.exists():
         try:
             for line in repo_env.read_text(encoding="utf-8").splitlines():
@@ -673,7 +675,7 @@ def check_telegram_bot_token() -> dict[str, Any]:
     if os.environ.get(token_env):
         return {"ok": True, "detail": f"${token_env} is set"}
     # Check .env file in repo root
-    env_file = _repo_root() / ".env"
+    env_file = _config_dir() / ".env"
     if env_file.exists():
         try:
             content = env_file.read_text(encoding="utf-8")

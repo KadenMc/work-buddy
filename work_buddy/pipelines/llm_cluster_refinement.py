@@ -330,9 +330,9 @@ def _render_system_prompt(
     """Render the Jinja system prompt with source-specific guidance."""
     from jinja2 import Environment, FileSystemLoader
 
-    from work_buddy.paths import repo_root
+    from work_buddy.paths import asset_root
 
-    template_dir = repo_root() / "prompts" / "defaults"
+    template_dir = asset_root() / "prompts" / "defaults"
     env = Environment(
         loader=FileSystemLoader(str(template_dir)),
         autoescape=False,

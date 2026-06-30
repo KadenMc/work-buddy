@@ -7,13 +7,12 @@ knowledge-store unit carrying a matching ``op`` field). These callables wrap
 
 from __future__ import annotations
 
-from pathlib import Path
 
 from work_buddy.mcp_server.op_registry import register_op
+from work_buddy import paths
 
-# The ``work_buddy`` package directory — the default cwd for session listing,
-# matching the legacy builder's resolution (registry.py's parent.parent).
-_PKG_DIR = Path(__file__).resolve().parents[2]
+# The ``work_buddy`` package directory, the default cwd for session listing.
+_PKG_DIR = paths.install_root()
 
 
 def remote_session_begin(

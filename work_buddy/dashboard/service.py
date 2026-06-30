@@ -248,7 +248,8 @@ def index():
 
 @app.get("/favicon.svg")
 def favicon():
-    logo = Path(__file__).parent.parent.parent / "docs" / "logo.svg"
+    from work_buddy import paths
+    logo = paths.asset_root() / "docs" / "logo.svg"
     if logo.exists():
         return send_file(logo, mimetype="image/svg+xml")
     return "", 404

@@ -11,7 +11,6 @@ Usage:
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from typing import Any
 
 from work_buddy.knowledge.model import (
@@ -24,11 +23,11 @@ from work_buddy.knowledge.model import (
 )
 from work_buddy.knowledge.store import load_store
 from work_buddy.logging_config import get_logger
+from work_buddy import paths
 
 logger = get_logger(__name__)
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-_SLASH_CMD_DIR = _REPO_ROOT / ".claude" / "commands"
+_SLASH_CMD_DIR = paths.asset_root() / ".claude" / "commands"
 _MAX_THIN_LINES = 7
 
 

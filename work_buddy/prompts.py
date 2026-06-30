@@ -15,13 +15,13 @@ Usage::
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from jinja2 import Environment, FileSystemLoader, StrictUndefined
 
-_REPO_ROOT = Path(__file__).parent.parent
-_DEFAULTS_DIR = _REPO_ROOT / "prompts" / "defaults"
-_OVERRIDES_DIR = _REPO_ROOT / "prompts" / "overrides"
+from work_buddy import paths
+
+_PROMPTS_DIR = paths.asset_root() / "prompts"
+_DEFAULTS_DIR = _PROMPTS_DIR / "defaults"
+_OVERRIDES_DIR = _PROMPTS_DIR / "overrides"
 
 # Module-level singleton — created once, reused forever.
 _env: Environment | None = None

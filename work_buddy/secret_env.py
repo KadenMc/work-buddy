@@ -1,5 +1,5 @@
 """Process-agnostic secret resolution: ``os.environ`` first, then a line-scan
-of the repo-root ``.env``.
+of the config-dir ``.env``.
 
 work-buddy does **not** auto-load ``.env`` in most processes (only the Telegram
 subprocess calls ``load_dotenv`` at its own startup). Existing consumers cope by
@@ -14,14 +14,12 @@ restart or a ``load_dotenv`` call.
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
-# work_buddy/secret_env.py -> work_buddy/ -> repo root
-_REPO_ROOT = Path(__file__).resolve().parent.parent
+from work_buddy import paths
 
 
 def _scan_env_file(name: str) -> str | None:
-    env_file = _REPO_ROOT / ".env"
+    env_file = paths.config_dir() / ".env"
     if not env_file.exists():
         return None
     try:
@@ -40,7 +38,7 @@ def _scan_env_file(name: str) -> str | None:
 
 def read_secret_env(name: str) -> str | None:
     """Return the secret named ``name`` from the environment, falling back to a
-    repo-root ``.env`` line-scan. Returns ``None`` if absent/empty in both."""
+    config-dir ``.env`` line-scan. Returns ``None`` if absent/empty in both."""
     v = os.environ.get(name)
     if v:
         return v

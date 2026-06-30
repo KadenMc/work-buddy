@@ -281,8 +281,8 @@ def main() -> None:
     # (sidecar spawns us as a subprocess without .env loading)
     try:
         from dotenv import load_dotenv
-        from pathlib import Path
-        env_path = Path(__file__).parent.parent.parent / ".env"
+        from work_buddy import paths
+        env_path = paths.config_dir() / ".env"
         load_dotenv(env_path)
     except ImportError:
         pass
