@@ -3885,7 +3885,7 @@ def api_thread_groups(umbrella_id: str):
                 continue
             groups_out.append(rendered)
 
-        action_options, source_name = _resolve_action_library_for_umbrella(
+        action_options, source_name = _resolve_action_library_for_thread(
             umbrella,
         )
 
@@ -3902,16 +3902,19 @@ def api_thread_groups(umbrella_id: str):
         return jsonify({"groups": [], "error": str(exc)}), 500
 
 
-def _resolve_action_library_for_umbrella(umbrella) -> tuple[list[dict], str | None]:
-    """Resolve the umbrella's source name and merge per-source +
-    universal actions into a single ordered descriptor list for the
-    frontend.
+def _resolve_action_library_for_thread(thread) -> tuple[list[dict], str | None]:
+    """Resolve a thread's source name and merge per-source + universal
+    actions into a single ordered descriptor list for the frontend.
+
+    Works on any thread, not just group umbrellas: group children carry
+    their own ``source_pipeline`` in ``inciting_event_summary``, so a
+    child resolves to its real pipeline library directly.
 
     Returns ``(descriptor_list, source_name)``. Empty list if the
-    umbrella's source isn't registered or pipelines/universal-actions
+    thread's source isn't registered or pipelines/universal-actions
     fail to import (defensive).
     """
-    inciting = umbrella.inciting_event_summary or {}
+    inciting = thread.inciting_event_summary or {}
     source_name = (
         inciting.get("source_pipeline")
         or inciting.get("source")
@@ -3923,27 +3926,60 @@ def _resolve_action_library_for_umbrella(umbrella) -> tuple[list[dict], str | No
         )
     except Exception as e:
         logger.warning(
-            "groups endpoint: pipeline imports failed: %s", e,
+            "action library: pipeline imports failed: %s", e,
         )
         return [], source_name
 
     factory = PIPELINES.get(source_name)
     if factory is None:
         # Unknown source — surface universal actions only so the chip
-        # still works for legacy umbrellas.
+        # still works for threads without a registered pipeline.
         return UNIVERSAL_ACTION_LIBRARY.to_list(), source_name
 
     try:
         pipeline_lib = factory().action_library
     except Exception as e:
         logger.warning(
-            "groups endpoint: %s.action_library failed: %s",
+            "action library: %s.action_library failed: %s",
             source_name, e,
         )
         return UNIVERSAL_ACTION_LIBRARY.to_list(), source_name
 
     merged = UNIVERSAL_ACTION_LIBRARY.merged_with(pipeline_lib)
     return merged.to_list(), source_name
+
+
+@app.get("/api/threads/<thread_id>/action_options")
+def api_thread_action_options(thread_id: str):
+    """Return the action library (per-source + universal) for a single
+    thread, regardless of whether it is a group umbrella.
+
+    The ``/groups`` endpoint only serves group umbrellas, so a child
+    thread opened directly has no way to populate the action-switcher
+    options. This endpoint resolves the library for any thread from its
+    own ``inciting_event_summary`` source, letting the inner thread
+    pane fill the switcher without fetching the parent's group grid.
+
+    Returns ``{"thread_id", "source", "action_options"}``. Pure read.
+    """
+    try:
+        from work_buddy.threads import store
+        thread = store.get_thread(thread_id)
+        if thread is None:
+            return jsonify({"error": "thread not found"}), 404
+        action_options, source_name = _resolve_action_library_for_thread(
+            thread,
+        )
+        return jsonify({
+            "thread_id": thread_id,
+            "source": source_name,
+            "action_options": action_options,
+        })
+    except Exception as exc:
+        logger.exception(
+            "thread action_options failed for %s: %s", thread_id, exc,
+        )
+        return jsonify({"action_options": [], "error": str(exc)}), 500
 
 
 # ---------------------------------------------------------------------------

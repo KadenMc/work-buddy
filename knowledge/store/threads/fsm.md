@@ -10,6 +10,13 @@ tags:
 parents:
 - threads
 - threads
+dev_notes: |-
+  ## Action parameter binding (EXECUTING)
+
+  `execution_runner._bind_runtime_parameters` fills parameters that depend on thread runtime state before dispatch:
+
+  - `tab_ids` — for the `chrome_tab_*` actions, collected from the thread's context items.
+  - `thread_id` — injected for any action whose **declaration** includes a `thread_id` parameter, gated on `is_action`. The op callable is a `**kwargs` wrapper whose signature can't be introspected, so the declared parameter schema is the authoritative source. A thread-scoped action (`journal_*`, `email_*`, `chrome_route_*`, the universal `thread_*`) therefore needs no execution_runner change — declaring `thread_id` is sufficient for the host thread to be bound at dispatch. The `is_action` gate excludes non-action capabilities (e.g. the messaging tools) that declare an unrelated `thread_id`.
 ---
 
 ## State catalog

@@ -331,3 +331,52 @@ def _make_child_under(parent, fsm_state="awaiting_confirmation"):
 # tests for those new endpoints live in the per-feature test
 # modules under ``tests/unit/threads/`` (group ops) and
 # ``tests/unit/pipelines/`` (pipeline-level integration).
+
+
+# ---------------------------------------------------------------------------
+# /api/threads/<id>/action_options
+# ---------------------------------------------------------------------------
+
+
+class TestActionOptionsEndpoint:
+    """The per-thread action library endpoint backs the inner-thread
+    action switcher (a child opened directly has no group grid to
+    populate the switcher's options)."""
+
+    def test_returns_source_library_for_journal_thread(self, client):
+        t = _make_thread(source="journal_backlog", description="meditation")
+        resp = client.get(f"/api/threads/{t.thread_id}/action_options")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        opts = data["action_options"]
+        by_name = {o["capability_name"]: o for o in opts}
+        assert "journal_route_to_tasks" in by_name
+        assert by_name["journal_route_to_tasks"]["cardinality"] == "per_group"
+
+    def test_unknown_source_returns_universal_actions(self, client):
+        t = _make_thread(source="unknown_source")
+        resp = client.get(f"/api/threads/{t.thread_id}/action_options")
+        assert resp.status_code == 200
+        names = {o["capability_name"] for o in resp.get_json()["action_options"]}
+        # Universal thread actions are always present, even with no
+        # registered source pipeline.
+        assert "thread_dismiss" in names
+
+    def test_resolves_from_child_own_inciting_summary(self, client):
+        """A group child carries its own ``source_pipeline``, so it
+        resolves to the real library without a parent lookup."""
+        from work_buddy.threads.enums import FSMState
+        child = Thread(
+            fsm_state=FSMState.AWAITING_CONFIRMATION,
+            parent_relationship="decompose",
+            inciting_event_summary={"source_pipeline": "journal_backlog"},
+        )
+        store.insert_thread(child)
+        resp = client.get(f"/api/threads/{child.thread_id}/action_options")
+        assert resp.status_code == 200
+        names = {o["capability_name"] for o in resp.get_json()["action_options"]}
+        assert "journal_route_to_tasks" in names
+
+    def test_missing_thread_404(self, client):
+        resp = client.get("/api/threads/th-does-not-exist/action_options")
+        assert resp.status_code == 404
