@@ -325,9 +325,10 @@ def _dispatch_session_resume(
     """
     import subprocess
     from work_buddy.logging_config import get_logger
+    from work_buddy import paths
 
     logger = get_logger(__name__)
-    repo_root = Path(__file__).parent.parent.parent
+    repo_root = paths.repo_root()
 
     prompt = (
         f"User has responded to notification '{title}' "

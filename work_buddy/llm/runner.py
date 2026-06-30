@@ -19,7 +19,6 @@ import os
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from work_buddy.config import load_config
@@ -356,8 +355,9 @@ def run_task(
     # Call Anthropic API — check dedicated subagent key first, then general key
     api_key = os.environ.get("SUBAGENT_ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
-        # Try loading from .env file at repo root
-        env_file = Path(__file__).parent.parent.parent / ".env"
+        # Try loading from .env file in the config dir
+        from work_buddy import paths
+        env_file = paths.config_dir() / ".env"
         if env_file.exists():
             for line in env_file.read_text(encoding="utf-8").splitlines():
                 if line.startswith("SUBAGENT_ANTHROPIC_API_KEY="):

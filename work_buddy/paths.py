@@ -24,6 +24,7 @@ folders matching the ID prefix.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -122,41 +123,92 @@ PRUNERS: dict[str, tuple[str, dict[str, Any]]] = {}
 
 
 def repo_root() -> Path:
-    """Return the repository root (parent of the ``work_buddy`` package)."""
+    """Return the repository root (parent of the ``work_buddy`` package).
+
+    This is the code/install anchor. In a clone it is the checkout root; the
+    config dir, shipped-asset root, and data root all default to it (so a
+    clone behaves as one undivided directory). Each of those can be pointed
+    elsewhere independently — see :func:`config_dir`, :func:`asset_root`, and
+    the ``WORK_BUDDY_DATA_DIR`` override in :func:`_data_base` — which is what
+    lets work-buddy run when it is not a clone.
+    """
     return Path(__file__).resolve().parent.parent
 
 
-# Memoized (cache_key, value) for the resolved data root. The parse is
-# keyed on the config files' (repo_root, mtime) identity so a runtime edit
-# — or a test that rewrites config under a monkeypatched ``repo_root`` —
-# still invalidates, while the common case skips the YAML parse entirely.
-# This matters because ``resolve()`` / ``data_dir()`` run on every DB
-# connection open across the app; an uncached parse put ~60ms of YAML on
-# every query (≈10s across a single dashboard list endpoint).
-_data_root_cache: tuple[tuple[str, ...], str] | None = None
+def install_root() -> Path:
+    """Directory of the installed ``work_buddy`` package (where the code lives).
 
-
-def _load_data_root_from_config() -> str:
-    """Read ``paths.data_root`` from config without importing config.py eagerly.
-
-    Reads ``config.yaml`` first, then overlays ``config.local.yaml`` so
-    user-local overrides win — mirrors how ``config.load_config()``
-    merges, but avoids the import (``config.py`` does not import
-    ``paths``, so a future change there could otherwise create a cycle).
-
-    Falls back to ``"data"`` when nothing is set or PyYAML is missing.
-
-    The result is memoized on the config files' mtimes (see
-    ``_data_root_cache``) — repeated calls in a hot path stat two files
-    instead of re-parsing YAML.
+    Distinct from :func:`repo_root`, which is its parent. Under a wheel
+    install this is ``site-packages/work_buddy``; it is the basis for
+    resolving assets shipped *inside* the package.
     """
-    global _data_root_cache
+    from importlib.resources import files
+
+    return Path(str(files("work_buddy")))
+
+
+def config_dir() -> Path:
+    """Directory holding ``config.yaml`` / ``config.local.yaml`` / ``.env``.
+
+    Defaults to :func:`repo_root` (the clone layout, where config sits beside
+    the package). Override with ``WORK_BUDDY_CONFIG_DIR`` to point at a
+    per-user config directory in a packaged install. It cannot itself be read
+    from config (that would be circular), so the only override is the env var.
+    """
+    env = os.environ.get("WORK_BUDDY_CONFIG_DIR")
+    return Path(env).expanduser() if env else repo_root()
+
+
+def asset_root() -> Path:
+    """Root of work-buddy's shipped assets.
+
+    These trees (``knowledge/store`` seed, ``prompts/``, ``sidecar_jobs/``,
+    ``.claude/commands``, ``config.example*``, ``docs/``) live beside the
+    ``work_buddy`` package in a clone. Resolution precedence: the
+    ``WORK_BUDDY_ASSET_ROOT`` env var, then a ``paths.asset_root`` config
+    value, then :func:`repo_root`.
+    """
+    env = os.environ.get("WORK_BUDDY_ASSET_ROOT")
+    if env:
+        return Path(env).expanduser()
+    val = _load_paths_section().get("asset_root")
+    if val:
+        p = Path(val).expanduser()
+        return p if p.is_absolute() else repo_root() / val
+    return repo_root()
+
+
+# Memoized (cache_key, paths-section) for the merged ``paths:`` config
+# block. The parse is keyed on the config files' (config_dir, mtime)
+# identity so a runtime edit (or a test that rewrites config under a
+# monkeypatched root) still invalidates, while the common case skips the
+# YAML parse entirely. This matters because ``resolve()`` / ``data_dir()``
+# run on every DB connection open across the app; an uncached parse put
+# ~60ms of YAML on every query (about 10s across one dashboard endpoint).
+_paths_section_cache: tuple[tuple[str, ...], dict[str, Any]] | None = None
+
+
+def _load_paths_section() -> dict[str, Any]:
+    """Read the merged ``paths:`` config section without importing config.py.
+
+    Reads ``config.yaml`` then overlays ``config.local.yaml`` from
+    :func:`config_dir` so user-local overrides win. This mirrors how
+    ``config.load_config()`` merges, but avoids the import: ``config.py``
+    does not import ``paths``, so reading config here directly keeps that
+    dependency one-way and cannot create a cycle.
+
+    Returns an empty dict when nothing is set or PyYAML is missing. The
+    result is memoized on the config files' mtimes (see
+    ``_paths_section_cache``), so repeated calls on a hot path stat two
+    files instead of re-parsing YAML.
+    """
+    global _paths_section_cache
     try:
         import yaml
     except ImportError:
-        return "data"
+        return {}
 
-    root = repo_root()
+    root = config_dir()
     files: list[tuple[Path, int | None]] = []
     key_parts: list[str] = [str(root)]
     for name in ("config.yaml", "config.local.yaml"):
@@ -169,7 +221,7 @@ def _load_data_root_from_config() -> str:
         key_parts.append(f"{name}:{mtime}")
     cache_key = tuple(key_parts)
 
-    cached = _data_root_cache
+    cached = _paths_section_cache
     if cached is not None and cached[0] == cache_key:
         return cached[1]
 
@@ -185,9 +237,27 @@ def _load_data_root_from_config() -> str:
         local_paths = cfg.get("paths") or {}
         if isinstance(local_paths, dict):
             paths_section.update(local_paths)
-    value = paths_section.get("data_root", "data")
-    _data_root_cache = (cache_key, value)
-    return value
+    _paths_section_cache = (cache_key, paths_section)
+    return paths_section
+
+
+def _load_data_root_from_config() -> str:
+    """Return the configured ``paths.data_root`` (default ``"data"``)."""
+    return _load_paths_section().get("data_root", "data")
+
+
+def _data_base() -> Path:
+    """Resolve the data-root directory, honoring overrides.
+
+    Precedence: the ``WORK_BUDDY_DATA_DIR`` env var (an absolute per-user
+    data dir for a packaged install), then the configured ``paths.data_root``
+    (used as-is when absolute, else relative to :func:`repo_root`).
+    """
+    env = os.environ.get("WORK_BUDDY_DATA_DIR")
+    if env:
+        return Path(env).expanduser()
+    raw = _load_data_root_from_config()
+    return Path(raw) if Path(raw).is_absolute() else repo_root() / raw
 
 
 def data_dir(category: str = "") -> Path:
@@ -199,8 +269,7 @@ def data_dir(category: str = "") -> Path:
         Optional subdirectory under the data root (e.g. ``"context"``,
         ``"runtime"``).  Pass ``""`` to get the data root itself.
     """
-    raw = _load_data_root_from_config()
-    root = Path(raw) if Path(raw).is_absolute() else repo_root() / raw
+    root = _data_base()
     target = root / category if category else root
     target.mkdir(parents=True, exist_ok=True)
     return target
@@ -226,8 +295,7 @@ def resolve(resource_id: str) -> Path:
             f"Register it in work_buddy.paths.RESOURCES first."
         )
     rel = RESOURCES[resource_id]
-    raw = _load_data_root_from_config()
-    root = Path(raw) if Path(raw).is_absolute() else repo_root() / raw
+    root = _data_base()
     target = root / rel
     target.parent.mkdir(parents=True, exist_ok=True)
     return target

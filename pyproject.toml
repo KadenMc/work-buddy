@@ -7,6 +7,17 @@ license = "GPL-3.0-only"
 readme = "README.md"
 packages = [{include = "work_buddy"}]
 classifiers = ["Development Status :: 4 - Beta"]
+# Assets that live beside the work_buddy package and are resolved at runtime
+# via paths.asset_root(). Declared here so a built wheel or sdist carries them.
+include = [
+    { path = "knowledge/store/**/*", format = ["sdist", "wheel"] },
+    { path = "prompts/**/*", format = ["sdist", "wheel"] },
+    { path = "sidecar_jobs/**/*", format = ["sdist", "wheel"] },
+    { path = ".claude/commands/**/*", format = ["sdist", "wheel"] },
+    { path = "config.example.yaml", format = ["sdist", "wheel"] },
+    { path = "config.local.yaml.example", format = ["sdist", "wheel"] },
+    { path = "docs/logo.svg", format = ["sdist", "wheel"] },
+]
 
 [tool.poetry.scripts]
 collect = "work_buddy.collect:main"

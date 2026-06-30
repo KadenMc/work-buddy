@@ -37,10 +37,11 @@ from typing import Any, Literal
 
 from work_buddy.consent import ConsentCache
 from work_buddy.logging_config import get_logger
+from work_buddy import paths
 
 logger = get_logger(__name__)
 
-_REPO_ROOT = Path(__file__).parent.parent
+_REPO_ROOT = paths.repo_root()
 
 # Consent operation for remote session launches
 REMOTE_SESSION_CONSENT_OP = "sidecar:remote_session_launch"

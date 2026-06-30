@@ -37,10 +37,11 @@ from work_buddy.config import load_config
 from work_buddy.logging_config import get_logger
 from work_buddy.sidecar.dispatch.models import AgentTarget, SpawnMode, SpawnResult
 from work_buddy.sidecar.scheduler.jobs import Job
+from work_buddy import paths
 
 logger = get_logger(__name__)
 
-_REPO_ROOT = Path(__file__).parent.parent.parent.parent
+_REPO_ROOT = paths.repo_root()
 
 # Consent operation ID for Tier 3 agent spawning
 AGENT_SPAWN_CONSENT_OP = "sidecar:agent_spawn"

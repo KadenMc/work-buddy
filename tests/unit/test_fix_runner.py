@@ -295,7 +295,7 @@ def test_fix_repos_root_writes_config(tmp_path, monkeypatch):
     config_yaml = tmp_path / "config.yaml"
     config_yaml.write_text("repos_root: \"\"\nvault_root: \"/old\"\n", encoding="utf-8")
     monkeypatch.setattr(
-        "work_buddy.health.fixers._repo_root",
+        "work_buddy.health.fixers._config_dir",
         lambda: tmp_path,
     )
     from work_buddy.health.fixers import fix_repos_root
@@ -316,7 +316,7 @@ def test_fix_timezone_writes_config(tmp_path, monkeypatch):
     config_yaml = tmp_path / "config.yaml"
     config_yaml.write_text("timezone: \"\"\n", encoding="utf-8")
     monkeypatch.setattr(
-        "work_buddy.health.fixers._repo_root",
+        "work_buddy.health.fixers._config_dir",
         lambda: tmp_path,
     )
     from work_buddy.health.fixers import fix_timezone
@@ -334,7 +334,7 @@ def test_fix_anthropic_api_key_validates_prefix():
 
 def test_fix_anthropic_api_key_creates_env_file(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "work_buddy.health.fixers._repo_root",
+        "work_buddy.health.fixers._config_dir",
         lambda: tmp_path,
     )
     monkeypatch.delenv("SUBAGENT_ANTHROPIC_API_KEY", raising=False)
@@ -359,7 +359,7 @@ def test_fix_anthropic_api_key_replaces_existing_line(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "work_buddy.health.fixers._repo_root",
+        "work_buddy.health.fixers._config_dir",
         lambda: tmp_path,
     )
     from work_buddy.health.fixers import fix_anthropic_api_key
@@ -381,7 +381,7 @@ def test_fix_telegram_bot_token_validates_shape():
 
 def test_fix_telegram_bot_token_writes_env(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "work_buddy.health.fixers._repo_root",
+        "work_buddy.health.fixers._config_dir",
         lambda: tmp_path,
     )
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)

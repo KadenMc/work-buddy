@@ -8,6 +8,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
+from work_buddy import paths
+
 logger = logging.getLogger(__name__)
 
 # Memoized parsed YAML, keyed on file path → (mtime_ns, parsed dict). The
@@ -211,8 +213,7 @@ def load_config(config_path: Path | None = None) -> dict[str, Any]:
     cfg = DEFAULTS.copy()
 
     if config_path is None:
-        # Look relative to the repo root (parent of work_buddy/)
-        config_path = Path(__file__).parent.parent / "config.yaml"
+        config_path = paths.config_dir() / "config.yaml"
 
     # Parses are memoized on file mtime (see ``_read_yaml_memoized``);
     # the merge itself is cheap and still produces a fresh dict per call.
@@ -228,14 +229,9 @@ def load_config(config_path: Path | None = None) -> dict[str, Any]:
     return cfg
 
 
-def _repo_root() -> Path:
-    """Return the work-buddy repo root (parent of work_buddy/)."""
-    return Path(__file__).parent.parent
-
-
 def config_local_path() -> Path:
-    """Return the path to config.local.yaml."""
-    return _repo_root() / "config.local.yaml"
+    """Return the path to config.local.yaml (in the per-user config dir)."""
+    return paths.config_dir() / "config.local.yaml"
 
 
 def read_config_local() -> dict[str, Any]:

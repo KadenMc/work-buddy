@@ -353,8 +353,10 @@ def fix_running_notes_section() -> dict[str, Any]:
 # Fix-C — input_required helpers
 # ---------------------------------------------------------------------------
 
-def _repo_root() -> Path:
-    return Path(__file__).parent.parent.parent
+def _config_dir() -> Path:
+    from work_buddy import paths
+
+    return paths.config_dir()
 
 
 def _set_env_var(name: str, value: str) -> tuple[bool, str, list[str]]:
@@ -368,7 +370,7 @@ def _set_env_var(name: str, value: str) -> tuple[bool, str, list[str]]:
     import os
 
     side_effects: list[str] = []
-    env_file = _repo_root() / ".env"
+    env_file = _config_dir() / ".env"
 
     # Update in-memory env first (so the recheck after the fix sees the new value)
     os.environ[name] = value
@@ -416,7 +418,7 @@ def _set_config_value(dotted_key: str, value: Any) -> tuple[bool, str, list[str]
     Returns (ok, detail, side_effects).
     """
     side_effects: list[str] = []
-    config_file = _repo_root() / "config.yaml"
+    config_file = _config_dir() / "config.yaml"
 
     if not config_file.exists():
         return False, (

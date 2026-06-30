@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from work_buddy.frontmatter import parse_frontmatter
@@ -27,11 +26,11 @@ from work_buddy.frontmatter import parse_frontmatter
 # pure-data module with no other work_buddy deps, so this import is
 # cycle-safe).
 from work_buddy.threads.enums import InvocationContext
+from work_buddy import paths
 
 logger = logging.getLogger(__name__)
 
-_REPO_ROOT = Path(__file__).parent.parent.parent
-_SLASH_CMD_DIR = _REPO_ROOT / ".claude" / "commands"
+_SLASH_CMD_DIR = paths.asset_root() / ".claude" / "commands"
 
 
 # ---------------------------------------------------------------------------

@@ -26,12 +26,13 @@ from work_buddy.knowledge.model import (
     validate_dag,
 )
 from work_buddy.logging_config import get_logger
+from work_buddy import paths
 
 logger = get_logger(__name__)
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-_STORE_DIR = _REPO_ROOT / "knowledge" / "store"
-_LOCAL_DIR = _REPO_ROOT / "knowledge" / "store.local"
+_KNOWLEDGE_DIR = paths.asset_root() / "knowledge"
+_STORE_DIR = _KNOWLEDGE_DIR / "store"
+_LOCAL_DIR = _KNOWLEDGE_DIR / "store.local"
 
 # Caches
 _STORE: dict[str, PromptUnit] | None = None

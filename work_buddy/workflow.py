@@ -72,8 +72,6 @@ class WorkflowDAG:
     - started_at / completed_at: timestamps
     """
 
-    _REPO_ROOT = Path(__file__).parent.parent
-
     def __init__(self, name: str, description: str = ""):
         self.name = name
         self.description = description
@@ -104,8 +102,9 @@ class WorkflowDAG:
         Returns (default_execution, allow_override).
         """
         from work_buddy.frontmatter import parse_frontmatter
+        from work_buddy import paths
 
-        path = WorkflowDAG._REPO_ROOT / workflow_file
+        path = paths.asset_root() / workflow_file
         if not path.exists():
             return "main", True
 

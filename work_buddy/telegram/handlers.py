@@ -309,8 +309,8 @@ async def cmd_slash(
     query = " ".join(context.args) if context.args else ""
 
     try:
-        from pathlib import Path
-        commands_dir = Path(__file__).parent.parent.parent / ".claude" / "commands"
+        from work_buddy import paths
+        commands_dir = paths.asset_root() / ".claude" / "commands"
         if not commands_dir.is_dir():
             await _reply(update, "No slash commands found.")
             return

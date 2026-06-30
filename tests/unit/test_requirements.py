@@ -238,7 +238,7 @@ class TestCheckFunctions:
 
     def test_check_config_yaml_exists_pass(self, monkeypatch, tmp_path):
         monkeypatch.setattr(
-            "work_buddy.health.requirement_checks._repo_root",
+            "work_buddy.health.requirement_checks._config_dir",
             lambda: tmp_path,
         )
         (tmp_path / "config.yaml").write_text("vault_root: /test", encoding="utf-8")
@@ -248,7 +248,7 @@ class TestCheckFunctions:
 
     def test_check_config_yaml_exists_fail(self, monkeypatch, tmp_path):
         monkeypatch.setattr(
-            "work_buddy.health.requirement_checks._repo_root",
+            "work_buddy.health.requirement_checks._config_dir",
             lambda: tmp_path,
         )
         from work_buddy.health.requirement_checks import check_config_yaml_exists
@@ -328,12 +328,12 @@ class TestCheckFunctions:
 
     def test_check_anthropic_api_key_missing(self, monkeypatch, tmp_path):
         """All three sources must be empty: SUBAGENT env, ANTHROPIC env,
-        and the repo .env file. Point _repo_root at a tmp_path that has
+        and the repo .env file. Point _config_dir at a tmp_path that has
         no .env to isolate from the developer's own .env."""
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("SUBAGENT_ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setattr(
-            "work_buddy.health.requirement_checks._repo_root",
+            "work_buddy.health.requirement_checks._config_dir",
             lambda: tmp_path,
         )
         from work_buddy.health.requirement_checks import check_anthropic_api_key
@@ -660,7 +660,7 @@ class TestCheckFunctions:
     def test_check_telegram_bot_token_dotenv(self, monkeypatch, tmp_path):
         monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
         monkeypatch.setattr(
-            "work_buddy.health.requirement_checks._repo_root",
+            "work_buddy.health.requirement_checks._config_dir",
             lambda: tmp_path,
         )
         monkeypatch.setattr(
@@ -676,7 +676,7 @@ class TestCheckFunctions:
     def test_check_telegram_bot_token_missing(self, monkeypatch, tmp_path):
         monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
         monkeypatch.setattr(
-            "work_buddy.health.requirement_checks._repo_root",
+            "work_buddy.health.requirement_checks._config_dir",
             lambda: tmp_path,
         )
         monkeypatch.setattr(
