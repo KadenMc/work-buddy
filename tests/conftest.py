@@ -105,6 +105,41 @@ def _isolate_task_store_and_vault(tmp_path, monkeypatch, request):
             monkeypatch.setattr(bridge, "urlopen", _refuse_bridge_connection)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_notification_delivery(monkeypatch, request):
+    """Neutralize outbound notification delivery for every test.
+
+    ``SurfaceDispatcher.deliver`` is the single fan-out point where a
+    notification reaches Telegram / Obsidian / dashboard surfaces. Several
+    capabilities emit fire-and-forget notifications as a side effect
+    (e.g. ``tasks.archive_completed`` -> ``_send_archive_summary_notification``).
+    Without this, any unmocked call from a test sends a *real* message (the
+    "Archived N completed tasks" Telegram leak). Stubbing ``deliver`` at the
+    class level is surface-agnostic and construction-agnostic: it blocks every
+    surface regardless of how the dispatcher instance was built, and the
+    consequential helpers import the dispatcher lazily inside the function, so
+    a class-attribute patch is what intercepts them.
+
+    Mirrors ``_isolate_task_store_and_vault``. Best-effort import so a module
+    move never breaks collection. Test-local patches of ``SurfaceDispatcher``
+    / ``from_config`` take precedence over this autouse default.
+
+    Opt out per-test with ``@pytest.mark.real_notification_delivery`` to drive
+    the real dispatcher against the test's own fakes.
+    """
+    if request.node.get_closest_marker("real_notification_delivery") is not None:
+        return
+    try:
+        import work_buddy.notifications.dispatcher as disp
+    except Exception:  # pragma: no cover - defensive
+        return
+
+    def _no_deliver(self, notification, mark_delivered_fn=None):
+        return {}  # matches deliver()'s dict[str, bool] contract
+
+    monkeypatch.setattr(disp.SurfaceDispatcher, "deliver", _no_deliver)
+
+
 @pytest.fixture
 def tmp_agents_dir(tmp_path, monkeypatch):
     """Redirect agent_session to write into a temp directory.
