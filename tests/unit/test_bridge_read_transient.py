@@ -147,6 +147,15 @@ class TestArchiveCompleted:
         )
         assert wrote_fresh_header, mb.write_file.call_args_list
 
+        # Regression guard for the "Archived N completed tasks" Telegram leak:
+        # archive_completed fires a fire-and-forget summary notification, and
+        # this single-task fixture makes count == 1. Under the default harness
+        # the dispatcher fan-out point must be neutralized (autouse
+        # _isolate_notification_delivery in tests/conftest.py), so no real
+        # surface (Telegram included) is ever contacted.
+        from work_buddy.notifications.dispatcher import SurfaceDispatcher
+        assert SurfaceDispatcher.deliver.__name__ != "deliver"
+
 
 # ── 4. Secondary consumers: transient ≠ false absent ─────────────────────
 
