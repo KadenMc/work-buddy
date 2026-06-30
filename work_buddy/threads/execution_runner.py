@@ -70,6 +70,11 @@ def execution_state_entry_handler(transition_result) -> None:
     capability_name = proposal.get("name") or ""
     raw_parameters = dict(proposal.get("parameters") or {})
 
+    # Resolve the registry entry once and thread it through both the
+    # parameter binder (which reads the declared param schema) and the
+    # dispatcher (which calls the entry's callable).
+    entry = _get_capability_entry(capability_name)
+
     # Bind dynamic parameters that depend on the thread's runtime
     # state (e.g. tab_ids pulled from context_items for chrome_tab_*
     # actions). Static parameters set on the proposal at refine-time
@@ -78,6 +83,7 @@ def execution_state_entry_handler(transition_result) -> None:
         capability_name=capability_name,
         thread=thread,
         provided=raw_parameters,
+        entry=entry,
     )
 
     # Audit start.
@@ -98,7 +104,7 @@ def execution_state_entry_handler(transition_result) -> None:
 
     # Dispatch.
     success, result, error = _invoke_capability(
-        capability_name=capability_name, parameters=bound,
+        capability_name=capability_name, parameters=bound, entry=entry,
     )
 
     # Audit finish (always — both success + failure paths).
@@ -169,12 +175,14 @@ def _bind_runtime_parameters(
     capability_name: str,
     thread,
     provided: dict[str, Any],
+    entry=None,
 ) -> dict[str, Any]:
     """Fill in capability parameters that depend on thread runtime
     state. Static params from the proposal win.
 
-    Currently covers the Chrome-action capabilities (which all need
-    ``tab_ids`` extracted from the Thread's context items). Other
+    Covers the Chrome-action capabilities (which need ``tab_ids``
+    extracted from the Thread's context items) and any action whose
+    callable takes the host thread as a ``thread_id`` argument. Other
     capabilities pass through unchanged.
     """
     out = dict(provided)
@@ -185,19 +193,26 @@ def _bind_runtime_parameters(
         if "tab_ids" not in out:
             out["tab_ids"] = _collect_tab_ids(thread)
 
-    # Capabilities whose first argument is the thread the action is
-    # being run against. Includes the chrome route_* helpers and the
-    # universal thread_* actions surfaced via the column-header chip
-    # (thread_dismiss / thread_defer / thread_rename). Without this,
-    # picking a universal action via the chip and approving lands in
-    # AWAITING_REDIRECT with "missing thread_id" — exactly the error
-    # surfaced via the Telegram "Redirect needed" notification.
-    if capability_name in (
-        "chrome_route_to_tasks", "chrome_route_to_umbrella_task",
-        "thread_dismiss", "thread_defer", "thread_rename",
+    # Actions whose first argument is the thread they run against — the
+    # chrome route_* helpers, the universal thread_* actions, the
+    # per-source journal_*/email_* thread actions. Without this, picking
+    # such an action and approving lands in AWAITING_REDIRECT with
+    # "missing thread_id" — exactly the error surfaced via the Telegram
+    # "Redirect needed" notification.
+    #
+    # The binding is driven by the declared parameter schema, not a
+    # hardcoded capability list: the op callable is a ``**kwargs``
+    # wrapper whose signature can't be introspected, but the declaration
+    # names ``thread_id`` for exactly the actions that need it. The
+    # ``is_action`` gate excludes non-action capabilities (e.g. the
+    # messaging tools) that declare an unrelated ``thread_id``.
+    if (
+        entry is not None
+        and getattr(entry, "is_action", False)
+        and "thread_id" in (getattr(entry, "parameters", None) or {})
+        and "thread_id" not in out
     ):
-        if "thread_id" not in out:
-            out["thread_id"] = thread.thread_id
+        out["thread_id"] = thread.thread_id
 
     return out
 
@@ -218,22 +233,38 @@ def _collect_tab_ids(thread) -> list[int]:
     return out
 
 
+def _get_capability_entry(capability_name: str):
+    """Resolve a capability's registry entry, or ``None`` if the
+    registry can't be imported or the name isn't registered.
+
+    Used to look up the entry once per execution so both the parameter
+    binder (reads the declared schema) and the dispatcher (calls the
+    callable) share it.
+    """
+    try:
+        from work_buddy.mcp_server.registry import get_registry
+    except Exception:
+        logger.exception("execution_runner: registry import failed")
+        return None
+    return get_registry().get(capability_name)
+
+
 def _invoke_capability(
-    *, capability_name: str, parameters: dict[str, Any],
+    *, capability_name: str, parameters: dict[str, Any], entry=None,
 ) -> tuple[bool, Any, str | None]:
     """Look up the capability in the MCP registry and call it.
 
     Returns ``(success, result, error_msg)``. The capability's
     callable is called with ``**parameters``; any exception is caught
-    and surfaced as a failure.
+    and surfaced as a failure. ``entry`` may be passed pre-resolved to
+    avoid a second registry lookup; when omitted it is resolved here.
     """
-    try:
-        from work_buddy.mcp_server.registry import get_registry
-    except Exception as e:
-        return (False, None, f"registry import failed: {e}")
-
-    registry = get_registry()
-    entry = registry.get(capability_name)
+    if entry is None:
+        try:
+            from work_buddy.mcp_server.registry import get_registry
+        except Exception as e:
+            return (False, None, f"registry import failed: {e}")
+        entry = get_registry().get(capability_name)
     if entry is None:
         return (
             False, None,

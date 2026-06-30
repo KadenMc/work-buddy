@@ -149,19 +149,54 @@ def script() -> str:
         return html;
     }
 
+    // Lazy-fetch a thread's own action library when the group cache
+    // wasn't populated (the user opened a child directly rather than via
+    // the umbrella's group grid). Stores the result under the parent id
+    // — the key ``_renderActionSwitcher`` reads — then rerenders.
+    // Guarded so each umbrella is fetched at most once in flight; an
+    // empty/error result is cached as [] so we don't refetch in a loop.
+    function _lazyFetchActionOptions(threadId, parentId) {
+        const st = window._groupState;
+        if (!st._actionOptionsFetching) st._actionOptionsFetching = {};
+        if (st._actionOptionsFetching[parentId]) return;
+        st._actionOptionsFetching[parentId] = true;
+        fetch('/api/threads/' + encodeURIComponent(threadId)
+              + '/action_options')
+            .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
+            .then(data => {
+                st.actionOptionsByUmbrella[parentId] =
+                    Array.isArray(data.action_options)
+                        ? data.action_options : [];
+            })
+            .catch(err => {
+                console.warn(
+                    '[action-switcher] options fetch failed:', err);
+                st.actionOptionsByUmbrella[parentId] = [];
+            })
+            .then(() => {
+                delete st._actionOptionsFetching[parentId];
+                if (typeof window._renderActiveThread === "function") {
+                    window._renderActiveThread();
+                }
+            });
+    }
+
     function _renderActionSwitcher(thread, action) {
-        // The action-switcher dropdown reuses the umbrella's
-        // ``action_options`` (cached in ``window._groupState``).
-        // Available only when the thread is a group child whose
-        // umbrella has been visited in this session — otherwise we
-        // skip the switcher rather than make a synchronous fetch
-        // from inside an HTML-string renderer.
+        // The action-switcher dropdown reuses the per-source
+        // ``action_options`` (cached in ``window._groupState``, keyed by
+        // the umbrella/parent id). When the cache is unpopulated — the
+        // user opened this child directly, so the umbrella's group grid
+        // never ran — lazy-fetch the thread's own library and rerender.
         const parentId = thread.parent_id;
         if (!parentId
             || !window._groupState
             || !window._groupState.actionOptionsByUmbrella) return '';
         const options = window._groupState.actionOptionsByUmbrella[parentId];
-        if (!Array.isArray(options) || options.length === 0) return '';
+        if (!Array.isArray(options)) {
+            _lazyFetchActionOptions(thread.thread_id, parentId);
+            return '';
+        }
+        if (options.length === 0) return '';
         const perGroup = options.filter(
             d => d.cardinality === "per_group",
         );

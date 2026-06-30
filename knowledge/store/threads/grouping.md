@@ -42,6 +42,10 @@ dev_notes: |-
   ## Per-matter routing for inline captures
 
   `pipelines/inline.py:inline_capture` segments the captured text into matters via the `clarify/text-segmenter` SubCall BEFORE running the verdict, then calls `pipelines/singular.py:spawn_thread_for_matter` once per matter. The text-segmenter biases toward 'one matter' and a coverage check rejects hallucinated boundaries; on segmenter soft-fail or short-text bypass the input is treated as a single matter. One matter → one root thread (flat or singular umbrella, depending on record count). N matters → N independent root threads with no umbrella conflation.
+
+  ## Inner-thread action switcher
+
+  The per-source action switcher (`scripts/tabs/threads/actions.py:_renderActionSwitcher`) renders on a child thread's right-pane editor, not only on the umbrella's group grid. It reads `window._groupState.actionOptionsByUmbrella[parentId]`. The group grid populates that cache only for group umbrellas, so a child opened directly lazy-fetches `GET /api/threads/<id>/action_options` and stores the result under the parent id. That endpoint is backed by `service._resolve_action_library_for_thread`, which resolves the library from the thread's own `inciting_event_summary` source (group children carry their pipeline's `source_pipeline`), so it works for any thread. The `/groups` endpoint stays group-umbrella-only; `/action_options` is the any-thread library surface.
 ---
 
 Three parent-child relationship patterns coexist. The discriminator is `Thread.parent_relationship` (free-string column on the threads table).
