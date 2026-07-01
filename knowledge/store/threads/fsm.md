@@ -17,6 +17,12 @@ dev_notes: |-
 
   - `tab_ids` — for the `chrome_tab_*` actions, collected from the thread's context items.
   - `thread_id` — injected for any action whose **declaration** includes a `thread_id` parameter, gated on `is_action`. The op callable is a `**kwargs` wrapper whose signature can't be introspected, so the declared parameter schema is the authoritative source. A thread-scoped action (`journal_*`, `email_*`, `chrome_route_*`, the universal `thread_*`) therefore needs no execution_runner change — declaring `thread_id` is sufficient for the host thread to be bound at dispatch. The `is_action` gate excludes non-action capabilities (e.g. the messaging tools) that declare an unrelated `thread_id`.
+
+  ### Committing user-resolved actions
+
+  Approve is deterministic execution; Redirect is LLM re-inference. On Approve, `service._apply_action_edits_for_execute` folds the user's resolution into a fresh `action_inferred` BEFORE the `execute` transition, so the executor reads what the user approved. It honors `{action: {capability_name, parameters}}` (a switch or filled action) and legacy `{action_overrides: {action_id: {param: value}}}`, preserving the prior proposal's risk metadata when the action is unchanged. `set_action_proposal` and this path share `_write_action_proposal_event`.
+
+  Redirect (`service.redirect_action`, any thread, feedback optional) records `seed_params` + `target_action` on the `KIND_ACTION_REDIRECTED` event. `bootstrap._build_redirect_feedback_block` surfaces the seeds + the still-missing required params (via `_required_params_for`) and the target action, and the action-inference catalog marks required params with `*` so re-inference keeps the user's filled values and completes only the gaps.
 ---
 
 ## State catalog

@@ -167,7 +167,13 @@ TARGETS: dict[InferenceTarget, TargetSpec] = {
             "to state exactly what you need. Reserve this for cases "
             "where the inciting context is too sparse to map to any "
             "standard action — and remember 'wb/TODO X' alone IS "
-            "enough to call task_create with task_text='X'."
+            "enough to call task_create with task_text='X'.\n"
+            "When you pick a 'standard' action, fill EVERY required "
+            "parameter (marked '*' in the catalog) in parameters_json, "
+            "inferring sensible values from the Thread's intent, context, "
+            "and items. If a redirect block below supplies parameter "
+            "values or a target action, keep those values verbatim and "
+            "only fill the ones still missing."
         ),
         output_schema={
             "type": "object",

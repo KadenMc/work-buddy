@@ -380,3 +380,90 @@ class TestActionOptionsEndpoint:
     def test_missing_thread_404(self, client):
         resp = client.get("/api/threads/th-does-not-exist/action_options")
         assert resp.status_code == 404
+
+    def test_carries_param_schema_with_required_flags(self, client):
+        """Each action carries its parameter schema so the UI can render
+        blank required fields and gate Approve."""
+        t = _make_thread(source="journal_backlog")
+        resp = client.get(f"/api/threads/{t.thread_id}/action_options")
+        by_name = {o["capability_name"]: o
+                   for o in resp.get_json()["action_options"]}
+        append = by_name["journal_append_to_note"]
+        params = {p["name"]: p for p in append["parameters"]}
+        assert params["note_path"]["required"] is True
+        assert params["bullet_prefix"]["required"] is False
+
+
+# ---------------------------------------------------------------------------
+# Approve folds user action edits into a fresh action_inferred
+# ---------------------------------------------------------------------------
+
+
+class TestApproveFoldsActionEdits:
+    """Before Approve commits to execution, the user's filled / switched
+    params are written as a fresh action_inferred so the executor reads
+    them. Exercised at the fold-in helper (not the full /accept, which
+    would fire execution)."""
+
+    def _seed_proposal(self, name, params, irreversibility="low"):
+        from work_buddy.threads.enums import FSMState
+        t = Thread(fsm_state=FSMState.AWAITING_CONFIRMATION)
+        store.insert_thread(t)
+        store.append_event(ThreadEvent(
+            thread_id=t.thread_id,
+            kind=KIND_ACTION_INFERRED,
+            actor="agent",
+            data={"payload": {
+                "kind": "standard",
+                "name": name,
+                "parameters": dict(params),
+                "irreversibility": irreversibility,
+                "regret_potential": "low",
+                "risk_amplifier": False,
+            }},
+        ))
+        store.update_thread_state(
+            t.thread_id, parent_event_id=store.latest_event_id(t.thread_id),
+        )
+        return store.get_thread(t.thread_id)
+
+    def test_action_shape_fills_params(self, fresh_threads_db):
+        from work_buddy.dashboard import service
+        t = self._seed_proposal("journal_append_to_note", {})
+        with service.app.test_request_context(json={"action": {
+            "capability_name": "journal_append_to_note",
+            "parameters": {"note_path": "Areas/Mindfulness/Meditation.md"},
+        }}):
+            service._apply_action_edits_for_execute(t.thread_id, t)
+        payload = service._current_action_payload(t.thread_id)
+        assert payload["name"] == "journal_append_to_note"
+        assert payload["parameters"]["note_path"] == "Areas/Mindfulness/Meditation.md"
+
+    def test_same_action_preserves_risk(self, fresh_threads_db):
+        from work_buddy.dashboard import service
+        t = self._seed_proposal("send_email", {}, irreversibility="high")
+        with service.app.test_request_context(json={"action": {
+            "capability_name": "send_email",
+            "parameters": {"to": "a@b.com"},
+        }}):
+            service._apply_action_edits_for_execute(t.thread_id, t)
+        payload = service._current_action_payload(t.thread_id)
+        assert payload["irreversibility"] == "high"
+
+    def test_action_overrides_merge_into_params(self, fresh_threads_db):
+        from work_buddy.dashboard import service
+        t = self._seed_proposal("journal_append_to_note", {"bullet_prefix": "- "})
+        with service.app.test_request_context(json={"action_overrides": {
+            "act-1": {"note_path": "Y.md"},
+        }}):
+            service._apply_action_edits_for_execute(t.thread_id, t)
+        payload = service._current_action_payload(t.thread_id)
+        assert payload["parameters"] == {"bullet_prefix": "- ", "note_path": "Y.md"}
+
+    def test_plain_accept_is_noop(self, fresh_threads_db):
+        from work_buddy.dashboard import service
+        t = self._seed_proposal("journal_append_to_note", {"note_path": "Z.md"})
+        before = store.latest_event_id(t.thread_id)
+        with service.app.test_request_context(json={}):
+            service._apply_action_edits_for_execute(t.thread_id, t)
+        assert store.latest_event_id(t.thread_id) == before
