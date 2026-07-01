@@ -28,17 +28,23 @@ def subprocess_creation_flags() -> int:
 
 
 def detached_process_kwargs() -> dict:
-    """Return kwargs for launching a fully detached background process.
+    """Return kwargs for launching a windowless background process.
 
-    On Windows: CREATE_NO_WINDOW | DETACHED_PROCESS via creationflags.
-    On Unix: start_new_session=True to detach from parent's process group.
+    On Windows: CREATE_NO_WINDOW alone. This gives the child its own *hidden*
+    console, which the child's own console subprocesses (git, netstat, taskkill,
+    ...) then inherit, so they run windowless too. Do NOT add DETACHED_PROCESS:
+    combined with CREATE_NO_WINDOW it wins and leaves the child with NO console
+    at all, at which point every console subprocess the child spawns without its
+    own CREATE_NO_WINDOW gets a fresh *visible* console allocated. For a detached
+    sidecar that runs git-backed jobs on a schedule, a console-less parent means
+    each git call flashes a terminal window. The hidden console the children
+    inherit keeps them windowless, and the process still outlives its launching
+    shell because it owns that console rather than borrowing the shell's.
+
+    On Unix: start_new_session=True to detach from the parent's process group.
     """
     if IS_WINDOWS:
-        return {
-            "creationflags": (
-                subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
-            ),
-        }
+        return {"creationflags": subprocess.CREATE_NO_WINDOW}
     return {"start_new_session": True}
 
 
