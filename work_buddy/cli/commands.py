@@ -1,4 +1,4 @@
-"""Verb handlers for the ``wb`` CLI: rendering and side effects.
+"""Verb handlers for the ``wbuddy`` CLI: rendering and side effects.
 
 Each ``cmd_*`` takes the parsed args, prints human-readable output (or JSON
 when ``--json`` is set on verbs that support it), and returns a process exit
@@ -55,7 +55,7 @@ def cmd_start(args) -> int:
         _err(res["detail"])
         return EXIT_FAIL
     if res["already_running"]:
-        print(f"Sidecar already running (pid={res['pid']}).")
+        print(f"{res['detail']} (pid={res['pid']}).")
     else:
         print(f"Sidecar started (pid={res['pid']}).")
     _print_dashboard_url(prefix="Dashboard: ")
@@ -96,27 +96,37 @@ def cmd_status(args) -> int:
 
     res = lifecycle.sidecar_status()
     st = res["state"]
+    pid = res["pid"]
+    health = res.get("health", "down")
 
     if _want_json(args):
-        out = {"running": res["running"], "pid": res["pid"]}
+        out = {"running": res["running"], "health": health, "pid": pid}
         if st is not None:
             out["state"] = asdict(st)
         print(json.dumps(out, indent=2))
-        return EXIT_OK if res["running"] else EXIT_FAIL
+        return EXIT_OK if health in ("up", "booting") else EXIT_FAIL
 
-    if not res["running"]:
+    if health == "down":
         print("Sidecar not running.")
         return EXIT_FAIL
 
-    pid = res["pid"]
-    # The daemon rewrites the state file on its first tick, so right after a
-    # start the pid file already shows the new daemon while the state file may
-    # still hold a previous one's started_at/services. A pid mismatch means the
-    # new daemon is up but has not published its state yet.
-    if st is None or st.pid != pid:
+    # A wedged daemon holds the pid file but has stopped ticking: its children
+    # never came up (or died), so it is alive-but-not-serving. Say so plainly
+    # rather than reporting an indefinite "starting up", and point at the fix.
+    if health == "wedged":
+        print(
+            f"Sidecar process alive (pid={pid}) but not publishing state "
+            f"(looks wedged). Run 'wbuddy restart'."
+        )
+        return EXIT_FAIL
+
+    # Booting: the daemon has taken over / written its pid file but has not
+    # published its first tick yet (services can take ~60s to come up).
+    if health == "booting":
         print(f"Sidecar running (pid={pid}); starting up, state not yet published.")
         return EXIT_OK
 
+    # health == "up": the state file names this pid and is fresh.
     uptime = _fmt_duration(time.time() - st.started_at) if st.started_at else "?"
     print(f"Sidecar running (pid={pid}, uptime={uptime})")
     if st.services:
@@ -196,10 +206,10 @@ def cmd_setup(args) -> int:
         f"{summary['failed_required']} required failing."
     )
     print()
-    print("Claude Code MCP config (or run: wb mcp print):")
+    print("Claude Code MCP config (or run: wbuddy mcp print):")
     _print_mcp_config()
     print()
-    print("Start the sidecar with:  wb start")
+    print("Start the sidecar with:  wbuddy start")
     print(
         "For the interactive feature selection, run /wb-setup guided inside "
         "Claude Code (that walk needs an agent)."

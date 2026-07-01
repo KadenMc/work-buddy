@@ -1,14 +1,14 @@
-"""``wb`` CLI: the bootstrap and sidecar-lifecycle ramp for work-buddy.
+"""``wbuddy`` CLI: the bootstrap and sidecar-lifecycle ramp for work-buddy.
 
-``wb`` is the shell entrypoint that takes a fresh user from "installed" to
+``wbuddy`` is the shell entrypoint that takes a fresh user from "installed" to
 "the sidecar is running and Claude Code is wired", and manages the sidecar
 lifecycle afterward. It is deliberately NOT an operations surface: anything
-that acts on work-buddy state goes through the ``wb_*`` MCP gateway. ``wb``
+that acts on work-buddy state goes through the ``wb_*`` MCP gateway. ``wbuddy``
 owns only setup, sidecar lifecycle, diagnostics, and emitting the MCP config.
 
-    wb start [--foreground]      wb stop        wb restart
-    wb status [--json]           wb doctor [<component>] [--json]
-    wb setup                     wb mcp print   wb dashboard [--open]
+    wbuddy start [--foreground]  wbuddy stop    wbuddy restart
+    wbuddy status [--json]       wbuddy doctor [<component>] [--json]
+    wbuddy setup                 wbuddy mcp print   wbuddy dashboard [--open]
 
 The interactive, domain-by-domain feature selection lives in ``/wb-setup
 guided`` inside Claude Code, because that walk needs an agent.
@@ -32,7 +32,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     parser = argparse.ArgumentParser(
-        prog="wb",
+        prog="wbuddy",
         description="work-buddy setup and sidecar lifecycle.",
     )
     sub = parser.add_subparsers(dest="command", required=True)

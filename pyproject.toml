@@ -20,7 +20,7 @@ include = [
 ]
 
 [tool.poetry.scripts]
-wb = "work_buddy.cli:main"
+wbuddy = "work_buddy.cli:main"
 collect = "work_buddy.collect:main"
 work-buddy-mcp = "work_buddy.mcp_server:main"
 
