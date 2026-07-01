@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from work_buddy.compat import subprocess_creation_flags
 from work_buddy.timefmt import to_local_naive
 
 
@@ -17,6 +18,11 @@ def _run_git(repo_path: Path, *args: str, timeout: int = 15) -> str:
             capture_output=True,
             text=True,
             timeout=timeout,
+            # Windowless on Windows. This collector fans out git across every
+            # repo, so if the sidecar is ever launched without a console (a
+            # future launch path), each call would otherwise flash a console
+            # window. Defense in depth alongside the daemon's hidden console.
+            creationflags=subprocess_creation_flags(),
         )
         return result.stdout.strip()
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):

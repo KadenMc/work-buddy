@@ -332,10 +332,10 @@ Machine-specific overrides (e.g., `hindsight.bank_id`) go in `config.local.yaml`
 work-buddy runs its MCP gateway as an HTTP service supervised by the sidecar, so start the sidecar first:
 
 ```bash
-wb start          # or: python -m work_buddy.sidecar
+wbuddy start      # or: python -m work_buddy.sidecar
 ```
 
-Then add this to your Claude Code MCP config (or run `wb mcp print` to emit it):
+Then add this to your Claude Code MCP config (or run `wbuddy mcp print` to emit it):
 
 ```json
 {
