@@ -337,31 +337,97 @@ def script() -> str:
             window._renderActiveThread();
         }
     };
-    window.threadsDraftEditParam = function (threadId, pname, value) {
-        const d = window._draftActionFor(threadId);
-        if (!d) return;
-        d.params[pname] = value;
-        // Toggle Approve without a full re-render (keep input focus).
-        const root = document.querySelector(
-            '.threads-draft[data-thread-id="' + threadId + '"]');
-        if (root) {
-            const btn = root.querySelector('.threads-draft-approve');
-            const ok = _draftRequiredFilled(threadId);
-            if (btn) { btn.disabled = !ok; btn.classList.toggle('ready', ok); }
+    // Reusable, schema-driven parameter fields (the same shape the command
+    // palette renders: one control per param by type, required marker,
+    // description hint). Fields carry data-param/data-ptype and NO inline
+    // handlers — values are read from the DOM on demand, which sidesteps
+    // the onclick/oninput attribute-quoting hazard entirely. Required
+    // params show at the top; optional ones collapse behind a native
+    // <details> "More options" so defaulted plumbing stays out of the way.
+    window.wbRenderParamFields = function (params, opts) {
+        opts = opts || {};
+        const values = opts.values || {};
+        function _control(p) {
+            const v = values[p.name] != null ? String(values[p.name]) : "";
+            if (p.type === "bool") {
+                return '<select data-param="' + _esc(p.name) + '" '
+                    + 'data-ptype="bool" class="threads-input">'
+                    + '<option value=""' + (v === "" ? " selected" : "") + '>—</option>'
+                    + '<option value="true"' + (v === "true" ? " selected" : "") + '>true</option>'
+                    + '<option value="false"' + (v === "false" ? " selected" : "") + '>false</option>'
+                    + '</select>';
+            }
+            return '<input type="text" class="threads-input" '
+                + 'data-param="' + _esc(p.name) + '" '
+                + 'data-ptype="' + _esc(p.type || "str") + '" '
+                + 'value="' + _esc(v) + '" '
+                + 'placeholder="' + _esc(p.description || p.type || "") + '">';
         }
-    };
-    window.threadsDraftEditMessage = function (threadId, value) {
-        const d = window._draftActionFor(threadId);
-        if (d) d.message = value;
-        const root = document.querySelector(
-            '.threads-draft[data-thread-id="' + threadId + '"]');
-        if (root) {
-            const w = root.querySelector('.threads-draft-warn');
-            if (w) w.remove();
-            const g = root.querySelector('.threads-draft-refine');
-            if (g) g.classList.remove('warn');
+        function _field(p) {
+            return '<div class="threads-draft-field">'
+                + '<label>' + _humanize(p.name)
+                +   (p.required ? ' <span class="req">*</span>' : '')
+                + '</label>' + _control(p) + '</div>';
         }
+        const req = (params || []).filter(p => p.required);
+        const opt = (params || []).filter(p => !p.required);
+        let html = req.map(_field).join("");
+        if (opt.length) {
+            html += '<details class="threads-draft-more">'
+                + '<summary>More options</summary>'
+                + opt.map(_field).join("") + '</details>';
+        }
+        return html;
     };
+
+    // Read + type-coerce the param field values from a draft's DOM.
+    function _coerceParams(threadId) {
+        const d = window._draftActionFor(threadId);
+        const thread = _draftThreadRef[threadId];
+        const desc = (d && thread)
+            ? _descriptorFor(thread, d.capability_name) : null;
+        const byName = {};
+        for (const p of ((desc && desc.parameters) || [])) byName[p.name] = p;
+        const raw = (d && d.params) || {};
+        const out = {};
+        for (const k in raw) {
+            let v = raw[k];
+            if (v == null || String(v).trim() === "") continue;
+            const t = (byName[k] || {}).type;
+            if (t === "int") v = parseInt(v, 10);
+            else if (t === "float") v = parseFloat(v);
+            else if (t === "bool") v = (String(v) === "true");
+            out[k] = v;
+        }
+        return out;
+    }
+
+    // Delegated input handler — one listener for every draft's fields +
+    // message, instead of per-field inline handlers.
+    if (!window._threadsDraftInputWired) {
+        window._threadsDraftInputWired = true;
+        document.addEventListener('input', function (ev) {
+            const el = ev.target;
+            const root = el && el.closest && el.closest('.threads-draft');
+            if (!root) return;
+            const threadId = root.getAttribute('data-thread-id');
+            const d = window._draftActionFor(threadId);
+            if (!d) return;
+            if (el.dataset && el.dataset.param != null) {
+                d.params[el.dataset.param] = el.value;
+                const btn = root.querySelector('.threads-draft-approve');
+                const ok = _draftRequiredFilled(threadId);
+                if (btn) { btn.disabled = !ok; btn.classList.toggle('ready', ok); }
+            } else if (el.classList
+                       && el.classList.contains('threads-draft-message')) {
+                d.message = el.value;
+                const w = root.querySelector('.threads-draft-warn');
+                if (w) w.remove();
+                const g = root.querySelector('.threads-draft-refine');
+                if (g) g.classList.remove('warn');
+            }
+        });
+    }
 
     window.renderActionDraft = function (thread, action) {
         _draftThreadRef[thread.thread_id] = thread;
@@ -370,7 +436,6 @@ def script() -> str:
         const tid = _sq(thread.thread_id);
         const toLabel = (desc && desc.label) || d.capability_name;
         const schema = (desc && desc.parameters) || [];
-        const required = schema.filter(p => p.required);
         const ready = _draftRequiredFilled(thread.thread_id);
 
         let html = '<div class="threads-draft" data-thread-id="'
@@ -383,17 +448,9 @@ def script() -> str:
             +   'onclick="threadsCancelDraft(' + tid + ')">cancel</button>'
             + '</div>';
 
-        html += '<div class="threads-draft-fields">';
-        for (const p of required) {
-            const val = d.params[p.name] || "";
-            html += _field(_humanize(p.name) + ' *',
-                '<input type="text" class="threads-input" '
-                + 'value="' + _esc(val) + '" '
-                + 'placeholder="' + _esc(p.description || "") + '" '
-                + 'oninput="threadsDraftEditParam(' + tid + ', '
-                +   _sq(p.name) + ', this.value)">');
-        }
-        html += '</div>';
+        html += '<div class="threads-draft-fields">'
+            + window.wbRenderParamFields(schema, { values: d.params })
+            + '</div>';
 
         html += '<div class="threads-draft-approve-row">'
             + '<span class="threads-draft-hint" '
@@ -411,8 +468,7 @@ def script() -> str:
             +   'Issue? Hand it back for refinement</div>'
             + '<textarea class="threads-draft-message" rows="2" '
             +   'placeholder="Optional note. e.g. use the mindfulness log, '
-            +   'not the meditation note" '
-            +   'oninput="threadsDraftEditMessage(' + tid + ', this.value)">'
+            +   'not the meditation note">'
             +   _esc(d.message || "") + '</textarea>'
             + '<div class="threads-draft-refine-row">'
             +   '<span class="threads-draft-hint" title="Sends the switch, '
@@ -464,7 +520,8 @@ def script() -> str:
         fetch('/api/threads/' + encodeURIComponent(threadId) + '/accept', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ action: {
-                capability_name: d.capability_name, parameters: d.params,
+                capability_name: d.capability_name,
+                parameters: _coerceParams(threadId),
             } }),
         }).then(r => r.json().then(b => ({ ok: r.ok, body: b })))
           .then(({ ok, body }) => {
@@ -481,7 +538,7 @@ def script() -> str:
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 target_action: d.capability_name,
-                params: d.params,
+                params: _coerceParams(threadId),
                 feedback: String(d.message || ''),
             }),
         }).then(r => r.json().then(b => ({ ok: r.ok, body: b })))
@@ -941,4 +998,25 @@ def styles() -> str:
     border-radius: 4px;
     padding: 8px 10px;
 }
+.threads-draft-field { display: flex; flex-direction: column; gap: 4px; }
+.threads-draft-field label {
+    font-size: 12px;
+    color: var(--text-muted, #888);
+}
+.threads-draft-field .req { color: var(--danger, #c0504d); }
+.threads-draft-more {
+    border: 1px solid var(--border, #333);
+    border-radius: 4px;
+    padding: 6px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.threads-draft-more > summary {
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text-muted, #888);
+    list-style: revert;
+}
+.threads-draft-more[open] > summary { margin-bottom: 4px; }
 """
