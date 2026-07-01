@@ -267,8 +267,14 @@ def _maybe_format_action_catalog(schema: dict) -> str:
         # Compact one-line description (truncate aggressively — the
         # full description is in the registry; the agent just needs
         # enough to match intent).
+        from work_buddy.threads.execution_runner import RUNTIME_BOUND_PARAMS
         desc = (tmpl.description or "").split(". ")[0][:160]
-        params = tmpl.parameters or {}
+        # Runtime-bound params (thread_id, tab_ids) are injected by the
+        # executor — never ask the model to propose them.
+        params = {
+            n: i for n, i in (tmpl.parameters or {}).items()
+            if n not in RUNTIME_BOUND_PARAMS
+        }
         if params:
             shown = []
             for pname, pinfo in list(params.items())[:6]:
@@ -397,11 +403,13 @@ def _required_params_for(capability_name: str) -> list[str]:
         return []
     try:
         from work_buddy.mcp_server.registry import get_registry
+        from work_buddy.threads.execution_runner import RUNTIME_BOUND_PARAMS
         entry = get_registry().get(capability_name)
         params = getattr(entry, "parameters", None) or {}
         return [
             n for n, info in params.items()
             if isinstance(info, dict) and info.get("required")
+            and n not in RUNTIME_BOUND_PARAMS
         ]
     except Exception:  # pragma: no cover — defensive
         return []

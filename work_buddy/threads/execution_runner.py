@@ -37,6 +37,13 @@ from work_buddy.threads.fsm import (
 
 logger = logging.getLogger(__name__)
 
+# Parameters the executor injects from thread runtime state at dispatch
+# (see ``_bind_runtime_parameters``). They are NOT the user's or the
+# agent's to fill, so surfaces that render fields (the resolution UI) and
+# the inference catalog exclude them — otherwise the model hallucinates a
+# ``thread_id`` and the user sees a meaningless "thread ID" field.
+RUNTIME_BOUND_PARAMS = frozenset({"thread_id", "tab_ids"})
+
 
 def execution_state_entry_handler(transition_result) -> None:
     """Engine state-entry handler for :data:`FSMState.EXECUTING`.
@@ -206,11 +213,14 @@ def _bind_runtime_parameters(
     # names ``thread_id`` for exactly the actions that need it. The
     # ``is_action`` gate excludes non-action capabilities (e.g. the
     # messaging tools) that declare an unrelated ``thread_id``.
+    #
+    # This ALWAYS overrides any provided ``thread_id``: the host thread is
+    # authoritative, and a proposal-supplied value is never correct (an
+    # LLM re-inference may hallucinate one; it must not reach dispatch).
     if (
         entry is not None
         and getattr(entry, "is_action", False)
         and "thread_id" in (getattr(entry, "parameters", None) or {})
-        and "thread_id" not in out
     ):
         out["thread_id"] = thread.thread_id
 

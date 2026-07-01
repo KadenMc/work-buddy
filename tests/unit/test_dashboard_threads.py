@@ -392,6 +392,9 @@ class TestActionOptionsEndpoint:
         params = {p["name"]: p for p in append["parameters"]}
         assert params["note_path"]["required"] is True
         assert params["bullet_prefix"]["required"] is False
+        # thread_id is runtime-bound (executor-injected) — never surfaced
+        # as a field for the user to fill.
+        assert "thread_id" not in params
 
 
 # ---------------------------------------------------------------------------

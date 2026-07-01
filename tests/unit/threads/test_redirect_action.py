@@ -329,6 +329,16 @@ class TestActionCatalogRequiredMarking:
         assert "note_path*" in block
         assert "REQUIRED parameter" in block
 
+    def test_runtime_bound_params_excluded(self):
+        from work_buddy.threads.bootstrap import _maybe_format_action_catalog
+        from work_buddy.threads.enums import InferenceTarget
+        from work_buddy.threads.inference import TARGETS
+        block = _maybe_format_action_catalog(
+            TARGETS[InferenceTarget.ACTION].output_schema)
+        # thread_id is executor-injected — the model must never be asked
+        # to propose it (it would hallucinate a wrong value).
+        assert "thread_id" not in block
+
 
 # ---------------------------------------------------------------------------
 # Render: latest action_inferred surfaces; prior stays in history

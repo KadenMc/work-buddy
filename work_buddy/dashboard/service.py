@@ -4018,14 +4018,22 @@ def _project_param_schema(raw) -> list[dict[str, Any]]:
 def _attach_param_schemas(descriptors: list[dict]) -> list[dict]:
     """Add each action descriptor's parameter schema (from the registry)
     so the resolution UI can render blank required fields and gate Approve
-    on the required ones. Unknown capabilities get an empty schema."""
+    on the required ones. Unknown capabilities get an empty schema.
+
+    Runtime-bound params (``thread_id``, ``tab_ids``) are excluded — the
+    executor injects them, so the user must not see them as fields.
+    """
     from work_buddy.mcp_server.registry import get_registry
+    from work_buddy.threads.execution_runner import RUNTIME_BOUND_PARAMS
     reg = get_registry()
     for d in descriptors:
         entry = reg.get(d.get("capability_name"))
-        d["parameters"] = _project_param_schema(
+        schema = _project_param_schema(
             getattr(entry, "parameters", None) if entry is not None else None
         )
+        d["parameters"] = [
+            p for p in schema if p["name"] not in RUNTIME_BOUND_PARAMS
+        ]
     return descriptors
 
 
