@@ -333,12 +333,6 @@ async function submitGenericResponse(viewId, value) {
     } catch(e) { console.error('Submit failed:', e); }
 }
 
-function escapeHtml(text) {
-    const d = document.createElement('div');
-    d.textContent = text || '';
-    return d.innerHTML;
-}
-
 // Start polling for workflow views
 setInterval(pollWorkflowViews, 3000);
 pollWorkflowViews();
