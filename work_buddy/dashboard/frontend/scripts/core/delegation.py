@@ -54,6 +54,20 @@ def script() -> str:
         if (typeof fn !== 'function') {
             throw new TypeError('wbAction: handler must be a function');
         }
+        // Collision guard: two modules concatenate into one window.wbActions
+        // namespace. Registering the same name twice with a DIFFERENT handler
+        // is almost always an accidental cross-module collision (the second
+        // silently wins), which breaks whichever emitter's data contract does
+        // not match the surviving adapter. Warn loudly at load. Identical
+        // re-registration (a deliberately shared adapter) is silent.
+        var existing = window.wbActions[name];
+        if (existing
+            && existing.toString().replace(/\s+/g, ' ')
+               !== fn.toString().replace(/\s+/g, ' ')) {
+            console.warn('[wb-actions] action "' + name
+                + '" re-registered with a different handler — probable'
+                + ' cross-module name collision; the later one wins.');
+        }
         window.wbActions[name] = fn;
     };
 

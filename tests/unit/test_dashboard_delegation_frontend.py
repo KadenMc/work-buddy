@@ -108,3 +108,39 @@ def test_delegation_behavior_harness():
         f"delegation behaviour harness failed:\nstdout:\n{result.stdout}\n"
         f"stderr:\n{result.stderr}"
     )
+
+
+def test_no_conflicting_action_registrations():
+    """No action name may be registered with two DIFFERENT handlers.
+
+    Every module concatenates into one ``window.wbActions`` namespace, so a
+    same-name / different-body registration is a silent cross-module collision:
+    the later registration wins, breaking whichever emitter's ``data-*``
+    contract does not match the surviving adapter. This bites when parallel
+    authors independently pick the same action name for different handlers
+    (it shipped once as ``threadsPushPathAction`` in both main.py and card.py,
+    with `data-thread-id` vs `data-target-id`). Identical re-registration (a
+    deliberately shared adapter, e.g. ``threadsLaterPopup``) is allowed.
+    """
+    js = assembled_js()
+    regs: dict[str, set[str]] = {}
+    for m in re.finditer(r"window\.wbAction\(\s*'([^']+)'\s*,\s*function", js):
+        name = m.group(1)
+        i = js.index("{", m.end())
+        depth = 0
+        j = i
+        while j < len(js):
+            if js[j] == "{":
+                depth += 1
+            elif js[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        body = re.sub(r"\s+", " ", js[i:j + 1]).strip()
+        regs.setdefault(name, set()).add(body)
+    conflicts = sorted(n for n, bodies in regs.items() if len(bodies) > 1)
+    assert not conflicts, (
+        "action name(s) registered with conflicting handlers "
+        f"(cross-module collision): {conflicts}"
+    )

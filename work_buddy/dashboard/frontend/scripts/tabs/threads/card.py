@@ -627,7 +627,7 @@ def script() -> str:
                       ? (' role="button" tabindex="0" '
                           + 'title="Click to open this action\'s thread '
                           + 'for full Approve / Edit / Redirect / Reject" '
-                          + wbActAttrs('threadsPushPathAction', {targetId: hostId}))
+                          + wbActAttrs('threadsPushPathTarget', {targetId: hostId}))
                       : '')
                   + '>';
             // Action label: kind icon + name + small kind chip
@@ -909,7 +909,7 @@ def script() -> str:
                 + (sub.display_mode === 'terminal'
                     ? 'threads-terminal' : '');
             html += '<li class="' + cls + '" '
-                  + wbActAttrs('threadsPushPathAction', {targetId: sub.thread_id}) + '>'
+                  + wbActAttrs('threadsPushPathTarget', {targetId: sub.thread_id}) + '>'
                   + '<div class="threads-subthread-meta">'
                   +   '<span class="threads-subthread-state">'
                   +     _esc(stateLabel) + '</span>'
@@ -1639,7 +1639,7 @@ def script() -> str:
     // Shared "navigate to a thread by id" action. Used both by the
     // singular-hoisted action <li> (data-target-id = host_thread_id)
     // and the sub-thread mini-card <li> (data-target-id = sub.thread_id).
-    window.wbAction('threadsPushPathAction', function (el) {
+    window.wbAction('threadsPushPathTarget', function (el) {
         threadsPushPath(el.dataset.targetId);
     });
 
