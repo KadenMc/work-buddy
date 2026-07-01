@@ -105,20 +105,45 @@ class TestRedirectActionEndpoint:
         assert events[0].data["superseded_event_id"] == body["superseded_event_id"]
         assert events[0].actor == ACTOR_USER
 
-    def test_empty_feedback_rejected(self, fresh_db, client):
+    def test_empty_feedback_allowed(self, fresh_db, client):
+        """A bare redirect (no typed feedback) is valid — a "try this
+        again", with the auto swap-context supplying the meaning. It
+        records an event with empty feedback and transitions."""
         t = _thread_with_pending_action({"kind": "standard", "name": "task_create"})
         resp = client.post(
             f"/api/threads/{t.thread_id}/redirect_action",
             data=json.dumps({"feedback": "   "}),
             content_type="application/json",
         )
-        assert resp.status_code == 400
-        assert "feedback is required" in (resp.get_json() or {}).get("error", "")
-        # No event recorded, state unchanged
-        assert not store.list_events(t.thread_id, kinds=[KIND_ACTION_REDIRECTED])
+        assert resp.status_code == 200, resp.get_json()
+        events = store.list_events(t.thread_id, kinds=[KIND_ACTION_REDIRECTED])
+        assert len(events) == 1
+        assert events[0].data["feedback"] == ""
         assert (
-            store.get_thread(t.thread_id).fsm_state == FSMState.AWAITING_CONFIRMATION
+            store.get_thread(t.thread_id).fsm_state == FSMState.AWAITING_INFERENCE
         )
+
+    def test_seeds_and_target_action_recorded(self, fresh_db, client):
+        """The switched-to action + partial fields the user filled ride
+        along on the redirect event for the inference runner to seed."""
+        t = _thread_with_pending_action({
+            "kind": "standard", "name": "journal_append_to_note",
+        })
+        resp = client.post(
+            f"/api/threads/{t.thread_id}/redirect_action",
+            data=json.dumps({
+                "feedback": "",
+                "params": {"note_path": "Areas/Mindfulness/Meditation.md"},
+                "target_action": "journal_append_to_note",
+            }),
+            content_type="application/json",
+        )
+        assert resp.status_code == 200, resp.get_json()
+        ev = store.list_events(t.thread_id, kinds=[KIND_ACTION_REDIRECTED])[0]
+        assert ev.data["seed_params"] == {
+            "note_path": "Areas/Mindfulness/Meditation.md",
+        }
+        assert ev.data["target_action"] == "journal_append_to_note"
 
     def test_no_optimistic_lock_conflict_after_feedback_event(
         self, fresh_db, client,
@@ -255,6 +280,64 @@ class TestRedirectFeedbackBlock:
             data={"feedback": ""},
         ))
         assert self._build(t) == ""
+
+    def test_target_action_and_seeds_surface(self, fresh_db):
+        """A switch-redirect (target action + partial fields, no typed
+        feedback) surfaces the target action and the kept values so the
+        agent proposes that action and fills only the gaps."""
+        t = _thread_with_pending_action({
+            "kind": "standard", "name": "journal_append_to_note",
+        })
+        store.append_event(ThreadEvent(
+            thread_id=t.thread_id,
+            kind=KIND_ACTION_REDIRECTED,
+            actor=ACTOR_USER,
+            data={
+                "feedback": "",
+                "seed_params": {"note_path": "Areas/M.md"},
+                "target_action": "journal_route_to_tasks",
+            },
+        ))
+        block = self._build(t)
+        assert block != ""
+        assert "journal_route_to_tasks" in block
+        assert "Areas/M.md" in block
+        assert "Keep these parameter values" in block
+
+    def test_seeds_without_feedback_not_skipped(self, fresh_db):
+        t = _thread_with_pending_action({"kind": "standard", "name": "x"})
+        store.append_event(ThreadEvent(
+            thread_id=t.thread_id,
+            kind=KIND_ACTION_REDIRECTED,
+            actor=ACTOR_USER,
+            data={"feedback": "", "seed_params": {"k": "v"}},
+        ))
+        assert self._build(t) != ""
+
+
+class TestActionCatalogRequiredMarking:
+    """The action catalog injected into the inference prompt marks
+    required params so the model fills them."""
+
+    def test_required_params_marked_with_star(self):
+        from work_buddy.threads.bootstrap import _maybe_format_action_catalog
+        from work_buddy.threads.enums import InferenceTarget
+        from work_buddy.threads.inference import TARGETS
+        schema = TARGETS[InferenceTarget.ACTION].output_schema
+        block = _maybe_format_action_catalog(schema)
+        # journal_append_to_note declares note_path as required.
+        assert "note_path*" in block
+        assert "REQUIRED parameter" in block
+
+    def test_runtime_bound_params_excluded(self):
+        from work_buddy.threads.bootstrap import _maybe_format_action_catalog
+        from work_buddy.threads.enums import InferenceTarget
+        from work_buddy.threads.inference import TARGETS
+        block = _maybe_format_action_catalog(
+            TARGETS[InferenceTarget.ACTION].output_schema)
+        # thread_id is executor-injected — the model must never be asked
+        # to propose it (it would hallucinate a wrong value).
+        assert "thread_id" not in block
 
 
 # ---------------------------------------------------------------------------

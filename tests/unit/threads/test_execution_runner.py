@@ -35,14 +35,16 @@ class TestBindRuntimeThreadId:
         )
         assert out["thread_id"] == t.thread_id
 
-    def test_does_not_overwrite_provided_thread_id(self):
+    def test_always_overrides_provided_thread_id(self):
+        # thread_id is runtime-bound: the host thread is authoritative, so
+        # a proposal-supplied (possibly LLM-hallucinated) value is replaced.
         t = models.Thread()
         entry = _entry(is_action=True, params={"thread_id": {}})
         out = execution_runner._bind_runtime_parameters(
             capability_name="journal_route_to_tasks",
-            thread=t, provided={"thread_id": "explicit"}, entry=entry,
+            thread=t, provided={"thread_id": "journal_backlog"}, entry=entry,
         )
-        assert out["thread_id"] == "explicit"
+        assert out["thread_id"] == t.thread_id
 
     def test_skips_when_thread_id_not_declared(self):
         # chrome_tab_* actions declare tab_ids, not thread_id — the

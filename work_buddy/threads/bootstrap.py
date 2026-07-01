@@ -261,16 +261,30 @@ def _maybe_format_action_catalog(schema: dict) -> str:
         )
     lines = ["Available Standard Actions (pick one of these by name "
              "for kind='standard'; otherwise pick improvised, "
-             "suggestion, or clarification):"]
+             "suggestion, or clarification). A '*' marks a REQUIRED "
+             "parameter you MUST fill in parameters_json:"]
     for tmpl in catalog:
         # Compact one-line description (truncate aggressively — the
         # full description is in the registry; the agent just needs
         # enough to match intent).
+        from work_buddy.threads.execution_runner import RUNTIME_BOUND_PARAMS
         desc = (tmpl.description or "").split(". ")[0][:160]
-        params = list(tmpl.parameters.keys())
-        param_list = ", ".join(params[:6]) if params else "(no params)"
-        if len(params) > 6:
-            param_list += ", ..."
+        # Runtime-bound params (thread_id, tab_ids) are injected by the
+        # executor — never ask the model to propose them.
+        params = {
+            n: i for n, i in (tmpl.parameters or {}).items()
+            if n not in RUNTIME_BOUND_PARAMS
+        }
+        if params:
+            shown = []
+            for pname, pinfo in list(params.items())[:6]:
+                required = isinstance(pinfo, dict) and pinfo.get("required")
+                shown.append(f"{pname}*" if required else pname)
+            param_list = ", ".join(shown)
+            if len(params) > 6:
+                param_list += ", ..."
+        else:
+            param_list = "(no params)"
         lines.append(f"- {tmpl.name}: {desc}")
         lines.append(f"    params: {param_list}")
     lines.append("")
@@ -328,8 +342,13 @@ def _build_redirect_feedback_block(thread) -> str:
         ):
             return ""
 
-        feedback = (latest_redirect.data or {}).get("feedback", "").strip()
-        if not feedback:
+        redirect_data = latest_redirect.data or {}
+        feedback = (redirect_data.get("feedback") or "").strip()
+        seed_params = redirect_data.get("seed_params") or {}
+        target_action = redirect_data.get("target_action")
+        # A redirect is meaningful with ANY of: steering feedback, seed
+        # params the user filled, or a switched-to target action.
+        if not feedback and not seed_params and not target_action:
             return ""
 
         prior_summary = ""
@@ -343,20 +362,57 @@ def _build_redirect_feedback_block(thread) -> str:
                 f"name={prior_name!r}, parameters={prior_params}\n"
             )
 
-        return (
-            "User redirect for this action — they asked for a different "
-            "proposal than the prior one.\n"
-            f"{prior_summary}"
-            f"User feedback: {feedback!r}\n"
-            "Re-propose the action accordingly. Keep the intent and "
-            "context unchanged; only the action proposal needs to "
-            "differ. If the feedback asks for a parameter tweak, "
-            "respect it; if it asks for a different action entirely, "
-            "pick one that better fits.\n\n"
-        )
+        parts = [
+            "User redirect for this action — re-propose it. Keep the "
+            "intent and context unchanged; only the action proposal "
+            "changes.\n",
+            prior_summary,
+        ]
+        if target_action:
+            parts.append(
+                f"Propose THIS action: {target_action!r} (the user "
+                "switched to it).\n"
+            )
+            missing = [
+                p for p in _required_params_for(target_action)
+                if p not in (seed_params or {})
+            ]
+            if missing:
+                parts.append(
+                    "Fill these still-missing REQUIRED parameters from the "
+                    f"thread context: {', '.join(missing)}.\n"
+                )
+        if seed_params:
+            parts.append(
+                "Keep these parameter values the user already filled "
+                f"(do not change them): {seed_params}\n"
+            )
+        if feedback:
+            parts.append(f"User feedback: {feedback!r}\n")
+        parts.append("\n")
+        return "".join(parts)
     except Exception as e:  # pragma: no cover — defensive
         logger.debug("redirect-feedback block build failed: %s", e)
         return ""
+
+
+def _required_params_for(capability_name: str) -> list[str]:
+    """Required parameter names for a capability, or ``[]`` if the name
+    is unknown or the registry can't be read."""
+    if not capability_name:
+        return []
+    try:
+        from work_buddy.mcp_server.registry import get_registry
+        from work_buddy.threads.execution_runner import RUNTIME_BOUND_PARAMS
+        entry = get_registry().get(capability_name)
+        params = getattr(entry, "parameters", None) or {}
+        return [
+            n for n, info in params.items()
+            if isinstance(info, dict) and info.get("required")
+            and n not in RUNTIME_BOUND_PARAMS
+        ]
+    except Exception:  # pragma: no cover — defensive
+        return []
 
 
 def _register_real_llm_runner() -> None:

@@ -1520,12 +1520,19 @@ def script() -> str:
         if (!params || typeof params !== "object") return "";
         const keys = Object.keys(params);
         if (keys.length === 0) return "";
-        const first = keys[0];
-        const v = params[first];
-        const text = (typeof v === "string" || typeof v === "number")
-            ? String(v) : JSON.stringify(v);
-        if (text.length > 90) return first + ": " + text.slice(0, 87) + "...";
-        return first + ": " + text;
+        // Surface the decision-critical values on the card itself (a note
+        // target, a task id) rather than hiding them behind Edit. Show up
+        // to three params, humanised, so the user can judge accept/reject
+        // without opening the editor.
+        const parts = [];
+        for (const k of keys.slice(0, 3)) {
+            const v = params[k];
+            const text = (typeof v === "string" || typeof v === "number")
+                ? String(v) : JSON.stringify(v);
+            const val = text.length > 60 ? text.slice(0, 57) + "..." : text;
+            parts.push(k.replace(/_/g, " ") + ": " + val);
+        }
+        return parts.join("  ·  ");
     }
 
     function _findById(thread, id) {

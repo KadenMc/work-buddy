@@ -37,6 +37,13 @@ def script() -> str:
             .replace(/>/g, "&gt;");
     }
 
+    // A JS string arg for an onclick/oninput attribute: single-quoted +
+    // HTML-escaped, so it never collides with the double-quoted attribute
+    // (JSON.stringify would emit double quotes and truncate the handler).
+    function _sq(v) {
+        return "'" + _esc(v) + "'";
+    }
+
     if (!window._actionRenderers) window._actionRenderers = {};
 
     window.registerActionRenderer = function (actionName, fn) {
@@ -201,7 +208,6 @@ def script() -> str:
             d => d.cardinality === "per_group",
         );
         if (perGroup.length === 0) return '';
-        const tid = JSON.stringify(thread.thread_id);
         let html = '<div class="threads-action-switcher">';
         html += '<div class="threads-section-label">Switch action</div>';
         html += '<div class="threads-action-switcher-options">';
@@ -210,9 +216,9 @@ def script() -> str:
             html += '<button class="threads-action-switcher-option'
                 +     (isCurrent ? ' current' : '') + '" '
                 +     'title="' + _esc(d.description || '') + '" '
-                +     'onclick="threadsGroupSetActionProposal('
-                +       tid + ', '
-                +       JSON.stringify(d.capability_name) + ')">'
+                +     'onclick="threadsSetActionDraft('
+                +       _sq(thread.thread_id) + ', '
+                +       _sq(d.capability_name) + ')">'
                 +     '<span class="label">' + _esc(d.label) + '</span>'
                 + '</button>';
         }
@@ -237,6 +243,13 @@ def script() -> str:
     };
 
     window.renderActionInRightPane = function (thread, action) {
+        // An uncommitted action-switch draft takes over the right pane:
+        // blank required fields to fill, then Approve (run) or hand it
+        // back for refinement (Redirect). Nothing is persisted until then.
+        if (window._draftActionFor
+            && window._draftActionFor(thread.thread_id)) {
+            return window.renderActionDraft(thread, action);
+        }
         const fn = window._actionRenderers[action.name];
         const opts = {
             thread: thread,
@@ -246,9 +259,9 @@ def script() -> str:
             // attribute string that captures edits via the
             // global threadCardEditActionParam helper.
             paramHandler: function (paramName) {
-                const tid = JSON.stringify(thread.thread_id);
-                const aid = JSON.stringify(action.id);
-                const pname = JSON.stringify(paramName);
+                const tid = _sq(thread.thread_id);
+                const aid = _sq(action.id);
+                const pname = _sq(paramName);
                 return 'oninput="threadCardEditActionParam('
                        + tid + ', ' + aid + ', ' + pname + ', this.value)"'
                        + ' onchange="threadCardEditActionParam('
@@ -259,6 +272,280 @@ def script() -> str:
             return fn(action, opts);
         }
         return window.renderActionGeneric(action, opts);
+    };
+
+    // ===== Action-switch DRAFT (fill-or-refine resolution) ============
+    // Switching an action opens an uncommitted client draft with blank
+    // required fields. Approve commits + runs it deterministically; the
+    // "Issue? Hand it back for refinement" group sends the switch + the
+    // fields you filled + an optional note to the agent (Redirect).
+    // Nothing hits the server until Approve or Redirect. The draft lives
+    // in _groupState (not the thread-detail cache), so an SSE refresh
+    // re-renders without wiping it.
+
+    function _draftStore() {
+        if (!window._groupState) window._groupState = {};
+        if (!window._groupState.draftByThread) {
+            window._groupState.draftByThread = {};
+        }
+        return window._groupState.draftByThread;
+    }
+    let _draftThreadRef = {};
+
+    window._draftActionFor = function (threadId) {
+        return _draftStore()[threadId] || null;
+    };
+    function _descriptorFor(thread, capabilityName) {
+        const parentId = thread.parent_id;
+        const opts = (window._groupState
+            && window._groupState.actionOptionsByUmbrella
+            && window._groupState.actionOptionsByUmbrella[parentId]) || [];
+        for (const d of opts) {
+            if (d.capability_name === capabilityName) return d;
+        }
+        return null;
+    }
+    function _humanize(name) {
+        return String(name || "").replace(/_/g, " ")
+            .replace(/\bid\b/gi, "ID");
+    }
+    function _draftRequiredFilled(threadId) {
+        const d = window._draftActionFor(threadId);
+        const thread = _draftThreadRef[threadId];
+        if (!d || !thread) return false;
+        const desc = _descriptorFor(thread, d.capability_name);
+        const schema = (desc && desc.parameters) || [];
+        for (const p of schema) {
+            if (p.required && !String(d.params[p.name] || "").trim()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    window.threadsSetActionDraft = function (threadId, capabilityName) {
+        _draftStore()[threadId] = {
+            capability_name: capabilityName, params: {}, message: "",
+        };
+        if (typeof window._renderActiveThread === "function") {
+            window._renderActiveThread();
+        }
+    };
+    window.threadsCancelDraft = function (threadId) {
+        delete _draftStore()[threadId];
+        if (typeof window._renderActiveThread === "function") {
+            window._renderActiveThread();
+        }
+    };
+    // Reusable, schema-driven parameter fields (the same shape the command
+    // palette renders: one control per param by type, required marker,
+    // description hint). Fields carry data-param/data-ptype and NO inline
+    // handlers — values are read from the DOM on demand, which sidesteps
+    // the onclick/oninput attribute-quoting hazard entirely. Required
+    // params show at the top; optional ones collapse behind a native
+    // <details> "More options" so defaulted plumbing stays out of the way.
+    window.wbRenderParamFields = function (params, opts) {
+        opts = opts || {};
+        const values = opts.values || {};
+        function _control(p) {
+            const v = values[p.name] != null ? String(values[p.name]) : "";
+            if (p.type === "bool") {
+                return '<select data-param="' + _esc(p.name) + '" '
+                    + 'data-ptype="bool" class="threads-input">'
+                    + '<option value=""' + (v === "" ? " selected" : "") + '>—</option>'
+                    + '<option value="true"' + (v === "true" ? " selected" : "") + '>true</option>'
+                    + '<option value="false"' + (v === "false" ? " selected" : "") + '>false</option>'
+                    + '</select>';
+            }
+            return '<input type="text" class="threads-input" '
+                + 'data-param="' + _esc(p.name) + '" '
+                + 'data-ptype="' + _esc(p.type || "str") + '" '
+                + 'value="' + _esc(v) + '" '
+                + 'placeholder="' + _esc(p.description || p.type || "") + '">';
+        }
+        function _field(p) {
+            return '<div class="threads-draft-field">'
+                + '<label>' + _humanize(p.name)
+                +   (p.required ? ' <span class="req">*</span>' : '')
+                + '</label>' + _control(p) + '</div>';
+        }
+        const req = (params || []).filter(p => p.required);
+        const opt = (params || []).filter(p => !p.required);
+        let html = req.map(_field).join("");
+        if (opt.length) {
+            html += '<details class="threads-draft-more">'
+                + '<summary>Optional parameters</summary>'
+                + opt.map(_field).join("") + '</details>';
+        }
+        return html;
+    };
+
+    // Read + type-coerce the param field values from a draft's DOM.
+    function _coerceParams(threadId) {
+        const d = window._draftActionFor(threadId);
+        const thread = _draftThreadRef[threadId];
+        const desc = (d && thread)
+            ? _descriptorFor(thread, d.capability_name) : null;
+        const byName = {};
+        for (const p of ((desc && desc.parameters) || [])) byName[p.name] = p;
+        const raw = (d && d.params) || {};
+        const out = {};
+        for (const k in raw) {
+            let v = raw[k];
+            if (v == null || String(v).trim() === "") continue;
+            const t = (byName[k] || {}).type;
+            if (t === "int") v = parseInt(v, 10);
+            else if (t === "float") v = parseFloat(v);
+            else if (t === "bool") v = (String(v) === "true");
+            out[k] = v;
+        }
+        return out;
+    }
+
+    // Delegated input handler — one listener for every draft's fields +
+    // message, instead of per-field inline handlers.
+    if (!window._threadsDraftInputWired) {
+        window._threadsDraftInputWired = true;
+        document.addEventListener('input', function (ev) {
+            const el = ev.target;
+            const root = el && el.closest && el.closest('.threads-draft');
+            if (!root) return;
+            const threadId = root.getAttribute('data-thread-id');
+            const d = window._draftActionFor(threadId);
+            if (!d) return;
+            if (el.dataset && el.dataset.param != null) {
+                d.params[el.dataset.param] = el.value;
+                const btn = root.querySelector('.threads-draft-approve');
+                const ok = _draftRequiredFilled(threadId);
+                if (btn) { btn.disabled = !ok; btn.classList.toggle('ready', ok); }
+            } else if (el.classList
+                       && el.classList.contains('threads-draft-message')) {
+                d.message = el.value;
+                const w = root.querySelector('.threads-draft-warn');
+                if (w) w.remove();
+                const g = root.querySelector('.threads-draft-refine');
+                if (g) g.classList.remove('warn');
+            }
+        });
+    }
+
+    window.renderActionDraft = function (thread, action) {
+        _draftThreadRef[thread.thread_id] = thread;
+        const d = window._draftActionFor(thread.thread_id);
+        const desc = _descriptorFor(thread, d.capability_name);
+        const tid = _sq(thread.thread_id);
+        const toLabel = (desc && desc.label) || d.capability_name;
+        const schema = (desc && desc.parameters) || [];
+        const ready = _draftRequiredFilled(thread.thread_id);
+
+        let html = '<div class="threads-draft" data-thread-id="'
+            + _esc(thread.thread_id) + '">';
+        html += '<div class="threads-draft-banner">'
+            + '<i class="ti ti-arrows-exchange" aria-hidden="true"></i> '
+            + 'Switching to <strong>' + _esc(toLabel) + '</strong> — not '
+            + 'applied until you approve or hand it back. '
+            + '<button class="threads-draft-cancel" '
+            +   'onclick="threadsCancelDraft(' + tid + ')">cancel</button>'
+            + '</div>';
+
+        html += '<div class="threads-draft-fields">'
+            + window.wbRenderParamFields(schema, { values: d.params })
+            + '</div>';
+
+        html += '<div class="threads-draft-approve-row">'
+            + '<span class="threads-draft-hint" '
+            +   'title="Runs it exactly as filled. No agent, and the note '
+            +   'below is not read.">Runs it as filled <i class="ti '
+            +   'ti-info-circle" aria-hidden="true"></i></span>'
+            + '<button class="threads-draft-approve' + (ready ? ' ready' : '')
+            +   '" ' + (ready ? '' : 'disabled ')
+            +   'onclick="threadsApproveDraft(' + tid + ')">Approve</button>'
+            + '</div>';
+
+        html += '<div class="threads-draft-refine">'
+            + '<div class="threads-draft-refine-title">'
+            +   '<i class="ti ti-arrow-back-up" aria-hidden="true"></i> '
+            +   'Issue? Hand it back for refinement</div>'
+            + '<textarea class="threads-draft-message" rows="2" '
+            +   'placeholder="Optional note. e.g. use the mindfulness log, '
+            +   'not the meditation note">'
+            +   _esc(d.message || "") + '</textarea>'
+            + '<div class="threads-draft-refine-row">'
+            +   '<span class="threads-draft-hint" title="Sends the switch, '
+            +     'whatever you filled in, and this note. The agent '
+            +     'refines it and you review before anything runs.">Sends '
+            +     'to the agent <i class="ti ti-info-circle" '
+            +     'aria-hidden="true"></i></span>'
+            +   '<button class="threads-draft-redirect" '
+            +     'onclick="threadsRedirectDraft(' + tid + ')">Redirect</button>'
+            + '</div></div>';
+
+        html += '</div>';
+        return html;
+    };
+
+    function _clearDraftAndRerender(threadId) {
+        delete _draftStore()[threadId];
+        try {
+            if (typeof window.invalidateThreadCache === 'function') {
+                window.invalidateThreadCache(threadId);
+            }
+        } catch (e) { /* best-effort */ }
+        if (typeof window._renderActiveThread === 'function') {
+            window._renderActiveThread();
+        }
+    }
+
+    window.threadsApproveDraft = function (threadId) {
+        const d = window._draftActionFor(threadId);
+        if (!d || !_draftRequiredFilled(threadId)) return;
+        if (String(d.message || "").trim()) {
+            // Guard: the refinement note only sends with Redirect. Warn
+            // rather than silently drop it (the "agent isn't listening"
+            // failure).
+            const g = document.querySelector(
+                '.threads-draft[data-thread-id="' + threadId
+                + '"] .threads-draft-refine');
+            if (g && !g.querySelector('.threads-draft-warn')) {
+                g.classList.add('warn');
+                const w = document.createElement('div');
+                w.className = 'threads-draft-warn';
+                w.textContent = 'Your note only sends with Redirect. '
+                    + 'Approve ignores it — clear the note, or hand it '
+                    + 'back to send it.';
+                g.appendChild(w);
+            }
+            return;
+        }
+        fetch('/api/threads/' + encodeURIComponent(threadId) + '/accept', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: {
+                capability_name: d.capability_name,
+                parameters: _coerceParams(threadId),
+            } }),
+        }).then(r => r.json().then(b => ({ ok: r.ok, body: b })))
+          .then(({ ok, body }) => {
+            if (!ok) { window.alert('Approve failed: ' + (body.error || '')); return; }
+            _clearDraftAndRerender(threadId);
+          }).catch(e => window.alert('Approve failed: ' + e));
+    };
+
+    window.threadsRedirectDraft = function (threadId) {
+        const d = window._draftActionFor(threadId);
+        if (!d) return;
+        fetch('/api/threads/' + encodeURIComponent(threadId)
+              + '/redirect_action', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                target_action: d.capability_name,
+                params: _coerceParams(threadId),
+                feedback: String(d.message || ''),
+            }),
+        }).then(r => r.json().then(b => ({ ok: r.ok, body: b })))
+          .then(({ ok, body }) => {
+            if (!ok) { window.alert('Redirect failed: ' + (body.error || '')); return; }
+            _clearDraftAndRerender(threadId);
+          }).catch(e => window.alert('Redirect failed: ' + e));
     };
 
     // ----- Specialized renderers -------------------------------------
@@ -615,4 +902,121 @@ def styles() -> str:
 .threads-action-switcher-option.current::after {
     content: " ✓";
 }
+
+/* Action-switch draft editor (fill-or-refine). */
+.threads-draft {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+.threads-draft-banner {
+    font-size: 12px;
+    background: var(--bg-warning, #3a3320);
+    color: var(--text-warning, #e0c060);
+    border-radius: 6px;
+    padding: 8px 10px;
+    line-height: 1.5;
+}
+.threads-draft-banner strong { color: var(--text, #ddd); }
+.threads-draft-cancel {
+    background: transparent;
+    border: none;
+    color: var(--text-muted, #888);
+    cursor: pointer;
+    text-decoration: underline;
+    font-size: 12px;
+    padding: 0 2px;
+}
+.threads-draft-fields { display: flex; flex-direction: column; gap: 10px; }
+.threads-draft-approve-row,
+.threads-draft-refine-row {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+}
+.threads-draft-hint {
+    font-size: 11px;
+    color: var(--text-muted, #888);
+    margin-right: auto;
+    cursor: help;
+}
+.threads-draft-approve {
+    border: 1px solid var(--border, #333);
+    background: transparent;
+    color: var(--text-muted, #888);
+    border-radius: 4px;
+    padding: 6px 16px;
+    font-size: 13px;
+    cursor: not-allowed;
+}
+.threads-draft-approve.ready {
+    background: var(--accent, #4a7fc1);
+    border-color: var(--accent, #4a7fc1);
+    color: #fff;
+    cursor: pointer;
+}
+.threads-draft-refine {
+    border: 1px solid var(--border, #333);
+    border-left: 2px solid var(--accent-2, #8f7fdd);
+    border-radius: 0 6px 6px 0;
+    padding: 10px 12px;
+    background: var(--bg-secondary, #1a1a1a);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.threads-draft-refine-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--accent-2, #8f7fdd);
+}
+.threads-draft-message {
+    width: 100%;
+    font-size: 13px;
+    resize: vertical;
+    background: var(--bg, #0a0a0a);
+    color: var(--text, #ddd);
+    border: 1px solid var(--border, #333);
+    border-radius: 4px;
+    padding: 6px 10px;
+}
+.threads-draft-redirect {
+    border: 1px solid var(--accent-2, #8f7fdd);
+    background: transparent;
+    color: var(--accent-2, #8f7fdd);
+    border-radius: 4px;
+    padding: 6px 16px;
+    font-size: 13px;
+    cursor: pointer;
+}
+.threads-draft-refine.warn { border-color: var(--danger, #c0504d); }
+.threads-draft-warn {
+    font-size: 12px;
+    color: var(--danger-text, #f0a0a0);
+    background: var(--bg-danger, #3a2020);
+    border-radius: 4px;
+    padding: 8px 10px;
+}
+.threads-draft-field { display: flex; flex-direction: column; gap: 4px; }
+.threads-draft-field label {
+    font-size: 12px;
+    color: var(--text-muted, #888);
+}
+.threads-draft-field .req { color: var(--danger, #c0504d); }
+.threads-draft-more {
+    border: 1px solid var(--border, #333);
+    border-radius: 4px;
+    padding: 6px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.threads-draft-more > summary {
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text-muted, #888);
+    list-style: revert;
+}
+.threads-draft-more[open] > summary { margin-bottom: 4px; }
 """

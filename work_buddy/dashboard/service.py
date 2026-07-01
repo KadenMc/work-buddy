@@ -279,20 +279,6 @@ def api_registry_list():
 
     reg = get_registry()
 
-    def _project_schema(raw: dict[str, dict[str, Any]] | None) -> list[dict[str, Any]]:
-        """Flatten a {name: {type, description, required}} schema for the UI."""
-        out: list[dict[str, Any]] = []
-        for pname, pinfo in (raw or {}).items():
-            if not isinstance(pinfo, dict):
-                continue
-            out.append({
-                "name": pname,
-                "type": pinfo.get("type", ""),
-                "description": pinfo.get("description", ""),
-                "required": bool(pinfo.get("required", False)),
-            })
-        return out
-
     capabilities = []
     workflows = []
     for name, entry in sorted(reg.items()):
@@ -305,14 +291,14 @@ def api_registry_list():
             workflows.append({
                 "name": name,
                 "description": desc,
-                "parameters": _project_schema(entry.params_schema),
+                "parameters": _project_param_schema(entry.params_schema),
                 "slash_command": slash,
             })
         elif isinstance(entry, Capability):
             capabilities.append({
                 "name": name,
                 "description": desc,
-                "parameters": _project_schema(entry.parameters),
+                "parameters": _project_param_schema(entry.parameters),
                 "slash_command": slash,
             })
     return jsonify({"capabilities": capabilities, "workflows": workflows})
@@ -3246,6 +3232,115 @@ _ACCEPT_TRIGGER_BY_STATE = {
 }
 
 
+def _write_action_proposal_event(
+    thread_id: str, thread, *, payload: dict, confidence: float,
+    cleared: bool = False,
+) -> None:
+    """Append a synthetic user-override ``action_inferred`` event.
+
+    Shared by ``set_action_proposal`` (chip override / clear) and the
+    accept path (commit the user's filled / switched action before
+    execution). The caller bumps ``parent_event_id`` and handles any FSM
+    promotion; this only writes the event using the thread's current
+    ``parent_event_id``.
+    """
+    from work_buddy.threads import store
+    from work_buddy.threads.events import (
+        ACTOR_USER, KIND_ACTION_INFERRED, ThreadEvent,
+    )
+    data = {
+        "target": "action",
+        "payload": payload,
+        "confidence": float(confidence),
+        "synthetic": True,
+        "from_user_override": True,
+    }
+    if cleared:
+        data["cleared"] = True
+    store.append_event(ThreadEvent(
+        thread_id=thread_id,
+        kind=KIND_ACTION_INFERRED,
+        actor=ACTOR_USER,
+        data=data,
+        parent_event_id=thread.parent_event_id,
+    ))
+
+
+def _current_action_payload(thread_id: str) -> dict | None:
+    """The latest non-cleared ``action_inferred`` payload for a thread,
+    or ``None``. Mirrors what the executor reads at dispatch."""
+    from work_buddy.threads import store
+    from work_buddy.threads.events import KIND_ACTION_INFERRED
+    for e in reversed(store.list_events(thread_id=thread_id)):
+        if e.kind != KIND_ACTION_INFERRED:
+            continue
+        if e.data.get("cleared"):
+            continue
+        payload = e.data.get("payload") or {}
+        if payload.get("name"):
+            return payload
+    return None
+
+
+def _apply_action_edits_for_execute(thread_id: str, thread) -> None:
+    """Fold user-supplied action edits into a fresh ``action_inferred``
+    event before an Approve commits to execution, so the executor
+    dispatches the action the user actually approved.
+
+    Honors two body shapes:
+      - ``action``: ``{capability_name, parameters}`` — the resolved
+        action to run (a switch, or the current action with filled
+        params). The canonical shape the resolution UI sends.
+      - ``action_overrides``: ``{action_id: {param: value}}`` — per-field
+        edits from the right-pane editor, merged into the current
+        proposal's parameters.
+
+    No-op (a plain Approve) when neither is present. When the action is
+    unchanged, the current proposal's risk metadata is preserved so a
+    param edit can't silently downgrade the consent posture.
+    """
+    from work_buddy.threads import store
+    body = request.get_json(silent=True) or {}
+    override = body.get("action") if isinstance(body.get("action"), dict) else None
+    overrides_map = body.get("action_overrides")
+    current = _current_action_payload(thread_id)
+
+    payload: dict | None = None
+    if override and override.get("capability_name"):
+        name = str(override["capability_name"])
+        params = dict(override.get("parameters") or {})
+        if current and current.get("name") == name:
+            payload = {**current, "name": name, "parameters": params}
+        else:
+            payload = {
+                "kind": "standard",
+                "name": name,
+                "parameters": params,
+                "rationale": override.get("rationale")
+                or (current or {}).get("rationale"),
+                "irreversibility": "low",
+                "regret_potential": "low",
+                "risk_amplifier": False,
+            }
+    elif isinstance(overrides_map, dict) and overrides_map and current:
+        merged = dict(current.get("parameters") or {})
+        for _aid, kv in overrides_map.items():
+            if isinstance(kv, dict):
+                merged.update(kv)
+        if merged != (current.get("parameters") or {}):
+            payload = {**current, "parameters": merged}
+
+    if payload is None:
+        return  # plain Approve; nothing to fold in
+
+    _write_action_proposal_event(
+        thread_id, thread, payload=payload, confidence=1.0,
+    )
+    store.update_thread_state(
+        thread_id, parent_event_id=store.latest_event_id(thread_id),
+    )
+
+
 @app.post("/api/threads/<thread_id>/accept")
 def api_thread_accept(thread_id: str):
     """Smart accept: dispatches the right trigger based on FSM state.
@@ -3267,6 +3362,10 @@ def api_thread_accept(thread_id: str):
             return jsonify({
                 "error": f"Accept not valid in state {thread.fsm_state.value!r}",
             }), 400
+        # Approve commits the user's resolved action: fold any filled /
+        # switched params into a fresh action_inferred before execution.
+        if trigger == "execute":
+            _apply_action_edits_for_execute(thread_id, thread)
         return _post_thread_action(thread_id, trigger=trigger)
     except Exception as exc:
         logger.exception("thread accept failed for %s: %s", thread_id, exc)
@@ -3339,30 +3438,36 @@ def api_thread_redirect(thread_id: str):
 
 @app.post("/api/threads/<thread_id>/redirect_action")
 def api_thread_redirect_action(thread_id: str):
-    """Per-action scoped redirect on a singular umbrella's hoisted action.
+    """Hand an action back to the agent for refinement, on any thread.
 
-    Body: ``{"feedback": "<user-supplied redirect feedback>"}``
+    Body (all optional)::
 
-    Re-infers JUST the action layer for this child thread, without
-    rerunning intent / context inference. The prior ``action_inferred``
-    event stays in history; ``render._latest()`` surfaces the newest
-    one as the active proposal.
+        {
+          "feedback": "<free-text steering note>",
+          "params": {...},              # seeds: fields the user filled
+          "target_action": "<capability_name>"   # the switched-to action
+        }
+
+    Re-infers JUST the action layer, without rerunning intent / context
+    inference. The prior ``action_inferred`` event stays in history;
+    ``render._latest()`` surfaces the newest as the active proposal.
 
     Path: AWAITING_CONFIRMATION → AWAITING_INFERENCE (TRIG_REDIRECTED,
     data carries ``target='action'`` so the inference worker enqueues
-    only the action target). The feedback is recorded as a
-    ``KIND_ACTION_REDIRECTED`` event; the inference runner picks it up
-    when building the user message.
+    only the action target). Feedback is optional — a bare redirect is a
+    valid "try this again". The feedback, seed params, and target action
+    are recorded on a ``KIND_ACTION_REDIRECTED`` event; the inference
+    runner reads them so it keeps what the user filled and completes only
+    the gaps.
     """
     blocked = _reject_read_only()
     if blocked:
         return blocked
     payload = request.get_json(silent=True) or {}
     feedback = (payload.get("feedback") or "").strip()
-    if not feedback:
-        return jsonify({
-            "error": "feedback is required for per-action redirect",
-        }), 400
+    seed_params = payload.get("params")
+    seed_params = dict(seed_params) if isinstance(seed_params, dict) else {}
+    target_action = (payload.get("target_action") or "").strip() or None
     try:
         from work_buddy.threads import engine, store
         from work_buddy.threads.events import (
@@ -3380,17 +3485,24 @@ def api_thread_redirect_action(thread_id: str):
         events = store.list_events(thread_id, kinds=[KIND_ACTION_INFERRED])
         superseded_event_id = events[-1].id if events else None
 
-        # Record the user redirect with feedback BEFORE the transition,
-        # so the feedback event is in the log when the inference worker
-        # builds the prompt.
+        # Record the user redirect BEFORE the transition, so it's in the
+        # log when the inference worker builds the prompt. Seeds (the
+        # params the user filled) + target_action (the switched-to
+        # capability) let re-inference keep what the user provided and
+        # fill only the missing required fields.
+        redirect_data = {
+            "feedback": feedback,
+            "superseded_event_id": superseded_event_id,
+        }
+        if seed_params:
+            redirect_data["seed_params"] = seed_params
+        if target_action:
+            redirect_data["target_action"] = target_action
         store.append_event(ThreadEvent(
             thread_id=thread_id,
             kind=KIND_ACTION_REDIRECTED,
             actor=ACTOR_USER,
-            data={
-                "feedback": feedback,
-                "superseded_event_id": superseded_event_id,
-            },
+            data=redirect_data,
         ))
 
         # ``append_event`` writes the event row but does NOT bump the
@@ -3610,9 +3722,7 @@ def api_thread_set_action_proposal(thread_id: str):
     capability_name = body.get("capability_name")
     try:
         from work_buddy.threads import store
-        from work_buddy.threads.events import (
-            ACTOR_USER, KIND_ACTION_INFERRED, ThreadEvent,
-        )
+        from work_buddy.threads.events import ThreadEvent
         thread = store.get_thread(thread_id)
         if thread is None:
             return jsonify({"error": "thread not found"}), 404
@@ -3622,39 +3732,25 @@ def api_thread_set_action_proposal(thread_id: str):
             # synthetic.cleared = True. The card renderer treats
             # empty name as "no proposed action" without needing a
             # separate event kind.
-            payload = {"kind": "standard", "name": ""}
-            data = {
-                "target": "action",
-                "payload": payload,
-                "confidence": 0.0,
-                "synthetic": True,
-                "from_user_override": True,
-                "cleared": True,
-            }
+            _write_action_proposal_event(
+                thread_id, thread,
+                payload={"kind": "standard", "name": ""},
+                confidence=0.0, cleared=True,
+            )
         else:
-            payload = {
-                "kind": "standard",
-                "name": str(capability_name),
-                "parameters": dict(body.get("parameters") or {}),
-                "rationale": body.get("rationale"),
-                "irreversibility": "low",
-                "regret_potential": "low",
-                "risk_amplifier": False,
-            }
-            data = {
-                "target": "action",
-                "payload": payload,
-                "confidence": float(body.get("confidence") or 1.0),
-                "synthetic": True,
-                "from_user_override": True,
-            }
-        store.append_event(ThreadEvent(
-            thread_id=thread_id,
-            kind=KIND_ACTION_INFERRED,
-            actor=ACTOR_USER,
-            data=data,
-            parent_event_id=thread.parent_event_id,
-        ))
+            _write_action_proposal_event(
+                thread_id, thread,
+                payload={
+                    "kind": "standard",
+                    "name": str(capability_name),
+                    "parameters": dict(body.get("parameters") or {}),
+                    "rationale": body.get("rationale"),
+                    "irreversibility": "low",
+                    "regret_potential": "low",
+                    "risk_amplifier": False,
+                },
+                confidence=float(body.get("confidence") or 1.0),
+            )
         # If the thread was stuck in AWAITING_INFERENCE (e.g. a
         # pipeline-spawned child whose worker hasn't picked it up
         # yet), the user picking an action via the chip is itself a
@@ -3902,6 +3998,45 @@ def api_thread_groups(umbrella_id: str):
         return jsonify({"groups": [], "error": str(exc)}), 500
 
 
+def _project_param_schema(raw) -> list[dict[str, Any]]:
+    """Flatten a ``{name: {type, description, required}}`` params schema
+    into an ordered ``[{name, type, description, required}]`` list for the
+    frontend."""
+    out: list[dict[str, Any]] = []
+    for pname, pinfo in (raw or {}).items():
+        if not isinstance(pinfo, dict):
+            continue
+        out.append({
+            "name": pname,
+            "type": pinfo.get("type", ""),
+            "description": pinfo.get("description", ""),
+            "required": bool(pinfo.get("required", False)),
+        })
+    return out
+
+
+def _attach_param_schemas(descriptors: list[dict]) -> list[dict]:
+    """Add each action descriptor's parameter schema (from the registry)
+    so the resolution UI can render blank required fields and gate Approve
+    on the required ones. Unknown capabilities get an empty schema.
+
+    Runtime-bound params (``thread_id``, ``tab_ids``) are excluded — the
+    executor injects them, so the user must not see them as fields.
+    """
+    from work_buddy.mcp_server.registry import get_registry
+    from work_buddy.threads.execution_runner import RUNTIME_BOUND_PARAMS
+    reg = get_registry()
+    for d in descriptors:
+        entry = reg.get(d.get("capability_name"))
+        schema = _project_param_schema(
+            getattr(entry, "parameters", None) if entry is not None else None
+        )
+        d["parameters"] = [
+            p for p in schema if p["name"] not in RUNTIME_BOUND_PARAMS
+        ]
+    return descriptors
+
+
 def _resolve_action_library_for_thread(thread) -> tuple[list[dict], str | None]:
     """Resolve a thread's source name and merge per-source + universal
     actions into a single ordered descriptor list for the frontend.
@@ -3970,6 +4105,7 @@ def api_thread_action_options(thread_id: str):
         action_options, source_name = _resolve_action_library_for_thread(
             thread,
         )
+        _attach_param_schemas(action_options)
         return jsonify({
             "thread_id": thread_id,
             "source": source_name,
