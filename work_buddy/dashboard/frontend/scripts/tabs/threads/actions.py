@@ -37,6 +37,13 @@ def script() -> str:
             .replace(/>/g, "&gt;");
     }
 
+    // A JS string arg for an onclick/oninput attribute: single-quoted +
+    // HTML-escaped, so it never collides with the double-quoted attribute
+    // (JSON.stringify would emit double quotes and truncate the handler).
+    function _sq(v) {
+        return "'" + _esc(v) + "'";
+    }
+
     if (!window._actionRenderers) window._actionRenderers = {};
 
     window.registerActionRenderer = function (actionName, fn) {
@@ -201,7 +208,6 @@ def script() -> str:
             d => d.cardinality === "per_group",
         );
         if (perGroup.length === 0) return '';
-        const tid = JSON.stringify(thread.thread_id);
         let html = '<div class="threads-action-switcher">';
         html += '<div class="threads-section-label">Switch action</div>';
         html += '<div class="threads-action-switcher-options">';
@@ -211,8 +217,8 @@ def script() -> str:
                 +     (isCurrent ? ' current' : '') + '" '
                 +     'title="' + _esc(d.description || '') + '" '
                 +     'onclick="threadsSetActionDraft('
-                +       tid + ', '
-                +       JSON.stringify(d.capability_name) + ')">'
+                +       _sq(thread.thread_id) + ', '
+                +       _sq(d.capability_name) + ')">'
                 +     '<span class="label">' + _esc(d.label) + '</span>'
                 + '</button>';
         }
@@ -253,9 +259,9 @@ def script() -> str:
             // attribute string that captures edits via the
             // global threadCardEditActionParam helper.
             paramHandler: function (paramName) {
-                const tid = JSON.stringify(thread.thread_id);
-                const aid = JSON.stringify(action.id);
-                const pname = JSON.stringify(paramName);
+                const tid = _sq(thread.thread_id);
+                const aid = _sq(action.id);
+                const pname = _sq(paramName);
                 return 'oninput="threadCardEditActionParam('
                        + tid + ', ' + aid + ', ' + pname + ', this.value)"'
                        + ' onchange="threadCardEditActionParam('
@@ -361,7 +367,7 @@ def script() -> str:
         _draftThreadRef[thread.thread_id] = thread;
         const d = window._draftActionFor(thread.thread_id);
         const desc = _descriptorFor(thread, d.capability_name);
-        const tid = JSON.stringify(thread.thread_id);
+        const tid = _sq(thread.thread_id);
         const toLabel = (desc && desc.label) || d.capability_name;
         const schema = (desc && desc.parameters) || [];
         const required = schema.filter(p => p.required);
@@ -385,7 +391,7 @@ def script() -> str:
                 + 'value="' + _esc(val) + '" '
                 + 'placeholder="' + _esc(p.description || "") + '" '
                 + 'oninput="threadsDraftEditParam(' + tid + ', '
-                +   JSON.stringify(p.name) + ', this.value)">');
+                +   _sq(p.name) + ', this.value)">');
         }
         html += '</div>';
 
