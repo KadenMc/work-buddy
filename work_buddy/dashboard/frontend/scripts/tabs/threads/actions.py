@@ -374,7 +374,7 @@ def script() -> str:
         let html = req.map(_field).join("");
         if (opt.length) {
             html += '<details class="threads-draft-more">'
-                + '<summary>More options</summary>'
+                + '<summary>Optional parameters</summary>'
                 + opt.map(_field).join("") + '</details>';
         }
         return html;
