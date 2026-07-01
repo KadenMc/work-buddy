@@ -334,8 +334,8 @@ def script() -> str:
             html += '</div>';
         }
         html += '<div class="cp-param-actions">'
-            + '<button class="cp-btn-cancel" onclick="cpParamBack()">Back</button>'
-            + '<button class="cp-btn-run" onclick="cpParamSubmit()">Run</button>'
+            + '<button class="cp-btn-cancel" ' + wbActAttrs('cpParamBack', {}) + '>Back</button>'
+            + '<button class="cp-btn-run" ' + wbActAttrs('cpParamSubmit', {}) + '>Run</button>'
             + '</div>';
         paramForm.innerHTML = html;
 
@@ -444,6 +444,13 @@ def script() -> str:
             const next = (clicked === _cpProviderFilter && clicked !== 'all') ? 'all' : clicked;
             _cpSetProviderFilter(next);
         });
+    });
+
+    window.wbAction('cpParamBack', function(el) {
+        cpParamBack();
+    });
+    window.wbAction('cpParamSubmit', function(el) {
+        cpParamSubmit();
     });
 })();
 """

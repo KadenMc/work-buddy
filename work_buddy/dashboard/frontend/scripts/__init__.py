@@ -41,6 +41,7 @@ from .core import (
     page,
     pager,
     palette,
+    static_actions,
     workflows,
 )
 from .surfaces import resolution, triage
@@ -103,6 +104,10 @@ SCRIPTS = [
     # After helpers (uses escapeHtml), before page (init at load). Declares
     # no module-scope let/const — page-LAST safe.
     delegation.script,
+    # static_actions: wbAction adapters for html.py's page-skeleton handlers.
+    # After delegation; adapter bodies resolve their target globals lazily at
+    # event time, so its position relative to the tab modules does not matter.
+    static_actions.script,
     card_registry.script,
     card_obsidian_bridge.script,
     card_event_log.script,

@@ -260,8 +260,8 @@ registerViewRenderer('generic', async function(container, viewId, payload) {
 
     if (respType === 'boolean') {
         html += '<div class="nb-btn-group stretch">';
-        html += '<button class="nb-btn nb-btn-approve" onclick="submitGenericResponse(&#39;'+viewId+'&#39;,&#39;yes&#39;)">Yes</button>';
-        html += '<button class="nb-btn nb-btn-deny" onclick="submitGenericResponse(&#39;'+viewId+'&#39;,&#39;no&#39;)">No</button>';
+        html += '<button class="nb-btn nb-btn-approve" ' + wbActAttrs('submitGenericResponseYes', {viewId: viewId}) + '>Yes</button>';
+        html += '<button class="nb-btn nb-btn-deny" ' + wbActAttrs('submitGenericResponseNo', {viewId: viewId}) + '>No</button>';
         html += '</div>';
     } else if (respType === 'choice') {
         let choices = (data.choices && data.choices.length) ? data.choices : [];
@@ -273,19 +273,39 @@ registerViewRenderer('generic', async function(container, viewId, payload) {
             for (const c of choices) {
                 const key = c.key||'', label = c.label||key, desc = c.description||'';
                 const cls = btnClassMap[key] || 'nb-btn nb-btn-request';
-                html += '<button class="'+cls+'" onclick="submitGenericResponse(&#39;'+viewId+'&#39;,&#39;'+key+'&#39;)" title="'+escapeHtml(desc)+'">'+escapeHtml(label)+'</button>';
+                html += '<button class="'+cls+'" ' + wbActAttrs('submitGenericResponseChoice', {viewId: viewId, choiceKey: key}) + ' title="'+escapeHtml(desc)+'">'+escapeHtml(label)+'</button>';
             }
             html += '</div>';
         }
     } else if (respType === 'freeform') {
         html += '<div style="margin-top:8px">';
         html += '<textarea id="freeform-'+viewId+'" rows="4" style="width:100%;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);padding:12px;font-family:inherit;font-size:14px;resize:vertical;line-height:1.5" placeholder="Type your response..."></textarea>';
-        html += '<button class="nb-btn nb-btn-approve" onclick="submitFreeformResponse(&#39;'+viewId+'&#39;,&#39;freeform-'+viewId+'&#39;)" style="margin-top:10px;width:100%">Submit</button>';
+        html += '<button class="nb-btn nb-btn-approve" ' + wbActAttrs('submitFreeformResponseClick', {viewId: viewId}) + ' style="margin-top:10px;width:100%">Submit</button>';
         html += '</div>';
     }
 
     html += '</div></div></div>';
     container.innerHTML = html;
+});
+
+// ---- Event delegation adapters ----
+window.wbAction('submitGenericResponseYes', function(el) {
+    const viewId = el.dataset.viewId;
+    submitGenericResponse(viewId, 'yes');
+});
+window.wbAction('submitGenericResponseNo', function(el) {
+    const viewId = el.dataset.viewId;
+    submitGenericResponse(viewId, 'no');
+});
+window.wbAction('submitGenericResponseChoice', function(el) {
+    const viewId = el.dataset.viewId;
+    const choiceKey = el.dataset.choiceKey;
+    submitGenericResponse(viewId, choiceKey);
+});
+window.wbAction('submitFreeformResponseClick', function(el) {
+    const viewId = el.dataset.viewId;
+    const textareaId = 'freeform-' + viewId;
+    submitFreeformResponse(viewId, textareaId);
 });
 
 async function submitFreeformResponse(viewId, textareaId) {

@@ -56,15 +56,43 @@ const documentStub = {
     querySelectorAll: () => [],
 };
 
+// helpers.escapeHtml is a page global; stub a faithful minimal version.
+const escapeHtmlStub = (x) => (x == null ? "" : String(x)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;"));
+
+// core/delegation.py is a page global too: filters.py renders data-on-*
+// attributes via window.wbAction/window.wbActAttrs rather than inline
+// on*= handlers. Stub the same contract (camelCase -> kebab data-* keys,
+// escaped values) so this harness reflects the real page composition.
+function _camelToKebabStub(s) {
+    return String(s).replace(/[A-Z]/g, (m) => "-" + m.toLowerCase());
+}
+windowStub.wbActions = {};
+windowStub.wbAction = function (name, fn) { windowStub.wbActions[name] = fn; };
+const wbActAttrsStub = function (name, data, events) {
+    const evs = events ? (Array.isArray(events) ? events : [events]) : ["click"];
+    const parts = evs.map((ev) => `data-on-${ev}="${escapeHtmlStub(name)}"`);
+    if (data) {
+        for (const k in data) {
+            if (!Object.prototype.hasOwnProperty.call(data, k)) continue;
+            parts.push(`data-${_camelToKebabStub(k)}="${escapeHtmlStub(data[k])}"`);
+        }
+    }
+    return parts.join(" ");
+};
+windowStub.wbActAttrs = wbActAttrsStub;
+
 const sandbox = {
     window: windowStub,
     document: documentStub,
     console,
     Set, Map, Array, Object, String, Number, Boolean, JSON, Math,
-    // helpers.escapeHtml is a page global; stub a faithful minimal version.
-    escapeHtml: (x) => (x == null ? "" : String(x)
-        .replace(/&/g, "&amp;").replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;").replace(/"/g, "&quot;")),
+    // Bare-global forms — filters.js (like the real page) calls these
+    // unqualified, the same way it calls escapeHtml.
+    escapeHtml: escapeHtmlStub,
+    wbAction: windowStub.wbAction,
+    wbActAttrs: wbActAttrsStub,
 };
 vm.createContext(sandbox);
 vm.runInContext(js, sandbox, { filename: "filters.js" });

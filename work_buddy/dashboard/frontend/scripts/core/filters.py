@@ -18,7 +18,8 @@ State is **caller-owned**. The widget keeps no selection state of its own: it
 reads the current selection through ``config.getSelected`` and reports the
 intended next selection through ``config.onChange``. Both are passed by
 *string name* and resolved to globals at click time (the ``wbRenderPager``
-``onPageFnName`` trick), so the rendered ``onclick=`` attributes stay
+``onPageFnName`` trick), so the rendered ``data-on-click``/``data-on-keydown``
+attributes (dispatched by the shared ``core/delegation.py`` listener) stay
 serializable and morphdom-stable — no closures captured on DOM nodes.
 
 Because selection lives in caller (tab-module) state, never in the DOM, an
@@ -34,7 +35,7 @@ Accessor contracts by mode::
     grouped: getSelected()         -> Set<value>     ; onChange(nextSet, ev)
 
 The config registry (``window._wbFilterConfigs``) is keyed by ``config.id``;
-the inline dispatchers look the config up by id at click time, so nothing but
+the delegated adapters look the config up by id at click time, so nothing but
 a stable string id and small integer indices ever live in the markup.
 """
 
@@ -46,7 +47,7 @@ def script() -> str:
 // ===========================================================================
 // Shared filter rail — wbRenderFilters
 // ===========================================================================
-// Configs are registered by id so the inline onclick dispatchers can resolve
+// Configs are registered by id so the delegated action adapters can resolve
 // (config, selection) at click time without storing closures on DOM nodes.
 window._wbFilterConfigs = window._wbFilterConfigs || {};
 
@@ -91,10 +92,12 @@ function _wbFilterChip(domId, label, active, opts) {
     const tabindex = (opts.tabindex == null) ? 0 : opts.tabindex;
     const disabled = opts.disabled ? ' disabled' : '';
     const title = opts.title ? ` title="${escapeHtml(opts.title)}"` : '';
-    const click = opts.disabled ? '' : ` onclick="${opts.onclick}"`;
-    const keys = (opts.disabled || !opts.onkeydown) ? '' : ` onkeydown="${opts.onkeydown}"`;
+    let attrs = opts.disabled ? '' : ` ${wbActAttrs(opts.onClickAction, opts.data)}`;
+    if (!opts.disabled && opts.onKeydownAction) {
+        attrs += ` ${wbActAttrs(opts.onKeydownAction, opts.data, 'keydown')}`;
+    }
     return `<button id="${domId}" type="button" class="${cls.join(' ')}" role="${role}"`
-        + `${aria} tabindex="${tabindex}"${title}${disabled}${click}${keys}>`
+        + `${aria} tabindex="${tabindex}"${title}${disabled}${attrs}>`
         + `${escapeHtml(label)}</button>`;
 }
 
@@ -106,9 +109,10 @@ function _wbFilterFamilyPill(domId, label, active, opts) {
     // Tristate maps to aria-pressed mixed/true/false.
     const aria = ` aria-pressed="${opts.mixed ? 'mixed' : (active ? 'true' : 'false')}"`;
     const title = opts.title ? ` title="${escapeHtml(opts.title)}"` : '';
-    const keys = opts.onkeydown ? ` onkeydown="${opts.onkeydown}"` : '';
+    let attrs = ` ${wbActAttrs(opts.onClickAction, opts.data)}`;
+    if (opts.onKeydownAction) attrs += ` ${wbActAttrs(opts.onKeydownAction, opts.data, 'keydown')}`;
     return `<button id="${domId}" type="button" class="${cls.join(' ')}" role="button"`
-        + `${aria} tabindex="0"${title} onclick="${opts.onclick}"${keys}>`
+        + `${aria} tabindex="0"${title}${attrs}>`
         + `${escapeHtml(label)}</button>`;
 }
 
@@ -148,8 +152,9 @@ function _wbFiltersFlatMarkup(config) {
                 tabindex: tabindex,
                 disabled: !!opt.disabled,
                 title: _wbFilterChipTitle(config, opt),
-                onclick: `_wbFilterClick('${id}',${gi},${oi},event)`,
-                onkeydown: `_wbFilterKey('${id}',${gi},${oi},event)`,
+                onClickAction: 'wbfChipClick',
+                onKeydownAction: (mode === 'single') ? 'wbfChipKey' : null,
+                data: { widgetId: id, gi: gi, oi: oi },
             });
         }).join('');
         const groupRole = (mode === 'single') ? 'radiogroup' : 'group';
@@ -180,8 +185,8 @@ function _wbFiltersGroupedMarkup(config) {
             indeterminate: famIndet,
             mixed: famIndet,
             title: famTitle,
-            onclick: `_wbFilterFamilyClick('${id}',${fi},event)`,
-            onkeydown: `_wbFilterFamilyKey('${id}',${fi},event)`,
+            onClickAction: 'wbfFamilyClick',
+            data: { widgetId: id, fi: fi },
         });
         inner += (fam.members || []).map(function (m, mi) {
             const active = !!(sel && sel.has && sel.has(m.value));
@@ -189,8 +194,8 @@ function _wbFiltersGroupedMarkup(config) {
                 role: 'button',
                 tabindex: 0,
                 title: config.solo ? 'Click to toggle · Alt-click to solo' : 'Click to toggle',
-                onclick: `_wbFilterMemberClick('${id}',${fi},${mi},event)`,
-                onkeydown: `_wbFilterMemberKey('${id}',${fi},${mi},event)`,
+                onClickAction: 'wbfMemberClick',
+                data: { widgetId: id, fi: fi, mi: mi },
             });
         }).join('');
         html += `<span class="wb-filter-family" role="group" aria-label="${escapeHtml(fam.family)}">${inner}</span>`;
@@ -218,8 +223,7 @@ function _wbFilterResetHtml(config, mode) {
     if (!narrowed) return '';
     const label = config.resetLabel || 'Reset';
     return `<button class="wb-filter-reset" type="button" title="Clear filter"`
-        + ` onclick="_wbFilterReset('${config.id}',event)"`
-        + ` onkeydown="_wbFilterResetKey('${config.id}',event)">${escapeHtml(label)}</button>`;
+        + ` ${wbActAttrs('wbfReset', { widgetId: config.id })}>${escapeHtml(label)}</button>`;
 }
 
 // ---- Click dispatchers (resolve config + selection by id at click time) ----
@@ -309,13 +313,11 @@ function _wbFilterReset(widgetId, ev) {
 }
 
 // ---- Keyboard support (additive — the tabs were click-only) ----
-
-function _wbFilterIsActivate(ev) {
-    return !!ev && (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar');
-}
+// Enter/Space activation is handled for every data-on-click element by the
+// shared delegation dispatcher (core/delegation.py); only genuine ArrowLeft/
+// ArrowRight (radiogroup roving-focus) navigation needs an explicit handler.
 
 function _wbFilterKey(widgetId, gi, oi, ev) {
-    if (_wbFilterIsActivate(ev)) { ev.preventDefault(); _wbFilterClick(widgetId, gi, oi, ev); return; }
     const cfg = window._wbFilterConfigs[widgetId];
     if (!cfg || cfg.mode !== 'single') return;
     const group = (cfg.groups || [])[gi];
@@ -336,17 +338,28 @@ function _wbFilterKey(widgetId, gi, oi, ev) {
     if (focusEl) focusEl.focus();
 }
 
-function _wbFilterMemberKey(widgetId, fi, mi, ev) {
-    if (_wbFilterIsActivate(ev)) { ev.preventDefault(); _wbFilterMemberClick(widgetId, fi, mi, ev); }
-}
+// ---- Delegated-action adapters (core/delegation.py dispatches these by
+// the data-on-click/data-on-keydown name; args travel via el.dataset). ----
 
-function _wbFilterFamilyKey(widgetId, fi, ev) {
-    if (_wbFilterIsActivate(ev)) { ev.preventDefault(); _wbFilterFamilyClick(widgetId, fi, ev); }
-}
+window.wbAction('wbfChipClick', function (el, e) {
+    _wbFilterClick(el.dataset.widgetId, parseInt(el.dataset.gi, 10), parseInt(el.dataset.oi, 10), e);
+});
 
-function _wbFilterResetKey(widgetId, ev) {
-    if (_wbFilterIsActivate(ev)) { ev.preventDefault(); _wbFilterReset(widgetId, ev); }
-}
+window.wbAction('wbfChipKey', function (el, e) {
+    _wbFilterKey(el.dataset.widgetId, parseInt(el.dataset.gi, 10), parseInt(el.dataset.oi, 10), e);
+});
+
+window.wbAction('wbfFamilyClick', function (el, e) {
+    _wbFilterFamilyClick(el.dataset.widgetId, parseInt(el.dataset.fi, 10), e);
+});
+
+window.wbAction('wbfMemberClick', function (el, e) {
+    _wbFilterMemberClick(el.dataset.widgetId, parseInt(el.dataset.fi, 10), parseInt(el.dataset.mi, 10), e);
+});
+
+window.wbAction('wbfReset', function (el, e) {
+    _wbFilterReset(el.dataset.widgetId, e);
+});
 """
 
 

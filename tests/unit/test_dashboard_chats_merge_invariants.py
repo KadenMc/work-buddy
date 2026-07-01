@@ -885,13 +885,14 @@ def test_search_send_button_calls_global_search(panel_html: str) -> None:
     function Enter and the debounce both route through. Otherwise it
     becomes a fourth code path that can drift out of sync.
     """
-    # Locate the send button tag and check its onclick.
+    # Locate the send button tag and check its delegated action (wired via
+    # data-on-click, not an inline onclick, since the frontend hardening).
     m = re.search(
         r'<button[^>]*id="chats-search-send"[^>]*>', panel_html,
     )
     assert m is not None
     tag = m.group(0)
-    assert 'onclick="chatsGlobalSearch()"' in tag
+    assert 'data-on-click="chatsGlobalSearch"' in tag
 
 
 def test_search_debounce_relaxed(chats_js: str) -> None:

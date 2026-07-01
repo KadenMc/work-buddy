@@ -24,7 +24,7 @@ window.wbCardRenderers['core.event_log'] = function(state) {
     const toolbar = `
         <div class="log-toolbar" style="margin-top: 24px;">
             <span class="section-title">Event Log</span>
-            <button class="log-toolbar-btn" onclick="copyActivityLog()" title="Copy log to clipboard">Copy Log</button>
+            <button class="log-toolbar-btn" ${wbActAttrs('copyActivityLog', {})} title="Copy log to clipboard">Copy Log</button>
         </div>`;
 
     let body;
@@ -37,7 +37,7 @@ window.wbCardRenderers['core.event_log'] = function(state) {
             const kind = (e.kind || '').replace(/_/g, ' ');
             const level = e.level || 'info';
             const actions = (!WB_READ_ONLY_MODE && (level === 'error' || level === 'warn'))
-                ? `<span class="log-actions"><button class="btn-investigate ${level}" onclick="investigateActivityEvent(${i}, this)" title="Spawn agent to investigate">Investigate</button></span>`
+                ? `<span class="log-actions"><button class="btn-investigate ${level}" ${wbActAttrs('investigateActivityEvent', {eventIndex: i})} title="Spawn agent to investigate">Investigate</button></span>`
                 : '';
             return `<div class="log-entry ${level}">
                 <span class="log-ts">${time}</span>
@@ -50,4 +50,13 @@ window.wbCardRenderers['core.event_log'] = function(state) {
     }
     return toolbar + body;
 };
+
+// ---- Event-delegation adapters ----
+window.wbAction('copyActivityLog', function (el) {
+    copyActivityLog();
+});
+window.wbAction('investigateActivityEvent', function (el) {
+    var eventIndex = parseInt(el.dataset.eventIndex, 10);
+    investigateActivityEvent(eventIndex, el);
+});
 """

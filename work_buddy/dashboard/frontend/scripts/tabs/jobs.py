@@ -339,12 +339,12 @@ function renderJobsTable(jobs, emptyHtml) {
             <td class="jobs-row-actions">
                 <button class="jobs-row-icon-btn" type="button"
                         title="Edit this job"
-                        onclick="onEditJobClick(${JSON.stringify(j.name).replace(/"/g, '&quot;')})">
+                        ${wbActAttrs('onEditJobClick', {jobName: j.name})}>
                     ${_wbJobIcon('edit')}
                 </button>
                 <button class="jobs-row-icon-btn jobs-row-icon-destructive" type="button"
                         title="Delete this job"
-                        onclick="onDeleteJobClick(${JSON.stringify(j.name).replace(/"/g, '&quot;')})">
+                        ${wbActAttrs('onDeleteJobClick', {jobName: j.name})}>
                     ${_wbJobIcon('trash')}
                 </button>
             </td>` : '<td class="jobs-row-actions"></td>';
@@ -1131,4 +1131,12 @@ async function onJobsHelpClick() {
         btn.textContent = orig;
     }
 }
+
+// ---- Event-delegation adapters ----
+window.wbAction('onEditJobClick', function (el) {
+    onEditJobClick(el.dataset.jobName);
+});
+window.wbAction('onDeleteJobClick', function (el) {
+    onDeleteJobClick(el.dataset.jobName);
+});
 """

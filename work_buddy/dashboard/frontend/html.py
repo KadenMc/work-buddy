@@ -14,8 +14,8 @@ def _html() -> str:
             <span class="status-dot stopped"></span> live
         </span>
         <span id="clock"></span>
-        <span class="cp-kbd-hint" onclick="cpOpen()" title="Command palette">Ctrl+K</span>
-        <button class="header-settings-btn" onclick="switchTab('settings')"
+        <span class="cp-kbd-hint" data-on-click="cpOpen" title="Command palette">Ctrl+K</span>
+        <button class="header-settings-btn" data-on-click="switchTabSettings"
                 title="Settings &mdash; component preferences &amp; control graph"
                 aria-label="Open Settings">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
@@ -95,14 +95,14 @@ def _html() -> str:
             </span>
         </div>
         <select id="today-context-preset" class="chats-select"
-                onchange="onTodayContextPresetChange()"
+                data-on-change="onTodayContextPresetChange"
                 title="Your current context — feeds the recommender">
             <option value="at_desk">At desk + online</option>
             <option value="phone_only">Phone only</option>
             <option value="untethered">Untethered</option>
             <option value="custom">Custom…</option>
         </select>
-        <button class="chats-accent-btn" onclick="loadToday()">Re-run</button>
+        <button class="chats-accent-btn" data-on-click="loadToday">Re-run</button>
     </div>
     <div id="today-now-banner" class="today-now-banner"></div>
     <div id="today-contracts-banner" class="today-contracts-banner"></div>
@@ -147,7 +147,7 @@ def _html() -> str:
     <div class="wb-chat-header">
         <div class="wb-chat-title" id="wb-chat-title"></div>
         <button class="wb-chat-close" type="button" aria-label="Close chat"
-                onclick="window.wbChatSidebar.close()">&times;</button>
+                data-on-click="wbChatSidebarClose">&times;</button>
     </div>
     <div class="wb-chat-body" id="wb-chat-body"></div>
 </aside>
@@ -164,7 +164,7 @@ def _html() -> str:
     <div class="jobs-toolbar">
         <div class="section-title" style="margin: 0;">Your Jobs</div>
         <button id="jobs-add-btn" class="jobs-add-btn" type="button"
-                onclick="showAddJobForm()">+ Add job</button>
+                data-on-click="showAddJobForm">+ Add job</button>
     </div>
 
     <div id="jobs-add-form" class="jobs-add-form" hidden>
@@ -173,7 +173,7 @@ def _html() -> str:
              the agent populates these same fields live as it gathers info,
              then submits via user_job_create when the user confirms. -->
         <button id="jobs-help-btn" class="jobs-form-help-btn" type="button"
-                onclick="onJobsHelpClick()"
+                data-on-click="onJobsHelpClick"
                 title="Open a chat that walks you through filling this form">
             💬 Help me fill this out
         </button>
@@ -188,7 +188,7 @@ def _html() -> str:
             <label>Schedule
                 <input id="job-form-schedule" type="text"
                        placeholder="0 * * * *" autocomplete="off"
-                       oninput="onCronInput()" />
+                       data-on-input="onCronInput" />
                 <small id="job-form-cron-preview" class="cron-preview-hint">
                     5-field cron (MIN HOUR DOM MON DOW).
                     Example: <code>*/15 * * * *</code> = every 15 min.
@@ -199,13 +199,13 @@ def _html() -> str:
                        min="0" max="0" step="1"
                        placeholder="0" autocomplete="off"
                        disabled
-                       oninput="onJitterInput()" />
+                       data-on-input="onJitterInput" />
                 <small id="job-form-jitter-hint" class="cron-preview-hint">
                     Type a schedule to enable. Spreads phase-aligned starts.
                 </small>
             </label>
             <label class="job-form-type-row">What does this job do?
-                <select id="job-form-type" onchange="onJobTypeChange()">
+                <select id="job-form-type" data-on-change="onJobTypeChange">
                     <option value="prompt">Run a prompt — agent does a freeform task</option>
                     <option value="invoke">Invoke a capability or workflow</option>
                 </select>
@@ -221,7 +221,7 @@ def _html() -> str:
 
         <div id="job-form-invoke-row" class="job-form-row" hidden>
             <label>Kind
-                <select id="job-form-invoke-kind" onchange="onInvokeKindChange()">
+                <select id="job-form-invoke-kind" data-on-change="onInvokeKindChange">
                     <option value="capability">capability</option>
                     <option value="workflow">workflow</option>
                 </select>
@@ -230,7 +230,7 @@ def _html() -> str:
                 <span id="job-form-invoke-name-label">Capability name</span>
                 <input id="job-form-invoke-name" type="text" list="job-form-invoke-options"
                        placeholder="task_briefing" autocomplete="off"
-                       oninput="onInvokeNameInput()" />
+                       data-on-input="onInvokeNameInput" />
                 <datalist id="job-form-invoke-options"></datalist>
                 <small id="job-form-invoke-hint" class="cron-preview-hint"
                        style="min-height: 14px;"></small>
@@ -239,7 +239,7 @@ def _html() -> str:
                 Params (JSON, optional)
                 <textarea id="job-form-params" rows="3"
                           placeholder='{"same_day": true}'
-                          oninput="onParamsInput()"></textarea>
+                          data-on-input="onParamsInput"></textarea>
                 <small id="job-form-params-validity" class="cron-preview-hint">
                     Empty, or a JSON object.
                 </small>
@@ -250,9 +250,9 @@ def _html() -> str:
         <div id="job-form-error" class="job-form-error" hidden></div>
         <div class="job-form-actions">
             <button type="button" class="jobs-form-cancel"
-                    onclick="hideAddJobForm()">Cancel</button>
+                    data-on-click="hideAddJobForm">Cancel</button>
             <button type="button" class="jobs-form-submit"
-                    onclick="submitAddJobForm()">Create job</button>
+                    data-on-click="submitAddJobForm">Create job</button>
         </div>
     </div>
 
@@ -305,17 +305,17 @@ def _html() -> str:
                 <input type="text" id="chats-global-search" class="chats-search-input"
                        placeholder="Search or filter the chats below..." />
                 <button class="chats-search-send" id="chats-search-send"
-                        onclick="chatsGlobalSearch()" aria-label="Search"
+                        data-on-click="chatsGlobalSearch" aria-label="Search"
                         data-tooltip="Send · Enter">↵</button>
             </div>
-            <select id="chats-search-method" class="chats-select" onchange="chatsSearchMethodChanged(this.value)">
+            <select id="chats-search-method" class="chats-select" data-on-change="chatsSearchMethodChanged">
                 <option value="keyword,semantic">Hybrid</option>
                 <option value="keyword">Keyword</option>
                 <option value="semantic">Semantic</option>
                 <option value="substring">Exact match</option>
             </select>
             <select id="chats-project-filter" class="chats-select chats-project-select"
-                    onchange="chatsProjectFilterChanged(this.value)">
+                    data-on-change="chatsProjectFilterChanged">
                 <option value="">All repos</option>
             </select>
         </div>
@@ -325,7 +325,7 @@ def _html() -> str:
                  with doc_score in that mode). The dropdown is disabled
                  in that state and restored to the user's prior choice
                  when the search clears. -->
-            <select id="chats-sort" class="chats-select" onchange="applyChatsFiltersAndSort()">
+            <select id="chats-sort" class="chats-select" data-on-change="applyChatsFiltersAndSort">
                 <option value="recent">Most Recent</option>
                 <option value="longest">Longest Duration</option>
                 <option value="most-messages">Most Messages</option>
@@ -341,7 +341,7 @@ def _html() -> str:
                 <option value="0">All time</option>
             </select>
             <button class="chats-select chats-advanced-toggle" id="chats-advanced-toggle"
-                    onclick="chatsToggleAdvanced()">Advanced ▾</button>
+                    data-on-click="chatsToggleAdvanced">Advanced ▾</button>
         </div>
     </div>
 
@@ -374,7 +374,7 @@ def _html() -> str:
                  buttons (User / Assistant / All) on the header's right
                  edge. Click anywhere on the bar or hit Esc to return. -->
             <div class="chats-viewer-backbar">
-                <button class="chats-back-btn" onclick="closeChat()"
+                <button class="chats-back-btn" data-on-click="closeChat"
                         title="Back to chat list (Esc)">
                     <span class="chats-back-icon">‹</span> Back to all chats
                 </button>
@@ -386,8 +386,8 @@ def _html() -> str:
             <div class="chats-in-search" id="chats-in-search" style="display:none;">
                 <div class="chats-in-search-bar">
                     <input type="text" id="chats-in-search-input" placeholder="Search in this chat..." />
-                    <button onclick="chatsInSessionSearch()">Find</button>
-                    <button onclick="chatsCloseInSearch()">Close</button>
+                    <button data-on-click="chatsInSessionSearch">Find</button>
+                    <button data-on-click="chatsCloseInSearch">Close</button>
                 </div>
                 <div id="chats-in-search-hits" class="chats-in-search-hits"></div>
             </div>
@@ -396,11 +396,11 @@ def _html() -> str:
             <!-- Message list -->
             <div class="chats-messages" id="chats-messages">
                 <div id="chats-load-earlier" style="display:none;">
-                    <button class="chats-load-more-btn" onclick="chatsLoadEarlier()">Load earlier messages</button>
+                    <button class="chats-load-more-btn" data-on-click="chatsLoadEarlier">Load earlier messages</button>
                 </div>
                 <div id="chats-message-list"></div>
                 <div id="chats-load-later" style="display:none;">
-                    <button class="chats-load-more-btn" onclick="chatsLoadLater()">Load more messages</button>
+                    <button class="chats-load-more-btn" data-on-click="chatsLoadLater">Load more messages</button>
                 </div>
             </div>
         </div>
@@ -420,10 +420,10 @@ def _html() -> str:
     <div class="costs-toolbar">
         <div class="costs-toolbar-left">
             <select id="costs-project" class="chats-select chats-project-select"
-                    onchange="costsProjectChanged(this.value)">
+                    data-on-change="costsProjectChanged">
                 <option value="">All projects</option>
             </select>
-            <select id="costs-range" class="chats-select" onchange="costsRangeChanged(this.value)">
+            <select id="costs-range" class="chats-select" data-on-change="costsRangeChanged">
                 <option value="today">Today</option>
                 <option value="7">Last 7 days</option>
                 <option value="30" selected>Last 30 days</option>
@@ -437,13 +437,13 @@ def _html() -> str:
                  collapses. See tabs/costs.py for behaviour. -->
             <span id="costs-rate-chip" class="costs-rate-chip"
                   style="display: none;"
-                  onclick="costsToggleRateLimitPopover(event)"
+                  data-on-click="costsToggleRateLimitPopover"
                   title="Click for per-model breakdown">
                 Limits: <span id="costs-rate-pct">—</span>
             </span>
             <div id="costs-rate-popover" class="costs-rate-popover" style="display: none;"></div>
             <span id="costs-meta" class="costs-meta"></span>
-            <button class="chats-accent-btn" onclick="costsRefresh(this)">Refresh</button>
+            <button class="chats-accent-btn" data-on-click="costsRefresh">Refresh</button>
         </div>
     </div>
 
@@ -505,13 +505,13 @@ def _html() -> str:
 <div class="tab-panel" id="panel-settings">
     <div class="settings-subtab-bar">
         <button class="settings-subtab-btn active" data-st="status"
-                onclick="switchSettingsSubtab('status')">Status</button>
+                data-on-click="switchSettingsSubtab" data-subtab="status">Status</button>
         <button class="settings-subtab-btn" data-st="activity"
-                onclick="switchSettingsSubtab('activity')">Activity</button>
+                data-on-click="switchSettingsSubtab" data-subtab="activity">Activity</button>
         <button class="settings-subtab-btn" data-st="embeddings"
-                onclick="switchSettingsSubtab('embeddings')">Embeddings</button>
+                data-on-click="switchSettingsSubtab" data-subtab="embeddings">Embeddings</button>
         <button class="settings-subtab-btn" data-st="inference"
-                onclick="switchSettingsSubtab('inference')">Inference</button>
+                data-on-click="switchSettingsSubtab" data-subtab="inference">Inference</button>
     </div>
     <!-- Status sub-view: the control graph (component state, preferences,
          requirements). Default sub-tab. The toolbar lives inside this
@@ -521,7 +521,7 @@ def _html() -> str:
         <div class="settings-toolbar">
             <div class="settings-toolbar-controls">
                 <input type="text" id="settings-filter" class="task-search-input" placeholder="Filter by label or id (matches cascade up through parents)" />
-                <button class="chats-accent-btn" onclick="reprobeAll(this)"
+                <button class="chats-accent-btn" data-on-click="reprobeAll"
                         title="Re-run every tool probe from scratch, then rebuild the graph. Takes up to ~10s if Obsidian or another service is slow. Use when the tree shows 'unknown' badges and you want definitive state right now.">Reprobe all</button>
             </div>
         </div>
@@ -570,7 +570,7 @@ def _html() -> str:
 <div class="tab-panel" id="panel-memory">
     <div class="memory-subtab-bar">
         <button class="memory-subtab-btn active" data-mst="entities"
-                onclick="switchMemorySubtab('entities')">Entities</button>
+                data-on-click="switchMemorySubtab" data-subtab="entities">Entities</button>
     </div>
     <div class="memory-subtab-panel active" id="msp-entities">
         <div style="display:flex; gap:24px; align-items:flex-start; min-height:500px;">
@@ -585,7 +585,7 @@ def _html() -> str:
 </div>
 
 <!-- Command Palette -->
-<div class="cp-overlay" id="cp-overlay" onclick="if(event.target===this)cpClose()">
+<div class="cp-overlay" id="cp-overlay" data-on-click="cpOverlayClick">
     <div class="cp-modal">
         <div class="cp-search-row">
             <span class="cp-search-icon">&#128269;</span>

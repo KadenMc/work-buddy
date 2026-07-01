@@ -57,6 +57,13 @@ def script() -> str:
         window.wbActions[name] = fn;
     };
 
+    // Shared no-op action. Put data-on-click="wbNoop" on an element that
+    // used to carry onclick="event.stopPropagation()" purely to keep a click
+    // from triggering an ancestor's handler. Because the dispatcher below
+    // resolves the CLOSEST data-on-click ancestor, a wbNoop child wins and
+    // the ancestor action never fires — same effect, no inline handler.
+    window.wbAction('wbNoop', function () {});
+
     function _camelToKebab(s) {
         return String(s).replace(/[A-Z]/g, function (m) {
             return '-' + m.toLowerCase();
@@ -105,9 +112,47 @@ def script() -> str:
     }
 
     // One delegated listener per event type, bound to document so it
-    // survives every morphdom childrenOnly refresh.
-    ['click', 'input', 'change', 'keydown', 'submit'].forEach(function (ev) {
+    // survives every morphdom childrenOnly refresh. All of these bubble
+    // (focusout is the bubbling counterpart of the non-bubbling blur), so
+    // the closest()-based dispatch works uniformly. mousedown/contextmenu
+    // and the drag events are included so those handlers can be delegated
+    // too; each listener early-returns unless a data-on-<event> ancestor
+    // exists, so the added listeners are cheap.
+    ['click', 'input', 'change', 'keydown', 'submit',
+     'contextmenu', 'mousedown', 'focusout',
+     'dragstart', 'dragend', 'dragover', 'dragleave', 'drop'
+    ].forEach(function (ev) {
         document.addEventListener(ev, _makeHandler(ev));
+    });
+
+    // Enter/Space activation: any data-on-click element behaves like a
+    // native button under the keyboard. This replaces the
+    // onkeydown="if(event.key==='Enter'||event.key===' ')...same-as-click..."
+    // accessibility conditionals — a converted element just needs
+    // data-on-click and this handler fires it on Enter/Space.
+    document.addEventListener('keydown', function (e) {
+        if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+        var start = e.target;
+        if (!start || !start.closest) return;
+        // Don't hijack typing inside form controls.
+        var t = (start.tagName || '').toUpperCase();
+        if (t === 'INPUT' || t === 'TEXTAREA' || t === 'SELECT') return;
+        var el = start.closest('[data-on-click]');
+        if (!el) return;
+        // Native <button>/<a> already fire a click on Enter/Space (which the
+        // click listener above catches); don't double-fire for them.
+        var tag = (el.tagName || '').toUpperCase();
+        if (tag === 'BUTTON' || tag === 'A') return;
+        // If the element declares an explicit keydown action, let it own the key.
+        if (el.getAttribute('data-on-keydown')) return;
+        var fn = window.wbActions[el.getAttribute('data-on-click')];
+        if (typeof fn !== 'function') return;
+        if (e.key === ' ' || e.key === 'Spacebar') e.preventDefault();
+        try {
+            fn(el, e);
+        } catch (err) {
+            console.error('[wb-actions] keyboard-activate threw:', err);
+        }
     });
 })();
 """

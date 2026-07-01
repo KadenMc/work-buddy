@@ -217,7 +217,7 @@ function renderChatList() {
         if (hiddenByWindow > 0 && !onAllTime) {
             hint = ' &middot; <span class="chats-search-hint">'
                 + hiddenByWindow + ' more outside the current days window — '
-                + '<a href="#" onclick="chatsExpandToAllTime();return false;">show All time</a>'
+                + '<a href="#" data-on-click="chatsExpandToAllTimeLink">show All time</a>'
                 + '</span>';
         }
         searchSummary = '<div class="chats-search-summary">'
@@ -227,7 +227,7 @@ function renderChatList() {
             + ' &middot; sorted by relevance'
             + hint
             + '</span>'
-            + '<button class="chats-clear-search-btn" onclick="chatsClearSearch()">Clear search</button>'
+            + '<button class="chats-clear-search-btn" data-on-click="chatsClearSearchBtn">Clear search</button>'
             + '</div>';
     }
 
@@ -528,13 +528,13 @@ function renderEmptyChatListState() {
     if (chatsState.searchActive) {
         return '<div class="empty-state">No matches for <em>"'
             + escapeHtml(chatsState.searchQuery) + '"</em> '
-            + '<button class="chats-clear-search-btn" onclick="chatsClearSearch()">Clear search</button>'
+            + '<button class="chats-clear-search-btn" data-on-click="chatsClearSearchBtn">Clear search</button>'
             + '</div>';
     }
     if (chatsState.filters.has_commits || chatsState.filters.has_unfinished
         || document.getElementById('chats-project-filter')?.value) {
         return '<div class="empty-state">No chats match the current filters. '
-            + '<button class="chats-clear-search-btn" onclick="chatsResetFiltersAll()">Reset filters</button>'
+            + '<button class="chats-clear-search-btn" data-on-click="chatsResetFiltersAllBtn">Reset filters</button>'
             + '</div>';
     }
     return '<div class="empty-state">No chats found</div>';
@@ -771,8 +771,8 @@ function _railTopicsHtml(topicData) {
         var range = (t.turn_start != null && t.turn_end != null)
             ? ' <span class="topic-range">' + t.turn_start + '–' + t.turn_end + '</span>'
             : '';
-        return '<div class="chats-topic-item" data-turn="' + (t.turn_start != null ? t.turn_start : '') + '"'
-            + ' onclick="chatsJumpToTopic(' + (t.turn_start != null ? t.turn_start : 'null') + ')"'
+        return '<div class="chats-topic-item"'
+            + ' ' + wbActAttrs('chatsJumpToTopicAction', { turn: t.turn_start != null ? t.turn_start : '' })
             + ' title="' + escapeHtml(t.summary || '') + '">'
             + '<span class="topic-index">' + (i + 1) + '.</span> '
             + escapeHtml(t.title || '(untitled)')
@@ -826,7 +826,7 @@ function _railGitHtml(commits) {
         groups.forEach(function(g) {
             var clickable = g.message_index != null;
             var clickAttr = clickable
-                ? ' onclick="chatsJumpToCommit(' + g.message_index + ')" title="Jump to this commit in the conversation"'
+                ? ' ' + wbActAttrs('chatsJumpToCommitAction', { messageIndex: g.message_index }) + ' title="Jump to this commit in the conversation"'
                 : '';
             var commitRepo = g.repo_name || '';
             var repoPrefix = (commitRepo && commitRepo !== primaryRepo)
@@ -1175,12 +1175,12 @@ function renderChatHeader(meta) {
         + leftPieces.join(' &middot; ')
         + '</div>'
         + '<div class="chats-hdr-right">'
-        + '<button class="chats-hdr-btn" id="chats-hdr-resume" onclick="chatsResumeSession()" title="Open a new local terminal and resume this session (claude --resume). No prompt sent.">Resume</button>'
-        + '<button class="chats-hdr-btn" onclick="chatsToggleInSearch()">Search</button>'
+        + '<button class="chats-hdr-btn" id="chats-hdr-resume" ' + wbActAttrs('chatsResumeSessionAction') + ' title="Open a new local terminal and resume this session (claude --resume). No prompt sent.">Resume</button>'
+        + '<button class="chats-hdr-btn" ' + wbActAttrs('chatsToggleInSearchAction') + '>Search</button>'
         + '<span class="chats-hdr-divider"></span>'
-        + '<button class="chats-hdr-btn' + (chatsState.roleFilter === 'user' ? ' active' : '') + '" onclick="chatsFilterRole(&#39;user&#39;)">User</button>'
-        + '<button class="chats-hdr-btn' + (chatsState.roleFilter === 'assistant' ? ' active' : '') + '" onclick="chatsFilterRole(&#39;assistant&#39;)">Assistant</button>'
-        + '<button class="chats-hdr-btn' + (!chatsState.roleFilter ? ' active' : '') + '" onclick="chatsFilterRole(null)">All</button>'
+        + '<button class="chats-hdr-btn' + (chatsState.roleFilter === 'user' ? ' active' : '') + '" ' + wbActAttrs('chatsFilterRoleAction', { role: 'user' }) + '>User</button>'
+        + '<button class="chats-hdr-btn' + (chatsState.roleFilter === 'assistant' ? ' active' : '') + '" ' + wbActAttrs('chatsFilterRoleAction', { role: 'assistant' }) + '>Assistant</button>'
+        + '<button class="chats-hdr-btn' + (!chatsState.roleFilter ? ' active' : '') + '" ' + wbActAttrs('chatsFilterRoleAction', { role: '' }) + '>All</button>'
         + '</div>';
 }
 
@@ -1254,7 +1254,7 @@ function renderMessages() {
             + '<div class="chat-msg-bubble'
             + (isExpanded ? ' expanded' : '')
             + (inSpan ? ' in-span' : '')
-            + '" data-idx="' + msg.index + '" onclick="chatsMsgClick(' + msg.index + ')">'
+            + '" data-idx="' + msg.index + '" data-on-click="chatsMsgClickAction">'
             + bubbleContent
             + '</div>'
             + '<div class="chat-msg-meta">'
@@ -1529,7 +1529,7 @@ async function chatsGlobalSearch() {
     if (!data || data.error) {
         container.innerHTML = '<div class="empty-state">'
             + (data && data.error ? escapeHtml(data.error) : 'Search failed')
-            + ' <button class="chats-clear-search-btn" onclick="chatsClearSearch()">Clear search</button>'
+            + ' <button class="chats-clear-search-btn" data-on-click="chatsClearSearchBtn">Clear search</button>'
             + '</div>';
         return;
     }
@@ -1638,7 +1638,7 @@ async function chatsCommitSearch(q) {
     if (!data || data.error) {
         container.innerHTML = '<div class="empty-state">'
             + (data && data.error ? escapeHtml(data.error) : 'Commit search failed')
-            + ' <button class="chats-clear-search-btn" onclick="chatsClearSearch()">Clear search</button>'
+            + ' <button class="chats-clear-search-btn" data-on-click="chatsClearSearchBtn">Clear search</button>'
             + '</div>';
         return;
     }
@@ -1884,7 +1884,7 @@ async function chatsInSessionSearch() {
         }
         if (!snippet) snippet = 'Messages ' + h.turn_range[0] + '-' + h.turn_range[1];
 
-        html += '<div class="chats-search-hit" style="padding:6px 8px;cursor:pointer;" onclick="chatsJumpToInHit(' + i + ')">'
+        html += '<div class="chats-search-hit" style="padding:6px 8px;cursor:pointer;" ' + wbActAttrs('chatsJumpToInHitAction', { hitIndex: i }) + '>'
             + '<div style="display:flex;justify-content:space-between;align-items:center;">'
             + '<span style="font-size:11px;font-weight:600;color:var(--accent);">#' + (i + 1) + '</span>'
             + '<span style="font-size:10px;color:var(--text-muted);">msgs ' + h.turn_range[0] + '\u2013' + h.turn_range[1] + '</span>'
@@ -2228,5 +2228,32 @@ document.addEventListener('keydown', function(ev) {
             selectChat(card.dataset.sid);
         }
     }
+});
+
+// ---- Chats: delegated-action registrations (replaces inline on*=) ----
+window.wbAction('chatsExpandToAllTimeLink', function (el, e) {
+    e.preventDefault();
+    chatsExpandToAllTime();
+});
+window.wbAction('chatsClearSearchBtn', function (el) { chatsClearSearch(); });
+window.wbAction('chatsResetFiltersAllBtn', function (el) { chatsResetFiltersAll(); });
+window.wbAction('chatsJumpToTopicAction', function (el) {
+    var raw = el.dataset.turn;
+    chatsJumpToTopic(raw === '' ? null : parseInt(raw, 10));
+});
+window.wbAction('chatsJumpToCommitAction', function (el) {
+    chatsJumpToCommit(parseInt(el.dataset.messageIndex, 10));
+});
+window.wbAction('chatsResumeSessionAction', function (el) { chatsResumeSession(); });
+window.wbAction('chatsToggleInSearchAction', function (el) { chatsToggleInSearch(); });
+window.wbAction('chatsFilterRoleAction', function (el) {
+    var role = el.dataset.role;
+    chatsFilterRole(role === '' ? null : role);
+});
+window.wbAction('chatsMsgClickAction', function (el) {
+    chatsMsgClick(parseInt(el.dataset.idx, 10));
+});
+window.wbAction('chatsJumpToInHitAction', function (el) {
+    chatsJumpToInHit(parseInt(el.dataset.hitIndex, 10));
 });
 """

@@ -143,7 +143,7 @@ function _infRenderHeader() {
         <div class="inf-header">
             <div class="inf-title-row">
                 <span class="emb-section-title">Inference activity</span>
-                <button class="inf-help-btn" title="What am I looking at?" onclick="_infToggleHelp()">?</button>
+                <button class="inf-help-btn" title="What am I looking at?" ` + wbActAttrs('infToggleHelp', {}) + `>?</button>
             </div>
             <div class="idx-muted inf-intro">Every model call across work-buddy — local and cloud,
                 completions and embeddings — newest first.</div>
@@ -217,6 +217,9 @@ window.inferenceSurface = {
             && (typeof WB_SETTINGS_SUBTAB === 'undefined' || WB_SETTINGS_SUBTAB === 'inference');
     },
 };
+
+// Event delegation adapter
+window.wbAction('infToggleHelp', function (el) { _infToggleHelp(); });
 """
 
 

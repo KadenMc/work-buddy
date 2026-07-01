@@ -78,7 +78,7 @@ function _embRenderUser(data) {
     const vaults = data.vaults || [];
     const ro = _embReadOnly();
     const body = vaults.length ? vaults.map(v => {
-        const gear = ro ? '' : `<button class="emb-gear" title="Edit this vault" onclick='showVaultForm(${JSON.stringify(v.id)})'>&#9881;</button>`;
+        const gear = ro ? '' : `<button class="emb-gear" title="Edit this vault" ` + wbActAttrs('showVaultForm', {vaultId: v.id}) + `>&#9881;</button>`;
         const defNote = v.is_default ? ` <span class="idx-tag" title="Default vault — not yet explicit in config. Edit to make it explicit.">default</span>` : '';
         const orphan = (!v.in_config && !v.is_default) ? ` <span class="idx-badge idx-warn" title="Removed from config; chunks remain until pruned">orphan</span>` : '';
         return `
@@ -94,7 +94,7 @@ function _embRenderUser(data) {
             <td class="idx-r">${gear}</td>
         </tr>`;
     }).join('') : '<tr><td colspan="9" class="idx-muted">no vaults</td></tr>';
-    const addBtn = ro ? '' : `<button class="jobs-form-submit" onclick="showVaultForm()">+ Add vault</button>`;
+    const addBtn = ro ? '' : `<button class="jobs-form-submit" ` + wbActAttrs('showVaultFormNew', {}) + `>+ Add vault</button>`;
     return `
         <div class="emb-section">
             <div class="emb-section-head">
@@ -139,9 +139,9 @@ function _embFormHtml() {
         </div>
         <div id="vault-form-error" class="job-form-error" hidden></div>
         <div class="job-form-actions">
-            <button type="button" id="vault-form-remove" class="emb-remove-btn" onclick="removeVaultFromForm()" hidden>Remove vault</button>
-            <button type="button" class="jobs-form-cancel" onclick="hideVaultForm()">Cancel</button>
-            <button type="button" class="jobs-form-submit" onclick="submitVaultForm()">Save</button>
+            <button type="button" id="vault-form-remove" class="emb-remove-btn" ` + wbActAttrs('removeVaultFromForm', {}) + ` hidden>Remove vault</button>
+            <button type="button" class="jobs-form-cancel" ` + wbActAttrs('hideVaultForm', {}) + `>Cancel</button>
+            <button type="button" class="jobs-form-submit" ` + wbActAttrs('submitVaultForm', {}) + `>Save</button>
         </div>
     </div>`;
 }
@@ -231,6 +231,13 @@ async function removeVault(id) {
     hideVaultForm();
     await loadEmbeddings();
 }
+
+// Event delegation adapters
+window.wbAction('showVaultForm', function (el) { showVaultForm(el.dataset.vaultId); });
+window.wbAction('showVaultFormNew', function (el) { showVaultForm(); });
+window.wbAction('hideVaultForm', function (el) { hideVaultForm(); });
+window.wbAction('removeVaultFromForm', function (el) { removeVaultFromForm(); });
+window.wbAction('submitVaultForm', function (el) { submitVaultForm(); });
 """
 
 

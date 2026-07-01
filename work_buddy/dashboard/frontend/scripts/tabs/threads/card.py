@@ -278,7 +278,7 @@ def script() -> str:
             html += '<div class="threads-card-right">';
             html += '<button class="threads-right-close" '
                   +   'title="Close editor (Esc)" '
-                  +   'onclick="threadCardFocus(\'' + _esc(thread.thread_id) + '\', null)">'
+                  +   wbActAttrs('threadCardCloseRightPane', {threadId: thread.thread_id}) + '>'
                   +   _icon("x") + '</button>';
             html += _renderRightPane(thread, s);
             html += '</div>';
@@ -482,7 +482,7 @@ def script() -> str:
             +     _flagBtn(thread.thread_id, "intent", flagged)
             +     '<button class="threads-edit-btn" '
             +       'title="Edit intent" '
-            +       'onclick="threadCardFocus(\'' + tid + '\', \'intent\')">'
+            +       wbActAttrs('threadCardFocusIntent', {threadId: thread.thread_id}) + '>'
             +       _icon("edit")
             +     '</button>'
             +   '</div>'
@@ -538,17 +538,14 @@ def script() -> str:
                   + (flagged ? ' threads-flagged' : '') + '" '
                   + 'role="button" tabindex="0" '
                   + 'title="Click to expand for full context-item details" '
-                  + 'onclick="threadCardFocus(\'' + tid + '\', \'' + cid + '\')" '
-                  + 'onkeydown="if(event.key===\'Enter\'||event.key===\' \''
-                  + '){event.preventDefault();'
-                  + 'threadCardFocus(\'' + tid + '\', \'' + cid + '\')}">';
+                  + wbActAttrs('threadCardFocusContext', {threadId: thread.thread_id, contextId: ci.id}) + '>';
             html += '<div class="threads-item-label">'
                   + _esc(ci.label || ci.id) + '</div>';
             html += '<div class="threads-item-source">'
                   + _esc(ci.source || "") + (ci.type ? " · " + _esc(ci.type) : "")
                   + '</div>';
             html += '<div class="threads-item-actions" '
-                  + 'onclick="event.stopPropagation()">';
+                  + 'data-on-click="wbNoop">';
             // _flagBtn already stops propagation in its onclick;
             // wrapping the actions div is belt-and-braces so any
             // future inline action button doesn't accidentally
@@ -630,10 +627,7 @@ def script() -> str:
                       ? (' role="button" tabindex="0" '
                           + 'title="Click to open this action\'s thread '
                           + 'for full Approve / Edit / Redirect / Reject" '
-                          + 'onclick="threadsPushPath(\'' + hostEsc + '\')" '
-                          + 'onkeydown="if(event.key===\'Enter\'||event.key===\' \''
-                          + '){event.preventDefault();'
-                          + 'threadsPushPath(\'' + hostEsc + '\')}"')
+                          + wbActAttrs('threadsPushPathAction', {targetId: hostId}))
                       : '')
                   + '>';
             // Action label: kind icon + name + small kind chip
@@ -742,14 +736,12 @@ def script() -> str:
                 // already stopPropagates; the wrapper is belt-and-
                 // suspenders for the edit + redirect buttons.
                 html += '<div class="threads-item-actions"'
-                      + (clickable ? ' onclick="event.stopPropagation()"' : '')
+                      + (clickable ? ' data-on-click="wbNoop"' : '')
                       + '>';
                 html += _flagBtn(thread.thread_id, a.id, flagged);
                 html += '<button class="threads-edit-btn" '
                       + 'title="Edit action" '
-                      + 'onclick="' + (clickable ? 'event.stopPropagation();' : '')
-                      + 'threadCardFocus(\'' + tidEsc + '\', \''
-                      + _esc(a.id) + '\')">'
+                      + wbActAttrs('threadCardFocusAction', {threadId: thread.thread_id, actionId: a.id}) + '>'
                       + _icon("edit") + '</button>';
                 // Per-action Redirect. Hoisted singular actions carry
                 // host_thread_id, so the redirect targets the child
@@ -762,8 +754,7 @@ def script() -> str:
                     html += '<button class="threads-redirect-btn" '
                           + 'title="Redirect: ask the LLM to try this action '
                           + 'again with your feedback" '
-                          + 'onclick="event.stopPropagation();'
-                          + 'threadCardRedirectAction(\'' + hostEsc + '\')">'
+                          + wbActAttrs('threadCardRedirectHostAction', {hostId: hostId}) + '>'
                           + _icon("refresh-cw") + '</button>';
                 }
                 html += '</div>';
@@ -810,7 +801,7 @@ def script() -> str:
             + '<a href="#" '
             +   'class="threads-timeline-link" '
             +   'title="Open the full event log for this thread" '
-            +   'onclick="event.preventDefault();threadsOpenInspector(\'evlog\')">'
+            +   'data-on-click="threadCardOpenEvlog">'
             +   _icon("list") + ' View timeline'
             + '</a>'
             + '</div>'
@@ -918,8 +909,7 @@ def script() -> str:
                 + (sub.display_mode === 'terminal'
                     ? 'threads-terminal' : '');
             html += '<li class="' + cls + '" '
-                  + 'onclick="threadsPushPath(\''
-                  +   _esc(sub.thread_id) + '\')">'
+                  + wbActAttrs('threadsPushPathAction', {targetId: sub.thread_id}) + '>'
                   + '<div class="threads-subthread-meta">'
                   +   '<span class="threads-subthread-state">'
                   +     _esc(stateLabel) + '</span>'
@@ -968,9 +958,7 @@ def script() -> str:
                   +   '<button class="threads-subthread-edit-btn" '
                   +     'title="Edit this proposed action (opens the right-pane editor)" '
                   +     'aria-label="Edit proposed action" '
-                  +     'onclick="event.stopPropagation();'
-                  +       'threadsOpenSubThreadAction(\''
-                  +       _esc(sub.thread_id) + '\', \'' + _esc(a.id) + '\')">'
+                  +     wbActAttrs('threadsOpenSubThreadActionBtn', {subThreadId: sub.thread_id, actionId: a.id}) + '>'
                   +     _icon("edit")
                   +   '</button>'
                   + '</div>';
@@ -1078,21 +1066,20 @@ def script() -> str:
                 +   '<kbd>Esc</kbd> to discard'
                 + '</p>'
                 + '<textarea class="threads-textarea" rows="6" autofocus '
-                +   'oninput="threadCardEditIntent(\'' + tidJs + '\', this.value)" '
-                +   'onkeydown="return threadCardEditorKeydown(event, \''
-                +     tidJs + '\', \'intent\')"'
+                +   wbActAttrs('threadCardEditIntentInput', {threadId: thread.thread_id}, 'input') + ' '
+                +   wbActAttrs('threadCardIntentEditorKeydown', {threadId: thread.thread_id}, 'keydown')
                 + '>' + _esc(edited) + '</textarea>'
                 + '<div class="threads-editor-actions">'
                 +   '<button class="threads-editor-btn threads-editor-btn-cancel" '
                 +     'title="Discard edit (Esc)" '
-                +     'onclick="threadCardDiscardIntentEdit(\'' + tidJs + '\')">'
+                +     wbActAttrs('threadCardDiscardIntentEditBtn', {threadId: thread.thread_id}) + '>'
                 +     '<span class="threads-editor-icon">&times;</span>'
                 +     '<span class="threads-editor-label">Discard</span>'
                 +   '</button>'
                 +   '<button class="threads-editor-btn threads-editor-btn-confirm" '
                 +     'title="Confirm edit (Enter). The edit is staged; click Accept on '
                 +       'the main card to commit it to the thread." '
-                +     'onclick="threadCardConfirmIntentEdit(\'' + tidJs + '\')">'
+                +     wbActAttrs('threadCardConfirmIntentEditBtn', {threadId: thread.thread_id}) + '>'
                 +     '<span class="threads-editor-icon">&#x21A9;</span>'
                 +     '<span class="threads-editor-label">Confirm</span>'
                 +   '</button>'
@@ -1215,30 +1202,29 @@ def script() -> str:
             '<div class="threads-card-footer">'
             +   '<button class="threads-btn-icon threads-btn-destructive" '
             +     'title="Dismiss this thread" '
-            +     'onclick="threadCommitAction(\'' + tid + '\', \'dismiss\')">'
+            +     wbActAttrs('threadCommitActionVerb', {threadId: thread.thread_id, verb: 'dismiss'}) + '>'
             +     _icon("trash") + '</button>'
             +   (cleanupShown
                     ? '<button class="threads-btn-icon threads-btn-neutral" '
                     +   'title="Clean up inciting event source" '
-                    +   'onclick="threadCommitAction(\'' + tid + '\', \'cleanup\')">'
+                    +   wbActAttrs('threadCommitActionVerb', {threadId: thread.thread_id, verb: 'cleanup'}) + '>'
                     +   _icon("broom") + '</button>'
                     : '')
             +   '<button class="threads-btn-icon threads-btn-neutral" '
             +     'title="Later — left-click defers 6h; right-click for options" '
-            +     'onclick="threadCommitAction(\'' + tid + '\', \'later\', {hours: 6})" '
-            +     'oncontextmenu="event.preventDefault();'
-            +     'threadsShowLaterPopup(this, \'' + tid + '\')">'
+            +     wbActAttrs('threadCommitActionLater', {threadId: thread.thread_id}) + ' '
+            +     'data-on-contextmenu="threadsLaterPopup">'
             +     _icon("clock") + '</button>'
             +   '<button class="threads-btn-icon threads-btn-redirect" '
             +     'title="Redirect — give the agent feedback and re-infer" '
-            +     'onclick="threadCommitAction(\'' + tid + '\', \'redirect\')">'
+            +     wbActAttrs('threadCommitActionVerb', {threadId: thread.thread_id, verb: 'redirect'}) + '>'
             +     _icon("corner-up-left") + '</button>'
             +   '<button class="threads-btn-icon threads-btn-accept" '
             +     (acceptDisabled ? 'disabled ' : '')
             +     'title="' + _esc(acceptTitle) + '" '
             +     (acceptDisabled
                     ? ''
-                    : 'onclick="threadCommitAction(\'' + tid + '\', \'accept\')"')
+                    : wbActAttrs('threadCommitActionVerb', {threadId: thread.thread_id, verb: 'accept'}))
             +     '>' + _icon("check") + '</button>'
             + '</div>'
         );
@@ -1265,7 +1251,7 @@ def script() -> str:
               + '</p>';
         html += '<textarea class="threads-clarify-textarea" rows="6" '
               + 'placeholder="Tell the agent what you mean..." '
-              + 'oninput="threadClarifyInput(\'' + tid + '\', this.value)">'
+              + wbActAttrs('threadClarifyInputChange', {threadId: thread.thread_id}, 'input') + '>'
               + _esc(stored) + '</textarea>';
         if (thread.context_items && thread.context_items.length > 0) {
             html += '<div class="threads-clarify-context">';
@@ -1306,23 +1292,22 @@ def script() -> str:
             '<div class="threads-card-footer">'
             +   '<button class="threads-btn-icon threads-btn-destructive" '
             +     'title="Dismiss this thread" '
-            +     'onclick="threadCommitAction(\'' + tid + '\', \'dismiss\')">'
+            +     wbActAttrs('threadCommitActionVerb', {threadId: thread.thread_id, verb: 'dismiss'}) + '>'
             +     _icon("trash") + '</button>'
             +   (cleanupShown
                     ? '<button class="threads-btn-icon threads-btn-neutral" '
                     +   'title="Clean up inciting event source" '
-                    +   'onclick="threadCommitAction(\'' + tid + '\', \'cleanup\')">'
+                    +   wbActAttrs('threadCommitActionVerb', {threadId: thread.thread_id, verb: 'cleanup'}) + '>'
                     +   _icon("broom") + '</button>'
                     : '')
             +   '<button class="threads-btn-icon threads-btn-neutral" '
             +     'title="Later — left-click defers 6h; right-click for options" '
-            +     'onclick="threadCommitAction(\'' + tid + '\', \'later\', {hours: 6})" '
-            +     'oncontextmenu="event.preventDefault();'
-            +     'threadsShowLaterPopup(this, \'' + tid + '\')">'
+            +     wbActAttrs('threadCommitActionLater', {threadId: thread.thread_id}) + ' '
+            +     'data-on-contextmenu="threadsLaterPopup">'
             +     _icon("clock") + '</button>'
             +   '<button class="threads-btn-icon threads-btn-accept" '
             +     'title="Submit clarification" '
-            +     'onclick="threadCommitAction(\'' + tid + '\', \'accept\', {input: window._clarifyInput[\'' + tid + '\'] || \'\'})">'
+            +     wbActAttrs('threadCommitActionClarifyAccept', {threadId: thread.thread_id}) + '>'
             +     _icon("check") + '</button>'
             + '</div>'
         );
@@ -1362,17 +1347,16 @@ def script() -> str:
         html += '<div class="threads-card-footer">'
               +   '<button class="threads-btn-icon threads-btn-neutral" '
               +     'title="Later — left-click defers 6h; right-click for options" '
-              +     'onclick="threadCommitAction(\'' + tid + '\', \'later\', {hours: 6})" '
-              +     'oncontextmenu="event.preventDefault();'
-              +     'threadsShowLaterPopup(this, \'' + tid + '\')">'
+              +     wbActAttrs('threadCommitActionLater', {threadId: thread.thread_id}) + ' '
+              +     'data-on-contextmenu="threadsLaterPopup">'
               +     _icon("clock") + '</button>'
               +   '<button class="threads-btn-icon threads-btn-redirect" '
               +     'title="Redirect — give the agent feedback and re-infer" '
-              +     'onclick="threadCommitAction(\'' + tid + '\', \'redirect\')">'
+              +     wbActAttrs('threadCommitActionVerb', {threadId: thread.thread_id, verb: 'redirect'}) + '>'
               +     _icon("corner-up-left") + '</button>'
               +   '<button class="threads-btn-icon threads-btn-accept" '
               +     'title="Mark done" '
-              +     'onclick="threadCommitAction(\'' + tid + '\', \'accept\')">'
+              +     wbActAttrs('threadCommitActionVerb', {threadId: thread.thread_id, verb: 'accept'}) + '>'
               +     _icon("check") + '</button>'
               + '</div>';
         html += '</div>';
@@ -1408,7 +1392,7 @@ def script() -> str:
               + 'Tell the agent what to do now.</p>';
         html += '<textarea class="threads-redirect-textarea" rows="5" '
               + 'placeholder="Describe what went wrong / what to try..." '
-              + 'oninput="threadRedirectInput(\'' + tid + '\', this.value)">'
+              + wbActAttrs('threadRedirectInputChange', {threadId: thread.thread_id}, 'input') + '>'
               + _esc(stored) + '</textarea>';
         html += '</div>';
         // Footer: Trash / Broom / Later / Submit redirect — unified
@@ -1417,23 +1401,22 @@ def script() -> str:
         html += '<div class="threads-card-footer">'
               +   '<button class="threads-btn-icon threads-btn-destructive" '
               +     'title="Dismiss this thread" '
-              +     'onclick="threadCommitAction(\'' + tid + '\', \'dismiss\')">'
+              +     wbActAttrs('threadCommitActionVerb', {threadId: thread.thread_id, verb: 'dismiss'}) + '>'
               +     _icon("trash") + '</button>'
               +   (cleanupShown
                     ? '<button class="threads-btn-icon threads-btn-neutral" '
                     +   'title="Clean up inciting event source" '
-                    +   'onclick="threadCommitAction(\'' + tid + '\', \'cleanup\')">'
+                    +   wbActAttrs('threadCommitActionVerb', {threadId: thread.thread_id, verb: 'cleanup'}) + '>'
                     +   _icon("broom") + '</button>'
                     : '')
               +   '<button class="threads-btn-icon threads-btn-neutral" '
               +     'title="Later — left-click defers 6h; right-click for options" '
-              +     'onclick="threadCommitAction(\'' + tid + '\', \'later\', {hours: 6})" '
-              +     'oncontextmenu="event.preventDefault();'
-              +     'threadsShowLaterPopup(this, \'' + tid + '\')">'
+              +     wbActAttrs('threadCommitActionLater', {threadId: thread.thread_id}) + ' '
+              +     'data-on-contextmenu="threadsLaterPopup">'
               +     _icon("clock") + '</button>'
               +   '<button class="threads-btn-icon threads-btn-redirect" '
               +     'title="Submit redirect feedback" '
-              +     'onclick="threadCommitAction(\'' + tid + '\', \'redirect\', {feedback: window._redirectInput[\'' + tid + '\'] || \'\'})">'
+              +     wbActAttrs('threadCommitActionRedirectSubmit', {threadId: thread.thread_id}) + '>'
               +     _icon("corner-up-left") + '</button>'
               + '</div>';
         html += '</div>';
@@ -1465,21 +1448,20 @@ def script() -> str:
         html += '<div class="threads-card-footer">'
               +   '<button class="threads-btn-icon threads-btn-destructive" '
               +     'title="Dismiss this thread" '
-              +     'onclick="threadCommitAction(\'' + tid + '\', \'dismiss\')">'
+              +     wbActAttrs('threadCommitActionVerb', {threadId: thread.thread_id, verb: 'dismiss'}) + '>'
               +     _icon("trash") + '</button>'
               +   '<button class="threads-btn-icon threads-btn-neutral" '
               +     'title="Later — left-click defers 6h; right-click for options" '
-              +     'onclick="threadCommitAction(\'' + tid + '\', \'later\', {hours: 6})" '
-              +     'oncontextmenu="event.preventDefault();'
-              +     'threadsShowLaterPopup(this, \'' + tid + '\')">'
+              +     wbActAttrs('threadCommitActionLater', {threadId: thread.thread_id}) + ' '
+              +     'data-on-contextmenu="threadsLaterPopup">'
               +     _icon("clock") + '</button>'
               +   '<button class="threads-btn-icon threads-btn-neutral" '
               +     'title="Accept the failure and close this thread" '
-              +     'onclick="threadCommitAction(\'' + tid + '\', \'accept-cleanup-failure\')">'
+              +     wbActAttrs('threadCommitActionVerb', {threadId: thread.thread_id, verb: 'accept-cleanup-failure'}) + '>'
               +     _icon("check") + '</button>'
               +   '<button class="threads-btn-icon threads-btn-redirect" '
               +     'title="Retry cleanup" '
-              +     'onclick="threadCommitAction(\'' + tid + '\', \'retry-cleanup\')">'
+              +     wbActAttrs('threadCommitActionVerb', {threadId: thread.thread_id, verb: 'retry-cleanup'}) + '>'
               +     _icon("refresh-cw") + '</button>'
               + '</div>';
         html += '</div>';
@@ -1510,8 +1492,7 @@ def script() -> str:
         return '<button class="threads-flag-btn'
              + (flagged ? ' threads-flag-on' : '') + '" '
              + 'title="' + (flagged ? 'Unflag' : 'Flag as wrong') + '" '
-             + 'onclick="threadCardToggleFlag(\'' + _esc(threadId) + '\', \''
-             + _esc(itemId) + '\')">'
+             + wbActAttrs('threadCardToggleFlagBtn', {threadId: threadId, itemId: itemId}) + '>'
              + (flagged ? _icon("x-square") : _icon("x"))
              + '</button>';
     }
@@ -1632,6 +1613,110 @@ def script() -> str:
              + 'stroke-width="2" stroke-linecap="round" '
              + 'stroke-linejoin="round">' + p + '</svg>';
     }
+
+    // ----- Delegated action adapters (replaces inline on*= handlers) ---
+    // See core/delegation.py. Each adapter reads its args from
+    // el.dataset (camelCase of the data-* attrs wbActAttrs wrote) and
+    // calls the same window.* function the old inline handler called,
+    // with the same arguments in the same order.
+
+    window.wbAction('threadCardCloseRightPane', function (el) {
+        threadCardFocus(el.dataset.threadId, null);
+    });
+
+    window.wbAction('threadCardFocusIntent', function (el) {
+        threadCardFocus(el.dataset.threadId, 'intent');
+    });
+
+    window.wbAction('threadCardFocusContext', function (el) {
+        threadCardFocus(el.dataset.threadId, el.dataset.contextId);
+    });
+
+    window.wbAction('threadCardFocusAction', function (el) {
+        threadCardFocus(el.dataset.threadId, el.dataset.actionId);
+    });
+
+    // Shared "navigate to a thread by id" action. Used both by the
+    // singular-hoisted action <li> (data-target-id = host_thread_id)
+    // and the sub-thread mini-card <li> (data-target-id = sub.thread_id).
+    window.wbAction('threadsPushPathAction', function (el) {
+        threadsPushPath(el.dataset.targetId);
+    });
+
+    window.wbAction('threadCardRedirectHostAction', function (el) {
+        threadCardRedirectAction(el.dataset.hostId);
+    });
+
+    window.wbAction('threadCardOpenEvlog', function (el, e) {
+        e.preventDefault();
+        threadsOpenInspector('evlog');
+    });
+
+    window.wbAction('threadsOpenSubThreadActionBtn', function (el) {
+        threadsOpenSubThreadAction(el.dataset.subThreadId, el.dataset.actionId);
+    });
+
+    window.wbAction('threadCardEditIntentInput', function (el) {
+        threadCardEditIntent(el.dataset.threadId, el.value);
+    });
+
+    window.wbAction('threadCardIntentEditorKeydown', function (el, e) {
+        threadCardEditorKeydown(e, el.dataset.threadId, 'intent');
+    });
+
+    window.wbAction('threadCardDiscardIntentEditBtn', function (el) {
+        threadCardDiscardIntentEdit(el.dataset.threadId);
+    });
+
+    window.wbAction('threadCardConfirmIntentEditBtn', function (el) {
+        threadCardConfirmIntentEdit(el.dataset.threadId);
+    });
+
+    window.wbAction('threadClarifyInputChange', function (el) {
+        threadClarifyInput(el.dataset.threadId, el.value);
+    });
+
+    window.wbAction('threadRedirectInputChange', function (el) {
+        threadRedirectInput(el.dataset.threadId, el.value);
+    });
+
+    window.wbAction('threadCardToggleFlagBtn', function (el) {
+        threadCardToggleFlag(el.dataset.threadId, el.dataset.itemId);
+    });
+
+    // Shared verb-dispatch action for the footer buttons that call
+    // threadCommitAction(tid, verb) with no extra option object
+    // (dismiss / cleanup / redirect / accept / accept-cleanup-failure /
+    // retry-cleanup).
+    window.wbAction('threadCommitActionVerb', function (el) {
+        threadCommitAction(el.dataset.threadId, el.dataset.verb);
+    });
+
+    // "Later" button — left-click always defers 6h via the option
+    // object; the right-click (oncontextmenu) popup stays a plain
+    // inline handler since the dispatcher has no contextmenu event.
+    window.wbAction('threadCommitActionLater', function (el) {
+        threadCommitAction(el.dataset.threadId, 'later', {hours: 6});
+    });
+
+    // Clarification-card Accept — submits the staged free-text input.
+    window.wbAction('threadCommitActionClarifyAccept', function (el) {
+        const t = el.dataset.threadId;
+        threadCommitAction(t, 'accept', {input: window._clarifyInput[t] || ''});
+    });
+
+    // Redirect-card submit — sends the staged redirect feedback text.
+    window.wbAction('threadCommitActionRedirectSubmit', function (el) {
+        const t = el.dataset.threadId;
+        threadCommitAction(t, 'redirect', {feedback: window._redirectInput[t] || ''});
+    });
+
+    // Right-click "Later" -> options popup (contextmenu delegated). threadId
+    // comes from the button's data-thread-id (emitted by its click action).
+    window.wbAction('threadsLaterPopup', function (el, e) {
+        e.preventDefault();
+        threadsShowLaterPopup(el, el.dataset.threadId);
+    });
 })();
 """
 

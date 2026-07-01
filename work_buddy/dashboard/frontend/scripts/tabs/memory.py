@@ -130,8 +130,8 @@ function renderEntityList(entities) {
                 .map(t => '<span class="entity-tag-chip">' + escapeHtml(t.tag) + '</span>')
                 .join(' ');
             html +=
-                '<div class="entity-list-row' + (isSelected ? ' selected' : '') + '"' +
-                ' onclick="selectEntity(' + e.id + ')">' +
+                '<div class="entity-list-row' + (isSelected ? ' selected' : '') + '" ' +
+                wbActAttrs('entitySelect', {id: e.id}) + '>' +
                 '  <div class="entity-list-name">' + escapeHtml(e.canonical_name) + '</div>' +
                 (aliasCount > 0
                     ? '<div class="entity-list-aliases">aka ' + aliasCount + ' alias' + (aliasCount === 1 ? '' : 'es') + '</div>'
@@ -144,18 +144,17 @@ function renderEntityList(entities) {
 }
 
 function renderEntityListHeader() {
-    // The tag-filter input commits via inline handlers (onchange +
-    // Enter) rather than addEventListener: morphdom preserves the live
-    // input node across re-renders, so re-attaching a listener every
-    // render would stack duplicates. Inline handlers are attributes —
-    // morphdom syncs them idempotently.
+    // The tag-filter input commits via delegated handlers (change +
+    // Enter-on-keydown) rather than addEventListener: morphdom preserves
+    // the live input node across re-renders, so re-attaching a listener
+    // every render would stack duplicates. data-on-* attributes are
+    // synced idempotently by morphdom just like inline handlers were.
     return '<div class="entity-list-header">' +
-        '<button class="entity-new-btn" onclick="openEntityCreateForm()">+ New entity</button>' +
+        '<button class="entity-new-btn" data-on-click="openEntityCreateForm">+ New entity</button>' +
         '<input type="text" id="entity-tag-filter" class="entity-tag-filter-input"' +
         ' placeholder="Filter by tag (e.g. person)" value="' +
         escapeHtml(_entityTagFilter) + '"' +
-        ' onchange="onEntityTagFilterCommit(this.value)"' +
-        ' onkeydown="if(event.key===\'Enter\')onEntityTagFilterCommit(this.value)" />' +
+        ' ' + wbActAttrs('entityTagFilterCommit', {}, ['change', 'keydown']) + ' />' +
         '</div>';
 }
 
@@ -165,6 +164,16 @@ function onEntityTagFilterCommit(value) {
     _entityTagFilter = next;
     loadEntities();
 }
+
+window.wbAction('entityTagBlur', function () { entityTagBlur(); });
+window.wbAction('acceptTagSuggest', function (el, e) {
+    e.preventDefault();
+    acceptTagSuggestionFromRow(Number(el.dataset.i));
+});
+window.wbAction('entityTagFilterCommit', function (el, e) {
+    if (e.type === 'keydown' && e.key !== 'Enter') return;
+    onEntityTagFilterCommit(el.value);
+});
 
 function _topTag(entity) {
     const tags = entity.tags || [];
@@ -179,7 +188,7 @@ async function selectEntity(eid) {
     if (typeof _persistHash === 'function') _persistHash();
     document.querySelectorAll('.entity-list-row').forEach(row => {
         row.classList.toggle('selected',
-            row.getAttribute('onclick') === 'selectEntity(' + eid + ')');
+            String(row.dataset.id) === String(eid));
     });
     await renderEntityDetail(eid);
 }
@@ -211,19 +220,19 @@ function _entityDetailHTML(e) {
         '    <input id="entity-name-input" class="entity-name-input"' +
         '           value="' + escapeHtml(e.canonical_name) + '"' +
         '           data-original="' + escapeHtml(e.canonical_name) + '"' +
-        '           oninput="entitySyncDirty()" />' +
-        '    <button class="entity-delete-btn" onclick="deleteEntity(' + e.id + ')">Delete</button>' +
+        '           data-on-input="entitySyncDirty" />' +
+        '    <button class="entity-delete-btn" ' + wbActAttrs('deleteEntity', {id: e.id}) + '>Delete</button>' +
         '  </div>' +
         '  <div class="entity-detail-row">' +
         '    <label>Description</label>' +
         '    <textarea id="entity-description-input" class="entity-description-input"' +
         '              data-original="' + escapeHtml(e.description || '') + '"' +
-        '              oninput="entitySyncDirty()"' +
+        '              data-on-input="entitySyncDirty"' +
         '              placeholder="What is this? Relationship context lives here.">' +
         escapeHtml(e.description || '') +
         '    </textarea>' +
         '    <div class="entity-save-row">' +
-        '      <button class="entity-save-btn" onclick="saveEntityIdentity(' + e.id + ')">Save</button>' +
+        '      <button class="entity-save-btn" ' + wbActAttrs('saveEntityIdentity', {id: e.id}) + '>Save</button>' +
         '      <span id="entity-save-status" class="entity-save-status"></span>' +
         '    </div>' +
         '  </div>' +
@@ -236,14 +245,16 @@ function _entityDetailHTML(e) {
         '      <div class="entity-tag-add-combo">' +
         '        <input id="entity-tag-add" class="entity-tag-add-input"' +
         '               placeholder="Add tag (e.g. person/family)"' +
-        '               autocomplete="off" spellcheck="false"' +
-        '               oninput="entityTagInput(event, ' + e.id + ')"' +
-        '               onkeydown="entityTagKeydown(event, ' + e.id + ')"' +
-        '               onblur="entityTagBlur()" />' +
+        '               autocomplete="off" spellcheck="false" ' +
+        wbActAttrs('entityTagInput', {id: e.id}, 'input') + ' ' +
+        wbActAttrs('entityTagKeydownAct', {id: e.id}, 'keydown') + ' ' +
+        // Delegated via focusout (the bubbling counterpart of blur, which
+        // does not bubble); the shared dispatcher binds focusout for this.
+        'data-on-focusout="entityTagBlur" />' +
         '        <div id="entity-tag-suggest" class="entity-tag-suggest"' +
         '             style="display:none;"></div>' +
         '      </div>' +
-        '      <button class="entity-add-chip-btn" onclick="addEntityTag(' + e.id + ')">Add</button>' +
+        '      <button class="entity-add-chip-btn" ' + wbActAttrs('addEntityTag', {id: e.id}) + '>Add</button>' +
         '    </div>' +
         '    <div id="entity-tag-status" class="entity-save-status"></div>' +
         '  </div>' +
@@ -253,9 +264,9 @@ function _entityDetailHTML(e) {
         aliases.map(a => _renderAliasChip(e.id, a)).join('') +
         '    </div>' +
         '    <div class="entity-alias-add-row">' +
-        '      <input id="entity-alias-add" class="entity-alias-add-input" placeholder="Add alias"' +
-        '             onkeydown="if(event.key===\'Enter\'){event.preventDefault();addEntityAlias(' + e.id + ')}" />' +
-        '      <button class="entity-add-chip-btn" onclick="addEntityAlias(' + e.id + ')">Add</button>' +
+        '      <input id="entity-alias-add" class="entity-alias-add-input" placeholder="Add alias" ' +
+        wbActAttrs('entityAliasAddKeydown', {id: e.id}, 'keydown') + ' />' +
+        '      <button class="entity-add-chip-btn" ' + wbActAttrs('addEntityAlias', {id: e.id}) + '>Add</button>' +
         '    </div>' +
         '    <div id="entity-alias-status" class="entity-save-status"></div>' +
         '  </div>' +
@@ -271,27 +282,26 @@ function _entityDetailHTML(e) {
     );
 }
 
-// Tag + alias chips embed the target value into an inline onclick.
-// The value is encodeURIComponent-encoded on the way in and
-// decodeURIComponent-decoded in the handler — encodeURIComponent
-// output contains no quotes or backslashes, so it is always safe
-// inside a single-quoted JS string literal regardless of what
-// punctuation the tag or alias contains (e.g. an alias like O'Brien).
+// Tag + alias chips embed the target value into a data-* attribute via
+// wbActAttrs, which HTML-escapes it. That removes the FM-1 quoting
+// hazard by construction, so the encodeURIComponent/decodeURIComponent
+// round-trip the inline-handler version needed is no longer necessary
+// (e.g. an alias like O'Brien is just a string in el.dataset).
 function _renderTagChip(eid, tag) {
     return '<span class="entity-tag-chip-edit">' +
         escapeHtml(tag.tag) +
-        '<button class="entity-chip-x" title="Remove tag"' +
-        ' onclick="removeEntityTag(' + eid + ', \'' +
-        encodeURIComponent(tag.tag_norm) + '\')">×</button>' +
+        '<button class="entity-chip-x" title="Remove tag" ' +
+        wbActAttrs('removeEntityTag', {id: eid, tagNorm: tag.tag_norm}) +
+        '>×</button>' +
         '</span>';
 }
 
 function _renderAliasChip(eid, alias) {
     return '<span class="entity-alias-chip">' +
         escapeHtml(alias.alias) +
-        '<button class="entity-chip-x" title="Remove alias"' +
-        ' onclick="removeEntityAlias(' + eid + ', \'' +
-        encodeURIComponent(alias.alias) + '\')">×</button>' +
+        '<button class="entity-chip-x" title="Remove alias" ' +
+        wbActAttrs('removeEntityAlias', {id: eid, alias: alias.alias}) +
+        '>×</button>' +
         '</span>';
 }
 
@@ -307,9 +317,10 @@ function _renderRefRow(ref) {
 
 // Toggle the Save button's "dirty" affordance when the name or
 // description diverges from the values last loaded from the server.
-// Bound via inline oninput on both fields — no addEventListener, so a
-// morphdom re-render that preserves the live input cannot stack a
-// duplicate handler. Purely a visual hint; Save works regardless.
+// Bound via data-on-input (delegated dispatcher) on both fields — no
+// addEventListener, so a morphdom re-render that preserves the live
+// input cannot stack a duplicate handler. Purely a visual hint; Save
+// works regardless.
 function entitySyncDirty() {
     const name = document.getElementById('entity-name-input');
     const desc = document.getElementById('entity-description-input');
@@ -394,8 +405,7 @@ async function addEntityTag(eid) {
     await renderEntityDetail(eid);
 }
 
-async function removeEntityTag(eid, encodedTagNorm) {
-    const tagNorm = decodeURIComponent(encodedTagNorm);
+async function removeEntityTag(eid, tagNorm) {
     const current = await _fetchEntityTags(eid);
     if (current === null) {
         _entitySetStatus('entity-tag-status', 'Could not load current tags.', 'var(--red)');
@@ -586,7 +596,7 @@ function _renderTagSuggest(typed, addedNorms) {
     }
     box.innerHTML = _tagSuggestItems.map((it, i) =>
         '<div class="entity-tag-suggest-row" data-i="' + i + '"' +
-        ' onmousedown="event.preventDefault();acceptTagSuggestionFromRow(' + i + ')">' +
+        ' data-on-mousedown="acceptTagSuggest">' +
         '<span class="entity-tag-suggest-path">' + escapeHtml(it.path) + '</span>' +
         '<span class="entity-tag-suggest-count">' + it.count + '</span>' +
         '</div>'
@@ -653,8 +663,7 @@ async function addEntityAlias(eid) {
     await renderEntityDetail(eid);
 }
 
-async function removeEntityAlias(eid, encodedAlias) {
-    const alias = decodeURIComponent(encodedAlias);
+async function removeEntityAlias(eid, alias) {
     _entitySetStatus('entity-alias-status', 'Removing…');
     const resp = await fetch('/api/entities/' + eid + '/aliases', {
         method: 'DELETE',
@@ -724,8 +733,8 @@ function openEntityCreateForm() {
         '    <input id="entity-create-aliases" class="entity-create-input" placeholder="e.g. Ada, A.L." />' +
         '  </div>' +
         '  <div class="entity-save-row">' +
-        '    <button class="entity-save-btn dirty" onclick="submitEntityCreate()">Create</button>' +
-        '    <button class="entity-cancel-btn" onclick="cancelEntityCreate()">Cancel</button>' +
+        '    <button class="entity-save-btn dirty" data-on-click="submitEntityCreate">Create</button>' +
+        '    <button class="entity-cancel-btn" data-on-click="cancelEntityCreate">Cancel</button>' +
         '    <span id="entity-create-status" class="entity-save-status"></span>' +
         '  </div>' +
         '</div>');
@@ -778,6 +787,66 @@ async function submitEntityCreate() {
     await loadEntities();
     if (data.id) await selectEntity(data.id);
 }
+
+// ---- Delegated action registrations (event-delegation dispatcher) ----
+
+window.wbAction('entitySelect', function (el) {
+    selectEntity(parseInt(el.dataset.id, 10));
+});
+
+window.wbAction('deleteEntity', function (el) {
+    deleteEntity(parseInt(el.dataset.id, 10));
+});
+
+window.wbAction('saveEntityIdentity', function (el) {
+    saveEntityIdentity(parseInt(el.dataset.id, 10));
+});
+
+window.wbAction('entitySyncDirty', function () {
+    entitySyncDirty();
+});
+
+window.wbAction('entityTagInput', function (el, e) {
+    entityTagInput(e, parseInt(el.dataset.id, 10));
+});
+
+window.wbAction('entityTagKeydownAct', function (el, e) {
+    entityTagKeydown(e, parseInt(el.dataset.id, 10));
+});
+
+window.wbAction('addEntityTag', function (el) {
+    addEntityTag(parseInt(el.dataset.id, 10));
+});
+
+window.wbAction('removeEntityTag', function (el) {
+    removeEntityTag(parseInt(el.dataset.id, 10), el.dataset.tagNorm);
+});
+
+window.wbAction('entityAliasAddKeydown', function (el, e) {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    addEntityAlias(parseInt(el.dataset.id, 10));
+});
+
+window.wbAction('addEntityAlias', function (el) {
+    addEntityAlias(parseInt(el.dataset.id, 10));
+});
+
+window.wbAction('removeEntityAlias', function (el) {
+    removeEntityAlias(parseInt(el.dataset.id, 10), el.dataset.alias);
+});
+
+window.wbAction('openEntityCreateForm', function () {
+    openEntityCreateForm();
+});
+
+window.wbAction('submitEntityCreate', function () {
+    submitEntityCreate();
+});
+
+window.wbAction('cancelEntityCreate', function () {
+    cancelEntityCreate();
+});
 
 // ---- Surface handle for the SSE event bus ----
 // Other processes (MCP-driven entity_create/update/delete, agent edits)

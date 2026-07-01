@@ -274,7 +274,7 @@ function controlStateBadge(state, nodeId) {
         return `<span class="badge badge-clickable ${map[state] || 'badge-muted'}" ` +
             `data-drilldown-node="${escapeHtml(nodeId)}" ` +
             `title="Click to find what's wrong under this node" ` +
-            `onclick="onBadgeDrilldown(event)">${state}</span>`;
+            `data-on-click="badgeDrilldown">${state}</span>`;
     }
     return `<span class="badge ${map[state] || 'badge-muted'}">${state}</span>`;
 }
@@ -283,11 +283,10 @@ function controlStateBadge(state, nodeId) {
 // Walks the node's descendants (via grouping_parents and dependencies),
 // collects every non-ok node, opens all ancestor <details>, scrolls to
 // the first match, and flashes it.
-function onBadgeDrilldown(ev) {
-    ev.stopPropagation();
-    ev.preventDefault();
-    const badge = ev.currentTarget;
-    const rootId = badge.dataset.drilldownNode;
+function onBadgeDrilldown(el, e) {
+    e.stopPropagation();
+    e.preventDefault();
+    const rootId = el.dataset.drilldownNode;
     if (!rootId || !WB_CONTROL_GRAPH) return;
     const nodes = WB_CONTROL_GRAPH.nodes;
 
@@ -427,7 +426,7 @@ function preferenceToggleControls(componentId, currentPref) {
                 class="settings-pref-btn ${isActive ? 'active' : ''}"
                 data-component="${escapeHtml(componentId)}"
                 data-value="${value}"
-                onclick="onPreferenceClick(this)" ${disabledRo}>
+                data-on-click="preferenceClick" ${disabledRo}>
             ${escapeHtml(label)}
         </button>
     `;
@@ -562,7 +561,7 @@ function renderSettingsSummary() {
             if (jumpStates.has(s)) {
                 return (
                     `<span class="badge badge-clickable ${cls}" ` +
-                    `onclick="onStateChipClick('${s}')" ` +
+                    wbActAttrs('stateChipClick', {state: s}) + ` ` +
                     `title="Click to jump to the first node in this state">${s}</span> ` +
                     `<span class="settings-summary-count">${totals[s]}</span>`
                 );
@@ -571,7 +570,7 @@ function renderSettingsSummary() {
                 const pressed = WB_SHOW_DISABLED_LIST ? ' pressed' : '';
                 return (
                     `<span class="badge badge-clickable ${cls}${pressed}" ` +
-                    `onclick="onDisabledChipClick()" ` +
+                    `data-on-click="disabledChipClick" ` +
                     `title="${WB_SHOW_DISABLED_LIST ? 'Click to hide the disabled-items list' : 'Click to list what is currently disabled'}">${s}</span> ` +
                     `<span class="settings-summary-count">${totals[s]}</span>`
                 );
@@ -611,7 +610,7 @@ function renderSettingsSummary() {
                 why = n.status_reason || '';
             }
             return `
-                <div class="settings-summary-issue" onclick="onBadgeDrilldown({currentTarget:{dataset:{drilldownNode:'${escapeHtml(n.id)}'}},stopPropagation:()=>{},preventDefault:()=>{}})" title="Click to jump to this node">
+                <div class="settings-summary-issue" data-on-click="badgeDrilldown" data-drilldown-node="${escapeHtml(n.id)}" title="Click to jump to this node">
                     <span class="badge badge-muted">${escapeHtml(n.kind)}</span>
                     <span class="settings-summary-issue-label">${escapeHtml(n.label)}</span>
                     ${why ? `<span class="settings-summary-issue-reason">${escapeHtml(why)}</span>` : ''}
@@ -626,7 +625,7 @@ function renderSettingsSummary() {
 
     if (topIssues.length > 0) {
         const issueRows = topIssues.map(n => `
-            <div class="settings-summary-issue" onclick="onBadgeDrilldown({currentTarget: {dataset: {drilldownNode: '${escapeHtml(n.id)}'}}, stopPropagation:()=>{}, preventDefault:()=>{}})" title="Click to jump to this issue">
+            <div class="settings-summary-issue" data-on-click="badgeDrilldown" data-drilldown-node="${escapeHtml(n.id)}" title="Click to jump to this issue">
                 ${controlStateBadge(n.effective_state, n.id)}
                 <span class="settings-summary-issue-label">${escapeHtml(n.label)}</span>
                 ${n.status_reason ? `<span class="settings-summary-issue-reason">${escapeHtml(n.status_reason)}</span>` : ''}
@@ -684,7 +683,7 @@ function _renderRequirementActions(r) {
             ? 'disabled title="Dashboard is in read-only mode"' : '';
         return `<span class="settings-req-actions">` +
             `<button class="settings-edit-btn" type="button" ` +
-            `onclick="onFixClick(this)" ${_fixDataAttrs(r)} ${roDisabled} ` +
+            `data-on-click="fixClick" ${_fixDataAttrs(r)} ${roDisabled} ` +
             `title="Change this setting">✎</button></span>`;
     }
     // Two user-facing verbs:
@@ -714,7 +713,7 @@ function _renderRequirementActions(r) {
     }
     const fixBtn = r.fix_kind && r.fix_kind !== 'none'
         ? `<button class="${fixClass}" type="button"
-                   onclick="onFixClick(this)"
+                   data-on-click="fixClick"
                    ${_fixDataAttrs(r)}
                    ${WB_READ_ONLY_MODE ? 'disabled title="Dashboard is in read-only mode"' : ''}
                    title="${escapeHtml(fixTitle.trim())}">${escapeHtml(fixLabel)}</button>`
@@ -729,7 +728,7 @@ function _renderRequirementActions(r) {
     const showHelp = r.fix_kind !== 'agent_handoff';
     const helpBtn = showHelp
         ? `<button class="settings-help-btn settings-help-btn-alert" type="button"
-                    onclick="onHelpClick(this)"
+                    data-on-click="helpClick"
                     data-node-id="${escapeHtml(r.id)}"
                     ${WB_READ_ONLY_MODE ? 'disabled' : ''}
                     title="Spawn a Claude Code session focused on this requirement. Use when you want to understand or investigate rather than auto-apply a fix.">?</button>`
@@ -1132,7 +1131,7 @@ function _renderComponentNode(nodes, node, underParent) {
     const helpAlert = node.effective_state !== 'ok' && node.effective_state !== 'disabled'
         ? ' settings-help-btn-alert' : '';
     const helpBtn = `<button class="settings-help-btn${helpAlert}" type="button"
-                              onclick="onHelpClick(this)"
+                              data-on-click="helpClick"
                               data-node-id="${escapeHtml(node.id)}"
                               ${WB_READ_ONLY_MODE ? 'disabled' : ''}
                               title="Spawn a Claude Code session focused on this component. Bundles the full diagnostic output so you can investigate without re-explaining context.">?</button>`;
@@ -1141,7 +1140,7 @@ function _renderComponentNode(nodes, node, underParent) {
     // rebuild) so users can chase 'unknown'/'degraded' signals
     // per-component without committing to the ~10s full reprobe.
     const reprobeBtn = `<button class="settings-reprobe-btn" type="button"
-                                 onclick="onComponentReprobeClick(this)"
+                                 data-on-click="componentReprobeClick"
                                  data-component-id="${escapeHtml(node.component_id || '')}"
                                  ${WB_READ_ONLY_MODE ? 'disabled' : ''}
                                  title="Re-run just this component's probe (fast). Use when you want a definitive state for this one thing without waiting for a full reprobe.">&#x21BB;</button>`;
@@ -1154,7 +1153,7 @@ function _renderComponentNode(nodes, node, underParent) {
     const evtOpen = !!(window._WB_EVT_PANELS && window._WB_EVT_PANELS[node.id]);
     const evtChip = evtCount > 0
         ? `<button class="settings-evt-chip${evtOpen ? ' open' : ''}" type="button"
-                   onclick="toggleComponentEvents('${escapeHtml(node.id)}', this)"
+                   ${wbActAttrs('toggleComponentEvents', {nodeId: node.id})}
                    title="${evtCount} recent warn/error event${evtCount !== 1 ? 's' : ''} on this component — click to ${evtOpen ? 'hide' : 'show'}">&#9888; ${evtCount}</button>`
         : '';
     const evtPanel = evtCount > 0
@@ -1452,7 +1451,7 @@ function _renderComponentEventPanel(nodeId, evts, open) {
         const level = e.level || 'info';
         const invBtn = WB_READ_ONLY_MODE ? '' :
             `<button class="btn-investigate ${level}" type="button"
-                     onclick="investigateComponentEvent('${escapeHtml(nodeId)}', ${i}, this)"
+                     ${wbActAttrs('investigateComponentEvent', {nodeId: nodeId, idx: i})}
                      title="Spawn an agent to investigate this event">Investigate</button>`;
         return `<div class="evt-panel-row ${level}">
             <span class="evt-panel-ts">${time}</span>
@@ -1475,4 +1474,17 @@ function toggleComponentEvents(nodeId, btnEl) {
     if (panel) panel.classList.toggle('open', open);
     if (btnEl) btnEl.classList.toggle('open', open);
 }
+
+// ---- Event-delegation adapter registrations (FM-1 dispatcher) ----
+window.wbAction('badgeDrilldown', function (el, e) { onBadgeDrilldown(el, e); });
+window.wbAction('preferenceClick', function (el) { onPreferenceClick(el); });
+window.wbAction('stateChipClick', function (el) { onStateChipClick(el.dataset.state); });
+window.wbAction('disabledChipClick', function () { onDisabledChipClick(); });
+window.wbAction('fixClick', function (el) { onFixClick(el); });
+window.wbAction('helpClick', function (el) { onHelpClick(el); });
+window.wbAction('componentReprobeClick', function (el) { onComponentReprobeClick(el); });
+window.wbAction('toggleComponentEvents', function (el) { toggleComponentEvents(el.dataset.nodeId, el); });
+window.wbAction('investigateComponentEvent', function (el) {
+    investigateComponentEvent(el.dataset.nodeId, Number(el.dataset.idx), el);
+});
 """
