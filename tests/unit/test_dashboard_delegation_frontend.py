@@ -27,7 +27,7 @@ import tempfile
 
 import pytest
 
-from work_buddy.dashboard.frontend import render_page
+from work_buddy.dashboard.frontend import assembled_js, render_page
 from work_buddy.dashboard.frontend.scripts.core.delegation import script as _delegation_script
 from work_buddy.dashboard.frontend.scripts.core.helpers import script as _helpers_script
 
@@ -79,7 +79,10 @@ def _strip_comments(text: str) -> str:
 def test_no_inline_handlers_in_rendered_page():
     """The gate FM-1 lacked: the fully-assembled page must carry zero inline
     event-handler attributes. Every interaction goes through delegation."""
-    body = _strip_comments(render_page())
+    # Scan both the HTML skeleton (static data-on-* live here) and the
+    # assembled JS (where the JS-built handler strings live, now served as an
+    # external asset rather than inlined in the page).
+    body = _strip_comments(render_page() + "\n" + assembled_js())
     hits = _HANDLER_RE.findall(body)
     assert not hits, f"{len(hits)} inline handler(s) remain in rendered page: {hits[:10]}"
 

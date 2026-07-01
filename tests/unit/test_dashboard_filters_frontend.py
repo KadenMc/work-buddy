@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from work_buddy.dashboard.frontend import render_page
+from work_buddy.dashboard.frontend import assembled_css, assembled_js, render_page
 from work_buddy.dashboard.frontend.scripts import SCRIPTS, STYLES
 from work_buddy.dashboard.frontend.scripts.core.filters import script as _filters_script
 from work_buddy.dashboard.frontend.scripts.core.filters import styles as _filters_styles
@@ -123,9 +123,10 @@ def test_registered_in_order():
 
 
 def test_widget_in_assembled_page():
-    page = render_page()
-    assert "window.wbRenderFilters = function" in page
-    assert ".wb-filter-chip" in page
+    # JS lives in the assembled bundle, CSS in the assembled stylesheet (both
+    # now served as external assets rather than inlined in the page).
+    assert "window.wbRenderFilters = function" in assembled_js()
+    assert ".wb-filter-chip" in assembled_css()
 
 
 # --------------------------------------------------------------------------
@@ -209,7 +210,7 @@ def test_costs_activity_and_models_use_widget():
 
 
 def test_old_filter_css_clusters_removed():
-    page = render_page()
+    page = assembled_css()
     for retired in (
         ".costs-pill",
         ".costs-filter-pill",

@@ -26,9 +26,11 @@ def rendered_html() -> str:
     # ``register_schema`` runs at import time. ``render_page`` builds
     # the full HTML the browser sees.
     import work_buddy.dashboard  # noqa: F401  — triggers schema registration
-    from work_buddy.dashboard.frontend import render_page
+    from work_buddy.dashboard.frontend import assembled_js, render_page
 
-    return render_page()
+    # Field ui_ids may live in the static skeleton (html.py) or in JS-built
+    # forms (now served as an external asset), so check both.
+    return render_page() + "\n" + assembled_js()
 
 
 def test_every_schema_field_ui_id_exists_in_rendered_page(rendered_html: str) -> None:

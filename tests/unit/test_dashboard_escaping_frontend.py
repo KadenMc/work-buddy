@@ -26,7 +26,7 @@ import tempfile
 
 import pytest
 
-from work_buddy.dashboard.frontend import render_page
+from work_buddy.dashboard.frontend import assembled_js, render_page
 from work_buddy.dashboard.frontend.scripts.core.helpers import script as _helpers_script
 from work_buddy.dashboard.frontend.scripts.core.workflows import script as _workflows_script
 from work_buddy.dashboard.frontend.scripts.tabs.projects import script as _projects_script
@@ -50,8 +50,8 @@ def test_former_duplicate_definitions_are_gone():
 
 
 def test_assembled_page_declares_escaper_once():
-    page = render_page()
-    assert page.count("function escapeHtml") == 1
+    js = assembled_js()
+    assert js.count("function escapeHtml") == 1
 
 
 def test_escaper_escapes_all_five_chars_at_runtime():

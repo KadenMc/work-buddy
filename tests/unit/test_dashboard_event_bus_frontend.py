@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from work_buddy.dashboard.frontend import render_page
+from work_buddy.dashboard.frontend import assembled_js, render_page
 from work_buddy.dashboard.frontend.scripts.core.event_bus import script as _event_bus_script
 
 
@@ -43,7 +43,7 @@ def test_dispatcher_handles_connection_lifecycle():
 def test_render_page_emits_bus_before_other_scripts():
     """The bus must be defined before any other module's load-time code,
     so handlers can be registered synchronously without races."""
-    page = render_page()
+    page = assembled_js()
     bus_pos = page.find("window.eventBus = {")
     main_pos = page.find("function switchTab")  # core script_main marker
     assert bus_pos > 0, "bus script not in page"
@@ -213,8 +213,13 @@ def test_assembled_javascript_init_runs():
     if shutil.which("node") is None:
         pytest.skip("node not on PATH")
 
-    # Render the page to a temp file the harness can read.
-    html = render_page()
+    # The harness extracts the body <script>; the assembled JS is now served as
+    # an external asset, so wrap it in a minimal HTML document for the harness.
+    html = (
+        "<!DOCTYPE html><html><body>\n<script>\n"
+        + assembled_js()
+        + "\n</script>\n</body></html>"
+    )
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".html", encoding="utf-8", delete=False
     ) as fh:
@@ -263,10 +268,7 @@ def test_assembled_javascript_parses():
     if shutil.which("node") is None:
         pytest.skip("node not on PATH")
 
-    html = render_page()
-    m = re.search(r"<script>(.*?)</script>\s*</body>", html, re.S)
-    assert m, "render_page output is missing the body <script> block"
-    js = m.group(1)
+    js = assembled_js()
 
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".js", encoding="utf-8", delete=False
