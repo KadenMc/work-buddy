@@ -32,6 +32,7 @@ from __future__ import annotations
 from .core import (
     card_registry,
     chat_sidebar,
+    delegation,
     event_bus,
     filters,
     form_bridge,
@@ -98,6 +99,10 @@ from .tabs.threads import main as threads
 SCRIPTS = [
     event_bus.script,
     helpers.script,
+    # delegation: event-delegation dispatcher (window.wbAction / wbActAttrs).
+    # After helpers (uses escapeHtml), before page (init at load). Declares
+    # no module-scope let/const — page-LAST safe.
+    delegation.script,
     card_registry.script,
     card_obsidian_bridge.script,
     card_event_log.script,

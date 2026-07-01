@@ -30,19 +30,12 @@ def script() -> str:
 (function () {
     if (typeof window.registerActionRenderer === "function") return;
 
-    function _esc(s) {
-        if (s === null || s === undefined) return "";
-        return String(s)
-            .replace(/&/g, "&amp;").replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;");
-    }
-
-    // A JS string arg for an onclick/oninput attribute: single-quoted +
-    // HTML-escaped, so it never collides with the double-quoted attribute
-    // (JSON.stringify would emit double quotes and truncate the handler).
-    function _sq(v) {
-        return "'" + _esc(v) + "'";
-    }
+    // Local alias for the canonical escaper (core/helpers.py). Kept as a
+    // short name for this module's many call sites. It escapes quotes too,
+    // so it is safe in attribute context as well as element text. Handler
+    // wiring goes through wbActAttrs (event delegation), not string-built
+    // on*= attributes, so the old _sq single-quote helper is gone.
+    function _esc(s) { return escapeHtml(s); }
 
     if (!window._actionRenderers) window._actionRenderers = {};
 
@@ -216,9 +209,10 @@ def script() -> str:
             html += '<button class="threads-action-switcher-option'
                 +     (isCurrent ? ' current' : '') + '" '
                 +     'title="' + _esc(d.description || '') + '" '
-                +     'onclick="threadsSetActionDraft('
-                +       _sq(thread.thread_id) + ', '
-                +       _sq(d.capability_name) + ')">'
+                +     wbActAttrs('threadsSetActionDraft', {
+                          threadId: thread.thread_id,
+                          capabilityName: d.capability_name,
+                      }) + '>'
                 +     '<span class="label">' + _esc(d.label) + '</span>'
                 + '</button>';
         }
@@ -259,13 +253,11 @@ def script() -> str:
             // attribute string that captures edits via the
             // global threadCardEditActionParam helper.
             paramHandler: function (paramName) {
-                const tid = _sq(thread.thread_id);
-                const aid = _sq(action.id);
-                const pname = _sq(paramName);
-                return 'oninput="threadCardEditActionParam('
-                       + tid + ', ' + aid + ', ' + pname + ', this.value)"'
-                       + ' onchange="threadCardEditActionParam('
-                       + tid + ', ' + aid + ', ' + pname + ', this.value)"';
+                return wbActAttrs('threadCardEditActionParam', {
+                    threadId: thread.thread_id,
+                    actionId: action.id,
+                    paramName: paramName,
+                }, ['input', 'change']);
             },
         };
         if (typeof fn === "function") {
@@ -433,7 +425,6 @@ def script() -> str:
         _draftThreadRef[thread.thread_id] = thread;
         const d = window._draftActionFor(thread.thread_id);
         const desc = _descriptorFor(thread, d.capability_name);
-        const tid = _sq(thread.thread_id);
         const toLabel = (desc && desc.label) || d.capability_name;
         const schema = (desc && desc.parameters) || [];
         const ready = _draftRequiredFilled(thread.thread_id);
@@ -445,7 +436,7 @@ def script() -> str:
             + 'Switching to <strong>' + _esc(toLabel) + '</strong> — not '
             + 'applied until you approve or hand it back. '
             + '<button class="threads-draft-cancel" '
-            +   'onclick="threadsCancelDraft(' + tid + ')">cancel</button>'
+            +   wbActAttrs('threadsCancelDraft', {threadId: thread.thread_id}) + '>cancel</button>'
             + '</div>';
 
         html += '<div class="threads-draft-fields">'
@@ -459,7 +450,7 @@ def script() -> str:
             +   'ti-info-circle" aria-hidden="true"></i></span>'
             + '<button class="threads-draft-approve' + (ready ? ' ready' : '')
             +   '" ' + (ready ? '' : 'disabled ')
-            +   'onclick="threadsApproveDraft(' + tid + ')">Approve</button>'
+            +   wbActAttrs('threadsApproveDraft', {threadId: thread.thread_id}) + '>Approve</button>'
             + '</div>';
 
         html += '<div class="threads-draft-refine">'
@@ -477,7 +468,7 @@ def script() -> str:
             +     'to the agent <i class="ti ti-info-circle" '
             +     'aria-hidden="true"></i></span>'
             +   '<button class="threads-draft-redirect" '
-            +     'onclick="threadsRedirectDraft(' + tid + ')">Redirect</button>'
+            +     wbActAttrs('threadsRedirectDraft', {threadId: thread.thread_id}) + '>Redirect</button>'
             + '</div></div>';
 
         html += '</div>';
@@ -703,6 +694,27 @@ def script() -> str:
             + control
             + '</div>';
     }
+
+    // ----- Delegated action registrations ----------------------------
+    // Adapters unpack data-* args (emitted above via wbActAttrs) and call
+    // the existing window.* handlers. No inline on*= attribute is produced,
+    // so the onclick-arg quoting hazard (FM-1) cannot recur here.
+    window.wbAction('threadsSetActionDraft', function (el) {
+        window.threadsSetActionDraft(el.dataset.threadId, el.dataset.capabilityName);
+    });
+    window.wbAction('threadsCancelDraft', function (el) {
+        window.threadsCancelDraft(el.dataset.threadId);
+    });
+    window.wbAction('threadsApproveDraft', function (el) {
+        window.threadsApproveDraft(el.dataset.threadId);
+    });
+    window.wbAction('threadsRedirectDraft', function (el) {
+        window.threadsRedirectDraft(el.dataset.threadId);
+    });
+    window.wbAction('threadCardEditActionParam', function (el) {
+        window.threadCardEditActionParam(
+            el.dataset.threadId, el.dataset.actionId, el.dataset.paramName, el.value);
+    });
 })();
 """
 
