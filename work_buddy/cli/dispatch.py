@@ -9,9 +9,11 @@ owns only setup, sidecar lifecycle, diagnostics, and emitting the MCP config.
     wbuddy start [--foreground]  wbuddy stop    wbuddy restart
     wbuddy status [--json]       wbuddy doctor [<component>] [--json]
     wbuddy setup                 wbuddy mcp print   wbuddy dashboard [--open]
+    wbuddy provision [...]       wbuddy autostart {enable,disable,status}
 
-The interactive, domain-by-domain feature selection lives in ``/wb-setup
-guided`` inside Claude Code, because that walk needs an agent.
+``provision`` is the native installer's one-shot entry point. The interactive,
+domain-by-domain feature selection lives in ``/wb-setup guided`` inside Claude
+Code, because that walk needs an agent.
 """
 
 from __future__ import annotations
@@ -64,6 +66,28 @@ def _build_parser() -> argparse.ArgumentParser:
     mcp_sub = p_mcp.add_subparsers(dest="mcp_command", required=True)
     mcp_sub.add_parser("print", help="print the Claude Code MCP config (HTTP)")
 
+    p_prov = sub.add_parser(
+        "provision", parents=[common],
+        help="one-shot install provisioning (the native installer's entry point)",
+    )
+    p_prov.add_argument(
+        "--data-dir", default=None,
+        help="per-user data dir (default: the OS per-user location)",
+    )
+    p_prov.add_argument("--vault-root", default=None, help="Obsidian vault path")
+    p_prov.add_argument("--repos-root", default=None, help="git repos directory")
+    p_prov.add_argument("--timezone", default=None, help="IANA timezone")
+    p_prov.add_argument("--anthropic-key", default=None, help="Anthropic API key (sk-...)")
+    p_prov.add_argument(
+        "--no-start", action="store_true", help="do not start the sidecar afterward",
+    )
+
+    p_auto = sub.add_parser("autostart", help="manage login auto-start of the sidecar")
+    auto_sub = p_auto.add_subparsers(dest="autostart_command", required=True)
+    auto_sub.add_parser("enable", help="register login auto-start")
+    auto_sub.add_parser("disable", help="remove login auto-start")
+    auto_sub.add_parser("status", help="show auto-start registration status")
+
     return parser
 
 
@@ -75,6 +99,7 @@ _HANDLERS = {
     "doctor": commands.cmd_doctor,
     "setup": commands.cmd_setup,
     "dashboard": commands.cmd_dashboard,
+    "provision": commands.cmd_provision,
 }
 
 
@@ -92,6 +117,8 @@ def main(argv: list[str] | None = None) -> int:
                 return commands.cmd_mcp_print(args)
             parser.error(f"unknown mcp subcommand: {args.mcp_command}")
             return 1
+        if args.command == "autostart":
+            return commands.cmd_autostart(args)
         handler = _HANDLERS.get(args.command)
         if handler is None:
             parser.error(f"unknown command: {args.command}")

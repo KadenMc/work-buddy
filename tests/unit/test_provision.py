@@ -1,0 +1,81 @@
+"""Tests for the install provisioning orchestrator (``work_buddy.provision``).
+
+Everything runs into throwaway temp dirs: ``WORK_BUDDY_CONFIG_DIR`` redirects
+where config.yaml / .env / .mcp.json land, and ``--data-dir`` is a temp path, so
+the real repo and the user's live config are never touched. ``start=False`` keeps
+the tests from spawning a real sidecar.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+import pytest
+import yaml
+
+from work_buddy import compat, provision as prov
+
+
+@pytest.fixture
+def tmp_install(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    data = tmp_path / "data"
+    # config_dir -> temp home (asset_root stays the real repo, so the shipped
+    # config.example.yaml is still readable). No data-dir env var: the config
+    # value written by provision drives data resolution.
+    monkeypatch.setenv("WORK_BUDDY_CONFIG_DIR", str(home))
+    monkeypatch.delenv("WORK_BUDDY_DATA_DIR", raising=False)
+    return home, data
+
+
+def test_user_data_dir_windows_branch(monkeypatch):
+    if not compat.IS_WINDOWS:
+        pytest.skip("windows-only branch")
+    monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\test\AppData\Local")
+    assert compat.user_data_dir() == Path(r"C:\Users\test\AppData\Local") / "work-buddy"
+
+
+def test_provision_writes_config_env_mcp_and_pins_interpreter(tmp_install):
+    home, data = tmp_install
+    res = prov.provision(
+        data_dir=str(data),
+        vault_root=str(home),
+        timezone="America/Toronto",
+        anthropic_key="sk-test-000000000000000000000000",
+        start=False,
+    )
+
+    cfg = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    assert cfg["paths"]["data_root"] == str(data.resolve())
+    assert cfg["sidecar"]["python_executable"] == sys.executable
+    assert cfg["timezone"] == "America/Toronto"
+
+    assert "SUBAGENT_ANTHROPIC_API_KEY" in (home / ".env").read_text(encoding="utf-8")
+
+    mcp = json.loads((home / ".mcp.json").read_text(encoding="utf-8"))
+    assert mcp["mcpServers"]["work-buddy"]["type"] == "http"
+    assert mcp["mcpServers"]["work-buddy"]["url"].endswith("/mcp")
+
+    assert data.exists()  # data tree relocated under the temp data dir
+    assert res["home"] == str(home)
+    assert res["data_dir"] == str(data.resolve())
+    assert res["sidecar"] is None
+    assert "bootstrap" in res and "summary" in res["bootstrap"]
+
+
+def test_provision_is_idempotent(tmp_install):
+    home, data = tmp_install
+    prov.provision(data_dir=str(data), start=False)
+    prov.provision(data_dir=str(data), start=False)  # re-run must not corrupt
+    cfg = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    assert cfg["paths"]["data_root"] == str(data.resolve())
+    assert (home / "config.local.yaml").exists()
+
+
+def test_provision_seeds_config_local_stub(tmp_install):
+    home, data = tmp_install
+    prov.provision(data_dir=str(data), start=False)
+    assert (home / "config.local.yaml").exists()
