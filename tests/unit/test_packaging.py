@@ -7,11 +7,14 @@ archive extraction (against synthetic archives) are exercised.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import io
 import tarfile
 import zipfile
 from pathlib import Path
+
+import pytest
 
 _REPO = Path(__file__).resolve().parent.parent.parent
 
@@ -86,3 +89,15 @@ def test_vendor_uv_extracts_tar(tmp_path):
     dest = vendor_uv._extract(buf.getvalue(), "linux", tmp_path)
     assert dest.name == "uv"
     assert dest.read_bytes() == b"BINARY"
+
+
+def test_vendor_uv_checksum_accepts_match():
+    data = b"BINARY"
+    digest = hashlib.sha256(data).hexdigest()
+    # uv publishes "<hexdigest>  <filename>"; the filename token is ignored.
+    vendor_uv._verify_checksum(data, f"{digest}  uv-x86_64-pc-windows-msvc.zip")
+
+
+def test_vendor_uv_checksum_rejects_mismatch():
+    with pytest.raises(ValueError):
+        vendor_uv._verify_checksum(b"BINARY", "deadbeef  uv.zip")
