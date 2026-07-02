@@ -557,3 +557,23 @@ def chrome_native_messaging_dir() -> Path:
         return Path.home() / "Library" / "Application Support" / "Google" / "Chrome" / "NativeMessagingHosts"
     else:
         return Path.home() / ".config" / "google-chrome" / "NativeMessagingHosts"
+
+
+def user_data_dir() -> Path:
+    """Per-user data directory for a packaged (non-clone) work-buddy install.
+
+    Windows ``%LOCALAPPDATA%\\work-buddy``, macOS
+    ``~/Library/Application Support/work-buddy``, Linux ``$XDG_DATA_HOME/
+    work-buddy`` (or ``~/.local/share/work-buddy``). Mirrors the platform
+    branching of :func:`obsidian_log_path` / :func:`chrome_native_messaging_dir`.
+    This is where the sidecar's mutable state (DBs, caches, logs, consent) lives
+    when work-buddy is installed rather than cloned; the HOME working copy keeps
+    the code, assets, config, and secrets.
+    """
+    if IS_WINDOWS:
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return Path(base) / "work-buddy"
+    if IS_MACOS:
+        return Path.home() / "Library" / "Application Support" / "work-buddy"
+    base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
+    return Path(base) / "work-buddy"

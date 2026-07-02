@@ -218,6 +218,66 @@ def cmd_setup(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# provision / autostart
+# ---------------------------------------------------------------------------
+
+def cmd_provision(args) -> int:
+    from work_buddy import provision as _prov
+
+    res = _prov.provision(
+        home=getattr(args, "home", None),
+        data_dir=getattr(args, "data_dir", None),
+        vault_root=getattr(args, "vault_root", None),
+        repos_root=getattr(args, "repos_root", None),
+        timezone=getattr(args, "timezone", None),
+        anthropic_key=getattr(args, "anthropic_key", None),
+        start=not getattr(args, "no_start", False),
+    )
+    if _want_json(args):
+        print(json.dumps(res, indent=2, default=str))
+        return EXIT_OK if res["ok"] else EXIT_FAIL
+    print(f"Provisioned work-buddy home: {res['home']}")
+    print(f"Data dir: {res['data_dir']}")
+    for step in res["steps"]:
+        print(f"  - {step}")
+    print()
+    _render_requirements(res["bootstrap"]["results"], title="Bootstrap:")
+    sc = res.get("sidecar")
+    if sc:
+        pid = f" (pid={sc['pid']})" if sc.get("pid") else ""
+        print(f"Sidecar: {sc.get('detail')}{pid}")
+    print()
+    print("Next: open Claude Code in this directory and run /wb-setup guided for")
+    print("feature selection and the interactive integrations.")
+    return EXIT_OK if res["ok"] else EXIT_FAIL
+
+
+def cmd_autostart(args) -> int:
+    from work_buddy import autostart, paths
+
+    action = getattr(args, "autostart_command", None)
+    if action == "status":
+        st = autostart.status()
+        state = "registered" if st["registered"] else "not registered"
+        print(f"autostart ({st['os']}): {state}")
+        return EXIT_OK
+    if action == "enable":
+        res = autostart.register(
+            python_exe=sys.executable,
+            home_dir=paths.config_dir(),
+            data_dir=paths._data_base(),
+        )
+        print(res.get("detail"))
+        return EXIT_OK if res.get("ok") else EXIT_FAIL
+    if action == "disable":
+        res = autostart.unregister()
+        print(res.get("detail"))
+        return EXIT_OK if res.get("ok") else EXIT_FAIL
+    _err(f"unknown autostart action: {action}")
+    return EXIT_FAIL
+
+
+# ---------------------------------------------------------------------------
 # MCP config / dashboard
 # ---------------------------------------------------------------------------
 
