@@ -17,6 +17,7 @@ and no ``WORK_BUDDY_*`` env vars are needed at runtime.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -28,6 +29,7 @@ logger = get_logger(__name__)
 
 def provision(
     *,
+    home: str | Path | None = None,
     data_dir: str | Path | None = None,
     vault_root: str | None = None,
     repos_root: str | None = None,
@@ -35,12 +37,24 @@ def provision(
     anthropic_key: str | None = None,
     start: bool = True,
 ) -> dict:
-    """Provision an installed work-buddy. Idempotent. Returns a structured result."""
+    """Provision an installed work-buddy. Idempotent. Returns a structured result.
+
+    ``home`` explicitly targets the install directory: it redirects ``config_dir``
+    for this process so config, secrets, and ``.mcp.json`` land there regardless
+    of the cwd or which ``work_buddy`` package is imported. Since ``config_dir()``
+    is env-var-only by design, this is the one safe way to point provisioning at a
+    specific home; without it, ``config_dir`` defaults to the running package's
+    repo root, which is correct for an editable install but unsafe for a test run
+    next to a live clone.
+    """
     from work_buddy import paths
     from work_buddy.cli.commands import _mcp_config
     from work_buddy.compat import user_data_dir
     from work_buddy.health import fixers
     from work_buddy.health.requirements import RequirementChecker
+
+    if home is not None:
+        os.environ["WORK_BUDDY_CONFIG_DIR"] = str(Path(home).expanduser())
 
     steps: list[str] = []
     home = paths.config_dir()

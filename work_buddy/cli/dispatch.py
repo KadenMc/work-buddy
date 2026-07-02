@@ -71,6 +71,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="one-shot install provisioning (the native installer's entry point)",
     )
     p_prov.add_argument(
+        "--home", default=None,
+        help="install HOME / config dir (default: the running package's repo root)",
+    )
+    p_prov.add_argument(
         "--data-dir", default=None,
         help="per-user data dir (default: the OS per-user location)",
     )

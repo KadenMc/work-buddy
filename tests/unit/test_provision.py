@@ -79,3 +79,15 @@ def test_provision_seeds_config_local_stub(tmp_install):
     home, data = tmp_install
     prov.provision(data_dir=str(data), start=False)
     assert (home / "config.local.yaml").exists()
+
+
+def test_provision_home_flag_redirects_config(tmp_path, monkeypatch):
+    """`home=` explicitly targets an install dir, so config/.mcp.json land there
+    regardless of the ambient config_dir. Protects a real clone from a test run."""
+    monkeypatch.delenv("WORK_BUDDY_CONFIG_DIR", raising=False)
+    monkeypatch.delenv("WORK_BUDDY_DATA_DIR", raising=False)
+    home = tmp_path / "explicit-home"
+    home.mkdir()
+    prov.provision(home=str(home), data_dir=str(tmp_path / "d"), start=False)
+    assert (home / "config.yaml").exists()
+    assert (home / ".mcp.json").exists()

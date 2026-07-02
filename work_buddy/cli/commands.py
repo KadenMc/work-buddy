@@ -225,6 +225,7 @@ def cmd_provision(args) -> int:
     from work_buddy import provision as _prov
 
     res = _prov.provision(
+        home=getattr(args, "home", None),
         data_dir=getattr(args, "data_dir", None),
         vault_root=getattr(args, "vault_root", None),
         repos_root=getattr(args, "repos_root", None),
