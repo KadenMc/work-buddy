@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# work-buddy macOS installer (per-user, no sudo). Double-click to run in Terminal.
+#
+# Lays the source-tree payload into a HOME, runs the uv bootstrap (managed
+# Python 3.11 + venv + editable install with CPU torch, retried) + provision,
+# and registers a launchd login agent. Idempotent; re-run repairs.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+APP_HOME="$HOME/work-buddy"
+DATA_DIR="$HOME/Library/Application Support/work-buddy"
+VAULT_ROOT=""
+ANTHROPIC_KEY=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --home)         APP_HOME="$2"; shift 2 ;;
+    --data-dir)     DATA_DIR="$2"; shift 2 ;;
+    --vault-root)   VAULT_ROOT="$2"; shift 2 ;;
+    --anthropic-key) ANTHROPIC_KEY="$2"; shift 2 ;;
+    *) echo "unknown option: $1" >&2; exit 2 ;;
+  esac
+done
+
+UV="$HERE/payload/vendor/uv"
+VENV_PY="$APP_HOME/.venv/bin/python"
+chmod +x "$UV"
+
+echo "==> Installing work-buddy into $APP_HOME"
+mkdir -p "$APP_HOME" "$DATA_DIR"
+cp -a "$HERE/payload/." "$APP_HOME/"
+
+echo "==> Installing Python 3.11 (uv)"
+"$UV" python install 3.11
+
+echo "==> Creating the virtual environment"
+"$UV" venv --python 3.11 "$APP_HOME/.venv"
+
+echo "==> Downloading dependencies (this can take several minutes)"
+attempt=1
+until "$UV" pip install --python "$VENV_PY" --extra-index-url https://download.pytorch.org/whl/cpu -e "$APP_HOME"; do
+  if [ "$attempt" -ge 3 ]; then
+    echo "Dependency install failed after $attempt attempts. Re-run install.command to resume (downloads are cached)." >&2
+    exit 1
+  fi
+  sleep "$((2 ** attempt))"; attempt="$((attempt + 1))"
+done
+
+echo "==> Provisioning work-buddy"
+prov=(-m work_buddy.cli provision --home "$APP_HOME" --data-dir "$DATA_DIR")
+[ -n "$VAULT_ROOT" ]    && prov+=(--vault-root "$VAULT_ROOT")
+[ -n "$ANTHROPIC_KEY" ] && prov+=(--anthropic-key "$ANTHROPIC_KEY")
+"$VENV_PY" "${prov[@]}"
+
+echo "==> Registering login auto-start (launchd)"
+"$VENV_PY" -m work_buddy.cli autostart enable
+
+echo "==> work-buddy install complete."
+echo "    Open Claude Code in $APP_HOME and run /wb-setup guided."
