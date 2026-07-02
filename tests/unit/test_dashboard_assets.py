@@ -1,4 +1,4 @@
-"""Tests for the externalized, content-hashed frontend assets (FM-2).
+"""Tests for the externalized, content-hashed frontend assets.
 
 The ~800 KB of app JS and the CSS are served as separate
 ``/assets/app.<hash>.js|css`` files with an immutable cache policy, instead of

@@ -1351,7 +1351,7 @@ def script() -> str:
     }
     _wireThreadStateBus();
 
-    // ----- Event-delegation adapters (FM-1 fix) --------------------------
+    // ----- Event-delegation adapters --------------------------
     //
     // Registered here so every data-on-* attribute emitted by this
     // module's renderers above has a matching action. See

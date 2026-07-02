@@ -698,7 +698,7 @@ def script() -> str:
     // ----- Delegated action registrations ----------------------------
     // Adapters unpack data-* args (emitted above via wbActAttrs) and call
     // the existing window.* handlers. No inline on*= attribute is produced,
-    // so the onclick-arg quoting hazard (FM-1) cannot recur here.
+    // so the onclick-arg quoting hazard cannot recur here.
     window.wbAction('threadsSetActionDraft', function (el) {
         window.threadsSetActionDraft(el.dataset.threadId, el.dataset.capabilityName);
     });

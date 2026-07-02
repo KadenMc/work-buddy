@@ -1,10 +1,10 @@
 """Tests for the single canonical HTML escaper (core/helpers.py).
 
-FM-3 in the dashboard-frontend hardening: there used to be three escape
+There used to be three escape
 helpers (``escapeHtml`` defined twice via the ``textContent`` trick, plus a
 threads-local ``_esc``), none of which escaped quotes. Quote-unsafe escaping
 in attribute context is the same bug family as the inline-handler quoting
-break. Stage 0 collapses the two global definitions into one that escapes
+break. This collapses the two global definitions into one that escapes
 all five unsafe characters (``& < > " '``).
 
 We verify:

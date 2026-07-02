@@ -1475,7 +1475,7 @@ function toggleComponentEvents(nodeId, btnEl) {
     if (btnEl) btnEl.classList.toggle('open', open);
 }
 
-// ---- Event-delegation adapter registrations (FM-1 dispatcher) ----
+// ---- Event-delegation adapter registrations ----
 window.wbAction('badgeDrilldown', function (el, e) { onBadgeDrilldown(el, e); });
 window.wbAction('preferenceClick', function (el) { onPreferenceClick(el); });
 window.wbAction('stateChipClick', function (el) { onStateChipClick(el.dataset.state); });

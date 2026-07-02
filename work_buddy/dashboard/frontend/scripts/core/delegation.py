@@ -1,4 +1,4 @@
-"""Event-delegation dispatcher — the structural fix for FM-1.
+"""Event-delegation dispatcher: the structural fix for the inline-handler quoting bug.
 
 The dashboard historically wired interactivity through inline
 ``onclick="fn('id')"`` attributes built by JS string concatenation. When a
@@ -86,7 +86,7 @@ def script() -> str:
 
     // Build the delegated-handler attribute string for a renderer. Every
     // value is escaped through the canonical escapeHtml, so a quote in an
-    // arg can never break out of the attribute (the FM-1 fix, by
+    // arg can never break out of the attribute (the quoting-collision fix, by
     // construction). ``events`` defaults to 'click'; pass an array to bind
     // one action to several events (e.g. ['input','change']).
     window.wbActAttrs = function (name, data, events) {

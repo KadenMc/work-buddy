@@ -1,7 +1,7 @@
 /* eslint-disable */
 // Behavior harness for the event-delegation dispatcher (core/delegation.py).
 //
-// Proves the FM-1 fix by construction: a handler arg containing BOTH a single
+// Proves the quoting-collision fix by construction: a handler arg containing BOTH a single
 // and a double quote round-trips through wbActAttrs -> HTML attribute ->
 // el.dataset -> the registered handler WITHOUT truncation. Under the old
 // inline-onclick model, such a value truncated the handler at click time.

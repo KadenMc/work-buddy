@@ -283,7 +283,7 @@ function _entityDetailHTML(e) {
 }
 
 // Tag + alias chips embed the target value into a data-* attribute via
-// wbActAttrs, which HTML-escapes it. That removes the FM-1 quoting
+// wbActAttrs, which HTML-escapes it. That removes the quoting
 // hazard by construction, so the encodeURIComponent/decodeURIComponent
 // round-trip the inline-handler version needed is no longer necessary
 // (e.g. an alias like O'Brien is just a string in el.dataset).

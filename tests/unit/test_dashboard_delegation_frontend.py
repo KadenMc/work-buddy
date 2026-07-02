@@ -1,7 +1,7 @@
 """Tests for the event-delegation dispatcher (core/delegation.py) and the
 repo-wide "zero inline handlers" invariant.
 
-FM-1 in the dashboard-frontend hardening: interactivity was wired through
+Interactivity was historically wired through
 inline ``onclick="fn('id')"`` attributes built by string concatenation, where
 a quote in an interpolated arg silently truncated the handler at click time
 (invisible to ``node --check`` and on page load). The whole frontend was
@@ -12,7 +12,7 @@ type dispatches to registered ``window.wbAction`` handlers.
 These tests pin:
 1. the dispatcher's public API and page-LAST safety;
 2. that the assembled page carries NO inline event-handler attributes (the
-   gate that FM-1 previously lacked); and
+   gate the inline-handler pattern previously lacked); and
 3. a Node behaviour harness proving a quote-bearing arg round-trips through
    wbActAttrs -> attribute -> dataset -> handler without truncation.
 """
@@ -42,7 +42,7 @@ _HANDLER_EVENTS = (
 # Match the inline-ATTRIBUTE form only: on<event>= immediately followed by a
 # quote. This excludes legitimate JS property assignments (el.onclick = fn),
 # which are function references, not string-built attributes, and carry no
-# FM-1 quoting risk.
+# quoting risk.
 _HANDLER_RE = re.compile(r"on(?:" + _HANDLER_EVENTS + r")\s*=\s*[\"']")
 
 
@@ -77,7 +77,7 @@ def _strip_comments(text: str) -> str:
 
 
 def test_no_inline_handlers_in_rendered_page():
-    """The gate FM-1 lacked: the fully-assembled page must carry zero inline
+    """The gate the inline-handler pattern lacked: the fully-assembled page must carry zero inline
     event-handler attributes. Every interaction goes through delegation."""
     # Scan both the HTML skeleton (static data-on-* live here) and the
     # assembled JS (where the JS-built handler strings live, now served as an
@@ -89,7 +89,7 @@ def test_no_inline_handlers_in_rendered_page():
 
 def test_delegation_behavior_harness():
     """A quote-bearing arg round-trips through wbActAttrs -> attribute ->
-    dataset -> handler without truncation (the FM-1 fix, proven at runtime)."""
+    dataset -> handler without truncation (the quoting-collision fix, proven at runtime)."""
     if shutil.which("node") is None:
         pytest.skip("node not on PATH")
     harness = os.path.join(os.path.dirname(__file__), "eval_delegation_behavior.cjs")
