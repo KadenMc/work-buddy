@@ -11,9 +11,13 @@ import subprocess
 import sys
 from pathlib import Path
 
+from work_buddy.logging_config import get_logger
+
 IS_WINDOWS = sys.platform == "win32"
 IS_MACOS = sys.platform == "darwin"
 IS_LINUX = sys.platform.startswith("linux")
+
+logger = get_logger(__name__)
 
 
 def subprocess_creation_flags() -> int:
@@ -46,6 +50,69 @@ def detached_process_kwargs() -> dict:
     if IS_WINDOWS:
         return {"creationflags": subprocess.CREATE_NO_WINDOW}
     return {"start_new_session": True}
+
+
+def resolve_child_python(cfg: dict | None = None) -> str:
+    """Resolve the Python interpreter child processes should be spawned with.
+
+    Resolution order:
+    1. ``sidecar.python_executable`` from config, when set and pointing at an
+       existing file. This pins the interpreter independently of how the parent
+       was launched, so a parent accidentally started on the wrong interpreter
+       still spawns children on the right one.
+    2. ``sys.executable`` — the current process's own interpreter.
+
+    When (1) is set but the file is missing, fall back to ``sys.executable`` and
+    log an error so the misconfiguration is visible. When (1) and
+    ``sys.executable`` disagree, log a warning: a useful diagnostic, not a hard
+    failure, since the explicit pin is the user's intent.
+
+    Shared by the sidecar daemon (for its supervised children) and the messaging
+    client's auto-start path, so both honor the same interpreter pin.
+    """
+    if cfg is None:
+        from work_buddy.config import load_config
+
+        try:
+            cfg = load_config()
+        except Exception:
+            cfg = {}
+    pinned = (cfg.get("sidecar", {}) or {}).get("python_executable")
+    if not pinned:
+        return sys.executable
+    if not Path(pinned).is_file():
+        logger.error(
+            "sidecar.python_executable=%r does not exist; falling back to "
+            "sys.executable=%r. Children may spawn on the wrong interpreter.",
+            pinned, sys.executable,
+        )
+        return sys.executable
+    if Path(pinned).resolve() != Path(sys.executable).resolve():
+        logger.warning(
+            "sidecar.python_executable=%r differs from sys.executable=%r; the "
+            "parent and its children will run on different interpreters. This is "
+            "intentional only if you explicitly pinned an env different from the "
+            "parent's own.",
+            pinned, sys.executable,
+        )
+    return pinned
+
+
+def build_child_env() -> dict[str, str]:
+    """Build the environment dict for a subprocess spawned by work-buddy.
+
+    Sets ``PYTHONUTF8=1`` so child interpreters wrap stdout/stderr in UTF-8
+    ``TextIOWrapper``s. Without it, on Windows the child picks cp1252 (the system
+    ANSI code page) and ``logging.StreamHandler`` raises ``UnicodeEncodeError``
+    on any non-Latin-1 codepoint reaching a log line, a recurring bug class since
+    log messages routinely interpolate vault content and other user data.
+
+    ``setdefault`` preserves an explicit user override (e.g. ``PYTHONUTF8=0``).
+    Returns a fresh dict; never mutates ``os.environ``.
+    """
+    env = os.environ.copy()
+    env.setdefault("PYTHONUTF8", "1")
+    return env
 
 
 def kill_process_on_port(port: int, *, wait_seconds: float = 5.0) -> bool:
@@ -490,25 +557,3 @@ def chrome_native_messaging_dir() -> Path:
         return Path.home() / "Library" / "Application Support" / "Google" / "Chrome" / "NativeMessagingHosts"
     else:
         return Path.home() / ".config" / "google-chrome" / "NativeMessagingHosts"
-
-
-def conda_activate_command(repo_root: str, module: str) -> list[str]:
-    """Build a command to run a Python module in the work-buddy conda env.
-
-    On Windows: uses powershell.exe with conda activate.
-    On Unix: uses bash with conda activate (assumes conda init has been done).
-    """
-    if IS_WINDOWS:
-        return [
-            "powershell.exe", "-Command",
-            f"cd '{repo_root}'; conda activate work-buddy; "
-            f"python -m {module}",
-        ]
-    else:
-        return [
-            "bash", "-c",
-            f"cd '{repo_root}' && "
-            f"eval \"$(conda shell.bash hook 2>/dev/null)\" && "
-            f"conda activate work-buddy && "
-            f"python -m {module}",
-        ]
