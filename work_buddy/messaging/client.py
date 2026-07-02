@@ -35,12 +35,19 @@ def _ensure_service_running() -> bool:
     if is_service_running():
         return True
 
-    logger.info("Messaging service not running — auto-starting...")
+    logger.info("Messaging service not running, auto-starting...")
     try:
-        from work_buddy.compat import conda_activate_command, detached_process_kwargs
-        cmd = conda_activate_command(str(_REPO_ROOT), "work_buddy.messaging.service")
+        from work_buddy.compat import (
+            build_child_env,
+            detached_process_kwargs,
+            resolve_child_python,
+        )
+
+        cmd = [resolve_child_python(), "-u", "-m", "work_buddy.messaging.service"]
         subprocess.Popen(
             cmd,
+            cwd=str(_REPO_ROOT),
+            env=build_child_env(),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             **detached_process_kwargs(),

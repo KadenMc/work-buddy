@@ -19,7 +19,7 @@ aliases:
 parents:
 - operations
 - operations
-dev_notes: Use work_buddy.compat.conda_activate_command(repo_root, module) for OS-portable Python execution. Never hardcode 'powershell.exe' in knowledge content or code — it breaks on macOS/Linux. The compat function handles Windows (PowerShell) and Unix (bash + conda hook) automatically. See work_buddy/compat.py lines 151-170. The hardcoded powershell.exe command in this unit's own content is a known Windows-only shortcut for the user — agent-facing code and docs should use compat instead.
+dev_notes: To spawn a work-buddy Python module OS-portably, resolve the interpreter with work_buddy.compat.resolve_child_python() (honors the sidecar.python_executable pin, else sys.executable) and run [python, '-u', '-m', module] with compat.build_child_env() and compat.detached_process_kwargs(). Never hardcode 'powershell.exe' or 'conda activate' in knowledge content or code; it breaks off-conda and on macOS/Linux. The hardcoded powershell.exe command in this unit's own content is a known Windows-only shortcut for the user; agent-facing code and docs should use the compat helpers instead.
 ---
 
 WORK_BUDDY_SESSION_ID is set automatically by a SessionStart hook (.claude/hooks/session-init.sh). On Claude Code Desktop, the hook outputs it as context.

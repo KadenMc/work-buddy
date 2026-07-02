@@ -24,7 +24,12 @@ from typing import Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
-from work_buddy.compat import assign_process_to_job, create_kill_on_close_job
+from work_buddy.compat import (
+    assign_process_to_job,
+    build_child_env,
+    create_kill_on_close_job,
+    resolve_child_python,
+)
 from work_buddy.config import load_config
 from work_buddy.logging_config import get_logger
 from work_buddy.sidecar.pid import (
@@ -264,71 +269,6 @@ def _kill_process_on_port(port: int, *, service_name: str = "") -> bool:
     return freed
 
 
-def _resolve_child_python(cfg: dict[str, Any] | None = None) -> str:
-    """Resolve the Python interpreter children should be spawned with.
-
-    Resolution order:
-    1. ``sidecar.python_executable`` from config, when set and pointing
-       at an existing file. This pins the env independently of how the
-       daemon itself was launched — so a daemon accidentally booted on
-       the wrong interpreter (e.g. a Windows scheduled task whose
-       ``conda activate`` no-op'd) still spawns children on the right one.
-    2. ``sys.executable`` — the daemon's own interpreter.
-
-    When (1) is set but the file is missing, we fall back to ``sys.executable``
-    and log an error so the misconfiguration is visible. When (1) and
-    ``sys.executable`` disagree (daemon and children would run different
-    Pythons), we log a warning — that's a useful diagnostic but not a
-    hard failure, since the explicit pin is the user's intent.
-    """
-    if cfg is None:
-        try:
-            cfg = load_config()
-        except Exception:
-            cfg = {}
-    pinned = (cfg.get("sidecar", {}) or {}).get("python_executable")
-    if not pinned:
-        return sys.executable
-    if not Path(pinned).is_file():
-        logger.error(
-            "sidecar.python_executable=%r does not exist; falling back to "
-            "sys.executable=%r. Children may spawn on the wrong interpreter.",
-            pinned, sys.executable,
-        )
-        return sys.executable
-    if Path(pinned).resolve() != Path(sys.executable).resolve():
-        logger.warning(
-            "sidecar.python_executable=%r differs from sys.executable=%r; "
-            "the daemon and its children will run on different interpreters. "
-            "This is intentional only if you explicitly pinned an env "
-            "different from the daemon's own.",
-            pinned, sys.executable,
-        )
-    return pinned
-
-
-def _build_child_env() -> dict[str, str]:
-    """Build the env dict children inherit when spawned by the sidecar.
-
-    Sets ``PYTHONUTF8=1`` so child interpreters wrap stdout/stderr in
-    UTF-8 ``TextIOWrapper``s. Without this, on Windows the child picks
-    cp1252 (the system ANSI code page) and ``logging.StreamHandler``
-    raises ``UnicodeEncodeError`` on any non-Latin-1 codepoint reaching
-    a log line — a recurring class of bug since log messages routinely
-    interpolate vault content, task descriptions, and other user data.
-
-    ``setdefault`` semantics: an explicit user override (e.g. setting
-    ``PYTHONUTF8=0`` to debug a bytes-vs-str regression) is preserved.
-
-    Returns a fresh dict — must not mutate ``os.environ`` itself, or
-    the override would leak into the parent and into any subprocess
-    spawn that bypasses this helper.
-    """
-    env = os.environ.copy()
-    env.setdefault("PYTHONUTF8", "1")
-    return env
-
-
 # ---------------------------------------------------------------------------
 # Startup banner
 # ---------------------------------------------------------------------------
@@ -504,7 +444,7 @@ def _start_child(svc: ChildService) -> None:
         )
         return
 
-    python = _resolve_child_python()
+    python = resolve_child_python()
     # ``-u`` forces unbuffered stdio so child output lands in the log
     # file immediately — critical for debugging slow/silent startups.
     cmd = [python, "-u", "-m", svc.module] + svc.args
@@ -551,7 +491,7 @@ def _start_child(svc: ChildService) -> None:
         svc.process = subprocess.Popen(
             cmd,
             cwd=str(_REPO_ROOT),
-            env=_build_child_env(),
+            env=build_child_env(),
             stdout=log_fh if log_fh else subprocess.DEVNULL,
             stderr=subprocess.STDOUT if log_fh else subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
@@ -881,7 +821,7 @@ def run(foreground: bool = True) -> None:
     # log catches is a Windows scheduled task whose ``conda activate``
     # silently no-op'd, leaving the daemon and all its children on the
     # base interpreter (and serving stale code) for days.
-    resolved_python = _resolve_child_python(cfg)
+    resolved_python = resolve_child_python(cfg)
     logger.info(
         "Children will spawn with: %s (daemon sys.executable=%s)",
         resolved_python, sys.executable,
