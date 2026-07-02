@@ -14,6 +14,24 @@ from __future__ import annotations
 def script() -> str:
     return r"""
 // ---- Helpers ----
+
+// Canonical HTML escaper. Escapes the five characters that are unsafe in
+// element text OR attribute values: & < > " '. This is the single
+// escaper for the whole dashboard frontend — the former per-module
+// escapeHtml definitions (which used the textContent trick and did NOT
+// escape quotes) are gone. Quote-escaping is what makes it safe in
+// attribute context, e.g. title="${escapeHtml(x)}" — an unescaped " in
+// x would otherwise break out of the attribute.
+function escapeHtml(s) {
+    if (s === null || s === undefined) return '';
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
 function statusBadge(status, tooltip) {
     const map = {
         healthy: 'badge-green', running: 'badge-green', active: 'badge-green', ok: 'badge-green',

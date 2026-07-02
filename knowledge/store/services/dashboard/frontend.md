@@ -1,0 +1,85 @@
+---
+name: Dashboard Frontend
+kind: concept
+description: 'Dashboard frontend architecture (developer-facing): the Python-generated single-page app, module structure and load-bearing concatenation order, the event-delegation interaction model, HTML escaping, shared pager/filters widgets, content-hashed asset serving, and the add-a-tab pattern.'
+summary: 'The dashboard UI is generated server-side by Python modules under work_buddy/dashboard/frontend/ and served as content-hashed cached JS/CSS assets. Interactivity uses event delegation (window.wbAction / wbActAttrs), never inline handlers.'
+tags:
+- dashboard
+- frontend
+- delegation
+- assets
+- escaping
+aliases:
+- dashboard frontend
+- event delegation
+- wbAction
+- wbActAttrs
+- add a tab
+- frontend layout
+parents:
+- services/dashboard
+dev_notes: |-
+  ## Module structure
+
+  Each concern is a Python module returning a JS string (``script() -> str``) and optionally CSS (``styles() -> str``), under ``frontend/scripts/`` in three buckets: ``core/`` (event bus, page shell, helpers, event-delegation dispatcher, static-skeleton adapters, workflow polling, notifications, palette, chat sidebar, form bridge, shared pager, shared filters, card registry), ``tabs/`` (one module per panel, with ``tabs/threads/*`` as a sub-cluster and ``tabs/cards/*`` for registry card renderers), and ``surfaces/`` (workflow-view renderers). ``frontend/scripts/__init__.py`` defines the load-bearing concatenation order via the ``SCRIPTS`` and ``STYLES`` registries.
+
+  ## Concatenation order is load-bearing
+
+  Every module concatenates into ONE script served as one asset. ``event_bus`` is first (defines ``window.eventBus``); ``helpers`` second (defines the canonical ``escapeHtml`` plus the fetch/badge primitives); ``page`` LAST, because its init runs at load and touches ``let``/``const`` declared in tab modules, and touching a binding still in the temporal dead zone throws ``ReferenceError`` and halts the whole script. New ``core/`` modules must therefore declare only ``window.*`` assignments and hoisted ``function`` declarations (no module-scope ``let``/``const``), so they stay page-LAST safe.
+
+  ## Interaction: event delegation
+
+  No inline ``on*=`` handlers exist; ``tests/unit/test_dashboard_delegation_frontend.py`` asserts zero in the assembled output. Interactivity goes through ``core/delegation.py``:
+
+  - ``window.wbAction(name, fn)`` registers an action; ``fn`` receives ``(el, e)`` and reads args from ``el.dataset``.
+  - ``window.wbActAttrs(name, data, events)`` returns the attribute string a renderer drops into an element: ``data-on-<event>="name"`` plus escaped ``data-*`` args (camelCase keys become kebab ``data-*``, read back as ``el.dataset.camelKey``). ``events`` defaults to ``'click'``; pass an array to bind several.
+  - One document-level listener per event type dispatches to the closest ``data-on-<event>`` ancestor. Bound events: click, input, change, keydown, submit, contextmenu, mousedown, focusout (blur's bubbling counterpart), and the drag events. Binding to ``document`` means listeners survive every morphdom ``childrenOnly`` refresh.
+  - Enter/Space activates any ``data-on-click`` element (native button-like keyboard behavior), so it needs no separate keydown handler. A shared ``wbNoop`` action lets an element swallow a click so it does not trigger an ancestor's delegated handler; the closest-match dispatch makes the innermost handler win.
+  - Action names are ONE global ``window.wbActions`` namespace. Never register the same name with different logic in two modules: the later registration silently wins and breaks the other emitter's ``data-*`` contract. A load-time ``console.warn`` and ``test_no_conflicting_action_registrations`` guard this. Adapters for the static skeleton (``html.py``) live in ``core/static_actions.py``.
+
+  ## Escaping
+
+  One canonical ``escapeHtml`` in ``core/helpers.py`` escapes ``& < > " '``. Use it, or ``wbActAttrs`` (which escapes for you), for any attribute value. Do not reintroduce per-module escapers or the ``textContent`` -> ``innerHTML`` trick, which does not escape quotes.
+
+  ## Asset serving (content-hashed, cached)
+
+  ``assembled_js()`` / ``assembled_css()`` in ``frontend/__init__.py`` concatenate the modules; they are the single source of truth used by the cache, the ``/assets`` route, and the tests. ``_build_assets()`` hashes them and serves ``app.<sha>.js|css`` via ``get_asset(filename)`` through the ``GET /assets/<path>`` route with ``Cache-Control: public, max-age=31536000, immutable``. Built once lazily; in ``--dev``, Werkzeug reloads the process on any ``.py`` change so the cache rebuilds. The ``GET /`` document stays no-store and references the current hashed names, so cache-busting is automatic. ``WB_VAULT_NAME`` is read from the ``<html data-vault-name>`` attribute so the bundle stays fully static (zero inline script, which also keeps a future CSP reachable). Frontend tests read ``assembled_js()`` / ``assembled_css()`` rather than scanning ``render_page()``, since the JS and CSS are served as separate assets, not inlined in the page.
+
+  ## Shared pager
+
+  ``frontend/scripts/core/pager.py`` exposes ``window.wbRenderPager(containerId, total, currentPage, pageSize, onPageFnName)``. Tabs that paginate mount a ``<div class="wb-pager" id="..."></div>`` container and call the renderer after their data fetch resolves. The pager hides itself when ``total <= pageSize``. Class names are ``.wb-pager*`` (styled centrally in ``styles.py``); the Threads tab and the Costs sessions table both use it.
+
+  ## Shared filters
+
+  ``frontend/scripts/core/filters.py`` exposes ``window.wbRenderFilters(containerId, config)``: one configurable chip-filter widget covering single-select (``segmented``), flat multi-select (``chips``), and family-grouped tristate multi-select with solo (``grouped``). Selection is caller-owned: the widget reads it through string-named ``getSelected`` / ``onChange`` globals (the pager's string-name trick) and keeps none of its own, so a morphdom refresh re-derives identical active chips from caller state. Tabs mount a ``<div class="wb-filters" id="..."></div>`` and call the renderer. Canonical ``.wb-filter-*`` classes are styled centrally in ``styles.py``. The Inference (where/kind/status), Tasks (state), Chats (Advanced predicates + Topics/Git/Tasks rail), and Costs (activity + model-family rail) filters all use it; it adds ARIA roles + keyboard nav and performs no fetches.
+
+  ## Adding a tab
+
+  1. Add a ``<button>`` to the tab bar in ``html.py`` ``_html()``.
+  2. Add a ``<div class="tab-panel" id="panel-<name>">`` in the panels section.
+  3. Create ``frontend/scripts/tabs/<name>.py`` exposing ``script() -> str`` (and optionally ``styles() -> str``).
+  4. Add the loader to ``staticLoaders`` in ``frontend/scripts/core/page.py``.
+  5. Add the new module's ``script`` (and ``styles`` if applicable) to the ordered registry in ``frontend/scripts/__init__.py``.
+  6. Wire interactivity via ``data-on-*`` + ``window.wbAction``, never inline ``on*=`` handlers.
+
+  Settings is atypical: its trigger lives in ``header-meta`` rather than the tab bar, but the panel structure is the same.
+
+  ## Hard rule for SSE handler authors
+
+  Do NOT call ``loadReview`` / ``loadTasks`` / ``loadSettings`` / ``loadCosts`` / ``refreshCostsData`` / ``staticLoaders[panel]()`` from any ``window.eventBus.on(...)`` handler. Use the panel's surface mutators instead:
+
+  - Review tab: ``window.reviewSurface.{appendCard, removeCard, updateCard, bumpAttractionPasses, setForcedContextStored}``.
+  - Tasks / Settings / Costs / Jobs: ``window.<panel>Surface.refresh()``, which internally morphdom-merges via ``window._wbMorphReplace``, preserving user state.
+
+  The regression test ``test_no_wholesale_loader_calls_in_event_handlers`` in ``tests/unit/test_dashboard_event_bus_frontend.py`` enforces this at the JS string level. See ``architecture/event-bus`` for the full per-card mutation contract.
+
+  ## No global panel-refresh timer
+
+  There is no ``setInterval`` driving panel refresh. The dashboard updates from server-pushed events; ``morphdom-umd.min.js`` v2.7.4 (``frontend/vendor/``) is the surgical-update primitive. If a tab needs periodic refresh, the answer is an event in the taxonomy, not a timer.
+
+  ## Cross-cutting rules
+
+  Frontend changes must also honor the rules in ``services/dashboard`` "CRITICAL for all agents modifying dashboard code": same-origin ``/api/*`` only, no browser fetches to sibling localhost ports, and do not subscribe to ``dashboard.form.*`` directly (register via ``window.wbFormBridge``).
+---
+
+The dashboard UI is a single-page app generated server-side by Python modules under ``work_buddy/dashboard/frontend/``, served to the browser as content-hashed, immutably-cached JS and CSS assets referenced from a small no-store HTML document. Interactivity is wired through event delegation rather than inline handlers. The module structure, concatenation order, interaction model, escaping, shared pager and filters widgets, asset serving, and the add-a-tab workflow are all in dev notes.

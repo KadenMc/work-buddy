@@ -574,7 +574,7 @@ function _costsRenderRatePopover() {
     // first-time reader: what RPM/ITPM/OTPM mean, how the bucket model
     // works, why values may be stale, and the coverage gap.
     html += `<div class="costs-rate-help">
-        <button class="costs-rate-help-toggle" onclick="costsRateLimitToggleHelp()">
+        <button class="costs-rate-help-toggle" ${wbActAttrs('costsRateLimitToggleHelp', {})}>
             <span class="costs-rate-help-icon">\u2139</span> What is this?
         </button>
         <div id="costs-rate-help-body" class="costs-rate-help-body" style="display: none;">
@@ -626,7 +626,7 @@ function costsRenderAll(opts) {
             `<div class="empty-state" style="padding:24px;text-align:center;">
                 <div style="margin-bottom:12px;">${costsEsc(data.message || 'No Claude Code usage cached yet.')}</div>
                 <button class="chats-accent-btn"
-                        onclick="costsRefresh(this)">Rescan Claude Code</button>
+                        ${wbActAttrs('costsRefresh', {})}>Rescan Claude Code</button>
             </div>`;
         document.getElementById('costs-models-filter').innerHTML = '';
         document.getElementById('costs-model-table').innerHTML = '';
@@ -1359,9 +1359,9 @@ function costsRenderSessionsTable(shape, data) {
             // for columns whose contents vary widely page-to-page.
             c.key ? ('col-' + c.key.replace(/_/g, '-')) : '',
         ].filter(Boolean).join(' ');
-        const onClick = sortable ? ` onclick="costsSortBy('${costsEsc(c.sort)}')"` : '';
+        const attrs = sortable ? wbActAttrs('costsSortBy', {sortKey: c.sort}) : '';
         const arrowSpan = sortable ? `<span class="sort-arrow">${arrow}</span>` : '';
-        html += `<th class="${cls}"${onClick}>${costsEsc(c.label)}${arrowSpan}</th>`;
+        html += `<th class="${cls}" ${attrs}>${costsEsc(c.label)}${arrowSpan}</th>`;
     }
     html += '</tr></thead><tbody>';
 
@@ -1395,5 +1395,16 @@ window.costsSurface = {
         return !!document.getElementById('costs-cards');
     },
 };
+
+// ---- Event-delegation adapters ----
+window.wbAction('costsRateLimitToggleHelp', function (el, e) {
+    costsRateLimitToggleHelp(e);
+});
+window.wbAction('costsRefresh', function (el) {
+    costsRefresh(el);
+});
+window.wbAction('costsSortBy', function (el) {
+    costsSortBy(el.dataset.sortKey);
+});
 
 """

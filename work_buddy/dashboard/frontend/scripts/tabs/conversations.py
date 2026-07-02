@@ -40,12 +40,12 @@ def script() -> str:
         if (msg.status === 'pending' && msg.message_type === 'question') {
             if (msg.response_type === 'boolean') {
                 bubble += '<div class="msg-choices">'
-                  + '<button onclick="conversationRespond(&#39;' + cid + '&#39;,&#39;true&#39;)">Yes</button>'
-                  + '<button onclick="conversationRespond(&#39;' + cid + '&#39;,&#39;false&#39;)">No</button></div>';
+                  + '<button ' + wbActAttrs('conversationRespondYes', {conversationId: cid}) + '>Yes</button>'
+                  + '<button ' + wbActAttrs('conversationRespondNo', {conversationId: cid}) + '>No</button></div>';
             } else if (msg.response_type === 'choice' && msg.choices) {
                 bubble += '<div class="msg-choices">';
                 for (const c of msg.choices) {
-                    bubble += '<button onclick="conversationRespond(&#39;' + cid + '&#39;,&#39;' + _esc(c.key) + '&#39;)">'
+                    bubble += '<button ' + wbActAttrs('conversationRespondChoice', {conversationId: cid, choiceKey: c.key}) + '>'
                        + _esc(c.label) + '</button>';
                 }
                 bubble += '</div>';
@@ -166,23 +166,9 @@ def script() -> str:
         const wrapClass = inst.mode === 'pane' ? 'thread-chat-pane' : 'thread-chat-standalone';
         // Input element: textarea (not <input>) so Shift+Enter inserts a
         // real newline. Plain Enter submits via the keydown handler.
-        // ``oninput`` auto-grows the textarea up to its CSS max-height
-        // (~4 lines), then the textarea's own ``overflow-y: auto`` lets
-        // the content scroll inside the cap.
-        // Build the inline event-handler attribute strings in JS, not in
-        // the Python source. The Python file is a triple-double-quoted
-        // block, so every backslash-quote in the source collapses to a
-        // bare quote before the JS even reaches the browser, which then
-        // breaks any single-quoted JS string literal that needs an
-        // embedded apostrophe. By assembling the handler bodies as JS
-        // variables here, the literal quote characters never traverse
-        // a Python escape boundary.
-        const KEYDOWN = "if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();conversationSendInput('" + cid + "')}";
         // Cap matches .thread-input textarea max-height so JS-driven
         // growth and CSS max-height agree; beyond the cap the
         // textarea's overflow-y kicks in (the user can scroll within).
-        const ONINPUT = "this.style.height='auto';this.style.height=Math.min(this.scrollHeight,96)+'px'";
-        const SENDCLICK = "conversationSendInput('" + cid + "')";
         // When the driving agent is dead, the input is rendered
         // disabled — typing into it would have no audience and
         // ``conversationRespond`` would silently land messages no one
@@ -198,10 +184,9 @@ def script() -> str:
                 ? '<div class="thread-input" id="tc-input-' + cid + '">'
                   + '<textarea rows="1" placeholder="' + inputPlaceholder + '"'
                   + inputDisabled
-                  + ' onkeydown="' + KEYDOWN.replace(/"/g, '&quot;') + '" '
-                  + 'oninput="' + ONINPUT.replace(/"/g, '&quot;') + '"></textarea>'
+                  + ' ' + wbActAttrs('conversationInputAuto', {conversationId: cid}, 'input') + '"></textarea>'
                   + '<button' + inputDisabled
-                  + ' onclick="' + SENDCLICK.replace(/"/g, '&quot;') + '">Send</button></div>'
+                  + ' ' + wbActAttrs('conversationSendClick', {conversationId: cid}) + '>Send</button></div>'
                 : '')
             + (status ? '<div class="thread-status-bar">' + _esc(status) + '</div>' : '')
             + '</div>';
@@ -244,6 +229,29 @@ def script() -> str:
             _render(inst, data);
         }
     }
+
+    // ---- Event delegation adapters ----
+    window.wbAction('conversationRespondYes', function(el) {
+        const cid = el.dataset.conversationId;
+        conversationRespond(cid, 'true');
+    });
+    window.wbAction('conversationRespondNo', function(el) {
+        const cid = el.dataset.conversationId;
+        conversationRespond(cid, 'false');
+    });
+    window.wbAction('conversationRespondChoice', function(el) {
+        const cid = el.dataset.conversationId;
+        const key = el.dataset.choiceKey;
+        conversationRespond(cid, key);
+    });
+    window.wbAction('conversationInputAuto', function(el) {
+        el.style.height = 'auto';
+        el.style.height = Math.min(el.scrollHeight, 96) + 'px';
+    });
+    window.wbAction('conversationSendClick', function(el) {
+        const cid = el.dataset.conversationId;
+        conversationSendInput(cid);
+    });
 
     // ---- Public API ----
 

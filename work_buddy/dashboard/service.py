@@ -1828,6 +1828,26 @@ def static_vendor(filename: str):
     return send_file(target, mimetype=mime)
 
 
+@app.get("/assets/<path:filename>")
+def static_assets(filename: str):
+    """Serve the content-hashed frontend bundle (``app.<hash>.js|css``).
+
+    Built in-memory by ``work_buddy.dashboard.frontend`` (no files on disk).
+    The filename carries a content hash, so the response is safe to cache
+    forever: any change to the frontend produces a new hash and therefore a
+    new URL. The ``GET /`` document stays no-store and always points at the
+    current hashed names, so cache-busting is automatic.
+    """
+    from work_buddy.dashboard.frontend import get_asset
+    asset = get_asset(filename)
+    if asset is None:
+        return "", 404
+    data, ctype = asset
+    resp = Response(data, content_type=ctype)
+    resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return resp
+
+
 # ---------------------------------------------------------------------------
 # Review tab + Resolution Surface endpoints removed
 # ---------------------------------------------------------------------------

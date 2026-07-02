@@ -124,10 +124,10 @@ function _fleetCard(m) {
     const local = m.is_local ? `<span class="idx-badge fleet-local">this machine</span>` : '';
     const ro = _fleetReadOnly();
     const editBtn = ro ? '' :
-        `<button class="fleet-edit" title="Edit role / hardware" onclick="showFleetForm('${escapeHtml(m.device_id)}')">&#9881;</button>`;
+        `<button class="fleet-edit" title="Edit role / hardware" ` + wbActAttrs('showFleetForm', {deviceId: m.device_id}) + `>&#9881;</button>`;
     const role = m.role
         ? `<div class="fleet-role idx-muted">${escapeHtml(m.role)}</div>`
-        : (ro ? '' : `<div class="fleet-role-empty" onclick="showFleetForm('${escapeHtml(m.device_id)}')">+ add a role label</div>`);
+        : (ro ? '' : `<div class="fleet-role-empty" ` + wbActAttrs('showFleetForm', {deviceId: m.device_id}) + `>+ add a role label</div>`);
     const models = (m.loaded_models && m.loaded_models.length)
         ? m.loaded_models.map(_fleetModel).join('')
         : `<div class="fleet-empty idx-muted">no models loaded</div>`;
@@ -174,9 +174,9 @@ function _fleetFormHtml() {
         </div>
         <div id="fleet-form-error" class="job-form-error" hidden></div>
         <div class="job-form-actions">
-            <button type="button" id="fleet-form-clear" class="fleet-clear-btn" onclick="clearFleetFromForm()" hidden>Clear roster entry</button>
-            <button type="button" class="jobs-form-cancel" onclick="hideFleetForm()">Cancel</button>
-            <button type="button" class="jobs-form-submit" onclick="submitFleetForm()">Save</button>
+            <button type="button" id="fleet-form-clear" class="fleet-clear-btn" ` + wbActAttrs('clearFleetFromForm', {}) + ` hidden>Clear roster entry</button>
+            <button type="button" class="jobs-form-cancel" ` + wbActAttrs('hideFleetForm', {}) + `>Cancel</button>
+            <button type="button" class="jobs-form-submit" ` + wbActAttrs('submitFleetForm', {}) + `>Save</button>
         </div>
     </div>`;
 }
@@ -269,7 +269,7 @@ function _fleetRenderInner(data) {
         <div class="fleet-header">
             <div class="fleet-title-row">
                 <span class="emb-section-title">Local model fleet</span>
-                <button class="inf-help-btn" title="Refresh fleet" onclick="loadFleet()">↻</button>
+                <button class="inf-help-btn" title="Refresh fleet" ` + wbActAttrs('loadFleet', {}) + `>↻</button>
             </div>
             <div class="idx-muted inf-intro">What's loaded on which machine right now — reachability, models, and hardware.</div>
         </div>`;
@@ -293,6 +293,13 @@ window.fleetSurface = {
             && (typeof WB_SETTINGS_SUBTAB === 'undefined' || WB_SETTINGS_SUBTAB === 'inference');
     },
 };
+
+// Event delegation adapters
+window.wbAction('showFleetForm', function (el) { showFleetForm(el.dataset.deviceId); });
+window.wbAction('hideFleetForm', function (el) { hideFleetForm(); });
+window.wbAction('clearFleetFromForm', function (el) { clearFleetFromForm(); });
+window.wbAction('submitFleetForm', function (el) { submitFleetForm(); });
+window.wbAction('loadFleet', function (el) { loadFleet(); });
 """
 
 

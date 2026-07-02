@@ -51,8 +51,8 @@ window.wbRenderPager = function (containerId, total, currentPage, pageSize, onPa
         const classes = ['wb-pager-btn'];
         if (opts.current) classes.push('current');
         const disabled = opts.disabled ? ' disabled' : '';
-        const onClick = opts.disabled ? '' : ` onclick="${onPageFnName}(${n})"`;
-        return `<button class="${classes.join(' ')}"${disabled}${onClick}>${_esc(label)}</button>`;
+        const attrs = opts.disabled ? '' : ` data-on-click="wbPagerButton" data-handler-name="${escapeHtml(onPageFnName)}" data-page-num="${n}"`;
+        return `<button class="${classes.join(' ')}"${disabled}${attrs}>${_esc(label)}</button>`;
     }
 
     let html = '';
@@ -73,4 +73,22 @@ window.wbRenderPager = function (containerId, total, currentPage, pageSize, onPa
     html += `<span class="wb-pager-info">${startIdx}–${endIdx} of ${total}</span>`;
     el.innerHTML = html;
 };
+
+// Generic pager button dispatcher: reads the handler name from data-handler-name
+// and the page number from data-page-num, then calls the named function.
+window.wbAction('wbPagerButton', function (el) {
+    var handlerName = el.dataset.handlerName || '';
+    var pageNum = parseInt(el.dataset.pageNum, 10);
+    if (!handlerName || !isFinite(pageNum)) return;
+    var fn = window[handlerName];
+    if (typeof fn !== 'function') {
+        console.warn('[wb-pager] no handler for', handlerName);
+        return;
+    }
+    try {
+        fn(pageNum);
+    } catch (err) {
+        console.error('[wb-pager] handler threw:', err);
+    }
+});
 """

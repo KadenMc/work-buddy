@@ -181,7 +181,7 @@ def script() -> str:
         // titles are usually available.
         let html = '<nav class="threads-breadcrumbs">';
         html += '<button class="threads-back" '
-              + 'onclick="threadsBack()" '
+              + wbActAttrs('threadsBack') + ' '
               + (path.length === 0 ? 'disabled' : '')
               + ' title="Back">&larr; Back</button>';
         html += '<span class="threads-crumb-sep">Threads</span>';
@@ -208,10 +208,9 @@ def script() -> str:
                       + _esc(label) + '</span>';
             } else {
                 const subPath = path.slice(0, i + 1);
-                const json = JSON.stringify(subPath).replace(/"/g, "&quot;");
                 html += '<a href="#" class="threads-crumb"' + titleAttr + ' '
-                      + 'onclick="event.preventDefault();threadsSetPath('
-                      + json + ')">' + _esc(label) + '</a>';
+                      + wbActAttrs('threadsCrumbNav', {subPath: JSON.stringify(subPath)})
+                      + '>' + _esc(label) + '</a>';
             }
         }
         html += '</nav>';
@@ -386,9 +385,9 @@ def script() -> str:
         html += '<input type="text" class="threads-search" '
               + 'placeholder="Search threads..." '
               + 'value="' + _esc(f.q) + '" '
-              + 'oninput="threadsSetFilter(\'q\', this.value)">';
+              + wbActAttrs('threadsFilterQ', {}, 'input') + '>';
         html += '<select class="threads-filter-select" '
-              + 'onchange="threadsSetFilter(\'state\', this.value)">';
+              + wbActAttrs('threadsFilterState', {}, 'change') + '>';
         for (const [v, label] of stateOpts) {
             html += '<option value="' + _esc(v) + '"'
                   + (f.state === v ? ' selected' : '') + '>'
@@ -396,7 +395,7 @@ def script() -> str:
         }
         html += '</select>';
         html += '<select class="threads-filter-select" '
-              + 'onchange="threadsSetFilter(\'subtype\', this.value)">';
+              + wbActAttrs('threadsFilterSubtype', {}, 'change') + '>';
         for (const [v, label] of subtypeOpts) {
             html += '<option value="' + _esc(v) + '"'
                   + (f.subtype === v ? ' selected' : '') + '>'
@@ -413,7 +412,7 @@ def script() -> str:
               + 'title="Filter by urgency level — surface_now is the '
               + 'subset of threads that have requested immediate '
               + 'attention via the inciting context." '
-              + 'onchange="threadsSetFilter(\'urgency\', this.value)">';
+              + wbActAttrs('threadsFilterUrgency', {}, 'change') + '>';
         for (const [v, label] of urgencyOpts) {
             html += '<option value="' + _esc(v) + '"'
                   + (f.urgency === v ? ' selected' : '') + '>'
@@ -423,7 +422,7 @@ def script() -> str:
         html += '<label class="threads-show-later">'
               + '<input type="checkbox"'
               + (f.show_later ? ' checked' : '')
-              + ' onchange="threadsSetFilter(\'show_later\', this.checked)">'
+              + ' ' + wbActAttrs('threadsFilterShowLater', {}, 'change') + '>'
               + ' Show deferred</label>';
         // Wave C: has-cleanup filter chip per UX.md §10.3.
         html += '<label class="threads-show-later" '
@@ -432,7 +431,7 @@ def script() -> str:
               + 'mutate the source).">'
               + '<input type="checkbox"'
               + (f.has_cleanup ? ' checked' : '')
-              + ' onchange="threadsSetFilter(\'has_cleanup\', this.checked)">'
+              + ' ' + wbActAttrs('threadsFilterHasCleanup', {}, 'change') + '>'
               + ' Cleanup-applicable</label>';
         // Wave F: master "show all" toggle. Disables the default
         // actionable-only filter so terminal threads (done /
@@ -444,7 +443,7 @@ def script() -> str:
               + 'pre-PROPOSED states.">'
               + '<input type="checkbox"'
               + (f.show_all ? ' checked' : '')
-              + ' onchange="threadsSetFilter(\'show_all\', this.checked)">'
+              + ' ' + wbActAttrs('threadsFilterShowAll', {}, 'change') + '>'
               + ' Show all states</label>';
         // Phase 4: surface in-flight states (AWAITING_INFERENCE,
         // INFERRING_*, EXECUTING, MONITORING, CLEANING_UP). Off by
@@ -455,7 +454,7 @@ def script() -> str:
               + 'title="Show threads currently being inferred or executing — useful for auditing what the agent is doing without surfacing a card.">'
               + '<input type="checkbox"'
               + (f.include_mid_process ? ' checked' : '')
-              + ' onchange="threadsSetFilter(\'include_mid_process\', this.checked)">'
+              + ' ' + wbActAttrs('threadsFilterMidProcess', {}, 'change') + '>'
               + ' Show mid-process</label>';
         html += '</div>';
         return html;
@@ -493,7 +492,7 @@ def script() -> str:
             if (filtered) {
                 html += '<p class="threads-empty-state">'
                       + 'No Threads match the current filters. '
-                      + '<a href="#" onclick="threadsClearFilters();return false;">Clear filters</a>'
+                      + '<a href="#" data-on-click="threadsClearFiltersLink">Clear filters</a>'
                       + '</p>';
             } else {
                 // Calls-to-action: bridge between "list is empty"
@@ -505,14 +504,14 @@ def script() -> str:
                       + 'they\'ll surface here.</p>';
                 html += '<div class="threads-empty-cta-row">';
                 html += '<button class="threads-empty-cta" '
-                      + 'onclick="threadsRunJournalScan()" '
+                      + 'data-on-click="threadsRunJournalScan" '
                       + 'title="Run the journal-backlog source pipeline '
                       + 'on today\'s Running Notes (segment + cluster + '
                       + 'spawn group threads)">'
                       + 'Scan today\'s journal'
                       + '</button>';
                 html += '<button class="threads-empty-cta" '
-                      + 'onclick="threadsToggleMidProcess()" '
+                      + 'data-on-click="threadsToggleMidProcess" '
                       + 'title="Show in-flight states (inferring, executing, '
                       + 'monitoring) — useful for auditing what the agent '
                       + 'is doing right now">'
@@ -617,7 +616,7 @@ def script() -> str:
             '<li class="threads-toplist-card'
             + (urgent ? ' threads-urgent' : '')
             + midProcessClass + '" '
-            +   'onclick="threadsPushPath(\'' + _esc(t.thread_id) + '\')">'
+            +   wbActAttrs('threadsPushPathAction', {threadId: t.thread_id}) + '>'
             + '<div class="threads-toplist-meta">'
             +   (urgent
                     ? '<span class="threads-urgency-pill high">!</span>'
@@ -658,13 +657,11 @@ def script() -> str:
                   + '</div>'
                 : '')
             + '<div class="threads-toplist-row-actions" '
-            +   'onclick="event.stopPropagation()">'
+            +   'data-on-click="wbNoop">'
             +   '<button class="threads-btn-icon" '
             +     'title="Later — left-click defers 6h; right-click for options" '
-            +     'onclick="threadCommitAction(\'' + _esc(t.thread_id)
-            +     '\', \'later\', {hours: 6})" '
-            +     'oncontextmenu="event.preventDefault();'
-            +     'threadsShowLaterPopup(this, \'' + _esc(t.thread_id) + '\')">'
+            +     wbActAttrs('threadsLaterDefault', {threadId: t.thread_id}) + ' '
+            +     'data-on-contextmenu="threadsLaterPopup">'
             +     '<svg width="14" height="14" viewBox="0 0 24 24" '
             +       'fill="none" stroke="currentColor" stroke-width="2" '
             +       'stroke-linecap="round" stroke-linejoin="round">'
@@ -734,11 +731,8 @@ def script() -> str:
                  +   'another thread from the list.'
                  + '</p>'
                  + '<button class="threads-retry-btn" '
-                 +   'onclick="(function(){'
-                 +     'delete (window._threadDetailErrors||{})[\'' + _esc(threadId) + '\'];'
-                 +     'delete window._threadDetailCache[\'' + _esc(threadId) + '\'];'
-                 +     'window._renderActiveThread && window._renderActiveThread();'
-                 +   '})()">Retry</button>'
+                 +   wbActAttrs('threadsRetryDetail', {threadId: threadId})
+                 +   '>Retry</button>'
                  + '</div>';
         }
         return '<div class="threads-loading">Loading thread '
@@ -954,11 +948,11 @@ def script() -> str:
         }
         return (
             '<div class="threads-modal-backdrop" '
-            +   'onclick="threadsCloseInspector()">'
-            + '<div class="threads-modal" onclick="event.stopPropagation()">'
+            +   'data-on-click="threadsCloseInspector">'
+            + '<div class="threads-modal" data-on-click="wbNoop">'
             +   '<div class="threads-modal-header">'
             +     '<span>Inspector: ' + _esc(itemId) + '</span>'
-            +     '<button onclick="threadsCloseInspector()" '
+            +     '<button data-on-click="threadsCloseInspector" '
             +       'class="threads-modal-close">&times;</button>'
             +   '</div>'
             +   '<div class="threads-modal-body">'
@@ -977,12 +971,12 @@ def script() -> str:
         const state = window._threadsState || { path: [] };
         const tid = state.path[state.path.length - 1] || '';
         let html = '<div class="threads-modal-backdrop" '
-                 + 'onclick="threadsCloseInspector()">'
+                 + 'data-on-click="threadsCloseInspector">'
                  + '<div class="threads-modal threads-modal-wide" '
-                 +   'onclick="event.stopPropagation()">'
+                 +   'data-on-click="wbNoop">'
                  + '<div class="threads-modal-header">'
                  +   '<span>Event log: <code>' + _esc(tid) + '</code></span>'
-                 +   '<button onclick="threadsCloseInspector()" '
+                 +   '<button data-on-click="threadsCloseInspector" '
                  +     'class="threads-modal-close">&times;</button>'
                  + '</div>'
                  + '<div class="threads-modal-body">'
@@ -1043,7 +1037,7 @@ def script() -> str:
             const evid = _esc(String(e.id));
             // Main row: click anywhere to toggle the detail row.
             html += '<tr class="threads-evlog-row" '
-                  +   'onclick="threadsToggleEvlogRow(\'' + evid + '\')">'
+                  +   wbActAttrs('threadsToggleEvlogRowAction', {eventId: e.id}) + '>'
                   + '<td class="threads-evlog-toggle" '
                   +   'aria-label="Expand row">'
                   +   '<span class="threads-evlog-caret" '
@@ -1296,12 +1290,12 @@ def script() -> str:
         el.className = "threads-modal-backdrop";
         el.onclick = () => el.remove();
         el.innerHTML = '<div class="threads-modal" '
-            + 'onclick="event.stopPropagation()" '
+            + 'data-on-click="wbNoop" '
             + 'style="max-width:480px">'
             + '<div class="threads-modal-header">'
             + '<span>Keyboard shortcuts</span>'
             + '<button class="threads-modal-close" '
-            + 'onclick="document.getElementById(\'threads-kbd-help\').remove()">&times;</button>'
+            + 'data-on-click="threadsKbdHelpClose">&times;</button>'
             + '</div>'
             + '<div class="threads-modal-body">'
             + '<table class="threads-ci-table">'
@@ -1357,6 +1351,63 @@ def script() -> str:
     }
     _wireThreadStateBus();
 
+    // ----- Event-delegation adapters --------------------------
+    //
+    // Registered here so every data-on-* attribute emitted by this
+    // module's renderers above has a matching action. See
+    // core/delegation.py for the dispatcher itself.
+
+    window.wbAction('threadsBack', function (el) { threadsBack(); });
+
+    window.wbAction('threadsCrumbNav', function (el) {
+        let subPath;
+        try { subPath = JSON.parse(el.dataset.subPath); } catch (e) { subPath = []; }
+        threadsSetPath(subPath);
+    });
+
+    window.wbAction('threadsFilterQ', function (el) { threadsSetFilter('q', el.value); });
+    window.wbAction('threadsFilterState', function (el) { threadsSetFilter('state', el.value); });
+    window.wbAction('threadsFilterSubtype', function (el) { threadsSetFilter('subtype', el.value); });
+    window.wbAction('threadsFilterUrgency', function (el) { threadsSetFilter('urgency', el.value); });
+    window.wbAction('threadsFilterShowLater', function (el) { threadsSetFilter('show_later', el.checked); });
+    window.wbAction('threadsFilterHasCleanup', function (el) { threadsSetFilter('has_cleanup', el.checked); });
+    window.wbAction('threadsFilterShowAll', function (el) { threadsSetFilter('show_all', el.checked); });
+    window.wbAction('threadsFilterMidProcess', function (el) { threadsSetFilter('include_mid_process', el.checked); });
+
+    window.wbAction('threadsClearFiltersLink', function (el, e) {
+        e.preventDefault();
+        threadsClearFilters();
+    });
+
+    window.wbAction('threadsRunJournalScan', function (el) { threadsRunJournalScan(); });
+    window.wbAction('threadsToggleMidProcess', function (el) { threadsToggleMidProcess(); });
+
+    window.wbAction('threadsPushPathAction', function (el) {
+        threadsPushPath(el.dataset.threadId);
+    });
+
+    window.wbAction('threadsLaterDefault', function (el) {
+        threadCommitAction(el.dataset.threadId, 'later', { hours: 6 });
+    });
+
+    window.wbAction('threadsRetryDetail', function (el) {
+        const threadId = el.dataset.threadId;
+        delete (window._threadDetailErrors || {})[threadId];
+        delete window._threadDetailCache[threadId];
+        window._renderActiveThread && window._renderActiveThread();
+    });
+
+    window.wbAction('threadsCloseInspector', function (el) { threadsCloseInspector(); });
+
+    window.wbAction('threadsToggleEvlogRowAction', function (el) {
+        threadsToggleEvlogRow(el.dataset.eventId);
+    });
+
+    window.wbAction('threadsKbdHelpClose', function (el) {
+        const help = document.getElementById('threads-kbd-help');
+        if (help) help.remove();
+    });
+
     // Hashchange listener: when the user uses browser back/forward, the
     // hash changes; re-extract state and re-render iff currently on the
     // Threads tab. (core/page.py already calls _initFromHash on
@@ -1373,6 +1424,13 @@ def script() -> str:
             };
             renderThreads();
         }
+    });
+
+    // Right-click "Later" -> options popup (contextmenu delegated). threadId
+    // comes from the button's data-thread-id (emitted by its click action).
+    window.wbAction('threadsLaterPopup', function (el, e) {
+        e.preventDefault();
+        threadsShowLaterPopup(el, el.dataset.threadId);
     });
 })();
 """

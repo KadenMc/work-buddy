@@ -137,10 +137,10 @@ registerViewRenderer('capability_consent', async function(container, viewId, pay
 
     // Buttons
     html += '<div id="cc-btns-'+viewId+'" class="nb-btn-group">';
-    html += '<button class="nb-btn nb-btn-request" onclick="capConsentRespond(&#39;'+viewId+'&#39;,&#39;always&#39;)">Allow always</button>';
-    html += '<button class="nb-btn nb-btn-neutral" onclick="capConsentRespond(&#39;'+viewId+'&#39;,&#39;temporary&#39;)">Allow for '+ttl+' min</button>';
-    html += '<button class="nb-btn nb-btn-ghost" onclick="capConsentRespond(&#39;'+viewId+'&#39;,&#39;once&#39;)">Allow once</button>';
-    html += '<button class="nb-btn nb-btn-deny" onclick="capConsentRespond(&#39;'+viewId+'&#39;,&#39;deny&#39;)">Deny</button>';
+    html += '<button class="nb-btn nb-btn-request" ' + wbActAttrs('capConsentAlways', {viewId: viewId}) + '>Allow always</button>';
+    html += '<button class="nb-btn nb-btn-neutral" ' + wbActAttrs('capConsentTemporary', {viewId: viewId, ttl: ttl}) + '>Allow for '+ttl+' min</button>';
+    html += '<button class="nb-btn nb-btn-ghost" ' + wbActAttrs('capConsentOnce', {viewId: viewId}) + '>Allow once</button>';
+    html += '<button class="nb-btn nb-btn-deny" ' + wbActAttrs('capConsentDeny', {viewId: viewId}) + '>Deny</button>';
     html += '</div>';
 
     html += '</div></div></div>';
@@ -166,6 +166,19 @@ window.capConsentRespond = async function(viewId, value) {
         setTimeout(() => dismissAndRemoveTab(viewId), value === 'deny' ? 500 : 1500);
     } catch(e) { console.error('Consent response failed:', e); }
 };
+
+window.wbAction('capConsentAlways', function(el) {
+    capConsentRespond(el.dataset.viewId, 'always');
+});
+window.wbAction('capConsentTemporary', function(el) {
+    capConsentRespond(el.dataset.viewId, 'temporary');
+});
+window.wbAction('capConsentOnce', function(el) {
+    capConsentRespond(el.dataset.viewId, 'once');
+});
+window.wbAction('capConsentDeny', function(el) {
+    capConsentRespond(el.dataset.viewId, 'deny');
+});
 
 // --- Workflow consent renderer ---
 registerViewRenderer('workflow_consent', async function(container, viewId, payload) {
@@ -219,8 +232,8 @@ registerViewRenderer('workflow_consent', async function(container, viewId, paylo
 
     // Buttons
     html += '<div id="wfc-btns-'+viewId+'" class="nb-btn-group stretch">';
-    html += '<button class="nb-btn nb-btn-approve" onclick="wfConsentRespond(&#39;'+viewId+'&#39;,&#39;launch&#39;)">Launch</button>';
-    html += '<button class="nb-btn nb-btn-deny" onclick="wfConsentRespond(&#39;'+viewId+'&#39;,&#39;cancel&#39;)">Cancel</button>';
+    html += '<button class="nb-btn nb-btn-approve" ' + wbActAttrs('wfConsentLaunch', {viewId: viewId}) + '>Launch</button>';
+    html += '<button class="nb-btn nb-btn-deny" ' + wbActAttrs('wfConsentCancel', {viewId: viewId}) + '>Cancel</button>';
     html += '</div>';
 
     html += '</div></div></div>';
@@ -250,6 +263,13 @@ window.wfConsentRespond = async function(viewId, value) {
         setTimeout(() => dismissAndRemoveTab(viewId), value === 'launch' ? 2000 : 500);
     } catch(e) { console.error('Consent response failed:', e); }
 };
+
+window.wbAction('wfConsentLaunch', function(el) {
+    wfConsentRespond(el.dataset.viewId, 'launch');
+});
+window.wbAction('wfConsentCancel', function(el) {
+    wfConsentRespond(el.dataset.viewId, 'cancel');
+});
 
 // --- Palette result renderer ---
 registerViewRenderer('palette_result', function(container, viewId, payload) {

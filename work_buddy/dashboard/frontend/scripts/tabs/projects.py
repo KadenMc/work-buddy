@@ -621,12 +621,6 @@ async function loadProjectMemoryItems(slug) {
     container.innerHTML = '<div class="log-container" style="max-height:340px; overflow-y:auto;">' + logHtml + '</div>';
 }
 
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-
 async function saveProject(slug) {
     const name = document.getElementById('proj-name').value.trim();
     const status = document.getElementById('proj-status').value;

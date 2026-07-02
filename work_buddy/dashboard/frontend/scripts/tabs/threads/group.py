@@ -295,14 +295,16 @@ def script() -> str:
             + '<h3>Couldn’t load groups</h3>'
             + '<p>' + _esc(msg) + '</p>'
             + '<button class="threads-retry-btn" '
-            +   'onclick="(function(){'
-            +     'delete window._groupState.errorByUmbrella[\''
-            +       _esc(umbrellaId) + '\'];'
-            +     'window._renderActiveThread '
-            +       '&& window._renderActiveThread();'
-            +   '})()">Retry</button>'
+            +   wbActAttrs('threadsGroupRetryFetch', {umbrellaId: umbrellaId})
+            +   '>Retry</button>'
             + '</div>';
     }
+
+    window.wbAction('threadsGroupRetryFetch', function (el) {
+        var umbrellaId = el.dataset.umbrellaId;
+        delete window._groupState.errorByUmbrella[umbrellaId];
+        window._renderActiveThread && window._renderActiveThread();
+    });
 
     function _renderColumns(umbrella, groups) {
         const umbrellaId = umbrella.thread_id;
@@ -328,8 +330,8 @@ def script() -> str:
             + (liveChildren.length > 0
                 ? '<button class="threads-group-approve-all" '
                     + 'title="Run Accept on every non-terminal group" '
-                    + 'onclick="threadsGroupApproveAll(\''
-                    +   _esc(umbrellaId) + '\')">'
+                    + wbActAttrs('threadsGroupApproveAll', {umbrellaId: umbrellaId})
+                    + '>'
                     + 'Approve all (' + liveChildren.length + ')'
                 + '</button>'
                 : '')
@@ -418,9 +420,8 @@ def script() -> str:
             +   'title="' + _esc(currentDescriptor
                 ? (current.rationale || currentDescriptor.description)
                 : 'Pick a per-group action') + '" '
-            +   'onclick="event.stopPropagation();'
-            +     'threadsGroupToggleActionChip(\''
-            +     _esc(sId) + '\')">'
+            +   wbActAttrs('threadsGroupToggleActionChip', {threadId: sId})
+            +   '>'
             +   '<span class="threads-group-action-chip-arrow">&rarr;</span> '
             +   _esc(chipLabel)
             +   ' <span class="threads-group-action-chip-caret">&#9662;</span>'
@@ -428,17 +429,18 @@ def script() -> str:
 
         if (isOpen) {
             html += '<div class="threads-group-action-chip-menu" '
-                +   'onclick="event.stopPropagation();">';
+                +   'data-on-click="wbNoop">';
             for (const d of perGroup) {
                 const isCurrent = currentDescriptor
                     && currentDescriptor.capability_name === d.capability_name;
                 html += '<button class="threads-group-action-chip-option'
                     +     (isCurrent ? ' current' : '') + '" '
                     +     'title="' + _esc(d.description || '') + '" '
-                    +     'onclick="event.stopPropagation();'
-                    +       'threadsGroupSetActionProposal(\''
-                    +       _esc(sId) + '\', \''
-                    +       _esc(d.capability_name) + '\')">'
+                    +     wbActAttrs('threadsGroupSetActionProposal', {
+                                threadId: sId,
+                                capabilityName: d.capability_name,
+                            })
+                    +     '>'
                     +     '<span class="label">' + _esc(d.label) + '</span>'
                     +     (d.description
                             ? '<span class="desc">'
@@ -453,9 +455,8 @@ def script() -> str:
             if (currentDescriptor) {
                 html += '<button class="threads-group-action-chip-option '
                     +     'clear" '
-                    +     'onclick="event.stopPropagation();'
-                    +       'threadsGroupSetActionProposal(\''
-                    +       _esc(sId) + '\', null)">'
+                    +     wbActAttrs('threadsGroupClearActionProposal', {threadId: sId})
+                    +     '>'
                     +     '<span class="label">Clear proposal</span>'
                     +     '<span class="desc">'
                     +       'No batch action; user reviews individually.'
@@ -478,6 +479,11 @@ def script() -> str:
             window._renderActiveThread();
         }
     };
+
+    window.wbAction('threadsGroupToggleActionChip', function (el, e) {
+        e.stopPropagation();
+        window.threadsGroupToggleActionChip(el.dataset.threadId);
+    });
 
     window.threadsGroupSetActionProposal = function (threadId, capabilityName) {
         // capabilityName === null → clear
@@ -544,6 +550,18 @@ def script() -> str:
         .catch(e => _groupToast('Action update failed', String(e)));
     };
 
+    window.wbAction('threadsGroupSetActionProposal', function (el, e) {
+        e.stopPropagation();
+        window.threadsGroupSetActionProposal(
+            el.dataset.threadId, el.dataset.capabilityName,
+        );
+    });
+
+    window.wbAction('threadsGroupClearActionProposal', function (el, e) {
+        e.stopPropagation();
+        window.threadsGroupSetActionProposal(el.dataset.threadId, null);
+    });
+
     // Close the chip dropdown when the user clicks elsewhere on the
     // page. Wired once at module load.
     if (!window._threadsGroupChipDismissInstalled) {
@@ -568,26 +586,22 @@ def script() -> str:
         actionOptions = actionOptions || [];
         let html = '<div class="threads-group-column" '
             + 'data-parent-id="' + _esc(sId) + '" '
-            + 'ondragover="event.preventDefault();'
-            +   'this.classList.add(\'drag-over\');" '
-            + 'ondragleave="this.classList.remove(\'drag-over\');" '
-            + 'ondrop="threadsGroupDropOnColumn(event, \'' + _esc(sId)
-            +   '\')">'
+            + 'data-on-dragover="threadsDragOver" '
+            + 'data-on-dragleave="threadsDragLeave" '
+            + 'data-on-drop="threadsDropOnColumn">'
             + '<div class="threads-group-column-header '
             +   'threads-group-column-header-clickable" '
             +   'role="link" tabindex="0" '
             +   'title="Open ' + _esc(child.title || sId) + '" '
-            +   'onclick="threadsGroupHeaderClick(event, \''
-            +     _esc(sId) + '\')" '
-            +   'onkeydown="if(event.key===\'Enter\'||event.key===\' \'){'
-            +     'event.preventDefault();'
-            +     'threadsPushPath(\'' + _esc(sId) + '\')}">'
+            +   wbActAttrs('threadsGroupHeaderClick', {threadId: sId})
+            +   '>'
             +   '<button class="threads-group-column-delete-x" '
             +     'title="Delete group sub-thread" '
-            +     'onclick="event.stopPropagation();'
-            +       'threadsGroupDeleteSubthread(\''
-            +       _esc(sId) + '\', '
-            +       (itemCount > 0 ? 'true' : 'false') + ')">'
+            +     wbActAttrs('threadsGroupDeleteSubthread', {
+                        threadId: sId,
+                        hadItems: itemCount > 0 ? 'true' : 'false',
+                    })
+            +     '>'
             +     '&times;'
             +   '</button>'
             +   '<div class="threads-group-column-title-row">'
@@ -638,12 +652,9 @@ def script() -> str:
             + 'data-item-id="' + _esc(iId) + '" '
             + 'data-parent-id="' + _esc(parentId) + '" '
             + 'draggable="true" '
-            + 'ondragstart="threadsGroupDragStart(event, \''
-            +   _esc(iId) + '\')" '
-            + 'ondragend="threadsGroupDragEnd(event, \''
-            +   _esc(iId) + '\')" '
-            + 'onclick="threadsGroupItemClick(event, \''
-            +   _esc(iId) + '\')">'
+            + 'data-on-dragstart="threadsItemDragStart" '
+            + 'data-on-dragend="threadsItemDragEnd" '
+            + 'data-on-click="threadsGroupItemClick">'
             + '<div class="threads-group-item-handle" '
             +   'title="Drag to move to another group">&#8801;</div>'
             + '<div class="threads-group-item-body">'
@@ -671,11 +682,10 @@ def script() -> str:
 
     function _renderNewGroupZone(umbrellaId) {
         return '<div class="threads-group-newzone" '
-            + 'ondragover="event.preventDefault();'
-            +   'this.classList.add(\'drag-over\');" '
-            + 'ondragleave="this.classList.remove(\'drag-over\');" '
-            + 'ondrop="threadsGroupDropOnNewZone(event, \''
-            +   _esc(umbrellaId) + '\')">'
+            + 'data-umbrella-id="' + _esc(umbrellaId) + '" '
+            + 'data-on-dragover="threadsDragOver" '
+            + 'data-on-dragleave="threadsDragLeave" '
+            + 'data-on-drop="threadsDropOnNewZone">'
             + '<div class="threads-group-newzone-icon">+</div>'
             + 'Drop here to create a new group'
             + '</div>';
@@ -907,6 +917,10 @@ def script() -> str:
         }
     };
 
+    window.wbAction('threadsGroupHeaderClick', function (el, e) {
+        window.threadsGroupHeaderClick(e, el.dataset.threadId);
+    });
+
     window.threadsGroupDeleteSubthread = function (threadId, hadItems) {
         if (hadItems && !window.confirm(
             'Delete this group sub-thread? It still has items inside; '
@@ -931,6 +945,13 @@ def script() -> str:
         })
         .catch(e => _groupToast('Delete failed', String(e)));
     };
+
+    window.wbAction('threadsGroupDeleteSubthread', function (el, e) {
+        e.stopPropagation();
+        window.threadsGroupDeleteSubthread(
+            el.dataset.threadId, el.dataset.hadItems === 'true',
+        );
+    });
 
     // ---- Approve all -------------------------------------------------
 
@@ -971,6 +992,10 @@ def script() -> str:
         .catch(e => _groupToast('Approve failed', String(e)));
     };
 
+    window.wbAction('threadsGroupApproveAll', function (el) {
+        window.threadsGroupApproveAll(el.dataset.umbrellaId);
+    });
+
     // ---- Selection handlers (item-level) ----------------------------
 
     window.threadsGroupItemClick = function (ev, itemId) {
@@ -998,6 +1023,10 @@ def script() -> str:
         // future polish could let it open. For now, item cards are
         // pure drag handles.
     };
+
+    window.wbAction('threadsGroupItemClick', function (el, e) {
+        window.threadsGroupItemClick(e, el.dataset.itemId);
+    });
 
     function _extendSelection(toItemId) {
         const all = Array.from(document.querySelectorAll(
@@ -1155,6 +1184,29 @@ def script() -> str:
         if (!n || n < 1 || n > candidates.length) return;
         _moveItems(sel, candidates[n - 1].thread_id);
     }
+
+    // Drag-and-drop (delegated; dispatcher binds drag* + drop). Columns and
+    // the new-group zone carry data-parent-id / data-umbrella-id; item cards
+    // carry data-item-id. Behaviour matches the former inline handlers.
+    window.wbAction('threadsDragOver', function (el, e) {
+        e.preventDefault();
+        el.classList.add('drag-over');
+    });
+    window.wbAction('threadsDragLeave', function (el) {
+        el.classList.remove('drag-over');
+    });
+    window.wbAction('threadsDropOnColumn', function (el, e) {
+        threadsGroupDropOnColumn(e, el.dataset.parentId);
+    });
+    window.wbAction('threadsDropOnNewZone', function (el, e) {
+        threadsGroupDropOnNewZone(e, el.dataset.umbrellaId);
+    });
+    window.wbAction('threadsItemDragStart', function (el, e) {
+        threadsGroupDragStart(e, el.dataset.itemId);
+    });
+    window.wbAction('threadsItemDragEnd', function (el, e) {
+        threadsGroupDragEnd(e, el.dataset.itemId);
+    });
 })();
 """
 

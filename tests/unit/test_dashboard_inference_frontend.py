@@ -17,7 +17,9 @@ def test_inference_subview_in_page():
     page = render_page()
     assert 'id="ssp-inference"' in page
     assert 'id="inference-content"' in page
-    assert "switchSettingsSubtab('inference')" in page
+    # The sub-tab button is wired via event delegation (data-on-click +
+    # data-subtab), not an inline onclick handler.
+    assert 'data-on-click="switchSettingsSubtab" data-subtab="inference"' in page
 
 
 def test_settings_guard_accepts_inference():
