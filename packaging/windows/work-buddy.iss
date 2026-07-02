@@ -7,9 +7,9 @@
 ; Build:  ISCC.exe /DAppVersion=X.Y.Z packaging\windows\work-buddy.iss
 ;   expects dist\payload\  (from build_payload.py, with vendor\uv.exe from vendor_uv.py)
 ;
-; NOTE: not yet compile-validated (no Inno Setup on the dev box). Compile with
-; ISCC on the clean Windows VM before the first real run. The AppId GUID below is
-; a stable placeholder; keep it fixed once published (it keys upgrade detection).
+; Compile-validated with ISCC 6.7.3; runtime behavior still needs the clean-VM
+; install test before the first release. The AppId GUID below is a stable
+; placeholder; keep it fixed once published (it keys upgrade detection).
 
 #ifndef AppVersion
   #define AppVersion "0.0.0"
@@ -34,8 +34,9 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayName=work-buddy
-; The bootstrap downloads a few hundred MB of dependencies; warn about time/space.
-DiskSpaceWarning=yes
+; The bootstrap downloads Python + dependencies after extraction (torch alone is
+; hundreds of MB); make the wizard's free-space check account for it (5 GB).
+ExtraDiskSpaceRequired=5368709120
 
 [Files]
 ; The source-tree payload (build_payload.py output), including vendor\uv.exe.
