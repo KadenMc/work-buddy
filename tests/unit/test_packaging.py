@@ -50,6 +50,15 @@ def test_build_payload_includes_package_excludes_dev_trees(tmp_path):
     assert "work_buddy" in summary["copied"]
 
 
+def test_build_payload_refuses_live_tree(tmp_path):
+    root = tmp_path / "repo"
+    (root / "work_buddy").mkdir(parents=True)
+    (root / "work_buddy" / "__init__.py").write_text("x")
+    (root / "knowledge" / "store.local").mkdir(parents=True)  # private, gitignored
+    with pytest.raises(ValueError, match="live working tree"):
+        build_payload.build_payload(root, tmp_path / "payload")
+
+
 def test_build_payload_recreates_out(tmp_path):
     root = tmp_path / "repo"
     (root / "work_buddy").mkdir(parents=True)

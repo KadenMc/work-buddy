@@ -16,6 +16,9 @@
 #endif
 
 [Setup]
+; All relative Source/OutputDir paths resolve from the repo root, not this
+; script's directory (Inno defaults relative paths to the .iss location).
+SourceDir=..\..
 AppId={{8F3E2A10-9C4B-4D7E-A1F2-6B5C8D9E0A1B}
 AppName=work-buddy
 AppVersion={#AppVersion}
@@ -38,7 +41,7 @@ DiskSpaceWarning=yes
 ; The source-tree payload (build_payload.py output), including vendor\uv.exe.
 Source: "dist\payload\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs
 ; The bootstrap script is not part of the source payload; ship it into vendor\.
-Source: "bootstrap.ps1"; DestDir: "{app}\vendor"; Flags: ignoreversion
+Source: "packaging\windows\bootstrap.ps1"; DestDir: "{app}\vendor"; Flags: ignoreversion
 
 [Dirs]
 ; The hidden per-user DATA dir (DBs, caches, logs, consent). provision writes

@@ -10,6 +10,12 @@ The payload is a plain source tree (no .git); Model A's git-working-copy nature
 is set up by the update lifecycle later. The heavy dependencies are NOT bundled:
 uv downloads them at install time.
 
+Build from a CLEAN CHECKOUT only (CI checkouts are; locally use a git worktree).
+A live working tree hides gitignored private files inside shipped directories
+(e.g. the personal knowledge store at knowledge/store.local), and copytree would
+sweep them into the installer. build_payload refuses to run when it detects the
+telltale local-only files.
+
 Usage:  python packaging/build_payload.py --out dist/payload [--root <repo>]
 """
 
@@ -44,6 +50,16 @@ INCLUDE = [
 PRUNE_DIRS = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
 PRUNE_SUFFIXES = {".pyc", ".pyo"}
 
+# Presence of any of these marks a LIVE working tree (all are gitignored, so a
+# clean checkout has none). Refuse to build: private local state must never be
+# swept into an installer payload.
+LIVE_TREE_MARKERS = [
+    "knowledge/store.local",
+    ".claude/settings.local.json",
+    "config.local.yaml",
+    ".env",
+]
+
 
 def _ignore(_dir: str, names: list[str]) -> list[str]:
     return [
@@ -55,6 +71,12 @@ def _ignore(_dir: str, names: list[str]) -> list[str]:
 
 def build_payload(root: Path, out: Path) -> dict:
     """Copy the installer payload from ``root`` into ``out``. Returns a summary."""
+    found = [m for m in LIVE_TREE_MARKERS if (root / m).exists()]
+    if found:
+        raise ValueError(
+            f"refusing to build from a live working tree ({', '.join(found)} present); "
+            "build from a clean checkout (CI) or a git worktree"
+        )
     out = out.resolve()
     if out.exists():
         shutil.rmtree(out)
