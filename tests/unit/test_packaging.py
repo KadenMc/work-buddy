@@ -28,6 +28,20 @@ def _load(name: str):
 
 build_payload = _load("build_payload")
 vendor_uv = _load("vendor_uv")
+version = _load("version")
+
+
+def test_version_reads_pyproject(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.poetry]\nname = "x"\nversion = "1.2.3"\n', encoding="utf-8"
+    )
+    assert version.read_version(tmp_path) == "1.2.3"
+
+
+def test_version_matches_real_pyproject():
+    # The real repo's version must be readable (guards against a malformed bump).
+    v = version.read_version(_REPO)
+    assert v and v[0].isdigit()
 
 
 def test_build_payload_includes_package_excludes_dev_trees(tmp_path):

@@ -4,8 +4,10 @@
 ; HOME, then runs bootstrap.ps1 (uv python + venv + editable install + provision
 ; + login auto-start). Mutable state lives under {localappdata}\work-buddy.
 ;
-; Build:  ISCC.exe /DAppVersion=X.Y.Z packaging\windows\work-buddy.iss
+; Build:  ISCC.exe /DAppVersion=$(python packaging/version.py) packaging\windows\work-buddy.iss
 ;   expects dist\payload\  (from build_payload.py, with vendor\uv.exe from vendor_uv.py)
+;   The version comes from pyproject.toml (single source of truth); the 0.0.0
+;   default below is only a fallback for an ad-hoc build with no version passed.
 ;
 ; Compile-validated with ISCC 6.7.3; runtime behavior still needs the clean-VM
 ; install test before the first release. The AppId GUID below is a stable

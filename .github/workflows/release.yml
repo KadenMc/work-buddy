@@ -10,10 +10,10 @@ on:
       - "[0-9]+.[0-9]+.[0-9]+"
   workflow_dispatch:
     inputs:
-      version:
-        description: "Version label for a manual test build (no tag needed)"
+      version_override:
+        description: "Optional version label for a manual test build (default: pyproject version)"
         required: false
-        default: "0.0.0-manual"
+        default: ""
 
 permissions:
   contents: write # create/upload the draft release
@@ -30,20 +30,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Resolve version
-        id: ver
-        shell: bash
-        run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
-            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=${{ github.event.inputs.version }}" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Resolve and verify version
+        id: ver
+        shell: bash
+        run: |
+          # pyproject.toml is the single source of truth for the version.
+          PYPROJECT=$(python packaging/version.py)
+          if [ "${{ github.event_name }}" = "push" ]; then
+            TAG="${GITHUB_REF_NAME}"
+            if [ "$TAG" != "$PYPROJECT" ]; then
+              echo "::error::release tag ($TAG) does not match pyproject version ($PYPROJECT). Bump pyproject.toml and commit before tagging." >&2
+              exit 1
+            fi
+            echo "version=$TAG" >> "$GITHUB_OUTPUT"
+          elif [ -n "${{ github.event.inputs.version_override }}" ]; then
+            echo "version=${{ github.event.inputs.version_override }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$PYPROJECT" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Install uv (pinned to the bundled version)
         uses: astral-sh/setup-uv@v5
