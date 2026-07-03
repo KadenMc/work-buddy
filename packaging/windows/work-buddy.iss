@@ -72,3 +72,10 @@ Filename: "{app}\.venv\Scripts\wbuddy.exe"; Parameters: "stop"; \
   Flags: runhidden; RunOnceId: "WbStop"
 Filename: "{app}\.venv\Scripts\wbuddy.exe"; Parameters: "autostart disable"; \
   Flags: runhidden; RunOnceId: "WbAutostart"
+
+[UninstallDelete]
+; Inno removes only what it installed, so the runtime-created venv (hundreds of
+; MB of dependencies) and the provision-written config.yaml/.env (which holds the
+; API key) would otherwise be left behind. Remove the whole install dir. User
+; DATA lives under {localappdata}\work-buddy and is preserved deliberately.
+Type: filesandordirs; Name: "{app}"
