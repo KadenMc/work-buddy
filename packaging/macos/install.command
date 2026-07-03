@@ -34,11 +34,11 @@ echo "==> Installing Python 3.11 (uv)"
 "$UV" python install 3.11
 
 echo "==> Creating the virtual environment"
-"$UV" venv --python 3.11 "$APP_HOME/.venv"
+"$UV" venv --clear --python 3.11 "$APP_HOME/.venv"
 
 echo "==> Downloading dependencies (this can take several minutes)"
 attempt=1
-until "$UV" pip install --python "$VENV_PY" --extra-index-url https://download.pytorch.org/whl/cpu -e "$APP_HOME"; do
+until "$UV" pip install --python "$VENV_PY" --index-strategy unsafe-best-match --extra-index-url https://download.pytorch.org/whl/cpu -e "$APP_HOME"; do
   if [ "$attempt" -ge 3 ]; then
     echo "Dependency install failed after $attempt attempts. Re-run install.command to resume (downloads are cached)." >&2
     exit 1
