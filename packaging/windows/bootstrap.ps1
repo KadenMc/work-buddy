@@ -22,10 +22,20 @@ param(
 $ErrorActionPreference = "Stop"
 $venvPy = Join-Path $AppHome ".venv\Scripts\python.exe"
 
-# The installer runs this hidden and does not surface a nonzero exit, so failure
-# handling lives here: everything is transcribed to install.log in the DATA dir,
-# and a failure raises a visible dialog instead of a silent "successful" finish.
+# Install the managed Python INSIDE the HOME, not uv's shared per-user dir. A
+# fresh install-local dir has no pre-existing version-link reparse points, which
+# on Windows otherwise fail permanently (uv tries to recreate them and Windows
+# rejects re-traversing an existing reparse point: "untrusted mount point", os
+# error 448). It also keeps Python self-contained, so uninstall removes it too.
+$env:UV_PYTHON_INSTALL_DIR = Join-Path $AppHome ".uv\python"
+
+# The installer runs this hidden and Inno does not treat a nonzero exit as fatal.
+# So success is signalled by a marker file: the installer aborts if it is absent
+# after this runs. Clear any stale marker up front; everything is transcribed to
+# install.log for diagnosis.
 New-Item -ItemType Directory -Force -Path $Data | Out-Null
+$markerPath = Join-Path $Data ".install-ok"
+Remove-Item -Force -ErrorAction SilentlyContinue $markerPath
 $logPath = Join-Path $Data "install.log"
 Start-Transcript -Path $logPath -Append | Out-Null
 
@@ -48,14 +58,11 @@ function Invoke-Step {
 }
 
 trap {
-    $msg = $_.Exception.Message
+    # No dialog here: the marker is never written, so the installer detects the
+    # failure and shows a single error message pointing at the log. Just record
+    # the reason and exit nonzero.
+    Write-Host "ERROR: $($_.Exception.Message)"
     try { Stop-Transcript | Out-Null } catch {}
-    try {
-        Add-Type -AssemblyName PresentationFramework
-        [System.Windows.MessageBox]::Show(
-            "work-buddy setup did not complete:`n`n$msg`n`nDetails: $logPath`nRe-run the installer to resume (downloads are cached).",
-            "work-buddy setup", "OK", "Error") | Out-Null
-    } catch {}
     exit 1
 }
 
@@ -94,4 +101,6 @@ Invoke-Step "Provisioning work-buddy" { & $venvPy @provArgs }
 Invoke-Step "Registering login auto-start" { & $venvPy -m work_buddy.cli autostart enable }
 
 Write-Host "==> work-buddy install complete."
+# Signal success to the installer (its [Code] guard aborts if this is missing).
+New-Item -ItemType File -Force -Path $markerPath | Out-Null
 Stop-Transcript | Out-Null

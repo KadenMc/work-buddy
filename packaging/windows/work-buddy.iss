@@ -26,7 +26,10 @@ AppName=work-buddy
 AppVersion={#AppVersion}
 AppPublisher=Kaden McKeen
 AppSupportURL=https://github.com/KadenMc/work-buddy
-DefaultDirName={userdocs}\work-buddy
+; The user's home folder: auto-resolves to the current user, is never cloud-synced
+; (Documents often is), and is visible as a Claude Code project dir. Matches the
+; ~/work-buddy default the Linux/macOS installers already use.
+DefaultDirName={%USERPROFILE}\work-buddy
 DefaultGroupName=work-buddy
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
@@ -56,12 +59,11 @@ Name: "{localappdata}\work-buddy"
 ; PowerShell console out of the user's face; the wizard shows StatusMsg.
 Filename: "powershell.exe"; \
   Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\vendor\bootstrap.ps1"" -AppHome ""{app}"" -Data ""{localappdata}\work-buddy"" -Uv ""{app}\vendor\uv.exe"""; \
-  StatusMsg: "Setting up Python and downloading dependencies. This can take several minutes..."; \
+  StatusMsg: "Setting up Python and downloading dependencies (about 1 GB). This can take several minutes..."; \
   Flags: runhidden
-; Offer to open the dashboard once install finishes.
-Filename: "{app}\.venv\Scripts\wbuddy.exe"; Parameters: "dashboard --open"; \
-  Description: "Open the work-buddy dashboard"; \
-  Flags: postinstall nowait skipifsilent
+; No postinstall "open dashboard" action: the finish page hands off to the real
+; setup step (/wb-setup guided in Claude Code) via [Code] below, and a failed
+; bootstrap must never leave a launch action pointing at a venv that was not built.
 
 [Icons]
 Name: "{group}\work-buddy dashboard"; Filename: "{app}\.venv\Scripts\wbuddy.exe"; Parameters: "dashboard --open"
@@ -76,8 +78,47 @@ Filename: "{app}\.venv\Scripts\wbuddy.exe"; Parameters: "autostart disable"; \
   Flags: runhidden; RunOnceId: "WbAutostart"
 
 [UninstallDelete]
-; Inno removes only what it installed, so the runtime-created venv (hundreds of
-; MB of dependencies) and the provision-written config.yaml/.env (which holds the
+; Inno removes only what it installed, so the runtime-created venv + managed
+; Python (.uv\python), and the provision-written config.yaml/.env (which holds the
 ; API key) would otherwise be left behind. Remove the whole install dir. User
 ; DATA lives under {localappdata}\work-buddy and is preserved deliberately.
 Type: filesandordirs; Name: "{app}"
+
+[Messages]
+; The installer is NOT work-buddy's "wizard" — the real setup wizard is
+; /wb-setup guided inside Claude Code. Strip "Setup Wizard" from the UI, and use
+; the welcome page to explain the one-time download up front so the size reassures
+; rather than alarms.
+WelcomeLabel1=Welcome to work-buddy Setup
+WelcomeLabel2=This will install work-buddy on your computer.%n%nwork-buddy runs a private semantic-search engine on your own machine, so Setup downloads its own Python and machine-learning libraries (about 1 GB, one time). The search models themselves download later, the first time you use search. Nothing you store is sent to a cloud service.%n%nClick Next to continue.
+FinishedHeadingLabel=work-buddy is installed
+ClickFinish=Click Finish to close Setup.
+
+[Code]
+{ Fail the install if the bootstrap did not write its success marker. Inno does
+  not treat a nonzero [Run] exit as fatal, so without this a failed setup would
+  reach the success page. ssPostInstall runs after the [Run] bootstrap. }
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  Marker, Log: String;
+begin
+  if CurStep = ssPostInstall then
+  begin
+    Marker := ExpandConstant('{localappdata}\work-buddy\.install-ok');
+    Log := ExpandConstant('{localappdata}\work-buddy\install.log');
+    if not FileExists(Marker) then
+      RaiseException(
+        'work-buddy setup could not complete. See the log at ' + Log + '.' + #13#10 +
+        'Re-run the installer to resume (downloads are cached).');
+  end;
+end;
+
+{ Point the finish page at the real next step, with the actual install path. }
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if CurPageID = wpFinished then
+    WizardForm.FinishedLabel.Caption :=
+      'work-buddy is installed at ' + ExpandConstant('{app}') + '.' + #13#10 + #13#10 +
+      'To finish setup, open that folder in Claude Code and run  /wb-setup guided  ' +
+      '(feature selection and the interactive integrations).';
+end;

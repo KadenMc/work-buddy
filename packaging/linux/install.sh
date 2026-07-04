@@ -28,10 +28,17 @@ done
 UV="$HERE/payload/vendor/uv"
 VENV_PY="$APP_HOME/.venv/bin/python"
 chmod +x "$UV"
+# Install the managed Python inside the HOME (self-contained; removed on uninstall).
+export UV_PYTHON_INSTALL_DIR="$APP_HOME/.uv/python"
 
 echo "==> Installing work-buddy into $APP_HOME"
 mkdir -p "$APP_HOME" "$DATA_DIR"
 cp -a "$HERE/payload/." "$APP_HOME/"
+
+echo "==> work-buddy runs a private semantic-search engine on your machine, so this"
+echo "    downloads its own Python and machine-learning libraries (about 1 GB, one"
+echo "    time). Search models download later, on first use. Nothing is sent to a"
+echo "    cloud service."
 
 echo "==> Installing Python 3.11 (uv)"
 "$UV" python install 3.11
