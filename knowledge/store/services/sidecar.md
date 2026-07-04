@@ -66,29 +66,29 @@ dev_notes: |-
 
   ### Defense 2 — children spawn under a pinned interpreter
 
-  `work_buddy/sidecar/daemon.py:_resolve_child_python(cfg)` is the single chokepoint for which Python children get spawned with: `cfg['sidecar']['python_executable']` if set and existing, else `sys.executable`.
+  `work_buddy/compat.py:resolve_child_python(cfg)` is the single chokepoint for which Python children get spawned with: `cfg['sidecar']['python_executable']` if set and existing, else `sys.executable`. Shared by the sidecar daemon and the messaging client's auto-start.
 
-  **Why a config pin and not a startup guard**: `sys.executable` is locked in by the launch context (scheduled task, shell activation, etc.) — the daemon can't change it once it's running. What the daemon *can* control is which interpreter its children inherit. Moving the pin from "how the daemon launched" to "what the daemon spawns" puts it inside our authority. A daemon accidentally booted on the wrong interpreter (e.g. a Windows scheduled task whose `conda activate` no-op'd in headless context) still spawns children on the right one.
+  **Why a config pin and not a startup guard**: `sys.executable` is locked in by the launch context (scheduled task, shell activation, etc.) — the daemon can't change it once it's running. What the daemon *can* control is which interpreter its children inherit. Moving the pin from "how the daemon launched" to "what the daemon spawns" puts it inside our authority. A parent accidentally launched on the wrong interpreter (e.g. a Windows login task started on the base env in a headless context) still spawns children on the right one.
 
   Mismatch between pin and `sys.executable` logs a WARNING; missing pinned file logs an ERROR and falls back. **Warn-only, not refuse-to-start** — hard-stop would brick boot for users who haven't opted in. Easy to escalate to `raise` if you want fail-closed.
 
-  Do not bypass `_resolve_child_python` by reading `sys.executable` directly in `_start_child`. The config pin is the user's only knob for fixing a misconfigured launch context; bypassing it silently invalidates the knob.
+  Do not bypass `resolve_child_python` by reading `sys.executable` directly in `_start_child`. The config pin is the user's only knob for fixing a misconfigured launch context; bypassing it silently invalidates the knob.
 
   ## Child-process encoding: PYTHONUTF8 chokepoint
 
   A third spawn-time invariant, sibling to the interpreter pin in Defense 2 above. The class of bug is `UnicodeEncodeError` from `logging.StreamHandler` — children on Windows wrap their `sys.stdout`/`sys.stderr` in a `TextIOWrapper(encoding="cp1252")` at interpreter init, and any non-Latin-1 codepoint reaching a log line raises. Python's logging module catches the exception and falls back to a `--- Logging error ---` stack trace, so the function completes but the log file fills with noise. The bug recurs anywhere a `logger.*` call interpolates non-ASCII data — vault content, task descriptions, log glyphs (`→`, `—`, `×`).
 
-  `work_buddy/sidecar/daemon.py:_build_child_env()` is the chokepoint that fixes this by setting `PYTHONUTF8=1` in the child's env before `Popen`, flipping the child interpreter into UTF-8 mode (every stream — std, subprocess pipes, file ops — encodes via UTF-8). Lives adjacent to `_resolve_child_python` so the two spawn invariants are obviously paired.
+  `work_buddy/compat.py:build_child_env()` is the chokepoint that fixes this by setting `PYTHONUTF8=1` in the child's env before `Popen`, flipping the child interpreter into UTF-8 mode (every stream — std, subprocess pipes, file ops — encodes via UTF-8). Lives adjacent to `resolve_child_python` so the two spawn invariants are obviously paired.
 
   **`setdefault` semantics.** An explicit user override (`PYTHONUTF8=0` to debug a bytes-vs-str regression) is preserved. The helper adds, it doesn't clobber.
 
-  **Returns a copy, not `os.environ`.** Mutating `os.environ` would leak `PYTHONUTF8` into the parent and into any subprocess spawn that bypasses `_build_child_env`. Test `test_build_child_env_does_not_mutate_os_environ` in `tests/unit/test_sidecar_child_env.py` enforces this.
+  **Returns a copy, not `os.environ`.** Mutating `os.environ` would leak `PYTHONUTF8` into the parent and into any subprocess spawn that bypasses `build_child_env`. Test `test_build_child_env_does_not_mutate_os_environ` in `tests/unit/test_sidecar_child_env.py` enforces this.
 
   **Forward-compat with PEP 686.** Python 3.15 makes UTF-8 mode the default on all platforms; once we upgrade, the env injection becomes a no-op (the runtime is already in UTF-8 mode regardless of the env var). Don't rip the helper out at upgrade time — it remains the user-override knob for `PYTHONUTF8=0`.
 
   **Layer 2 fallback in `work_buddy/logging_config.py:setup_logging()`.** Layer 1 (the env injection) only covers sidecar-spawned children. Standalone launches (`python -m work_buddy.<service>` directly, tests, dev one-offs) bypass the sidecar path. As a fallback, `setup_logging()` calls `sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")` (and same for stderr) at first invocation. `errors="backslashreplace"` is the never-crash policy: any unencodable codepoint becomes `→` text instead of raising. Class-level regression sentinel: `tests/unit/test_logging_config.py::test_log_with_non_ascii_under_cp1252_does_not_crash` installs a cp1252 stream and proves the bug class is dead.
 
-  Do not bypass `_build_child_env` by passing `env=os.environ.copy()` directly in the `Popen` call. Same rule as `_resolve_child_python`: the chokepoint is the single knob; bypassing it silently invalidates future env additions.
+  Do not bypass `build_child_env` by passing `env=os.environ.copy()` directly in the `Popen` call. Same rule as `resolve_child_python`: the chokepoint is the single knob; bypassing it silently invalidates future env additions.
 
   ## Scheduler jitter: pending-fire layer
 
