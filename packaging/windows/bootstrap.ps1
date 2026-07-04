@@ -22,12 +22,17 @@ param(
 $ErrorActionPreference = "Stop"
 $venvPy = Join-Path $AppHome ".venv\Scripts\python.exe"
 
-# Install the managed Python INSIDE the HOME, not uv's shared per-user dir. A
-# fresh install-local dir has no pre-existing version-link reparse points, which
-# on Windows otherwise fail permanently (uv tries to recreate them and Windows
-# rejects re-traversing an existing reparse point: "untrusted mount point", os
-# error 448). It also keeps Python self-contained, so uninstall removes it too.
-$env:UV_PYTHON_INSTALL_DIR = Join-Path $AppHome ".uv\python"
+# uv creates Python's version-link inside its DATA dir, which defaults to
+# %APPDATA%\Roaming\uv. OneDrive's Files On-Demand driver intercepts reparse-point
+# creation there and fails it with "untrusted mount point" (os error 448), even
+# when nothing is inside the OneDrive folder. Point uv's DATA dir (where the link
+# is created) AND its Python dir at the per-user DATA dir under %LOCALAPPDATA%,
+# which OneDrive never touches. Setting only UV_PYTHON_INSTALL_DIR is NOT enough:
+# the link still goes to the default DATA dir. Verified in a real session.
+# See https://github.com/astral-sh/uv/issues/19616.
+$uvDir = Join-Path $Data "uv"
+$env:UV_DATA_DIR = $uvDir
+$env:UV_PYTHON_INSTALL_DIR = Join-Path $uvDir "python"
 
 # The installer runs this hidden and Inno does not treat a nonzero exit as fatal.
 # So success is signalled by a marker file: the installer aborts if it is absent

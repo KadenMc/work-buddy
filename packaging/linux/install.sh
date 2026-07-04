@@ -28,8 +28,12 @@ done
 UV="$HERE/payload/vendor/uv"
 VENV_PY="$APP_HOME/.venv/bin/python"
 chmod +x "$UV"
-# Install the managed Python inside the HOME (self-contained; removed on uninstall).
-export UV_PYTHON_INSTALL_DIR="$APP_HOME/.uv/python"
+# Keep uv's data dir + managed Python under the per-user DATA dir (off any
+# cloud-synced location; consistent with the Windows OneDrive-448 fix). Setting
+# UV_DATA_DIR (not just UV_PYTHON_INSTALL_DIR) is what actually relocates the
+# version-link uv creates.
+export UV_DATA_DIR="$DATA_DIR/uv"
+export UV_PYTHON_INSTALL_DIR="$DATA_DIR/uv/python"
 
 echo "==> Installing work-buddy into $APP_HOME"
 mkdir -p "$APP_HOME" "$DATA_DIR"

@@ -30,6 +30,12 @@ AppSupportURL=https://github.com/KadenMc/work-buddy
 ; (Documents often is), and is visible as a Claude Code project dir. Matches the
 ; ~/work-buddy default the Linux/macOS installers already use.
 DefaultDirName={%USERPROFILE}\work-buddy
+; Always SHOW the location picker with the current default. DisableDirPage defaults
+; to "auto", which silently skips the picker (and reuses the previous location) once
+; the app has been installed before -- surprising, and it stranded a test install at
+; a stale path. UsePreviousAppDir=no so it always offers the current default.
+DisableDirPage=no
+UsePreviousAppDir=no
 DefaultGroupName=work-buddy
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
@@ -78,11 +84,13 @@ Filename: "{app}\.venv\Scripts\wbuddy.exe"; Parameters: "autostart disable"; \
   Flags: runhidden; RunOnceId: "WbAutostart"
 
 [UninstallDelete]
-; Inno removes only what it installed, so the runtime-created venv + managed
-; Python (.uv\python), and the provision-written config.yaml/.env (which holds the
-; API key) would otherwise be left behind. Remove the whole install dir. User
-; DATA lives under {localappdata}\work-buddy and is preserved deliberately.
+; Inno removes only what it installed, so the runtime-created venv and the
+; provision-written config.yaml/.env (which holds the API key) would otherwise be
+; left behind. Remove the whole install dir, plus the managed Python that lives
+; under the data dir (a derived artifact). The rest of the user's DATA (databases,
+; logs) under {localappdata}\work-buddy is preserved deliberately.
 Type: filesandordirs; Name: "{app}"
+Type: filesandordirs; Name: "{localappdata}\work-buddy\uv"
 
 [Messages]
 ; The installer is NOT work-buddy's "wizard" — the real setup wizard is
