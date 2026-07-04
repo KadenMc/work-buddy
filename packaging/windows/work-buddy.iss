@@ -110,30 +110,35 @@ FinishedHeadingLabel=work-buddy is installed
 ClickFinish=Click Finish to close Setup.
 
 [Code]
-{ Fail the install if the bootstrap did not write its success marker. Inno does
-  not treat a nonzero [Run] exit as fatal, so without this a failed setup would
-  reach the success page. ssPostInstall runs after the [Run] bootstrap. }
-procedure CurStepChanged(CurStep: TSetupStep);
-var
-  Marker, Log: String;
+{ Inno does not treat a nonzero [Run] exit as failure, so the bootstrap signals
+  success by writing a marker file only when it fully completes. Reflect the TRUE
+  outcome on the finish page (both heading and body) rather than always claiming
+  the app is installed. }
+function InstallSucceeded(): Boolean;
 begin
-  if CurStep = ssPostInstall then
-  begin
-    Marker := ExpandConstant('{localappdata}\work-buddy\.install-ok');
-    Log := ExpandConstant('{localappdata}\work-buddy\install.log');
-    if not FileExists(Marker) then
-      RaiseException(
-        'work-buddy setup could not complete. See the log at ' + Log + '.' + #13#10 +
-        'Re-run the installer to resume (downloads are cached).');
-  end;
+  Result := FileExists(ExpandConstant('{localappdata}\work-buddy\.install-ok'));
 end;
 
-{ Point the finish page at the real next step, with the actual install path. }
 procedure CurPageChanged(CurPageID: Integer);
+var
+  Log: String;
 begin
-  if CurPageID = wpFinished then
+  if CurPageID <> wpFinished then Exit;
+  Log := ExpandConstant('{localappdata}\work-buddy\install.log');
+  if InstallSucceeded() then
+  begin
+    WizardForm.FinishedHeadingLabel.Caption := 'work-buddy is installed';
     WizardForm.FinishedLabel.Caption :=
       'work-buddy is installed at ' + ExpandConstant('{app}') + '.' + #13#10 + #13#10 +
       'To finish setup, open that folder in Claude Code and run  /wb-setup guided  ' +
       '(feature selection and the interactive integrations).';
+  end
+  else
+  begin
+    WizardForm.FinishedHeadingLabel.Caption := 'Setup did not complete';
+    WizardForm.FinishedLabel.Caption :=
+      'work-buddy could not finish setting up, so it is NOT ready to use yet.' + #13#10 + #13#10 +
+      'See the log at ' + Log + #13#10 + #13#10 +
+      'Re-run the installer to try again. The downloads are cached, so it resumes.';
+  end;
 end;

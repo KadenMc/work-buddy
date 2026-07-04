@@ -77,7 +77,15 @@ trap {
 #    extracts fine either way. So run the install best-effort and then locate the
 #    real versioned python.exe directly, bypassing the broken link entirely.
 Write-Host "==> Installing Python 3.11 (uv)"
-& $Uv python install 3.11 2>&1 | Write-Host
+# Best-effort. uv's final version-link and shim steps can warn or fail on Windows,
+# and those surface on stderr. With ErrorActionPreference=Stop, even a uv WARNING on
+# stderr would be promoted to a terminating error and abort us. So run this step
+# with error handling relaxed, and gate real success on whether a versioned
+# python.exe actually appears (checked next), NOT on uv's exit code or stderr.
+& {
+    $ErrorActionPreference = "Continue"
+    & $Uv python install 3.11 2>&1 | ForEach-Object { Write-Host $_ }
+}
 $pyExe = Get-ChildItem (Join-Path $uvDir "python") -Recurse -Filter python.exe -Depth 2 -ErrorAction SilentlyContinue |
     Where-Object { $_.Directory.Name -like "cpython-3.11.*-windows-*" } |
     Select-Object -First 1 -ExpandProperty FullName
