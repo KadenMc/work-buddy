@@ -36,6 +36,12 @@ DefaultDirName={%USERPROFILE}\work-buddy
 ; a stale path. UsePreviousAppDir=no so it always offers the current default.
 DisableDirPage=no
 UsePreviousAppDir=no
+; work-buddy installs into its OWN dedicated folder, never merged into a folder the
+; user picks. AppendDefaultDirName=yes (the default, set here for intent) makes a
+; Browse selection append "\work-buddy". A [Code] NextButtonClick guard additionally
+; refuses a non-empty folder that is not already a work-buddy install, so uninstall
+; (which removes the whole install dir) can never take a user's own data with it.
+AppendDefaultDirName=yes
 DefaultGroupName=work-buddy
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
@@ -110,6 +116,56 @@ FinishedHeadingLabel=work-buddy is installed
 ClickFinish=Click Finish to close Setup.
 
 [Code]
+{ Guard the location page: work-buddy installs into its own dedicated folder, so
+  refuse a non-empty folder that is not already a work-buddy install. That keeps
+  uninstall (which removes the whole install dir) from ever deleting a user's own
+  files, while still allowing re-install/repair over an existing work-buddy. }
+function DirIsEmpty(const Dir: String): Boolean;
+var
+  FR: TFindRec;
+begin
+  Result := True;
+  if FindFirst(AddBackslash(Dir) + '*', FR) then
+  begin
+    try
+      repeat
+        if (FR.Name <> '.') and (FR.Name <> '..') then
+        begin
+          Result := False;
+          Break;
+        end;
+      until not FindNext(FR);
+    finally
+      FindClose(FR);
+    end;
+  end;
+end;
+
+function IsWorkBuddyInstall(const Dir: String): Boolean;
+begin
+  Result := FileExists(AddBackslash(Dir) + 'pyproject.toml') and
+            DirExists(AddBackslash(Dir) + 'work_buddy');
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  Dir: String;
+begin
+  Result := True;
+  if CurPageID <> wpSelectDir then Exit;
+  Dir := WizardDirValue;
+  if not DirExists(Dir) then Exit;        { new folder: fine }
+  if DirIsEmpty(Dir) then Exit;           { empty folder: fine }
+  if IsWorkBuddyInstall(Dir) then Exit;   { existing work-buddy: allow repair }
+  MsgBox('The folder' + #13#10 + #13#10 + Dir + #13#10 + #13#10 +
+    'already contains other files. work-buddy installs into its own dedicated ' +
+    'folder, and uninstalling later removes that entire folder, so it will not ' +
+    'install on top of a folder that holds your own files.' + #13#10 + #13#10 +
+    'Choose an empty folder, or a location where a new "work-buddy" folder can be ' +
+    'created.', mbError, MB_OK);
+  Result := False;
+end;
+
 { Inno does not treat a nonzero [Run] exit as failure, so the bootstrap signals
   success by writing a marker file only when it fully completes. Reflect the TRUE
   outcome on the finish page (both heading and body) rather than always claiming
