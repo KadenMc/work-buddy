@@ -22,14 +22,9 @@ param(
 $ErrorActionPreference = "Stop"
 $venvPy = Join-Path $AppHome ".venv\Scripts\python.exe"
 
-# uv creates Python's version-link inside its DATA dir, which defaults to
-# %APPDATA%\Roaming\uv. OneDrive's Files On-Demand driver intercepts reparse-point
-# creation there and fails it with "untrusted mount point" (os error 448), even
-# when nothing is inside the OneDrive folder. Point uv's DATA dir (where the link
-# is created) AND its Python dir at the per-user DATA dir under %LOCALAPPDATA%,
-# which OneDrive never touches. Setting only UV_PYTHON_INSTALL_DIR is NOT enough:
-# the link still goes to the default DATA dir. Verified in a real session.
-# See https://github.com/astral-sh/uv/issues/19616.
+# Keep uv's data dir and managed Python under the per-user DATA dir (self-contained,
+# and off the roaming profile). The Python version-link failure this used to chase
+# is handled at the install step below (we bypass the link), not by relocation.
 $uvDir = Join-Path $Data "uv"
 $env:UV_DATA_DIR = $uvDir
 $env:UV_PYTHON_INSTALL_DIR = Join-Path $uvDir "python"
@@ -71,17 +66,30 @@ trap {
     exit 1
 }
 
-# All three uv steps are retried: each touches the network and/or creates
-# reparse points that antivirus can transiently block on a fresh path.
+# 1. Install a self-contained managed CPython 3.11 (not system python, not conda).
+#    IMPORTANT: uv finishes by creating a "minor version link" (a directory junction
+#    cpython-3.11-... -> cpython-3.11.15-...) purely for transparent patch upgrades.
+#    That link step fails on common Windows setups and is NOT recoverable by retry:
+#    when the installer runs with Windows' RedirectionGuard mitigation (Inno 6.7+
+#    enables it by default and it is inherited by child processes) junction traversal
+#    is blocked with os error 448; with the guard off, uv then reports a "missing
+#    target directory" for the same link. The Python interpreter itself ALWAYS
+#    extracts fine either way. So run the install best-effort and then locate the
+#    real versioned python.exe directly, bypassing the broken link entirely.
+Write-Host "==> Installing Python 3.11 (uv)"
+& $Uv python install 3.11 2>&1 | Write-Host
+$pyExe = Get-ChildItem (Join-Path $uvDir "python") -Recurse -Filter python.exe -Depth 2 -ErrorAction SilentlyContinue |
+    Where-Object { $_.Directory.Name -like "cpython-3.11.*-windows-*" } |
+    Select-Object -First 1 -ExpandProperty FullName
+if (-not $pyExe) {
+    throw "Python 3.11 install produced no interpreter under $uvDir\python"
+}
+Write-Host "==> Using Python at $pyExe"
 
-# 1. A self-contained managed CPython 3.11 (not system python, not conda).
-Invoke-Step "Installing Python 3.11" -Retries 3 { & $Uv python install 3.11 }
-
-# 2. A venv inside the HOME (co-located with the code; rebuilds with the checkout).
-#    --clear so a re-run (the advertised "resume" path) replaces a half-built
-#    venv instead of erroring that one already exists.
+# 2. A venv inside the HOME, pointed straight at that python.exe (never the link).
+#    --clear so a re-run (the advertised "resume" path) replaces a half-built venv.
 Invoke-Step "Creating the virtual environment" -Retries 3 {
-    & $Uv venv --clear --python 3.11 (Join-Path $AppHome ".venv")
+    & $Uv venv --clear --python $pyExe (Join-Path $AppHome ".venv")
 }
 
 # 3. Dependencies + editable install of work-buddy. THE slow step (CPU torch,

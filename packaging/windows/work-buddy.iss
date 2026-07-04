@@ -39,6 +39,13 @@ UsePreviousAppDir=no
 DefaultGroupName=work-buddy
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
+; Inno 6.7+ enables Windows' RedirectionGuard mitigation on Setup by default, and
+; it is inherited by child processes, which makes uv's junction/reparse operations
+; fail with os error 448 ("untrusted mount point"). The mitigation exists to protect
+; ELEVATED installers from junction-planting in shared paths; this installer is
+; per-user and writes only user-owned paths, so there is no privilege boundary to
+; defend. Turn it off. (Same fix Warp shipped: warpdotdev/warp#9863.)
+RedirectionGuard=no
 OutputDir=dist
 OutputBaseFilename=work-buddy-{#AppVersion}-setup
 Compression=lzma2
