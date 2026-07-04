@@ -37,11 +37,20 @@ def _run_ps(script: str, timeout: int = 60) -> subprocess.CompletedProcess:
 
 def register(*, python_exe: str, home_dir: str, data_dir: str) -> dict:
     pyw = _pythonw(python_exe)
-    # -Force replaces an existing task, so this is idempotent. pythonw.exe keeps
-    # the daemon windowless; a short AtLogOn delay lets the desktop settle first.
+    # Delete any existing task first, then create fresh. Register-ScheduledTask
+    # -Force *should* overwrite, but overwriting a task created in another context
+    # can fail with "Access is denied"; an explicit delete-then-create is more
+    # reliable. Deleting a task you own is permitted unelevated. -Force stays as a
+    # belt-and-suspenders. pythonw.exe keeps the daemon windowless; a short AtLogOn
+    # delay lets the desktop settle first.
+    unregister()  # best-effort; ignore result (there may be no existing task)
+    # Escape single quotes for the single-quoted PowerShell strings below, so a
+    # path like C:\Users\O'Brien\work-buddy cannot break out of the string.
+    pyw_ps = pyw.replace("'", "''")
+    home_ps = home_dir.replace("'", "''")
     script = (
-        f"$a = New-ScheduledTaskAction -Execute '{pyw}' "
-        f"-Argument '-m work_buddy.sidecar' -WorkingDirectory '{home_dir}'; "
+        f"$a = New-ScheduledTaskAction -Execute '{pyw_ps}' "
+        f"-Argument '-m work_buddy.sidecar' -WorkingDirectory '{home_ps}'; "
         f"$t = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME; "
         f"$t.Delay = 'PT15S'; "
         f"$s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries "

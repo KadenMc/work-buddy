@@ -118,10 +118,24 @@ if ($VaultRoot)    { $provArgs += @("--vault-root", $VaultRoot) }
 if ($AnthropicKey) { $provArgs += @("--anthropic-key", $AnthropicKey) }
 Invoke-Step "Provisioning work-buddy" { & $venvPy @provArgs }
 
-# 5. Register login auto-start (the WB-Sidecar scheduled task).
-Invoke-Step "Registering login auto-start" { & $venvPy -m work_buddy.cli autostart enable }
+# 5. Register login auto-start (the WB-Sidecar scheduled task). BEST-EFFORT: by
+#    now work-buddy is installed and running (sidecar up, MCP wired), so failing to
+#    register the login task must NOT fail the whole install. Warn and continue; a
+#    separate marker records whether it succeeded so the finish page can mention it.
+Write-Host "==> Registering login auto-start"
+$autostartMarker = Join-Path $Data ".autostart-ok"
+Remove-Item -Force -ErrorAction SilentlyContinue $autostartMarker
+& {
+    $ErrorActionPreference = "Continue"
+    & $venvPy -m work_buddy.cli autostart enable 2>&1 | ForEach-Object { Write-Host $_ }
+}
+if ($LASTEXITCODE -eq 0) {
+    New-Item -ItemType File -Force -Path $autostartMarker | Out-Null
+} else {
+    Write-Host "WARNING: could not register login auto-start. work-buddy is installed and running; it just will not restart automatically after a reboot. You can retry later with:  wbuddy autostart enable"
+}
 
 Write-Host "==> work-buddy install complete."
-# Signal success to the installer (its [Code] guard aborts if this is missing).
+# Signal overall success to the installer (its finish page checks this marker).
 New-Item -ItemType File -Force -Path $markerPath | Out-Null
 Stop-Transcript | Out-Null

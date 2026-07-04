@@ -119,19 +119,29 @@ begin
   Result := FileExists(ExpandConstant('{localappdata}\work-buddy\.install-ok'));
 end;
 
+function AutostartOk(): Boolean;
+begin
+  Result := FileExists(ExpandConstant('{localappdata}\work-buddy\.autostart-ok'));
+end;
+
 procedure CurPageChanged(CurPageID: Integer);
 var
-  Log: String;
+  Log, Msg: String;
 begin
   if CurPageID <> wpFinished then Exit;
   Log := ExpandConstant('{localappdata}\work-buddy\install.log');
   if InstallSucceeded() then
   begin
     WizardForm.FinishedHeadingLabel.Caption := 'work-buddy is installed';
-    WizardForm.FinishedLabel.Caption :=
+    Msg :=
       'work-buddy is installed at ' + ExpandConstant('{app}') + '.' + #13#10 + #13#10 +
       'To finish setup, open that folder in Claude Code and run  /wb-setup guided  ' +
       '(feature selection and the interactive integrations).';
+    if not AutostartOk() then
+      Msg := Msg + #13#10 + #13#10 +
+        'Note: automatic start at login could not be set up. work-buddy is running ' +
+        'now; after a reboot, start it with  wbuddy start  (or retry  wbuddy autostart enable).';
+    WizardForm.FinishedLabel.Caption := Msg;
   end
   else
   begin
