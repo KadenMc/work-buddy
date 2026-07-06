@@ -105,13 +105,16 @@ def provision(
     )
     steps.append("wrote .mcp.json (gateway wiring)")
 
-    # 6. Bootstrap checks.
+    # 6. Bootstrap checks. Advisory: they guide the user's next steps but do not,
+    #    by themselves, decide provisioning success. Feature config (vault_root,
+    #    the Anthropic key) is deferred to `/wb-setup guided`, so those unmet
+    #    required checks are expected on a fresh install and must NOT fail it.
     checker = RequirementChecker()
     boot_results = checker.check_bootstrap()
     summary = checker.summarize(boot_results)
 
     result = {
-        "ok": bool(summary.get("all_required_pass", False)),
+        "ok": False,  # decided after the install-critical work below
         "home": str(home),
         "data_dir": str(data),
         "steps": steps,
@@ -127,6 +130,13 @@ def provision(
         from work_buddy.cli import lifecycle
 
         result["sidecar"] = lifecycle.start_sidecar()
+
+    # Provisioning succeeds when ITS OWN work completed: the data tree is writable
+    # and (if requested) the sidecar came up. The MVP first-run state is "sidecar
+    # up + MCP wired"; feature configuration comes later via the wizard, so unmet
+    # feature-config checks are surfaced (in `bootstrap`) but never fail the install.
+    sidecar_ok = (not start) or bool((result["sidecar"] or {}).get("started"))
+    result["ok"] = bool(dw.get("ok", True)) and sidecar_ok
 
     return result
 

@@ -284,7 +284,7 @@ A **sidecar supervisor** manages long-running services — starts them on demand
 
 ### Fastest path to first value
 
-1. Install and connect the MCP server
+1. Download and run the installer, then open the install folder in Claude Code
 2. Run `/wb-setup guided`
 3. Open the dashboard
 4. Try `/wb-morning` or `/wb-task-triage`
@@ -292,50 +292,29 @@ A **sidecar supervisor** manages long-running services — starts them on demand
 ### Prerequisites
 
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (CLI or Desktop)
-- Python 3.11 (via [Miniforge](https://github.com/conda-forge/miniforge) or similar)
 - [Obsidian](https://obsidian.md/) (recommended, not strictly required for core functionality)
+
+work-buddy bundles its own Python, so there is nothing else to install first. No system Python, conda, or package manager is required.
 
 ### Install
 
-```bash
-git clone https://github.com/KadenMc/work-buddy.git
-cd work-buddy
+Download the installer for your platform from the [latest release](https://github.com/KadenMc/work-buddy/releases/latest), then run it.
 
-conda create -n work-buddy python=3.11 -y
-conda activate work-buddy
+| Platform | Installer | How to run it |
+|----------|-----------|---------------|
+| Windows | `work-buddy-<version>-setup.exe` | Double-click and follow the prompts |
+| macOS | *(planned)* | |
+| Linux | *(planned)* | |
 
-pip install poetry
-poetry install
+The installer sets up a private Python environment (using [uv](https://docs.astral.sh/uv/), which it bundles), downloads work-buddy's dependencies (about 1 GB, one time), creates a per-user data folder, and registers work-buddy to start at login. Everything installs under your own user account, and no system Python is touched.
 
-# Optional features
-poetry install --extras memory    # Persistent memory (Hindsight)
-poetry install --extras telegram  # Telegram bot
-poetry install --extras all       # Everything
-```
-
-### Configure
-
-```bash
-cp config.example.yaml config.yaml
-# Edit: vault path, timezone, enabled services
-
-cp config.local.yaml.example config.local.yaml
-# Edit: machine-specific overrides (Tailscale URL, Hindsight bank, feature preferences)
-```
-
-Machine-specific overrides (e.g., `hindsight.bank_id`) go in `config.local.yaml` (gitignored).
-
-**First-time setup:** After connecting to Claude Code, run `/wb-setup guided` for an interactive walkthrough that validates your configuration, lets you choose which features to enable, and checks that everything is wired correctly. The wizard will flag missing requirements with fix instructions.
+When it finishes, open the install folder in Claude Code and run `/wb-setup guided`. That walkthrough lets you choose which features to enable and completes the integrations (vault path, timezone, optional services), flagging anything missing with fix instructions.
 
 ### Connect to Claude Code
 
-work-buddy runs its MCP gateway as an HTTP service supervised by the sidecar, so start the sidecar first:
+The installer writes a project-level `.mcp.json` into the install folder, so opening that folder in Claude Code discovers the work-buddy gateway automatically. There is nothing to wire up by hand.
 
-```bash
-wbuddy start      # or: python -m work_buddy.sidecar
-```
-
-Then add this to your Claude Code MCP config (or run `wbuddy mcp print` to emit it):
+To connect a different Claude Code setup, point it at the gateway directly (or run `wbuddy mcp print` to emit this):
 
 ```json
 {
@@ -348,7 +327,7 @@ Then add this to your Claude Code MCP config (or run `wbuddy mcp print` to emit 
 }
 ```
 
-Then:
+Your settings live in `config.yaml` in the install folder (vault path, timezone, enabled features); `/wb-setup guided` fills them in interactively, and machine-specific overrides go in `config.local.yaml` (gitignored). Then, inside Claude Code:
 
 ```
 > /wb-morning    # Run the morning routine
@@ -357,261 +336,67 @@ Then:
 
 ### GPU Acceleration
 
-The default install uses CPU-only PyTorch from PyPI. If you have an NVIDIA GPU, installing CUDA-enabled PyTorch will significantly speed up embeddings, semantic search, and anything that touches `sentence-transformers`.
+The installer sets up CPU-only PyTorch. If you have an NVIDIA GPU, installing the CUDA build significantly speeds up embeddings, semantic search, and anything that touches `sentence-transformers`.
 
 <details>
 <summary><strong>[Windows/Linux] NVIDIA CUDA</strong></summary>
 
-After `poetry install`, override torch with the CUDA wheel:
+Replace the CPU wheel in the install environment (swap your install folder in for `<install-folder>`):
 
 ```bash
-# Install CUDA-enabled PyTorch (replaces the CPU-only wheel)
-pip install torch --index-url https://download.pytorch.org/whl/cu126 --force-reinstall
+"<install-folder>\.venv\Scripts\python" -m pip install torch --index-url https://download.pytorch.org/whl/cu126 --force-reinstall
 ```
 
-Verify GPU access:
+On macOS/Linux the interpreter is `<install-folder>/.venv/bin/python` instead. Verify GPU access:
+
 ```bash
-python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+"<install-folder>\.venv\Scripts\python" -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 # Expected: True NVIDIA GeForce RTX ...
 ```
-
-This replaces the CPU wheel in your virtualenv with the CUDA 12.6 build. The `poetry.lock` stays clean (CPU-only) so CI and other environments aren't affected.
 </details>
 
 <details>
 <summary><strong>[macOS] Apple Silicon (MPS)</strong></summary>
 
-The default PyPI torch wheel includes MPS support on Apple Silicon. No extra step needed.
+The default PyTorch wheel includes MPS support on Apple Silicon, so no extra step is needed.
 
 ```bash
-python -c "import torch; print(torch.backends.mps.is_available())"
+"<install-folder>/.venv/bin/python" -c "import torch; print(torch.backends.mps.is_available())"
 ```
 </details>
 
-> **Note:** `pyproject.toml` pins `python = ">=3.11,<3.12"` because `triton` (a torch dependency) doesn't declare support for Python 3.14+, and Poetry's resolver rejects ranges that *could* include unsupported versions.
+> **Note:** work-buddy pins `python = ">=3.11,<3.12"` because `triton` (a torch dependency) does not declare support for Python 3.14+, and the resolver rejects ranges that could include unsupported versions.
 
 ### Optional: Persistent Memory (Hindsight)
 
-If you installed with `--extras memory`, you need PostgreSQL with pgvector and the Hindsight server.
+work-buddy runs fully without persistent memory. Memory is an advanced, optional add-on: it needs the `memory` Python extra, a PostgreSQL server with the pgvector extension, and the Hindsight API server running alongside work-buddy.
 
-<details>
-<summary><strong>1. Install PostgreSQL and pgvector via conda</strong></summary>
-
-These are compiled server processes, not Python packages — install through conda:
-
-```bash
-conda install -c conda-forge postgresql pgvector -y
-```
-</details>
-
-<details>
-<summary><strong>2. Initialize PostgreSQL (first time only)</strong></summary>
-
-```bash
-# Create a database cluster with UTF-8 encoding
-initdb -D ~/hindsight-pgdata -U postgres -E UTF8 --locale=en_US.UTF-8
-
-# Start the server
-pg_ctl -D ~/hindsight-pgdata -l ~/hindsight-pgdata/logfile start
-
-# Create the hindsight database and enable pgvector
-createdb -U postgres hindsight
-psql -U postgres -d hindsight -c "CREATE EXTENSION IF NOT EXISTS vector;"
-```
-
-To stop the server later: `pg_ctl -D ~/hindsight-pgdata stop`
-</details>
-
-<details>
-<summary><strong>3. Configure and start Hindsight</strong></summary>
-
-Set environment variables (or add to a `.env` file):
-
-```bash
-export HINDSIGHT_API_LLM_PROVIDER=anthropic
-export HINDSIGHT_API_LLM_API_KEY=<your-anthropic-api-key>
-export HINDSIGHT_API_LLM_MODEL=claude-haiku-4-5-20251001
-export HINDSIGHT_API_DATABASE_URL=postgresql://postgres@localhost/hindsight
-```
-
-Start the server:
-```bash
-hindsight-api   # Runs at http://localhost:8888
-```
-
-Verify: `curl http://localhost:8888/health`
-</details>
-
-<details>
-<summary><strong>4. Bootstrap the memory bank (first time only)</strong></summary>
-
-```bash
-python -c "from work_buddy.memory.setup import ensure_bank; ensure_bank()"
-```
-
-This creates the personal memory bank (configured as `hindsight.bank_id` in config) with missions, directives, and mental models.
-</details>
-
-<details>
-<summary><strong>5. Inspect memories (optional)</strong></summary>
-
-To browse memories, entities, observations, and mental models in a browser:
-
-```bash
-npx @vectorize-io/hindsight-control-plane --api-url http://localhost:8888
-```
-
-Then open **http://localhost:9999**. This is an on-demand inspection tool — run it when you want to browse, not always-on.
-</details>
+This is a manual, from-source setup rather than a one-click feature. Install the extra with `uv pip install -e ".[memory]"` (see [CONTRIBUTING.md](CONTRIBUTING.md) for the from-source environment), provide a PostgreSQL instance with pgvector (through your platform's package manager, [Postgres.app](https://postgresapp.com/), or Docker), and run the Hindsight API per its documentation. Inside work-buddy, `agent_docs path=memory/hindsight` describes how memory is wired, including the bank bootstrap and the `hindsight.bank_id` setting.
 
 ### Running Services
 
-Three background services should run when using work-buddy: **PostgreSQL** (if using Hindsight), **Hindsight API** (`:8888`), and the **WB-Sidecar** (supervises messaging `:5123`, embedding `:5124`, dashboard `:5127`, and optionally Telegram `:5125`).
-
-**One-off start/stop:**
+The installer registers work-buddy to start at login, so normally nothing needs to be run by hand. To control it manually:
 
 ```bash
-# Sidecar (supervises messaging + embedding + dashboard)
-conda activate work-buddy && python -m work_buddy.sidecar &
-
-# Hindsight API (if using memory)
-conda activate work-buddy && hindsight-api &
-
-# PostgreSQL (if using memory)
-pg_ctl -D ~/hindsight-pgdata -l ~/hindsight-pgdata/logfile start
+wbuddy start     # start the sidecar (MCP gateway, messaging, embedding, dashboard)
+wbuddy stop      # stop it
+wbuddy status    # health check
 ```
 
-**Verify all services:**
-
-```bash
-curl http://localhost:8888/health    # Hindsight API
-curl http://127.0.0.1:5123/health   # Messaging
-curl http://127.0.0.1:5124/health   # Embedding
-curl http://127.0.0.1:5127/health   # Dashboard
-```
-
-Or from within Claude Code: `/wb-setup` runs the setup wizard with automated diagnostics, requirement validation, and feature preference management. Use `/wb-setup-help` for targeted component diagnostics.
+The sidecar supervises messaging (`:5123`), embedding (`:5124`), the dashboard (`:5127`), and optionally Telegram (`:5125`); the MCP gateway itself runs at `:5126`. From within Claude Code, `/wb-setup` runs the setup wizard with diagnostics and requirement validation, and `/wb-setup-help` gives targeted component checks.
 
 <details>
 <summary><strong>Auto-start on login</strong></summary>
 
-#### [Windows] Windows Task Scheduler
+The installer sets this up for you: a per-user login task that starts the work-buddy sidecar, with no administrator rights required. To manage it by hand:
 
-Run all commands in an **elevated PowerShell** (right-click → Run as Administrator).
-
-<details>
-<summary>Hindsight PostgreSQL</summary>
-
-```powershell
-$pgAction = New-ScheduledTaskAction -Execute (Get-Command pg_ctl).Source -Argument "-D $HOME\hindsight-pgdata -l $HOME\hindsight-pgdata\logfile start"
-$pgTrigger = New-ScheduledTaskTrigger -AtLogon
-$pgSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0
-Register-ScheduledTask -TaskName "Hindsight-PostgreSQL" -Action $pgAction -Trigger $pgTrigger -Settings $pgSettings -Description "Start PostgreSQL for Hindsight memory" -RunLevel Limited
-```
-</details>
-
-<details>
-<summary>Hindsight API (10s delay for PG readiness)</summary>
-
-```powershell
-$hsAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-WindowStyle Hidden -ExecutionPolicy Bypass -Command `"conda activate work-buddy; Get-Content <repo-path>\.env | ForEach-Object { if (`$_ -match '^([^#][^=]*)=(.*)$') { [Environment]::SetEnvironmentVariable(`$matches[1].Trim(), `$matches[2].Trim(), 'Process') } }; `$env:PYTHONIOENCODING='utf-8'; hindsight-api`""
-$hsTrigger = New-ScheduledTaskTrigger -AtLogon
-$hsTrigger.Delay = "PT10S"
-$hsSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0
-Register-ScheduledTask -TaskName "Hindsight-API" -Action $hsAction -Trigger $hsTrigger -Settings $hsSettings -Description "Start Hindsight memory server" -RunLevel Limited
-```
-</details>
-
-<details>
-<summary>WB-Sidecar (15s delay — supervises messaging + embedding)</summary>
-
-Invoke the env's `python.exe` directly rather than going through `conda activate`. Activation can silently no-op in headless contexts (where conda's PowerShell hook hasn't loaded), which leaves `python` resolving to the base interpreter — the daemon then spawns every child on the wrong env, and orphaned children can survive across restarts. A direct path makes that class of bug impossible.
-
-```powershell
-$envPython = "$HOME\miniforge3\envs\work-buddy\python.exe"  # adjust if your env lives elsewhere
-$scAction = New-ScheduledTaskAction -Execute $envPython -Argument "-m work_buddy.sidecar"
-$scTrigger = New-ScheduledTaskTrigger -AtLogon
-$scTrigger.Delay = "PT15S"
-$scSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0
-Register-ScheduledTask -TaskName "WB-Sidecar" -Action $scAction -Trigger $scTrigger -Settings $scSettings -Description "work-buddy sidecar daemon (supervises messaging + embedding, runs scheduler)" -RunLevel Limited
-```
-
-If you've previously registered WB-Sidecar with the `conda activate` form, replace it with the above — or set `sidecar.python_executable` in `config.yaml` to your env's `python.exe`, which pins the interpreter children spawn with regardless of how the daemon was launched.
-</details>
-
-#### [Linux] systemd user services
-
-Create service files under `~/.config/systemd/user/`:
-
-<details>
-<summary>hindsight-postgres.service</summary>
-
-```ini
-[Unit]
-Description=PostgreSQL for Hindsight memory
-
-[Service]
-Type=forking
-ExecStart=%h/miniforge3/envs/work-buddy/bin/pg_ctl -D %h/hindsight-pgdata -l %h/hindsight-pgdata/logfile start
-ExecStop=%h/miniforge3/envs/work-buddy/bin/pg_ctl -D %h/hindsight-pgdata stop
-Restart=on-failure
-
-[Install]
-WantedBy=default.target
-```
-</details>
-
-<details>
-<summary>hindsight-api.service</summary>
-
-```ini
-[Unit]
-Description=Hindsight memory API server
-After=hindsight-postgres.service
-
-[Service]
-Type=simple
-EnvironmentFile=%h/path-to-repo/.env
-ExecStart=%h/miniforge3/envs/work-buddy/bin/hindsight-api
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-```
-</details>
-
-<details>
-<summary>wb-sidecar.service</summary>
-
-```ini
-[Unit]
-Description=work-buddy sidecar daemon
-After=hindsight-api.service
-
-[Service]
-Type=simple
-WorkingDirectory=%h/path-to-repo
-ExecStart=%h/miniforge3/envs/work-buddy/bin/python -m work_buddy.sidecar
-Restart=on-failure
-RestartSec=10
-
-[Install]
-WantedBy=default.target
-```
-</details>
-
-Enable and start:
 ```bash
-systemctl --user daemon-reload
-systemctl --user enable hindsight-postgres hindsight-api wb-sidecar
-systemctl --user start hindsight-postgres hindsight-api wb-sidecar
+wbuddy autostart enable    # register the login task
+wbuddy autostart disable   # remove it
+wbuddy autostart status    # check whether it is registered
 ```
 
-#### [macOS] launchd agents
-
-Create plist files under `~/Library/LaunchAgents/`. The pattern is similar to systemd — each plist specifies the program, arguments, and `RunAtLoad=true`. See Apple's `launchd.plist(5)` man page for the full schema.
-
+This uses the platform's per-user login mechanism (Task Scheduler on Windows, a systemd user service on Linux, a launchd agent on macOS).
 </details>
 
 ### Remote Access
@@ -628,11 +413,11 @@ Set `dashboard.external_url` in `config.yaml` to enable "View in dashboard" link
 
 | Layer | Managed by | What it provides |
 |-------|-----------|-----------------|
-| conda | `conda install` | PostgreSQL server, pgvector extension |
-| Poetry | `poetry install` | All Python packages (hindsight, mcp, flask, etc.) |
-| Environment vars | Shell config / `.env` | Anthropic API key, DB URL, Telegram token |
-| config.yaml | Checked into repo | Vault path, timezone, service ports, enabled features |
-| config.local.yaml | Gitignored | Machine-specific overrides (bank IDs, paths) |
+| Install folder | the installer | Code, assets, `config.yaml`, secrets (`.env`) |
+| `.venv` | uv (bundled) | All Python packages (torch, mcp, flask, etc.) |
+| Data folder | the installer | Databases, caches, logs, consent (hidden per-user dir) |
+| `config.yaml` | you / `/wb-setup` | Vault path, timezone, service ports, enabled features |
+| `config.local.yaml` | you (gitignored) | Machine-specific overrides (bank IDs, paths) |
 
 ---
 

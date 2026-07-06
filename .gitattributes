@@ -3,3 +3,6 @@
 # breaks the `#!/bin/bash` shebang ("bad interpreter: /bin/bash^M"), so pin LF
 # regardless of a contributor's core.autocrlf setting or platform.
 *.sh text eol=lf
+# macOS installer launcher (packaging/macos/install.command) is bash too; a CRLF
+# shebang breaks it identically, and .command is not covered by *.sh.
+*.command text eol=lf

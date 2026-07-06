@@ -66,6 +66,19 @@ def test_provision_writes_config_env_mcp_and_pins_interpreter(tmp_install):
     assert "bootstrap" in res and "summary" in res["bootstrap"]
 
 
+def test_provision_ok_when_feature_config_missing(tmp_install):
+    """A fresh install with no vault and no API key still succeeds: the core work
+    (writable data, MCP wiring) is done and feature config is deferred to the
+    wizard. The unmet required checks must be surfaced in ``bootstrap`` for the
+    user, but must NOT fail provisioning (else every default install "fails")."""
+    home, data = tmp_install
+    res = prov.provision(data_dir=str(data), start=False)
+    assert res["ok"] is True
+    # the unmet feature-config requirements are still reported, just not fatal
+    failed_ids = {r["id"] for r in res["bootstrap"]["results"] if not r["ok"]}
+    assert any("vault" in i or "anthropic" in i for i in failed_ids)
+
+
 def test_provision_is_idempotent(tmp_install):
     home, data = tmp_install
     prov.provision(data_dir=str(data), start=False)

@@ -41,10 +41,12 @@ def test_windows_register_builds_task(monkeypatch, tmp_path):
         python_exe=str(tmp_path / "python.exe"), home_dir=str(tmp_path), data_dir=str(tmp_path)
     )
     assert res["ok"] is True
-    assert "Register-ScheduledTask" in calls[0]
-    assert "WB-Sidecar" in calls[0]
-    assert "-m work_buddy.sidecar" in calls[0]
-    assert "-RunLevel Limited" in calls[0]  # per-user, no admin
+    # register() deletes any existing task first, so the Register call is the last.
+    assert "Register-ScheduledTask" in calls[-1]
+    assert "WB-Sidecar" in calls[-1]
+    assert "-m work_buddy.sidecar" in calls[-1]
+    assert "-RunLevel Limited" in calls[-1]  # per-user, no admin
+    assert "Unregister-ScheduledTask" in calls[0]  # delete-then-create
 
 
 def test_windows_is_registered(monkeypatch):
@@ -58,6 +60,19 @@ def test_windows_register_reports_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(windows, "_run_ps", lambda script, timeout=60: _fake_cp(returncode=1, stderr="denied"))
     res = windows.register(python_exe="py.exe", home_dir=str(tmp_path), data_dir=str(tmp_path))
     assert res["ok"] is False and "denied" in res["detail"]
+
+
+def test_windows_register_escapes_apostrophe(monkeypatch, tmp_path):
+    # A path with an apostrophe (e.g. username O'Brien) must be escaped so it
+    # cannot terminate the single-quoted PowerShell string early.
+    calls = []
+    monkeypatch.setattr(windows, "_run_ps", lambda script, timeout=60: calls.append(script) or _fake_cp())
+    windows.register(
+        python_exe=r"C:\Users\O'Brien\.venv\Scripts\python.exe",
+        home_dir=r"C:\Users\O'Brien\work-buddy",
+        data_dir=str(tmp_path),
+    )
+    assert "O''Brien" in calls[-1]  # doubled, i.e. escaped
 
 
 # --- Linux (systemd --user) -----------------------------------------------

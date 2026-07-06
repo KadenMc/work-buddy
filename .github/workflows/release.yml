@@ -1,0 +1,117 @@
+name: Release
+
+# Builds the native installers on a version tag (e.g. 1.4.0) and attaches them to
+# a DRAFT GitHub Release for a human to review and publish. workflow_dispatch also
+# builds (no release) for manual verification.
+
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      version_override:
+        description: "Optional version label for a manual test build (default: pyproject version)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write # create/upload the draft release
+
+env:
+  # Keep in sync with packaging/vendor_uv.py UV_VERSION so the bundled uv and the
+  # CI-resolved uv are the same build.
+  UV_VERSION: "0.11.26"
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Resolve and verify version
+        id: ver
+        shell: bash
+        run: |
+          # pyproject.toml is the single source of truth for the version.
+          PYPROJECT=$(python packaging/version.py)
+          if [ "${{ github.event_name }}" = "push" ]; then
+            TAG="${GITHUB_REF_NAME}"
+            if [ "$TAG" != "$PYPROJECT" ]; then
+              echo "::error::release tag ($TAG) does not match pyproject version ($PYPROJECT). Bump pyproject.toml and commit before tagging." >&2
+              exit 1
+            fi
+            echo "version=$TAG" >> "$GITHUB_OUTPUT"
+          elif [ -n "${{ github.event.inputs.version_override }}" ]; then
+            echo "version=${{ github.event.inputs.version_override }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$PYPROJECT" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install uv (pinned to the bundled version)
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: ${{ env.UV_VERSION }}
+
+      - name: Build source-tree payload
+        run: python packaging/build_payload.py --out dist/payload
+
+      - name: Vendor uv into the payload
+        run: python packaging/vendor_uv.py --target windows --out dist/payload/vendor --version ${{ env.UV_VERSION }}
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Compile installer
+        shell: pwsh
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=${{ steps.ver.outputs.version }} packaging\windows\work-buddy.iss
+
+      - name: Upload installer as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: work-buddy-windows-setup
+          path: dist/work-buddy-*-setup.exe
+          if-no-files-found: error
+
+      - name: Attach to draft release
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          name: work-buddy ${{ steps.ver.outputs.version }}
+          tag_name: ${{ github.ref_name }}
+          files: dist/work-buddy-*-setup.exe
+
+  # ---------------------------------------------------------------------------
+  # Phase E fast-follow (architecture ready; build scripts not yet written).
+  # Uncomment once packaging/macos/build_pkg.sh and packaging/linux/build_tarball.sh
+  # exist, and add their outputs to the draft-release `files:` globs.
+  #
+  # macos:
+  #   runs-on: macos-latest
+  #   timeout-minutes: 30
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: astral-sh/setup-uv@v5
+  #       with: { version: "${{ env.UV_VERSION }}" }
+  #     - run: python packaging/build_payload.py --out dist/payload
+  #     - run: python packaging/vendor_uv.py --target macos --out dist/payload/vendor --version ${{ env.UV_VERSION }}
+  #     - run: bash packaging/macos/build_pkg.sh
+  #
+  # linux:
+  #   runs-on: ubuntu-latest
+  #   timeout-minutes: 30
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: astral-sh/setup-uv@v5
+  #       with: { version: "${{ env.UV_VERSION }}" }
+  #     - run: python packaging/build_payload.py --out dist/payload
+  #     - run: python packaging/vendor_uv.py --target linux --out dist/payload/vendor --version ${{ env.UV_VERSION }}
+  #     - run: bash packaging/linux/build_tarball.sh
