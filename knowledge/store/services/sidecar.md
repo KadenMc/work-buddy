@@ -127,7 +127,7 @@ dev_notes: |-
 
 A single long-lived Python process that replaces multiple independent Windows Task Scheduler entries with a unified process supervisor, cron/heartbeat scheduler, and message-driven job dispatcher.
 
-Starting: powershell.exe -Command "cd <repo-root>; conda activate work-buddy; python -m work_buddy.sidecar"
+Starting: uv run python -m work_buddy.sidecar
 
 Manages its own lifecycle via PID file (`<data_root>/runtime/sidecar.pid`) and state file (`<data_root>/runtime/sidecar_state.json`).
 

@@ -139,7 +139,7 @@ If the integration produces data useful for context bundles:
 ## Running Python
 
 ```bash
-powershell.exe -Command "cd <vault-root>\repos\work-buddy; conda activate work-buddy; <command>"
+uv run python <args>
 ```
 
 Set `WORK_BUDDY_SESSION_ID` env var before any `work_buddy` imports (consent system needs it).

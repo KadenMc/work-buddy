@@ -95,8 +95,8 @@ def handle_periodic_snapshot(message: dict) -> None:
     """Append a periodic tab snapshot to the rolling ledger.
 
     This is called by the extension's background alarm (every 5 minutes).
-    Fully self-contained with stdlib only — no work_buddy imports — because
-    Chrome launches the native host with system Python, not the conda env.
+    Fully self-contained with stdlib only (no work_buddy imports) because
+    Chrome launches the native host with system Python, not the project .venv.
     """
     try:
         # Build snapshot from message

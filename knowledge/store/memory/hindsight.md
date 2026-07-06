@@ -24,8 +24,8 @@ Hindsight is the external memory server backing the work-buddy memory subsystem 
 
 ## Server components
 
-- `hindsight-api-slim` — the HTTP server, managed via Poetry
-- `hindsight-client` — the Python SDK, managed via Poetry
+- `hindsight-api-slim`, the HTTP server, managed via uv
+- `hindsight-client`, the Python SDK, managed via uv
 - External PostgreSQL with the `pgvector` extension (for semantic search)
 
 ## Configuration

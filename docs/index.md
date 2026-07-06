@@ -15,7 +15,6 @@ It runs locally, uses your own API keys, and stores everything on your machine.
 ### Getting Started
 
 - **[README](https://github.com/KadenMc/work-buddy#readme)** — Quick start, installation, and feature overview
-- **[Setup Guide](https://github.com/KadenMc/work-buddy/blob/main/SETUP.md)** — Detailed configuration walkthrough
 - **[Contributing](https://github.com/KadenMc/work-buddy/blob/main/CONTRIBUTING.md)** — How to extend work-buddy
 
 ### Reference

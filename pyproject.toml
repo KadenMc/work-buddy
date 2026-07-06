@@ -1,100 +1,98 @@
-[tool.poetry]
+[project]
 name = "work-buddy"
 version = "0.2.0"
 description = "Personal agent framework built on Claude Code and MCP"
-authors = ["Kaden McKeen"]
-license = "GPL-3.0-only"
+authors = [{ name = "Kaden McKeen" }]
+requires-python = ">=3.11,<3.12"
 readme = "README.md"
-packages = [{include = "work_buddy"}]
-classifiers = ["Development Status :: 4 - Beta"]
-# Assets that live beside the work_buddy package and are resolved at runtime
-# via paths.asset_root(). Declared here so a built wheel or sdist carries them.
-include = [
-    { path = "knowledge/store/**/*", format = ["sdist", "wheel"] },
-    { path = "prompts/**/*", format = ["sdist", "wheel"] },
-    { path = "sidecar_jobs/**/*", format = ["sdist", "wheel"] },
-    { path = ".claude/commands/**/*", format = ["sdist", "wheel"] },
-    { path = "config.example.yaml", format = ["sdist", "wheel"] },
-    { path = "config.local.yaml.example", format = ["sdist", "wheel"] },
-    { path = "docs/logo.svg", format = ["sdist", "wheel"] },
+license = "GPL-3.0-only"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+]
+dependencies = [
+    "pyyaml>=6.0,<7",
+    "networkx>=3.0,<4.0",
+    "omegaconf>=2.3.0,<3",
+    "flask>=3.1.3,<4",
+    "mcp[cli]>=1.27.0,<2",
+    "anthropic>=0.89.0,<0.90",
+    "jinja2>=3.1.6,<4",
+    "cron-descriptor>=2.0.8,<3",
+    "simhash>=2.1.2,<3",
+    "rank-bm25>=0.2.2,<0.3",
+    "torch>=2.11.0,<3",
+    "sentence-transformers>=5.3.0,<6",
+    "einops>=0.8.2,<0.9",
+    "pywinpty>=3.0.3,<4 ; sys_platform == 'win32'",
+    "ptyprocess>=0.7.0,<0.8 ; sys_platform != 'win32'",
+    "httpx>=0.28.1,<0.29",
+    "watchdog>=6.0.0,<7",
+    "google-auth-oauthlib>=1.4.0,<2",
+    "pathspec>=1.1.1,<2",
+    "ddgs>=9.14.4,<10",
+    "trafilatura>=1.8,<2",
+    "cel-python>=0.5.0,<0.6",
+    "jsonpath-ng>=1.8.0,<2",
 ]
 
-[tool.poetry.scripts]
+[project.optional-dependencies]
+memory = [
+    "hindsight-api-slim>=0.4.22,<0.5",
+    "hindsight-client>=0.4.22,<0.5",
+]
+telegram = ["python-telegram-bot>=22.7,<23"]
+all = [
+    "hindsight-api-slim>=0.4.22,<0.5",
+    "hindsight-client>=0.4.22,<0.5",
+    "python-telegram-bot>=22.7,<23",
+]
+
+[project.scripts]
 wbuddy = "work_buddy.cli:main"
 collect = "work_buddy.collect:main"
 work-buddy-mcp = "work_buddy.mcp_server:main"
 
-# --- Core dependencies (always installed) ---
-[tool.poetry.dependencies]
-python = ">=3.11,<3.12"
-pyyaml = "^6.0"
-networkx = ">=3.0,<4.0"
-omegaconf = "^2.3.0"
-flask = "^3.1.3"
-mcp = {extras = ["cli"], version = "^1.27.0"}
-anthropic = "^0.89.0"
-jinja2 = "^3.1.6"
-cron-descriptor = "^2.0.8"
-simhash = "^2.1.2"
-rank-bm25 = "^0.2.2"
+[tool.hatch.build.targets.sdist]
+include = ["work_buddy"]
 
-# Embedding & search (core — powers wb_search, IR, chrome clustering)
-torch = "^2.11.0"
-sentence-transformers = "^5.3.0"
-# Pure-Python, zero-dep: required by trust_remote_code embedding models (nomic etc.)
-# loaded via the consolidated index's `st` provider; absent it those models can't load.
-einops = "^0.8.2"
+[tool.hatch.build.targets.sdist.force-include]
+"knowledge/store" = "knowledge/store"
+"prompts" = "prompts"
+"sidecar_jobs" = "sidecar_jobs"
+".claude/commands" = ".claude/commands"
+"config.example.yaml" = "config.example.yaml"
+"config.local.yaml.example" = "config.local.yaml.example"
+"docs/logo.svg" = "docs/logo.svg"
 
-# Platform-specific PTY libraries (auto-selected by OS)
-pywinpty = {version = "^3.0.3", markers = "sys_platform == 'win32'"}
-ptyprocess = {version = "^0.7.0", markers = "sys_platform != 'win32'"}
+[tool.hatch.build.targets.wheel]
+include = ["work_buddy"]
 
-# Optional feature dependencies (installed via extras)
-hindsight-api-slim = {version = "^0.4.22", optional = true}
-hindsight-client = {version = "^0.4.22", optional = true}
-python-telegram-bot = {version = "^22.7", optional = true}
-
-# --- Optional feature groups ---
-# Install with: pip install work-buddy[memory,telegram]
-# Or all at once: pip install work-buddy[all]
-httpx = "^0.28.1"
-watchdog = "^6.0.0"
-google-auth-oauthlib = "^1.4.0"
-pathspec = "^1.1.1"
-ddgs = "^9.14.4"
-trafilatura = "^1.8"
-cel-python = "^0.5.0"
-jsonpath-ng = "^1.8.0"
-[tool.poetry.extras]
-memory = ["hindsight-api-slim", "hindsight-client"]
-telegram = ["python-telegram-bot"]
-all = ["hindsight-api-slim", "hindsight-client", "python-telegram-bot"]
+[tool.hatch.build.targets.wheel.force-include]
+"knowledge/store" = "knowledge/store"
+"prompts" = "prompts"
+"sidecar_jobs" = "sidecar_jobs"
+".claude/commands" = ".claude/commands"
+"config.example.yaml" = "config.example.yaml"
+"config.local.yaml.example" = "config.local.yaml.example"
+"docs/logo.svg" = "docs/logo.svg"
 
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [dependency-groups]
 dev = [
     "pytest (>=9.0.3,<10.0.0)",
     "pytest-cov (>=7.1.0,<8.0.0)",
     "freezegun (>=1.5.5,<2.0.0)",
-    # Transformers 4.x ships a buggy lazy-loaded module
-    # (transformers/models/gemma4/image_processing_pil_gemma4.py) that
-    # references PILImageResampling at class-definition time but imports
-    # PIL only conditionally. Freezegun walks transformers.__dir__ for
-    # snapshotting when any test uses @freeze_time, which triggers the
-    # lazy-load → NameError if Pillow isn't installed. Our production
-    # code never touches transformers.models.gemma4 (we use BERT-family
-    # sentence-transformers models, not Gemma), so this is purely a
-    # test-env concern. Pinning Pillow here keeps CI stable without
-    # adding a production dep.
-    "Pillow (>=10.0.0)"
+    "Pillow (>=10.0.0)",
 ]
 docs = [
     "mkdocs (>=1.6.0,<2.0.0)",
     "mkdocs-material (>=9.6.0,<10.0.0)",
-    "mkdocstrings[python] (>=0.29.0,<1.0.0)"
+    "mkdocstrings[python] (>=0.29.0,<1.0.0)",
 ]
 
 [tool.pytest.ini_options]

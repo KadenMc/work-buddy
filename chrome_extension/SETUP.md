@@ -5,7 +5,7 @@ Set up the Work Buddy Chrome Tab Exporter on a new Windows machine. This enables
 ## Prerequisites
 
 - Google Chrome (any recent version)
-- Python 3.11+ with conda environment `work-buddy`
+- uv (which manages Python itself)
 - The `work-buddy` repo cloned to your machine
 
 ## Architecture
@@ -35,8 +35,7 @@ Python Collector (collect --only chrome)
 
 ```powershell
 cd <repo-root>\chrome_extension
-conda activate work-buddy
-python generate_icons.py
+uv run python generate_icons.py
 ```
 
 ### Step 2: Load extension in Chrome
@@ -55,8 +54,7 @@ Claude Code Desktop is a packaged Windows app with virtualized registry/filesyst
 
 ```powershell
 cd <repo-root>\work_buddy\chrome_native_host
-conda activate work-buddy
-python install.py --extension-id <PASTE_YOUR_EXTENSION_ID>
+uv run python install.py --extension-id <PASTE_YOUR_EXTENSION_ID>
 ```
 
 This creates:
@@ -74,8 +72,7 @@ Run the context collector:
 
 ```powershell
 cd <repo-root>
-conda activate work-buddy
-collect --only chrome
+uv run collect --only chrome
 ```
 
 Check the output in `agents/<session>/context/chrome_summary.md` — it should list all open tabs, browsing history, and recently closed tabs.
@@ -83,7 +80,7 @@ Check the output in `agents/<session>/context/chrome_summary.md` — it should l
 To test with a time range:
 
 ```powershell
-collect --since 2026-04-03T05:00:00 --until 2026-04-03T17:00:00 --only chrome
+uv run collect --since 2026-04-03T05:00:00 --until 2026-04-03T17:00:00 --only chrome
 ```
 
 ## Troubleshooting

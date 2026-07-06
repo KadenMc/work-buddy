@@ -13,7 +13,7 @@ mechanism to register native messaging hosts:
 
 Usage
 -----
-Run from the work-buddy conda environment::
+Run from the work-buddy project environment (e.g. ``uv run python install.py``)::
 
     python install.py
 
@@ -39,7 +39,7 @@ HOST_NAME = "com.work_buddy.tabs"
 # The host script lives alongside this install script
 HOST_SCRIPT = Path(__file__).resolve().parent / "host.py"
 
-# Python interpreter in the conda env
+# Python interpreter from the project .venv
 PYTHON_EXE = Path(sys.executable).resolve()
 
 # Platform-appropriate native messaging directory
