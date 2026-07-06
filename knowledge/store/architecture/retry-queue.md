@@ -102,7 +102,7 @@ dev_notes: |-
 
 8. **Deferred submit path** (work_buddy/llm/submit.py): llm_submit() directly writes a record with queued=True, queue_reason='deferred_submit', status='failed', retry_at=now, max_retries=1, lease_seconds=600. Returns immediately with {operation_id, status: 'queued', hint}.
 
-9. **Sidecar sweep** (sidecar/retry_sweep.py): RetrySweep.sweep() runs every daemon tick. Scans operation records for queued ops where retry_at <= now, acquires a lease (honoring per-op lease_seconds), and invokes entry.callable(**params). Before the call it binds a `replay_of` consent principal (so per-session consent grants resolve to the originating agent, individual-grants-only) and sets the originating-session contextvar (so per-session artifacts like the LLM cost log resolve to the right agent). The replay path also catches `ObsidianPostWriteUncertain` and verifies before re-enqueueing.
+9. **Sidecar sweep** (sidecar/retry_sweep.py): RetrySweep.sweep() runs every cycle of the sidecar's dispatch loop (a background thread, so a long replay delays only other dispatch work, not supervision or state publishing). Scans operation records for queued ops where retry_at <= now, acquires a lease (honoring per-op lease_seconds), and invokes entry.callable(**params). Before the call it binds a `replay_of` consent principal (so per-session consent grants resolve to the originating agent, individual-grants-only) and sets the originating-session contextvar (so per-session artifacts like the LLM cost log resolve to the right agent). The replay path also catches `ObsidianPostWriteUncertain` and verifies before re-enqueueing.
 
 10. **Backoff strategies** (retry-reason only): 'adaptive' (default: 10s, 20s, 45s, 90s, 120s), 'fixed_10s', 'exponential' (10s * 2^n, capped 120s). Deferred submits use 'none' — no backoff, one attempt.
 
@@ -137,7 +137,7 @@ config.yaml → sidecar.retry_queue: enabled, max_retries (default 5), default_b
 - work_buddy/llm/submit.py — llm_submit() async submission
 - work_buddy/agent_session.py — set_originating_session / get_originating_session contextvar
 - work_buddy/llm/cost.py — _cost_log_path() honors originating-session override
-- work_buddy/sidecar/daemon.py — sweep wired into tick loop
+- work_buddy/sidecar/daemon.py — sweep wired into the dispatch loop
 - work_buddy/workflow.py — TaskStatus.RETRY_PENDING
 - work_buddy/mcp_server/conductor.py — resume_after_retry(), fail_after_retry_exhaustion()
 - work_buddy/consent.py — ConsentCache cross-session lookup

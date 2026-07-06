@@ -119,6 +119,66 @@ def test_status_json(capsys, monkeypatch):
     assert out["state"]["services"]["mcp_gateway"]["status"] == "healthy"
 
 
+def test_status_busy_dispatch_names_phase_and_job(capsys, monkeypatch):
+    # A dispatch phase running for minutes (a job executing inline) is
+    # reported as busy, with the job name, while the daemon stays "up".
+    st = _state_with_services()
+    st.dispatch_phase = "scheduler_tick"
+    st.dispatch_phase_since = time.time() - 300
+    st.dispatch_job = "ir-index-rebuild"
+    monkeypatch.setattr(
+        lifecycle, "sidecar_status",
+        lambda: {"running": True, "health": "up", "pid": 123, "state": st},
+    )
+    rc = dispatch.main(["status"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "busy in scheduler_tick" in out
+    assert "ir-index-rebuild" in out
+
+
+def test_status_idle_dispatch_shows_last_cycle(capsys, monkeypatch):
+    st = _state_with_services()
+    st.dispatch_phase = "idle"
+    st.dispatch_phase_since = time.time() - 5
+    st.last_dispatch_at = time.time() - 12
+    monkeypatch.setattr(
+        lifecycle, "sidecar_status",
+        lambda: {"running": True, "health": "up", "pid": 123, "state": st},
+    )
+    rc = dispatch.main(["status"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Last dispatch cycle:" in out
+    assert "busy" not in out
+
+
+def test_status_briefly_busy_dispatch_is_not_flagged(capsys, monkeypatch):
+    # Seconds into a phase is normal cycle progress, not a stall worth
+    # a dedicated line.
+    st = _state_with_services()
+    st.dispatch_phase = "message_poll"
+    st.dispatch_phase_since = time.time() - 3
+    monkeypatch.setattr(
+        lifecycle, "sidecar_status",
+        lambda: {"running": True, "health": "up", "pid": 123, "state": st},
+    )
+    dispatch.main(["status"])
+    assert "busy" not in capsys.readouterr().out
+
+
+def test_status_without_dispatch_fields_renders_no_dispatch_line(capsys, monkeypatch):
+    # State from a daemon without dispatch fields: no dispatch line at all.
+    st = _state_with_services()
+    monkeypatch.setattr(
+        lifecycle, "sidecar_status",
+        lambda: {"running": True, "health": "up", "pid": 123, "state": st},
+    )
+    dispatch.main(["status"])
+    out = capsys.readouterr().out
+    assert "Dispatch" not in out and "dispatch" not in out
+
+
 def test_status_booting_after_start(capsys, monkeypatch):
     # Live pid (pid file) differs from the state file's pid: a just-started
     # daemon that has not published its state yet. Status must not show the

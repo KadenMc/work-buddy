@@ -106,6 +106,38 @@ def _isolate_task_store_and_vault(tmp_path, monkeypatch, request):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_sidecar_runtime_files(tmp_path, monkeypatch, request):
+    """Redirect the sidecar PID and state files to per-test temp paths.
+
+    ``work_buddy.sidecar.pid.PID_FILE`` and
+    ``work_buddy.sidecar.state.STATE_FILE`` resolve to the real
+    ``.data/runtime/`` files at import time. Tests that exercise the
+    write/cleanup/check helpers against those module globals would
+    otherwise clobber a live sidecar's runtime files on the dev machine.
+    The pid file is the destructive case: it is written once at daemon
+    boot and never re-created, so a test deleting it leaves ``wbuddy
+    status`` reporting a healthy daemon as not running until the next
+    restart. (The state file self-heals on the next supervisor tick.)
+
+    The helpers read the module globals at call time, so patching the
+    attributes covers them; tests must reference the patched values via
+    the modules, not by-value imports. Opt out per-test with
+    ``@pytest.mark.real_sidecar_runtime_files``.
+    """
+    if request.node.get_closest_marker("real_sidecar_runtime_files") is not None:
+        return
+    try:
+        import work_buddy.sidecar.pid as pid_mod
+        import work_buddy.sidecar.state as state_mod
+    except Exception:  # pragma: no cover - defensive
+        return
+    monkeypatch.setattr(pid_mod, "PID_FILE", tmp_path / "sidecar.pid")
+    monkeypatch.setattr(
+        state_mod, "STATE_FILE", tmp_path / "sidecar_state.json",
+    )
+
+
+@pytest.fixture(autouse=True)
 def _isolate_notification_delivery(monkeypatch, request):
     """Neutralize outbound notification delivery for every test.
 

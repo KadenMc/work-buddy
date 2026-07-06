@@ -1,13 +1,23 @@
-"""Sidecar daemon — main event loop, process supervisor, shutdown handling.
+"""Sidecar daemon — supervisor loop, dispatch loop, shutdown handling.
 
 Entry point: ``python -m work_buddy.sidecar``
 
 The daemon:
 1. Checks for an existing instance (PID file)
 2. Starts supervised child services (messaging, embedding)
-3. Runs the scheduler tick loop (cron + heartbeat + hot-reload)
-4. Polls for incoming messages to auto-dispatch as jobs
-5. Writes sidecar_state.json on every tick for observability
+3. Supervisor loop (main thread): evaluates cached health probes,
+   restarts failed children, and writes sidecar_state.json every tick
+4. Dispatch loop (background thread): scheduler cron ticks (which
+   execute jobs inline), message polling, and retry sweeps
+
+The two-loop split is load-bearing for observability: jobs and retried
+operations run inline in the dispatch loop and can legitimately block
+for minutes (agent spawns, index rebuilds, local-LLM replays), while
+``wbuddy status`` classifies the daemon as wedged when the state file
+goes ~90s stale. Publishing from a job-free supervisor thread keeps
+freshness a true liveness signal (a slow job reads as a busy dispatch
+phase in the state file, not as a hung daemon) and keeps child
+restarts and Ctrl+C responsiveness independent of job duration.
 """
 
 import json
@@ -948,10 +958,11 @@ def run(foreground: bool = True) -> None:
     failure_threshold = sidecar_cfg.get("health_failure_threshold", 2)
     probe_interval = sidecar_cfg.get("health_probe_interval", 5)
     probe_timeout = sidecar_cfg.get("health_probe_timeout", 2)
+    dispatch_stall_warn = sidecar_cfg.get("dispatch_stall_warn_seconds", 600)
 
-    # Parallel background prober. Probes run off-loop so scheduler
-    # ticks, message polling, and retry sweeps can never delay a
-    # health check. The main loop consumes cached results only.
+    # Parallel background prober. Probes run in their own thread so
+    # neither loop can delay a health check. The supervisor loop
+    # consumes cached results only.
     monitor = HealthMonitor(
         children, interval=probe_interval, probe_timeout=probe_timeout,
     )
@@ -967,8 +978,27 @@ def run(foreground: bool = True) -> None:
     )
     _print_startup_banner(children, cfg)
 
-    # --- Main loop ---
-    tick_failures = TickFailureTracker()
+    # --- Dispatch loop (background thread) ---
+    # Runs the phases that execute work inline and can block for minutes:
+    # scheduler cron ticks (jobs run inside tick()), message-driven job
+    # dispatch, and retry sweeps. Keeping them off the supervisor thread
+    # means a slow job can never stall child restarts or state publishing.
+    dispatch_thread = threading.Thread(
+        target=_dispatch_loop,
+        args=(
+            state, scheduler, poller, retry_sweep, event_log,
+            _emit_event_tick, health_interval,
+        ),
+        name="dispatch",
+        daemon=True,
+    )
+    dispatch_thread.start()
+
+    # --- Supervisor loop (main thread) ---
+    # Everything here must stay fast and bounded: it is the loop whose
+    # state-file freshness ``wbuddy status`` reads as daemon liveness.
+    supervisor_failures = TickFailureTracker()
+    stall_warned_since = 0.0
     try:
         while not _shutdown_requested:
             tick_start = time.time()
@@ -982,34 +1012,25 @@ def run(foreground: bool = True) -> None:
                             failure_threshold, event_log,
                         )
 
-                # 2. Scheduler tick (cron + heartbeat + hot-reload)
-                scheduler.tick()
-                scheduler.update_state(state)
-
-                # 2b. Events backbone — thin CronAdapter emits a (throttled)
-                # schedule.tick event onto the spine. Additive; never raises up.
-                if _emit_event_tick is not None:
-                    try:
-                        _emit_event_tick(scheduler)
-                    except Exception:
-                        logger.debug(
-                            "cron event adapter failed (non-fatal)", exc_info=True
-                        )
-
-                # 3. Message polling
-                poller.poll()
-
-                # 4. Retry sweep — process queued-for-retry operations
-                try:
-                    retry_sweep.sweep()
-                except Exception as sweep_exc:
-                    logger.error("Retry sweep error (non-fatal): %s", sweep_exc, exc_info=True)
+                # 2. Surface a dispatch loop stuck in one phase. Attribute
+                # it to the running job first so the warning names the
+                # culprit. Warned once per stall (keyed on phase_since).
+                state.dispatch_job = scheduler.current_job
+                stall_msg = _dispatch_stall_message(
+                    state, time.time(), dispatch_stall_warn,
+                )
+                if stall_msg and state.dispatch_phase_since != stall_warned_since:
+                    stall_warned_since = state.dispatch_phase_since
+                    logger.warning("%s", stall_msg)
+                    event_log.emit(
+                        "dispatch_stalled", "dispatch", stall_msg, level="warn",
+                    )
 
             except Exception as exc:
                 # Log but don't crash the daemon — individual tick failures
                 # are recoverable. The next tick will retry.
-                logger.error("Tick error (non-fatal): %s", exc, exc_info=True)
-                escalation = tick_failures.record_failure(exc)
+                logger.error("Supervisor tick error (non-fatal): %s", exc, exc_info=True)
+                escalation = supervisor_failures.record_failure(exc)
                 if escalation:
                     # Sustained failure — make it loud instead of silent.
                     logger.critical("%s", escalation)
@@ -1017,23 +1038,23 @@ def run(foreground: bool = True) -> None:
                         "tick_failures", "daemon", escalation, level="error",
                     )
             else:
-                recovery = tick_failures.record_success()
+                recovery = supervisor_failures.record_success()
                 if recovery:
                     logger.info("%s", recovery)
                     event_log.emit("tick_recovered", "daemon", recovery)
 
-            # 5. Persist event log snapshot + write state
+            # 3. Persist event log snapshot + write state. Never fatal:
+            # a transient write failure must not take down supervision.
             state.events = event_log.recent(50)
             state.last_tick_at = time.time()
-            save_state(state)
+            try:
+                save_state(state)
+            except Exception as exc:
+                logger.error("State publish failed (non-fatal): %s", exc, exc_info=True)
 
             # Sleep until next tick (target: health_interval seconds).
-            # Wakes early on a JobsWatcher filesystem event so the next
-            # tick reloads jobs immediately instead of waiting out the
-            # full interval.
             elapsed = time.time() - tick_start
-            sleep_time = max(1.0, health_interval - elapsed)
-            _interruptible_sleep(sleep_time, waker=scheduler.jobs_reload_pending)
+            _interruptible_sleep(max(1.0, health_interval - elapsed))
 
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt — shutting down.")
@@ -1042,9 +1063,148 @@ def run(foreground: bool = True) -> None:
         if event_drain is not None:
             event_drain.stop()
         monitor.stop()
+        # Give the dispatch thread a moment to exit between phases. It is
+        # a daemon thread, so a cycle blocked mid-job cannot hold up
+        # shutdown (the shutdown watchdog bounds the whole sequence).
+        dispatch_thread.join(timeout=2)
+        if dispatch_thread.is_alive():
+            logger.warning(
+                "Dispatch loop still busy in phase %r at shutdown, "
+                "abandoning it (daemon thread).", state.dispatch_phase,
+            )
         event_log.emit("daemon_stop", "daemon", "Sidecar shutting down")
         state.events = event_log.recent(50)
         _shutdown(children, state)
+
+
+# ---------------------------------------------------------------------------
+# Dispatch loop
+# ---------------------------------------------------------------------------
+# Jobs, message-driven dispatch, and retry replays all execute inline in
+# these phases. An agent spawn waits on ``claude -p`` for up to its
+# timeout, an index rebuild encodes vectors through a local LLM, a retry
+# replay can sit on a multi-minute inference lease. That is expected
+# behavior, not a fault, which is why this work gets its own thread
+# rather than timeouts: the supervisor keeps publishing state (with
+# these phase markers) while a cycle takes as long as it takes.
+
+
+def _set_dispatch_phase(state: SidecarState, phase: str) -> None:
+    """Record which dispatch phase is running and since when.
+
+    Written only from the dispatch thread. The supervisor thread reads
+    both fields when classifying a stall. Scalar assignments are atomic
+    under the GIL, so no lock is needed.
+    """
+    state.dispatch_phase = phase
+    state.dispatch_phase_since = time.time()
+
+
+def _run_dispatch_cycle(
+    state: SidecarState,
+    scheduler: Any,
+    poller: Any,
+    retry_sweep: Any,
+    event_log: Any,
+    emit_event_tick: Any,
+    failures: TickFailureTracker,
+) -> None:
+    """One dispatch cycle: scheduler tick, event tick, message poll,
+    retry sweep. Exceptions are contained per-cycle (and escalated once
+    per sustained run via ``failures``). The phase marker always lands
+    back on ``idle``."""
+    try:
+        _set_dispatch_phase(state, "scheduler_tick")
+        # Scheduler tick (cron + hot-reload). Due jobs execute inline here.
+        scheduler.tick()
+        scheduler.update_state(state)
+
+        # Events backbone — thin CronAdapter emits a (throttled)
+        # schedule.tick event onto the spine. Additive; never raises up.
+        if emit_event_tick is not None:
+            try:
+                emit_event_tick(scheduler)
+            except Exception:
+                logger.debug(
+                    "cron event adapter failed (non-fatal)", exc_info=True
+                )
+
+        _set_dispatch_phase(state, "message_poll")
+        poller.poll()
+
+        _set_dispatch_phase(state, "retry_sweep")
+        try:
+            retry_sweep.sweep()
+        except Exception as sweep_exc:
+            logger.error("Retry sweep error (non-fatal): %s", sweep_exc, exc_info=True)
+
+    except Exception as exc:
+        logger.error("Dispatch cycle error (non-fatal): %s", exc, exc_info=True)
+        escalation = failures.record_failure(exc)
+        if escalation:
+            logger.critical("%s", escalation)
+            event_log.emit("tick_failures", "dispatch", escalation, level="error")
+    else:
+        recovery = failures.record_success()
+        if recovery:
+            logger.info("%s", recovery)
+            event_log.emit("tick_recovered", "dispatch", recovery)
+    finally:
+        _set_dispatch_phase(state, "idle")
+        state.last_dispatch_at = time.time()
+
+
+def _dispatch_loop(
+    state: SidecarState,
+    scheduler: Any,
+    poller: Any,
+    retry_sweep: Any,
+    event_log: Any,
+    emit_event_tick: Any,
+    interval: float,
+) -> None:
+    """Dispatch thread body. Runs cycles until shutdown.
+
+    The between-cycle sleep wakes early on a JobsWatcher filesystem
+    event (``scheduler.jobs_reload_pending``) so a job-file change
+    reloads on the next cycle instead of waiting out the interval.
+    """
+    failures = TickFailureTracker()
+    while not _shutdown_requested:
+        cycle_start = time.time()
+        _run_dispatch_cycle(
+            state, scheduler, poller, retry_sweep, event_log,
+            emit_event_tick, failures,
+        )
+        elapsed = time.time() - cycle_start
+        _interruptible_sleep(
+            max(1.0, interval - elapsed), waker=scheduler.jobs_reload_pending,
+        )
+
+
+def _dispatch_stall_message(
+    state: SidecarState, now: float, threshold_seconds: float,
+) -> str | None:
+    """Return a warning when the dispatch loop has sat in one non-idle
+    phase for longer than ``threshold_seconds``, else None.
+
+    Pure classification. The supervisor loop decides how often to emit
+    it. A stall is informational, not fatal: supervision and state
+    publishing continue, and only scheduled work is queued behind the
+    phase.
+    """
+    phase = state.dispatch_phase
+    if not phase or phase == "idle":
+        return None
+    since = state.dispatch_phase_since
+    if not since or (now - since) < threshold_seconds:
+        return None
+    job = f" (job {state.dispatch_job!r})" if state.dispatch_job else ""
+    return (
+        f"Dispatch loop has been in phase {phase!r}{job} for "
+        f"{int(now - since)}s. Scheduled jobs, message dispatch, and "
+        f"retries are queued behind it. Services are still supervised."
+    )
 
 
 def _interruptible_sleep(

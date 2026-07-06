@@ -19,6 +19,10 @@ EXIT_FAIL = 1
 
 _GLYPH = {True: "ok  ", False: "FAIL"}
 
+# Only call out a busy dispatch phase once it has run long enough to be
+# noteworthy (a cycle legitimately spends seconds in each phase).
+_DISPATCH_BUSY_DISPLAY_S = 120.0
+
 
 def _err(msg: str) -> None:
     print(msg, file=sys.stderr)
@@ -137,7 +141,37 @@ def cmd_status(args) -> int:
             print(f"  {name}{port}: {svc.status}{crashes}")
     if st.last_tick_at:
         print(f"Last tick: {_fmt_duration(time.time() - st.last_tick_at)} ago")
+    _print_dispatch_status(st)
     return EXIT_OK
+
+
+def _print_dispatch_status(st) -> None:
+    """One line on the daemon's dispatch loop, when informative.
+
+    Jobs, message dispatch, and retry sweeps execute inline in that loop
+    and may legitimately block for minutes while the supervisor keeps
+    ticking (the freshness ``Last tick`` reports). A long-running phase
+    is shown as busy, with the job name when the scheduler is executing
+    one, so a quiet cron backlog is attributable from the CLI. State
+    files written by a daemon without dispatch fields print nothing.
+    """
+    now = time.time()
+    busy_for = (now - st.dispatch_phase_since) if st.dispatch_phase_since else 0.0
+    if (
+        st.dispatch_phase
+        and st.dispatch_phase != "idle"
+        and busy_for >= _DISPATCH_BUSY_DISPLAY_S
+    ):
+        job = f" (job '{st.dispatch_job}')" if st.dispatch_job else ""
+        print(
+            f"Dispatch: busy in {st.dispatch_phase}{job} for "
+            f"{_fmt_duration(busy_for)}, scheduled work is queued behind it"
+        )
+    elif st.last_dispatch_at:
+        print(
+            f"Last dispatch cycle: "
+            f"{_fmt_duration(now - st.last_dispatch_at)} ago"
+        )
 
 
 # ---------------------------------------------------------------------------

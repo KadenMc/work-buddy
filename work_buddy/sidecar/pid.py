@@ -140,7 +140,31 @@ def write_pid_file() -> None:
 
 
 def cleanup_pid_file() -> None:
-    """Remove the PID file. Safe to call multiple times."""
+    """Remove the PID file if it records this process. Safe to call
+    multiple times.
+
+    Guarded on pid ownership: ``write_pid_file`` registers this as an
+    atexit hook, and that hook can fire long after another daemon has
+    taken over and written its own pid to the file. An unguarded delete
+    would erase the live successor's pid file, leaving ``wbuddy status``
+    reporting a healthy daemon as not running until its next restart.
+    A file naming a different pid is therefore left alone. Stale-file
+    removal for dead foreign pids belongs to ``check_existing_daemon``.
+    """
+    try:
+        recorded = int(PID_FILE.read_text().strip())
+    except FileNotFoundError:
+        return
+    except (OSError, ValueError):
+        # Unreadable or corrupt: ownership is unknowable. Leave it for
+        # check_existing_daemon, which removes corrupt files explicitly.
+        return
+    if recorded != os.getpid():
+        logger.debug(
+            "cleanup_pid_file: %s records pid=%d (not ours, %d), leaving it.",
+            PID_FILE, recorded, os.getpid(),
+        )
+        return
     _remove_pid_file()
 
 
