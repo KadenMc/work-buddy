@@ -413,6 +413,11 @@ sidecar:
     #   end: "08:00"
     #   days: [0, 1, 2, 3, 4, 5, 6]
   message_poll_interval: 15
+  # Warn (log + sidecar event) when the dispatch loop sits in one phase
+  # longer than this many seconds, meaning a job or retried operation is
+  # blocking scheduled work behind it. Informational: supervision and
+  # state publishing run on their own thread and are unaffected.
+  dispatch_stall_warn_seconds: 600
   agent_spawn:
     model: "sonnet"
     timeout_seconds: 300

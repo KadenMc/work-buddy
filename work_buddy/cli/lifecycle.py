@@ -26,8 +26,10 @@ from work_buddy.sidecar import pid as _pid
 from work_buddy.sidecar import state as _state
 
 # A healthy daemon rewrites the state file every health-check interval (~30s by
-# default), stamping its own pid and last_tick_at. Three missed ticks means it
-# has stopped supervising, so treat it as wedged rather than merely slow.
+# default), stamping its own pid and last_tick_at. The supervisor loop that
+# writes it runs no jobs (job execution lives on the daemon's dispatch thread),
+# so three missed ticks means the daemon itself has stopped supervising.
+# Treat that as wedged rather than merely busy.
 _STALE_TICK_S = 90.0
 # The daemon writes its pid file early in boot but does not publish state until
 # its services are healthy and it takes its first tick (which can be ~60s out).

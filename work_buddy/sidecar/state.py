@@ -55,7 +55,16 @@ class JobState:
 
 @dataclass
 class SidecarState:
-    """Top-level sidecar state written to ``sidecar_state.json``."""
+    """Top-level sidecar state written to ``sidecar_state.json``.
+
+    Thread ownership: the daemon's supervisor thread owns ``services``,
+    ``events``, ``last_tick_at``, and ``dispatch_job``. The dispatch
+    thread owns ``jobs``, ``exclusion_active``, ``last_dispatch_at``,
+    ``dispatch_phase``, and ``dispatch_phase_since``. Cross-thread
+    visibility relies on each field being written by exactly one thread
+    with atomic replacement (fresh lists, scalar assignments), never
+    in-place mutation of a shared container.
+    """
 
     started_at: float = 0.0
     pid: int = 0
@@ -64,6 +73,18 @@ class SidecarState:
     last_tick_at: float = 0.0
     exclusion_active: bool = False
     events: list[dict[str, Any]] = field(default_factory=list)
+    # Dispatch-loop observability. ``last_tick_at`` above proves the
+    # supervisor is alive (it is the freshness signal ``wbuddy status``
+    # gates on). These fields say what the dispatch loop is doing right
+    # now (jobs, message dispatch, and retry sweeps execute inline
+    # there and may block for minutes). ``dispatch_phase`` is one of
+    # ``scheduler_tick | message_poll | retry_sweep | idle`` (empty
+    # before the first cycle). ``dispatch_job`` names the job currently
+    # executing inline in the scheduler, if any.
+    last_dispatch_at: float = 0.0
+    dispatch_phase: str = ""
+    dispatch_phase_since: float = 0.0
+    dispatch_job: str = ""
 
     def update_service(self, name: str, **kwargs: Any) -> None:
         if name in self.services:
@@ -147,6 +168,10 @@ def load_state() -> SidecarState | None:
             pid=data.get("pid", 0),
             last_tick_at=data.get("last_tick_at", 0),
             exclusion_active=data.get("exclusion_active", False),
+            last_dispatch_at=data.get("last_dispatch_at", 0.0),
+            dispatch_phase=data.get("dispatch_phase", ""),
+            dispatch_phase_since=data.get("dispatch_phase_since", 0.0),
+            dispatch_job=data.get("dispatch_job", ""),
         )
         for name, svc in data.get("services", {}).items():
             state.services[name] = ServiceHealth(**svc)

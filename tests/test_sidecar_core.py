@@ -10,16 +10,19 @@ from pathlib import Path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ.setdefault("WORK_BUDDY_SESSION_ID", "test-sidecar")
 
+# The pid/state modules are imported as modules (not by-value constants)
+# so tests observe the per-test PID_FILE / STATE_FILE redirection from the
+# autouse _isolate_sidecar_runtime_files fixture in conftest.py.
+import work_buddy.sidecar.pid as pid_mod
+import work_buddy.sidecar.state as state_mod
 from work_buddy.sidecar.state import (
     SidecarState,
     ServiceHealth,
     JobState,
     save_state,
     load_state,
-    STATE_FILE,
 )
 from work_buddy.sidecar.pid import (
-    PID_FILE,
     _is_process_alive,
     check_existing_daemon,
     write_pid_file,
@@ -53,15 +56,15 @@ def test_is_process_alive_bogus():
 def test_pid_write_read_cleanup():
     # Ensure clean state
     cleanup_pid_file()
-    assert not PID_FILE.exists()
+    assert not pid_mod.PID_FILE.exists()
 
     write_pid_file()
-    assert PID_FILE.exists()
-    content = PID_FILE.read_text().strip()
+    assert pid_mod.PID_FILE.exists()
+    content = pid_mod.PID_FILE.read_text().strip()
     assert content == str(os.getpid())
 
     cleanup_pid_file()
-    assert not PID_FILE.exists()
+    assert not pid_mod.PID_FILE.exists()
 
 
 def test_check_existing_daemon_none():
@@ -71,10 +74,20 @@ def test_check_existing_daemon_none():
 
 def test_check_existing_daemon_stale():
     # Write a bogus PID
-    PID_FILE.write_text("99999999\n")
+    pid_mod.PID_FILE.write_text("99999999\n")
     result = check_existing_daemon()
     assert result is None
-    assert not PID_FILE.exists()  # Should auto-clean stale
+    assert not pid_mod.PID_FILE.exists()  # Should auto-clean stale
+
+
+def test_cleanup_leaves_foreign_pid_file():
+    # cleanup_pid_file is registered as an atexit hook, which can fire
+    # after another daemon has taken over and written its own pid. A
+    # file recording a different pid must survive the cleanup.
+    pid_mod.PID_FILE.write_text(f"{os.getpid() + 1}\n")
+    cleanup_pid_file()
+    assert pid_mod.PID_FILE.exists()
+    pid_mod.PID_FILE.unlink()
 
 
 # --- State tests ---
@@ -90,8 +103,12 @@ def test_state_round_trip():
     state.jobs.append(JobState(
         name="daily-briefing", schedule="0 9 * * 1-5", next_at=1712400000.0,
     ))
+    state.last_dispatch_at = 1712345680.0
+    state.dispatch_phase = "scheduler_tick"
+    state.dispatch_phase_since = 1712345679.0
+    state.dispatch_job = "ir-index-rebuild"
     save_state(state)
-    assert STATE_FILE.exists()
+    assert state_mod.STATE_FILE.exists()
 
     loaded = load_state()
     assert loaded is not None
@@ -100,9 +117,36 @@ def test_state_round_trip():
     assert loaded.services["messaging"].status == "healthy"
     assert len(loaded.jobs) == 1
     assert loaded.jobs[0].name == "daily-briefing"
+    assert loaded.last_dispatch_at == 1712345680.0
+    assert loaded.dispatch_phase == "scheduler_tick"
+    assert loaded.dispatch_phase_since == 1712345679.0
+    assert loaded.dispatch_job == "ir-index-rebuild"
 
     # Cleanup
-    STATE_FILE.unlink(missing_ok=True)
+    state_mod.STATE_FILE.unlink(missing_ok=True)
+
+
+def test_state_without_dispatch_fields_loads_with_defaults():
+    # A state file written by a daemon without dispatch fields must
+    # load with quiet defaults.
+    import json
+
+    state_mod.STATE_FILE.write_text(json.dumps({
+        "started_at": 1712345678.0,
+        "pid": 12345,
+        "last_tick_at": 1712345680.0,
+        "services": {},
+        "jobs": [],
+        "events": [],
+    }))
+    loaded = load_state()
+    assert loaded is not None
+    assert loaded.last_dispatch_at == 0.0
+    assert loaded.dispatch_phase == ""
+    assert loaded.dispatch_phase_since == 0.0
+    assert loaded.dispatch_job == ""
+
+    state_mod.STATE_FILE.unlink(missing_ok=True)
 
 
 # --- Job tests ---

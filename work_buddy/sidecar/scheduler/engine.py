@@ -138,7 +138,7 @@ class Scheduler:
         # in any of self._jobs_dirs. The next tick checks this and calls
         # _hot_reload() immediately, bypassing the 30s interval. Cleared
         # after the reload runs. Doubles as a wake-up signal for the
-        # daemon's main-loop sleep so a watcher event jumps the queue.
+        # daemon's dispatch-loop sleep so a watcher event jumps the queue.
         self.jobs_reload_pending: threading.Event = threading.Event()
 
         # Deduplication: track which jobs fired this minute (legacy
@@ -153,6 +153,13 @@ class Scheduler:
         # multiple distinct pending occurrences if jitter exceeds the
         # schedule period. Value is the effective fire timestamp.
         self._pending_fires: dict[tuple[str, float], float] = {}
+
+        # Name of the job currently executing inline in ``_fire_job``,
+        # or "" when none. Read by the sidecar's supervisor thread to
+        # attribute a long-running dispatch cycle to its job in
+        # ``sidecar_state.json``. A plain string assignment is atomic
+        # under the GIL, so no lock is needed.
+        self.current_job: str = ""
 
     @staticmethod
     def _resolve_jobs_dirs(config: dict[str, Any]) -> list[tuple[Path, str]]:
@@ -312,6 +319,13 @@ class Scheduler:
 
     def _fire_job(self, job: Job) -> None:
         """Execute a job via the dispatch router."""
+        self.current_job = job.name
+        try:
+            self._fire_job_inner(job)
+        finally:
+            self.current_job = ""
+
+    def _fire_job_inner(self, job: Job) -> None:
         if self._event_log:
             self._event_log.emit(
                 "job_fired", job.name, f"Firing {job.name}",

@@ -42,7 +42,7 @@ Installed as a console script (`wbuddy`) via pyproject, also runnable as `python
 - `wbuddy start [--foreground]` -- start the sidecar. Detached by default (no console window), `--foreground` runs it in the current terminal. Idempotent for a healthy sidecar: an already-running (or still-booting) sidecar is reported, not duplicated, while a wedged one is taken over.
 - `wbuddy stop` -- stop the running sidecar and its child services.
 - `wbuddy restart` -- stop then start.
-- `wbuddy status [--json]` -- sidecar liveness, uptime, and per-service health, read from the sidecar state file. Distinguishes booting from wedged; exits non-zero when not running or wedged.
+- `wbuddy status [--json]` -- sidecar liveness, uptime, and per-service health, read from the sidecar state file. Distinguishes booting from wedged; exits non-zero when not running or wedged. Also reports the daemon's dispatch loop: a phase busy past ~2 minutes prints as busy with the running job's name (scheduled work is queued behind it, supervision unaffected), otherwise the time since the last completed dispatch cycle.
 - `wbuddy doctor [<component>] [--json]` -- render the setup wizard's status, or one component's diagnosis: bootstrap, requirements, health.
 - `wbuddy setup` -- run the bootstrap checks, print the Claude Code MCP config, and point to `/wb-setup guided` for the interactive feature selection.
 - `wbuddy mcp print` -- emit the Claude Code MCP config (HTTP, the gateway port) to stdout.
