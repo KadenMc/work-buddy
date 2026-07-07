@@ -18,6 +18,23 @@ import yaml
 from work_buddy import compat, provision as prov
 
 
+@pytest.fixture(autouse=True)
+def _stub_cli_shim(monkeypatch):
+    """provision() publishes a wbuddy PATH shim; stub it so tests never touch
+    the host's registry or ~/.local/bin. The shim itself is covered by
+    test_userpath.py against temp paths."""
+    from work_buddy import userpath
+
+    monkeypatch.setattr(
+        userpath, "install_cli_shim",
+        lambda home: {"ok": True, "changed": False, "detail": "stubbed in tests"},
+    )
+    monkeypatch.setattr(
+        userpath, "uninstall_cli_shim",
+        lambda home: {"ok": True, "detail": "stubbed in tests"},
+    )
+
+
 @pytest.fixture
 def tmp_install(tmp_path, monkeypatch):
     home = tmp_path / "home"

@@ -10,6 +10,7 @@ owns only setup, sidecar lifecycle, diagnostics, and emitting the MCP config.
     wbuddy status [--json]       wbuddy doctor [<component>] [--json]
     wbuddy setup                 wbuddy mcp print   wbuddy dashboard [--open]
     wbuddy provision [...]       wbuddy autostart {enable,disable,status}
+    wbuddy uninstall
 
 ``provision`` is the native installer's one-shot entry point. The interactive,
 domain-by-domain feature selection lives in ``/wb-setup guided`` inside Claude
@@ -86,6 +87,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-start", action="store_true", help="do not start the sidecar afterward",
     )
 
+    sub.add_parser(
+        "uninstall",
+        help="remove machine integration (stop sidecar, login task, PATH shim); user data is preserved",
+    )
+
     p_auto = sub.add_parser("autostart", help="manage login auto-start of the sidecar")
     auto_sub = p_auto.add_subparsers(dest="autostart_command", required=True)
     auto_sub.add_parser("enable", help="register login auto-start")
@@ -104,6 +110,7 @@ _HANDLERS = {
     "setup": commands.cmd_setup,
     "dashboard": commands.cmd_dashboard,
     "provision": commands.cmd_provision,
+    "uninstall": commands.cmd_uninstall,
 }
 
 

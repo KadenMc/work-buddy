@@ -1,7 +1,7 @@
 ---
 name: wbuddy CLI
 kind: directions
-description: 'The wbuddy shell CLI: bootstrap, provisioning, and sidecar-lifecycle ramp (start/stop/status/doctor/setup/provision/autostart/mcp print). Not the agent operations surface, the wb_* gateway stays that.'
+description: 'The wbuddy shell CLI: bootstrap, provisioning, and sidecar-lifecycle ramp (start/stop/status/doctor/setup/provision/uninstall/autostart/mcp print). Not the agent operations surface, the wb_* gateway stays that.'
 summary: '`wbuddy start` runs the sidecar detached, `wbuddy status` and `doctor` report health, and `wbuddy setup` plus `wbuddy mcp print` do pre-MCP bootstrap. A console script (via pyproject) and also `python -m work_buddy.cli`. The wb_* MCP gateway remains the agent operations surface.'
 trigger: user or agent needs to start/stop/check the sidecar from the shell, run bootstrap setup, or print the MCP config
 tags:
@@ -21,6 +21,7 @@ aliases:
 - wbuddy mcp print
 - wbuddy dashboard
 - wbuddy provision
+- wbuddy uninstall
 - wbuddy autostart
 - start the sidecar
 - wbuddy command
@@ -46,7 +47,8 @@ Installed as a console script (`wbuddy`) via pyproject, also runnable as `python
 - `wbuddy setup` -- run the bootstrap checks, print the Claude Code MCP config, and point to `/wb-setup guided` for the interactive feature selection.
 - `wbuddy mcp print` -- emit the Claude Code MCP config (HTTP, the gateway port) to stdout.
 - `wbuddy dashboard [--open]` -- print (or open) the dashboard URL.
-- `wbuddy provision [--home ...] [--data-dir ...] [--vault-root ...] [--repos-root ...] [--timezone ...] [--anthropic-key ...] [--no-start]` -- the native installer's one-shot entry point. `--home` targets a specific install dir (redirects `config_dir`, the one safe way since `config_dir()` is env-var-only), defaulting to the running package's repo root. Seeds `config.yaml` from the template, relocates the mutable-state tree to a per-user data dir (absolute `paths.data_root`), pins `sidecar.python_executable` to the running interpreter, writes secrets to `.env`, refreshes `.mcp.json`, runs the bootstrap checks, and starts the sidecar. Idempotent. Logic in `work_buddy/provision.py`.
+- `wbuddy provision [--home ...] [--data-dir ...] [--vault-root ...] [--repos-root ...] [--timezone ...] [--anthropic-key ...] [--no-start]` -- the native installer's one-shot entry point. `--home` targets a specific install dir (redirects `config_dir`, the one safe way since `config_dir()` is env-var-only), defaulting to the running package's repo root. Seeds `config.yaml` from the template, relocates the mutable-state tree to a per-user data dir (absolute `paths.data_root`), pins `sidecar.python_executable` to the running interpreter, writes secrets to `.env`, refreshes `.mcp.json`, publishes `wbuddy` on the user's PATH (a one-command shim, best-effort: `<home>\bin\wbuddy.cmd` plus a per-user PATH entry on Windows, `~/.local/bin/wbuddy` on POSIX; the venv's own `Scripts`/`bin` never lands on PATH), runs the bootstrap checks, and starts the sidecar. Idempotent. Logic in `work_buddy/provision.py` and `work_buddy/userpath.py`.
+- `wbuddy uninstall` -- tear down machine integration: stop the sidecar, remove the login auto-start task, and remove the PATH shim. User data is preserved; removing the install directory itself is the OS uninstaller's (or the user's) job. The Windows uninstaller invokes this before deleting files.
 - `wbuddy autostart {enable,disable,status}` -- manage login auto-start of the detached sidecar (Windows Task Scheduler `WB-Sidecar`, Linux systemd `--user` unit, macOS launchd agent), via `work_buddy/autostart/`.
 
 ## When to use

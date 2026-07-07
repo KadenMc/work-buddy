@@ -89,12 +89,12 @@ Name: "{group}\work-buddy dashboard"; Filename: "{app}\.venv\Scripts\wbuddy.exe"
 Name: "{group}\Uninstall work-buddy"; Filename: "{uninstallexe}"
 
 [UninstallRun]
-; Stop the sidecar and remove the login auto-start task. DATA is left in place
-; (uninstalling the app should not silently delete the user's databases).
-Filename: "{app}\.venv\Scripts\wbuddy.exe"; Parameters: "stop"; \
-  Flags: runhidden; RunOnceId: "WbStop"
-Filename: "{app}\.venv\Scripts\wbuddy.exe"; Parameters: "autostart disable"; \
-  Flags: runhidden; RunOnceId: "WbAutostart"
+; Tear down machine integration in one call: stop the sidecar, remove the login
+; auto-start task, and remove the wbuddy PATH shim (registry PATH-segment surgery
+; lives in Python, where it is unit-testable, not in Pascal). DATA is left in
+; place (uninstalling the app should not silently delete the user's databases).
+Filename: "{app}\.venv\Scripts\wbuddy.exe"; Parameters: "uninstall"; \
+  Flags: runhidden; RunOnceId: "WbUninstall"
 
 [UninstallDelete]
 ; Inno removes only what it installed, so the runtime-created venv and the
