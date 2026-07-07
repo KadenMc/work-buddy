@@ -33,16 +33,15 @@ def test_merge_returns_none_when_present():
 
 
 def test_merge_is_trailing_separator_insensitive(monkeypatch):
-    # Segments join with os.pathsep so the Windows normalization semantics are
-    # exercised on any host OS (CI runs Linux, where the separator is ':').
+    # A Windows PATH value is ';'-separated on any host (drive letters contain
+    # ':', so it could never ride the POSIX separator), hence the literals.
     monkeypatch.setattr(userpath, "IS_WINDOWS", True)
-    current = _sep(r"C:\x", "C:\\tool\\bin\\", r"C:\y")
-    assert userpath.merge_path(current, r"C:\tool\bin") is None
+    assert userpath.merge_path(r"C:\x;C:\tool\bin\;C:\y", r"C:\tool\bin") is None
 
 
 def test_merge_is_case_insensitive_on_windows(monkeypatch):
     monkeypatch.setattr(userpath, "IS_WINDOWS", True)
-    assert userpath.merge_path(_sep(r"C:\Tool\Bin"), r"c:\tool\bin") is None
+    assert userpath.merge_path(r"C:\Tool\Bin", r"c:\tool\bin") is None
 
 
 def test_merge_is_case_sensitive_on_posix(monkeypatch):
@@ -53,9 +52,9 @@ def test_merge_is_case_sensitive_on_posix(monkeypatch):
 def test_merge_preserves_existing_value_verbatim(monkeypatch):
     # %VAR% references in a REG_EXPAND_SZ value must survive untouched.
     monkeypatch.setattr(userpath, "IS_WINDOWS", True)
-    current = _sep(r"%SystemRoot%\system32", r"%USERPROFILE%\.local\bin")
+    current = r"%SystemRoot%\system32;%USERPROFILE%\.local\bin"
     merged = userpath.merge_path(current, r"C:\wb\bin")
-    assert merged == current + os.pathsep + r"C:\wb\bin"
+    assert merged == current + ";" + r"C:\wb\bin"
 
 
 def test_strip_removes_entry():

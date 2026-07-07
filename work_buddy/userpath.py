@@ -35,6 +35,13 @@ _WIN_SHIM = '@"%~dp0..\\.venv\\Scripts\\wbuddy.exe" %*\n'
 
 # --- pure PATH-string surgery (unit-tested) --------------------------------
 
+def _pathsep() -> str:
+    """The separator of the PATH value being edited. A Windows registry PATH is
+    ';'-separated regardless of the host manipulating it (``os.pathsep`` only
+    coincides with this when running on Windows)."""
+    return ";" if IS_WINDOWS else ":"
+
+
 def _norm(segment: str) -> str:
     """Normalize a PATH segment for comparison (Windows: case + trailing sep)."""
     seg = segment.strip().rstrip("\\/")
@@ -47,21 +54,23 @@ def merge_path(current: str, entry: str) -> str | None:
     Preserves the existing value byte-for-byte (including ``%VAR%`` references
     in a ``REG_EXPAND_SZ`` value, which must never be expanded and re-written).
     """
-    segments = [s for s in current.split(os.pathsep) if s.strip()]
+    sep = _pathsep()
+    segments = [s for s in current.split(sep) if s.strip()]
     if any(_norm(s) == _norm(entry) for s in segments):
         return None
     if not segments:
         return entry
-    return current.rstrip(os.pathsep) + os.pathsep + entry
+    return current.rstrip(sep) + sep + entry
 
 
 def strip_path(current: str, entry: str) -> str | None:
     """Return ``current`` without ``entry``, or None if it was absent."""
-    segments = current.split(os.pathsep)
+    sep = _pathsep()
+    segments = current.split(sep)
     kept = [s for s in segments if not (s.strip() and _norm(s) == _norm(entry))]
     if len(kept) == len(segments):
         return None
-    return os.pathsep.join(s for s in kept if s.strip())
+    return sep.join(s for s in kept if s.strip())
 
 
 # --- Windows per-user PATH (HKCU\Environment) ------------------------------
