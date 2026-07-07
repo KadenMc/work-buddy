@@ -8,25 +8,25 @@ Everything below is user-, platform-, or preference-specific and does **not** ge
 
 ## Environment
 
-<!-- YOUR local Python / shell setup. The example below is one author's Windows + conda configuration — replace with yours. -->
+<!-- YOUR local Python / shell setup. The example below uses uv, which manages the project .venv itself. Replace with whatever applies to you. -->
 
 ### Running Python
 
-The `Bash` tool uses bash, not PowerShell, so conda activation doesn't work directly. To run Python scripts inside the `work-buddy` conda env on Windows:
+`work-buddy` uses **uv**, which is cross-platform and manages the project `.venv` for you, so no shell activation step is needed. To run Python:
 
 ```
-powershell.exe -Command "cd <repo-root>; conda activate work-buddy; <your command here>"
+uv run python <your args here>   # e.g. uv run python -m work_buddy.<module>
 ```
 
-If you use a different shell / env manager (venv, pyenv, direnv, etc.), document your activation pattern here so any dev agent working in your environment uses the right Python.
+If you use a different env manager (a plain venv, pyenv, direnv, etc.), document your own pattern here so any dev agent working in your environment uses the right Python.
 
 ### Dependency management
 
-`work-buddy` uses **Poetry** — that part is canonical and lives in `CLAUDE.md`. What's local to you is which Poetry workflow you actually use:
+`work-buddy` uses **uv** (that part is canonical and lives in `CLAUDE.md`). What's local to you is which uv workflow you actually use:
 
-- Production deps: `poetry add <package>`
-- Temporary / testing deps: `poetry add --group temp <package>` (cleanly removable later)
-- Remove: `poetry remove <package>` or `poetry remove --group temp <package>`
+- Production deps: `uv add <package>`
+- Temporary / testing deps: `uv add --group dev <package>` (cleanly removable later)
+- Remove: `uv remove <package>`
 
 ---
 

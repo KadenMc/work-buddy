@@ -286,6 +286,16 @@ def cmd_provision(args) -> int:
     return EXIT_OK if res["ok"] else EXIT_FAIL
 
 
+def cmd_uninstall(args) -> int:
+    """Tear down machine integration; the OS uninstaller (or the user) removes files."""
+    from work_buddy import provision as _prov
+
+    res = _prov.uninstall()
+    for step in res["steps"]:
+        print(f"  - {step}")
+    return EXIT_OK
+
+
 def cmd_autostart(args) -> int:
     from work_buddy import autostart, paths
 

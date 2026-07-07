@@ -105,6 +105,16 @@ def provision(
     )
     steps.append("wrote .mcp.json (gateway wiring)")
 
+    # 5b. Publish the wbuddy CLI on the user's PATH (a one-command shim; the
+    #     venv's Scripts/bin never lands on PATH). Best-effort: a failed shim
+    #     must not fail the install — the venv CLI itself still works.
+    try:
+        from work_buddy import userpath
+
+        steps.append("cli shim: " + str(userpath.install_cli_shim(home).get("detail")))
+    except Exception as exc:
+        steps.append(f"cli shim: skipped ({exc})")
+
     # 6. Bootstrap checks. Advisory: they guide the user's next steps but do not,
     #    by themselves, decide provisioning success. Feature config (vault_root,
     #    the Anthropic key) is deferred to `/wb-setup guided`, so those unmet
@@ -147,12 +157,13 @@ def uninstall(*, remove_data: bool = False) -> dict:
     Removing the HOME working copy is left to the OS uninstaller (it knows the
     install path). The data dir is removed only when ``remove_data`` is set.
     """
-    from work_buddy import autostart, paths
+    from work_buddy import autostart, paths, userpath
     from work_buddy.cli import lifecycle
 
     steps: list[str] = []
     steps.append("stop sidecar: " + str(lifecycle.stop_sidecar().get("detail")))
     steps.append("autostart: " + str(autostart.unregister().get("detail")))
+    steps.append("cli shim: " + str(userpath.uninstall_cli_shim(paths.config_dir()).get("detail")))
     if remove_data:
         data = paths._data_base()
         shutil.rmtree(data, ignore_errors=True)

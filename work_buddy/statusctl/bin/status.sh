@@ -33,7 +33,7 @@ REPO="%%REPO%%"
 export PYTHONPATH="${REPO}${PYTHONPATH:+:$PYTHONPATH}"
 
 # Resolve a Python interpreter that can import work-buddy. Resolution order:
-# explicit override → a `python`/`python3` on PATH → common conda env paths.
+# explicit override → a `python`/`python3` on PATH → the project `.venv`.
 _wb_can_import() { "$1" -c "import work_buddy.statusctl.cli" >/dev/null 2>&1; }
 
 WB_PY=""
@@ -48,11 +48,8 @@ if [ -z "$WB_PY" ]; then
     done
 fi
 if [ -z "$WB_PY" ]; then
-    for base in "$CONDA_PREFIX" "$HOME/miniforge3" "$HOME/anaconda3" "$HOME/miniconda3"; do
-        [ -n "$base" ] || continue
-        for exe in "$base/envs/work-buddy/python.exe" "$base/envs/work-buddy/bin/python"; do
-            if [ -x "$exe" ] && _wb_can_import "$exe"; then WB_PY="$exe"; break 2; fi
-        done
+    for exe in "$REPO/.venv/Scripts/python.exe" "$REPO/.venv/bin/python"; do
+        if [ -x "$exe" ] && _wb_can_import "$exe"; then WB_PY="$exe"; break; fi
     done
 fi
 if [ -z "$WB_PY" ]; then

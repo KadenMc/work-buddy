@@ -15,49 +15,30 @@ jobs:
 
     env:
       WORK_BUDDY_SESSION_ID: docs-ci
-      # Override the committed poetry.toml (virtualenvs.create=false, for local
-      # conda-based dev) so CI keeps building a cached, managed venv. The env
-      # var has higher precedence than the project poetry.toml.
-      POETRY_VIRTUALENVS_CREATE: "true"
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
         with:
-          python-version: "3.11"
+          version: "0.11.26"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
 
-      - name: Install Poetry
-        uses: snok/install-poetry@v1
-        with:
-          version: latest
-          virtualenvs-create: true
-          virtualenvs-in-project: true
-
-      - name: Cache virtualenv
-        uses: actions/cache@v4
-        with:
-          path: .venv
-          key: venv-docs-${{ runner.os }}-py3.11-${{ hashFiles('poetry.lock') }}
-          restore-keys: |
-            venv-docs-${{ runner.os }}-py3.11-
-
-      - name: Install dependencies
+      - name: Build docs environment (docs group + a lightweight importable package, no heavy runtime deps)
         run: |
-          poetry install --only docs --no-interaction
-          # docs_gen needs work_buddy.knowledge + pyyaml + networkx
-          # (pyyaml for YAML parsing, networkx for DAG validation in load_store)
-          # Make the package importable without installing heavy main deps
-          pip install -e . --no-deps
-          pip install pyyaml networkx
+          # docs_gen only needs work_buddy importable plus pyyaml (YAML parsing)
+          # and networkx (DAG validation); skip the heavy runtime deps (torch).
+          uv venv
+          uv pip install --group docs
+          uv pip install -e . --no-deps pyyaml networkx
 
       - name: Generate handbook pages
-        run: |
-          poetry run python -m work_buddy.knowledge.docs_gen --write
+        run: .venv/bin/python -m work_buddy.knowledge.docs_gen --write
 
       - name: Deploy to GitHub Pages
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          poetry run mkdocs gh-deploy --force
+          .venv/bin/mkdocs gh-deploy --force

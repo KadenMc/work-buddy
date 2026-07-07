@@ -438,7 +438,7 @@ def _oversize_service_logs(log_dir: Path) -> list[tuple[Path, int]]:
 def _start_child(svc: ChildService) -> None:
     """Start a child service as a direct subprocess.
 
-    Launches the conda env's Python directly (no PowerShell wrapper)
+    Launches the project ``.venv`` Python directly (no shell wrapper)
     so that ``svc.process.pid`` is the actual Python process, not a
     wrapper. This ensures ``terminate()`` actually stops the service.
     """
@@ -826,11 +826,11 @@ def run(foreground: bool = True) -> None:
     _force_kill_children.extend(children)
 
     # Surface the resolved interpreter at boot so a wrong-env startup is
-    # visible immediately — children will spawn under this Python, not
-    # necessarily the daemon's own. The most common failure mode this
-    # log catches is a Windows scheduled task whose ``conda activate``
-    # silently no-op'd, leaving the daemon and all its children on the
-    # base interpreter (and serving stale code) for days.
+    # visible immediately (children will spawn under this Python, not
+    # necessarily the daemon's own). The most common failure mode this
+    # log catches is a Windows login task that resolved a different Python
+    # than the project's ``.venv``, leaving the daemon and all its children
+    # on the wrong interpreter (and serving stale code) for days.
     resolved_python = resolve_child_python(cfg)
     logger.info(
         "Children will spawn with: %s (daemon sys.executable=%s)",

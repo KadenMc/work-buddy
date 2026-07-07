@@ -8,11 +8,7 @@ recommendation for whether the workflow needs an explicit
 
 Run via::
 
-    conda run -n work-buddy python -m scripts.audit_workflow_consent
-
-Or, with the env's python directly::
-
-    .../envs/work-buddy/python.exe -m scripts.audit_workflow_consent
+    uv run python -m scripts.audit_workflow_consent
 
 Used to prioritize which workflows to convert (explicit
 ``consent_weight`` on their high-risk capabilities) versus which ride

@@ -43,7 +43,6 @@ Two files live under the gitignored data root (`<repo>/.data/credentials/`) —
   only `calendar.events` fails with "insufficient authentication scopes" the
   moment it tries to list calendars.
 - **The "Publish" button is hidden** under the **Audience** sub-tab (step 2).
-- **`poetry install` won't update the conda env** by default (step 5).
 - **The badge doesn't expire; only the permission slip can** — and only if you
   consented while the app was still in "Testing" (step 2). Publish to Production
   *before* you run the consent flow.
@@ -111,30 +110,23 @@ and **"See the list of calendars you're subscribed to"**
 (`calendar.calendarlist.readonly`). The refresh token is then saved to
 `.data/credentials/google_oauth_token.json`.
 
-**Dependency gotcha:** the interactive flow needs `google-auth-oauthlib`. It is in
-`pyproject.toml`/`poetry.lock`, but **Poetry installs into its own venv, not the
-conda env** (a classic conda+Poetry seam). So `conda run -n work-buddy python …`
-will fail with `ModuleNotFoundError: google_auth_oauthlib`. Two ways to run the
-flow:
+**Dependency note:** the interactive flow needs `google-auth-oauthlib`. It is a
+locked dependency in `pyproject.toml`/`uv.lock`, so `uv sync` already installs it
+into the project `.venv`. There is a single environment (no separate seam to
+reconcile), so both the shell and the sidecar share it. Two ways to run the flow:
 
-- **Via Poetry's venv (no env surgery — easiest):** it already has the lib.
+- **Directly (easiest):** run the one-off through uv, which resolves it against
+  the project `.venv`.
   ```bash
-  poetry run python -c "from work_buddy.calendar import google_auth; print(google_auth.run_oauth_flow({}))"
+  uv run python -c "from work_buddy.calendar import google_auth; print(google_auth.run_oauth_flow({}))"
   ```
 - **Via the wizard** (`/wb-setup` → diagnose `google_calendar_native` → fix the
-  token requirement): the fixer runs inside the sidecar (the conda env), so the
-  conda env must have the lib first. Sync it once with
-  `poetry config virtualenvs.create false` then `conda activate work-buddy &&
-  poetry install` (this installs into the active conda env; re-apply the CUDA
-  torch override afterward if you use it — see the README).
+  token requirement): the fixer runs inside the sidecar, which runs on the same
+  `.venv`, so `uv sync` having installed the lib is all that is required.
 
 Only the *interactive flow* needs `google-auth-oauthlib`. Steady-state runtime
-(load token + silent refresh) needs only `google-auth`, which the conda env
-already has — so day-to-day use never imports oauthlib.
-
-Note: only the *interactive flow* needs `google-auth-oauthlib`. The steady-state
-runtime (load token + silent refresh) needs only `google-auth`, which is already
-present — so once the token exists, day-to-day use never imports oauthlib.
+(load token + silent refresh) needs only `google-auth`, which is likewise in the
+`.venv`, so once the token exists, day-to-day use never imports oauthlib.
 
 ## 6. Switch the provider (after validating parity)
 
@@ -153,7 +145,7 @@ bridge already covers your Google calendars. So validate first:
 - **"no OAuth token" / token invalid** → re-run the consent flow (step 5).
 - **Token stopped refreshing after ~a week** → your consent screen is still in
   "Testing"; publish it to Production (step 2) and re-run consent.
-- **`google-auth-oauthlib` missing** → sync the runtime env
-  (`conda activate work-buddy && poetry install`); it's already in the lockfile.
+- **`google-auth-oauthlib` missing** → sync the environment (`uv sync`); it's
+  already in the lockfile.
 - The OAuth client secret exposed in the Obsidian plugin's `data.json` is **not**
   reusable — `google_native` needs its own Google Cloud client (this setup).

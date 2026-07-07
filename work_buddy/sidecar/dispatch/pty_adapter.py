@@ -81,7 +81,7 @@ def _check_backend_available(backend: BackendKind) -> None:
         except ImportError:
             raise ImportError(
                 "pywinpty is required for interactive agent sessions on Windows. "
-                "Install with: poetry add pywinpty"
+                "Install with: uv add pywinpty"
             )
     else:
         try:
@@ -89,7 +89,7 @@ def _check_backend_available(backend: BackendKind) -> None:
         except ImportError:
             raise ImportError(
                 "ptyprocess is required for interactive agent sessions on POSIX. "
-                "Install with: poetry add ptyprocess"
+                "Install with: uv add ptyprocess"
             )
 
 

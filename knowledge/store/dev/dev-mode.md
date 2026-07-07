@@ -130,9 +130,9 @@ Each service follows the pattern: `work_buddy/<service>/service.py` with Flask a
 
 ### Running Python
 ```
-powershell.exe -Command "cd <vault-root>\repos\work-buddy; conda activate work-buddy; <command>"
+uv run python <args>   # e.g. uv run python -m pytest tests/unit/<file>.py
 ```
-(Platform-neutral users: your own activation path — this invocation is Windows/conda-specific.)
+(uv is cross-platform and manages the project `.venv` itself, so no shell activation step is needed.)
 
 ### Testing capabilities
 ```
@@ -153,9 +153,9 @@ mcp__work-buddy__wb_run("service_restart", {"service": "dashboard"})
 Run `/wb-dev-live-testing` to drive an end-to-end test of an in-progress change against the running MCP server + sidecar + surfaces. Distinct from `pytest` — unit tests catch logic bugs; live tests catch wiring bugs (FastMCP tool registration, surface dispatchers, sidecar message routing, session-scoped storage). The protocol (precondition → trigger → user action → verify → cleanup) lives in `dev/live-testing-directions`; the slash command loads it. Use after any change that touches gateway entry points, notification surfaces, or session-scoped behavior.
 
 ### Dependencies
-**Never use `pip install`.** Use Poetry:
-- Production: `poetry add <package>`
-- Temporary/testing: `poetry add --group temp <package>` (cleanly removable)
+**Never use `pip install`.** Use uv:
+- Production: `uv add <package>`
+- Temporary/testing: `uv add --group dev <package>` (cleanly removable)
 
 ### Committing
 work-buddy enforces a Developer Certificate of Origin: **every commit must be signed off** with `git commit -s`, which appends a `Signed-off-by` trailer. The `DCO` status check is required on `main` — a pull request with any unsigned commit cannot merge. `/wb-dev-pr` signs off in its commit step; if you commit by hand, always pass `-s`.

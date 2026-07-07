@@ -184,8 +184,7 @@ def _probe_pyproject_version(repo_root: Path | None) -> str | None:
     except OSError:
         return None
     # Lightweight extraction: look for `version = "x.y.z"` under
-    # `[tool.poetry]` or `[project]`. Avoid pulling tomllib for one
-    # field — both forms are easy to recognize.
+    # `[project]`. Avoid pulling tomllib for one field.
     import re
     m = re.search(r'^\s*version\s*=\s*"([^"]+)"', text, re.MULTILINE)
     return m.group(1) if m else None

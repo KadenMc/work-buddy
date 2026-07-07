@@ -21,9 +21,9 @@ the conversion reads, writes, and deletes **strictly within
 Every target path is asserted to resolve under ``knowledge/store/`` before any
 write or delete.
 
-Run from the work-buddy conda env:
+Run via uv:
 
-    conda run -n work-buddy python -m scripts.migrate_store_to_files [--dry-run]
+    uv run python -m scripts.migrate_store_to_files [--dry-run]
 """
 
 from __future__ import annotations
