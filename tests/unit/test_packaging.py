@@ -33,7 +33,7 @@ version = _load("version")
 
 def test_version_reads_pyproject(tmp_path):
     (tmp_path / "pyproject.toml").write_text(
-        '[tool.poetry]\nname = "x"\nversion = "1.2.3"\n', encoding="utf-8"
+        '[project]\nname = "x"\nversion = "1.2.3"\n', encoding="utf-8"
     )
     assert version.read_version(tmp_path) == "1.2.3"
 

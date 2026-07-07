@@ -170,13 +170,13 @@ If `mcp__work-buddy__wb_init` is not in your tool list, **stop immediately and t
 
 work-buddy's functionality is reached through the MCP tools (see above) — reach for those first. But some tasks legitimately need raw Python: running the test suite, a one-off debug script, or a `scripts/` utility.
 
-When you do, run it in the **`work-buddy` conda environment**. That env has every optional dependency (`hindsight_client`, `rank_bm25`, `freezegun`, …); a bare or partial Python will fail partway through with `ModuleNotFoundError`. The portable form needs no shell activation and works cross-platform:
+When you do, run it through **uv** from the repo root. `uv run` executes in the project's `.venv` (built by `uv sync` from `uv.lock`), which carries every dependency, so a bare or partial Python that dies partway through with `ModuleNotFoundError` is not a concern. It needs no shell activation and works cross-platform:
 
 ```
-conda run -n work-buddy python -m <module>     # e.g. -m pytest tests/unit/<file>.py
+uv run python -m <module>     # e.g. uv run python -m pytest tests/unit/<file>.py
 ```
 
-If `conda` is not on `PATH` (common in non-interactive shells), it lives in your conda/miniforge install; or invoke the env's interpreter directly — `<conda-base>/envs/work-buddy/python`. A machine-specific absolute path, if you want one pinned, belongs in `CLAUDE.local.md`, not here.
+If the `.venv` is missing, `uv sync` recreates it from `uv.lock`. Run the whole suite with `uv run pytest`.
 
 ## Repo structure (navigational)
 

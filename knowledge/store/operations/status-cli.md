@@ -129,8 +129,9 @@ Waiting is **free** and **self-bounding**, so prefer a generous (or indefinite) 
   wait — another reason to prefer `wait` over re-spawning `status` in a
   tight loop.
 - **Interpreter resolution.** The command finds a Python that can import
-  work-buddy via `$WORK_BUDDY_PYTHON` → a `python`/`python3` on PATH → common
-  conda env locations. Set `WORK_BUDDY_PYTHON` if your env is elsewhere.
+  work-buddy via `$WORK_BUDDY_PYTHON` → the project `.venv` created by
+  `uv sync` → a `python`/`python3` on PATH. Set `WORK_BUDDY_PYTHON` if your
+  interpreter is elsewhere.
 
 ## Implementation
 

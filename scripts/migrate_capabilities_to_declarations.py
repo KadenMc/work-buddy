@@ -12,9 +12,9 @@ emits the data half. It also reports each capability's callable (module +
 qualname) so the op module can be written, flagging closures that must be
 hoisted to module scope before they can be registered as an op.
 
-Run from the work-buddy conda env:
+Run via uv:
 
-    conda run -n work-buddy python -m scripts.migrate_capabilities_to_declarations <category>
+    uv run python -m scripts.migrate_capabilities_to_declarations <category>
 """
 
 from __future__ import annotations

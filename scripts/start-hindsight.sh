@@ -9,14 +9,14 @@
 PGDATA="${HINDSIGHT_PGDATA:-$HOME/hindsight-pgdata}"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-# Helper: run a command inside the conda work-buddy env
-conda_run() {
-    powershell.exe -Command "conda activate work-buddy; $*" 2>&1
+# Helper: run a command inside the project's uv-managed .venv
+uv_run() {
+    (cd "$REPO_ROOT" && uv run "$@") 2>&1
 }
 
 status() {
     echo "=== PostgreSQL ==="
-    if conda_run pg_ctl -D "$PGDATA" status | grep -q "server is running"; then
+    if uv_run pg_ctl -D "$PGDATA" status | grep -q "server is running"; then
         echo "  Running"
     else
         echo "  Stopped"
@@ -31,11 +31,11 @@ status() {
 }
 
 start_pg() {
-    if conda_run pg_ctl -D "$PGDATA" status | grep -q "server is running"; then
+    if uv_run pg_ctl -D "$PGDATA" status | grep -q "server is running"; then
         echo "PostgreSQL already running."
     else
         echo "Starting PostgreSQL..."
-        conda_run pg_ctl -D "$PGDATA" -l "$PGDATA/logfile" start
+        uv_run pg_ctl -D "$PGDATA" -l "$PGDATA/logfile" start
         sleep 2
         echo "PostgreSQL started."
     fi
@@ -48,9 +48,9 @@ start_hindsight() {
     fi
 
     echo "Starting Hindsight API server..."
-    # Load .env and start in background
+    # Load .env and start in background (uv resolves hindsight-api from the project .venv)
     powershell.exe -Command "
-        conda activate work-buddy
+        Set-Location '$REPO_ROOT'
         [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
         \$env:PYTHONIOENCODING='utf-8'
         Get-Content '$REPO_ROOT/.env' | ForEach-Object {
@@ -58,7 +58,7 @@ start_hindsight() {
                 [Environment]::SetEnvironmentVariable(\$matches[1].Trim(), \$matches[2].Trim(), 'Process')
             }
         }
-        Start-Process -NoNewWindow -FilePath 'hindsight-api'
+        Start-Process -NoNewWindow -FilePath 'uv' -ArgumentList 'run','hindsight-api'
     " >/dev/null 2>&1
 
     # Wait for it (model loading can take 30-60s on first run)
@@ -80,7 +80,7 @@ stop_all() {
     " 2>/dev/null
 
     echo "Stopping PostgreSQL..."
-    conda_run pg_ctl -D "$PGDATA" stop 2>/dev/null
+    uv_run pg_ctl -D "$PGDATA" stop 2>/dev/null
 
     echo "Done."
 }

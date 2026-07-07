@@ -298,12 +298,12 @@ _register(ComponentDef(
                 + ("  1. Kill remaining processes: Get-Process *hindsight* | Stop-Process\n"
                    "  2. Ensure PostgreSQL is running (check port 5432)\n"
                    "  3. Restart: Start-ScheduledTask 'Hindsight-API'\n"
-                   "     Or manually: conda activate work-buddy && hindsight-api"
+                   "     Or manually: uv run hindsight-api"
                    if _IS_WINDOWS else
                    "  1. Kill remaining processes: pkill -f hindsight\n"
                    "  2. Ensure PostgreSQL is running (check port 5432)\n"
-                   "  3. Restart: conda activate work-buddy && hindsight-api &")
-                + "\nSee also: scripts/start-hindsight.sh, SETUP.md"
+                   "  3. Restart: uv run hindsight-api &")
+                + "\nSee also: scripts/start-hindsight.sh"
             ),
         ),
     ],

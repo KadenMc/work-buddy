@@ -365,11 +365,11 @@ sidecar:
   # Optional: pin the Python interpreter children are spawned with.
   # Without this, children inherit ``sys.executable`` from the daemon —
   # which is usually fine, but breaks when the daemon itself was
-  # accidentally launched on the wrong interpreter (e.g. a Windows
-  # scheduled task whose ``conda activate`` silently no-op'd, leaving
-  # the daemon and every child on the base env). Setting this pins the
-  # env regardless of how the daemon booted. Recommended on Windows.
-  # python_executable: "C:/Users/you/miniforge3/envs/work-buddy/python.exe"
+  # accidentally launched on the wrong interpreter (e.g. a login task
+  # that resolved a different Python than the project's ``.venv``).
+  # Setting this pins the env regardless of how the daemon booted; the
+  # installer sets it automatically.
+  # python_executable: "C:/Users/you/work-buddy/.venv/Scripts/python.exe"
   # A service must miss this many consecutive probes before the daemon
   # restarts it. Guards against cascading false-positive restarts when
   # a single probe is late (e.g. a service is briefly busy).

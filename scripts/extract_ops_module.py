@@ -9,7 +9,7 @@ per capability, ``op.wb.<name>`` → the capability's ``callable`` expression.
 The builder is NOT removed from ``registry.py`` here — strip it separately
 once the generated module imports and resolves cleanly.
 
-    conda run -n work-buddy python -m scripts.extract_ops_module <category> <builder_name>
+    uv run python -m scripts.extract_ops_module <category> <builder_name>
 """
 
 from __future__ import annotations

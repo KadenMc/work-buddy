@@ -12,9 +12,8 @@ Thank you for your interest in contributing! We welcome all types of contributio
 
 ### Prerequisites
 
-- Python 3.11 (via [Miniforge](https://github.com/conda-forge/miniforge) or similar)
-- [Poetry](https://python-poetry.org/) for dependency management
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (recommended for development — work-buddy develops itself)
+- [uv](https://docs.astral.sh/uv/) for dependency and environment management (it manages Python itself, so no separate Python install is needed)
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (recommended for development, since work-buddy develops itself)
 - Git
 
 ### Install
@@ -23,22 +22,19 @@ Thank you for your interest in contributing! We welcome all types of contributio
 git clone https://github.com/YOUR-USERNAME/work-buddy.git
 cd work-buddy
 
-conda create -n work-buddy python=3.11 -y
-conda activate work-buddy
-
-poetry install
-poetry install --extras all  # Optional: enables all integrations
+uv sync                 # creates .venv, installs work-buddy + dev tools
+uv sync --all-extras    # optional: include all integration extras
 ```
 
 ### Running Tests
 
 ```bash
-poetry run pytest              # All tests
-poetry run pytest -m unit      # Fast unit tests only
-poetry run pytest -m component # Tests with temp dirs/DBs
+uv run pytest              # All tests
+uv run pytest -m unit      # Fast unit tests only
+uv run pytest -m component # Tests with temp dirs/DBs
 ```
 
-**Important:** Never use `pip install`. Always use Poetry for dependency management.
+**Important:** Never use `pip install`. Use uv (`uv add <package>`) so dependencies land in `pyproject.toml` and `uv.lock`.
 
 ### Orienting on the Codebase
 
@@ -144,14 +140,14 @@ You're welcome to develop however you prefer — by hand, with Claude Code, or w
 
 Run `/wb-dev-push` to check most of these automatically. When submitting your PR, ensure:
 
-- [ ] All tests pass (`poetry run pytest` or `/wb-dev-test`)
+- [ ] All tests pass (`uv run pytest` or `/wb-dev-test`)
 - [ ] All commits are signed off (`git commit -s` — see [License and the Developer Certificate of Origin](#license-and-the-developer-certificate-of-origin))
 - [ ] New features include tests
 - [ ] Knowledge store validates (no broken DAG refs, no orphaned commands)
 - [ ] The PR title is descriptive and concise
 - [ ] You've linked to a relevant issue if one exists (e.g., "Closes #12")
 - [ ] Documentation is updated if you changed behavior (knowledge units, subsystem READMEs)
-- [ ] New dependencies use Poetry (`poetry add`), not pip
+- [ ] New dependencies use uv (`uv add`), not pip
 - [ ] New integrations are behind feature toggles (optional extras in `pyproject.toml`)
 
 ## Project Philosophy

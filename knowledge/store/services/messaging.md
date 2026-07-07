@@ -22,7 +22,7 @@ parents:
 
 Flask HTTP API backed by SQLite for exchanging messages between Claude Code agents across different repos. Runs on localhost:5123.
 
-Starting: powershell.exe -Command "cd <repo-root>; conda activate work-buddy; python -m work_buddy.messaging.service"
+Starting: uv run python -m work_buddy.messaging.service
 
 Hooks (global, in ~/.claude/settings.json):
 - SessionStart (startup/resume/compact) — shows pending messages + send/reply/resolve instructions
