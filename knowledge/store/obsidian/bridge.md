@@ -26,6 +26,10 @@ parents:
 - obsidian
 - obsidian
 dev_notes: |-
+  ## Version handshake with the plugin (paired constants)
+
+  `PLUGIN_VERSION_MIN`/`PLUGIN_VERSION_MAX` in bridge.py bound the plugin versions this bridge accepts; `require_available()` RAISES outside the range. The plugin mirrors this with its own advisory `WB_VERSION_MAX` (src/handlers.ts in obsidian-work-buddy), which only console-warns; the bridge never reads the plugin's `compatibility` field. Because each MAX caps the OTHER project's version, releasing either project at or above its counterpart's cap requires bumping that counterpart constant in the same change: in particular a plugin release >= PLUGIN_VERSION_MAX is hard-rejected by the bridge until bridge.py moves. The dev-release workflow's cross_repo step checks this bracket before every framework release.
+
   ## eval_js_internal vs eval_js_for_write
 
   Both bypass the `obsidian.eval_js` consent gate. The difference shows up on TIMEOUT:
