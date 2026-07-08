@@ -4,6 +4,7 @@ kind: directions
 description: 'Authoring rule for code and agent docs: describe the system''s current behavior, not the journey of how it got there. No commit hashes, branch names, PR numbers, dates, agent-session tags, stage labels, or ''after X'' framing in code identifiers, comments, log strings, tests, knowledge units, slash-command text, or CLAUDE.md.'
 trigger: When authoring or updating code (identifiers, comments, log strings, tests) or agent docs (knowledge units, slash-command text, CLAUDE.md) during /wb-dev or /wb-dev-document. Surfaced via cross-reference from dev/dev-mode, dev/dev-document-directions, and dev/dev-pr-directions so the rule travels with every authoring context.
 tags:
+- allow-transient-labels
 - dev
 - doc-hygiene
 - durable-surfaces
@@ -53,4 +54,9 @@ When authoring, ask: *would this sentence still read correctly six months from n
 
 ## Audit
 
-The audit fires programmatically in `/wb-dev-pr`'s cleanup step. The cheap fix is not writing it in the first place — at authoring time, with one rule loaded and the words still in front of you, not at PR time when you have to grep your own work for date-shaped strings.
+Two mechanisms enforce this rule, with different scopes:
+
+- **Store-wide, programmatic.** The `durable_surfaces` check in `work_buddy/knowledge/validate.py` scans every knowledge unit's prose fields (name, description, tags, summary, full content, dev_notes, capability parameter schemas, workflow step text) for stage labels, dates, VCS references, task ids, and migration-narrative phrasing. It runs on every `docs_validate` invocation, including the dev-document workflow's validate step, so archaeology in units no commit touches still surfaces. Findings are advisory warnings, and the open warning list doubles as the cleanup backlog. Units whose subject matter legitimately contains such patterns (a documented numbered interface, or this rule's own quoted examples) opt out with the `allow-transient-labels` tag.
+- **Diff-scoped, programmatic + judgment.** `/wb-dev-pr`'s `transient_check` auto_run step (`work_buddy.dev.commit.transient_check`) scans the change set, code and docs alike, with the same pattern table plus an identifier-form pattern for code names. Its hits feed the cleanup step, where the committing agent judges each one: quoted examples and versioned interface names are legitimate, rollout labels are not. The agent also self-reviews for what regex cannot see. Code files outside the current change set have no repo-wide scan; the knowledge store is the only corpus scanned exhaustively.
+
+The cheap fix is not writing it in the first place: at authoring time, with one rule loaded and the words still in front of you, not at PR time when you have to grep your own work for date-shaped strings.

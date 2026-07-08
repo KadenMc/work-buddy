@@ -38,7 +38,7 @@ dev_notes: |-
 
 # LLM Runner
 
-One entry point (`work_buddy.llm.LLMRunner` or the module-level `llm_call` convenience) that accepts a semantic `ModelTier` and returns a normalized `LLMResponse`. Replaces the split between `run_task` (structured output, Anthropic-only) and `llm_with_tools` (tool calls, LM Studio-only) that existed before the phase-1 refactor.
+One entry point (`work_buddy.llm.LLMRunner` or the module-level `llm_call` convenience) that accepts a semantic `ModelTier` and returns a normalized `LLMResponse`. Replaces the split between `run_task` (structured output, Anthropic-only) and `llm_with_tools` (tool calls, LM Studio-only) that predates the LLMRunner extraction.
 
 ## Why it exists
 
@@ -164,7 +164,7 @@ The Anthropic backend is NOT broker-wrapped — Anthropic is a cloud service, it
 - `work_buddy.triage.adapters.journal._call_segmenter` — LOCAL_FAST → FRONTIER_FAST escalation chain (configurable via `triage.segment.tier_chain`) for running-notes thread segmentation
 - `work_buddy.journal_backlog.manifest.build_thread_manifest` — FRONTIER_FAST per-thread tag/summary generation for the backlog pipeline
 
-## Phase-1 limitations (tracked in task t-a373609f)
+## Current limitations (tracked in task t-a373609f)
 
 - `LLMRunner._call_one` still delegates to legacy `run_task` for actual HTTP dispatch. Native Anthropic + local backend adapters replace this in the deletion pass.
 - `tools=` parameter raises `NotImplementedError`. Tool-call dispatch (Anthropic + LM Studio unified) is on the roadmap.

@@ -16,7 +16,7 @@ aliases:
 - segment_into_matters
 parents:
 - architecture/llm-runner
-dev_notes: 'Built 2026-05-09 as Stage 2 of the singular-pattern fix. The user''s specific ask: ''segmenter is very valuable and shouldn''t be tied into just one pipeline''. Hence the SubCall framing — any pipeline can call segment_into_matters(text) and consume the resulting per-matter list, dispatching each matter through its own per-matter spawn primitive. The first consumer is inline-capture; future per-message email triage drops in for free.'
+dev_notes: 'Built as the segmentation half of the singular-pattern fix. The user''s specific ask: ''segmenter is very valuable and shouldn''t be tied into just one pipeline''. Hence the SubCall framing — any pipeline can call segment_into_matters(text) and consume the resulting per-matter list, dispatching each matter through its own per-matter spawn primitive. The first consumer is inline-capture; future per-message email triage drops in for free.'
 ---
 
 Generic text-segmentation SubCall built on the decomposed-judgment framework. Splits captured prose into distinct *matters* — coherent subjects the user might think of as one thing each.

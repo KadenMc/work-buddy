@@ -25,14 +25,14 @@ dev_notes: |-
 
   **Resolver caching strategy:** *don't*. Per-request memoization is fine but cross-request caching adds invalidation complexity. The resolver is pure and cheap — call it on every read. Tolerance / amplifier policy can change live via config reload; cache invalidation against that is more code than it's worth.
 
-  **Frontend mount divergence.** Review Queue shipped a parallel renderer (``loadReviewQueue`` in scripts/tabs/automation.py) rather than reusing ``mountResolutionSurface``. Justification: data shapes differ — pool entries (Slice 1.5) carry ``pool_run_id`` / ``item_id`` / ``group_intent`` etc. that don't apply to task_metadata rows. CSS classes are shared (``wv-blocker-badge``, ``aut-tier-badge``) for visual consistency. Convergence is a Slice 7 follow-up once the per-action-item profile aligns shapes.
+  **Frontend mount divergence.** Review Queue shipped a parallel renderer (``loadReviewQueue`` in scripts/tabs/automation.py) rather than reusing ``mountResolutionSurface``. Justification: data shapes differ — pool entries carry ``pool_run_id`` / ``item_id`` / ``group_intent`` etc. that don't apply to task_metadata rows. CSS classes are shared (``wv-blocker-badge``, ``aut-tier-badge``) for visual consistency. Convergence becomes possible once the per-action-item profile aligns the shapes.
 
-  Slice-5a/5b lesson: hard-coded light card backgrounds (the yellow blocked-by-context nudge, the blue Today contracts banner) need hard-coded dark text colors -- var(--text-primary) flips to light in dark mode and becomes unreadable. Caught by live preview in the post-build sweep; fixed in commit 36cb747.
+  Hard-coded light card backgrounds (the yellow blocked-by-context nudge, the blue Today contracts banner) need hard-coded dark text colors: var(--text-primary) flips to light in dark mode and becomes unreadable. Caught by live preview in the post-build sweep.
 ---
 
-# Dashboard automation surfaces (post-v5 cleanup)
+# Dashboard automation surfaces
 
-Slice 4 originally shipped three places where the operating-tier resolver output reached the user: a **Review Queue** tab (tier-3 outputs), a **Daily Log** tab (tier-4 events), and an **Engage** tab (Slice 5a who-can-act + current-context filter). All three were retired in 2026-05-03's v5 Threads cleanup — v5 Threads is now the canonical resolution surface for everything that needs the user's attention. (The legacy Review tab itself was retired in the clarify -> Threads migration; triage now flows through the unified source pipeline and surfaces on the Threads tab via group sub-threads.)
+v5 Threads is the canonical resolution surface for everything that needs the user's attention; triage flows through the unified source pipeline and surfaces on the Threads tab via group sub-threads. A **Review Queue** tab (tier-3 outputs), a **Daily Log** tab (tier-4 events), and an **Engage** tab (who-can-act + current-context filter) used to project the operating-tier resolver output directly; those are gone (see "What used to be here" below), and what remains is the Today tab and the per-task Auto column on the Tasks tab.
 
 ## What's left
 
@@ -52,7 +52,7 @@ Lives in ``work_buddy.dashboard.service`` and is called only by ``work_buddy.tas
 
 ## Visual language
 
-The CSS classes that drove the Slice-4 cards (``aut-tier-badge``, ``aut-actor-badge``, ``wv-blocker-badge``) are gone. The Tasks tab's Auto column uses its own classes. ``.section-subtitle`` survives in ``scripts/tabs/automation.py`` because Today still consumes it.
+The CSS classes that drove the retired tab cards (``aut-tier-badge``, ``aut-actor-badge``, ``wv-blocker-badge``) are gone. The Tasks tab's Auto column uses its own classes. ``.section-subtitle`` survives in ``scripts/tabs/automation.py`` because Today still consumes it.
 
 ## Frontend
 

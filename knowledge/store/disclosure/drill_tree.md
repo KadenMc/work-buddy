@@ -20,6 +20,7 @@ parameters:
 op: op.wb.drill_tree
 schema_version: wb-capability/v1
 tags:
+- allow-transient-labels
 - disclosure
 - drill
 - navigation

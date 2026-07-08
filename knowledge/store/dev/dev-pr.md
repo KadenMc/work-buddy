@@ -73,11 +73,27 @@ steps:
     - hits
     - clean
   invokes: []
-- id: cleanup
-  name: Review own changes for debug code, stale refs, PII hits
-  step_type: reasoning
+- id: transient_check
+  name: Scan changed files for transient identifiers
+  step_type: code
   depends_on:
   - pii_check
+  auto_run:
+    callable: work_buddy.dev.commit.transient_check
+    kwargs: {}
+    timeout: 30
+  visibility:
+    mode: summary
+    include_keys:
+    - files_scanned
+    - hits
+    - clean
+  invokes: []
+- id: cleanup
+  name: Review own changes for debug code, stale refs, PII and transient hits
+  step_type: reasoning
+  depends_on:
+  - transient_check
   result_schema:
     required_keys:
     - ready
@@ -120,6 +136,7 @@ steps:
   invokes: []
 command: wb-dev-pr
 tags:
+- allow-transient-labels
 - dev
 - commit
 - git
@@ -262,14 +279,20 @@ Auto-run. The conductor calls `work_buddy.dev.commit.pii_check()` against the cu
 - `clean: true` → proceed.
 - `hits` → each entry has `file`, `line`, `label`, `match`, `context`. Fix before committing. Common fixes: replace personal paths with config-driven values (`cfg["vault_root"]`), replace named references to the user with 'the user', move machine-specific paths to gitignored configs.
 
+## transient_check
+
+Auto-run. The conductor calls `work_buddy.dev.commit.transient_check()` against the current change set: the durable-surfaces rule applied programmatically to the diff. Returns `{files_scanned, hits, clean}`; each hit has `file`, `line`, `category`, `match`, `context`. Categories: stage labels (prose and identifier form), dates, task ids, PR/branch/commit references, archaeology identifiers, session tags, migration phrasing. Test-file date and task-id literals are auto-suppressed (fixture data), and journal-shape files (CHANGELOG.md, DECISIONS.md) are skipped.
+
+Unlike PII hits, transient hits are advisory input for the cleanup step, not automatic defects: a quoted example or a versioned interface name is legitimate; a rollout label is not. Judge each hit there.
+
 ## cleanup
 
 Reasoning step. Walk each file you changed and look for:
 - Debug prints, `TODO`/`FIXME` you left while working.
 - Stale imports or references to things you renamed.
 - Dead code from a refactor.
-- **PII hits** from the previous step — if any, fix them now.
-- **Transient narrative in durable surfaces.** Scan changed code (identifiers, comments, log strings, tests) and agent docs (knowledge units, slash-command text, CLAUDE.md) for references whose meaning depends on the *moment* the change was made: branch names, PR numbers, dates, agent-session tags, "after the recent migration", "Slice 3"-style stage labels, "for now", "temporary workaround", or identifiers that read as archaeology (`legacy_*`, `_after_migration_shim`, `pre_2026_04_26_*`). Replace with stable domain terms describing current behavior. Versioned labels are allowed only when they name a documented interface, schema, protocol, migration, or compatibility boundary; otherwise rename. Commit messages are exempt — they're a write-once journal of how the change arrived.
+- **PII hits** from the pii_check step — if any, fix them now.
+- **Transient hits** from the transient_check step. The scan finds references whose meaning depends on the *moment* the change was made: branch names, PR numbers, dates, agent-session tags, "after the recent migration", "Slice 3"-style stage labels, "for now", "temporary workaround", or identifiers that read as archaeology (`legacy_*`, `_after_migration_shim`, `pre_2026_04_26_*`). For each hit, either replace with stable domain terms describing current behavior, or judge it legitimate: versioned labels survive only when they name a documented interface, schema, protocol, migration, or compatibility boundary, and quoted examples of the forbidden patterns are fine. Also self-review for anything the regex cannot see (fuzzy phrasing, misleading names). Commit messages are exempt — they're a write-once journal of how the change arrived.
 
 Do not refactor unrelated code. Scope is your own changes only.
 

@@ -1,5 +1,5 @@
 ---
-name: Pickup-time readiness (Slice 7)
+name: Pickup-time readiness
 kind: reference
 description: compute_pickup_readiness pure function -- 5-rule precedence ladder deciding whether a task is ready to execute as-is or should develop first when picked up. Reads creation_effort + user_involvement + provenance + staleness + deadline + has_action_items.
 entry_points:
@@ -9,7 +9,6 @@ tags:
 - automation
 - pickup
 - develop-at-pickup
-- slice-7
 - readiness
 aliases:
 - pickup readiness
@@ -23,7 +22,7 @@ parents:
 dev_notes: I considered a weighted-score model and rejected -- the user reads the reason field to understand WHY the engage flow chose develop-first; "score 0.42 < 0.5" is opaque. The 5-rule ladder gives concrete reasons ("agent-inferred sparse capture aged 12 days without user touch -- develop first").
 ---
 
-# automation/pickup (Slice 7)
+# automation/pickup
 
 Module: work_buddy/automation/pickup.py.
 
@@ -50,4 +49,4 @@ Greppable + visible -- the threshold-tuning discussion is a one-file PR.
 
 ## world_state forward-compat
 
-Slice 8 will add attraction_passes and relevance_status to the world_state mapping. Today only has_action_items is consumed.
+Future work may add attraction_passes and relevance_status to the world_state mapping. Today only has_action_items is consumed.

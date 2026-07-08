@@ -3,6 +3,7 @@ name: Summarization
 kind: system
 description: Producer + search surface for content summaries. Per-session TL;DR+topics, per-page flat extracts, and the coarse-to-fine retrieval funnel over them.
 tags:
+- allow-transient-labels
 - summarization
 - search
 - progressive-disclosure

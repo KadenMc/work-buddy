@@ -8,7 +8,6 @@ tags:
 - tier
 - amplifier
 - resurfacing
-- slice-4
 - pipeline-blocker
 - lazy-resolution
 aliases:
@@ -33,20 +32,20 @@ dev_notes: |-
 
   **Last-actor detection via consent.get_consent_context_info().** ``_detect_last_actor`` (in ``work_buddy/obsidian/tasks/mutations.py``) reads the consent context — inside ``user_initiated()`` → 'user', otherwise → 'agent'. Wired at three mutation sites (create_task / toggle_task / generic update_task state-change branch); deliberately NOT at the store layer because store-level writes also include reconciliation paths (task_sync re-deriving description) where setting last_actor would be wrong.
 
-  **JSON column for risk_profile.** Forward-compat with Slice 7 (per-action-item profiles) + Slice 8 (attraction signals) — both want the shape evolvable without ALTER TABLE churn. Trade-off: can't ``WHERE accuracy='critical'`` in SQL; if Slice 8 needs it we promote selected dimensions to columns then.
+  **JSON column for risk_profile.** Forward-compat with per-action-item risk profiles and attraction signals — both want the shape evolvable without ALTER TABLE churn. Trade-off: can't ``WHERE accuracy='critical'`` in SQL; promote selected dimensions to columns if that's ever needed.
 
   **Resolver is pure, callable per-render.** No memoization across requests. The dashboard /api/tasks endpoint calls ``resolve_operating_tier`` for every non-archived task on every render (~50 calls × <1ms each on real data). Don't cache: tolerance / amplifier policy can change live via config reload.
 
-  **Achievable-tier inference is v0.** ``resolve_achievable_tier`` infers from the risk profile (irreversible+high-regret → 2, critical-accuracy → 3, default → 3) when ``automation_tier_achievable`` isn't cached. Slice 5a will plug context-aware logic via ``contexts`` kwarg (currently accepted but ignored — kept in signature so callers don't churn).
+  **Achievable-tier inference is v0.** ``resolve_achievable_tier`` infers from the risk profile (irreversible+high-regret → 2, critical-accuracy → 3, default → 3) when ``automation_tier_achievable`` isn't cached. Context-aware logic is planned to plug in via the ``contexts`` kwarg (currently accepted but ignored — kept in signature so callers don't churn).
 
-  **Test fixture footgun.** Resolver unit tests all seed populated profiles, so the legacy-NULL-profile-everywhere production case isn't exercised. The Slice-4 Review Queue + Daily Log endpoints (now retired in the v5 cleanup) surfaced bugs only in live-fire testing. Future slices touching this surface should include at least one legacy-NULL-profile fixture row to model the production state.
+  **Test fixture footgun.** Resolver unit tests all seed populated profiles, so the legacy-NULL-profile-everywhere production case isn't exercised, a bug that surfaced only in live-fire testing on the (now-retired) Review Queue and Daily Log endpoints. Future work touching this surface should include at least one legacy-NULL-profile fixture row to model the production state.
 
   **Amplifier policy can be loosened per-gate.** ``config.local.yaml`` can set ``high_inference_uncertainty_requires_consent: false`` for users who don't want the inference gate. The other two gates (irreversible / high-regret) are individually toggleable too; default is all-ON (conservative).
 ---
 
 # Risk model + automation tiers + dynamic resurfacing
 
-Slice 4. The single home for the pure-function gating that decides how far an agent may take a task and how loudly the system should resurface it.
+The single home for the pure-function gating that decides how far an agent may take a task and how loudly the system should resurface it.
 
 ## Risk profile
 
@@ -62,7 +61,7 @@ A task carries a ``risk_profile_json`` blob with **four dimensions** + **three a
 | ``regret_potential`` | low / medium / high | amplifier (e.g. sending email under user identity) |
 | ``inference_uncertainty`` | low / medium / high | amplifier — agent's calibration on user intent |
 
-NULL profile (legacy, pre-Slice-4) → ``parse_risk_profile(None)`` returns ``SAFE_PROFILE`` (every field at its safest level). Resolvers therefore behave conservatively for unclassified tasks.
+NULL profile (legacy tasks created before the risk model existed) → ``parse_risk_profile(None)`` returns ``SAFE_PROFILE`` (every field at its safest level). Resolvers therefore behave conservatively for unclassified tasks.
 
 ## User config
 
@@ -103,11 +102,11 @@ All three functions are **pure**: no I/O, no DB writes. Surfaces call them per-r
 - ``search_only`` — agent-inferred + sparse + low-involvement + no deadline.
 - ``digest`` — default for everything else.
 
-Slice 8 will plug ``attraction_passes`` / ``relevance_status`` signals via the ``signals`` kwarg without touching the resolver shape.
+Future work may plug ``attraction_passes`` / ``relevance_status`` signals via the ``signals`` kwarg without touching the resolver shape.
 
 ## Schema columns (task_metadata)
 
-Added by Slice 4 via the Slice-2 ``_SLICE_N_COLUMNS`` migration descriptor in ``work_buddy/obsidian/tasks/store.py``:
+Managed by the versioned migration ladder in ``work_buddy/obsidian/tasks/migrations.py``:
 
 - ``risk_profile_json`` (TEXT, NULL legal — safe-profile fallback)
 - ``automation_tier_achievable`` (INTEGER, NULL legal — resolver re-derives lazily)
@@ -121,8 +120,8 @@ The resolver emits one of these on ``OperatingTierDecision.pipeline_blocker`` wh
 - ``inference_uncertain`` — high inference_uncertainty amplifier fired (different category from 'this is risky').
 - ``risk_threshold_exceeded`` — a dimension exceeded tolerance but no amplifier fired.
 
-The full enum (also covering ``agent_context_unmet`` etc. for Slice 5a) lives in ``work_buddy.clarify.resolution`` so the Resolution Surface card can render presentation hints (label, tone, deep_link) consistently across pre-creation verdicts and post-creation tier decisions.
+The full enum (also covering ``agent_context_unmet`` etc. from action-context resolution) lives in ``work_buddy.clarify.resolution`` so the Resolution Surface card can render presentation hints (label, tone, deep_link) consistently across pre-creation verdicts and post-creation tier decisions.
 
 ## Inference uncertainty calibration (Q-i v0)
 
-Default ``medium`` for every LLM-classified task. ``low`` reserved for actions the user directly invoked. ``high`` only via Slice 3's refusal path (the agent declined to commit a verdict). Self-report not relied on. Long-term plan to use logprob-based calibration with Slice 8 attraction signals as ground truth.
+Default ``medium`` for every LLM-classified task. ``low`` reserved for actions the user directly invoked. ``high`` only via Clarify's refusal path (the agent declined to commit a verdict). Self-report not relied on. Long-term plan to use logprob-based calibration with future attraction-signal data as ground truth.

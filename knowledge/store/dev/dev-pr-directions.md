@@ -1,7 +1,7 @@
 ---
 name: Dev PR Directions
 kind: directions
-description: How to run /wb-dev-pr — chained doc-update via /wb-dev-document, test verification, PII scan, cleanup review, commit, metadata record, push + PR. Replaces the prose /wb-commit directions (dev/commit).
+description: How to run /wb-dev-pr — chained doc-update via /wb-dev-document, test verification, PII scan, transient-identifier scan, cleanup review, commit, metadata record, push + PR. Replaces the prose /wb-commit directions (dev/commit).
 trigger: When the user invokes /wb-dev-pr or asks to commit work-buddy code changes with test verification and structured metadata recording
 command: wb-dev-pr
 workflow: dev/dev-pr
@@ -23,7 +23,7 @@ parents:
 - dev
 ---
 
-Run `/wb-dev-pr` to commit work-buddy code changes. The workflow enforces branch check → tests → doc update (via /wb-dev-document) → PII scan → cleanup → commit → metadata record → push.
+Run `/wb-dev-pr` to commit work-buddy code changes. The workflow enforces branch check → tests → doc update (via /wb-dev-document) → PII scan → transient-identifier scan → cleanup → commit → metadata record → push.
 
 ## When to run
 

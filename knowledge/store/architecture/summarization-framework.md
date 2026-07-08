@@ -4,6 +4,7 @@ kind: concept
 description: 'Composition-based summarization — Source × Strategy × Store with a shared refresh orchestrator. Two compositions today: conversation sessions (layered disclosure → durable store) and Chrome tabs (flat extraction → TTL cache).'
 summary: 'Protocol-based composition framework for content summarization. `Summarizer = Source × Strategy × Store` — three pluggable axes plus a shared core (refresh orchestrator, composer, construction-time coherence checks, provenance stamping). Stored result is always a tree (`SummaryNode`); flat extraction is depth-1, layered disclosure carries children with `source_ref` pointers. Two real compositions: conversation_session (layered, durable SQLite) and chrome_page (flat, TTL cache). New domains add a `Source` adapter, pick a strategy + store, register a binding factory.'
 tags:
+- allow-transient-labels
 - summarization
 - composition
 - llm

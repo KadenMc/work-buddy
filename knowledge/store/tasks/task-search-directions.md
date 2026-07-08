@@ -29,7 +29,7 @@ There are TWO ways to search tasks. Pick by what you want to find.
 
 Note: to *list* tasks (the whole filtered set) rather than search by text, use `task_list`. `task_search` with an empty query intentionally returns nothing.
 
-## task_search - search by description text (Slice 3, store-only)
+## task_search - search by description text (store-only)
 
 Looks at the `description` column of `task_metadata` - the human-readable task line text (`Fix the auth bug`, `Refactor the dashboard`, ...). Bridge-independent: works even when Obsidian isn't running. Cheap, deterministic, no embedding service.
 
@@ -42,7 +42,7 @@ Use this when:
   - You need to look up a task ID from a description.
   - The bridge is down and you still need to find a task.
 
-Returns task records (full task_metadata rows) ordered most-recently-updated first. Description column was added in Slice 3 - pre-Slice-3 tasks may have NULL description and won't surface here until task_sync runs (<=30 min).
+Returns task records (full task_metadata rows) ordered most-recently-updated first. Legacy tasks created before the description column existed may have NULL description and won't surface here until task_sync runs (<=30 min).
 
 ## context_search(source="task_note") - search by note body (hybrid)
 

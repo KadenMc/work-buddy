@@ -13,7 +13,7 @@ parameters:
     required: true
   target_task_id:
     type: str
-    description: Task ID (e.g. 't-a3f8c1e2') to file the cluster against. Must already have a linked note.
+    description: Task ID (e.g. 't-xxxxxxxx') to file the cluster against. Must already have a linked note.
     required: true
   section_heading:
     type: str
