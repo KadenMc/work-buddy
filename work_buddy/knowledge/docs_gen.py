@@ -336,8 +336,13 @@ def _write_nav_to_mkdocs(nav: list[dict[str, Any]]) -> None:
         logger.warning("Nav markers not found in mkdocs.yml — skipping nav update")
         return
 
-    # Build top-level nav: Home + Handbook index + flattened sections
-    full_nav = [{"Home": "index.md"}, {"Handbook": "handbook/index.md"}] + nav
+    # Build top-level nav: the hand-authored pages first (Home, Architecture),
+    # then the generated Handbook index + flattened sections.
+    full_nav = [
+        {"Home": "index.md"},
+        {"Architecture": "architecture.md"},
+        {"Handbook": "handbook/index.md"},
+    ] + nav
     nav_yaml = yaml.dump({"nav": full_nav}, default_flow_style=False, sort_keys=False)
 
     new_text = (

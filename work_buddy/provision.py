@@ -98,8 +98,12 @@ def provision(
     dw = fixers.fix_data_writable()
     steps.append("data writable: " + str(dw.get("detail", dw)))
 
-    # 5. Refresh the Claude Code MCP wiring at the HOME (project) root. Reuses the
-    #    canonical config so the port can never drift from the bound gateway.
+    # 5. Refresh the Claude Code MCP wiring at the HOME (project) root. A default
+    #    .mcp.json is committed to the repo, so a plain clone works in Claude Code
+    #    with zero steps; this rewrite exists because the file's one variable
+    #    field, the gateway port (sidecar.services.mcp_gateway.port), can differ
+    #    per machine. Under default config the regenerated file is byte-identical
+    #    to the committed one.
     (home / ".mcp.json").write_text(
         json.dumps(_mcp_config(), indent=2) + "\n", encoding="utf-8"
     )

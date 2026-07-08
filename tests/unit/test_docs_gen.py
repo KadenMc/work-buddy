@@ -266,9 +266,11 @@ class TestNavInjection:
 
         # The generated nav landed and parses as valid YAML.
         loaded = yaml.safe_load(out)
-        # _write_nav_to_mkdocs always prepends Home + Handbook to the sections.
+        # _write_nav_to_mkdocs always prepends the hand-authored pages
+        # (Home, Architecture) + the Handbook index to the sections.
         assert loaded["nav"][0] == {"Home": "index.md"}
-        assert loaded["nav"][1] == {"Handbook": "handbook/index.md"}
+        assert loaded["nav"][1] == {"Architecture": "architecture.md"}
+        assert loaded["nav"][2] == {"Handbook": "handbook/index.md"}
         assert {"Tasks": [{"Triage": "handbook/tasks_triage.md"}]} in loaded["nav"]
         # Trailing config is still structurally present, not just textually.
         assert loaded["extra"]["sentinel"] == "keep-me"
