@@ -69,6 +69,13 @@ config/global_settings.json
 work_buddy/chrome_native_host/host.bat
 work_buddy/chrome_native_host/host.sh
 
+# React dashboard frontend (dashboard-react/): dependencies and build
+# output stay out of git. The dist/ entry is already covered by the
+# unanchored Python-packaging pattern below, but the build output is a
+# deliberate build-on-demand artifact, so name it explicitly.
+node_modules/
+dashboard-react/dist/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
