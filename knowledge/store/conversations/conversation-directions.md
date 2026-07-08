@@ -1,7 +1,7 @@
 ---
 name: Conversation Management Directions
 kind: directions
-description: When and how to use agent-user conversations — decision guide, response types, behavioral notes. (Renamed from `threads/thread-directions` in v5 Stage 1; the `threads` namespace is reserved for the v5 universal-entity primitive.)
+description: When and how to use agent-user conversations — decision guide, response types, behavioral notes. The `threads` namespace is reserved for the universal-entity primitive.
 summary: 'Use conversations for: explaining plans before executing, multi-step decisions, progress updates, follow-up dialogue. conversation_create opens the dashboard sidebar automatically. conversation_ask blocks up to 110s.'
 trigger: user wants to start a conversation, or agent needs to explain a plan, ask multi-step questions, or send progress updates
 command: wb-conversation

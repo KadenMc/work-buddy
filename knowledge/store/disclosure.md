@@ -3,6 +3,7 @@ name: Progressive Disclosure
 kind: system
 description: Unified navigation contract for tree-shaped drillable resources. One MCP capability (drill_tree) walks any registered TreeDrillable at three depths (index/summary/full).
 tags:
+- allow-transient-labels
 - disclosure
 - drill
 - navigation

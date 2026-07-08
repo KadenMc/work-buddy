@@ -2,7 +2,7 @@
 name: Action Catalog (typed lens over capability + workflow registries)
 kind: concept
 description: 'Filtered view over the existing capability + workflow registries: entries where is_action=True. Four action kinds: Standard, Improvised, Suggestion, Clarification.'
-summary: 'Stage 1 deliverable: capability/workflow definitions gain is_action / available_in / intrinsic_amplifiers / parameter_schema_for_action / requires_post_review. Stage 2 wires action inference through these fields. 2026-05-03: added ActionKind.CLARIFICATION (route to AWAITING_ACTION_CLARIFICATION) and started injecting the catalog into the action-inference prompt.'
+summary: 'Capability/workflow definitions carry is_action / available_in / intrinsic_amplifiers / parameter_schema_for_action / requires_post_review, and action inference is wired through these fields. 2026-05-03: added ActionKind.CLARIFICATION (route to AWAITING_ACTION_CLARIFICATION); the catalog is injected into the action-inference prompt.'
 tags:
 - threads
 - actions
@@ -23,7 +23,7 @@ parents:
 
 The Action Catalog is injected into the action-inference prompt as a markdown list of `name: description` + `params:` lines (see `work_buddy.threads.bootstrap._maybe_format_action_catalog`). Without this block the agent can't pick a Standard Action by name and falls back to improvised/suggestion plans. Schema detection is by the presence of `kind: standard` in the schema's enum, so both staged ACTION and COMBINED targets get the catalog.
 
-## Capability/Workflow extensions (Stage 1.5)
+## Capability/Workflow extensions
 
 - ``is_action: bool`` — opt-in for Action Catalog inclusion.
 - ``available_in: set[InvocationContext]`` — defaults to {AGENT_CONVERSATION, AGENT_AUTONOMOUS, ACTION_PROPOSAL, USER_INVOCATION} (every context EXCEPT FSM_INTERNAL). Sensitive ops + FSM internals override.

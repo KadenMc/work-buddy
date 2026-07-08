@@ -509,3 +509,117 @@ class TestValidateStoreSeverity:
         # every error has error severity (default); warnings are separate
         for err in result["errors"]:
             assert err.get("severity", "error") != "warning"
+
+
+class TestDurableSurfacesCheck:
+    """``durable_surfaces`` is an advisory, store-wide scan for transient
+    identifiers (stage labels, dates, VCS refs, migration narrative) in
+    unit prose. Warnings only: the open list is the cleanup backlog, and
+    the check exists because diff-scoped commit hygiene structurally
+    cannot see archaeology in files no commit touches.
+    """
+
+    @staticmethod
+    def _run(unit):
+        from work_buddy.knowledge.validate import _check_durable_surfaces
+        return _check_durable_surfaces({unit.path: unit})
+
+    def test_clean_unit_produces_no_findings(self):
+        u = DirectionsUnit(
+            path="a", name="Action contexts", description="Resolves who can act.",
+            content={"full": "The resolver consults the context registry."},
+        )
+        assert self._run(u) == []
+
+    def test_stage_label_in_name_flagged_as_warning(self):
+        u = DirectionsUnit(
+            path="a", name="Action contexts (Slice 5a)", description="d",
+            content={},
+        )
+        findings = self._run(u)
+        assert len(findings) == 1
+        f = findings[0]
+        assert f["check"] == "durable_surfaces"
+        assert f["severity"] == "warning"
+        assert "stage_label" in f["message"]
+        assert "(name)" in f["message"]
+
+    def test_exempt_tag_suppresses_all_findings(self):
+        u = DirectionsUnit(
+            path="a", name="Retrieval funnel", description="Stage 1 ranks, stage 2 drills.",
+            tags=["allow-transient-labels"],
+            content={"full": "Slice 4 built this on 2026-05-01."},
+        )
+        assert self._run(u) == []
+
+    def test_date_in_dev_notes_flagged_with_field(self):
+        u = DirectionsUnit(
+            path="a", name="N", description="d",
+            content={}, dev_notes="Built 2026-05-09 during the overnight run.",
+        )
+        findings = self._run(u)
+        cats = {f["message"].split(":")[0] for f in findings}
+        assert "transient date" in cats
+        assert any("(dev_notes)" in f["message"] for f in findings)
+
+    def test_matches_aggregate_one_finding_per_category(self):
+        full = " ".join(f"Slice {i} shipped." for i in range(1, 9))
+        u = DirectionsUnit(path="a", name="N", description="d", content={"full": full})
+        findings = self._run(u)
+        assert len(findings) == 1
+        assert "+3 more" in findings[0]["message"]
+
+    def test_bare_version_labels_not_flagged(self):
+        u = DirectionsUnit(
+            path="a", name="Threads", description="v5 Threads is the canonical surface.",
+            content={"full": "The schema is at v3; the API returns stage1_hits."},
+        )
+        assert self._run(u) == []
+
+    def test_tier_reference_flagged_as_rename_tracker(self):
+        u = DirectionsUnit(
+            path="a", name="N", description="Caps the ceiling at tier-3 review.",
+            content={},
+        )
+        findings = self._run(u)
+        assert len(findings) == 1
+        assert "stage_label" in findings[0]["message"]
+
+    def test_capability_parameters_scanned(self):
+        u = CapabilityUnit(
+            path="a", name="N", description="d", content={},
+            capability_name="cap",
+            parameters={"task_id": {"description": "e.g. 't-a3f8c1e2'"}},
+        )
+        findings = self._run(u)
+        assert len(findings) == 1
+        assert "task_ref" in findings[0]["message"]
+        assert "(parameters)" in findings[0]["message"]
+
+    def test_scoped_commit_flagged_but_bare_hex_ignored(self):
+        u = DirectionsUnit(
+            path="a", name="N", description="Fixed in commit 36cb747.",
+            content={"full": "The default session id is 00000000 and cafe1234 is an example."},
+        )
+        findings = self._run(u)
+        assert len(findings) == 1
+        assert "commit_ref" in findings[0]["message"]
+
+    def test_migration_phrases_flagged(self):
+        u = DirectionsUnit(
+            path="a", name="N", description="d",
+            content={"full": "This ships inert for now and is staged to replace the old path."},
+        )
+        findings = self._run(u)
+        assert len(findings) == 1
+        assert "migration_phrase" in findings[0]["message"]
+
+    def test_check_registered_in_validate_store(self):
+        result = validate_store(checks=["durable_surfaces"])
+        assert "durable_surfaces" in result["checks_run"]
+        # advisory only: findings must never block the store
+        assert all(
+            e.get("severity") == "warning"
+            for e in result["issues"]
+            if e["check"] == "durable_surfaces"
+        )

@@ -11,6 +11,7 @@ capabilities:
 - session_get
 - session_locate
 tags:
+- allow-transient-labels
 - context
 - session
 - search

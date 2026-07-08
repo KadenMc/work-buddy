@@ -1,7 +1,7 @@
 ---
 name: Context Drill Down
 kind: capability
-description: 'Expand one item from a context source. Works on structured wave-1 sources that implement drill_down — tasks (field: ''note'' / ''line''), git (field: ''full_message'' / ''diff_stats''), projects (field: ''description'' / ''full''). Wave-2/3 markdown wrappers don''t implement drill-down — the prompt already holds their full body at DEEP depth.'
+description: 'Expand one item from a context source. Works on structured sources that implement drill_down: tasks (field: ''note'' / ''line''), git (field: ''full_message'' / ''diff_stats''), projects (field: ''description'' / ''full''). Markdown-wrapper sources don''t implement drill-down, since the prompt already holds their full body at DEEP depth.'
 capability_name: context_drill_down
 category: context
 op: op.wb.context_drill_down

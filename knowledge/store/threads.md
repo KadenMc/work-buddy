@@ -2,7 +2,7 @@
 name: Threads — universal-entity primitive
 kind: system
 description: The Thread is the FSM-resolution subtype of the WorkItem base. Replaces the older split between PoolEntry (now folded into states) and ActionItem (now folded into sub-Threads). Task is a sibling subtype on the shared WorkItem base — Task(WorkItem), NOT a Thread subclass.
-summary: 'v5 collapses v4''s overlapping entities into one primitive: Thread. A Thread has FSM state, an event log, an autonomy policy, optional parent_id (for sub-threads), optional subtype (''task'' for the master-list contract). Stage 1: types frozen, schemas migrated, scaffolding in place. Stage 2 wires the engine. Stage 3 migrates v4 data. Stage 4 redesigns surfaces.'
+summary: 'v5 collapses v4''s overlapping entities into one primitive: Thread. A Thread has FSM state, an event log, an autonomy policy, optional parent_id (for sub-threads), optional subtype (''task'' for the master-list contract). Types are frozen and schemas migrated. The FSM engine, inference layer, and surfaces are wired and running. v4 data migration is superseded: the legacy pool and Review surface are removed, so new triage producers write directly to v5 Threads.'
 dev_notes: |
   Task's read snapshot (``Task._row``) is a read CACHE, never a source of truth —
   the markdown master list (then the store) stays authoritative. Mutation methods
@@ -64,9 +64,9 @@ FSM-resolution subtype of WorkItem."
 - The capability/workflow registry lives in ``work_buddy/mcp_server``. Threads dispatch into it via the Action Catalog (a typed lens, not a new registry).
 - The conductor lives in ``work_buddy/sidecar``. v5 dispatches workflow-backed actions into it; the conductor itself is unchanged by v5.
 
-## Stage status (v5 implementation)
+## Current architecture
 
-- **Stage 1 — Foundation**: complete. Types frozen, schemas migrated, queue scaffolded. The v4-aggregator and pool-aware card primitives that were originally part of Stage 1 were retired alongside the legacy clarify pool — v5 is now the single source of truth.
-- **Stage 2 — Engine**: complete. FSM engine + transition table + inference layer + sidecar workers + bootstrap + LLM-queue admission hook.
-- **Stage 3 — Cutover**: superseded. The v4 → v5 dry-run migrator was scaffolded but never run against production data; with the legacy pool / Review surface deleted there is nothing left to cut over. The migration scripts and aggregator have been removed from the tree. New triage producers (journal, email, inline, chrome) write directly to v5 Threads via the source-pipeline runner.
-- **Stage 4 — Surfaces (UX)**: complete. Threads tab is the canonical v5 surface with recursive URL routing, all 5 card kinds (confirmation / clarification / consent / review / redirect / cleanup-failure), per-action UI registry with 5 specialized renderers, write-time linearization, search + filters, Later mechanic, action-context status indicators, journal + chrome spawn helpers. v4 tabs hide by default with a 'v4' toggle.
+- **Types and storage**: Thread/Task/WorkItem types and schemas are frozen and migrated. The v4-aggregator and pool-aware card primitives are retired along with the legacy clarify pool; v5 is the single source of truth.
+- **Engine**: the FSM engine, transition table, inference layer, sidecar workers, bootstrap, and LLM-queue admission hook are wired and running (see threads/fsm and threads/llm-call-queue).
+- **Data**: the v4 to v5 dry-run migrator was scaffolded but never run against production data. With the legacy pool and Review surface deleted, there is nothing left to cut over; the migration scripts and aggregator have been removed from the tree. Triage producers (journal, email, inline, chrome) write directly to v5 Threads via the source-pipeline runner.
+- **Surfaces (UX)**: the Threads tab is the canonical surface, with recursive URL routing, all 5 card kinds (confirmation / clarification / consent / review / redirect / cleanup-failure), a per-action UI registry with 5 specialized renderers, write-time linearization, search and filters, the Later mechanic, action-context status indicators, and journal + chrome spawn helpers. v4 tabs hide by default behind a 'v4' toggle.

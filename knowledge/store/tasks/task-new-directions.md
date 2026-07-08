@@ -41,11 +41,11 @@ The inline-todo markers `#wb/todo` / `#wb/done` are workflow-internal and not us
 
 When creating a task that includes `#tasker/state/focused` in `task_text` (a Most Important Task), `summary` is required. Pass a handoff-quality note: what needs to be done, why, and any relevant context, so a future agent picking up the task does not need to ask. A focused task without a note is a continuity gap.
 
-## Slice 2 GTD vocabulary (optional)
+## GTD vocabulary (optional)
 
 `task_create` accepts 12 optional kwargs for GTD-shaped metadata: `task_kind` (`task` / `periodic` / `habit`), `density` (`sparse` / `developed`), `outcome_text`, `next_action_text`, `definition_of_done`, `creation_effort`, `user_involvement`, `creation_provenance` (open enum — use `manual` / `agent_inferred_from_journal` / `agent_inferred_from_chrome` / `agent_inferred_from_inline`), `has_deadline`, `deadline_date`, `has_dependency`, `dependency_hint`. Defaults match the legacy assumption (manual, sparse, developed effort, high involvement).
 
-The task-new workflow's `plan` step doesn't currently emit these fields — they're available for agent-driven creators (Slice 3's Clarify will populate them from captures) and for explicit caller use. Add them to the workflow's plan output if the user asks for a developed task with sub-action-items, or if context provides a clear deadline.
+The task-new workflow's `plan` step doesn't currently emit these fields — they're available for agent-driven creators (Clarify populates them from captures) and for explicit caller use. Add them to the workflow's plan output if the user asks for a developed task with sub-action-items, or if context provides a clear deadline.
 
 ## Retroactive tag edits
 

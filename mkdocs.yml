@@ -46,7 +46,11 @@ plugins:
 markdown_extensions:
   - admonition
   - pymdownx.details
-  - pymdownx.superfences
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
   - pymdownx.tabbed:
       alternate_style: true
   - toc:
@@ -61,4 +65,5 @@ markdown_extensions:
 # AUTOGEN_NAV_START
 nav:
 - Home: index.md
+- Architecture: architecture.md
 # AUTOGEN_NAV_END

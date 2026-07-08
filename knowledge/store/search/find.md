@@ -44,6 +44,7 @@ parameters:
 op: op.wb.find
 schema_version: wb-capability/v1
 tags:
+- allow-transient-labels
 - search
 - ir
 - retrieval

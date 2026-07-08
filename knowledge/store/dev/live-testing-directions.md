@@ -5,6 +5,7 @@ description: How to drive a live end-to-end test of an in-progress code change â
 trigger: user invokes /wb-dev-live-testing or asks to verify a change live
 command: wb-dev-live-testing
 tags:
+- allow-transient-labels
 - dev
 - live
 - testing

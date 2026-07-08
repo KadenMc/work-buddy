@@ -133,3 +133,73 @@ def test_pii_check_skips_binary_extensions(tmp_path, monkeypatch):
     result = dev_commit.pii_check(files=["image.png"])
     assert result["clean"] is True
     assert "image.png" not in result["files_scanned"]
+
+
+# ---------------------------------------------------------------------------
+# transient_check — diff-scoped durable-surfaces gate
+# ---------------------------------------------------------------------------
+
+
+def test_transient_check_flags_stage_labels_and_dates(tmp_path, monkeypatch):
+    from work_buddy.dev.commit import transient_check
+    monkeypatch.setattr("work_buddy.dev.commit.repo_root", lambda: tmp_path)
+    f = tmp_path / "module.py"
+    f.write_text(
+        '"""Slice 5a: resolution layer.\n\nShipped 2026-04-30.\n"""\n',
+        encoding="utf-8",
+    )
+    result = transient_check(files=["module.py"])
+    cats = {h["category"] for h in result["hits"]}
+    # one hit per line (pii_check convention), so the two categories sit
+    # on separate fixture lines
+    assert "stage_label" in cats
+    assert "date" in cats
+    assert result["clean"] is False
+
+
+def test_transient_check_flags_identifier_form(tmp_path, monkeypatch):
+    from work_buddy.dev.commit import transient_check
+    monkeypatch.setattr("work_buddy.dev.commit.repo_root", lambda: tmp_path)
+    f = tmp_path / "store.py"
+    f.write_text("_SLICE_2_COLUMNS = []\n", encoding="utf-8")
+    result = transient_check(files=["store.py"])
+    assert [h["category"] for h in result["hits"]] == ["stage_label_ident"]
+
+
+def test_transient_check_suppresses_fixture_data_in_tests(tmp_path, monkeypatch):
+    from work_buddy.dev.commit import transient_check
+    monkeypatch.setattr("work_buddy.dev.commit.repo_root", lambda: tmp_path)
+    tdir = tmp_path / "tests"
+    tdir.mkdir()
+    f = tdir / "test_foo.py"
+    f.write_text(
+        'created = "2026-05-01"\ntask_id = "t-a3f8c1e2"\n# Slice 4 shipped this\n',
+        encoding="utf-8",
+    )
+    result = transient_check(files=["tests/test_foo.py"])
+    cats = [h["category"] for h in result["hits"]]
+    # date + task_ref suppressed in tests; stage_label still fires
+    assert cats == ["stage_label"]
+
+
+def test_transient_check_skips_journal_shape_files(tmp_path, monkeypatch):
+    from work_buddy.dev.commit import transient_check
+    monkeypatch.setattr("work_buddy.dev.commit.repo_root", lambda: tmp_path)
+    f = tmp_path / "CHANGELOG.md"
+    f.write_text("## 2026-07-08 - Slice 4 shipped\n", encoding="utf-8")
+    result = transient_check(files=["CHANGELOG.md"])
+    assert result["files_scanned"] == []
+    assert result["clean"] is True
+
+
+def test_transient_check_clean_file(tmp_path, monkeypatch):
+    from work_buddy.dev.commit import transient_check
+    monkeypatch.setattr("work_buddy.dev.commit.repo_root", lambda: tmp_path)
+    f = tmp_path / "clean.py"
+    f.write_text(
+        '"""The resolver consults the context registry."""\nTIMEOUT = 30\n',
+        encoding="utf-8",
+    )
+    result = transient_check(files=["clean.py"])
+    assert result["clean"] is True
+    assert result["files_scanned"] == ["clean.py"]
