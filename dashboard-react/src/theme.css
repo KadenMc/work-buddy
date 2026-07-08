@@ -1,0 +1,162 @@
+/*
+ * Dark theme matching the existing dashboard. The :root palette is copied
+ * verbatim from work_buddy/dashboard/frontend/styles.py so the React shell
+ * and the legacy page render as one product. If a value changes there,
+ * change it here too (the two stylesheets stay separate on purpose: the
+ * legacy sheet carries hundreds of tab-specific rules the shell must not
+ * inherit).
+ *
+ * No hardcoded light backgrounds anywhere: every surface reads a --bg-*
+ * token (the old Today tab hardcoded a light background once and shipped
+ * a known bug).
+ */
+
+:root {
+  --bg-primary: #0d1117;
+  --bg-secondary: #161b22;
+  --bg-tertiary: #21262d;
+  --border: #30363d;
+  --text-primary: #e6edf3;
+  --text-secondary: #8b949e;
+  --text-muted: #6e7681;
+  --accent: #d87857;
+  --accent-subtle: #d8785733;
+  --green: #3fb950;
+  --green-subtle: #238636;
+  --yellow: #d29922;
+  --red: #f85149;
+  --orange: #db6d28;
+  --purple: #bc8cff;
+  --purple-subtle: #bc8cff22;
+  color-scheme: dark;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  line-height: 1.5;
+  min-height: 100vh;
+}
+
+/* -- Header (mirrors the legacy .header block) ------------------------- */
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+}
+
+.header h1 {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.header h1 span {
+  color: var(--accent);
+}
+
+.header-meta {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+
+.status-dot.healthy {
+  background: var(--green);
+}
+
+.status-dot.unhealthy {
+  background: var(--yellow);
+}
+
+.status-dot.stopped {
+  background: var(--text-muted);
+}
+
+.read-only-tag {
+  color: var(--yellow);
+  font-size: 0.85em;
+  opacity: 0.8;
+}
+
+/* -- Tab bar ------------------------------------------------------------ */
+
+.tab-bar {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+  padding: 0 24px;
+  overflow-x: auto;
+}
+
+.tab-btn {
+  padding: 10px 16px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    color 0.15s,
+    border-color 0.15s;
+}
+
+.tab-btn:hover {
+  color: var(--text-primary);
+}
+
+.tab-btn.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* -- Panels -------------------------------------------------------------- */
+
+.tab-panel {
+  padding: 24px;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.empty-state {
+  margin-top: 96px;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.empty-state-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+}
+
+.empty-state-hint {
+  font-size: 13px;
+}

@@ -1849,6 +1849,89 @@ def static_assets(filename: str):
 
 
 # ---------------------------------------------------------------------------
+# React dashboard shell (Journal-first migration)
+# ---------------------------------------------------------------------------
+#
+# The dashboard frontend is migrating to a React app one view at a time,
+# starting with the Journal view. Sources live in ``dashboard-react/`` at
+# the repo root, outside the ``work_buddy`` package, so the Python wheel
+# never sweeps up ``node_modules/`` or the frontend sources (the hatchling
+# targets include only ``work_buddy`` plus named force-includes). The Vite
+# build output (``dashboard-react/dist``) is gitignored and produced on
+# demand: ``cd dashboard-react && npm install && npm run build``.
+
+
+def _react_dist_dir() -> Path:
+    """Directory of the built React dashboard (``dashboard-react/dist``).
+
+    Anchored on ``paths.asset_root()`` like the favicon route, so the repo
+    clone is the default and a config or env override relocates it together
+    with the other repo-level assets.
+    """
+    from work_buddy import paths
+    return paths.asset_root() / "dashboard-react" / "dist"
+
+
+@app.get("/app")
+@app.get("/app/")
+def react_app():
+    """Serve the built React dashboard's ``index.html``.
+
+    The document is no-store, mirroring ``GET /``: it always references the
+    current content-hashed asset names (Vite's ``base`` is ``/app/``), and
+    the ``/app/assets/`` route below serves those with an immutable cache
+    policy, so a rebuild cache-busts automatically through changed URLs.
+    """
+    index = _react_dist_dir() / "index.html"
+    if not index.is_file():
+        return Response(
+            "React dashboard not built. "
+            "Run: cd dashboard-react && npm install && npm run build\n",
+            status=404,
+            content_type="text/plain; charset=utf-8",
+        )
+    resp = Response(
+        index.read_text(encoding="utf-8"),
+        content_type="text/html; charset=utf-8",
+    )
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    resp.headers["Pragma"] = "no-cache"
+    return resp
+
+
+@app.get("/app/assets/<path:filename>")
+def react_app_assets(filename: str):
+    """Serve the React build's content-hashed assets (Vite output).
+
+    Vite emits ``dist/assets/<name>-<hash>.<ext>``, so responses are safe
+    to cache forever: any rebuild changes the hash and therefore the URL.
+    Safe path handling and the explicit MIME map mirror the
+    ``/vendor/<path>`` route (Windows registries can map ``.js`` to a
+    wrong MIME type, and browsers hard-reject module scripts served with
+    one).
+    """
+    safe = filename.replace("\\", "/").lstrip("/")
+    if ".." in safe.split("/"):
+        return "", 404
+    target = _react_dist_dir() / "assets" / safe
+    if not target.exists() or not target.is_file():
+        return "", 404
+    if safe.endswith(".js"):
+        mime = "application/javascript"
+    elif safe.endswith(".css"):
+        mime = "text/css"
+    elif safe.endswith(".map"):
+        mime = "application/json"
+    elif safe.endswith(".svg"):
+        mime = "image/svg+xml"
+    else:
+        mime = "application/octet-stream"
+    resp = send_file(target, mimetype=mime)
+    resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return resp
+
+
+# ---------------------------------------------------------------------------
 # Review tab + Resolution Surface endpoints removed
 # ---------------------------------------------------------------------------
 #

@@ -6,6 +6,13 @@
       "runtimeExecutable": "node",
       "runtimeArgs": ["-e", "setInterval(()=>{}, 1000); console.log('keepalive for sidecar dashboard on 5127')"],
       "port": 5127
+    },
+    {
+      "name": "dashboard-react-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "dashboard-react", "run", "dev"],
+      "port": 5173,
+      "autoPort": true
     }
   ]
 }
