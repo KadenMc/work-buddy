@@ -9,7 +9,7 @@ schema_version: wb-capability/v1
 parameters:
   task_id:
     type: str
-    description: Task ID (e.g., 't-a3f8c1e2')
+    description: Task ID (e.g., 't-xxxxxxxx')
     required: true
   new_description:
     type: str

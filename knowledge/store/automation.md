@@ -21,10 +21,10 @@ The work_buddy/automation/ package owns the lazy-resolution gates that decide ho
 
 ## Children
 
-- automation/risk -- Slice 4: operating-tier and dynamic resurfacing-level resolvers. Composition rule from ROADMAP section 3.4; the typed pipeline-blocker enum from section 3.3.
-- automation/contexts -- Slice 5a: resolve_who_can_act over a CONTEXT_REGISTRY of agent / user environment tokens. Pure-function answers "who can act on this now?" against the live tool-status cache. Caps achievable tier at 1 when the agent cannot satisfy.
-- automation/pickup -- Slice 7: compute_pickup_readiness 5-rule precedence ladder. Decides whether to execute as-is or develop-first when a task is picked up.
+- automation/risk -- operating-tier and dynamic resurfacing-level resolvers. Composition rule from ROADMAP section 3.4; the typed pipeline-blocker enum from section 3.3.
+- automation/contexts -- resolve_who_can_act over a CONTEXT_REGISTRY of agent / user environment tokens. Pure-function answers "who can act on this now?" against the live tool-status cache. Caps achievable tier at 1 when the agent cannot satisfy.
+- automation/pickup -- compute_pickup_readiness 5-rule precedence ladder. Decides whether to execute as-is or develop-first when a task is picked up.
 
 ## Future siblings
 
-Slice 8 will plug attraction + relevance signals into compute_resurfacing_level and compute_pickup_readiness.
+Future work may plug attraction + relevance signals into compute_resurfacing_level and compute_pickup_readiness.

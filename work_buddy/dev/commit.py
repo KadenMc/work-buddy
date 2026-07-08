@@ -1,8 +1,9 @@
-"""Dev-PR auto_run helpers: assess git state and scan staged content for PII.
+"""Dev-PR auto_run helpers: assess git state and scan the change set.
 
-Backs the ``assess`` and ``pii_check`` auto_run steps in the ``dev-pr``
-workflow. Kept separate from ``document.py`` so the two workflows can share
-the deterministic-offloading pattern without bleeding concerns across files.
+Backs the ``assess``, ``pii_check``, and ``transient_check`` auto_run steps
+in the ``dev-pr`` workflow. Kept separate from ``document.py`` so the two
+workflows can share the deterministic-offloading pattern without bleeding
+concerns across files.
 """
 
 from __future__ import annotations
@@ -186,6 +187,107 @@ def pii_check(files: list[str] | None = None) -> dict[str, Any]:
         for hit in _scan_text_for_pii(text):
             hit["file"] = norm
             hits.append(hit)
+
+    return {
+        "files_scanned": scanned,
+        "hits": hits,
+        "clean": not hits,
+    }
+
+
+# Identifier-form archaeology that only occurs in code. The prose patterns
+# in ``knowledge.validate.TRANSIENT_PATTERNS`` require a space or hyphen
+# between the label word and the number, so ``SLICE_2_COLUMNS``-style
+# identifiers slip through them.
+_CODE_IDENT_RE = re.compile(
+    # ``\b_?`` rather than plain ``\b``: underscore is a word character,
+    # so ``\bSLICE`` never matches inside ``_SLICE_2_COLUMNS``.
+    r"\b_?(?:SLICE|PHASE|STAGE|MILESTONE|WAVE)_\d+[A-Z_]*\b"
+    r"|_(?:slice|phase|stage)_?\d+"
+)
+
+# Journal-shape surfaces exempt from the durable-surfaces rule (see
+# ``dev/durable-surfaces``): write-once narratives where transient
+# references are the point.
+_TRANSIENT_EXEMPT_FILES: frozenset[str] = frozenset({"CHANGELOG.md", "DECISIONS.md"})
+
+# In test files, date literals and task-id-shaped strings are almost always
+# fixture data rather than archaeology; suppress those two categories there
+# so the hit list stays judgeable.
+_TEST_SUPPRESSED_CATEGORIES: frozenset[str] = frozenset({"date", "task_ref"})
+
+
+def transient_check(files: list[str] | None = None) -> dict[str, Any]:
+    """Scan candidate files for transient identifiers (durable-surfaces rule).
+
+    Diff-scoped sibling of :func:`pii_check`. Code archaeology enters the
+    repo through commits, so scanning the change set at commit time stops
+    new stage labels, VCS references, and migration narrative at the door.
+    The store-wide backstop for knowledge units is the ``durable_surfaces``
+    check in ``work_buddy.knowledge.validate``; this function shares its
+    pattern table so the two surfaces never drift.
+
+    Hits are advisory input to the workflow's cleanup step: the committing
+    agent judges each one (a versioned schema name or a quoted example is
+    legitimate; a rollout label is not).
+
+    Args:
+        files: Repo-relative file paths. If omitted, defaults to the current
+               tracked-diff + untracked file set (same as ``pii_check``).
+
+    Returns:
+        Dict with:
+            - ``files_scanned``: list[str]
+            - ``hits``: list[{file, line, category, match, context}]
+            - ``clean``: bool
+    """
+    # Imported here to keep this module light at import time; the pattern
+    # table lives with the store-wide check as the single source of truth.
+    from work_buddy.knowledge.validate import TRANSIENT_PATTERNS
+
+    patterns: list[tuple[str, re.Pattern[str]]] = (
+        list(TRANSIENT_PATTERNS) + [("stage_label_ident", _CODE_IDENT_RE)]
+    )
+
+    if files is None:
+        tracked = _run_git("diff", "--name-only", "HEAD")
+        untracked = _run_git("ls-files", "--others", "--exclude-standard")
+        files = sorted({*(p.replace("\\", "/") for p in tracked + untracked)})
+
+    repo = repo_root()
+    hits: list[dict[str, Any]] = []
+    scanned: list[str] = []
+
+    for f in files:
+        norm = f.replace("\\", "/")
+        suffix = PurePosixPath(norm).suffix.lower()
+        if suffix in {".png", ".jpg", ".jpeg", ".gif", ".ico", ".pdf", ".zip", ".whl"}:
+            continue
+        if PurePosixPath(norm).name in _TRANSIENT_EXEMPT_FILES:
+            continue
+        target = repo / norm
+        if not target.exists() or not target.is_file():
+            continue
+        try:
+            text = target.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        scanned.append(norm)
+        in_tests = norm.startswith("tests/")
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            for category, pat in patterns:
+                if in_tests and category in _TEST_SUPPRESSED_CATEGORIES:
+                    continue
+                m = pat.search(line)
+                if m:
+                    hits.append({
+                        "file": norm,
+                        "line": lineno,
+                        "category": category,
+                        "match": m.group(0),
+                        "context": line.strip()[:200],
+                    })
+                    break  # one hit per line; agent can re-grep for detail
 
     return {
         "files_scanned": scanned,

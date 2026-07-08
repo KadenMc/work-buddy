@@ -171,7 +171,7 @@ When Thunderbird is closed or the bridge is unreachable, the `thunderbird` tool 
 - `email_create_umbrella_task` — per-cluster: one task representing the cluster.
 - `email_record_into_task` — per-cluster: file emails as a context section on an existing task's note.
 
-Triage execution flows through `run_source_pipeline(source='email_triage', ...)` (or the `email/email-triage` workflow); there is no separate `email_triage_run` capability after the Phase 2 migration.
+Email triage flows through the unified source pipeline; there is no separate `email_triage_run` capability. Triage execution goes through `run_source_pipeline(source='email_triage', ...)` (or the `email/email-triage` workflow).
 
 ## Related
 

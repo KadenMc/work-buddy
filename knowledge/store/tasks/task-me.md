@@ -44,18 +44,17 @@ tags:
 - engage
 - today
 - task-me
-- slice-5b
 parents:
 - tasks
 ---
 
 ## load-context
 
-Auto-run: composes task_briefing, calendar, contract_constraints, and the Slice-5a engage view. The engage view filters by user_current_contexts when provided. No mutations.
+Auto-run: composes task_briefing, calendar, contract_constraints, and the who-can-act engage view. The engage view filters by user_current_contexts when provided. No mutations.
 
 ## build-now-plan
 
-Auto-run: calls work_buddy.obsidian.day_planner.planner.generate_plan with clamp_to_now=True. Returns the proposed timeline; does NOT write back. Pull focused tasks from the engage view (so Slice-5a context filtering applies) — fall back to task_briefing.focused if engage is unavailable.
+Auto-run: calls work_buddy.obsidian.day_planner.planner.generate_plan with clamp_to_now=True. Returns the proposed timeline; does NOT write back. Pull focused tasks from the engage view (so who-can-act context filtering applies), falling back to task_briefing.focused if engage is unavailable.
 
 ## engage
 

@@ -1,8 +1,8 @@
 ---
 name: Local LLM With Tools
 kind: concept
-description: '[LEGACY — phase-8 deprecated] Local LM Studio-served models invoke a restricted whitelist of work-buddy MCP tools via /api/v1/chat. Gateway-enforced security via session_acl. Superseded for internal callers by architecture/llm-runner; retained here because the MCP-exposed `llm_with_tools` capability still uses this path.'
-summary: LEGACY path. All internal Python callers migrated to LLMRunner (architecture/llm-runner) in phase 3 of the LLM + Context refactor. Retained for the MCP-exposed `llm_with_tools` capability only. Gateway-enforced per-session ACL via session_acl, tool presets in tool_presets.py, fail-closed bookend on unresolved sessions. Will be removed by task t-a373609f once LLMRunner grows native tool-call dispatch.
+description: '[LEGACY: superseded by LLMRunner] Local LM Studio-served models invoke a restricted whitelist of work-buddy MCP tools via /api/v1/chat. Gateway-enforced security via session_acl. Superseded for internal callers by architecture/llm-runner; retained here because the MCP-exposed `llm_with_tools` capability still uses this path.'
+summary: LEGACY path. All internal Python callers migrated to LLMRunner (architecture/llm-runner). Retained for the MCP-exposed `llm_with_tools` capability only. Gateway-enforced per-session ACL via session_acl, tool presets in tool_presets.py, fail-closed bookend on unresolved sessions. Will be removed by task t-a373609f once LLMRunner grows native tool-call dispatch.
 tags:
 - llm_with_tools
 - local-llm
@@ -105,8 +105,8 @@ dev_notes: |-
 ## Status — legacy
 
 This document describes the **legacy** local-LLM-with-tools path. All
-internal Python callers migrated to :class:`work_buddy.llm.LLMRunner`
-during phase 3 of the LLM + Context refactor. The `llm_with_tools`
+internal Python callers migrated to :class:`work_buddy.llm.LLMRunner`.
+The `llm_with_tools`
 function and its MCP capability are retained because external agents
 (Claude Code sessions, slash commands, workflow steps) may still call
 them over MCP. A CI sentinel test

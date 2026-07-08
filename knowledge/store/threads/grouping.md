@@ -2,7 +2,7 @@
 name: Threads — parent-child relationship patterns (decompose / group / singular)
 kind: concept
 description: 'Three parent-child relationship patterns. Decompose: parent has an action, children FSM-execute, cascade-on-terminal advances parent. Group: umbrella holds N cluster sub-threads with item-level drag-drop reorganization (Chrome / journal / email scans). Singular: umbrella holds N children whose actions render hoisted onto the parent''s card so the user sees one thread with N proposals (inline-capture multi-record path).'
-summary: 'Stage 5 introduces a second parent-child pattern. Decompose (Stage 4 default): parent has an action, children FSM-execute, cascade-on-terminal advances parent to DONE. Group (new): parent is a container; items can move between sibling parents (same originating_scrape_id); empty parent auto-DISMISSES. Currently used by Chrome scrape (one parent per Louvain cluster).'
+summary: 'Three parent-child relationship patterns coexist, discriminated by Thread.parent_relationship. Decompose (the default): parent has an action, children FSM-execute, cascade-on-terminal advances parent to DONE. Group: parent is a container; items move between sibling parents sharing the same originating_scrape_id; empty group children are deleted manually via the X-button, not auto-dismissed. Singular: parent is a container whose children''s actions render hoisted onto the parent''s card. Group is used by Chrome scrape (one parent per Louvain cluster), journal backlog, and email scan; Singular is used by inline capture.'
 tags:
 - grouping
 - chrome-scrape

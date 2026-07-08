@@ -242,6 +242,109 @@ def _check_capability_op_resolution(store: dict[str, PromptUnit]) -> list[dict[s
     return issues
 
 
+# ---------------------------------------------------------------------------
+# Durable-surfaces content audit (advisory)
+# ---------------------------------------------------------------------------
+
+# Transient-identifier patterns forbidden in durable surfaces (the rule
+# lives at ``dev/durable-surfaces``). The pattern set was mined from the
+# repo's own design corpus and validated against the live store for
+# false-positive rate. Notable exclusions, chosen on measured evidence:
+# bare ``vN`` version labels (hundreds of legitimate schema/interface
+# uses), bare hex strings (collide with example ids and numerals), and
+# ``Step N`` / broad lifecycle words like "deferred" (real workflow and
+# planning vocabulary). Findings are warnings, not errors: several
+# categories (tier references, example task ids) are acknowledged debt
+# that clears in scheduled cleanup passes, and the warning list doubles
+# as that backlog's inventory.
+#
+# Public: ``work_buddy.dev.commit.transient_check`` (the diff-scoped
+# commit gate) consumes the same table so the two surfaces never drift.
+TRANSIENT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    ("stage_label", re.compile(
+        r"\b(?:slice|phase|stage|milestone|wave|tier)[\s-]+\d+(?:\.\d+)?[a-z]?\b",
+        re.IGNORECASE)),
+    ("date", re.compile(r"\b20\d{2}-\d{2}-\d{2}\b")),
+    ("task_ref", re.compile(r"\bt-[0-9a-f]{8}\b")),
+    ("pr_ref", re.compile(r"(?:\bPR\s*)?#\d{2,5}\b")),
+    ("branch_ref", re.compile(r"\b(?:feat|fix|chore|docs|refactor)/[a-z0-9][\w./-]*")),
+    ("commit_ref", re.compile(r"\bcommit\s+[0-9a-f]{7,40}\b", re.IGNORECASE)),
+    ("archaeology_ident", re.compile(r"\b(?:legacy|deprecated)_[a-z]\w*")),
+    ("session_tag", re.compile(r"\bAFK\b|\bovernight\s+(?:build|run|batch)\b")),
+    ("migration_phrase", re.compile(
+        r"ships?\s+inert|shipped\s+inert|staged\s+to\s+replace|\bfor\s+now\b"
+        r"|the\s+new\s+approach|after\s+the\s+[\w\s-]{1,30}\s+migration"
+        r"|\bpost-migration\b|retirement\s+deferred|temporary\s+workaround",
+        re.IGNORECASE)),
+]
+
+# Units whose subject matter legitimately contains these patterns opt out
+# with this tag: the durable-surfaces rule itself (quotes forbidden
+# examples), and units documenting a real numbered interface (the
+# summarization funnel's stage-1/stage-2 retrieval contract, the
+# live-testing four-phase template).
+_TRANSIENT_EXEMPT_TAG = "allow-transient-labels"
+
+
+def _check_durable_surfaces(store: dict[str, PromptUnit]) -> list[dict[str, str]]:
+    """Check 15: advisory scan for transient identifiers in durable surfaces.
+
+    Scans every unit's prose fields (name, description, tags, summary,
+    full content, dev_notes, plus capability parameter schemas and
+    workflow step instructions) for stage labels, dates, VCS references,
+    and migration-narrative phrasing. Emits *warnings* only. This is the
+    repo-wide backstop the diff-scoped commit checks structurally cannot
+    provide: archaeology in units no commit touches is invisible to a
+    diff scan but shows up here on every run.
+    """
+    errors: list[dict[str, str]] = []
+    for path, unit in sorted(store.items()):
+        if _TRANSIENT_EXEMPT_TAG in (unit.tags or []):
+            continue
+
+        fields: list[tuple[str, str]] = [
+            ("name", unit.name or ""),
+            ("description", unit.description or ""),
+            ("tags", " ".join(unit.tags or [])),
+            ("summary", unit.content.get("summary", "") or ""),
+            ("full", unit.content.get("full", "") or ""),
+            ("dev_notes", unit.dev_notes or ""),
+        ]
+        # Kind-specific prose containers: capability parameter schemas
+        # and workflow step instructions both carry user-facing text.
+        for attr in ("parameters", "steps", "trigger"):
+            value = getattr(unit, attr, None)
+            if value:
+                fields.append((attr, str(value)))
+
+        per_category: dict[str, list[str]] = {}
+        for field_name, text in fields:
+            if not text:
+                continue
+            for category, pattern in TRANSIENT_PATTERNS:
+                for match in pattern.finditer(text):
+                    token = f"{match.group(0)!r} ({field_name})"
+                    bucket = per_category.setdefault(category, [])
+                    if token not in bucket:
+                        bucket.append(token)
+
+        for category, matches in sorted(per_category.items()):
+            shown = ", ".join(matches[:5])
+            extra = f" (+{len(matches) - 5} more)" if len(matches) > 5 else ""
+            errors.append({
+                "check": "durable_surfaces",
+                "path": path,
+                "message": (
+                    f"transient {category}: {shown}{extra}. Reword to stable "
+                    f"domain terms describing current behavior, or tag the "
+                    f"unit '{_TRANSIENT_EXEMPT_TAG}' if this names a real "
+                    f"documented interface."
+                ),
+                "severity": "warning",
+            })
+    return errors
+
+
 def _check_parent_child_symmetry(store: dict[str, PromptUnit]) -> list[dict[str, str]]:
     """Check 7: If A lists B as child, B should list A as parent (and vice versa)."""
     errors: list[dict[str, str]] = []
@@ -601,6 +704,7 @@ _CHECKS = [
     ("directions_fields", _check_directions_fields),
     ("kind_specific_fields", _check_kind_specific_fields),
     ("placeholder_duplicate", _check_placeholder_duplicates),
+    ("durable_surfaces", _check_durable_surfaces),
     ("parent_child_symmetry", _check_parent_child_symmetry),
     ("capability_op_resolution", _check_capability_op_resolution),
     ("workflow_step_dag", _check_workflow_step_dag),
@@ -693,7 +797,8 @@ def docs_validate(
                  Available: dag_integrity, command_mapping, thinned_commands,
                  store_path_validity, required_fields, directions_fields,
                  kind_specific_fields, placeholder_duplicate,
-                 parent_child_symmetry, capability_op_resolution,
+                 durable_surfaces, parent_child_symmetry,
+                 capability_op_resolution,
                  workflow_step_dag, workflow_step_consistency,
                  directions_workflow_resolution,
                  workflow_delegation_resolution

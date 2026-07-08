@@ -36,6 +36,7 @@ parameters:
 op: op.wb.summary_search
 schema_version: wb-capability/v1
 tags:
+- allow-transient-labels
 - summarization
 - search
 - retrieval

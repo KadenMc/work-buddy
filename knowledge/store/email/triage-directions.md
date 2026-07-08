@@ -30,7 +30,7 @@ aliases:
 parents:
 - email
 - email
-dev_notes: Phase 2 of the clarify -> Threads migration switched the email path off the legacy `email_triage_run` capability (which dropped pool entries for the dead Review tab) and onto the unified source pipeline (`run_source_pipeline` with `source='email_triage'`). The hourly cron at `sidecar_jobs/email-triage-scan.md` invokes the same path. Per-cluster actions resolve through the email action library declared on `EmailTriagePipeline.action_library`.
+dev_notes: Email triage routes through the unified source pipeline and surfaces on Threads (`run_source_pipeline` with `source='email_triage'`); there is no separate `email_triage_run` capability. The hourly cron at `sidecar_jobs/email-triage-scan.md` invokes the same path. Per-cluster actions resolve through the email action library declared on `EmailTriagePipeline.action_library`.
 ---
 
 ## Goal

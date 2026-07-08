@@ -1,5 +1,5 @@
 ---
-name: Action contexts (Slice 5a)
+name: Action contexts
 kind: reference
 description: resolve_who_can_act answers "who can act on this task now?" by consulting the CONTEXT_REGISTRY against the live tool-status cache. Tasks declare agent_required_contexts + user_required_contexts; the resolver returns a WhoCanActDecision with per-side unmet tokens and a handoff-eligible flag.
 entry_points:
@@ -12,7 +12,6 @@ tags:
 - automation
 - contexts
 - action-contexts
-- slice-5a
 - lazy-resolution
 aliases:
 - who can act
@@ -28,7 +27,7 @@ parents:
 dev_notes: Pure function -- only I/O is the in-memory _TOOL_STATUS lookup via is_tool_available. Tests inject tool_status= to bypass the global cache. Empty list ([]) vs None sentinel discipline is load-bearing -- get this wrong and all tasks become user-only OR all become universal. The user-side resolver trusts declared contexts (always satisfies for known + universal tokens); the engage-view filter user_satisfies_against answers the orthogonal "is the user CURRENTLY in this context?" question.
 ---
 
-# automation/contexts (Slice 5a)
+# automation/contexts
 
 Module: work_buddy/automation/contexts.py.
 
@@ -65,7 +64,7 @@ When agent=False AND user=True -> agent_handoff_eligible=True. The right surface
 
 automation.risk.resolve_achievable_tier consults this module via the tool_status kwarg. When the agent cannot satisfy its required contexts, the achievable ceiling drops to 1 (suggest only). resolve_operating_tier then emits agent_context_unmet / user_context_unmet blockers per ROADMAP section 3.3.
 
-## Schema (task_metadata, Slice 5a)
+## Schema (task_metadata)
 
 Three nullable columns:
 - agent_required_contexts (TEXT, JSON array)

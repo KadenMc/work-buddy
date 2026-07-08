@@ -1,7 +1,7 @@
 ---
 name: Thread FSM (resolution phase)
 kind: concept
-description: 14-state FSM that runs from inciting event to terminal. Transitions wired in Stage 2; data structures (state catalog, transition table) land in Stage 1.
+description: 14-state FSM that runs from inciting event to terminal. The state catalog, transition table, and transition wiring are in place and active.
 summary: 'States: proposed, awaiting_inference, inferring_*, awaiting_*_confirmation, awaiting_*_clarification, awaiting_confirmation (action gate), awaiting_review (opt-in), awaiting_redirect, executing, monitoring, done, dismissed, handed_off. Cycles only via human-initiated redirect (any wait state → awaiting_inference). No automated retry loops.'
 tags:
 - threads

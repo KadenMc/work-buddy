@@ -269,11 +269,13 @@ After all file edits, call `agent_docs_rebuild()` **once** to reconcile the stor
 
 ## validate
 
-Auto-run. After edits land, the conductor calls `work_buddy.knowledge.validate.docs_validate()` with no args (all checks: dag_integrity, command_mapping, thinned_commands, store_path_validity, required_fields, directions_fields, kind_specific_fields, placeholder_duplicate, parent_child_symmetry, capability_op_resolution, workflow_step_dag, workflow_step_consistency). Returns:
-- `passed` (bool): true iff every check found zero errors.
-- `failed` (int): total error count across all checks.
-- `summary` ({check_name: count}): errors per check type.
-- `errors` (list[{check, path, message}]): the individual problems, if any.
+Auto-run. After edits land, the conductor calls `work_buddy.knowledge.validate.docs_validate()` with no args, running every registered check (the canonical list lives in the `context/docs_validate` capability unit's `checks` parameter). Returns:
+- `passed` (bool): true iff every check found zero blocking errors.
+- `failed` (int): blocking error count across all checks.
+- `warnings` (int): advisory finding count (e.g. the durable_surfaces content audit); never blocks.
+- `summary` ({check_name: count}): findings per check type, errors and warnings together.
+- `errors` (list[{check, path, message}]): the blocking problems, if any.
+- `issues` (list): every finding, blocking and advisory together (advisory entries carry `severity: "warning"`).
 - `total_units`, `checks_run`: run metadata.
 
 You don't invoke this — it runs automatically. The next (report) step is where you surface any failures to the user.
@@ -284,7 +286,7 @@ Why this gate exists: doc edits are easy to get structurally wrong (orphaned par
 
 Reasoning step. Short summary of what changed:
 - Count of applied / failed / skipped edits (from `apply`).
-- **Validation outcome** (from `validate`): if `passed: false`, enumerate the errors by check type and path. These are structural problems you introduced and need to resolve before committing — they are not stylistic warnings.
+- **Validation outcome** (from `validate`): if `passed: false`, enumerate the errors by check type and path. These are structural problems you introduced and need to resolve before committing. Advisory warnings (the `warnings` count, e.g. durable_surfaces findings) are different: report the count and any findings your edits introduced, but they never block a commit — the open warning list is the documented cleanup backlog.
 - For any CLAUDE.md or similar non-store files the user still needs to edit manually, flag them explicitly (the store capabilities don't touch CLAUDE.md).
 
 If validation failed, recommend concrete next actions to the user: typically a follow-up edit to the referenced unit's `.md` (via `docs_edit`, or native `Edit` + `agent_docs_rebuild`) to fix the path/field. Do NOT treat validation failures as cosmetic; they indicate the store is in a broken state.

@@ -7,7 +7,7 @@ category: tasks
 parameters:
   task_id:
     type: str
-    description: Task ID (e.g., 't-a3f8c1e2')
+    description: Task ID (e.g., 't-xxxxxxxx')
     required: true
 op: op.wb.task_provenance
 schema_version: wb-capability/v1

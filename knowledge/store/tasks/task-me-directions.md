@@ -2,7 +2,7 @@
 name: Task Me Directions
 kind: directions
 description: How to run /wb-task-me — the re-runnable engage flow that answers what should I do right now
-summary: 'Re-runnable. Loads context, builds a clamp-to-now plan, presents top 1-2 recommendations. Slice-5a context-aware: skips tasks the agent and user both can''t satisfy now.'
+summary: 'Re-runnable. Loads context, builds a clamp-to-now plan, presents top 1-2 recommendations. Who-can-act context-aware: skips tasks the agent and user both can''t satisfy now.'
 trigger: user runs /wb-task-me or asks what to work on right now
 command: wb-task-me
 workflow: tasks/task-me
@@ -12,7 +12,6 @@ tags:
 - tasks
 - engage
 - today
-- slice-5b
 aliases:
 - task me
 - engage
@@ -30,7 +29,7 @@ The workflow has 4 steps:
    - task_briefing (focused / mit / overdue / inbox / stale buckets)
    - calendar (today's events; best-effort)
    - contract_constraints (WIP limits + active contracts)
-   - the Slice-5a engage view (per-task tier x who_can_act x user_now)
+   - the who-can-act engage view (per-task tier x who_can_act x user_now)
 
 2. **build-now-plan** (auto_run) — generates a clamp-to-now timeline
    from focused tasks + calendar. Uses the engage view's filtered

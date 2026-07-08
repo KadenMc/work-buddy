@@ -57,6 +57,6 @@ Checkbox state, the `#todo` marker, all hashtags (`#projects/*`, namespace tags)
 
 ## Why NOT to use filesystem-direct Edit
 
-The master-task-list.md has a documented read-modify-write race. Pre-Slice-3 the only path for description rewrites was `Edit` on `master-task-list.md`, which can clobber concurrent user typing in Obsidian. The Slice-C atomic write path (`app.vault.process()`) closes that race - but only if you go through `task_update_description`. Filesystem-direct edits bypass it.
+The master-task-list.md has a documented read-modify-write race. Historically the only path for description rewrites was `Edit` on `master-task-list.md`, which can clobber concurrent user typing in Obsidian. The atomic write path (`app.vault.process()`) closes that race, but only if you go through `task_update_description`. Filesystem-direct edits bypass it.
 
 If `task_update_description` returns `success=False, conflict=True`, the user is actively editing the task line in Obsidian. Surface the conflict to the user; don't keep retrying.
