@@ -47,6 +47,10 @@ all = [
     "hindsight-api-slim>=0.4.22,<0.5",
     "hindsight-client>=0.4.22,<0.5",
     "python-telegram-bot>=22.7,<23",
+    "pyside6-essentials>=6.8,<7",
+]
+tray = [
+    "pyside6-essentials>=6.8,<7",
 ]
 
 [project.scripts]

@@ -19,10 +19,6 @@ EXIT_FAIL = 1
 
 _GLYPH = {True: "ok  ", False: "FAIL"}
 
-# Only call out a busy dispatch phase once it has run long enough to be
-# noteworthy (a cycle legitimately spends seconds in each phase).
-_DISPATCH_BUSY_DISPLAY_S = 120.0
-
 
 def _err(msg: str) -> None:
     print(msg, file=sys.stderr)
@@ -63,6 +59,7 @@ def cmd_start(args) -> int:
     else:
         print(f"Sidecar started (pid={res['pid']}).")
     _print_dashboard_url(prefix="Dashboard: ")
+    _ensure_tray()
     return EXIT_OK
 
 
@@ -88,9 +85,26 @@ def cmd_restart(args) -> int:
     start = lifecycle.start_sidecar()
     if start["started"]:
         print(f"Sidecar restarted (pid={start['pid']}).")
+        _ensure_tray()
         return EXIT_OK
     _err(start["detail"])
     return EXIT_FAIL
+
+
+def _ensure_tray() -> None:
+    """Best-effort tray resurrection on any deliberate start (never fails it).
+
+    Quiet unless it actually did something or genuinely failed: printing
+    "tray disabled" on every start would be noise.
+    """
+    try:
+        from work_buddy import tray
+
+        res = tray.ensure_running()
+        if res.get("spawned") or not res.get("ok"):
+            print(f"Tray: {res.get('detail')}")
+    except Exception:
+        pass
 
 
 def cmd_status(args) -> int:
@@ -150,27 +164,24 @@ def _print_dispatch_status(st) -> None:
 
     Jobs, message dispatch, and retry sweeps execute inline in that loop
     and may legitimately block for minutes while the supervisor keeps
-    ticking (the freshness ``Last tick`` reports). A long-running phase
-    is shown as busy, with the job name when the scheduler is executing
-    one, so a quiet cron backlog is attributable from the CLI. State
-    files written by a daemon without dispatch fields print nothing.
+    ticking (the freshness ``Last tick`` reports). The busy classification
+    (threshold and shape) lives in ``lifecycle.dispatch_busy``, shared with
+    the tray so the two surfaces can never disagree. State files written by
+    a daemon without dispatch fields print nothing.
     """
-    now = time.time()
-    busy_for = (now - st.dispatch_phase_since) if st.dispatch_phase_since else 0.0
-    if (
-        st.dispatch_phase
-        and st.dispatch_phase != "idle"
-        and busy_for >= _DISPATCH_BUSY_DISPLAY_S
-    ):
-        job = f" (job '{st.dispatch_job}')" if st.dispatch_job else ""
+    from work_buddy.cli import lifecycle
+
+    busy = lifecycle.dispatch_busy(st)
+    if busy:
+        job = f" (job '{busy['job']}')" if busy["job"] else ""
         print(
-            f"Dispatch: busy in {st.dispatch_phase}{job} for "
-            f"{_fmt_duration(busy_for)}, scheduled work is queued behind it"
+            f"Dispatch: busy in {busy['phase']}{job} for "
+            f"{_fmt_duration(busy['busy_for_s'])}, scheduled work is queued behind it"
         )
     elif st.last_dispatch_at:
         print(
             f"Last dispatch cycle: "
-            f"{_fmt_duration(now - st.last_dispatch_at)} ago"
+            f"{_fmt_duration(time.time() - st.last_dispatch_at)} ago"
         )
 
 
@@ -321,6 +332,78 @@ def cmd_autostart(args) -> int:
     return EXIT_FAIL
 
 
+def cmd_tray(args) -> int:
+    """``wbuddy tray {enable,disable,status,run}``: the system-tray icon.
+
+    ``enable``/``disable`` keep three things in lockstep: the ``tray.enabled``
+    config flag (which gates the ``wbuddy start`` resurrection hook), the
+    WB-Tray login item, and the running process.
+    """
+    from work_buddy import autostart, paths, tray
+
+    action = getattr(args, "tray_command", None)
+
+    if action == "status":
+        from work_buddy.config import load_config
+
+        enabled = bool((load_config().get("tray") or {}).get("enabled"))
+        registered = autostart.tray_is_registered()
+        pid = tray.running_pid()
+        if _want_json(args):
+            print(json.dumps(
+                {"enabled": enabled, "registered": registered,
+                 "running": pid is not None, "pid": pid},
+                indent=2,
+            ))
+            return EXIT_OK
+        run_state = f"running (pid={pid})" if pid else "not running"
+        print(
+            f"tray: {'enabled' if enabled else 'disabled'}, login item "
+            f"{'registered' if registered else 'not registered'}, {run_state}"
+        )
+        return EXIT_OK
+
+    if action == "enable":
+        from work_buddy.health import fixers
+
+        ok, detail, _ = fixers._set_config_value("tray.enabled", True)
+        if not ok:
+            _err(f"could not set tray.enabled: {detail}")
+            return EXIT_FAIL
+        reg = autostart.register_tray(
+            python_exe=sys.executable,
+            home_dir=paths.config_dir(),
+            data_dir=paths._data_base(),
+        )
+        print(reg.get("detail"))
+        if not reg.get("ok"):
+            return EXIT_FAIL
+        res = tray.ensure_running()
+        print(res.get("detail"))
+        return EXIT_OK if res.get("ok") else EXIT_FAIL
+
+    if action == "disable":
+        from work_buddy.health import fixers
+
+        stop = tray.stop_running()
+        print(stop.get("detail"))
+        reg = autostart.unregister_tray()
+        print(reg.get("detail"))
+        ok, detail, _ = fixers._set_config_value("tray.enabled", False)
+        if not ok:
+            _err(f"could not set tray.enabled: {detail}")
+            return EXIT_FAIL
+        return EXIT_OK if reg.get("ok") else EXIT_FAIL
+
+    if action == "run":
+        from work_buddy.tray.__main__ import main as tray_main
+
+        return tray_main()
+
+    _err(f"unknown tray action: {action}")
+    return EXIT_FAIL
+
+
 # ---------------------------------------------------------------------------
 # MCP config / dashboard
 # ---------------------------------------------------------------------------
@@ -345,7 +428,12 @@ def cmd_mcp_print(args) -> int:
     return EXIT_OK
 
 
-def _dashboard_url() -> str:
+def dashboard_url() -> str:
+    """Resolve the dashboard URL (``dashboard.external_url``, else localhost).
+
+    Public: the tray's "Open dashboard" action resolves through this too, so
+    every surface honors the same external-URL override.
+    """
     from work_buddy.config import load_config
 
     cfg = load_config()
@@ -359,6 +447,28 @@ def _dashboard_url() -> str:
         .get("port", 5127)
     )
     return f"http://localhost:{port}"
+
+
+_dashboard_url = dashboard_url  # back-compat for existing internal callers
+
+
+def dashboard_local_url() -> str:
+    """The machine-local dashboard URL, ignoring ``external_url``.
+
+    The tray is inherently local, so it targets localhost for tab focus/create
+    (matching the ``/api/open-dashboard`` precedent); ``external_url`` is for
+    reaching the dashboard from OTHER devices, not from the local tray.
+    """
+    from work_buddy.config import load_config
+
+    port = (
+        load_config()
+        .get("sidecar", {})
+        .get("services", {})
+        .get("dashboard", {})
+        .get("port", 5127)
+    )
+    return f"http://127.0.0.1:{port}"
 
 
 def _print_dashboard_url(prefix: str = "") -> None:

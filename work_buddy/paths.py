@@ -41,6 +41,7 @@ RESOURCES: dict[str, str] = {
     "runtime/sidecar-state":     "runtime/sidecar_state.json",
     "runtime/tool-status":       "runtime/tool_status.json",
     "runtime/agent-registry":    "runtime/agent_registry.json",
+    "runtime/tray-pid":          "runtime/tray.pid",
 
     # Caches — safe to delete anytime
     "cache/llm":                 "cache/llm_cache.json",

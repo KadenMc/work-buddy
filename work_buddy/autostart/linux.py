@@ -18,14 +18,14 @@ logger = get_logger(__name__)
 
 _UNIT_TEMPLATE = """\
 [Unit]
-Description=work-buddy sidecar daemon
+Description={description}
 After=default.target
 
 [Service]
 Type=simple
 WorkingDirectory={home}
 Environment=WORK_BUDDY_DATA_DIR={data}
-ExecStart={python} -m work_buddy.sidecar
+ExecStart={python} -m {module}
 Restart=on-failure
 RestartSec=10
 
@@ -34,8 +34,8 @@ WantedBy=default.target
 """
 
 
-def _unit_path() -> Path:
-    return Path.home() / ".config" / "systemd" / "user" / f"{UNIT_NAME}.service"
+def _unit_path(unit: str | None = None) -> Path:
+    return Path.home() / ".config" / "systemd" / "user" / f"{unit or UNIT_NAME}.service"
 
 
 def _systemctl(*args: str, timeout: int = 30) -> subprocess.CompletedProcess:
@@ -47,40 +47,57 @@ def _systemctl(*args: str, timeout: int = 30) -> subprocess.CompletedProcess:
     )
 
 
-def register(*, python_exe: str, home_dir: str, data_dir: str) -> dict:
-    unit = _unit_path()
+def register(
+    *,
+    python_exe: str,
+    home_dir: str,
+    data_dir: str,
+    name: str | None = None,
+    module: str = "work_buddy.sidecar",
+    description: str = "work-buddy sidecar daemon",
+) -> dict:
+    unit_name = name or UNIT_NAME
+    unit = _unit_path(unit_name)
     unit.parent.mkdir(parents=True, exist_ok=True)
     unit.write_text(
-        _UNIT_TEMPLATE.format(home=home_dir, data=data_dir, python=python_exe)
+        _UNIT_TEMPLATE.format(
+            home=home_dir,
+            data=data_dir,
+            python=python_exe,
+            module=module,
+            description=description,
+        )
     )
     try:
         _systemctl("daemon-reload")
-        r = _systemctl("enable", "--now", UNIT_NAME)
+        r = _systemctl("enable", "--now", unit_name)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {"ok": False, "detail": f"systemctl did not run: {exc}"}
     if r.returncode != 0:
         return {"ok": False, "detail": f"systemctl enable failed: {r.stderr.strip()[:400]}"}
-    return {"ok": True, "detail": f"Enabled systemd --user unit {UNIT_NAME}: {unit}"}
+    return {"ok": True, "detail": f"Enabled systemd --user unit {unit_name}: {unit}"}
 
 
-def unregister() -> dict:
+def unregister(*, name: str | None = None) -> dict:
+    unit_name = name or UNIT_NAME
     try:
-        _systemctl("disable", "--now", UNIT_NAME)
+        _systemctl("disable", "--now", unit_name)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {"ok": False, "detail": f"systemctl did not run: {exc}"}
-    _unit_path().unlink(missing_ok=True)
+    _unit_path(unit_name).unlink(missing_ok=True)
     try:
         _systemctl("daemon-reload")
     except (OSError, subprocess.TimeoutExpired):
         pass
-    return {"ok": True, "detail": f"Disabled and removed {UNIT_NAME} (if present)"}
+    return {"ok": True, "detail": f"Disabled and removed {unit_name} (if present)"}
 
 
-def is_registered() -> bool:
-    if not _unit_path().exists():
+def is_registered(*, name: str | None = None) -> bool:
+    unit_name = name or UNIT_NAME
+    if not _unit_path(unit_name).exists():
         return False
     try:
-        r = _systemctl("is-enabled", UNIT_NAME, timeout=15)
+        r = _systemctl("is-enabled", unit_name, timeout=15)
     except (OSError, subprocess.TimeoutExpired):
         return True  # unit file exists but systemctl is unavailable; treat as present
     return r.returncode == 0 and r.stdout.strip() in {

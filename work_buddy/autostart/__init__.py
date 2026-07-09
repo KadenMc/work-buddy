@@ -23,6 +23,12 @@ TASK_NAME = "WB-Sidecar"               # Windows scheduled task
 UNIT_NAME = "wb-sidecar"               # Linux systemd --user unit (wb-sidecar.service)
 AGENT_LABEL = "com.workbuddy.sidecar"  # macOS launchd LaunchAgent
 
+# The tray's login item: a sibling of the sidecar's, same backend template
+# (see work_buddy/tray/ for why the tray is not a supervised service).
+TRAY_TASK_NAME = "WB-Tray"               # Windows scheduled task
+TRAY_UNIT_NAME = "wb-tray"               # Linux systemd --user unit
+TRAY_AGENT_LABEL = "com.workbuddy.tray"  # macOS launchd LaunchAgent
+
 
 def _os_name() -> str:
     if IS_WINDOWS:
@@ -72,3 +78,47 @@ def is_registered() -> bool:
 def status() -> dict:
     """Return ``{"os": <name>, "registered": bool}``."""
     return {"os": _os_name(), "registered": _backend().is_registered()}
+
+
+# ---------------------------------------------------------------------------
+# Tray login item (same backends, parameterized)
+# ---------------------------------------------------------------------------
+
+def _tray_name() -> str:
+    if IS_WINDOWS:
+        return TRAY_TASK_NAME
+    if IS_MACOS:
+        return TRAY_AGENT_LABEL
+    return TRAY_UNIT_NAME
+
+
+def register_tray(
+    *, python_exe: str | Path, home_dir: str | Path, data_dir: str | Path
+) -> dict:
+    """Register the tray to auto-start at login (idempotent, replaces existing).
+
+    Same per-OS template as the sidecar's, parameterized to launch
+    ``-m work_buddy.tray`` under WB-Tray / wb-tray / com.workbuddy.tray. On
+    macOS the agent is RunAtLoad-only (no KeepAlive): the tray is a
+    convenience surface, and ``wbuddy start`` re-spawns a crashed one.
+    """
+    kwargs: dict = dict(
+        python_exe=str(python_exe),
+        home_dir=str(home_dir),
+        data_dir=str(data_dir),
+        name=_tray_name(),
+        module="work_buddy.tray",
+        description="work-buddy tray icon",
+    )
+    if IS_MACOS:
+        kwargs.update(keep_alive=False, log_basename="tray")
+    return _backend().register(**kwargs)
+
+
+def unregister_tray() -> dict:
+    """Remove the tray login item. Ok (no-op) when already absent."""
+    return _backend().unregister(name=_tray_name())
+
+
+def tray_is_registered() -> bool:
+    return _backend().is_registered(name=_tray_name())

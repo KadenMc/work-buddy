@@ -73,11 +73,17 @@ Source: "packaging\windows\bootstrap.ps1"; DestDir: "{app}\vendor"; Flags: ignor
 ; paths.data_root here so mutable state never lands in the code tree.
 Name: "{localappdata}\work-buddy"
 
+[Tasks]
+; Default-checked. The choice only controls REGISTRATION (bootstrap step 6);
+; the tray's Python extra is always installed, so `wbuddy tray enable` works
+; later either way.
+Name: "traylogin"; Description: "Show the work-buddy tray icon (starts at login)"
+
 [Run]
 ; The heavy step: uv sequence + provision + autostart. runhidden keeps the
 ; PowerShell console out of the user's face; the wizard shows StatusMsg.
 Filename: "powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\vendor\bootstrap.ps1"" -AppHome ""{app}"" -Data ""{localappdata}\work-buddy"" -Uv ""{app}\vendor\uv.exe"""; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\vendor\bootstrap.ps1"" -AppHome ""{app}"" -Data ""{localappdata}\work-buddy"" -Uv ""{app}\vendor\uv.exe"" -Tray {code:TrayFlag}"; \
   StatusMsg: "Setting up Python and downloading dependencies (about 1 GB). This can take several minutes..."; \
   Flags: runhidden
 ; No postinstall "open dashboard" action: the finish page hands off to the real
@@ -145,6 +151,15 @@ function IsWorkBuddyInstall(const Dir: String): Boolean;
 begin
   Result := FileExists(AddBackslash(Dir) + 'pyproject.toml') and
             DirExists(AddBackslash(Dir) + 'work_buddy');
+end;
+
+{ 1/0 for bootstrap.ps1's -Tray parameter, from the [Tasks] checkbox. }
+function TrayFlag(Param: String): String;
+begin
+  if WizardIsTaskSelected('traylogin') then
+    Result := '1'
+  else
+    Result := '0';
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;

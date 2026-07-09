@@ -98,6 +98,19 @@ def resolve_child_python(cfg: dict | None = None) -> str:
     return pinned
 
 
+def pythonw_variant(python_exe: str) -> str:
+    """Prefer the console-less ``pythonw.exe`` beside a Windows ``python.exe``.
+
+    GUI-ish children (the tray) and login items launch through this so no
+    console window ever appears. Returns the input unchanged on POSIX or when
+    no ``pythonw.exe`` sits next to the given interpreter.
+    """
+    if not IS_WINDOWS:
+        return python_exe
+    cand = Path(python_exe).with_name("pythonw.exe")
+    return str(cand) if cand.exists() else python_exe
+
+
 def build_child_env() -> dict[str, str]:
     """Build the environment dict for a subprocess spawned by work-buddy.
 

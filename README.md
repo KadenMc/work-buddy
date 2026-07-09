@@ -68,6 +68,8 @@ wbuddy start | stop | restart    # control the background services
 wbuddy --help                    # everything else
 ```
 
+A **system-tray icon** shows work-buddy's status at a glance and opens a small panel to start, stop, or restart it and jump to the dashboard.
+
 ### What Can I Do with work-buddy?
 
 - Review today's work state across notes, tasks, git, browser, and calendar before planning

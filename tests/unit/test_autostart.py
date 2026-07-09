@@ -79,7 +79,7 @@ def test_windows_register_escapes_apostrophe(monkeypatch, tmp_path):
 
 def test_linux_register_writes_unit(monkeypatch, tmp_path):
     unit = tmp_path / "wb-sidecar.service"
-    monkeypatch.setattr(linux, "_unit_path", lambda: unit)
+    monkeypatch.setattr(linux, "_unit_path", lambda *a, **k: unit)
     monkeypatch.setattr(linux, "_systemctl", lambda *a, **k: _fake_cp())
     res = linux.register(python_exe="/venv/bin/python", home_dir="/home/x", data_dir="/data")
     assert res["ok"] is True
@@ -91,7 +91,7 @@ def test_linux_register_writes_unit(monkeypatch, tmp_path):
 
 def test_linux_is_registered(monkeypatch, tmp_path):
     unit = tmp_path / "wb-sidecar.service"
-    monkeypatch.setattr(linux, "_unit_path", lambda: unit)
+    monkeypatch.setattr(linux, "_unit_path", lambda *a, **k: unit)
     assert linux.is_registered() is False  # no unit file yet
     unit.write_text("[Unit]\n")
     monkeypatch.setattr(linux, "_systemctl", lambda *a, **k: _fake_cp(stdout="enabled\n"))
@@ -102,7 +102,7 @@ def test_linux_is_registered(monkeypatch, tmp_path):
 
 def test_macos_register_writes_plist(monkeypatch, tmp_path):
     plist = tmp_path / "com.workbuddy.sidecar.plist"
-    monkeypatch.setattr(macos, "_plist_path", lambda: plist)
+    monkeypatch.setattr(macos, "_plist_path", lambda *a, **k: plist)
     monkeypatch.setattr(macos, "_log_dir", lambda: tmp_path / "logs")
     monkeypatch.setattr(macos.os, "getuid", lambda: 501, raising=False)
     monkeypatch.setattr(macos.subprocess, "run", lambda *a, **k: _fake_cp())
@@ -118,7 +118,7 @@ def test_macos_register_writes_plist(monkeypatch, tmp_path):
 
 def test_macos_is_registered(monkeypatch, tmp_path):
     plist = tmp_path / "com.workbuddy.sidecar.plist"
-    monkeypatch.setattr(macos, "_plist_path", lambda: plist)
+    monkeypatch.setattr(macos, "_plist_path", lambda *a, **k: plist)
     assert macos.is_registered() is False
     plist.write_text("<plist/>")
     assert macos.is_registered() is True
