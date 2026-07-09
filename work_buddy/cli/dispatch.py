@@ -9,6 +9,7 @@ owns only setup, sidecar lifecycle, diagnostics, and emitting the MCP config.
     wbuddy start [--foreground]  wbuddy stop    wbuddy restart
     wbuddy status [--json]       wbuddy doctor [<component>] [--json]
     wbuddy setup                 wbuddy mcp print   wbuddy dashboard [--open]
+    wbuddy harness {list,enable,disable,primary,sync}
     wbuddy provision [...]       wbuddy autostart {enable,disable,status}
     wbuddy uninstall             wbuddy tray {enable,disable,status,run}
 
@@ -67,6 +68,30 @@ def _build_parser() -> argparse.ArgumentParser:
     mcp_sub = p_mcp.add_subparsers(dest="mcp_command", required=True)
     mcp_sub.add_parser("print", help="print the Claude Code MCP config (HTTP)")
 
+    p_harness = sub.add_parser(
+        "harness", parents=[common], help="manage generated agent-host surfaces"
+    )
+    harness_sub = p_harness.add_subparsers(dest="harness_command", required=True)
+    harness_sub.add_parser("list", parents=[common], help="list supported harnesses")
+    p_h_enable = harness_sub.add_parser("enable", help="enable a harness id")
+    p_h_enable.add_argument("harness_id")
+    p_h_disable = harness_sub.add_parser("disable", help="disable a harness id")
+    p_h_disable.add_argument("harness_id")
+    p_h_primary = harness_sub.add_parser("primary", help="set primary harness id")
+    p_h_primary.add_argument("harness_id")
+    p_h_sync = harness_sub.add_parser(
+        "sync", parents=[common], help="generate or check harness artifacts"
+    )
+    p_h_sync.add_argument("--check", action="store_true", help="fail if outputs are stale")
+    p_h_sync.add_argument("--dry-run", action="store_true", help="show changes without writing")
+    p_h_sync.add_argument(
+        "--target",
+        action="append",
+        default=None,
+        help="harness id to sync; repeatable. Defaults to enabled harnesses.",
+    )
+    p_h_sync.add_argument("--output-root", default=None, help="override output root")
+
     p_prov = sub.add_parser(
         "provision", parents=[common],
         help="one-shot install provisioning (the native installer's entry point)",
@@ -83,6 +108,21 @@ def _build_parser() -> argparse.ArgumentParser:
     p_prov.add_argument("--repos-root", default=None, help="git repos directory")
     p_prov.add_argument("--timezone", default=None, help="IANA timezone")
     p_prov.add_argument("--anthropic-key", default=None, help="Anthropic API key (sk-...)")
+    p_prov.add_argument(
+        "--harness",
+        default=None,
+        help="select and generate one primary setup harness (e.g. claudecode)",
+    )
+    p_prov.add_argument(
+        "--no-harness",
+        action="store_true",
+        help="skip harness selection/projection during provisioning",
+    )
+    p_prov.add_argument(
+        "--allow-experimental-harness",
+        action="store_true",
+        help="allow provisioning with a harness not marked setup-ready",
+    )
     p_prov.add_argument(
         "--no-start", action="store_true", help="do not start the sidecar afterward",
     )
@@ -141,6 +181,8 @@ def main(argv: list[str] | None = None) -> int:
                 return commands.cmd_mcp_print(args)
             parser.error(f"unknown mcp subcommand: {args.mcp_command}")
             return 1
+        if args.command == "harness":
+            return commands.cmd_harness(args)
         if args.command == "autostart":
             return commands.cmd_autostart(args)
         if args.command == "tray":

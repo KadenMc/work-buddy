@@ -74,6 +74,11 @@ Source: "packaging\windows\bootstrap.ps1"; DestDir: "{app}\vendor"; Flags: ignor
 Name: "{localappdata}\work-buddy"
 
 [Tasks]
+; First-run agent harness. Keep this to setup-ready harnesses: Codex artifacts
+; generate today, but Codex session hook/env propagation is not yet proven
+; end-to-end, so it is not offered as an ordinary installer choice.
+Name: "harness\claudecode"; Description: "Set up for Claude Code (recommended)"; Flags: exclusive checkedonce
+Name: "harness\none"; Description: "Skip agent harness setup"; Flags: exclusive
 ; Default-checked. The choice only controls REGISTRATION (bootstrap step 6);
 ; the tray's Python extra is always installed, so `wbuddy tray enable` works
 ; later either way.
@@ -83,7 +88,7 @@ Name: "traylogin"; Description: "Show the work-buddy tray icon (starts at login)
 ; The heavy step: uv sequence + provision + autostart. runhidden keeps the
 ; PowerShell console out of the user's face; the wizard shows StatusMsg.
 Filename: "powershell.exe"; \
-  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\vendor\bootstrap.ps1"" -AppHome ""{app}"" -Data ""{localappdata}\work-buddy"" -Uv ""{app}\vendor\uv.exe"" -Tray {code:TrayFlag}"; \
+  Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\vendor\bootstrap.ps1"" -AppHome ""{app}"" -Data ""{localappdata}\work-buddy"" -Uv ""{app}\vendor\uv.exe"" -Harness ""{code:HarnessFlag}"" -Tray {code:TrayFlag}"; \
   StatusMsg: "Setting up Python and downloading dependencies (about 1 GB). This can take several minutes..."; \
   Flags: runhidden
 ; No postinstall "open dashboard" action: the finish page hands off to the real
@@ -162,6 +167,16 @@ begin
     Result := '0';
 end;
 
+{ Harness id for bootstrap.ps1's -Harness parameter. Empty means provision
+  leaves harness selection/projection for later. }
+function HarnessFlag(Param: String): String;
+begin
+  if WizardIsTaskSelected('harness\claudecode') then
+    Result := 'claudecode'
+  else
+    Result := '';
+end;
+
 function NextButtonClick(CurPageID: Integer): Boolean;
 var
   Dir: String;
@@ -206,7 +221,8 @@ begin
     WizardForm.FinishedHeadingLabel.Caption := 'work-buddy is installed';
     Msg :=
       'work-buddy is installed at ' + ExpandConstant('{app}') + '.' + #13#10 + #13#10 +
-      'To finish setup, open that folder in Claude Code and run  /wb-setup guided  ' +
+      'To finish setup, open that folder in your selected agent harness and run setup. ' +
+      'For the recommended Claude Code path, run  /wb-setup guided  ' +
       '(feature selection and the interactive integrations).';
     if not AutostartOk() then
       Msg := Msg + #13#10 + #13#10 +

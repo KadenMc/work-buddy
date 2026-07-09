@@ -17,6 +17,7 @@ param(
     [Parameter(Mandatory = $true)][string]$Uv,
     [string]$VaultRoot = "",
     [string]$AnthropicKey = "",
+    [string]$Harness = "",
     [string]$Tray = "0"
 )
 
@@ -120,6 +121,7 @@ Invoke-Step "Downloading dependencies (this can take several minutes)" -Retries 
 $provArgs = @("-m", "work_buddy.cli", "provision", "--home", $AppHome, "--data-dir", $Data)
 if ($VaultRoot)    { $provArgs += @("--vault-root", $VaultRoot) }
 if ($AnthropicKey) { $provArgs += @("--anthropic-key", $AnthropicKey) }
+if ($Harness)      { $provArgs += @("--harness", $Harness) }
 Invoke-Step "Provisioning work-buddy" { & $venvPy @provArgs }
 
 # 5. Register login auto-start (the WB-Sidecar scheduled task). BEST-EFFORT: by
