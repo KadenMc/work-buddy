@@ -188,6 +188,10 @@ dashboard:
   external_url: ""          # Tailscale HTTPS URL (e.g. "https://machine.tailnet.ts.net")
                             # enables "View in dashboard" links in Telegram notifications
 
+tray:
+  enabled: false            # system-tray icon (needs the `tray` extra;
+                            # toggle with `wbuddy tray enable|disable`)
+
 chrome:
   snapshot_interval_minutes: 5
   ledger_window_days: 7

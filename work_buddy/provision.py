@@ -156,7 +156,8 @@ def provision(
 
 
 def uninstall(*, remove_data: bool = False) -> dict:
-    """Tear down a provisioned install: stop the sidecar and remove auto-start.
+    """Tear down a provisioned install: stop the sidecar and tray, remove
+    their login items, and remove the PATH shim.
 
     Removing the HOME working copy is left to the OS uninstaller (it knows the
     install path). The data dir is removed only when ``remove_data`` is set.
@@ -166,6 +167,17 @@ def uninstall(*, remove_data: bool = False) -> dict:
 
     steps: list[str] = []
     steps.append("stop sidecar: " + str(lifecycle.stop_sidecar().get("detail")))
+    # Tray teardown rides in the same call: stop the process, drop its login
+    # item. Best-effort like the shim: a tray failure must not block uninstall.
+    try:
+        from work_buddy import tray
+
+        steps.append("tray: " + str(tray.stop_running().get("detail")))
+        steps.append(
+            "tray login item: " + str(autostart.unregister_tray().get("detail"))
+        )
+    except Exception as exc:
+        steps.append(f"tray: skipped ({exc})")
     steps.append("autostart: " + str(autostart.unregister().get("detail")))
     steps.append("cli shim: " + str(userpath.uninstall_cli_shim(paths.config_dir()).get("detail")))
     if remove_data:

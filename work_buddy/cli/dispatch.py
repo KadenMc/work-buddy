@@ -10,7 +10,7 @@ owns only setup, sidecar lifecycle, diagnostics, and emitting the MCP config.
     wbuddy status [--json]       wbuddy doctor [<component>] [--json]
     wbuddy setup                 wbuddy mcp print   wbuddy dashboard [--open]
     wbuddy provision [...]       wbuddy autostart {enable,disable,status}
-    wbuddy uninstall
+    wbuddy uninstall             wbuddy tray {enable,disable,status,run}
 
 ``provision`` is the native installer's one-shot entry point. The interactive,
 domain-by-domain feature selection lives in ``/wb-setup guided`` inside Claude
@@ -98,6 +98,19 @@ def _build_parser() -> argparse.ArgumentParser:
     auto_sub.add_parser("disable", help="remove login auto-start")
     auto_sub.add_parser("status", help="show auto-start registration status")
 
+    p_tray = sub.add_parser(
+        "tray", help="manage the system-tray icon (needs the `tray` extra)"
+    )
+    tray_sub = p_tray.add_subparsers(dest="tray_command", required=True)
+    tray_sub.add_parser(
+        "enable", help="set tray.enabled, register the login item, start the tray"
+    )
+    tray_sub.add_parser("disable", help="stop the tray and remove its login item")
+    tray_sub.add_parser("status", parents=[common], help="show tray state")
+    tray_sub.add_parser(
+        "run", help="run the tray in the foreground (login-item entry point)"
+    )
+
     return parser
 
 
@@ -130,6 +143,8 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         if args.command == "autostart":
             return commands.cmd_autostart(args)
+        if args.command == "tray":
+            return commands.cmd_tray(args)
         handler = _HANDLERS.get(args.command)
         if handler is None:
             parser.error(f"unknown command: {args.command}")

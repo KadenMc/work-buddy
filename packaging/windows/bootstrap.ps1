@@ -16,7 +16,8 @@ param(
     [Parameter(Mandatory = $true)][string]$Data,
     [Parameter(Mandatory = $true)][string]$Uv,
     [string]$VaultRoot = "",
-    [string]$AnthropicKey = ""
+    [string]$AnthropicKey = "",
+    [string]$Tray = "0"
 )
 
 $ErrorActionPreference = "Stop"
@@ -107,8 +108,11 @@ Invoke-Step "Creating the virtual environment" -Retries 3 {
 #    uv's default "first index wins" rule pins those stale versions and
 #    resolution fails. Safe here: both indexes (PyPI + official PyTorch) are
 #    trusted, so there is no dependency-confusion exposure.
+#    The [tray] extra is installed UNCONDITIONALLY (regardless of the tray
+#    checkbox) so `wbuddy tray enable` works later without a network download;
+#    the checkbox only controls registration (step 6).
 Invoke-Step "Downloading dependencies (this can take several minutes)" -Retries 3 {
-    & $Uv pip install --python $venvPy --index-strategy unsafe-best-match --extra-index-url https://download.pytorch.org/whl/cpu -e $AppHome
+    & $Uv pip install --python $venvPy --index-strategy unsafe-best-match --extra-index-url https://download.pytorch.org/whl/cpu -e "$AppHome[tray]"
 }
 
 # 4. Provision: config, secrets, data-dir relocation, .mcp.json, bootstrap checks,
@@ -133,6 +137,21 @@ if ($LASTEXITCODE -eq 0) {
     New-Item -ItemType File -Force -Path $autostartMarker | Out-Null
 } else {
     Write-Host "WARNING: could not register login auto-start. work-buddy is installed and running; it just will not restart automatically after a reboot. You can retry later with:  wbuddy autostart enable"
+}
+
+# 6. Tray icon (from the installer's checkbox). Also best-effort: the tray is
+#    a convenience surface, so failing to set it up must not fail the install.
+#    `tray enable` sets tray.enabled, registers the WB-Tray login task, and
+#    starts the tray now.
+if ($Tray -eq "1") {
+    Write-Host "==> Enabling the tray icon"
+    & {
+        $ErrorActionPreference = "Continue"
+        & $venvPy -m work_buddy.cli tray enable 2>&1 | ForEach-Object { Write-Host $_ }
+    }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "WARNING: could not enable the tray icon. You can retry later with:  wbuddy tray enable"
+    }
 }
 
 Write-Host "==> work-buddy install complete."

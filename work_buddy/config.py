@@ -93,6 +93,12 @@ DEFAULTS = {
         "read_only": False,  # disable mutating actions (investigate, palette execute, etc.)
         "external_url": "",  # Tailscale HTTPS URL (e.g. "https://machine.tailnet.ts.net")
     },
+    "tray": {
+        # System-tray icon: its own login item beside the sidecar (needs the
+        # `tray` extra). Toggled by `wbuddy tray enable|disable`, which also
+        # registers/removes the login item.
+        "enabled": False,
+    },
     "sidecar": {
         "health_check_interval": 30,  # seconds between health checks
         "max_service_crashes": 5,     # give up restarting after this many

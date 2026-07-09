@@ -37,6 +37,10 @@ _STALE_TICK_S = 90.0
 # daemon is presumed to be booting rather than wedged, so `wbuddy start` waits for
 # it instead of racing the daemon's own takeover against itself.
 _BOOT_GRACE_S = 90.0
+# Only classify a busy dispatch phase as noteworthy once it has run long enough
+# (a cycle legitimately spends seconds in each phase). Shared by the CLI status
+# renderer and the tray so the threshold lives once.
+DISPATCH_BUSY_DISPLAY_S = 120.0
 
 
 def _pid_file_age_s() -> float:
@@ -70,6 +74,39 @@ def _daemon_health(pid: int | None, state) -> str:
         if last and (time.time() - last) <= _STALE_TICK_S:
             return "up"
     return "booting" if _pid_file_age_s() <= _BOOT_GRACE_S else "wedged"
+
+
+# Public name for external consumers (the tray reads status through this).
+# The underscore original stays for the existing internal callers.
+daemon_health = _daemon_health
+
+
+def dispatch_busy(state) -> dict | None:
+    """Classify the daemon's dispatch loop as noteworthy-busy.
+
+    Returns ``{"phase", "job", "busy_for_s"}`` once a non-idle phase has run
+    past ``DISPATCH_BUSY_DISPLAY_S``, else ``None`` (including for state files
+    written by a daemon without dispatch fields). Jobs, message dispatch, and
+    retry sweeps run inline on the dispatch thread and may legitimately block
+    for minutes while the supervisor keeps ticking, so busy is an overlay on a
+    healthy daemon, not a fifth health state.
+    """
+    if state is None or not getattr(state, "dispatch_phase", None):
+        return None
+    if state.dispatch_phase == "idle":
+        return None
+    busy_for = (
+        (time.time() - state.dispatch_phase_since)
+        if state.dispatch_phase_since
+        else 0.0
+    )
+    if busy_for < DISPATCH_BUSY_DISPLAY_S:
+        return None
+    return {
+        "phase": state.dispatch_phase,
+        "job": state.dispatch_job,
+        "busy_for_s": busy_for,
+    }
 
 
 def start_sidecar(*, foreground: bool = False, wait_seconds: float = 15.0) -> dict:
