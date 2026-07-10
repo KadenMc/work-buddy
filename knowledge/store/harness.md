@@ -30,7 +30,7 @@ The generated harness surface is intentionally disposable. `wbuddy harness sync`
 First-run install:
 
 - `wbuddy provision --harness <id>` selects one primary harness, persists it in `config.local.yaml`, and runs harness projection into the install home.
-- Only setup-ready harnesses should be used by default installer flows. `claudecode` is setup-ready today. `codexcli` is currently experimental because the surface generates, but session hook/env propagation has not been proven end-to-end.
+- Only setup-ready harnesses should be offered by installer flows. `claudecode` is setup-ready at the harness-behavior level, but rulesync still needs a local executable path (`rulesync` or `npx rulesync@<version>`), so the Windows installer defaults to skipping harness projection until the projection toolchain has a self-contained install story. `codexcli` is currently experimental because the surface generates, but session hook/env propagation has not been proven end-to-end.
 - `--allow-experimental-harness` exists for development/testing, not ordinary first-run setup.
 
 Do not edit generated harness outputs as the source of truth. Update the knowledge-store directions, MCP capabilities/workflows, or the canonical launcher source, then rerun `wbuddy harness sync`.
