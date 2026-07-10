@@ -77,8 +77,8 @@ Name: "{localappdata}\work-buddy"
 ; First-run agent harness. Keep this to setup-ready harnesses: Codex artifacts
 ; generate today, but Codex session hook/env propagation is not yet proven
 ; end-to-end, so it is not offered as an ordinary installer choice.
-Name: "harness\claudecode"; Description: "Set up for Claude Code (requires rulesync via Node/npm or PATH)"; Flags: exclusive
-Name: "harness\none"; Description: "Skip agent harness setup"; Flags: exclusive checkedonce
+Name: "harness\claudecode"; Description: "Set up for Claude Code (recommended)"; Flags: exclusive checkedonce
+Name: "harness\none"; Description: "Skip agent harness setup"; Flags: exclusive
 ; Default-checked. The choice only controls REGISTRATION (bootstrap step 6);
 ; the tray's Python extra is always installed, so `wbuddy tray enable` works
 ; later either way.

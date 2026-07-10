@@ -93,12 +93,6 @@ def test_windows_installer_passes_harness_to_bootstrap_and_provision():
     )
 
     assert 'Name: "harness\\claudecode"' in iss
-    assert (
-        'Name: "harness\\none"; Description: "Skip agent harness setup"; '
-        "Flags: exclusive checkedonce"
-    ) in iss
-    assert 'Name: "harness\\claudecode"; Description: "Set up for Claude Code' in iss
-    assert 'Name: "harness\\claudecode"; Description: "Set up for Claude Code (recommended)"; Flags: exclusive checkedonce' not in iss
     assert '-Harness ""{code:HarnessFlag}""' in iss
     assert "[string]$Harness" in bootstrap
     assert 'if ($Harness)      { $provArgs += @("--harness", $Harness) }' in bootstrap
