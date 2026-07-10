@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import sys
 import time
+from pathlib import Path
 
 EXIT_OK = 0
 EXIT_FAIL = 1
@@ -277,6 +278,9 @@ def cmd_provision(args) -> int:
         timezone=getattr(args, "timezone", None),
         anthropic_key=getattr(args, "anthropic_key", None),
         start=not getattr(args, "no_start", False),
+        harness=getattr(args, "harness", None),
+        no_harness=getattr(args, "no_harness", False),
+        allow_experimental_harness=getattr(args, "allow_experimental_harness", False),
     )
     if _want_json(args):
         print(json.dumps(res, indent=2, default=str))
@@ -291,9 +295,24 @@ def cmd_provision(args) -> int:
     if sc:
         pid = f" (pid={sc['pid']})" if sc.get("pid") else ""
         print(f"Sidecar: {sc.get('detail')}{pid}")
+    hs = res.get("harness")
+    if hs:
+        print(
+            f"Harness: {hs.get('id')} "
+            f"({'ok' if hs.get('ok') else 'failed'})"
+        )
+        if hs.get("setup_note"):
+            print(f"  note: {hs['setup_note']}")
     print()
-    print("Next: open Claude Code in this directory and run /wb-setup guided for")
-    print("feature selection and the interactive integrations.")
+    if hs and hs.get("id") == "claudecode":
+        print("Next: open Claude Code in this directory and run /wb-setup guided for")
+        print("feature selection and the interactive integrations.")
+    elif hs:
+        print("Next: open your selected harness in this directory and continue setup.")
+        print("If setup guidance is degraded, use Claude Code for /wb-setup guided.")
+    else:
+        print("Next: open Claude Code in this directory and run /wb-setup guided for")
+        print("feature selection and the interactive integrations.")
     return EXIT_OK if res["ok"] else EXIT_FAIL
 
 
@@ -305,6 +324,117 @@ def cmd_uninstall(args) -> int:
     for step in res["steps"]:
         print(f"  - {step}")
     return EXIT_OK
+
+
+def cmd_harness(args) -> int:
+    from work_buddy.harness.config import load_harness_config, save_harness_selection
+    from work_buddy.harness.registry import get_harness, list_harnesses
+    from work_buddy.harness.sync import sync_harnesses
+
+    action = getattr(args, "harness_command", None)
+    cfg = load_harness_config()
+
+    if action == "list":
+        rows = [
+            {
+                "id": h.id,
+                "label": h.label,
+                "enabled": h.id in cfg.enabled,
+                "primary": h.id == cfg.primary,
+                "rulesync_target": h.rulesync_target,
+                "features": list(h.features),
+                "description": h.description,
+            }
+            for h in list_harnesses()
+        ]
+        if _want_json(args):
+            print(json.dumps({"harnesses": rows}, indent=2))
+            return EXIT_OK
+        for row in rows:
+            marks = []
+            if row["enabled"]:
+                marks.append("enabled")
+            if row["primary"]:
+                marks.append("primary")
+            suffix = f" ({', '.join(marks)})" if marks else ""
+            print(f"{row['id']}: {row['label']}{suffix}")
+            print(f"  {row['description']}")
+        return EXIT_OK
+
+    if action == "enable":
+        hid = getattr(args, "harness_id")
+        get_harness(hid)
+        enabled = tuple(dict.fromkeys((*cfg.enabled, hid)))
+        next_cfg = save_harness_selection(enabled=enabled)
+        print(f"enabled harnesses: {', '.join(next_cfg.enabled) or '(none)'}")
+        return EXIT_OK
+
+    if action == "disable":
+        hid = getattr(args, "harness_id")
+        get_harness(hid)
+        enabled = tuple(x for x in cfg.enabled if x != hid)
+        primary = "" if cfg.primary == hid else cfg.primary
+        next_cfg = save_harness_selection(enabled=enabled, primary=primary)
+        print(f"enabled harnesses: {', '.join(next_cfg.enabled) or '(none)'}")
+        return EXIT_OK
+
+    if action == "primary":
+        hid = getattr(args, "harness_id")
+        get_harness(hid)
+        enabled = cfg.enabled if hid in cfg.enabled else tuple((*cfg.enabled, hid))
+        save_harness_selection(enabled=enabled, primary=hid)
+        print(f"primary harness: {hid}")
+        return EXIT_OK
+
+    if action == "sync":
+        try:
+            res = sync_harnesses(
+                getattr(args, "target", None),
+                output_root=(
+                    Path(args.output_root)
+                    if getattr(args, "output_root", None)
+                    else None
+                ),
+                dry_run=getattr(args, "dry_run", False),
+                check=getattr(args, "check", False),
+            )
+        except ValueError as exc:
+            _err(str(exc))
+            return EXIT_FAIL
+        if _want_json(args):
+            print(json.dumps(
+                {
+                    "ok": res.ok,
+                    "returncode": res.returncode,
+                    "targets": list(res.targets),
+                    "input_root": str(res.input_root),
+                    "output_root": str(res.output_root),
+                    "generated_paths": res.generated_paths,
+                    "has_diff": res.has_diff,
+                    "total_files": res.total_files,
+                    "error": res.error,
+                    "stderr": res.stderr,
+                },
+                indent=2,
+            ))
+            return EXIT_OK if res.ok else EXIT_FAIL
+        print(f"targets: {', '.join(res.targets)}")
+        print(f"input: {res.input_root}")
+        print(f"output: {res.output_root}")
+        if res.generated_paths:
+            print("paths:")
+            for path in res.generated_paths:
+                print(f"  - {path}")
+        if res.has_diff is not None:
+            print(f"has diff: {str(res.has_diff).lower()}")
+        if res.error:
+            _err(res.error)
+        if res.stderr:
+            _err(res.stderr.strip())
+        return EXIT_OK if res.ok else EXIT_FAIL
+
+    _err(f"unknown harness action: {action}")
+    return EXIT_FAIL
 
 
 def cmd_autostart(args) -> int:

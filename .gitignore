@@ -55,6 +55,14 @@ knowledge/store.local/
 # wrote them. Pattern catches similar future per-server lock files.
 .claude/*.lock
 
+# Generated agent-harness surfaces. Canonical behavior lives in the knowledge
+# store / MCP runtime and tracked launcher sources; these files are projected
+# locally by `wbuddy harness sync`.
+.codex/
+.agents/
+.claude/rules/
+AGENTS.md
+
 # Cygwin / MSYS bash crash dumps (machine-specific noise, regenerated
 # every time bash crashes — not useful in version control)
 *.stackdump

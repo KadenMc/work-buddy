@@ -99,6 +99,16 @@ DEFAULTS = {
         # registers/removes the login item.
         "enabled": False,
     },
+    "harness": {
+        # Agent-host projection settings. Empty enabled list means no generated
+        # harness surface is selected yet; use `wbuddy harness enable <id>`.
+        "primary": "",
+        "enabled": [],
+        "rulesync": {
+            "version": "9.6.0",
+            "command": "",
+        },
+    },
     "sidecar": {
         "health_check_interval": 30,  # seconds between health checks
         "max_service_crashes": 5,     # give up restarting after this many

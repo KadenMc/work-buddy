@@ -84,6 +84,26 @@ def test_build_payload_recreates_out(tmp_path):
     assert not (out / "stale.txt").exists()
 
 
+def test_windows_installer_passes_harness_to_bootstrap_and_provision():
+    iss = (_REPO / "packaging" / "windows" / "work-buddy.iss").read_text(
+        encoding="utf-8"
+    )
+    bootstrap = (_REPO / "packaging" / "windows" / "bootstrap.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'Name: "harness\\claudecode"' in iss
+    assert (
+        'Name: "harness\\none"; Description: "Skip agent harness setup"; '
+        "Flags: exclusive checkedonce"
+    ) in iss
+    assert 'Name: "harness\\claudecode"; Description: "Set up for Claude Code' in iss
+    assert 'Name: "harness\\claudecode"; Description: "Set up for Claude Code (recommended)"; Flags: exclusive checkedonce' not in iss
+    assert '-Harness ""{code:HarnessFlag}""' in iss
+    assert "[string]$Harness" in bootstrap
+    assert 'if ($Harness)      { $provArgs += @("--harness", $Harness) }' in bootstrap
+
+
 def test_vendor_uv_url_construction():
     assert vendor_uv.release_url("windows", "0.5.29") == (
         "https://github.com/astral-sh/uv/releases/download/0.5.29/"

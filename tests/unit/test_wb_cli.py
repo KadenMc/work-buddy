@@ -42,6 +42,11 @@ def test_mcp_print_routes_to_handler(monkeypatch):
     assert dispatch.main(["mcp", "print"]) == 7
 
 
+def test_harness_routes_to_handler(monkeypatch):
+    monkeypatch.setattr(commands, "cmd_harness", lambda args: 9)
+    assert dispatch.main(["harness", "list"]) == 9
+
+
 # ---------------------------------------------------------------------------
 # Dispatch routing
 # ---------------------------------------------------------------------------
@@ -367,3 +372,33 @@ def test_setup_renders_bootstrap_and_mcp(capsys, monkeypatch):
     assert "1/1 passed" in out
     assert "http://localhost:5126/mcp" in out
     assert "/wb-setup guided" in out
+
+
+def test_provision_passes_harness_args(monkeypatch):
+    seen = {}
+
+    def fake_provision(**kwargs):
+        seen.update(kwargs)
+        return {
+            "ok": True,
+            "home": "H",
+            "data_dir": "D",
+            "steps": [],
+            "bootstrap": {"results": []},
+            "sidecar": None,
+            "harness": {"id": "claudecode", "ok": True, "setup_note": ""},
+        }
+
+    monkeypatch.setattr("work_buddy.provision.provision", fake_provision)
+    rc = dispatch.main([
+        "provision",
+        "--harness",
+        "claudecode",
+        "--allow-experimental-harness",
+        "--no-start",
+    ])
+
+    assert rc == 0
+    assert seen["harness"] == "claudecode"
+    assert seen["allow_experimental_harness"] is True
+    assert seen["start"] is False

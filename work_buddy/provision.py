@@ -36,6 +36,9 @@ def provision(
     timezone: str | None = None,
     anthropic_key: str | None = None,
     start: bool = True,
+    harness: str | None = None,
+    no_harness: bool = False,
+    allow_experimental_harness: bool = False,
 ) -> dict:
     """Provision an installed work-buddy. Idempotent. Returns a structured result.
 
@@ -55,6 +58,19 @@ def provision(
 
     if home is not None:
         os.environ["WORK_BUDDY_CONFIG_DIR"] = str(Path(home).expanduser())
+
+    if harness and no_harness:
+        raise ValueError("--harness and --no-harness cannot be used together")
+    harness_target = None
+    if harness:
+        from work_buddy.harness.registry import get_harness
+
+        harness_target = get_harness(harness)
+        if not harness_target.setup_ready and not allow_experimental_harness:
+            raise ValueError(
+                f"harness {harness!r} is not setup-ready yet: "
+                f"{harness_target.setup_note}"
+            )
 
     steps: list[str] = []
     home = paths.config_dir()
@@ -137,7 +153,31 @@ def provision(
             "summary": summary,
         },
         "sidecar": None,
+        "harness": None,
     }
+
+    # 6b. Optional first-run harness projection. Installer flows may pass one
+    # setup-ready primary harness. Multi-harness setup remains a post-install
+    # `wbuddy harness ...` operation.
+    harness_ok = True
+    if harness and not no_harness:
+        from work_buddy.harness.config import save_harness_selection
+        from work_buddy.harness.sync import sync_harnesses
+
+        save_harness_selection(enabled=(harness,), primary=harness)
+        sync = sync_harnesses((harness,), output_root=home)
+        result["harness"] = {
+            "id": harness,
+            "ok": sync.ok,
+            "setup_ready": harness_target.setup_ready,
+            "setup_note": harness_target.setup_note,
+            "generated_paths": sync.generated_paths,
+            "error": sync.error,
+            "returncode": sync.returncode,
+        }
+        harness_ok = sync.ok
+        detail = "ok" if sync.ok else f"failed: {sync.error or sync.stderr}"
+        steps.append(f"harness {harness}: {detail}")
 
     # 7. Start the sidecar (brings up the MCP gateway).
     if start:
@@ -150,7 +190,7 @@ def provision(
     # up + MCP wired"; feature configuration comes later via the wizard, so unmet
     # feature-config checks are surfaced (in `bootstrap`) but never fail the install.
     sidecar_ok = (not start) or bool((result["sidecar"] or {}).get("started"))
-    result["ok"] = bool(dw.get("ok", True)) and sidecar_ok
+    result["ok"] = bool(dw.get("ok", True)) and sidecar_ok and harness_ok
 
     return result
 

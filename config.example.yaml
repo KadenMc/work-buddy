@@ -192,6 +192,13 @@ tray:
   enabled: false            # system-tray icon (needs the `tray` extra;
                             # toggle with `wbuddy tray enable|disable`)
 
+harness:
+  primary: ""               # e.g. "codexcli" or "claudecode"; empty until selected
+  enabled: []               # generated agent-host surfaces, opt in with `wbuddy harness enable`
+  rulesync:
+    version: "9.6.0"        # pinned dev invocation uses `npx -y rulesync@<version>`
+    command: ""             # optional explicit rulesync executable path/command
+
 chrome:
   snapshot_interval_minutes: 5
   ledger_window_days: 7
