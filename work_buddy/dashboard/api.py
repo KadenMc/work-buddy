@@ -1175,7 +1175,7 @@ def _load_pr_meta_for_repos(
 
 
 def get_chats_summary(days: int = 14) -> dict[str, Any]:
-    """Rich chat list from Claude Code JSONL sessions.
+    """Rich chat list from all enabled transcript providers.
 
     Calls the chat_collector parser which caches per-file to avoid
     re-parsing unchanged JSONL files. Enriches each chat with
@@ -1184,13 +1184,13 @@ def get_chats_summary(days: int = 14) -> dict[str, Any]:
     DB is available — safe no-op when it isn't.
     """
     try:
-        from work_buddy.collectors.chat_collector import _get_claude_code_conversations
+        from work_buddy.collectors.chat_collector import _get_agent_conversations
     except ImportError as exc:
         logger.warning("chat_collector unavailable: %s", exc)
         return {"chats": [], "total": 0, "error": str(exc)}
 
     try:
-        raw = _get_claude_code_conversations(days)
+        raw = _get_agent_conversations(days)
     except Exception as exc:
         logger.warning("Failed to load chats: %s", exc)
         return {"chats": [], "total": 0, "error": str(exc)}
@@ -1214,6 +1214,10 @@ def get_chats_summary(days: int = 14) -> dict[str, Any]:
         obs = obs_by_sid.get(sid, {})
         chats.append({
             "session_id": sid,
+            "native_session_id": c.get("native_session_id", sid),
+            "harness_id": c.get("harness_id", "claudecode"),
+            "harness_label": c.get("harness_label", c.get("harness_id", "agent")),
+            "provider_id": c.get("provider_id", "claudecode"),
             "short_id": c.get("session_id", "")[:8],
             "first_message": (c.get("first_user_message") or "")[:120],
             "message_count": msg_count,
@@ -1222,8 +1226,10 @@ def get_chats_summary(days: int = 14) -> dict[str, Any]:
             "start_time": c.get("start_time"),
             "end_time": c.get("end_time"),
             "duration": _format_chat_duration(c.get("start_time"), c.get("end_time")),
-            "project_name": _resolve_repo_name(
-                c.get("project_slug", ""), c.get("project_name", "")
+            "project_name": (
+                _resolve_repo_name(c.get("project_slug", ""), c.get("project_name", ""))
+                if c.get("harness_id", "claudecode") == "claudecode"
+                else c.get("project_name", "")
             ),
             # Conversation-observability enrichment. All optional; the
             # frontend renders badges only when ``engages_git`` is true.

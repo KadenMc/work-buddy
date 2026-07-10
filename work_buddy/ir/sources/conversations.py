@@ -1,13 +1,12 @@
-"""Conversation source adapter — Claude Code JSONL sessions to IR documents.
+"""Conversation source adapter — harness transcripts to IR documents.
 
-Scans ~/.claude/projects/*/ for JSONL session files, chunks each session
+Scans enabled transcript providers, chunks each session
 into 2-4 turn spans, and produces Documents with fields suitable for
 fielded BM25 retrieval.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +14,7 @@ from work_buddy.ir.sources.base import Document
 
 
 class ConversationSource:
-    """IR source adapter for Claude Code conversation sessions."""
+    """IR source adapter for normalized harness conversation sessions."""
 
     @property
     def name(self) -> str:
@@ -31,38 +30,19 @@ class ConversationSource:
         cfg = load_config()
         project_filter = cfg.get("chats", {}).get("project_filter", None)
 
-        claude_dir = Path.home() / ".claude" / "projects"
-        if not claude_dir.is_dir():
-            return []
+        from work_buddy.transcripts import discover_sessions
 
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-        results: list[tuple[str, float]] = []
-
-        for project_dir in sorted(claude_dir.iterdir()):
-            if not project_dir.is_dir():
-                continue
-            if project_filter:
-                if not any(f.lower() in project_dir.name.lower() for f in project_filter):
-                    continue
-
-            for jsonl_file in project_dir.glob("*.jsonl"):
-                if "subagents" in str(jsonl_file):
-                    continue
-                try:
-                    stat = jsonl_file.stat()
-                    mtime_dt = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
-                    if mtime_dt < cutoff:
-                        continue
-                except OSError:
-                    continue
-
-                results.append((str(jsonl_file), stat.st_mtime))
-
-        return results
+        return [
+            (str(session.path), session.mtime)
+            for session in discover_sessions(
+                days=days,
+                project_filter=project_filter,
+            )
+        ]
 
     def parse(self, item_id: str) -> list[Document]:
         """Parse a JSONL session file into span Documents."""
-        from work_buddy.collectors.chat_collector import iter_session_turns
+        from work_buddy.transcripts import provider_for_session, session_from_path
         from work_buddy.config import load_config
 
         cfg = load_config()
@@ -72,14 +52,19 @@ class ConversationSource:
         max_dense = cfg.get("ir", {}).get("dense_text_max_chars", 1500)
 
         path = Path(item_id)
-        session_id = path.stem
-        project_slug = path.parent.name
-
-        from work_buddy.collectors.chat_collector import project_name_from_slug
-        project_name = project_name_from_slug(project_slug)
+        try:
+            session = session_from_path(path)
+        except FileNotFoundError:
+            return []
+        session_id = session.session_id
+        project_slug = session.project_slug
+        project_name = session.project_name
 
         # Collect all turns
-        turns = list(iter_session_turns(path))
+        turns = [
+            turn.to_dict()
+            for turn in provider_for_session(session).iter_turns(session)
+        ]
         if not turns:
             return []
 
@@ -170,6 +155,9 @@ class ConversationSource:
                 display_text=display,
                 metadata={
                     "session_id": session_id,
+                    "native_session_id": session.native_session_id,
+                    "harness_id": session.harness_id,
+                    "provider_id": session.provider_id,
                     "project_slug": project_slug,
                     "project_name": project_name,
                     "span_index": span_idx,

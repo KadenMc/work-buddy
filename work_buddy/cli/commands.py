@@ -307,9 +307,12 @@ def cmd_provision(args) -> int:
     if hs and hs.get("id") == "claudecode":
         print("Next: open Claude Code in this directory and run /wb-setup guided for")
         print("feature selection and the interactive integrations.")
+    elif hs and hs.get("id") == "codexcli":
+        print("Next: open Codex in this directory and invoke the generated wb-setup")
+        print("skill in guided mode for feature selection and integrations.")
     elif hs:
-        print("Next: open your selected harness in this directory and continue setup.")
-        print("If setup guidance is degraded, use Claude Code for /wb-setup guided.")
+        print("Next: open your selected harness in this directory and invoke its")
+        print("generated wb-setup command or skill in guided mode.")
     else:
         print("Next: open Claude Code in this directory and run /wb-setup guided for")
         print("feature selection and the interactive integrations.")
@@ -344,6 +347,11 @@ def cmd_harness(args) -> int:
                 "rulesync_target": h.rulesync_target,
                 "features": list(h.features),
                 "description": h.description,
+                "support_tier": h.support_tier,
+                "setup_ready": h.setup_ready,
+                "session_env": h.session_env,
+                "transcript_provider": h.transcript_provider,
+                "lifecycle_events": list(h.lifecycle_events),
             }
             for h in list_harnesses()
         ]
@@ -359,7 +367,32 @@ def cmd_harness(args) -> int:
             suffix = f" ({', '.join(marks)})" if marks else ""
             print(f"{row['id']}: {row['label']}{suffix}")
             print(f"  {row['description']}")
+            print(f"  support: {row['support_tier']}; session: {row['session_env']}")
         return EXIT_OK
+
+    if action == "doctor":
+        from work_buddy.harness.toolchain import rulesync_status
+
+        status = rulesync_status(cfg)
+        payload = {
+            "ok": bool(status["available"] and status["version_ok"]),
+            "rulesync": status,
+            "enabled": list(cfg.enabled),
+            "primary": cfg.primary,
+        }
+        if _want_json(args):
+            print(json.dumps(payload, indent=2))
+        else:
+            state = "ok" if payload["ok"] else "unavailable"
+            print(f"rulesync: {state}")
+            print(f"  command: {status['command']}")
+            print(
+                f"  version: {status['version'] or '(unknown)'} "
+                f"(expected {status['expected_version']})"
+            )
+            print(f"enabled: {', '.join(cfg.enabled) or '(none)'}")
+            print(f"primary: {cfg.primary or '(none)'}")
+        return EXIT_OK if payload["ok"] else EXIT_FAIL
 
     if action == "enable":
         hid = getattr(args, "harness_id")
@@ -397,6 +430,7 @@ def cmd_harness(args) -> int:
                 ),
                 dry_run=getattr(args, "dry_run", False),
                 check=getattr(args, "check", False),
+                install_toolchain=not getattr(args, "no_install_toolchain", False),
             )
         except ValueError as exc:
             _err(str(exc))
@@ -414,6 +448,8 @@ def cmd_harness(args) -> int:
                     "total_files": res.total_files,
                     "error": res.error,
                     "stderr": res.stderr,
+                    "warnings": res.warnings,
+                    "backup_dir": str(res.backup_dir) if res.backup_dir else None,
                 },
                 indent=2,
             ))
@@ -429,12 +465,35 @@ def cmd_harness(args) -> int:
             print(f"has diff: {str(res.has_diff).lower()}")
         if res.error:
             _err(res.error)
+        for warning in res.warnings:
+            _err(f"warning: {warning}")
+        if res.backup_dir:
+            print(f"backup: {res.backup_dir}")
         if res.stderr:
             _err(res.stderr.strip())
         return EXIT_OK if res.ok else EXIT_FAIL
 
     _err(f"unknown harness action: {action}")
     return EXIT_FAIL
+
+
+def cmd_hook(args) -> int:
+    """Bridge native harness hook JSON from stdin into work-buddy."""
+    from work_buddy.harness.hooks import handle_hook, parse_hook_payload
+
+    try:
+        payload = parse_hook_payload(sys.stdin.read())
+        result = handle_hook(
+            getattr(args, "event"),
+            harness_id=getattr(args, "harness"),
+            payload=payload,
+        )
+    except ValueError as exc:
+        _err(str(exc))
+        return EXIT_FAIL
+    if result is not None:
+        print(json.dumps(result, ensure_ascii=False))
+    return EXIT_OK
 
 
 def cmd_autostart(args) -> int:

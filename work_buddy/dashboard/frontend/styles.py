@@ -2154,6 +2154,13 @@ body {
    left edge on those cards. */
 .chat-card-project-placeholder { flex: 0 0 auto; }
 
+.chat-card-harness {
+    flex: 0 0 auto;
+    color: var(--text-muted);
+    font-size: 10px;
+    line-height: 18px;
+}
+
 /* Monospace ("mechanical") session-id chip. Full UUID renders here
    so forks of the same conversation are visually distinguishable.
    Hover reveals the same string with a tooltip explainer. */

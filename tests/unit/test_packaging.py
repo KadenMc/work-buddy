@@ -94,14 +94,23 @@ def test_windows_installer_passes_harness_to_bootstrap_and_provision():
 
     assert 'Name: "harness\\claudecode"' in iss
     assert (
-        'Name: "harness\\none"; Description: "Skip agent harness setup"; '
-        "Flags: exclusive checkedonce"
+        'Name: "harness\\codexcli"; Description: "Set up for Codex"; '
+        "Flags: exclusive"
     ) in iss
-    assert 'Name: "harness\\claudecode"; Description: "Set up for Claude Code' in iss
-    assert 'Name: "harness\\claudecode"; Description: "Set up for Claude Code (recommended)"; Flags: exclusive checkedonce' not in iss
+    assert (
+        'Name: "harness\\none"; Description: "Skip agent harness setup"; '
+        "Flags: exclusive"
+    ) in iss
+    assert (
+        'Name: "harness\\claudecode"; Description: "Set up for Claude Code '
+        '(recommended)"; Flags: exclusive checkedonce'
+    ) in iss
+    assert "WizardIsTaskSelected('harness\\codexcli')" in iss
+    assert "Result := 'codexcli'" in iss
     assert '-Harness ""{code:HarnessFlag}""' in iss
     assert "[string]$Harness" in bootstrap
     assert 'if ($Harness)      { $provArgs += @("--harness", $Harness) }' in bootstrap
+    assert "requires rulesync via Node/npm" not in iss
 
 
 def test_vendor_uv_url_construction():

@@ -35,8 +35,11 @@ SCHEMA = """\
 -- don't clobber each other's staleness state.
 CREATE TABLE IF NOT EXISTS observed_sessions (
     session_id              TEXT PRIMARY KEY,
+    harness_id              TEXT NOT NULL DEFAULT 'claudecode',
+    native_session_id       TEXT,
     project_name            TEXT,
     project_slug            TEXT,
+    cwd                     TEXT,
     source_path             TEXT NOT NULL,
     source_mtime            REAL NOT NULL,
     observed_at             TEXT NOT NULL,

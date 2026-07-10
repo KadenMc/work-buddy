@@ -20,6 +20,10 @@ class HarnessTarget:
     simulate_commands: bool = False
     setup_ready: bool = True
     setup_note: str = ""
+    support_tier: str = "first_class"
+    session_env: str = ""
+    transcript_provider: str = ""
+    lifecycle_events: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -46,6 +50,8 @@ class HarnessSyncResult:
     stderr: str = ""
     data: dict[str, Any] = field(default_factory=dict)
     error: str = ""
+    warnings: list[str] = field(default_factory=list)
+    backup_dir: Path | None = None
 
     @property
     def generated_paths(self) -> list[str]:

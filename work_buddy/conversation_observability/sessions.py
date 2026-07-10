@@ -144,8 +144,11 @@ def refresh_observed_sessions(
                         tool_counts[name] = tool_counts.get(name, 0) + 1
             ok_record = (
                 sid,
-                path.parent.name,
-                path.parent.name,
+                meta.get("harness_id") or "claudecode",
+                meta.get("native_session_id") or sid,
+                meta.get("project_name") or path.parent.name,
+                meta.get("project_slug") or path.parent.name,
+                meta.get("cwd") or "",
                 str(path),
                 mtime,
                 now_iso,
@@ -185,13 +188,17 @@ def refresh_observed_sessions(
         try:
             conn.execute(
                 "INSERT INTO observed_sessions "
-                "(session_id, project_name, project_slug, source_path, "
+                "(session_id, harness_id, native_session_id, project_name, "
+                " project_slug, cwd, source_path, "
                 " source_mtime, observed_at, start_time, end_time, "
                 " message_count, span_count, tool_names_json, status, error) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ok', NULL) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ok', NULL) "
                 "ON CONFLICT(session_id) DO UPDATE SET "
+                "  harness_id=excluded.harness_id, "
+                "  native_session_id=excluded.native_session_id, "
                 "  project_name=excluded.project_name, "
                 "  project_slug=excluded.project_slug, "
+                "  cwd=excluded.cwd, "
                 "  source_path=excluded.source_path, "
                 "  source_mtime=excluded.source_mtime, "
                 "  observed_at=excluded.observed_at, "

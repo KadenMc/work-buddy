@@ -1021,7 +1021,7 @@ def api_sessions():
 
 @app.get("/api/chats")
 def api_chats():
-    """Rich chat list from Claude Code JSONL sessions."""
+    """Rich chat list from enabled agent-harness transcripts."""
     days = request.args.get("days", 14, type=int)
     return jsonify(get_chats_summary(days))
 
@@ -1125,7 +1125,8 @@ def api_chats_search():
     session_meta: dict[str, dict] = {}
 
     for hit in hits:
-        sid = (hit.get("doc_id") or "").split(":")[0]
+        hit_meta = hit.get("metadata") or {}
+        sid = hit_meta.get("session_id") or (hit.get("doc_id") or "").rsplit(":", 1)[0]
         if not sid:
             continue
         session_chunks[sid].append({
@@ -1134,10 +1135,11 @@ def api_chats_search():
             "score": hit.get("score", 0),
         })
         if sid not in session_meta:
-            meta = hit.get("metadata") or {}
+            meta = hit_meta
             session_meta[sid] = {
                 "project_name": meta.get("project_name", ""),
                 "start_time": meta.get("start_time"),
+                "harness_id": meta.get("harness_id", "claudecode"),
             }
 
     # Score and rank sessions using top-k weighted aggregation
@@ -1152,6 +1154,7 @@ def api_chats_search():
             "doc_score": round(doc_score, 6),
             "project_name": meta.get("project_name", ""),
             "start_time": meta.get("start_time"),
+            "harness_id": meta.get("harness_id", "claudecode"),
             "chunks": chunks,
         })
 
@@ -4808,7 +4811,7 @@ def api_investigate():
 
 @app.post("/api/chats/<session_id>/resume")
 def api_chat_resume(session_id: str):
-    """Resume a Claude Code session in a new local terminal.
+    """Resume an agent-harness session in a new local terminal.
 
     No prompt is sent; remote-control is off. The terminal opens into the
     session's recorded working directory, ready for the user to type.
@@ -4822,13 +4825,12 @@ def api_chat_resume(session_id: str):
     try:
         from work_buddy.consent import grant_consent
         from work_buddy.session_launcher import begin_session
-        from work_buddy.sessions.inspector import resolve_session_id
+        from work_buddy.sessions.inspector import ConversationSession
 
-        # Verify the session exists before spending a terminal spawn on it —
-        # begin_session falls back to a bare `claude --resume` if resolution
-        # fails, which opens a useless window.
+        # Resolve the canonical transcript before spending a terminal spawn on
+        # it. The metadata selects the native launcher and working directory.
         try:
-            resolved_id = resolve_session_id(session_id)
+            meta = ConversationSession(session_id).metadata()
         except FileNotFoundError as exc:
             return jsonify({"success": False, "error": str(exc)}), 404
 
@@ -4837,7 +4839,9 @@ def api_chat_resume(session_id: str):
         grant_consent("sidecar:remote_session_launch", mode="always")
 
         result = begin_session(
-            session_id=resolved_id,
+            session_id=meta["native_session_id"],
+            cwd=meta.get("cwd") or None,
+            harness_id=meta.get("harness_id", "claudecode"),
             remote_control=False,
             bypass_permissions=True,
         )

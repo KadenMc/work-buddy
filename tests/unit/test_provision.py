@@ -134,9 +134,10 @@ def test_provision_can_select_setup_ready_harness(tmp_install, monkeypatch):
         stderr = ""
         returncode = 0
 
-    def fake_sync_harnesses(ids, output_root=None):
+    def fake_sync_harnesses(ids, output_root=None, **kwargs):
         seen["ids"] = tuple(ids)
         seen["output_root"] = output_root
+        seen["install_toolchain"] = kwargs.get("install_toolchain")
         return FakeSync()
 
     monkeypatch.setattr("work_buddy.harness.sync.sync_harnesses", fake_sync_harnesses)
@@ -144,7 +145,11 @@ def test_provision_can_select_setup_ready_harness(tmp_install, monkeypatch):
     res = prov.provision(data_dir=str(data), start=False, harness="claudecode")
 
     assert res["ok"] is True
-    assert seen == {"ids": ("claudecode",), "output_root": home}
+    assert seen == {
+        "ids": ("claudecode",),
+        "output_root": home,
+        "install_toolchain": True,
+    }
     assert res["harness"]["id"] == "claudecode"
     assert res["harness"]["ok"] is True
 
@@ -153,15 +158,7 @@ def test_provision_can_select_setup_ready_harness(tmp_install, monkeypatch):
     assert local_cfg["harness"]["primary"] == "claudecode"
 
 
-def test_provision_rejects_experimental_harness_without_override(tmp_install):
-    home, data = tmp_install
-    with pytest.raises(ValueError, match="not setup-ready"):
-        prov.provision(data_dir=str(data), start=False, harness="codexcli")
-    assert not (home / "config.yaml").exists()
-    assert not (home / "config.local.yaml").exists()
-
-
-def test_provision_allows_experimental_harness_with_override(tmp_install, monkeypatch):
+def test_provision_can_select_codex_as_setup_ready_harness(tmp_install, monkeypatch):
     home, data = tmp_install
 
     class FakeSync:
@@ -173,18 +170,16 @@ def test_provision_allows_experimental_harness_with_override(tmp_install, monkey
 
     monkeypatch.setattr(
         "work_buddy.harness.sync.sync_harnesses",
-        lambda ids, output_root=None: FakeSync(),
+        lambda ids, output_root=None, **kwargs: FakeSync(),
     )
 
     res = prov.provision(
         data_dir=str(data),
         start=False,
         harness="codexcli",
-        allow_experimental_harness=True,
     )
 
     assert res["ok"] is True
     assert res["harness"]["id"] == "codexcli"
-    assert res["harness"]["setup_ready"] is False
-    assert "experimental" in res["harness"]["setup_note"]
+    assert res["harness"]["setup_ready"] is True
     assert (home / "config.local.yaml").exists()

@@ -9,7 +9,7 @@ owns only setup, sidecar lifecycle, diagnostics, and emitting the MCP config.
     wbuddy start [--foreground]  wbuddy stop    wbuddy restart
     wbuddy status [--json]       wbuddy doctor [<component>] [--json]
     wbuddy setup                 wbuddy mcp print   wbuddy dashboard [--open]
-    wbuddy harness {list,enable,disable,primary,sync}
+    wbuddy harness {list,enable,disable,primary,sync,doctor}
     wbuddy provision [...]       wbuddy autostart {enable,disable,status}
     wbuddy uninstall             wbuddy tray {enable,disable,status,run}
 
@@ -66,7 +66,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_mcp = sub.add_parser("mcp", help="MCP config helpers")
     mcp_sub = p_mcp.add_subparsers(dest="mcp_command", required=True)
-    mcp_sub.add_parser("print", help="print the Claude Code MCP config (HTTP)")
+    mcp_sub.add_parser("print", help="print the work-buddy MCP config (HTTP)")
+
+    p_hook = sub.add_parser("hook", help="run a generated harness lifecycle hook")
+    p_hook.add_argument(
+        "event",
+        choices=("session-start", "user-prompt-submit", "post-tool-use", "stop"),
+    )
+    p_hook.add_argument("--harness", required=True, help="originating harness id")
 
     p_harness = sub.add_parser(
         "harness", parents=[common], help="manage generated agent-host surfaces"
@@ -91,6 +98,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="harness id to sync; repeatable. Defaults to enabled harnesses.",
     )
     p_h_sync.add_argument("--output-root", default=None, help="override output root")
+    p_h_sync.add_argument(
+        "--no-install-toolchain",
+        action="store_true",
+        help="do not download the pinned rulesync binary when unavailable",
+    )
+    harness_sub.add_parser(
+        "doctor", parents=[common], help="report harness projection toolchain health"
+    )
 
     p_prov = sub.add_parser(
         "provision", parents=[common],
@@ -111,7 +126,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_prov.add_argument(
         "--harness",
         default=None,
-        help="select and generate one primary setup harness (e.g. claudecode)",
+        help="select and generate one primary setup harness (claudecode or codexcli)",
     )
     p_prov.add_argument(
         "--no-harness",
@@ -183,6 +198,8 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         if args.command == "harness":
             return commands.cmd_harness(args)
+        if args.command == "hook":
+            return commands.cmd_hook(args)
         if args.command == "autostart":
             return commands.cmd_autostart(args)
         if args.command == "tray":

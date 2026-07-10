@@ -350,7 +350,7 @@ def test_get_chats_summary_appends_observability_fields(co_env, monkeypatch) -> 
     # dashboard wrapper has something to enrich without depending on
     # the user's real ~/.claude/projects/ tree.
     monkeypatch.setattr(
-        "work_buddy.collectors.chat_collector._get_claude_code_conversations",
+        "work_buddy.collectors.chat_collector._get_agent_conversations",
         lambda days: [
             {
                 "full_session_id": sid,

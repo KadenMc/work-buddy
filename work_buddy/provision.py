@@ -165,7 +165,9 @@ def provision(
         from work_buddy.harness.sync import sync_harnesses
 
         save_harness_selection(enabled=(harness,), primary=harness)
-        sync = sync_harnesses((harness,), output_root=home)
+        sync = sync_harnesses(
+            (harness,), output_root=home, install_toolchain=True
+        )
         result["harness"] = {
             "id": harness,
             "ok": sync.ok,
@@ -174,6 +176,12 @@ def provision(
             "generated_paths": sync.generated_paths,
             "error": sync.error,
             "returncode": sync.returncode,
+            "warnings": list(getattr(sync, "warnings", [])),
+            "backup_dir": (
+                str(getattr(sync, "backup_dir", ""))
+                if getattr(sync, "backup_dir", None)
+                else None
+            ),
         }
         harness_ok = sync.ok
         detail = "ok" if sync.ok else f"failed: {sync.error or sync.stderr}"
