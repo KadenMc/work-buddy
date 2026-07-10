@@ -92,20 +92,20 @@ def test_windows_installer_passes_harness_to_bootstrap_and_provision():
         encoding="utf-8"
     )
 
-    assert 'Name: "harness\\claudecode"' in iss
+    assert 'Name: "harness_claudecode"' in iss
     assert (
-        'Name: "harness\\codexcli"; Description: "Set up for Codex"; '
+        'Name: "harness_codexcli"; Description: "Set up for Codex"; '
         "Flags: exclusive"
     ) in iss
     assert (
-        'Name: "harness\\none"; Description: "Skip agent harness setup"; '
+        'Name: "harness_none"; Description: "Skip agent harness setup"; '
         "Flags: exclusive"
     ) in iss
     assert (
-        'Name: "harness\\claudecode"; Description: "Set up for Claude Code '
+        'Name: "harness_claudecode"; Description: "Set up for Claude Code '
         '(recommended)"; Flags: exclusive checkedonce'
     ) in iss
-    assert "WizardIsTaskSelected('harness\\codexcli')" in iss
+    assert "WizardIsTaskSelected('harness_codexcli')" in iss
     assert "Result := 'codexcli'" in iss
     assert '-Harness ""{code:HarnessFlag}""' in iss
     assert "[string]$Harness" in bootstrap

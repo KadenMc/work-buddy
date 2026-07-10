@@ -76,9 +76,9 @@ Name: "{localappdata}\work-buddy"
 [Tasks]
 ; First-run agent harness. Provision installs the pinned, checksum-verified
 ; standalone rulesync binary, so neither choice requires Node/npm.
-Name: "harness\claudecode"; Description: "Set up for Claude Code (recommended)"; Flags: exclusive checkedonce
-Name: "harness\codexcli"; Description: "Set up for Codex"; Flags: exclusive
-Name: "harness\none"; Description: "Skip agent harness setup"; Flags: exclusive
+Name: "harness_claudecode"; Description: "Set up for Claude Code (recommended)"; Flags: exclusive checkedonce
+Name: "harness_codexcli"; Description: "Set up for Codex"; Flags: exclusive
+Name: "harness_none"; Description: "Skip agent harness setup"; Flags: exclusive
 ; Default-checked. The choice only controls REGISTRATION (bootstrap step 6);
 ; the tray's Python extra is always installed, so `wbuddy tray enable` works
 ; later either way.
@@ -171,9 +171,9 @@ end;
   leaves harness selection/projection for later. }
 function HarnessFlag(Param: String): String;
 begin
-  if WizardIsTaskSelected('harness\claudecode') then
+  if WizardIsTaskSelected('harness_claudecode') then
     Result := 'claudecode'
-  else if WizardIsTaskSelected('harness\codexcli') then
+  else if WizardIsTaskSelected('harness_codexcli') then
     Result := 'codexcli'
   else
     Result := '';
