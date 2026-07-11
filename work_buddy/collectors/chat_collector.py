@@ -1,4 +1,4 @@
-"""Collect recent Claude/Cursor chat history from SpecStory, Claude CLI, and Claude Code conversations."""
+"""Collect recent agent-harness conversations and legacy CLI chat history."""
 
 import json
 import re
@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from work_buddy import paths
 from work_buddy.timefmt import (
     format_session_span,
     parse_iso,
@@ -15,8 +16,8 @@ from work_buddy.timefmt import (
 # Cache for parsed JSONL summaries — avoids re-parsing unchanged files.
 # Bump _CACHE_VERSION when the parsed schema changes (new fields, renamed keys, etc.)
 # to auto-invalidate stale entries.
-_CACHE_PATH = Path.home() / ".claude" / "projects" / "work_buddy_chat_cache.json"
-_CACHE_VERSION = 2  # v2: added user_messages, all_assistant_text
+_CACHE_PATH = paths.data_dir("cache") / "transcript_summaries.json"
+_CACHE_VERSION = 3  # v3: harness/provider metadata and Codex transcripts
 
 # In-process memo of the parsed cache file, keyed on its (mtime, size). The
 # file holds hundreds of parsed-session summaries and json.load of it cost
@@ -63,6 +64,7 @@ def _save_cache(cache: dict[str, Any]) -> None:
     """Save the conversation summary cache with version stamp."""
     cache["_version"] = _CACHE_VERSION
     try:
+        _CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(_CACHE_PATH, "w", encoding="utf-8") as f:
             json.dump(cache, f, indent=2)
     except OSError:
@@ -274,85 +276,16 @@ def _parse_claude_history(
 
 
 def iter_session_turns(path: Path):
-    """Yield parsed turns from a Claude Code JSONL session file.
+    """Yield canonical turns from any registered transcript path."""
+    from work_buddy.transcripts import provider_for_session, session_from_path
 
-    Handles all edge cases: tool_result user messages (skipped), isMeta entries
-    (skipped), list-format user content, assistant text/tool_use blocks.
-
-    Yields:
-        dict with keys: role ("user"|"assistant"), text (str), tools (list[str]),
-        timestamp (str|None).
-    """
     try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-
-                entry_type = entry.get("type")
-                timestamp = entry.get("timestamp")
-
-                if entry_type == "user":
-                    msg = entry.get("message", {})
-                    content = msg.get("content", "")
-
-                    # Skip tool results
-                    if isinstance(content, list):
-                        has_tool_result = any(
-                            isinstance(c, dict) and c.get("type") == "tool_result"
-                            for c in content
-                        )
-                        if has_tool_result:
-                            continue
-                        text_parts = [
-                            c.get("text", "")
-                            for c in content
-                            if isinstance(c, dict) and c.get("type") == "text"
-                        ]
-                        content = " ".join(text_parts)
-
-                    if entry.get("isMeta"):
-                        continue
-
-                    if isinstance(content, str) and content.strip():
-                        yield {
-                            "role": "user",
-                            "text": content.strip(),
-                            "tools": [],
-                            "timestamp": timestamp,
-                        }
-
-                elif entry_type == "assistant":
-                    msg = entry.get("message", {})
-                    content = msg.get("content", [])
-                    tools = []
-                    texts = []
-                    if isinstance(content, list):
-                        for block in content:
-                            if not isinstance(block, dict):
-                                continue
-                            btype = block.get("type")
-                            if btype == "tool_use":
-                                tools.append(block.get("name", "unknown"))
-                            elif btype == "text":
-                                text = block.get("text", "").strip()
-                                if text:
-                                    texts.append(text)
-
-                    if texts or tools:
-                        yield {
-                            "role": "assistant",
-                            "text": " ".join(texts),
-                            "tools": tools,
-                            "timestamp": timestamp,
-                        }
-    except OSError:
+        session = session_from_path(path)
+    except FileNotFoundError:
         return
+    provider = provider_for_session(session)
+    for turn in provider.iter_turns(session):
+        yield turn.to_dict()
 
 
 def _parse_session_jsonl(path: Path) -> dict | None:
@@ -361,7 +294,13 @@ def _parse_session_jsonl(path: Path) -> dict | None:
     Uses iter_session_turns() for parsing, then aggregates into the summary
     format expected by the chat collector.
     """
-    session_id = path.stem
+    from work_buddy.transcripts import session_from_path
+
+    try:
+        session = session_from_path(path)
+    except FileNotFoundError:
+        return None
+    session_id = session.session_id
     first_user_msg = ""
     user_messages: list[str] = []
     user_count = 0
@@ -405,6 +344,13 @@ def _parse_session_jsonl(path: Path) -> dict | None:
     return {
         "session_id": session_id[:8],
         "full_session_id": session_id,
+        "native_session_id": session.native_session_id,
+        "harness_id": session.harness_id,
+        "provider_id": session.provider_id,
+        "harness_label": session.originator or session.harness_id,
+        "project_slug": session.project_slug,
+        "project_name": session.project_name,
+        "cwd": session.cwd,
         "first_user_message": first_user_msg[:500],
         "user_messages": user_messages,
         "user_msg_count": user_count,
@@ -452,20 +398,11 @@ def project_name_from_slug(slug: str) -> str:
     if slug in _project_name_cache:
         return _project_name_cache[slug]
 
-    from pathlib import Path
-    claude_projects = Path.home() / ".claude" / "projects"
+    from work_buddy.transcripts.providers.claude import (
+        project_name_from_slug as _resolve,
+    )
 
-    resolved = slug  # default: just the heuristic
-    if claude_projects.is_dir():
-        for sibling in claude_projects.iterdir():
-            if not sibling.is_dir() or sibling.name == slug:
-                continue
-            if slug.startswith(sibling.name + "-"):
-                resolved = _slug_to_readable(sibling.name)
-                break
-
-    if resolved == slug:
-        resolved = _slug_to_readable(slug)
+    resolved = _resolve(slug)
 
     _project_name_cache[slug] = resolved
     return resolved
@@ -510,13 +447,14 @@ def _format_session_when(
     return format_session_span(start, end, fallback=fallback)
 
 
-def _get_claude_code_conversations(
+def _get_agent_conversations(
     days: int,
     project_filter: list[str] | None = None,
     since: str | None = None,
     until: str | None = None,
+    provider_ids: list[str] | None = None,
 ) -> list[dict]:
-    """Scan ~/.claude/projects/ for recent Claude Code conversation JSONL files.
+    """Collect recent conversations from enabled transcript providers.
 
     Parses each session directly (no external dependency) and returns summaries.
     Uses a file-based cache to skip re-parsing unchanged JSONL files.
@@ -529,10 +467,6 @@ def _get_claude_code_conversations(
         since: ISO datetime for range start (overrides days).
         until: ISO datetime for range end.
     """
-    claude_dir = Path.home() / ".claude" / "projects"
-    if not claude_dir.is_dir():
-        return []
-
     if since:
         cutoff = datetime.fromisoformat(since).astimezone(timezone.utc)
     elif days <= 0:
@@ -548,74 +482,63 @@ def _get_claude_code_conversations(
     cache_dirty = False
     results = []
 
-    for project_dir in sorted(claude_dir.iterdir()):
-        if not project_dir.is_dir():
+    from work_buddy.transcripts import discover_sessions
+
+    # Provider discovery normally uses mtime as a cheap first-pass cutoff.
+    # An explicit historical window is authoritative, though: resumed files
+    # can have a recent mtime while their real message timestamps are old.
+    sessions = discover_sessions(
+        days=0 if since or until else days,
+        project_filter=project_filter,
+        provider_ids=provider_ids,
+    )
+    for session in sessions:
+        mtime = datetime.fromtimestamp(session.mtime, tz=timezone.utc)
+        if mtime < cutoff or mtime > upper:
+            continue
+        key = _cache_key(session.path)
+        if key and key in cache:
+            summary = cache[key]
+        else:
+            summary = _parse_session_jsonl(session.path)
+            if summary is not None and key:
+                cache[key] = summary
+                cache_dirty = True
+        if not summary:
             continue
 
-        project_slug = project_dir.name
-
-        # Project filter: skip projects that don't match any filter substring
-        if project_filter:
-            if not any(f.lower() in project_slug.lower() for f in project_filter):
+        s_real = parse_iso(summary.get("start_time"))
+        e_real = parse_iso(summary.get("end_time"))
+        if s_real or e_real:
+            s_eff = s_real or e_real
+            e_eff = e_real or s_real
+            if e_eff < cutoff or s_eff > upper:
                 continue
 
-        for jsonl_file in sorted(project_dir.glob("*.jsonl"), reverse=True):
-            if "subagents" in str(jsonl_file):
-                continue
-
-            try:
-                mtime = datetime.fromtimestamp(
-                    jsonl_file.stat().st_mtime, tz=timezone.utc
-                )
-                if mtime < cutoff or mtime > upper:
-                    continue
-            except OSError:
-                continue
-
-            # Check cache
-            key = _cache_key(jsonl_file)
-            if key and key in cache:
-                summary = cache[key]
-            else:
-                summary = _parse_session_jsonl(jsonl_file)
-                if summary is not None and key:
-                    cache[key] = summary
-                    cache_dirty = True
-
-            if not summary:
-                continue
-
-            # Window on the conversation's real time, not the file mtime. A
-            # resumed session has a present-day mtime but old message
-            # timestamps; the mtime check above is only a cheap pre-filter to
-            # avoid parsing every JSONL. Include the session iff its real
-            # [start, end] overlaps the requested window. Fall back to the
-            # mtime decision (already passed above) when neither timestamp
-            # parses, so timestamp-less sessions aren't silently dropped.
-            s_real = parse_iso(summary.get("start_time"))
-            e_real = parse_iso(summary.get("end_time"))
-            if s_real or e_real:
-                s_eff = s_real or e_real
-                e_eff = e_real or s_real
-                if e_eff < cutoff or s_eff > upper:
-                    continue
-
-            # Derive readable project name from slug
-            # Slugs look like "C--path-to-repos-work-buddy"
-            # The slug is the path with separators replaced by dashes
-            # Extract the last meaningful path segment
-            project_name = project_name_from_slug(project_slug)
-
-            summary_copy = dict(summary)
-            summary_copy["project_slug"] = project_slug
-            summary_copy["project_name"] = project_name
-            summary_copy["modified"] = to_local_naive(mtime).strftime("%Y-%m-%d %H:%M")
-            results.append(summary_copy)
+        summary_copy = dict(summary)
+        summary_copy["modified"] = to_local_naive(mtime).strftime("%Y-%m-%d %H:%M")
+        results.append(summary_copy)
 
     if cache_dirty:
         _save_cache(cache)
 
     return sorted(results, key=lambda x: x["modified"], reverse=True)
+
+
+def _get_claude_code_conversations(
+    days: int,
+    project_filter: list[str] | None = None,
+    since: str | None = None,
+    until: str | None = None,
+) -> list[dict]:
+    """Compatibility wrapper for callers that explicitly want Claude only."""
+    return _get_agent_conversations(
+        days,
+        project_filter,
+        since,
+        until,
+        provider_ids=["claudecode"],
+    )
 
 
 def collect(cfg: dict[str, Any]) -> str:
@@ -640,13 +563,15 @@ def collect(cfg: dict[str, Any]) -> str:
     specstory_files = _find_specstory_files(repos_root, specstory_days, since=range_since, until=range_until)
     claude_sessions = _parse_claude_history(claude_days, since=range_since, until=range_until)
     project_filter = chat_cfg.get("project_filter", None)
-    claude_conversations = _get_claude_code_conversations(claude_days, project_filter, since=range_since, until=range_until)
+    agent_conversations = _get_agent_conversations(
+        claude_days, project_filter, since=range_since, until=range_until
+    )
 
     # Apply chats.last=N cap to each source
     if last_n is not None:
         specstory_files = specstory_files[:last_n]
         claude_sessions = claude_sessions[:last_n]
-        claude_conversations = claude_conversations[:last_n]
+        agent_conversations = agent_conversations[:last_n]
 
     lines = [
         "# Chat Summary",
@@ -671,14 +596,15 @@ def collect(cfg: dict[str, Any]) -> str:
         lines.append("*No recent SpecStory sessions found.*")
         lines.append("")
 
-    if claude_conversations:
-        lines.append(f"## Claude Code Conversations (last {claude_days} days)")
+    if agent_conversations:
+        lines.append(f"## Agent Conversations (last {claude_days} days)")
         lines.append("")
-        for conv in claude_conversations[:20]:
+        for conv in agent_conversations[:20]:
             # Session header with duration
             duration_str = _format_duration(conv.get("start_time"), conv.get("end_time"))
             lines.append(
-                f"### [{conv['project_name']}] {conv.get('full_session_id', conv['session_id'])}"
+                f"### [{conv['project_name']}] [{conv.get('harness_label', 'agent')}] "
+                f"{conv.get('full_session_id', conv['session_id'])}"
             )
             session_when = _format_session_when(
                 conv.get("start_time"),
@@ -725,9 +651,9 @@ def collect(cfg: dict[str, Any]) -> str:
                 lines.append(f"Outcome: {snippet}")
                 lines.append("")
     else:
-        lines.append("## Claude Code Conversations")
+        lines.append("## Agent Conversations")
         lines.append("")
-        lines.append("*No recent Claude Code conversations found.*")
+        lines.append("*No recent agent conversations found.*")
         lines.append("")
 
     if claude_sessions:
@@ -804,7 +730,7 @@ def search_conversations(
     last: int = 20,
     show_context: bool = True,
 ) -> str:
-    """Search Claude Code conversations by keyword.
+    """Search enabled agent-harness conversations by keyword.
 
     Matches against all user messages, all assistant text blocks, tool
     names, and project name.  Returns formatted markdown with matching
@@ -822,7 +748,7 @@ def search_conversations(
     cfg = load_config()
     project_filter = cfg.get("chats", {}).get("project_filter", None)
 
-    conversations = _get_claude_code_conversations(days, project_filter)
+    conversations = _get_agent_conversations(days, project_filter)
     if last:
         conversations = conversations[:last]
 

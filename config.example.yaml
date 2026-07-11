@@ -319,6 +319,15 @@ chats:
   specstory_days: 7
   claude_history_days: 7
 
+# Harness transcript providers feeding IR, observability, and Dashboard Chats.
+# Third-party packages can register providers through the
+# `work_buddy.transcript_providers` Python entry-point group, then users opt in
+# by adding the provider id here.
+transcripts:
+  enabled:
+    - claudecode
+    - codexcli
+
 ir:
   db_path: null
   rrf_k: 60

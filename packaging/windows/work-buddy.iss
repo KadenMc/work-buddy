@@ -74,11 +74,11 @@ Source: "packaging\windows\bootstrap.ps1"; DestDir: "{app}\vendor"; Flags: ignor
 Name: "{localappdata}\work-buddy"
 
 [Tasks]
-; First-run agent harness. Keep this to setup-ready harnesses: Codex artifacts
-; generate today, but Codex session hook/env propagation is not yet proven
-; end-to-end, so it is not offered as an ordinary installer choice.
-Name: "harness\claudecode"; Description: "Set up for Claude Code (requires rulesync via Node/npm or PATH)"; Flags: exclusive
-Name: "harness\none"; Description: "Skip agent harness setup"; Flags: exclusive checkedonce
+; First-run agent harness. Provision installs the pinned, checksum-verified
+; standalone rulesync binary, so neither choice requires Node/npm.
+Name: "harness_claudecode"; Description: "Set up for Claude Code (recommended)"; Flags: exclusive checkedonce
+Name: "harness_codexcli"; Description: "Set up for Codex"; Flags: exclusive
+Name: "harness_none"; Description: "Skip agent harness setup"; Flags: exclusive
 ; Default-checked. The choice only controls REGISTRATION (bootstrap step 6);
 ; the tray's Python extra is always installed, so `wbuddy tray enable` works
 ; later either way.
@@ -171,8 +171,10 @@ end;
   leaves harness selection/projection for later. }
 function HarnessFlag(Param: String): String;
 begin
-  if WizardIsTaskSelected('harness\claudecode') then
+  if WizardIsTaskSelected('harness_claudecode') then
     Result := 'claudecode'
+  else if WizardIsTaskSelected('harness_codexcli') then
+    Result := 'codexcli'
   else
     Result := '';
 end;
@@ -221,9 +223,9 @@ begin
     WizardForm.FinishedHeadingLabel.Caption := 'work-buddy is installed';
     Msg :=
       'work-buddy is installed at ' + ExpandConstant('{app}') + '.' + #13#10 + #13#10 +
-      'To finish setup, open that folder in your selected agent harness and run setup. ' +
-      'For the recommended Claude Code path, run  /wb-setup guided  ' +
-      '(feature selection and the interactive integrations).';
+      'To finish setup, open that folder in your selected agent harness and run ' +
+      'the generated wb-setup command or skill in guided mode (feature selection ' +
+      'and the interactive integrations).';
     if not AutostartOk() then
       Msg := Msg + #13#10 + #13#10 +
         'Note: automatic start at login could not be set up. work-buddy is running ' +

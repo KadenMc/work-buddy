@@ -62,6 +62,7 @@ knowledge/store.local/
 .agents/
 .claude/rules/
 AGENTS.md
+AGENTS.override.md
 
 # Cygwin / MSYS bash crash dumps (machine-specific noise, regenerated
 # every time bash crashes — not useful in version control)

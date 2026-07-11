@@ -1302,15 +1302,25 @@ def register_tools(mcp: FastMCP) -> None:
     ensure_listeners_registered()
 
     @mcp.tool()
-    async def wb_init(session_id: str, ctx: Context = None) -> dict:
+    async def wb_init(
+        session_id: str,
+        harness_id: str = "",
+        harness_version: str = "",
+        workspace: str = "",
+        ctx: Context = None,
+    ) -> dict:
         """Initialize this connection for work-buddy. MUST be called once
         at the start of every agent session before any other wb_* tool.
 
-        The SessionStart hook sets your WORK_BUDDY_SESSION_ID environment
-        variable — pass that value here.
+        Pass the native session identity exposed by the harness. Generated
+        lifecycle hooks surface the right value: WORK_BUDDY_SESSION_ID for
+        Claude Code and CODEX_THREAD_ID for Codex.
 
         Args:
-            session_id: Your WORK_BUDDY_SESSION_ID (from the SessionStart hook)
+            session_id: Native harness session/thread id.
+            harness_id: Harness id such as claudecode or codexcli.
+            harness_version: Optional native harness version.
+            workspace: Optional session workspace path.
         """
         if not session_id or not session_id.strip():
             return _prepare({
@@ -1322,6 +1332,18 @@ def register_tools(mcp: FastMCP) -> None:
         # Ensure the agent session directory exists
         from work_buddy.mcp_server.activity_ledger import record_init
         record_init(session_id)
+        try:
+            from work_buddy.agent_session import update_manifest
+
+            update_manifest(
+                session_id=session_id,
+                harness_id=harness_id or "unknown",
+                harness_version=harness_version or None,
+                workspace=workspace or None,
+                native_session_id=session_id,
+            )
+        except (OSError, ValueError, RuntimeError):
+            pass
 
         # Quick bootstrap check — only fires when critical config is missing.
         # Intentionally lightweight: filesystem checks only, no HTTP/bridge.
@@ -1346,6 +1368,7 @@ def register_tools(mcp: FastMCP) -> None:
         result = {
             "status": "initialized",
             "session_id": session_id,
+            "harness_id": harness_id or "unknown",
             "message": "Session registered. All work-buddy tools are now available.",
         }
         if setup_hint:

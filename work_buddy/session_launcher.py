@@ -1,4 +1,4 @@
-"""Session launcher — visible, persistent Claude Code sessions.
+"""Session launcher for visible, persistent agent-harness sessions.
 
 This is the fourth agent spawn pattern, distinct from the three sidecar
 spawn modes in ``sidecar/dispatch/executor.py``:
@@ -337,8 +337,9 @@ def begin_session(
     session_name: str | None = None,
     bypass_permissions: bool = True,
     remote_control: bool = True,
+    harness_id: str = "claudecode",
 ) -> dict[str, Any]:
-    """Launch or resume a visible Claude Code session in a real terminal.
+    """Launch or resume a visible agent session in a real terminal.
 
     If ``session_id`` or ``session_name`` is provided, resumes that session.
     Otherwise, starts a new session.
@@ -375,6 +376,14 @@ def begin_session(
             "default_ttl": 30,
         }
 
+    if harness_id not in {"claudecode", "codexcli"}:
+        return {"status": "error", "error": f"Unsupported harness: {harness_id}"}
+    if harness_id != "claudecode" and remote_control:
+        return {
+            "status": "error",
+            "error": f"Remote control is not supported for {harness_id} sessions.",
+        }
+
     # --- Resume path ---
     if session_id or session_name:
         # When resuming, prefer the session's own recorded cwd over the repo
@@ -394,14 +403,20 @@ def begin_session(
             cwd=cwd,
             bypass_permissions=bypass_permissions,
             remote_control=remote_control,
+            harness_id=harness_id,
         )
 
     if cwd is None:
         cwd = str(_REPO_ROOT)
 
     # --- New session path ---
-    return _do_start(cwd=cwd, prompt=prompt, bypass_permissions=bypass_permissions,
-                     remote_control=remote_control)
+    return _do_start(
+        cwd=cwd,
+        prompt=prompt,
+        bypass_permissions=bypass_permissions,
+        remote_control=remote_control,
+        harness_id=harness_id,
+    )
 
 
 def _do_start(
@@ -409,6 +424,7 @@ def _do_start(
     prompt: str | None,
     bypass_permissions: bool = True,
     remote_control: bool = True,
+    harness_id: str = "claudecode",
 ) -> dict[str, Any]:
     """Launch a new visible session."""
     # IMPORTANT: bare `claude` opens the REPL but doesn't start a
@@ -420,12 +436,12 @@ def _do_start(
     # Prompt MUST be the positional arg (first after `claude`).
     # --remote-control takes an optional session name as its next arg,
     # so it must come AFTER the prompt to avoid eating it.
-    cmd = ["claude", prompt]
+    cmd = ["claude", prompt] if harness_id == "claudecode" else ["codex", prompt]
 
-    if remote_control:
+    if remote_control and harness_id == "claudecode":
         cmd.append("--remote-control")
 
-    if bypass_permissions:
+    if bypass_permissions and harness_id == "claudecode":
         cmd.append("--dangerously-skip-permissions")
 
     rc_label = "remote" if remote_control else "local"
@@ -467,6 +483,7 @@ def _do_resume(
     cwd: str,
     bypass_permissions: bool = True,
     remote_control: bool = True,
+    harness_id: str = "claudecode",
 ) -> dict[str, Any]:
     """Resume an existing session in a visible terminal."""
     resolved_id = _find_session_id(
@@ -482,12 +499,16 @@ def _do_resume(
             "error": f"No matching session found ({hint}). Use remote_session_list to see available sessions.",
         }
 
-    cmd = ["claude", "--resume", resolved_id]
+    cmd = (
+        ["claude", "--resume", resolved_id]
+        if harness_id == "claudecode"
+        else ["codex", "resume", resolved_id]
+    )
 
-    if remote_control:
+    if remote_control and harness_id == "claudecode":
         cmd.append("--remote-control")
 
-    if bypass_permissions:
+    if bypass_permissions and harness_id == "claudecode":
         cmd.append("--dangerously-skip-permissions")
 
     rc_label = "remote" if remote_control else "local"

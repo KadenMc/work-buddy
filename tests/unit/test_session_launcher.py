@@ -95,6 +95,20 @@ class TestDoStartCommandConstruction:
         result = _do_start(cwd="/tmp", prompt="hello", remote_control=False)
         assert "claude.ai/code" not in result["message"]
 
+    @patch("work_buddy.session_launcher._launch_and_verify", return_value=12345)
+    def test_codex_start_uses_native_command_without_claude_flags(self, mock_launch):
+        from work_buddy.session_launcher import _do_start
+
+        _do_start(
+            cwd="/tmp",
+            prompt="hello",
+            remote_control=False,
+            harness_id="codexcli",
+        )
+
+        cmd = mock_launch.call_args[0][0]
+        assert cmd == ["codex", "hello"]
+
 
 @pytest.mark.unit
 class TestDoResumeCommandConstruction:
@@ -128,6 +142,22 @@ class TestDoResumeCommandConstruction:
         cmd = mock_launch.call_args[0][0]
         assert "--remote-control" not in cmd
         assert result["remote_control"] is False
+
+    @patch("work_buddy.session_launcher._launch_and_verify", return_value=12345)
+    @patch("work_buddy.session_launcher._find_session_id", return_value="codex-thread")
+    def test_codex_resume_uses_native_subcommand(self, mock_find, mock_launch):
+        from work_buddy.session_launcher import _do_resume
+
+        result = _do_resume(
+            session_id="codex-thread",
+            session_name=None,
+            cwd="/tmp",
+            remote_control=False,
+            harness_id="codexcli",
+        )
+
+        assert mock_launch.call_args[0][0] == ["codex", "resume", "codex-thread"]
+        assert result["status"] == "ok"
 
 
 @pytest.mark.unit
@@ -177,3 +207,12 @@ class TestBeginSessionDispatch:
 
         _, kwargs = mock_resume.call_args
         assert kwargs["remote_control"] is False
+
+    @patch("work_buddy.session_launcher._check_remote_session_consent", return_value=True)
+    def test_codex_rejects_remote_control(self, mock_consent):
+        from work_buddy.session_launcher import begin_session
+
+        result = begin_session(prompt="hello", harness_id="codexcli")
+
+        assert result["status"] == "error"
+        assert "Remote control" in result["error"]

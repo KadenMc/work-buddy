@@ -395,8 +395,11 @@ function renderChatCard(c, searchHit) {
         ? '<div class="chat-card-project" data-project="' + escapeHtml(c.project_name) + '"'
             + ' title="Filter listing to this project">' + escapeHtml(c.project_name) + '</div>'
         : '<div class="chat-card-project-placeholder"></div>';
+    var harnessLabel = c.harness_label || (c.harness_id === 'codexcli' ? 'Codex' : 'Claude Code');
+    var harnessHTML = '<span class="chat-card-harness" title="Transcript source">'
+        + escapeHtml(harnessLabel) + '</span>';
     var sidHTML = c.session_id
-        ? '<code class="chat-card-sid" title="Full Claude Code session ID — useful for distinguishing forks of the same conversation (--resume).">'
+        ? '<code class="chat-card-sid" title="Full native session ID">'
             + escapeHtml(c.session_id) + '</code>'
         : '';
 
@@ -404,6 +407,7 @@ function renderChatCard(c, searchHit) {
         + ' data-sid="' + c.session_id + '">'
         + '<div class="chat-card-header-row">'
         + projectHTML
+        + harnessHTML
         + sidHTML
         + '</div>'
         + '<div class="chat-card-title">' + title + '</div>'
@@ -1154,6 +1158,7 @@ function renderChatHeader(meta) {
     }) || {};
 
     var leftPieces = [
+        escapeHtml(listEntry.harness_label || (meta.harness_id === 'codexcli' ? 'Codex' : 'Claude Code')),
         '<code>' + (meta.session_id ? meta.session_id.substring(0, 8) : '--') + '</code>',
         (meta.message_count || 0) + ' msgs',
         meta.duration || '--',
@@ -1175,7 +1180,7 @@ function renderChatHeader(meta) {
         + leftPieces.join(' &middot; ')
         + '</div>'
         + '<div class="chats-hdr-right">'
-        + '<button class="chats-hdr-btn" id="chats-hdr-resume" ' + wbActAttrs('chatsResumeSessionAction') + ' title="Open a new local terminal and resume this session (claude --resume). No prompt sent.">Resume</button>'
+        + '<button class="chats-hdr-btn" id="chats-hdr-resume" ' + wbActAttrs('chatsResumeSessionAction') + ' title="Open a new local terminal and resume this native agent session. No prompt sent.">Resume</button>'
         + '<button class="chats-hdr-btn" ' + wbActAttrs('chatsToggleInSearchAction') + '>Search</button>'
         + '<span class="chats-hdr-divider"></span>'
         + '<button class="chats-hdr-btn' + (chatsState.roleFilter === 'user' ? ' active' : '') + '" ' + wbActAttrs('chatsFilterRoleAction', { role: 'user' }) + '>User</button>'
@@ -1187,7 +1192,9 @@ function renderChatHeader(meta) {
 async function chatsResumeSession() {
     var sid = chatsState.selectedId;
     if (!sid) return;
-    if (!confirm('Open a new Claude Code terminal and resume this session? (claude --resume — no prompt sent, but a new window will appear on your desktop.)')) return;
+    var entry = (chatsState.chats || []).find(function(c) { return c.session_id === sid; }) || {};
+    var label = entry.harness_label || (entry.harness_id === 'codexcli' ? 'Codex' : 'Claude Code');
+    if (!confirm('Open a new ' + label + ' terminal and resume this session? No prompt is sent, but a new window will appear on your desktop.')) return;
     var btn = document.getElementById('chats-hdr-resume');
     var originalLabel = btn ? btn.textContent : 'Resume';
     if (btn) { btn.disabled = true; btn.textContent = 'Opening…'; }

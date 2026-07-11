@@ -15,9 +15,14 @@ _FEATURE_ORDER = ("rules", "mcp", "commands", "skills", "hooks", "permissions")
 
 
 class RulesyncBackend:
-    def __init__(self, command: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        command: list[str] | None = None,
+        *,
+        install_toolchain: bool = False,
+    ) -> None:
         cfg = load_harness_config()
-        self.command = command or rulesync_command(cfg)
+        self.command = command or rulesync_command(cfg, install=install_toolchain)
 
     def generate(
         self,

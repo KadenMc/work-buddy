@@ -401,43 +401,40 @@ def _scan_tool_names(path: Path) -> dict[Path, str]:
     The inspector's ``_extract_writes_from_jsonl`` drops the tool name.
     We re-walk the JSONL to recover it. Latest-write wins.
     """
-    import json
+    import re
 
-    from work_buddy.sessions.inspector import _WRITE_TOOLS
+    from work_buddy.sessions.inspector import (
+        _WRITE_TOOLS,
+        _tool_calls_for_path,
+        _transcript_for_path,
+    )
 
     result: dict[Path, str] = {}
-    try:
-        with open(path, encoding="utf-8") as f:
-            for line in f:
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                content = entry.get("message", {}).get("content", [])
-                if not isinstance(content, list):
-                    continue
-                for block in content:
-                    if not isinstance(block, dict):
-                        continue
-                    if block.get("type") != "tool_use":
-                        continue
-                    name = block.get("name", "")
-                    if name not in _WRITE_TOOLS:
-                        continue
-                    inp = block.get("input", {})
-                    fp = inp.get("file_path") or inp.get("notebook_path")
-                    if not fp:
-                        continue
-                    try:
-                        resolved = Path(fp).resolve()
-                    except (ValueError, OSError):
-                        continue
-                    # Last tool to write each file wins — matches the
-                    # latest-timestamp semantics of the existing
-                    # _extract_writes_from_jsonl.
-                    result[resolved] = name
-    except OSError:
-        pass
+    session, _ = _transcript_for_path(path)
+    base = Path(session.cwd) if session.cwd else path.parent
+    for call in _tool_calls_for_path(path):
+        arguments = call.arguments if isinstance(call.arguments, dict) else {}
+        candidates: list[str] = []
+        tool_name = call.name
+        if call.name in _WRITE_TOOLS:
+            value = arguments.get("file_path") or arguments.get("notebook_path")
+            if value:
+                candidates.append(str(value))
+        patch_paths = re.findall(
+            r"^\*\*\* (?:Update|Add|Delete) File: (.+?)\s*$",
+            call.arguments_text,
+            flags=re.MULTILINE,
+        )
+        if patch_paths:
+            candidates.extend(value.strip() for value in patch_paths)
+            tool_name = "apply_patch"
+        for value in candidates:
+            try:
+                candidate = Path(value)
+                resolved = (candidate if candidate.is_absolute() else base / candidate).resolve()
+            except (ValueError, OSError):
+                continue
+            result[resolved] = tool_name
     return result
 
 

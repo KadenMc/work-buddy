@@ -95,6 +95,9 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         for row in conn.execute("PRAGMA table_info(observed_sessions)")
     }
     for col_name, col_decl in (
+        ("harness_id", "TEXT NOT NULL DEFAULT 'claudecode'"),
+        ("native_session_id", "TEXT"),
+        ("cwd", "TEXT"),
         ("commits_scanned_mtime", "REAL"),
         ("writes_scanned_mtime", "REAL"),
         ("prs_scanned_mtime", "REAL"),
@@ -104,6 +107,13 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
             conn.execute(
                 f"ALTER TABLE observed_sessions ADD COLUMN {col_name} {col_decl}"
             )
+    # This index must be created after the forward migration. Putting it in
+    # SCHEMA breaks legacy databases whose observed_sessions table predates
+    # harness_id: CREATE TABLE IF NOT EXISTS preserves the old table shape.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_observed_sessions_harness "
+        "ON observed_sessions(harness_id)"
+    )
     # Drop legacy summary tables (migration completed 2026-05-28).
     conn.execute("DROP TABLE IF EXISTS topic_summaries")
     conn.execute("DROP TABLE IF EXISTS session_summaries")

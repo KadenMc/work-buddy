@@ -5,7 +5,13 @@ from __future__ import annotations
 from work_buddy.harness.model import HarnessTarget
 
 
-_HARNESS_FEATURE_ORDER = ("rules", "mcp", "commands", "skills")
+_HARNESS_FEATURE_ORDER = ("rules", "mcp", "commands", "skills", "hooks")
+_LIFECYCLE_EVENTS = (
+    "session-start",
+    "user-prompt-submit",
+    "post-tool-use",
+    "stop",
+)
 
 _HARNESSES: dict[str, HarnessTarget] = {
     "claudecode": HarnessTarget(
@@ -14,19 +20,20 @@ _HARNESSES: dict[str, HarnessTarget] = {
         rulesync_target="claudecode",
         description="Claude Code project surface: CLAUDE/command/MCP artifacts.",
         features=_HARNESS_FEATURE_ORDER,
+        session_env="WORK_BUDDY_SESSION_ID",
+        transcript_provider="claudecode",
+        lifecycle_events=_LIFECYCLE_EVENTS,
     ),
     "codexcli": HarnessTarget(
         id="codexcli",
         label="Codex CLI",
         rulesync_target="codexcli",
         description="Codex project surface: AGENTS.md, MCP config, and skills.",
-        features=("rules", "mcp", "skills"),
+        features=("rules", "mcp", "skills", "hooks"),
         simulate_skills=True,
-        setup_ready=False,
-        setup_note=(
-            "experimental: Codex artifacts generate, but session hook/env "
-            "propagation is not yet end-to-end setup-ready"
-        ),
+        session_env="CODEX_THREAD_ID",
+        transcript_provider="codexcli",
+        lifecycle_events=_LIFECYCLE_EVENTS,
     ),
 }
 

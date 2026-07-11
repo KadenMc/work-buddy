@@ -1,6 +1,6 @@
 """Session-level conversation inspection for the MCP gateway.
 
-Provides random-access into individual Claude Code conversation sessions:
+Provides random-access into normalized agent-harness conversation sessions:
 paginated message browsing, context expansion around a specific message,
 mapping from IR search hits (span_index) back to conversation turns,
 and structured extraction of git commits made during sessions.
@@ -22,7 +22,8 @@ from work_buddy.ir.store import get_connection, load_documents
 # Session resolution
 # ---------------------------------------------------------------------------
 
-_CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
+_DEFAULT_CLAUDE_PROJECTS = Path.home() / ".claude" / "projects"
+_CLAUDE_PROJECTS = _DEFAULT_CLAUDE_PROJECTS
 
 
 def resolve_session_path(session_id: str) -> tuple[Path, str]:
@@ -35,19 +36,32 @@ def resolve_session_path(session_id: str) -> tuple[Path, str]:
     a user-supplied (possibly partial) session ID to the authoritative full UUID
     should call this function or :func:`resolve_session_id`.
     """
-    if not _CLAUDE_PROJECTS.is_dir():
-        raise FileNotFoundError("Claude projects directory not found")
-
     matches: list[tuple[Path, str]] = []
-    for project_dir in _CLAUDE_PROJECTS.iterdir():
-        if not project_dir.is_dir():
-            continue
-        for jsonl in project_dir.glob("*.jsonl"):
-            if "subagents" in str(jsonl):
+    if _CLAUDE_PROJECTS.is_dir():
+        for project_dir in _CLAUDE_PROJECTS.iterdir():
+            if not project_dir.is_dir():
                 continue
-            stem = jsonl.stem
-            if stem == session_id or stem.startswith(session_id):
-                matches.append((jsonl, stem))
+            for jsonl in project_dir.glob("*.jsonl"):
+                if "subagents" in str(jsonl):
+                    continue
+                stem = jsonl.stem
+                if stem == session_id or stem.startswith(session_id):
+                    matches.append((jsonl, stem))
+
+    # Existing tests and isolated tools patch `_CLAUDE_PROJECTS`; in that
+    # mode the patched tree is the complete world and must not leak live user
+    # Codex sessions into a temp-backed scan.
+    if _CLAUDE_PROJECTS == _DEFAULT_CLAUDE_PROJECTS:
+        from work_buddy.transcripts import discover_sessions
+
+        for session in discover_sessions(days=0, provider_ids=["codexcli"]):
+            if (
+                session.session_id == session_id
+                or session.session_id.startswith(session_id)
+                or session.native_session_id == session_id
+                or session.native_session_id.startswith(session_id)
+            ):
+                matches.append((session.path, session.session_id))
 
     if not matches:
         raise FileNotFoundError(f"No session found matching '{session_id}'")
@@ -75,6 +89,20 @@ def resolve_session_id(session_id: str) -> str:
     return full_id
 
 
+def _resolve_transcript_session(session_id: str):
+    """Resolve a session and the provider instance that can parse its path."""
+    path, _ = resolve_session_path(session_id)
+    from work_buddy.transcripts import provider_for_session, session_from_path
+    from work_buddy.transcripts.providers.claude import ClaudeTranscriptProvider
+
+    claude = ClaudeTranscriptProvider(projects_root=_CLAUDE_PROJECTS)
+    session = claude.session_from_path(path)
+    if session is not None:
+        return session, claude
+    session = session_from_path(path)
+    return session, provider_for_session(session)
+
+
 def get_session_cwd(session_id: str) -> str | None:
     """Recover the working directory a session ran in from its JSONL.
 
@@ -84,9 +112,12 @@ def get_session_cwd(session_id: str) -> str | None:
     ``cwd`` is stamped in the first 50 records.
     """
     try:
-        path, _ = resolve_session_path(session_id)
+        session, _ = _resolve_transcript_session(session_id)
     except FileNotFoundError:
         return None
+    if session.cwd:
+        return session.cwd
+    path = session.path
     try:
         with path.open("r", encoding="utf-8") as fh:
             for i, line in enumerate(fh):
@@ -110,14 +141,18 @@ def get_session_cwd(session_id: str) -> str | None:
 
 
 class ConversationSession:
-    """Random-access wrapper around a Claude Code JSONL session file.
+    """Random-access wrapper around a normalized harness transcript.
 
     Lazy-loads turns on first access and builds a span-to-turn mapping
     that mirrors the IR chunking algorithm for reliable ``session_locate``.
     """
 
     def __init__(self, session_id: str) -> None:
-        self._path, self._session_id = resolve_session_path(session_id)
+        session, provider = _resolve_transcript_session(session_id)
+        self._transcript_session = session
+        self._provider = provider
+        self._path = session.path
+        self._session_id = session.session_id
         self._turns: list[dict] | None = None
         self._span_map: dict[int, tuple[int, int]] | None = None
 
@@ -126,7 +161,9 @@ class ConversationSession:
     def _ensure_loaded(self) -> None:
         if self._turns is not None:
             return
-        self._turns = list(iter_session_turns(self._path))
+        self._turns = [turn.to_dict() for turn in self._provider.iter_turns(
+            self._transcript_session
+        )]
         self._build_span_map()
 
     def _build_span_map(self) -> None:
@@ -209,6 +246,12 @@ class ConversationSession:
     def metadata(self) -> dict[str, Any]:
         return {
             "session_id": self._session_id,
+            "native_session_id": self._transcript_session.native_session_id,
+            "harness_id": self._transcript_session.harness_id,
+            "provider_id": self._transcript_session.provider_id,
+            "project_name": self._transcript_session.project_name,
+            "project_slug": self._transcript_session.project_slug,
+            "cwd": self._transcript_session.cwd,
             "message_count": self.message_count,
             "duration": self.duration,
             "start_time": self.start_time,
@@ -589,6 +632,13 @@ def _recent_sessions(
                 continue
             if jsonl.stat().st_mtime >= cutoff:
                 results.append((jsonl, jsonl.stem))
+    if _CLAUDE_PROJECTS == _DEFAULT_CLAUDE_PROJECTS:
+        from work_buddy.transcripts import discover_sessions
+
+        for session in discover_sessions(days=days, provider_ids=["codexcli"]):
+            if project and session.project_name != project:
+                continue
+            results.append((session.path, session.session_id))
     return results
 
 
@@ -619,6 +669,13 @@ def _all_sessions(project: str | None = None) -> list[tuple[Path, str]]:
             if "subagents" in str(jsonl):
                 continue
             results.append((jsonl, jsonl.stem))
+    if _CLAUDE_PROJECTS == _DEFAULT_CLAUDE_PROJECTS:
+        from work_buddy.transcripts import discover_sessions
+
+        for session in discover_sessions(days=0, provider_ids=["codexcli"]):
+            if project and session.project_name != project:
+                continue
+            results.append((session.path, session.session_id))
     return results
 
 
@@ -682,7 +739,7 @@ def _extract_commits_parallel(
     return all_commits
 
 
-def _extract_commits_single_pass(
+def _extract_commits_single_pass_legacy(
     path: Path, session_id: str,
 ) -> list[dict[str, Any]]:
     """Extract git commits from a JSONL file in a single pass.
@@ -802,7 +859,33 @@ def _extract_commits_single_pass(
     return commits
 
 
-def _extract_prs_single_pass(
+def _extract_commits_single_pass(
+    path: Path,
+    session_id: str,
+) -> list[dict[str, Any]]:
+    """Extract git commits from canonical provider tool calls."""
+    commits: list[dict[str, Any]] = []
+    for call in _tool_calls_for_path(path):
+        command = call.arguments_text
+        if call.is_error or not _GIT_COMMIT_RE.search(command):
+            continue
+        match = _COMMIT_OUTPUT_RE.search(call.output_text)
+        if not match:
+            continue
+        files = _FILES_CHANGED_RE.search(call.output_text)
+        commits.append({
+            "session_id": session_id,
+            "hash": match.group(2),
+            "branch": match.group(1),
+            "message": match.group(3).strip(),
+            "files_changed": int(files.group(1)) if files else None,
+            "timestamp": call.timestamp,
+            "message_index": call.message_index,
+        })
+    return commits
+
+
+def _extract_prs_single_pass_legacy(
     path: Path, session_id: str,
 ) -> list[dict[str, Any]]:
     """Extract GitHub PR-activity events from a JSONL file in one pass.
@@ -936,6 +1019,34 @@ def _extract_prs_single_pass(
     return prs
 
 
+def _extract_prs_single_pass(
+    path: Path,
+    session_id: str,
+) -> list[dict[str, Any]]:
+    """Extract GitHub PR activity from canonical provider tool calls."""
+    prs: list[dict[str, Any]] = []
+    for call in _tool_calls_for_path(path):
+        command = call.arguments_text
+        verb = _GH_PR_RE.search(command)
+        if call.is_error or not verb:
+            continue
+        match = _PR_URL_RE.search(f"{command}\n{call.output_text}")
+        if not match:
+            continue
+        repo = match.group(1)
+        number = int(match.group(2))
+        prs.append({
+            "session_id": session_id,
+            "pr_number": number,
+            "pr_url": f"https://github.com/{repo}/pull/{number}",
+            "repo": repo,
+            "action": _PR_ACTION_BY_VERB[verb.group(1)],
+            "ts": call.timestamp,
+            "message_index": call.message_index,
+        })
+    return prs
+
+
 # ---------------------------------------------------------------------------
 # File write extraction helpers
 # ---------------------------------------------------------------------------
@@ -943,7 +1054,7 @@ def _extract_prs_single_pass(
 _WRITE_TOOLS = frozenset({"Write", "Edit", "NotebookEdit"})
 
 
-def _extract_writes_from_jsonl(path: Path) -> dict[Path, str]:
+def _extract_writes_from_jsonl_legacy(path: Path) -> dict[Path, str]:
     """Parse a JSONL session file and return file paths with last-write timestamps.
 
     Scans assistant ``tool_use`` blocks for Write, Edit, and NotebookEdit calls
@@ -995,6 +1106,53 @@ def _extract_writes_from_jsonl(path: Path) -> dict[Path, str]:
                     written[resolved] = timestamp
 
     return written
+
+
+def _extract_writes_from_jsonl(path: Path) -> dict[Path, str]:
+    """Extract file writes from canonical provider tool calls."""
+    written: dict[Path, str] = {}
+    session, _ = _transcript_for_path(path)
+    base = Path(session.cwd) if session.cwd else path.parent
+    for call in _tool_calls_for_path(path):
+        timestamp = call.timestamp or ""
+        arguments = call.arguments if isinstance(call.arguments, dict) else {}
+        candidates: list[str] = []
+        if call.name in _WRITE_TOOLS:
+            value = arguments.get("file_path") or arguments.get("notebook_path")
+            if value:
+                candidates.append(str(value))
+        for match in re.finditer(
+            r"^\*\*\* (?:Update|Add|Delete) File: (.+?)\s*$",
+            call.arguments_text,
+            flags=re.MULTILINE,
+        ):
+            candidates.append(match.group(1).strip())
+        for value in candidates:
+            try:
+                candidate = Path(value)
+                resolved = (candidate if candidate.is_absolute() else base / candidate).resolve()
+            except (OSError, ValueError):
+                continue
+            if resolved not in written or timestamp > written[resolved]:
+                written[resolved] = timestamp
+    return written
+
+
+def _transcript_for_path(path: Path):
+    from work_buddy.transcripts import provider_for_session, session_from_path
+    from work_buddy.transcripts.providers.claude import ClaudeTranscriptProvider
+
+    claude = ClaudeTranscriptProvider(projects_root=_CLAUDE_PROJECTS)
+    session = claude.session_from_path(path)
+    if session is not None:
+        return session, claude
+    session = session_from_path(path)
+    return session, provider_for_session(session)
+
+
+def _tool_calls_for_path(path: Path):
+    session, provider = _transcript_for_path(path)
+    return list(provider.iter_tool_calls(session))
 
 
 def _committed_files_per_session(

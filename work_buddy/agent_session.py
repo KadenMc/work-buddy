@@ -1,6 +1,6 @@
 """Agent session identity and directory management.
 
-Each Claude session gets its own directory under agents/ with:
+Each agent-harness session gets its own directory under agents/ with:
 - manifest.json     — full session metadata (session ID, timestamps, etc.)
 - consent.db        — SQLite consent grants for this session
 - consent_audit.log — audit trail for this session
@@ -58,27 +58,31 @@ def get_originating_session() -> str | None:
 
 
 def _get_session_id() -> str:
-    """Get the current Claude Code session ID from environment.
+    """Get the current native agent session ID from environment.
 
-    Requires WORK_BUDDY_SESSION_ID to be set. This is a hard requirement —
-    no fallback, no auto-discovery. Each agent session must set this
-    before running any work_buddy code.
+    Generated hooks expose ``WORK_BUDDY_SESSION_ID`` for compatibility. Codex
+    also provides its native ``CODEX_THREAD_ID`` to every local command, so it
+    is a deterministic fallback when the hook subprocess cannot mutate the
+    parent agent process environment.
 
     Raises RuntimeError if not set.
     """
-    session_id = os.environ.get("WORK_BUDDY_SESSION_ID")
+    session_id = os.environ.get("WORK_BUDDY_SESSION_ID") or os.environ.get(
+        "CODEX_THREAD_ID"
+    )
     if not session_id:
         raise RuntimeError(
-            "WORK_BUDDY_SESSION_ID environment variable is not set.\n"
+            "No agent session identity is available.\n"
             "\n"
             "The SessionStart hook should have output your session ID in the\n"
-            "conversation context as: WORK_BUDDY_SESSION_ID=<uuid>\n"
+            "conversation context as WORK_BUDDY_SESSION_ID=<uuid>, or Codex\n"
+            "should provide CODEX_THREAD_ID automatically.\n"
             "\n"
             "If you see it in your context, run:\n"
             '  export WORK_BUDDY_SESSION_ID="<uuid-from-hook-output>"\n'
             "\n"
             "If the hook didn't fire, discover your session ID manually:\n"
-            "  Look in your OS temp directory under claude/ for this project\n"
+            "  Inspect your harness's native session metadata for this project\n"
             '  export WORK_BUDDY_SESSION_ID="<your-session-id>"\n'
         )
     return session_id
@@ -92,8 +96,8 @@ def get_agents_dir() -> Path:
 def get_session_dir(session_id: str | None = None) -> Path:
     """Get or create the current session's agent directory.
 
-    If session_id is not provided, reads from WORK_BUDDY_SESSION_ID
-    environment variable (required — raises RuntimeError if not set).
+    If session_id is not provided, reads from WORK_BUDDY_SESSION_ID or the
+    native Codex CODEX_THREAD_ID fallback.
 
     Creates the directory and manifest.json if they don't exist.
 
@@ -137,6 +141,8 @@ def get_session_dir(session_id: str | None = None) -> Path:
         "directory": dir_name,
         "project": str(repo_root()),
         "entrypoint": os.environ.get("CLAUDE_CODE_ENTRYPOINT", "unknown"),
+        "harness_id": os.environ.get("WORK_BUDDY_HARNESS_ID")
+        or ("codexcli" if os.environ.get("CODEX_THREAD_ID") else "unknown"),
     }
     manifest_path = session_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")

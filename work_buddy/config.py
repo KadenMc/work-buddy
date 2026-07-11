@@ -79,6 +79,11 @@ DEFAULTS = {
         "specstory_days": 7,
         "claude_history_days": 7,
     },
+    "transcripts": {
+        # Providers are pluggable through the
+        # `work_buddy.transcript_providers` Python entry-point group.
+        "enabled": ["claudecode", "codexcli"],
+    },
     "inference": {
         # Static roster for the Local model fleet view. Discovery is live
         # (the configured provider enumerates reachable machines); this
