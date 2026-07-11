@@ -513,6 +513,61 @@ def check_github_backup_freshness() -> dict[str, Any]:
     }
 
 
+def check_conversation_summaries() -> dict[str, Any]:
+    """Report opted-out, dormant, or active queue/coverage state."""
+    from work_buddy.summarization.policy import summaries_active
+
+    if not summaries_active():
+        return {
+            "ok": True,
+            "state": "opted_out",
+            "detail": "Session summaries are explicitly opted out.",
+        }
+
+    from work_buddy.summarization.orchestrator import chain_has_plausible_backend
+    from work_buddy.summarization.queue import queue_stats
+    from work_buddy.summarization.worker import _resolve_config
+
+    max_attempts = int(_resolve_config().get("max_attempts", 3))
+    stats = queue_stats(
+        "conversation_session", max_attempts=max_attempts,
+    )
+    state = "active" if chain_has_plausible_backend() else "dormant"
+    parts = [
+        f"{stats['active']} queued",
+        f"{stats['dead_lettered']} dead-lettered",
+    ]
+
+    try:
+        from work_buddy.conversation_observability.db import (
+            get_connection as observed_connection,
+        )
+        from work_buddy.summarization.db import get_connection as summary_connection
+
+        conn = observed_connection()
+        try:
+            observed = int(conn.execute(
+                "SELECT COUNT(*) AS n FROM observed_sessions"
+            ).fetchone()["n"])
+        finally:
+            conn.close()
+        conn = summary_connection()
+        try:
+            summarized = int(conn.execute(
+                "SELECT COUNT(*) AS n FROM summary_items "
+                "WHERE namespace = 'conversation_session' AND status = 'ok'"
+            ).fetchone()["n"])
+        finally:
+            conn.close()
+        parts.append(f"{summarized} of {observed} observed sessions summarized")
+    except Exception as exc:  # pragma: no cover - defensive visibility
+        parts.append(f"coverage unavailable: {exc}")
+
+    if state == "dormant":
+        parts.insert(0, "no plausible configured LLM backend")
+    return {"ok": True, "state": state, "detail": "; ".join(parts)}
+
+
 def check_google_calendar_native_api() -> dict[str, Any]:
     """Runtime probe: the Google Calendar API answers with the stored native
     OAuth token. Resolves only on diagnose (the component is ``health_source``

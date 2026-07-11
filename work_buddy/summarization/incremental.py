@@ -34,6 +34,8 @@ import json
 import logging
 from typing import Any
 
+from work_buddy.llm.response import ErrorKind
+
 from work_buddy.summarization.protocol import (
     LLMCaller,
     Provenance,
@@ -79,7 +81,8 @@ def refresh_one_incremental(
     """Run one incremental refresh against the given item.
 
     Returns the merged `SummaryNode` tree after save, or `None` if there was
-    nothing to do (empty session, no fresh turns) or the LLM/parse failed.
+    nothing to do (empty session or no fresh turns). LLM and parse failures
+    are recorded and then raised with a stable ``ErrorKind`` for the worker.
 
     The caller is expected to have already verified that the item is stale —
     this function does not consult `store.is_fresh`.
@@ -170,7 +173,8 @@ def refresh_one_incremental(
         raise SummarizationError(
             f"Prior-topic context (~{context_token_estimate} tokens) exceeds "
             f"per-call budget (~{budget_tokens} × {_PATHWAY_THRESHOLD_RATIO}); "
-            f"finalization heuristic may need re-tuning"
+            f"finalization heuristic may need re-tuning",
+            error_kind=ErrorKind.CONTEXT_EXCEEDED,
         )
 
     # Quick fresh-tail size probe via render_from (which respects the 40k
@@ -255,22 +259,35 @@ def _refresh_single_call(
     )
 
     if result.is_error():
+        message = result.error or "llm error"
         store.record_error(
             item_id,
-            result.error or "llm error",
+            message,
             build_error_provenance(summarizer, profile),
         )
-        return None
+        raise SummarizationError(
+            message,
+            error_kind=result.error_kind or ErrorKind.UNKNOWN,
+            recorded=True,
+        )
 
     try:
         new_root = strategy.parse(result.structured_output, result.content)
     except Exception as exc:
+        message = f"parse error: {exc}"
         store.record_error(
             item_id,
-            f"parse error: {exc}",
+            message,
             build_provenance(summarizer, result, profile),
         )
-        return None
+        raise SummarizationError(
+            message,
+            error_kind=(
+                getattr(exc, "error_kind", None)
+                or ErrorKind.MALFORMED_RESPONSE
+            ),
+            recorded=True,
+        ) from exc
 
     prov = build_provenance(summarizer, result, profile)
     activity_kind = new_root.extra.get("activity_kind", "unknown")
@@ -392,12 +409,20 @@ def _refresh_chunked(
         if result.is_error():
             # Per PRD: on chunked failure mid-way, record an error and
             # bail. Don't half-update the store with partial state.
+            message = (
+                f"chunked refresh failed at chunk {chunks_used}: "
+                f"{result.error or 'llm error'}"
+            )
             store.record_error(
                 item_id,
-                f"chunked refresh failed at chunk {chunks_used}: {result.error}",
+                message,
                 build_error_provenance(summarizer, profile),
             )
-            return None
+            raise SummarizationError(
+                message,
+                error_kind=result.error_kind or ErrorKind.UNKNOWN,
+                recorded=True,
+            )
 
         if result.model:
             models_used.append(result.model)
@@ -405,12 +430,22 @@ def _refresh_chunked(
         try:
             chunk_root = strategy.parse(result.structured_output, result.content)
         except Exception as exc:
+            message = (
+                f"chunked refresh parse error at chunk {chunks_used}: {exc}"
+            )
             store.record_error(
                 item_id,
-                f"chunked refresh parse error at chunk {chunks_used}: {exc}",
+                message,
                 build_provenance(summarizer, result, profile),
             )
-            return None
+            raise SummarizationError(
+                message,
+                error_kind=(
+                    getattr(exc, "error_kind", None)
+                    or ErrorKind.MALFORMED_RESPONSE
+                ),
+                recorded=True,
+            ) from exc
 
         # Merge chunk_root.children into accumulator.
         if accumulated_root is None:
@@ -545,8 +580,9 @@ def _estimate_topic_context_tokens(
 
 
 def _resolve_per_call_budget() -> int:
-    """Resolve the per-call input token budget from config, falling back to
-    the frontier_fast default. PRD §6 config block:
+    """Resolve the input budget from an override or the primary model tier.
+
+    PRD §6 config block:
 
         conversation_observability:
           summaries:
@@ -565,7 +601,15 @@ def _resolve_per_call_budget() -> int:
             return explicit
     except Exception:
         pass
-    return _DEFAULT_PER_CALL_BUDGET_TOKENS
+    try:
+        from work_buddy.summarization.orchestrator import _resolve_model_chain
+
+        primary = _resolve_model_chain()[0]
+        return _TIER_BUDGETS_TOKENS.get(
+            primary.value, _DEFAULT_PER_CALL_BUDGET_TOKENS,
+        )
+    except Exception:
+        return _DEFAULT_PER_CALL_BUDGET_TOKENS
 
 
 # ---------------------------------------------------------------------------

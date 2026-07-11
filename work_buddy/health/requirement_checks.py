@@ -706,6 +706,29 @@ def check_jina_api_key() -> dict[str, Any]:
     return {"ok": False, "detail": f"${env_name} not set — the keyless ddgs fallback is used instead"}
 
 
+def check_summaries_llm_backend() -> dict[str, Any]:
+    """No-network preflight for the configured summarization model chain."""
+    from work_buddy.summarization.orchestrator import (
+        _resolve_model_chain,
+        chain_has_plausible_backend,
+    )
+
+    chain = [tier.value for tier in _resolve_model_chain()]
+    if chain_has_plausible_backend():
+        return {
+            "ok": True,
+            "detail": f"Model chain {chain} has a plausible configured backend.",
+        }
+    return {
+        "ok": False,
+        "detail": (
+            f"Model chain {chain} has no plausible backend. Configure its "
+            "local profile or provide an Anthropic API key; the worker will "
+            "remain dormant until then."
+        ),
+    }
+
+
 def check_thunderbird_bridge() -> dict[str, Any]:
     """Check the thunderbird-work-buddy companion bridge is reachable.
 

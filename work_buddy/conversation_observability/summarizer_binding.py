@@ -295,11 +295,9 @@ def build_session_summarizer(use_incremental: bool = False) -> Summarizer:
       schema_v=1) + `DurableSummaryStore(selection=1, cache=1)`. v1-shape
       legacy callers (tests, query helpers, the v1 cron) always get this.
 
-    The feature flag `conversation_observability.summaries.use_incremental`
-    is consulted by the WORKER directly (see `summarization/worker.py`) and
-    by `refresh_observed_sessions` for the auto-enqueue gate — NOT by this
-    function. This separation prevents the lazy singleton from flipping
-    legacy callers to v2 strategy when the worker flag is enabled.
+    The activation policy is consulted by the worker and observed-session
+    enqueue path, not by this factory. This separation prevents the lazy v1
+    singleton from flipping legacy callers to v2 strategy.
     """
     if use_incremental:
         from work_buddy.summarization.strategies import IncrementalLayeredStrategy

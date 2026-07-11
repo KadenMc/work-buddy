@@ -47,6 +47,13 @@ class TestClassifyError:
         assert _classify_error("Timed out waiting", None) is ErrorKind.TIMEOUT
         assert _classify_error("Rate limit hit (429)", None) is ErrorKind.RATE_LIMITED
         assert _classify_error("invalid api key", None) is ErrorKind.AUTH
+        assert _classify_error(
+            "Your credit balance is too low to access the Anthropic API.",
+            None,
+        ) is ErrorKind.AUTH
+        assert _classify_error(
+            "Request denied due to insufficient credit", None,
+        ) is ErrorKind.AUTH
         # Unknown text → UNKNOWN
         assert _classify_error("something weird", None) is ErrorKind.UNKNOWN
 

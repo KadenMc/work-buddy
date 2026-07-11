@@ -90,8 +90,8 @@ Foreign-key cascades use `SqliteRowsStorage.post_delete_sql` rather than SQLite'
 
 Two sidecar crons keep the DB fresh independent of caller demand:
 
-- `conversation-observability-refresh.md` — every 5 minutes (offset from `ir-index-rebuild` by 2 minutes), `max_sessions=5`, `stale_only=true`. Runs all five non-LLM refreshers (observed-sessions, commits, writes, PRs, note-reads) AND auto-enqueues changed sessions into the summarization queue when `summaries.use_incremental` is on. Because the cron uses a 7-day window, PR / commit / write / note-read attribution for *older* sessions requires a one-off wide-window backfill (e.g. `refresh_session_note_reads(days=…)`) after the table first lands.
-- `summarization-worker.md` — every 5 minutes (offset 3 minutes from observability-refresh). Drains the summarization queue FIFO over the cooldown-passed subset, bounded by the daily cost budget. Feature-gated on `summaries.use_incremental`.
+- `conversation-observability-refresh.md` — every 5 minutes (offset from `ir-index-rebuild` by 2 minutes), `max_sessions=5`, `stale_only=true`. Runs all five non-LLM refreshers (observed-sessions, commits, writes, PRs, note-reads) and auto-enqueues changed sessions while Session Summaries is active. Automatic summaries are on by default; `features.conversation_summaries.wanted: false` opts out. Because the cron uses a 7-day window, older history enters the pipeline through `summarization_backfill`.
+- `summarization-worker.md` — every 5 minutes (offset 3 minutes from observability-refresh). Drains cooldown-eligible active rows under the daily cost budget. It remains dormant without a plausible backend, rotates failures behind waiting work, and excludes dead letters while preserving them for status and revival. See `summarization/failure-handling`.
 
 The `claude_session_summary` context source also triggers a stale-only refresh inline before rendering so bundle collections never read a cold DB. The `/ir/index` endpoint is deliberately NOT hooked — stale-only DB-backed scans are cheap enough that an independent cron is cleaner than embedding-service coupling.
 

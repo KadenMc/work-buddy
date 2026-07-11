@@ -769,7 +769,26 @@ function renderChatTldr(topicData) {
 
 function _railTopicsHtml(topicData) {
     if (!topicData || !topicData.topics || topicData.topics.length === 0) {
-        return '<div class="chats-rail-empty">No topic summary for this session.</div>';
+        var status = topicData && topicData.status;
+        var messages = {
+            ready: 'Summary ready; no topic segments were emitted.',
+            queued: 'Summary queued.',
+            retrying: 'Summary retry scheduled (attempt '
+                + (topicData && topicData.attempts || 0) + ' of '
+                + (topicData && topicData.max_attempts || 3) + ').',
+            dead_lettered: 'Summary paused after repeated item-specific failures.',
+            dormant: 'Summary waiting for a configured LLM backend.',
+            opted_out: 'Session summaries are turned off in Settings.',
+            error: 'Summary failed and is not currently queued.',
+            unsummarized: 'This session has not been queued for summarization yet.',
+            unavailable: 'Summary status is unavailable.'
+        };
+        var detail = (topicData && topicData.error)
+            ? '<div class="chats-rail-empty">' + escapeHtml(topicData.error) + '</div>'
+            : '';
+        return '<div class="chats-rail-empty">'
+            + escapeHtml(messages[status] || 'No topic summary for this session.')
+            + '</div>' + detail;
     }
     return topicData.topics.map(function(t, i) {
         var range = (t.turn_start != null && t.turn_end != null)
@@ -969,7 +988,7 @@ function renderActivityRail() {
     // both the intended UX and what keeps the rail from vanishing when you
     // page through chats that happen to have, say, no topics.
     var enabled = {
-        topics: !!(topicData && topicData.topics && topicData.topics.length),
+        topics: !!topicData,
         git: commits.length > 0 || prs.length > 0,
         // Tasks is lazy: enable on any cheap "might be non-empty" signal —
         // an assigned-task hint, commits (which may reference tasks →

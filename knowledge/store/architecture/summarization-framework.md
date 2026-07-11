@@ -34,7 +34,7 @@ dev_notes: |-
 
   ### Pathway selection
 
-  `_resolve_per_call_budget()` reads `conversation_observability.summaries.per_call_budget_tokens` (default 32k tracking frontier_fast). Pathway selector routes to chunked when the predicted fresh-tail input exceeds `pathway_threshold_ratio × budget` (default 0.85). The chunked path estimates tokens-per-turn from a 10-turn probe, picks a turn-count per chunk that fits the remaining budget after compressed-prior-topic context, and accumulates topics across chunks (each chunk sees the previous chunk's emissions as compressed context).
+  `_resolve_per_call_budget()` honors `conversation_observability.summaries.per_call_budget_tokens` when explicitly set; otherwise it derives the budget from the primary model tier (local 8k, frontier_fast 32k). Pathway selector routes to chunked when the predicted fresh-tail input exceeds `pathway_threshold_ratio × budget` (default 0.85). The chunked path estimates tokens-per-turn from a 10-turn probe, picks a turn-count per chunk that fits the remaining budget after compressed-prior-topic context, and accumulates topics across chunks (each chunk sees the previous chunk's emissions as compressed context).
 
   ### Model chain wiring
 
@@ -42,7 +42,7 @@ dev_notes: |-
 
   ### Queue worker — cadence and bounds
 
-  The worker (`summarization/worker.py`) is invoked by the `summarization-worker.md` sidecar job every 5 minutes (offset 3 minutes from `conversation-observability-refresh`). One tick drains up to `worker_tick_limit` (default 20) entries FIFO over the eligible (cooldown-passed) subset. Eligibility is enforced at dequeue time, not enqueue time, so an actively-changing session that re-enqueues during cooldown stays in the queue but doesn't pre-empt other work. The daily-budget circuit-breaker computes today's spend by summing `agents/*/llm_costs.jsonl` entries with `trace_id` prefix `summarization.`; when it trips, the worker returns `budget_paused: true` until the next day. `bypass_cooldown=True` and `bypass_budget=True` flags exist for explicit user-triggered refresh via the `summarization_worker_tick` MCP op.
+  The worker (`summarization/worker.py`) is invoked by the `summarization-worker.md` sidecar job every 5 minutes. Automatic summaries are active by default and use the component preference as their switch. Before dequeue, the worker goes dormant when no configured backend is plausible. Failures rotate to the queue tail; environmental kinds do not consume attempts, while item-intrinsic kinds dead-letter at `max_attempts` (default 3). Re-enqueue resets failure state. The daily-budget circuit-breaker still bounds spend. See `summarization/failure-handling`.
 
   ### Provenance is core, not an axis
 

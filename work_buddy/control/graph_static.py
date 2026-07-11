@@ -215,6 +215,20 @@ SUBSYSTEMS: list[_DomainDef] = [
         "component_deps": ["embedding"],
     },
     {
+        "id": "subsystem:session-summaries",
+        "label": "Session Summaries",
+        "description": (
+            "On-by-default per-session recaps and topic timelines. Users can "
+            "opt out with the component preference; without a plausible LLM "
+            "backend the queue stays dormant rather than burning retries."
+        ),
+        "grouping_parents": ["domain:knowledge"],
+        "component_deps": ["conversation_summaries"],
+        "requirement_ids": [
+            "services/conversation-summaries/llm-backend",
+        ],
+    },
+    {
         "id": "subsystem:obsidian-knowledge",
         "label": "Obsidian Knowledge Plugins",
         "description": (

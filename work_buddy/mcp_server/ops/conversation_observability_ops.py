@@ -119,6 +119,53 @@ def summarization_worker_tick(
     )
 
 
+def summarization_backfill(
+    days: int = 3650,
+    observe: bool = True,
+    max_sessions: int | None = None,
+) -> dict[str, Any]:
+    """Observe historical sessions and enqueue every missing/stale summary.
+
+    This operation does no LLM work. The normal worker drains the reconciled
+    queue under its cooldown, retry, and daily-budget policies.
+    """
+    from work_buddy.summarization.policy import summaries_active
+    from work_buddy.summarization.worker import enqueue_missing
+
+    if not summaries_active():
+        return {
+            "active": False,
+            "observed": None,
+            "enqueued": 0,
+            "hint": (
+                "Session summaries are opted out. Set the Session Summaries "
+                "preference to Want, then run summarization_backfill again."
+            ),
+        }
+
+    observed: dict[str, Any] | None = None
+    if observe:
+        from work_buddy.conversation_observability.sessions import (
+            refresh_observed_sessions,
+        )
+
+        observed = refresh_observed_sessions(
+            days=days,
+            stale_only=True,
+            max_sessions=max_sessions,
+        )
+
+    reconciled = enqueue_missing(days=days)
+    return {
+        "active": True,
+        "observed": observed,
+        "candidates": reconciled["candidates"],
+        "enqueued": reconciled["enqueued"],
+        "queue_depth": reconciled["queue_depth"],
+        "note": "Enqueue-only; the background worker drains the backlog.",
+    }
+
+
 def session_prs_get(session_id: str) -> dict[str, Any]:
     """Return the GitHub PR-activity events attributed to one session.
 
@@ -154,6 +201,8 @@ def _register() -> None:
                 refresh_session_summaries)
     register_op("op.wb.summarization_worker_tick",
                 summarization_worker_tick, replace=True)
+    register_op("op.wb.summarization_backfill",
+                summarization_backfill, replace=True)
     # Both op IDs bind the same callable so existing
     # `conversation_observability_summary_get` callers keep working;
     # the capability declaration for the long-namespace name is marked

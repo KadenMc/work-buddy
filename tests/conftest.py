@@ -138,6 +138,33 @@ def _isolate_sidecar_runtime_files(tmp_path, monkeypatch, request):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_conversation_summary_databases(tmp_path, monkeypatch, request):
+    """Keep transcript observation and summarization writes out of live DBs.
+
+    Observing a fixture session can enqueue it as a side effect now that
+    summaries are on by default. Both databases therefore need a suite-wide
+    boundary; isolating only the observability DB still leaks queue rows into
+    the user's real summarization store.
+    """
+    if request.node.get_closest_marker("real_conversation_databases") is not None:
+        return
+
+    import work_buddy.conversation_observability.db as observation_db
+    import work_buddy.summarization.db as summarization_db
+
+    observation_path = tmp_path / "conversation_observability.db"
+    summarization_path = tmp_path / "summarization.db"
+    monkeypatch.setattr(observation_db, "_default_db_path", lambda: observation_path)
+    monkeypatch.setattr(
+        observation_db, "db_path", lambda cfg=None: observation_db._default_db_path(),
+    )
+    monkeypatch.setattr(summarization_db, "_default_db_path", lambda: summarization_path)
+    monkeypatch.setattr(
+        summarization_db, "db_path", lambda cfg=None: summarization_db._default_db_path(),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _isolate_notification_delivery(monkeypatch, request):
     """Neutralize outbound notification delivery for every test.
 

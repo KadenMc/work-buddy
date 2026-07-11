@@ -107,7 +107,13 @@ def _classify_error(error: str | None, kind_str: str | None) -> ErrorKind | None
         return ErrorKind.TIMEOUT
     if "rate limit" in lower or "429" in lower:
         return ErrorKind.RATE_LIMITED
-    if "authentication" in lower or "api key" in lower or "401" in lower:
+    if (
+        "authentication" in lower
+        or "api key" in lower
+        or "401" in lower
+        or "credit balance is too low" in lower
+        or "insufficient credit" in lower
+    ):
         return ErrorKind.AUTH
     # SCHEMA_VIOLATION last — narrowed to require schema/JSON context AND
     # an actual violation/invalid signal. Was: ``"schema" in lower or

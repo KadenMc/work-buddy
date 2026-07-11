@@ -1230,26 +1230,77 @@ def api_chat_commits(session_id: str):
 def api_chat_topics(session_id: str):
     """Cached LLM topic summaries for a session.
 
-    Returns ``{topics: [...], tldr: str | None}``. Empty topics list +
-    ``tldr=None`` when the session hasn't been summarized (the LLM
-    summary feature is gated off by default). The dashboard hides its
-    topic-timeline rail entirely when topics is empty.
+    The status field distinguishes a genuinely absent summary from queued,
+    retrying, dead-lettered, dormant, and opted-out states.
     """
+    empty = {
+        "topics": [],
+        "tldr": None,
+        "status": "unavailable",
+        "error": None,
+        "error_kind": None,
+        "attempts": 0,
+        "max_attempts": 3,
+    }
     try:
         from work_buddy.conversation_observability.session_summary_row import (
             session_summary_row,
         )
     except ImportError:
-        return jsonify({"topics": [], "tldr": None})
+        return jsonify(empty)
 
     try:
+        from work_buddy.summarization import queue as summary_queue
+        from work_buddy.summarization.orchestrator import (
+            chain_has_plausible_backend,
+        )
+        from work_buddy.summarization.policy import summaries_active
+        from work_buddy.summarization.worker import _resolve_config
+
+        max_attempts = int(_resolve_config().get("max_attempts", 3))
+        queued = next(
+            (
+                item
+                for item in summary_queue.queue_snapshot(
+                    "conversation_session", max_attempts=max_attempts,
+                )
+                if item["item_id"] == session_id
+            ),
+            None,
+        )
         row = session_summary_row(session_id)
-        if row is None:
-            return jsonify({"topics": [], "tldr": None})
-        tldr = None
-        if row.get("status") == "ok":
-            tldr = row.get("tldr") or None
-        return jsonify({"topics": row["topics"], "tldr": tldr})
+        response = dict(empty)
+        response["max_attempts"] = max_attempts
+        if row is not None:
+            response["topics"] = row["topics"]
+            response["error"] = row.get("error")
+            if row.get("status") == "ok":
+                response["tldr"] = row.get("tldr") or None
+
+        if queued is not None:
+            response.update({
+                "attempts": int(queued.get("attempts") or 0),
+                "error": queued.get("last_error") or response["error"],
+                "error_kind": queued.get("last_error_kind"),
+            })
+
+        if not summaries_active():
+            response["status"] = "opted_out"
+        elif queued is not None and queued.get("dead_lettered"):
+            response["status"] = "dead_lettered"
+        elif not chain_has_plausible_backend():
+            response["status"] = "dormant"
+        elif queued is not None:
+            response["status"] = (
+                "retrying" if queued.get("last_error") else "queued"
+            )
+        elif row is not None and row.get("status") == "ok":
+            response["status"] = "ready"
+        elif row is not None and row.get("status") == "error":
+            response["status"] = "error"
+        else:
+            response["status"] = "unsummarized"
+        return jsonify(response)
     except Exception as exc:
         logger.exception("chat topics error")
         return jsonify({"error": str(exc)}), 500

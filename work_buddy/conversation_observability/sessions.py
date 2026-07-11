@@ -25,22 +25,10 @@ from work_buddy.conversation_observability.db import get_connection
 
 
 def _v2_summarization_enabled() -> bool:
-    """Read the feature flag for v2 incremental summarization.
+    """Compatibility wrapper for the on-by-default summary policy."""
+    from work_buddy.summarization.policy import summaries_active
 
-    `conversation_observability.summaries.use_incremental` (default False).
-    Determines whether `refresh_observed_sessions` enqueues into the
-    summarization queue. When False, the enqueue is skipped and the
-    deprecated v1 batch path remains the only LLM producer (callable
-    via `conversation_observability_summarize`).
-    """
-    try:
-        from work_buddy.config import load_config
-
-        cfg = load_config()
-        summ = (cfg.get("conversation_observability") or {}).get("summaries", {}) or {}
-        return bool(summ.get("use_incremental", False))
-    except Exception:
-        return False
+    return summaries_active()
 
 
 # ---------------------------------------------------------------------------
@@ -215,11 +203,9 @@ def refresh_observed_sessions(
             conn.close()
         observed += 1
 
-        # Enqueue for summarization on mtime change. Gated by the
-        # use_incremental feature flag so we only push onto the queue
-        # when there's a v2 worker draining it; with the flag off the
-        # deprecated v1 batch path is the only producer. Failure here
-        # doesn't break observation.
+        # Enqueue on mtime change while the on-by-default summary policy is
+        # active. An explicit user opt-out stops both enqueue and drainage.
+        # Failure here doesn't break observation.
         try:
             if _v2_summarization_enabled():
                 from work_buddy.summarization.queue import enqueue as _sum_enqueue

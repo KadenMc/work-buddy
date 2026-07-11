@@ -431,6 +431,57 @@ def test_refresh_one_incremental_initial(tmp_db):
     assert meta["activity_kind"] == "planning"
 
 
+def test_incremental_llm_failure_is_recorded_and_raised(tmp_db):
+    from work_buddy.llm.response import ErrorKind
+    from work_buddy.summarization.protocol import LLMCallResult, SummarizationError
+    from work_buddy.summarization.summarizer import Summarizer
+
+    source = _StubSource(total=15)
+    store = DurableSummaryStore("ns_test")
+    summarizer = Summarizer(
+        name="t", source=source,
+        strategy=IncrementalLayeredStrategy(), store=store,
+    )
+
+    class _FailingCaller:
+        def call(self, **_kwargs):
+            return LLMCallResult(
+                error="backend timed out", error_kind=ErrorKind.TIMEOUT,
+            )
+
+    with pytest.raises(SummarizationError) as raised:
+        refresh_one_incremental(
+            summarizer, "item-1", freshness_token="tok-1",
+            llm_caller=_FailingCaller(),
+        )
+
+    assert raised.value.error_kind is ErrorKind.TIMEOUT
+    assert raised.value.recorded is True
+    assert store.load_item_meta("item-1")["status"] == "error"
+
+
+def test_incremental_parse_failure_is_intrinsic(tmp_db):
+    from work_buddy.llm.response import ErrorKind
+    from work_buddy.summarization.protocol import SummarizationError
+    from work_buddy.summarization.summarizer import Summarizer
+
+    source = _StubSource(total=15)
+    store = DurableSummaryStore("ns_test")
+    summarizer = Summarizer(
+        name="t", source=source,
+        strategy=IncrementalLayeredStrategy(), store=store,
+    )
+
+    with pytest.raises(SummarizationError) as raised:
+        refresh_one_incremental(
+            summarizer, "item-1", freshness_token="tok-1",
+            llm_caller=_stub_llm_returning({"not": "the schema"}),
+        )
+
+    assert raised.value.error_kind is ErrorKind.MALFORMED_RESPONSE
+    assert raised.value.recorded is True
+
+
 def test_refresh_one_incremental_with_prior_finalized(tmp_db):
     """Prior 3 topics, 2 are finalized (distance 10). Refresh emits trailing+new."""
     from work_buddy.summarization.summarizer import Summarizer
@@ -658,7 +709,7 @@ def test_pathway_selection_single_call_short_session(tmp_db):
     assert meta["chunks_used"] == 1
 
 
-def test_pathway_selection_chunked_long_session(tmp_db):
+def test_pathway_selection_chunked_long_session(tmp_db, monkeypatch):
     """Long fresh tail exceeding budget → chunked pathway → multiple chunks_used.
 
     We force the chunked path by setting a tiny budget via monkeypatching the
@@ -683,6 +734,7 @@ def test_pathway_selection_chunked_long_session(tmp_db):
     # Override the default budget constant in the module to force chunking.
     original_budget = incr_mod._DEFAULT_PER_CALL_BUDGET_TOKENS
     incr_mod._DEFAULT_PER_CALL_BUDGET_TOKENS = 500
+    monkeypatch.setattr(incr_mod, "_resolve_per_call_budget", lambda: 500)
     try:
         # Stub LLM returns one new topic per chunk so accumulator advances.
         call_count = {"n": 0}
@@ -723,7 +775,7 @@ def test_pathway_selection_chunked_long_session(tmp_db):
         incr_mod._DEFAULT_PER_CALL_BUDGET_TOKENS = original_budget
 
 
-def test_chunked_pathway_records_model_used(tmp_db):
+def test_chunked_pathway_records_model_used(tmp_db, monkeypatch):
     """Chunked pathway records the model that ran each chunk."""
     from work_buddy.summarization.summarizer import Summarizer
     from work_buddy.summarization import incremental as incr_mod
@@ -735,6 +787,7 @@ def test_chunked_pathway_records_model_used(tmp_db):
 
     original = incr_mod._DEFAULT_PER_CALL_BUDGET_TOKENS
     incr_mod._DEFAULT_PER_CALL_BUDGET_TOKENS = 500
+    monkeypatch.setattr(incr_mod, "_resolve_per_call_budget", lambda: 500)
     try:
         out = {
             "tldr": "x",

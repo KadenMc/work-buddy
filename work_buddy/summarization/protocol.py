@@ -24,7 +24,6 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Iterable, Protocol, runtime_checkable
 
-
 # ---------------------------------------------------------------------------
 # Datatypes
 # ---------------------------------------------------------------------------
@@ -137,6 +136,17 @@ class SummarizationError(RuntimeError):
     flips to `status='error'`, prior good results are preserved, and other
     items in the same refresh pass continue.
     """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_kind: Any | None = None,
+        recorded: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.error_kind = error_kind
+        self.recorded = recorded
 
 
 # ---------------------------------------------------------------------------
@@ -289,9 +299,10 @@ class LLMCallResult:
     model: str | None = None
     backend: str | None = None
     error: str | None = None
+    error_kind: Any | None = None
 
     def is_error(self) -> bool:
-        return self.error is not None
+        return self.error is not None or self.error_kind is not None
 
 
 class LLMCaller(Protocol):
