@@ -792,13 +792,13 @@ function _railTopicsHtml(topicData) {
     }
     return topicData.topics.map(function(t, i) {
         var range = (t.turn_start != null && t.turn_end != null)
-            ? ' <span class="topic-range">' + t.turn_start + '–' + t.turn_end + '</span>'
+            ? '<span class="topic-range">' + t.turn_start + '–' + t.turn_end + '</span>'
             : '';
         return '<div class="chats-topic-item"'
             + ' ' + wbActAttrs('chatsJumpToTopicAction', { turn: t.turn_start != null ? t.turn_start : '' })
             + ' title="' + escapeHtml(t.summary || '') + '">'
-            + '<span class="topic-index">' + (i + 1) + '.</span> '
-            + escapeHtml(t.title || '(untitled)')
+            + '<span class="topic-index">' + (i + 1) + '.</span>'
+            + '<span class="topic-title">' + escapeHtml(t.title || '(untitled)') + '</span>'
             + range
             + '</div>';
     }).join('');

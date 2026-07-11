@@ -48,6 +48,37 @@ def styles_text() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Topic rail: title and turn range occupy stable, non-overlapping columns
+# ---------------------------------------------------------------------------
+
+
+def test_topic_rail_reserves_space_for_centered_turn_range(
+    chats_js: str, styles_text: str,
+) -> None:
+    assert '<span class="topic-title">' in chats_js
+
+    item_rule = re.search(r"\.chats-topic-item\s*\{([^}]+)\}", styles_text)
+    assert item_rule is not None
+    assert "display: grid" in item_rule.group(1)
+    assert "grid-template-columns: auto minmax(0, 1fr) auto" in item_rule.group(1)
+    assert "align-items: center" in item_rule.group(1)
+
+    title_rule = re.search(
+        r"\.chats-topic-item \.topic-title\s*\{([^}]+)\}", styles_text,
+    )
+    assert title_rule is not None
+    assert "min-width: 0" in title_rule.group(1)
+    assert "overflow-wrap: anywhere" in title_rule.group(1)
+
+    range_rule = re.search(
+        r"\.chats-topic-item \.topic-range\s*\{([^}]+)\}", styles_text,
+    )
+    assert range_rule is not None
+    assert "white-space: nowrap" in range_rule.group(1)
+    assert "float:" not in range_rule.group(1)
+
+
+# ---------------------------------------------------------------------------
 # Search-merge: there is exactly one renderer; no separate results pane
 # ---------------------------------------------------------------------------
 
