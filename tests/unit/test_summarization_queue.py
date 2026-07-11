@@ -313,15 +313,108 @@ def test_worker_classifies_environmental_and_intrinsic_failures(tmp_db, monkeypa
     assert result["errored"] == 2
 
 
-def test_v2_feature_flag_default_false():
-    """When the flag is unset, v2 enqueue path stays off."""
+def test_worker_opted_out_gate_preserves_queue(tmp_db, monkeypatch):
+    """An explicit opt-out stops drainage; queued items wait untouched."""
+    from work_buddy.summarization import worker as worker_mod
+
+    queue_mod.enqueue("conversation_session", "item-1")
+    monkeypatch.setattr(
+        worker_mod, "_resolve_config",
+        lambda: {"active": False, "cooldown_minutes": 0,
+                 "daily_budget_usd": 1.0, "tick_limit": 20,
+                 "max_attempts": 3},
+    )
+
+    result = worker_mod.run_worker_tick()
+    assert result["opted_out"] is True
+    assert result["processed"] == 0
+    assert queue_mod.queue_depth() == 1
+
+
+def test_worker_bypass_inactive_forces_run_past_both_gates(tmp_db, monkeypatch):
+    """bypass_inactive drains even when opted out AND the backend pre-gate
+    says no — the explicit one-off escape hatch."""
+    from work_buddy.summarization import worker as worker_mod
+
+    queue_mod.enqueue("conversation_session", "item-1")
+    monkeypatch.setattr(
+        worker_mod, "_resolve_config",
+        lambda: {"active": False, "cooldown_minutes": 0,
+                 "daily_budget_usd": 1.0, "tick_limit": 20,
+                 "max_attempts": 3},
+    )
+    monkeypatch.setattr(
+        "work_buddy.summarization.orchestrator.chain_has_plausible_backend",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        worker_mod, "today_summarization_spend_usd", lambda: 0.0,
+    )
+
+    class _FakeSummarizer:
+        def refresh_one(self, item_id, force=False, **kw):
+            return SummaryNode(summary="refreshed")
+
+    monkeypatch.setattr(
+        worker_mod, "_resolve_summarizer",
+        lambda ns: _FakeSummarizer() if ns == "conversation_session" else None,
+    )
+
+    result = worker_mod.run_worker_tick(bypass_inactive=True)
+    assert result["opted_out"] is False
+    assert result["dormant"] is False
+    assert result["processed"] == 1
+    assert queue_mod.queue_depth() == 0
+
+
+def test_worker_budget_pause_reports_active_depth(tmp_db, monkeypatch):
+    """The budget-paused exit excludes dead letters from queue_depth_after,
+    consistent with every other exit path."""
+    from work_buddy.summarization import worker as worker_mod
+
+    queue_mod.enqueue("conversation_session", "healthy")
+    queue_mod.enqueue("conversation_session", "poison")
+    for _ in range(3):
+        queue_mod.record_failure(
+            "conversation_session", "poison", "bad transcript",
+            error_kind="malformed_response", count_attempt=True,
+        )
+
+    monkeypatch.setattr(
+        worker_mod, "today_summarization_spend_usd", lambda: 99.0,
+    )
+    monkeypatch.setattr(
+        worker_mod, "_resolve_config",
+        lambda: {"active": True, "cooldown_minutes": 30,
+                 "daily_budget_usd": 1.0, "tick_limit": 20,
+                 "max_attempts": 3},
+    )
+    monkeypatch.setattr(
+        "work_buddy.summarization.orchestrator.chain_has_plausible_backend",
+        lambda: True,
+    )
+
+    result = worker_mod.run_worker_tick()
+    assert result["budget_paused"] is True
+    assert result["queue_depth_after"] == 1
+    assert result["dead_lettered"] == 1
+
+
+def test_enqueue_gate_compat_wrapper_follows_policy(monkeypatch):
+    """The sessions-module enqueue gate delegates to the activation policy
+    (which defaults ON) rather than reading config directly."""
     from work_buddy.conversation_observability.sessions import (
         _v2_summarization_enabled,
     )
-    # Default config has use_incremental=False (or missing).
-    # This test just confirms the helper exists and returns a bool.
-    result = _v2_summarization_enabled()
-    assert isinstance(result, bool)
+
+    monkeypatch.setattr(
+        "work_buddy.summarization.policy.summaries_active", lambda: True,
+    )
+    assert _v2_summarization_enabled() is True
+    monkeypatch.setattr(
+        "work_buddy.summarization.policy.summaries_active", lambda: False,
+    )
+    assert _v2_summarization_enabled() is False
 
 
 def test_build_session_summarizer_v1_default(monkeypatch, tmp_path):

@@ -166,6 +166,7 @@ def run_worker_tick(
     namespace: str | None = None,
     bypass_cooldown: bool = False,
     bypass_budget: bool = False,
+    bypass_inactive: bool = False,
     limit: int | None = None,
 ) -> dict[str, Any]:
     """Drain up to `limit` eligible queue entries.
@@ -173,19 +174,28 @@ def run_worker_tick(
     Args:
         namespace: optional filter (default: drain all namespaces).
         bypass_cooldown: when True, ignore the per-session cooldown.
-            Used by inline-trigger from consumers (PRD §6 O4) and by
+            Used by inline-trigger from consumers and by
             `force_recent=true` user commands.
         bypass_budget: when True, ignore the daily-budget circuit-breaker.
             Used by explicit user-triggered refresh.
+        bypass_inactive: when True, drain even though summaries are
+            opted out or the backend pre-gate reports no plausible
+            backend. For explicit one-off user requests only — routine
+            callers (sidecar cron, inline triggers) must respect both
+            gates. Doubles as the escape hatch should the plausibility
+            check ever misjudge a working setup.
         limit: max items to process this tick. Default from config.
 
     Returns a dict:
         - `processed`: count of successful refreshes
         - `skipped_cooldown`: count of items left in queue due to cooldown
         - `errored`: count of failures (errors are recorded on the items row)
+        - `dead_lettered`: rows at/over `max_attempts`, excluded from drainage
         - `budget_paused`: True if the daily budget halted processing
+        - `opted_out` / `dormant` / `dormancy_reason`: activation gates
         - `today_spend_usd`: current day's spend (after the tick)
-        - `queue_depth_after`: remaining queue depth
+        - `queue_depth_after`: remaining ACTIVE queue depth (dead letters
+          excluded; they're reported separately)
     """
     from work_buddy.summarization import queue as queue_mod
     from work_buddy.summarization.orchestrator import chain_has_plausible_backend
@@ -196,7 +206,7 @@ def run_worker_tick(
     tick_limit = limit if limit is not None else cfg["tick_limit"]
     max_attempts = int(cfg.get("max_attempts", _DEFAULT_MAX_ATTEMPTS))
 
-    if not cfg.get("active", True):
+    if not bypass_inactive and not cfg.get("active", True):
         stats = queue_mod.queue_stats(namespace, max_attempts=max_attempts)
         return {
             "processed": 0,
@@ -211,7 +221,7 @@ def run_worker_tick(
             "queue_depth_after": stats["active"],
         }
 
-    if not chain_has_plausible_backend():
+    if not bypass_inactive and not chain_has_plausible_backend():
         stats = queue_mod.queue_stats(namespace, max_attempts=max_attempts)
         return {
             "processed": 0,
@@ -233,19 +243,18 @@ def run_worker_tick(
             "summarization worker: budget exhausted (spend=$%.4f >= $%.4f); pausing",
             spend, cfg["daily_budget_usd"],
         )
+        stats = queue_mod.queue_stats(namespace, max_attempts=max_attempts)
         return {
             "processed": 0,
             "skipped_cooldown": 0,
             "errored": 0,
-            "dead_lettered": queue_mod.queue_stats(
-                namespace, max_attempts=max_attempts,
-            )["dead_lettered"],
+            "dead_lettered": stats["dead_lettered"],
             "budget_paused": True,
             "opted_out": False,
             "dormant": False,
             "dormancy_reason": None,
             "today_spend_usd": spend,
-            "queue_depth_after": queue_mod.queue_depth(namespace),
+            "queue_depth_after": stats["active"],
         }
 
     # Pull eligible entries.

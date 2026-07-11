@@ -159,3 +159,22 @@ def test_local_backend_plausibility_requires_model_and_url(monkeypatch):
         lambda _name: {"base_url": "http://localhost:1234/v1", "model": "qwen"},
     )
     assert orchestrator.chain_has_plausible_backend() is True
+
+
+def test_unrecognized_backend_kind_is_plausible(monkeypatch):
+    """The pre-gate fails open for backend kinds it doesn't recognize — a
+    wrongly-vetoed kind would freeze the pipeline as permanently dormant,
+    while a genuinely broken one fails at call time instead."""
+    from types import SimpleNamespace
+
+    from work_buddy.llm.tiers import ModelTier
+    from work_buddy.summarization import orchestrator
+
+    monkeypatch.setattr(
+        orchestrator, "_resolve_model_chain", lambda: [ModelTier.LOCAL_FAST],
+    )
+    monkeypatch.setattr(
+        "work_buddy.llm.tiers.resolve_tier",
+        lambda _tier: SimpleNamespace(backend="future_kind", profile=None),
+    )
+    assert orchestrator.chain_has_plausible_backend() is True

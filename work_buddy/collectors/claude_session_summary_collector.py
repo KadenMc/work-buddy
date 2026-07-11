@@ -58,12 +58,14 @@ def collect(cfg: dict[str, Any]) -> str:
       * ``include_tldr`` (bool, default False) — if set, surface the
         cached LLM tldr (when available) alongside each session's
         attribution line. The LLM is **not** invoked here; this only
-        renders existing rows. Generation is gated on the
-        ``conversation_observability.summaries.enabled`` config flag
-        and runs from the sidecar refresh job.
-      * ``include_topics`` (bool, default False) — v2 (PRD F15): if set,
-        nest a topic-level timeline under each session bullet using
-        v2's per-topic timestamps + span_ranges. No LLM is invoked
+        renders existing rows. Generation runs on-by-default from the
+        ``summarization-worker`` sidecar job, switched by the
+        ``conversation_summaries`` component preference
+        (``features.conversation_summaries.wanted``) — rows may simply
+        not exist on opted-out or backend-less installs.
+      * ``include_topics`` (bool, default False) — if set, nest a
+        topic-level timeline under each session bullet using the
+        per-topic timestamps + span_ranges. No LLM is invoked
         here; rendering reads existing rows from `summarization.db`.
         Implies ``include_tldr=True`` for consistency.
     """

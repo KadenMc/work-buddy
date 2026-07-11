@@ -15,6 +15,10 @@ parameters:
     type: bool
     description: Skip the daily-budget circuit-breaker. Use sparingly — for user-confirmed expensive sweeps only.
     required: false
+  bypass_inactive:
+    type: bool
+    description: Drain even though summaries are opted out or the backend pre-gate reports no plausible backend. For explicit one-off user requests only; also the escape hatch if the plausibility check misjudges a working setup.
+    required: false
   limit:
     type: int
     description: Max queue entries to process this tick. Default from config (`conversation_observability.summaries.worker_tick_limit`, default 20).
@@ -36,7 +40,8 @@ parents:
 ---
 
 One tick first evaluates activation and backend plausibility without making a
-network call. It then drains cooldown-eligible, non-dead-letter rows under the
+network call (`bypass_inactive=true` skips both gates for an explicit one-off
+run). It then drains cooldown-eligible, non-dead-letter rows under the
 tick and daily-cost bounds. Environmental failures rotate to the queue tail
 without consuming attempts; item-intrinsic failures consume the configured
 attempt budget and remain visible after dead-lettering.
