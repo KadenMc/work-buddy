@@ -143,11 +143,14 @@ def _run_refresh_incremental(
             )
             if node is not None:
                 report.summarized += 1
-            # else: record_error already called inside refresh_one_incremental
-            # OR there was nothing fresh to do (no error, no count)
+            # else: nothing fresh to do (no error, no count)
         except Exception as exc:
             report.errored += 1
             report.errors.append((item_id, str(exc)))
+            # SummarizationError with recorded=True means the incremental
+            # module already stamped the store row — don't write it twice.
+            if getattr(exc, "recorded", False):
+                continue
             try:
                 summarizer.store.record_error(
                     item_id,
@@ -543,7 +546,12 @@ def chain_has_plausible_backend() -> bool:
 
     This is deliberately a no-network preflight.  Local tiers are plausible
     when their tier and profile resolve; Anthropic tiers are plausible when a
-    key is available.  Runtime failures remain the worker's responsibility.
+    key is available.  Backend kinds this check does not recognize count as
+    plausible (fail-open): the check exists to catch missing credentials for
+    known backends, not to veto backends it has never met — a wrongly-vetoed
+    kind would freeze the pipeline as permanently dormant, while a genuinely
+    broken one just fails at call time where the ErrorKind taxonomy handles
+    it.  Runtime failures remain the worker's responsibility.
     """
     from work_buddy.llm.profiles import resolve_profile
     from work_buddy.llm.tiers import resolve_tier
@@ -559,6 +567,8 @@ def chain_has_plausible_backend() -> bool:
                     resolved = resolve_profile(binding.profile)
                     if resolved.get("base_url") and resolved.get("model"):
                         return True
+            else:
+                return True
         except (KeyError, TypeError, ValueError):
             continue
     return False

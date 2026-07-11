@@ -98,23 +98,26 @@ def conversation_observability_refresh(
 def summarization_worker_tick(
     bypass_cooldown: bool = False,
     bypass_budget: bool = False,
+    bypass_inactive: bool = False,
     limit: int | None = None,
 ) -> dict[str, Any]:
-    """Run one tick of the summarization queue worker (PRD §6 O2).
+    """Run one tick of the summarization queue worker.
 
     Piggybacks on the existing 5-minute observability cadence. Drains the
     `summarization_queue` table FIFO over the cooldown-passed subset,
     bounded by `daily_budget_usd`.
 
-    `bypass_cooldown` and `bypass_budget` are for explicit user-triggered
-    refresh (e.g. `/wb-summarize-now`); routine sidecar drainage uses the
-    defaults.
+    The `bypass_*` flags are for explicit user-triggered refresh
+    (e.g. `/wb-summarize-now`); routine sidecar drainage uses the
+    defaults. `bypass_inactive` additionally forces a run past the
+    opted-out and no-backend dormancy gates.
     """
     from work_buddy.summarization.worker import run_worker_tick
 
     return run_worker_tick(
         bypass_cooldown=bypass_cooldown,
         bypass_budget=bypass_budget,
+        bypass_inactive=bypass_inactive,
         limit=limit,
     )
 

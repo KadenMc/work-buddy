@@ -482,6 +482,46 @@ def test_incremental_parse_failure_is_intrinsic(tmp_db):
     assert raised.value.recorded is True
 
 
+def test_recorded_failure_not_double_written_by_refresh_handler(tmp_db, monkeypatch):
+    """The orchestrator's incremental refresh handler must not re-record a
+    failure the incremental module already stamped (recorded=True)."""
+    from work_buddy.llm.response import ErrorKind
+    from work_buddy.summarization.orchestrator import _run_refresh_incremental
+    from work_buddy.summarization.protocol import LLMCallResult
+    from work_buddy.summarization.summarizer import RefreshReport, Summarizer
+
+    source = _StubSource(total=15)
+    store = DurableSummaryStore("ns_test")
+    summarizer = Summarizer(
+        name="t", source=source,
+        strategy=IncrementalLayeredStrategy(), store=store,
+    )
+
+    calls = {"n": 0}
+    original_record = store.record_error
+
+    def _counting(*args, **kwargs):
+        calls["n"] += 1
+        return original_record(*args, **kwargs)
+
+    monkeypatch.setattr(store, "record_error", _counting)
+
+    class _FailingCaller:
+        def call(self, **_kwargs):
+            return LLMCallResult(
+                error="backend timed out", error_kind=ErrorKind.TIMEOUT,
+            )
+
+    report = RefreshReport(summarizer="t")
+    _run_refresh_incremental(
+        summarizer, [("item-1", "tok-1")], _FailingCaller(), None, report,
+    )
+
+    assert report.errored == 1
+    assert calls["n"] == 1
+    assert store.load_item_meta("item-1")["status"] == "error"
+
+
 def test_refresh_one_incremental_with_prior_finalized(tmp_db):
     """Prior 3 topics, 2 are finalized (distance 10). Refresh emits trailing+new."""
     from work_buddy.summarization.summarizer import Summarizer

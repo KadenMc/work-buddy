@@ -6,7 +6,7 @@ type: capability
 capability: summarization_worker_tick
 params: {}
 ---
-v2 summarization queue worker (PRD §6 O2). Drains the
+Summarization queue worker. Drains the
 `summarization_queue` SQLite table FIFO over the cooldown-passed
 subset, bounded by `conversation_observability.summaries.daily_budget_usd`
 (default $1.00).
