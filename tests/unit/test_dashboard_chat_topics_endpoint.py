@@ -51,6 +51,21 @@ def client():
         yield c
 
 
+@pytest.fixture(autouse=True)
+def active_summary_backend(monkeypatch):
+    monkeypatch.setattr(
+        "work_buddy.summarization.policy.summaries_active", lambda: True,
+    )
+    monkeypatch.setattr(
+        "work_buddy.summarization.orchestrator.chain_has_plausible_backend",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "work_buddy.summarization.worker._resolve_config",
+        lambda: {"max_attempts": 3},
+    )
+
+
 def _prov(prompt_version: int = 1) -> Provenance:
     return Provenance(
         model="claude-haiku-4-5",
@@ -112,8 +127,12 @@ def test_chat_topics_endpoint_returns_full_legacy_shape(
     assert resp.status_code == 200
     data = resp.get_json()
 
-    assert set(data.keys()) == {"topics", "tldr"}
+    assert set(data.keys()) == {
+        "topics", "tldr", "status", "error", "error_kind",
+        "attempts", "max_attempts",
+    }
     assert data["tldr"] == "Overall TLDR for the snapshot test."
+    assert data["status"] == "ready"
 
     topics = data["topics"]
     assert len(topics) == 2
@@ -157,7 +176,11 @@ def test_chat_topics_endpoint_returns_empty_for_unknown_session(
     resp = client.get("/api/chats/sess-does-not-exist/topics")
     assert resp.status_code == 200
     data = resp.get_json()
-    assert data == {"topics": [], "tldr": None}
+    assert data == {
+        "topics": [], "tldr": None, "status": "unsummarized",
+        "error": None, "error_kind": None, "attempts": 0,
+        "max_attempts": 3,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -192,6 +215,8 @@ def test_chat_topics_endpoint_returns_no_tldr_when_status_error(
     assert len(data["topics"]) == 1
     # But tldr is None because status != 'ok'
     assert data["tldr"] is None
+    assert data["status"] == "error"
+    assert data["error"] == "LLM call failed"
 
 
 # ---------------------------------------------------------------------------
@@ -213,3 +238,36 @@ def test_chat_topics_endpoint_returns_zero_topics_for_topicless_session(
     data = resp.get_json()
     assert data["topics"] == []
     assert data["tldr"] == "TLDR but no topics."
+    assert data["status"] == "ready"
+
+
+def test_chat_topics_endpoint_surfaces_queue_and_dead_letter_state(
+    tmp_summarization_db, client,
+):
+    from work_buddy.summarization import queue as queue_mod
+
+    queue_mod.enqueue("conversation_session", "sess-queued")
+    queued = client.get("/api/chats/sess-queued/topics").get_json()
+    assert queued["status"] == "queued"
+    assert queued["attempts"] == 0
+
+    for _ in range(3):
+        queue_mod.record_failure(
+            "conversation_session", "sess-queued", "invalid response",
+            error_kind="malformed_response", count_attempt=True,
+        )
+    dead = client.get("/api/chats/sess-queued/topics").get_json()
+    assert dead["status"] == "dead_lettered"
+    assert dead["attempts"] == 3
+    assert dead["error_kind"] == "malformed_response"
+
+
+def test_chat_topics_endpoint_surfaces_dormancy(
+    tmp_summarization_db, client, monkeypatch,
+):
+    monkeypatch.setattr(
+        "work_buddy.summarization.orchestrator.chain_has_plausible_backend",
+        lambda: False,
+    )
+    data = client.get("/api/chats/sess-dormant/topics").get_json()
+    assert data["status"] == "dormant"

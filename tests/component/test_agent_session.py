@@ -16,7 +16,8 @@ from work_buddy.agent_session import (
 class TestGetSessionId:
     def test_missing_env_raises(self, monkeypatch):
         monkeypatch.delenv("WORK_BUDDY_SESSION_ID", raising=False)
-        with pytest.raises(RuntimeError, match="WORK_BUDDY_SESSION_ID"):
+        monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+        with pytest.raises(RuntimeError, match="session identity"):
             _get_session_id()
 
     def test_reads_env(self, monkeypatch):

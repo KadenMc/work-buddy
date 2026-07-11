@@ -5,9 +5,6 @@ jitter_seconds: 60
 type: capability
 capability: summarization_worker_tick
 params: {}
-feature_gated:
-  config_path: conversation_observability.summaries.use_incremental
-  default: false
 ---
 v2 summarization queue worker (PRD §6 O2). Drains the
 `summarization_queue` SQLite table FIFO over the cooldown-passed
@@ -24,6 +21,6 @@ Per-session cooldown (default 30 min, configurable
 actively-churning session from re-summarizing every 5 minutes —
 the worker SKIPS in-cooldown sessions and tries the next eligible entry.
 
-Feature-gated on `conversation_observability.summaries.use_incremental`
-so v1's 2h cron path still works until the operator flips the flag and
-the eval pass clears (PRD OQ19).
+Runs by default. The worker itself honors the Session Summaries preference,
+goes dormant without a plausible configured backend, and excludes dead letters
+from drainage while keeping them visible for diagnosis and backfill revival.

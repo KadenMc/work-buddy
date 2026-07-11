@@ -1,7 +1,7 @@
 ---
 name: Summarization Worker Tick
 kind: capability
-description: 'Drain the summarization queue once (PRD §6 O2). Picks eligible (cooldown-passed) entries FIFO, bounded by `worker_tick_limit` and the daily cost budget. Used by the sidecar cron and inline-trigger from `/wb-journal-update` and `/wb-morning`. Pass `bypass_cooldown=true` for explicit user-triggered refresh; `bypass_budget=true` to override the daily ceiling.'
+description: 'Drain the active summarization queue once. Runs by default, respects the Session Summaries preference, remains dormant without a plausible backend, rotates failures for fairness, and excludes visible dead letters.'
 capability_name: summarization_worker_tick
 category: summarization
 op: op.wb.summarization_worker_tick
@@ -34,3 +34,9 @@ aliases:
 parents:
 - summarization
 ---
+
+One tick first evaluates activation and backend plausibility without making a
+network call. It then drains cooldown-eligible, non-dead-letter rows under the
+tick and daily-cost bounds. Environmental failures rotate to the queue tail
+without consuming attempts; item-intrinsic failures consume the configured
+attempt budget and remain visible after dead-lettering.

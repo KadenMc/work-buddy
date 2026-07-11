@@ -90,6 +90,48 @@ def test_queue_record_attempt(tmp_db):
     assert snap[0]["last_error"] == "stub failure"
 
 
+def test_queue_dead_letters_are_visible_but_not_dequeued(tmp_db):
+    queue_mod.enqueue("ns_a", "poison")
+    for _ in range(3):
+        queue_mod.record_failure(
+            "ns_a", "poison", "bad transcript",
+            error_kind="malformed_response", count_attempt=True,
+        )
+
+    assert queue_mod.dequeue_eligible(cooldown_minutes=0, max_attempts=3) == []
+    snapshot = queue_mod.queue_snapshot(max_attempts=3)
+    assert snapshot[0]["dead_lettered"] is True
+    assert queue_mod.queue_stats(max_attempts=3) == {
+        "active": 0, "dead_lettered": 1, "total": 1,
+    }
+
+
+def test_queue_reenqueue_revives_dead_letter(tmp_db):
+    queue_mod.enqueue("ns_a", "poison")
+    for _ in range(3):
+        queue_mod.record_attempt("ns_a", "poison", "bad transcript")
+
+    queue_mod.enqueue("ns_a", "poison")
+    revived = queue_mod.queue_snapshot(max_attempts=3)[0]
+    assert revived["attempts"] == 0
+    assert revived["last_error"] is None
+    assert revived["last_error_kind"] is None
+    assert revived["dead_lettered"] is False
+
+
+def test_failed_head_rotates_behind_waiting_work(tmp_db):
+    queue_mod.enqueue("ns_a", "poison")
+    queue_mod.enqueue("ns_a", "healthy")
+    queue_mod.record_failure(
+        "ns_a", "poison", "timeout",
+        error_kind="timeout", count_attempt=False,
+    )
+
+    eligible = queue_mod.dequeue_eligible(cooldown_minutes=0)
+    assert [entry["item_id"] for entry in eligible] == ["healthy", "poison"]
+    assert eligible[1]["attempts"] == 0
+
+
 def test_queue_re_enqueue_updates_enqueued_at(tmp_db):
     """Re-enqueueing an already-queued session updates timestamp; doesn't
     pre-empt items queued before it."""
@@ -120,7 +162,13 @@ def test_worker_budget_circuit_breaker(tmp_db, monkeypatch):
     # And force the config to a tight budget.
     monkeypatch.setattr(
         worker_mod, "_resolve_config",
-        lambda: {"cooldown_minutes": 30, "daily_budget_usd": 1.0, "tick_limit": 20},
+        lambda: {"active": True, "cooldown_minutes": 30,
+                 "daily_budget_usd": 1.0, "tick_limit": 20,
+                 "max_attempts": 3},
+    )
+    monkeypatch.setattr(
+        "work_buddy.summarization.orchestrator.chain_has_plausible_backend",
+        lambda: True,
     )
 
     result = worker_mod.run_worker_tick()
@@ -140,7 +188,13 @@ def test_worker_no_summarizer_for_namespace(tmp_db, monkeypatch):
     )
     monkeypatch.setattr(
         worker_mod, "_resolve_config",
-        lambda: {"cooldown_minutes": 0, "daily_budget_usd": 1.0, "tick_limit": 20},
+        lambda: {"active": True, "cooldown_minutes": 0,
+                 "daily_budget_usd": 1.0, "tick_limit": 20,
+                 "max_attempts": 3},
+    )
+    monkeypatch.setattr(
+        "work_buddy.summarization.orchestrator.chain_has_plausible_backend",
+        lambda: True,
     )
 
     result = worker_mod.run_worker_tick()
@@ -166,7 +220,13 @@ def test_worker_bypass_cooldown(tmp_db, monkeypatch):
     )
     monkeypatch.setattr(
         worker_mod, "_resolve_config",
-        lambda: {"cooldown_minutes": 30, "daily_budget_usd": 1.0, "tick_limit": 20},
+        lambda: {"active": True, "cooldown_minutes": 30,
+                 "daily_budget_usd": 1.0, "tick_limit": 20,
+                 "max_attempts": 3},
+    )
+    monkeypatch.setattr(
+        "work_buddy.summarization.orchestrator.chain_has_plausible_backend",
+        lambda: True,
     )
     # Force the summarizer resolver to return a stub that "succeeds".
     fake_summ_calls = {"n": 0}
@@ -191,6 +251,66 @@ def test_worker_bypass_cooldown(tmp_db, monkeypatch):
     assert fake_summ_calls["n"] == 1
     # And the queue entry is removed.
     assert queue_mod.queue_depth() == 0
+
+
+def test_worker_dormant_without_backend_preserves_queue(tmp_db, monkeypatch):
+    from work_buddy.summarization import worker as worker_mod
+
+    queue_mod.enqueue("conversation_session", "item-1")
+    monkeypatch.setattr(
+        worker_mod, "_resolve_config",
+        lambda: {"active": True, "cooldown_minutes": 0,
+                 "daily_budget_usd": 1.0, "tick_limit": 20,
+                 "max_attempts": 3},
+    )
+    monkeypatch.setattr(
+        "work_buddy.summarization.orchestrator.chain_has_plausible_backend",
+        lambda: False,
+    )
+
+    result = worker_mod.run_worker_tick()
+    assert result["dormant"] is True
+    assert result["dormancy_reason"] == "no_backend"
+    assert queue_mod.queue_depth() == 1
+
+
+def test_worker_classifies_environmental_and_intrinsic_failures(tmp_db, monkeypatch):
+    from work_buddy.llm.response import ErrorKind
+    from work_buddy.summarization import worker as worker_mod
+    from work_buddy.summarization.protocol import SummarizationError
+
+    queue_mod.enqueue("conversation_session", "environmental")
+    queue_mod.enqueue("conversation_session", "intrinsic")
+    monkeypatch.setattr(
+        worker_mod, "_resolve_config",
+        lambda: {"active": True, "cooldown_minutes": 0,
+                 "daily_budget_usd": 1.0, "tick_limit": 20,
+                 "max_attempts": 3},
+    )
+    monkeypatch.setattr(worker_mod, "today_summarization_spend_usd", lambda: 0.0)
+    monkeypatch.setattr(
+        "work_buddy.summarization.orchestrator.chain_has_plausible_backend",
+        lambda: True,
+    )
+
+    class _FailingSummarizer:
+        def refresh_one(self, item_id, **_kwargs):
+            kind = (
+                ErrorKind.TIMEOUT
+                if item_id == "environmental"
+                else ErrorKind.MALFORMED_RESPONSE
+            )
+            raise SummarizationError("failed", error_kind=kind, recorded=True)
+
+    monkeypatch.setattr(worker_mod, "_resolve_summarizer", lambda _ns: _FailingSummarizer())
+    result = worker_mod.run_worker_tick()
+
+    by_id = {item["item_id"]: item for item in queue_mod.queue_snapshot()}
+    assert by_id["environmental"]["attempts"] == 0
+    assert by_id["environmental"]["last_error_kind"] == "timeout"
+    assert by_id["intrinsic"]["attempts"] == 1
+    assert by_id["intrinsic"]["last_error_kind"] == "malformed_response"
+    assert result["errored"] == 2
 
 
 def test_v2_feature_flag_default_false():

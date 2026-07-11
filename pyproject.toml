@@ -109,5 +109,6 @@ markers = [
     "real_obsidian_bridge: opt out of the autouse Obsidian-bridge neutralization (see _isolate_task_store_and_vault)",
     "real_notification_delivery: opt out of the autouse notification-delivery stub (see _isolate_notification_delivery)",
     "real_sidecar_runtime_files: opt out of the autouse sidecar pid/state file redirection (see _isolate_sidecar_runtime_files)",
+    "real_conversation_databases: opt out of conversation-observability and summarization temp-DB isolation",
 ]
 addopts = "-q --tb=short"

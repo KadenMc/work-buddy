@@ -771,6 +771,21 @@ _register(RequirementDef(
 ))
 
 _register(RequirementDef(
+    id="services/conversation-summaries/llm-backend",
+    component="conversation_summaries",
+    description="A plausible LLM backend exists for session summaries",
+    check_fn="work_buddy.health.requirement_checks.check_summaries_llm_backend",
+    severity="recommended",
+    fix_hint=(
+        "Configure at least one tier in the summarization model chain: a "
+        "resolvable local profile, or an Anthropic tier with "
+        "SUBAGENT_ANTHROPIC_API_KEY/ANTHROPIC_API_KEY. Without one, the "
+        "on-by-default worker remains dormant and preserves its queue."
+    ),
+    setup_group="summaries",
+))
+
+_register(RequirementDef(
     id="integrations/thunderbird/bridge",
     component="thunderbird",
     description=(

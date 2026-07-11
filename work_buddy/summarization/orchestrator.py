@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any, Callable
 
 from work_buddy.summarization.protocol import (
@@ -356,7 +357,10 @@ def as_caller(fn: Callable[..., Any] | None) -> LLMCaller | None:
                     profile=profile,
                 )
             except Exception as exc:
-                return LLMCallResult(error=str(exc))
+                return LLMCallResult(
+                    error=str(exc),
+                    error_kind=getattr(exc, "error_kind", None),
+                )
             return _normalize_stub_response(resp)
 
     return _Adapter()
@@ -406,6 +410,7 @@ def _normalize_stub_response(resp: Any) -> LLMCallResult:
     model = getattr(resp, "model", None)
     backend = getattr(resp, "backend", None)
     error = getattr(resp, "error", None)
+    error_kind = getattr(resp, "error_kind", None)
     is_err_method = getattr(resp, "is_error", None)
     if callable(is_err_method):
         try:
@@ -420,6 +425,7 @@ def _normalize_stub_response(resp: Any) -> LLMCallResult:
         model=model,
         backend=backend,
         error=error,
+        error_kind=error_kind,
     )
 
 
@@ -487,7 +493,11 @@ def default_llm_caller() -> LLMCaller:
                     trace_id=trace_id,
                 )
             except Exception as exc:
-                return LLMCallResult(error=str(exc))
+                from work_buddy.llm.response import ErrorKind
+
+                return LLMCallResult(
+                    error=str(exc), error_kind=ErrorKind.UNKNOWN,
+                )
 
             return LLMCallResult(
                 structured_output=resp.structured_output,
@@ -495,9 +505,63 @@ def default_llm_caller() -> LLMCaller:
                 model=resp.model or None,
                 backend=resp.backend or None,
                 error=resp.error if resp.is_error() else None,
+                error_kind=resp.error_kind if resp.is_error() else None,
             )
 
     return _Default()
+
+
+def anthropic_key_available() -> bool:
+    """Cheap local check matching the key sources used by the LLM runner."""
+    if os.environ.get("SUBAGENT_ANTHROPIC_API_KEY") or os.environ.get(
+        "ANTHROPIC_API_KEY"
+    ):
+        return True
+
+    try:
+        from work_buddy.paths import config_dir
+
+        env_file = config_dir() / ".env"
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            key, sep, value = line.partition("=")
+            if (
+                sep
+                and key.strip() in {
+                    "SUBAGENT_ANTHROPIC_API_KEY",
+                    "ANTHROPIC_API_KEY",
+                }
+                and value.strip()
+            ):
+                return True
+    except OSError:
+        pass
+    return False
+
+
+def chain_has_plausible_backend() -> bool:
+    """Check whether any configured summarization tier could run.
+
+    This is deliberately a no-network preflight.  Local tiers are plausible
+    when their tier and profile resolve; Anthropic tiers are plausible when a
+    key is available.  Runtime failures remain the worker's responsibility.
+    """
+    from work_buddy.llm.profiles import resolve_profile
+    from work_buddy.llm.tiers import resolve_tier
+
+    for tier in _resolve_model_chain():
+        try:
+            binding = resolve_tier(tier)
+            if binding.backend == "anthropic":
+                if anthropic_key_available():
+                    return True
+            elif binding.backend in {"lmstudio_native", "openai_compat"}:
+                if binding.profile:
+                    resolved = resolve_profile(binding.profile)
+                    if resolved.get("base_url") and resolved.get("model"):
+                        return True
+        except (KeyError, TypeError, ValueError):
+            continue
+    return False
 
 
 def _resolve_model_chain() -> list[Any]:

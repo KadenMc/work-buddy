@@ -590,6 +590,27 @@ _register(ComponentDef(
 ))
 
 _register(ComponentDef(
+    id="conversation_summaries",
+    display_name="Session Summaries",
+    category="service",
+    is_core=False,
+    depends_on=["sidecar"],
+    health_source="custom",
+    requirements=["services/conversation-summaries/llm-backend"],
+    check_sequence=[
+        CheckStep(
+            description="Summarization pipeline state and coverage",
+            check_fn="work_buddy.health.checks.check_conversation_summaries",
+            on_fail=(
+                "Inspect the queue and configured model chain. Dead letters "
+                "remain visible and can be revived with "
+                "summarization_backfill after the underlying issue is fixed."
+            ),
+        ),
+    ],
+))
+
+_register(ComponentDef(
     id="google_calendar_native",
     display_name="Google Calendar (native OAuth)",
     category="integration",
