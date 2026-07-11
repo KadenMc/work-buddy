@@ -2406,6 +2406,10 @@ a.chat-card-badge.prs:hover { text-decoration: underline; }
     border-bottom: 1px solid var(--border);
 }
 .chats-topic-item {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    column-gap: 4px;
     padding: 6px 8px;
     border-radius: 4px;
     cursor: pointer;
@@ -2423,11 +2427,15 @@ a.chat-card-badge.prs:hover { text-decoration: underline; }
     font-family: var(--font-mono);
     font-size: 11px;
 }
+.chats-topic-item .topic-title {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
 .chats-topic-item .topic-range {
     color: var(--text-muted);
     font-family: var(--font-mono);
     font-size: 10px;
-    float: right;
+    white-space: nowrap;
 }
 /* Activity-rail selector (Topics | Git | Tasks) + switchable panels. The
    selector is the shared wb-filter rail; the scoped overrides below keep its
