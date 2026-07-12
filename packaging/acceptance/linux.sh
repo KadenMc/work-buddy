@@ -43,6 +43,10 @@ PACKAGE="$EXTRACT/work-buddy"
 file "$PACKAGE/payload/vendor/uv" | tee "$EVIDENCE/uv-file.txt"
 grep -Eqi 'x86[-_ ]64|x86-64' "$EVIDENCE/uv-file.txt"
 
+# Keep the checked-out repository off Python's import path. Every runtime
+# assertion below must exercise the downloaded artifact's installed package.
+cd "$SANDBOX"
+
 ACCOUNT_HOME="$(getent passwd "$(id -u)" | cut -d: -f6)"
 if [ "$HOME" = "$ACCOUNT_HOME" ] && systemctl --user show-environment >/dev/null 2>&1; then
   AUTOSTART_MODE=require

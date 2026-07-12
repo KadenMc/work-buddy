@@ -97,3 +97,15 @@ def test_verify_archive_rejects_version_mismatch(tmp_path):
     artifact = _artifact(tmp_path, "macos")
     with pytest.raises(verify_archive.VerificationError, match="version mismatch"):
         verify_archive.verify_archive(artifact, "macos", "9.9.9")
+
+
+@pytest.mark.parametrize("platform", ["linux", "macos"])
+def test_acceptance_runtime_cannot_import_from_checkout(platform):
+    script = (_REPO / "packaging" / "acceptance" / f"{platform}.sh").read_text()
+    assert 'cd "$SANDBOX"' in script
+
+
+def test_readiness_probe_fails_fast_on_http_errors():
+    common = (_REPO / "packaging" / "acceptance" / "common.sh").read_text()
+    assert "2??|3??) return 0" in common
+    assert "returned HTTP $http_code" in common

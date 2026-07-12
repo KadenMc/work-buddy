@@ -36,10 +36,20 @@ PY
 }
 
 wait_for_url() {
-  url="$1"
-  timeout_seconds="${2:-240}"
-  deadline=$((SECONDS + timeout_seconds))
-  until curl --silent --show-error --fail "$url" >/dev/null 2>&1; do
+  local url="$1"
+  local timeout_seconds="${2:-240}"
+  local deadline=$((SECONDS + timeout_seconds))
+  local http_code
+  while true; do
+    http_code="$(curl --silent --output /dev/null --write-out '%{http_code}' "$url" 2>/dev/null || true)"
+    case "$http_code" in
+      2??|3??) return 0 ;;
+      000|"") ;;
+      *)
+        echo "$url returned HTTP $http_code while waiting for readiness" >&2
+        return 1
+        ;;
+    esac
     if [ "$SECONDS" -ge "$deadline" ]; then
       echo "timed out waiting for $url" >&2
       return 1
