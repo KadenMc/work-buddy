@@ -2,7 +2,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=common.sh
+# shellcheck source=packaging/acceptance/common.sh
 source "$HERE/common.sh"
 
 [ $# -eq 2 ] || die "usage: macos.sh <artifact.tar.gz> <version>"
