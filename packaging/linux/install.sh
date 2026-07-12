@@ -74,8 +74,9 @@ mkdir -p "$DESKTOP_DIR"
 cat > "$DESKTOP_DIR/work-buddy.desktop" <<EOF
 [Desktop Entry]
 Type=Application
-Name=work-buddy dashboard
-Exec=$APP_HOME/.venv/bin/wbuddy dashboard --open
+Name=work-buddy
+Exec=$APP_HOME/.venv/bin/wbuddy launch
+Icon=$APP_HOME/dashboard-react/dist/icons/app-192.png
 Terminal=false
 Categories=Utility;
 EOF

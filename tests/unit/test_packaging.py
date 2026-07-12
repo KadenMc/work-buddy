@@ -52,6 +52,8 @@ def test_build_payload_includes_package_excludes_dev_trees(tmp_path):
     (root / "work_buddy" / "__pycache__" / "x.pyc").write_text("junk")
     (root / "tests").mkdir()
     (root / "tests" / "test_x.py").write_text("junk")
+    (root / "dashboard-react" / "dist").mkdir(parents=True)
+    (root / "dashboard-react" / "dist" / "index.html").write_text("app")
     (root / "pyproject.toml").write_text("[tool]")
 
     out = tmp_path / "payload"
@@ -61,6 +63,7 @@ def test_build_payload_includes_package_excludes_dev_trees(tmp_path):
     assert (out / "pyproject.toml").exists()
     assert not (out / "tests").exists()  # dev tree excluded by the allowlist
     assert not (out / "work_buddy" / "__pycache__").exists()  # bytecode pruned
+    assert (out / "dashboard-react" / "dist" / "index.html").read_text() == "app"
     assert "work_buddy" in summary["copied"]
 
 
@@ -77,11 +80,20 @@ def test_build_payload_recreates_out(tmp_path):
     root = tmp_path / "repo"
     (root / "work_buddy").mkdir(parents=True)
     (root / "work_buddy" / "__init__.py").write_text("x")
+    (root / "dashboard-react" / "dist").mkdir(parents=True)
+    (root / "dashboard-react" / "dist" / "index.html").write_text("app")
     out = tmp_path / "payload"
     out.mkdir()
     (out / "stale.txt").write_text("should be wiped")
     build_payload.build_payload(root, out)
     assert not (out / "stale.txt").exists()
+
+
+def test_build_payload_requires_react_build(tmp_path):
+    root = tmp_path / "repo"
+    (root / "work_buddy").mkdir(parents=True)
+    with pytest.raises(ValueError, match="dashboard-react/dist"):
+        build_payload.build_payload(root, tmp_path / "payload")
 
 
 def test_windows_installer_passes_harness_to_bootstrap_and_provision():
@@ -111,6 +123,34 @@ def test_windows_installer_passes_harness_to_bootstrap_and_provision():
     assert "[string]$Harness" in bootstrap
     assert 'if ($Harness)      { $provArgs += @("--harness", $Harness) }' in bootstrap
     assert "requires rulesync via Node/npm" not in iss
+
+
+def test_windows_shortcuts_use_consoleless_launcher_and_branded_icon():
+    iss = (_REPO / "packaging" / "windows" / "work-buddy.iss").read_text(
+        encoding="utf-8"
+    )
+    assert 'Name: "desktopicon"' in iss
+    assert 'Filename: "{app}\\.venv\\Scripts\\pythonw.exe"' in iss
+    assert 'Parameters: "-m work_buddy.desktop_launcher"' in iss
+    assert 'WorkingDir: "{app}"' in iss
+    assert 'IconFilename: "{app}\\docs\\work-buddy.ico"' in iss
+    assert 'Filename: "{app}\\.venv\\Scripts\\wbuddy.exe"; Parameters: "launch"' not in iss
+    assert "dashboard --open" not in iss
+
+    linux = (_REPO / "packaging" / "linux" / "install.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "wbuddy launch" in linux
+    assert "dashboard-react/dist/icons/app-192.png" in linux
+
+
+def test_release_builds_react_before_payload():
+    workflow = (_REPO / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8"
+    )
+    react = workflow.index("npm --prefix dashboard-react run build")
+    payload = workflow.index("python packaging/build_payload.py --out dist/payload")
+    assert react < payload
 
 
 def test_vendor_uv_url_construction():

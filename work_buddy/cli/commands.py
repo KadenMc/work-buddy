@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 EXIT_OK = 0
@@ -660,6 +662,26 @@ def dashboard_local_url() -> str:
     return f"http://127.0.0.1:{port}"
 
 
+def dashboard_app_url(*, local: bool = False) -> str:
+    """URL for the installable React dashboard application."""
+    base = dashboard_local_url() if local else dashboard_url()
+    return f"{base.rstrip('/')}/app/"
+
+
+def _wait_for_dashboard_app(url: str, *, timeout_seconds: float = 30.0) -> bool:
+    """Wait until the React dashboard document is actually ready to open."""
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=1.0) as resp:
+                if resp.status == 200:
+                    return True
+        except (OSError, urllib.error.URLError):
+            pass
+        time.sleep(0.25)
+    return False
+
+
 def _print_dashboard_url(prefix: str = "") -> None:
     print(f"{prefix}{_dashboard_url()}")
 
@@ -672,3 +694,49 @@ def cmd_dashboard(args) -> int:
 
         webbrowser.open(url)
     return EXIT_OK
+
+
+def cmd_launch(args) -> int:
+    """Ensure the local runtime is ready, then open the React dashboard app."""
+    result = launch_dashboard_app()
+    if not result["ok"]:
+        _err(result["detail"])
+        return EXIT_FAIL
+    print(f"work-buddy ready: {result['url']}")
+    return EXIT_OK
+
+
+def launch_dashboard_app() -> dict:
+    """Start/recover the runtime and open React, without rendering CLI output.
+
+    This is the shared launch operation for both ``wbuddy launch`` and the
+    console-less desktop entry point.  Returning a structured result keeps the
+    Windows launcher free to report failures through a native dialog while the
+    CLI retains normal terminal output.
+    """
+    from work_buddy.cli import lifecycle
+
+    started = lifecycle.start_sidecar()
+    if not started["started"]:
+        return {"ok": False, "detail": started["detail"]}
+
+    _ensure_tray()
+    url = dashboard_app_url(local=True)
+    if not _wait_for_dashboard_app(url):
+        return {
+            "ok": False,
+            "detail": (
+                "Dashboard app did not become ready within 30 seconds. "
+                "Run 'wbuddy status' and try again."
+            ),
+        }
+
+    from work_buddy.tray.actions import open_dashboard
+
+    opened = open_dashboard(app=True)
+    if not opened.get("ok"):
+        return {
+            "ok": False,
+            "detail": opened.get("detail", "Could not open the dashboard app."),
+        }
+    return {"ok": True, "detail": "work-buddy is ready.", "url": url, "opened": opened}

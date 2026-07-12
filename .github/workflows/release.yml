@@ -59,6 +59,18 @@ jobs:
         with:
           version: ${{ env.UV_VERSION }}
 
+      - name: Set up Node.js for the React dashboard
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dashboard-react/package-lock.json
+
+      - name: Build React dashboard app
+        run: |
+          npm --prefix dashboard-react ci
+          npm --prefix dashboard-react run build
+
       - name: Build source-tree payload
         run: python packaging/build_payload.py --out dist/payload
 

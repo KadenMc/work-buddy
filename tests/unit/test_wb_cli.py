@@ -53,7 +53,7 @@ def test_harness_routes_to_handler(monkeypatch):
 
 @pytest.mark.parametrize(
     "verb",
-    ["start", "stop", "restart", "status", "doctor", "setup", "dashboard"],
+    ["start", "stop", "restart", "status", "doctor", "setup", "dashboard", "launch"],
 )
 def test_routes_verb_to_handler(monkeypatch, verb):
     monkeypatch.setitem(dispatch._HANDLERS, verb, lambda args: 42)
@@ -66,6 +66,72 @@ def test_no_command_is_usage_error():
 
 def test_unknown_command_is_usage_error():
     assert dispatch.main(["bogus"]) == 2
+
+
+def test_launch_starts_waits_and_opens_react_app(capsys, monkeypatch):
+    monkeypatch.setattr(
+        lifecycle,
+        "start_sidecar",
+        lambda: {"started": True, "already_running": False, "pid": 42, "detail": "ok"},
+    )
+    monkeypatch.setattr(commands, "_ensure_tray", lambda: None)
+    monkeypatch.setattr(
+        commands,
+        "dashboard_app_url",
+        lambda local=False: "http://127.0.0.1:5127/app/",
+    )
+    monkeypatch.setattr(commands, "_wait_for_dashboard_app", lambda url: True)
+    opened = {}
+
+    def fake_open_dashboard(*, app=False):
+        opened["app"] = app
+        return {"ok": True, "via": "webbrowser"}
+
+    monkeypatch.setattr("work_buddy.tray.actions.open_dashboard", fake_open_dashboard)
+    assert dispatch.main(["launch"]) == 0
+    assert opened == {"app": True}
+    assert "work-buddy ready: http://127.0.0.1:5127/app/" in capsys.readouterr().out
+
+
+def test_launch_does_not_open_a_dead_dashboard(capsys, monkeypatch):
+    monkeypatch.setattr(
+        lifecycle,
+        "start_sidecar",
+        lambda: {"started": True, "already_running": True, "pid": 42, "detail": "ok"},
+    )
+    monkeypatch.setattr(commands, "_ensure_tray", lambda: None)
+    monkeypatch.setattr(
+        commands,
+        "dashboard_app_url",
+        lambda local=False: "http://127.0.0.1:5127/app/",
+    )
+    monkeypatch.setattr(commands, "_wait_for_dashboard_app", lambda url: False)
+    assert dispatch.main(["launch"]) == 1
+    assert "did not become ready" in capsys.readouterr().err
+
+
+def test_launch_operation_returns_open_failure(monkeypatch):
+    monkeypatch.setattr(
+        lifecycle,
+        "start_sidecar",
+        lambda: {"started": True, "already_running": True, "pid": 42, "detail": "ok"},
+    )
+    monkeypatch.setattr(commands, "_ensure_tray", lambda: None)
+    monkeypatch.setattr(
+        commands,
+        "dashboard_app_url",
+        lambda local=False: "http://127.0.0.1:5127/app/",
+    )
+    monkeypatch.setattr(commands, "_wait_for_dashboard_app", lambda url: True)
+    monkeypatch.setattr(
+        "work_buddy.tray.actions.open_dashboard",
+        lambda **kwargs: {"ok": False, "detail": "Browser launch failed."},
+    )
+
+    assert commands.launch_dashboard_app() == {
+        "ok": False,
+        "detail": "Browser launch failed.",
+    }
 
 
 # ---------------------------------------------------------------------------

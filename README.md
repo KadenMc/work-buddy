@@ -65,10 +65,12 @@ And from any terminal:
 ```
 wbuddy status                    # sidecar health
 wbuddy start | stop | restart    # control the background services
+wbuddy launch                    # start if needed, then open the dashboard app
 wbuddy --help                    # everything else
 ```
 
 A **system-tray icon** shows work-buddy's status at a glance and opens a small panel to start, stop, or restart it and jump to the dashboard.
+The installer also adds a branded, console-free Start Menu launcher, with an optional Desktop shortcut. It starts or recovers the local runtime before opening the React app. The same dashboard at `/app/` can optionally be installed from Chrome or Edge as a standalone PWA window.
 
 ### What Can I Do with work-buddy?
 

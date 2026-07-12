@@ -1,8 +1,8 @@
 ---
 name: wbuddy CLI
 kind: directions
-description: 'The wbuddy shell CLI: bootstrap, provisioning, harness surface sync, and sidecar-lifecycle ramp (start/stop/status/doctor/setup/provision/uninstall/autostart/tray/mcp print/harness). Not the agent operations surface, the wb_* gateway stays that.'
-summary: '`wbuddy start` runs the sidecar detached, `wbuddy status` and `doctor` report health, and `wbuddy setup` plus `wbuddy mcp print` do pre-MCP bootstrap. `wbuddy harness ...` manages generated agent-host surfaces through rulesync. A console script (via pyproject) and also `python -m work_buddy.cli`. The wb_* MCP gateway remains the agent operations surface.'
+description: 'The wbuddy shell CLI: bootstrap, provisioning, app launch, harness surface sync, and sidecar lifecycle (start/stop/status/doctor/setup/provision/uninstall/autostart/tray/mcp print/harness). Not the agent operations surface, the wb_* gateway stays that.'
+summary: '`wbuddy launch` makes the local runtime ready and opens the React dashboard; installer shortcuts reuse that operation through a dedicated console-less launcher. `wbuddy start` runs the sidecar detached, `wbuddy status` and `doctor` report health, and `wbuddy setup` plus `wbuddy mcp print` do pre-MCP bootstrap. `wbuddy harness ...` manages generated agent-host surfaces through rulesync. The wb_* MCP gateway remains the agent operations surface.'
 trigger: user or agent needs to start/stop/check the sidecar from the shell, run bootstrap setup, or print the MCP config
 tags:
 - cli
@@ -21,6 +21,7 @@ aliases:
 - wbuddy mcp print
 - wbuddy harness
 - wbuddy dashboard
+- wbuddy launch
 - wbuddy provision
 - wbuddy uninstall
 - wbuddy autostart
@@ -54,6 +55,7 @@ Installed as a console script (`wbuddy`) via pyproject, also runnable as `python
 - `wbuddy harness doctor [--json]` -- report configured, PATH, managed, or pinned-npx rulesync availability and exact-version agreement.
 - `wbuddy hook {session-start,user-prompt-submit,post-tool-use,stop} --harness <id>` -- internal JSON stdin/stdout lifecycle bridge used by generated native hook files. Users normally do not invoke it directly.
 - `wbuddy dashboard [--open]` -- print (or open) the dashboard URL.
+- `wbuddy launch` -- the terminal/admin form of the shared app-launch operation. It idempotently starts or recovers the sidecar, best-effort ensures the tray when enabled, waits until the React dashboard at `/app/` returns successfully, then focuses an existing matching browser tab or opens one. It fails instead of opening a dead page when the app does not become ready. Windows installer shortcuts run the same operation through `pythonw.exe -m work_buddy.desktop_launcher`, which opens no terminal and reports failures through a native dialog plus `<data_root>/logs/desktop_launcher.log`.
 - `wbuddy provision [--home ...] [--data-dir ...] [--vault-root ...] [--repos-root ...] [--timezone ...] [--anthropic-key ...] [--harness <id>] [--no-harness] [--allow-experimental-harness] [--no-start]` -- the native installer's one-shot entry point. `--home` targets a specific install dir. It seeds config, relocates mutable state, pins the interpreter, writes secrets and MCP wiring, optionally selects one setup-ready primary harness, installs pinned rulesync, projects the native harness surface, publishes the CLI shim, runs bootstrap checks, and starts the sidecar. Harness projection failure fails provision. Idempotent.
 - `wbuddy uninstall` -- tear down machine integration: stop the sidecar, remove the login auto-start task, and remove the PATH shim. User data is preserved; removing the install directory itself is the OS uninstaller's (or the user's) job. The Windows uninstaller invokes this before deleting files.
 - `wbuddy autostart {enable,disable,status}` -- manage login auto-start of the detached sidecar (Windows Task Scheduler `WB-Sidecar`, Linux systemd `--user` unit, macOS launchd agent), via `work_buddy/autostart/`.
@@ -63,4 +65,5 @@ Installed as a console script (`wbuddy`) via pyproject, also runnable as `python
 
 - First-run bootstrap before MCP is wired: `wbuddy setup`, `wbuddy mcp print`.
 - Sidecar lifecycle from the shell instead of `python -m work_buddy.sidecar`: `wbuddy start` / `stop` / `restart` / `status`.
+- Terminal launch of the complete local app: `wbuddy launch`. Installed Windows Start/Desktop shortcuts use the console-less wrapper around the same operation.
 - Interactive, domain-by-domain feature selection stays in the generated `wb-setup` command/skill inside the selected harness because that walk needs an agent. `wbuddy setup` is its pre-MCP shell-side complement.

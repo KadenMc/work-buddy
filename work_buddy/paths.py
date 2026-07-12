@@ -83,6 +83,7 @@ RESOURCES: dict[str, str] = {
     "logs/gateway-debug":        "logs/gateway_debug.log",
     "logs/search-debug":         "logs/search_debug.log",
     "logs/escalations":          "logs/escalations.log",
+    "logs/desktop-launcher":     "logs/desktop_launcher.log",
 
     # Anthropic rate-limit observations (latest snapshot per model).
     "runtime/rate-limits":       "runtime/rate_limits.json",

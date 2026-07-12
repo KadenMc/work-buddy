@@ -9,6 +9,7 @@ owns only setup, sidecar lifecycle, diagnostics, and emitting the MCP config.
     wbuddy start [--foreground]  wbuddy stop    wbuddy restart
     wbuddy status [--json]       wbuddy doctor [<component>] [--json]
     wbuddy setup                 wbuddy mcp print   wbuddy dashboard [--open]
+    wbuddy launch
     wbuddy harness {list,enable,disable,primary,sync,doctor}
     wbuddy provision [...]       wbuddy autostart {enable,disable,status}
     wbuddy uninstall             wbuddy tray {enable,disable,status,run}
@@ -63,6 +64,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p_dash = sub.add_parser("dashboard", help="print the dashboard URL")
     p_dash.add_argument("--open", action="store_true", help="open it in a browser")
+
+    sub.add_parser(
+        "launch",
+        help="start work-buddy if needed and open the React dashboard app",
+    )
 
     p_mcp = sub.add_parser("mcp", help="MCP config helpers")
     mcp_sub = p_mcp.add_subparsers(dest="mcp_command", required=True)
@@ -177,6 +183,7 @@ _HANDLERS = {
     "doctor": commands.cmd_doctor,
     "setup": commands.cmd_setup,
     "dashboard": commands.cmd_dashboard,
+    "launch": commands.cmd_launch,
     "provision": commands.cmd_provision,
     "uninstall": commands.cmd_uninstall,
 }
