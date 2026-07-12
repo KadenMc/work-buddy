@@ -1,4 +1,4 @@
-"""Render contract for the claude_session_summary context source."""
+"""Render contract for the agent_session_summary context source."""
 
 from __future__ import annotations
 
@@ -81,10 +81,10 @@ def co_env(tmp_path, monkeypatch):
 
 
 def test_collector_empty_state_when_no_sessions(co_env) -> None:
-    from work_buddy.collectors.claude_session_summary_collector import collect
+    from work_buddy.collectors.agent_session_summary_collector import collect
 
     out = collect({"days": 7})
-    assert "Claude Session Summary" in out
+    assert "Agent Session Summary" in out
     # Empty marker present (rather than a session list).
     assert "_" in out
 
@@ -95,7 +95,7 @@ def test_collector_empty_state_when_no_sessions(co_env) -> None:
 
 
 def test_collector_renders_session_with_commit(co_env) -> None:
-    from work_buddy.collectors.claude_session_summary_collector import collect
+    from work_buddy.collectors.agent_session_summary_collector import collect
 
     sid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
     write_session(
@@ -116,7 +116,7 @@ def test_collector_renders_session_with_commit(co_env) -> None:
 
 
 def test_collector_renders_uncommitted_files(co_env, monkeypatch) -> None:
-    from work_buddy.collectors.claude_session_summary_collector import collect
+    from work_buddy.collectors.agent_session_summary_collector import collect
 
     sid = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
     file_a = co_env["repo"] / "leftover.py"
@@ -138,7 +138,7 @@ def test_collector_renders_uncommitted_files(co_env, monkeypatch) -> None:
 
 
 def test_collector_groups_by_project(co_env) -> None:
-    from work_buddy.collectors.claude_session_summary_collector import collect
+    from work_buddy.collectors.agent_session_summary_collector import collect
 
     write_session(
         co_env["projects"] / "alpha",
@@ -172,7 +172,7 @@ def test_format_time_range_renders_local(monkeypatch) -> None:
     from zoneinfo import ZoneInfo
 
     import work_buddy.config as config
-    from work_buddy.collectors.claude_session_summary_collector import (
+    from work_buddy.collectors.agent_session_summary_collector import (
         _format_time_range,
     )
 
@@ -194,7 +194,7 @@ def test_format_time_range_renders_local(monkeypatch) -> None:
 
 def test_collector_include_topics_renders_topic_timeline(co_env, tmp_path, monkeypatch) -> None:
     """v2 P6: with `include_topics=True`, each session bullet nests its topic timeline."""
-    from work_buddy.collectors.claude_session_summary_collector import collect
+    from work_buddy.collectors.agent_session_summary_collector import collect
 
     # Point summarization DB at a temp file too (separate from conv_obs DB).
     summ_db = tmp_path / "summarization.db"
@@ -261,16 +261,15 @@ def test_collector_include_topics_renders_topic_timeline(co_env, tmp_path, monke
     assert "tldr: Worked on test feature." in out
     # Topics header present
     assert "Topics:" in out
-    # Both titles rendered with ranges
-    assert "Discussion start" in out
-    assert "turns 0-5" in out
-    assert "Implementation" in out
-    assert "turns 6-12" in out
+    # Both titles rendered, each prefixed with a wall-clock range derived from
+    # the topic's turn timestamps (all turns here are at 10:00).
+    assert "10:00 Discussion start" in out
+    assert "10:00 Implementation" in out
 
 
 def test_collector_include_topics_implies_include_tldr(co_env, tmp_path, monkeypatch) -> None:
     """include_topics=True forces include_tldr=True for rendering consistency."""
-    from work_buddy.collectors import claude_session_summary_collector as mod
+    from work_buddy.collectors import agent_session_summary_collector as mod
 
     # Sanity: the inside-collect logic flips include_tldr when include_topics is set.
     # We assert this via behavior: passing include_topics=True (without explicit
@@ -316,6 +315,6 @@ def test_context_source_registered_under_expected_name() -> None:
     # Force import to trigger registration.
     import work_buddy.context.sources  # noqa: F401
 
-    source = get("claude_session_summary")
+    source = get("agent_session_summary")
     assert source is not None
-    assert source.name == "claude_session_summary"
+    assert source.name == "agent_session_summary"

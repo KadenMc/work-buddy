@@ -183,12 +183,12 @@ def session_prs_get(session_id: str) -> dict[str, Any]:
 
 
 def _register() -> None:
+    from work_buddy.conversation_observability.session_detail import session_detail
     from work_buddy.conversation_observability.session_summary_row import (
         session_summary_row,
     )
     from work_buddy.conversation_observability.sessions import (
         list_observed_sessions,
-        query_observed_session,
     )
     from work_buddy.conversation_observability.summaries import (
         refresh_session_summaries,
@@ -198,7 +198,9 @@ def _register() -> None:
     register_op("op.wb.conversation_observability_refresh",
                 conversation_observability_refresh)
     register_op("op.wb.conversation_observability_uncommitted", uncommitted_report)
-    register_op("op.wb.conversation_observability_get", query_observed_session)
+    # Composite per-session view: bare observed row by default, opt-in joins via
+    # include_* flags. `replace=True` so a registry reload re-binds cleanly.
+    register_op("op.wb.conversation_observability_get", session_detail, replace=True)
     register_op("op.wb.conversation_observability_list", list_observed_sessions)
     register_op("op.wb.conversation_observability_summarize",
                 refresh_session_summaries)

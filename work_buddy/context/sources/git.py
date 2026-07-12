@@ -32,7 +32,7 @@ refetch.
 from __future__ import annotations
 
 import subprocess
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -292,8 +292,8 @@ def _resolve_repos(override: str | None) -> list[Path]:
 def _log_commits(
     repo: Path,
     max_commits: int,
-    since: date | None,
-    until: date | None,
+    since: date | datetime | None,
+    until: date | datetime | None,
 ) -> list[dict[str, Any]]:
     args = [
         "git", "log",
@@ -395,14 +395,17 @@ def _window_for(
     request: ContextRequest,
     *,
     window_days: int,
-) -> tuple[date | None, date | None]:
-    """Return the (since, until) window around the request's target_date.
+) -> tuple[date | datetime | None, date | datetime | None]:
+    """Return the (since, until) window for the git-log query, by precedence.
 
-    For the default path (target_date=None, window_days=1) this
-    computes "the last 24 hours" as a since-only bound, matching the
-    pre-refactor behavior. When a target_date is supplied, we
-    center the window on it.
+    Explicit ``request.since`` / ``request.until`` (exact datetimes, e.g. the
+    journal's activity window) win — ``git log --since/--until`` accept full
+    ISO timestamps, so the window stays minute-precise. Otherwise derive from
+    ``target_date`` ± ``window_days``; with no target_date this is a since-only
+    "last N days" bound (the default 24h path).
     """
+    if request.since is not None or request.until is not None:
+        return request.since, request.until
     if request.target_date is None:
         since = date.today() - timedelta(days=max(window_days, 0))
         return since, None

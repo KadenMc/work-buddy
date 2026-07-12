@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -12,6 +12,7 @@ from work_buddy.transcripts.models import (
     TranscriptSession,
     TranscriptToolCall,
     TranscriptTurn,
+    mtime_floor,
 )
 
 
@@ -33,13 +34,15 @@ class CodexTranscriptProvider:
     def discover(
         self,
         *,
-        days: int,
+        days: int | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
         project_filter: list[str] | None = None,
     ) -> Iterable[TranscriptSession]:
         root = self.root
         if not root.is_dir():
             return []
-        cutoff = 0.0 if days <= 0 else time.time() - days * 86400
+        cutoff = mtime_floor(days, since)
         results: list[TranscriptSession] = []
         for path in root.rglob("*.jsonl"):
             try:

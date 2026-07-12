@@ -56,6 +56,8 @@ Returns:
       "span_end": int | None,
       "turn_start": int | None,
       "turn_end": int | None,
+      "ts_start": str | None,
+      "ts_end": str | None,
       "keywords": list[str],
     },
     ...
@@ -65,8 +67,11 @@ Returns:
 
 Returns `None` if the session has no summary.
 
+Each topic also carries `ts_start`/`ts_end` — the wall-clock timestamps of its turn range, derived best-effort from the session's turns (both `None` when the session file is unavailable).
+
 ## When to reach for this vs. related tools
 
-- Use **`session_summary_get`** when you need the legacy row shape (specifically the per-topic `span_start`/`span_end`/`keywords` + the item-level provenance fields like `prompt_version`). The dashboard `/api/chats/<sid>/topics` endpoint and the `claude_session_summary` context collector both consume this shape.
+- Use **`session_summary_get`** for the LLM summary *alone* (tldr + topics, with the per-topic `span_start`/`span_end`/`ts_start`/`ts_end`/`keywords` and item-level provenance like `prompt_version`). Its `status`/`error` reflect summary-generation health specifically. The dashboard `/api/chats/<sid>/topics` endpoint and the `agent_session_summary` context collector both consume this shape.
+- Use **`conversation_observability_get(session_id, include_summary=True, …)`** when you want the whole per-session picture in one call — the observed row plus any of summary / commits / writes / prs. That composite reuses this helper for the summary part.
 - Use **`drill_tree(domain="summary", node_id=f"conversation_session:{sid}", ...)`** when you want to *navigate* a session's summary tree (index → summary → full depths). That's the agent-facing primitive; `session_summary_get` is the row-shape transform on top of the same store.
 - Use **`find(source="summary", scope="conversation_session", drill=true)`** (or its alias **`summary_search`**) when you have a topic and want to *search* across sessions.

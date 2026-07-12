@@ -155,7 +155,7 @@ parents:
    mcp__work-buddy__wb_run("context_bundle", {"hours": <hours>})
    ```
 
-3. Read the resulting pack files from the bundle path returned in the result. Priority files: `git_summary.md`, `tasks_summary.md`, `projects_summary.md`, `obsidian_summary.md`, `messages_summary.md`, `chat_summary.md`, `calendar_summary.md`, `wellness_summary.md`.
+3. Read the resulting pack files from the bundle path returned in the result. Priority files: `git_summary.md`, `tasks_summary.md`, `projects_summary.md`, `obsidian_summary.md`, `messages_summary.md`, `agent_session_summary.md` (agent conversations: per-session tldr/topics, commits, PRs), `chat_summary.md` (SpecStory + CLI history; absent when empty), `calendar_summary.md`, `wellness_summary.md`.
 
 4. Condense into a structured activity digest â€” not the raw pack, but a ~20 line summary of: what repos had activity, what journal entries exist, outstanding tasks, recent conversations, messages.
 

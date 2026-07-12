@@ -336,23 +336,23 @@ def collect_scoped_context(journal_state: dict[str, Any] | None = None) -> dict[
 
     since_str = state.get("collect_since")
     until_str = state.get("collect_until")
-    hours = 16  # conservative default covering a full active day
-    if since_str and until_str:
-        try:
-            since_dt = datetime.fromisoformat(since_str)
-            until_dt = datetime.fromisoformat(until_str)
-            delta = until_dt - since_dt
-            hours = max(1, int(delta.total_seconds() // 3600) + 1)
-        except (TypeError, ValueError):
-            pass
 
-    bundle_result = collect_bundle(hours=hours)
+    if since_str and until_str:
+        # Pass the exact activity window through. The collectors filter to
+        # ``[since, until]`` precisely rather than the day-granular scalar the
+        # window used to collapse into, so a "yesterday" journal no longer
+        # pulls a week of conversations.
+        bundle_result = collect_bundle(since=since_str, until=until_str)
+    else:
+        # No resolved window (shouldn't happen after read_journal_state, but be
+        # safe): fall back to a conservative full-day scalar.
+        bundle_result = collect_bundle(hours=16)
+
     return {
         "collected": True,
         "bundle_path": bundle_result.get("bundle_path"),
         "collect_since": since_str,
         "collect_until": until_str,
-        "hours": hours,
     }
 
 

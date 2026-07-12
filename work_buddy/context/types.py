@@ -40,7 +40,8 @@ class ContextRequest:
     """Caller-facing handle describing what context to gather.
 
     Only fields that affect *fetch* (sources, target_date, window_days,
-    per-source custom params) participate in the cache bucket key.
+    since/until, per-source custom params) participate in the cache
+    bucket key.
     ``depth``, ``per_source_depth`` and ``max_chars`` are *curation*
     concerns and don't influence the cached raw JSON.
 
@@ -55,6 +56,13 @@ class ContextRequest:
             ``None`` = now.
         window_days: Window around ``target_date`` for sources that
             accept one. Defaults to 1 (today only).
+        since: Explicit lower bound (aware UTC datetime). When set with
+            ``until`` it takes precedence over ``target_date`` /
+            ``window_days`` for deriving a source's fetch window — this is
+            how a caller passes a precise sub-day window (e.g. the journal's
+            activity window) rather than a day-granular one.
+        until: Explicit upper bound (aware UTC datetime). Paired with
+            ``since``.
         max_chars: Rendering budget. Curator truncates when output
             would exceed. ``None`` = unlimited.
         max_age_seconds: Cache-freshness floor. ``None`` = always
@@ -70,6 +78,8 @@ class ContextRequest:
     per_source_depth: dict[str, ContextDepth] | None = None
     target_date: date | None = None
     window_days: int = 1
+    since: datetime | None = None
+    until: datetime | None = None
     max_chars: int | None = None
     max_age_seconds: int | None = None
     custom: dict[str, dict[str, Any]] | None = None

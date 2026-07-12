@@ -85,7 +85,7 @@ At each `refresh` / `refresh_one` the composer re-bridges the strategy's `prompt
 
 | Composition | Source | Strategy | Store | Used by |
 |---|---|---|---|---|
-| `conversation_session` | `SessionSource` | `LayeredDisclosureStrategy` (v1; legacy callers) OR `IncrementalLayeredStrategy` (v2; queue worker) | `DurableSummaryStore(namespace="conversation_session")` — selection_version=1 for v1, 2 for v2 | dashboard `/api/chats/<id>/topics`, `/wb-session-identify`, `claude_session_summary` collector, `session_summary_get` MCP capability, the `summarization-worker` sidecar job |
+| `conversation_session` | `SessionSource` | `LayeredDisclosureStrategy` (v1; legacy callers) OR `IncrementalLayeredStrategy` (v2; queue worker) | `DurableSummaryStore(namespace="conversation_session")` — selection_version=1 for v1, 2 for v2 | dashboard `/api/chats/<id>/topics`, `/wb-session-identify`, `agent_session_summary` collector, `session_summary_get` MCP capability, the `summarization-worker` sidecar job |
 | `chrome_page` | `ChromeSource` (per-call) | `FlatExtractionStrategy` (BATCHED) | `TtlCacheStore(key_prefix="summarize_tab", ttl=30m)` | `chrome_infer._summarize_tabs`, `pipelines/chrome.py` |
 
 The lazy singleton `get_session_summarizer()` always builds v1; the worker explicitly constructs v2 via `build_session_summarizer(use_incremental=True)`. The split keeps legacy v1-shape callers (tests, query helpers) on v1 strategy without flipping under them when the production flag changes.

@@ -28,7 +28,7 @@ Three capabilities consume summaries; pick by the question you're answering.
 
 - **`summary_search(query, scope=?)`** — coarse-to-fine retrieval funnel. Stage 1 ranks summary nodes; stage 2 (optional, default on) drills the top items via `session_search`. Returns `stage1_hits` + `candidate_items` + `drilled`. Each hit carries a `drill_node_id` ready to hand to `drill_tree`. **Use this when you have a topic and don't know which item.**
 - **`drill_tree(domain="summary", node_id=..., depth=...)`** — walk one specific item's tree at three depths. **Use this when you have an item id and want its structure.** See `disclosure/drill_tree`.
-- **`conversation_observability_summary_get(session_id)`** — legacy direct row read (flat dict with `tldr`, `topics: [...]`). Consumed by the dashboard `/api/chats/<id>/topics` endpoint and the `claude_session_summary` context collector. **Prefer `drill_tree` for new code**; this surface stays until consumers migrate (tracked as task `t-bbefceef`).
+- **`conversation_observability_summary_get(session_id)`** — legacy direct row read (flat dict with `tldr`, `topics: [...]`). Consumed by the dashboard `/api/chats/<id>/topics` endpoint and the `agent_session_summary` context collector. **Prefer `drill_tree` for new code**; this surface stays until consumers migrate (tracked as task `t-bbefceef`).
 
 ## Agent workflow
 

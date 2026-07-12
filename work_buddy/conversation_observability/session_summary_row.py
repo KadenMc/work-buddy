@@ -5,7 +5,7 @@ framework's per-node store (`summary_items` + `summary_nodes` in
 `summarization.db`). Consumed by:
 
 - The dashboard `GET /api/chats/<sid>/topics` endpoint.
-- The `claude_session_summary` context collector's `include_tldr` branch.
+- The `agent_session_summary` context collector's `include_tldr` branch.
 - The MCP op `session_summary_get` (and its alias
   `conversation_observability_summary_get`).
 
@@ -211,6 +211,29 @@ def _topics_from_node(
             "span_end": span_end,
             "turn_start": turn_start,
             "turn_end": turn_end,
+            "ts_start": _turn_timestamp(session, turn_start),
+            "ts_end": _turn_timestamp(session, turn_end),
             "keywords": list(extra.get("keywords") or []),
         })
     return out
+
+
+def _turn_timestamp(session: Any, turn_index: Any) -> str | None:
+    """Wall-clock timestamp (ISO) of a topic's turn, best-effort.
+
+    Maps a turn index onto the loaded session's turn list, clamped into range,
+    and returns that turn's timestamp. Additive to the topic shape so callers
+    can render per-topic time ranges; ``None`` when the session or index is
+    unavailable.
+    """
+    if session is None or not isinstance(turn_index, int):
+        return None
+    try:
+        turns = session.turns
+    except Exception:
+        return None
+    if not turns:
+        return None
+    idx = max(0, min(turn_index, len(turns) - 1))
+    turn = turns[idx]
+    return turn.get("timestamp") if isinstance(turn, dict) else None

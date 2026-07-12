@@ -12,7 +12,7 @@ Markdown-wrapper sources (wave 2/3 — delegate to legacy
 ``work_buddy/collectors/*``; emit one item holding the full markdown;
 drill-down not implemented):
 - obsidian, obsidian_wellness, calendar, day_planner,
-  session_activity, chat, claude_session_summary, message, vault,
+  session_activity, chat, agent_session_summary, message, vault,
   datacore
 """
 
@@ -30,7 +30,7 @@ from work_buddy.context.sources import calendar  # noqa: F401
 from work_buddy.context.sources import day_planner  # noqa: F401
 from work_buddy.context.sources import session_activity  # noqa: F401
 from work_buddy.context.sources import chat  # noqa: F401
-from work_buddy.context.sources import claude_session_summary  # noqa: F401
+from work_buddy.context.sources import agent_session_summary  # noqa: F401
 from work_buddy.context.sources import message  # noqa: F401
 from work_buddy.context.sources import vault  # noqa: F401
 from work_buddy.context.sources import datacore  # noqa: F401

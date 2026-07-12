@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS observed_sessions (
     message_count           INTEGER,
     span_count              INTEGER,
     tool_names_json         TEXT NOT NULL DEFAULT '{}',
+    first_user_message      TEXT,
     status                  TEXT NOT NULL DEFAULT 'ok',
     error                   TEXT,
     commits_scanned_mtime   REAL,

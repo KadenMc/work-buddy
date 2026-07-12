@@ -31,6 +31,7 @@ Use mcp__work-buddy__wb_run("context_bundle") to collect. Scope options:
 - Default: config.yaml windows
 - Quick: {"hours": 24}
 - Last N days: {"days": 3}
+- Exact window: {"since": "18h", "until": "now"} or ISO datetimes — a precise, minute-level window every source honors (wins over hours/days)
 - Individual: context_git, context_chat, etc.
 
 ## Synthesis instructions

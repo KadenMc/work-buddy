@@ -23,7 +23,7 @@ File-name mapping from source → bundle file:
     calendar                   → calendar_summary.md
     day_planner                → day_planner_summary.md
     session_activity           → session_activity_summary.md
-    claude_session_summary     → claude_session_summary.md
+    agent_session_summary     → agent_session_summary.md
     datacore                   → datacore_summary.md
 """
 
@@ -70,7 +70,7 @@ _BUNDLE_MAP: dict[str, str] = {
     "calendar":          "calendar_summary.md",
     "day_planner":       "day_planner_summary.md",
     "session_activity":  "session_activity_summary.md",
-    "claude_session_summary": "claude_session_summary.md",
+    "agent_session_summary": "agent_session_summary.md",
     "datacore":          "datacore_summary.md",
     "projects":          "projects_summary.md",
 }
@@ -91,7 +91,7 @@ _LEGACY_ONLY_ALIAS: dict[str, list[str]] = {
 COLLECTORS = {
     "git", "obsidian", "chat", "chrome", "message",
     "vault", "calendar", "day_planner", "projects",
-    "session_activity", "claude_session_summary",
+    "session_activity", "agent_session_summary",
     "obsidian_tasks", "obsidian_wellness", "datacore",
 }
 
@@ -111,6 +111,7 @@ _TIME_TARGETS = [
     ("obsidian.recent_modified_days", float),
     ("chats.specstory_days", lambda d: max(1, int(d))),
     ("chats.claude_history_days", lambda d: max(1, int(d))),
+    ("agent_session_summary.days", lambda d: max(1, int(d))),
 ]
 
 
@@ -144,11 +145,20 @@ def _write_meta(
     bundle_dir: Path,
     cfg: dict[str, Any],
     collectors_run: list[str],
+    *,
+    since: datetime | None = None,
+    until: datetime | None = None,
 ) -> None:
     meta = {
         "version": __version__,
         "collected_at": datetime.now(timezone.utc).isoformat(),
         "collectors_run": collectors_run,
+        # The window every source was collected for (uniform per run). Records
+        # what the bundle actually covers, so a reader never has to infer it.
+        "window": {
+            "since": since.isoformat() if since else None,
+            "until": until.isoformat() if until else None,
+        },
         "config": {
             "vault_root": cfg.get("vault_root"),
             "repos_root": cfg.get("repos_root"),
@@ -157,6 +167,24 @@ def _write_meta(
     (bundle_dir / "bundle_meta.json").write_text(
         json.dumps(meta, indent=2), encoding="utf-8",
     )
+
+
+def _window_header(since: datetime | None, until: datetime | None) -> str:
+    """A one-line window banner prepended to each bundle file, so every file
+    states the exact window it was collected for (local wall-clock time)."""
+    from work_buddy.timefmt import to_local_naive
+
+    s = to_local_naive(since)
+    u = to_local_naive(until)
+    if s and u:
+        label = f"{s.strftime('%Y-%m-%d %H:%M')} → {u.strftime('%Y-%m-%d %H:%M')}"
+    elif s:
+        label = f"since {s.strftime('%Y-%m-%d %H:%M')}"
+    elif u:
+        label = f"until {u.strftime('%Y-%m-%d %H:%M')}"
+    else:
+        return ""
+    return f"*Window: {label}*\n\n"
 
 
 def _sources_from_only(only: str | None) -> list[str]:
@@ -204,13 +232,24 @@ def run_collection(
     cfg: dict[str, Any],
     only: str | None = None,
     dry_run: bool = False,
+    *,
+    since: datetime | None = None,
+    until: datetime | None = None,
 ) -> Path | None:
     """Run the context collection via ContextCollector + ContextCurator.
 
     Writes one ``<source>_summary.md`` per source into the session
     context dir, plus a ``bundle_meta.json`` manifest. Skips sources
     that return empty content.
+
+    ``since`` / ``until`` set the exact fetch window on the request (aware
+    datetimes). Explicit args win; otherwise a top-level ``cfg`` since/until
+    (e.g. a ``collect since=... until=...`` CLI override) is parsed and used,
+    so every source — including GitSource, which reads the request window
+    rather than a cfg section — honors the same bound.
     """
+    from work_buddy.timefmt import parse_time_bound
+
     sources = _sources_from_only(only)
 
     if dry_run:
@@ -219,6 +258,9 @@ def run_collection(
         logger.info("Repos root: %s", cfg.get("repos_root"))
         logger.info("Bundles dir: %s", cfg.get("bundles_dir"))
         return None
+
+    since_dt = since if since is not None else parse_time_bound(cfg.get("since"))
+    until_dt = until if until is not None else parse_time_bound(cfg.get("until"))
 
     bundle_dir = _make_bundle_dir(cfg)
     logger.info("Collecting context bundle -> %s", bundle_dir)
@@ -232,6 +274,8 @@ def run_collection(
         sources=sources,
         depth=ContextDepth.DEEP,
         window_days=1,
+        since=since_dt,
+        until=until_dt,
         custom=_custom_from_cfg(cfg),
     )
 
@@ -261,11 +305,12 @@ def run_collection(
         if not rendered.strip():
             logger.debug("collect: %r rendered empty; skipping file", source_name)
             continue
-        (bundle_dir / filename).write_text(rendered, encoding="utf-8")
+        banner = _window_header(since_dt, until_dt)
+        (bundle_dir / filename).write_text(banner + rendered, encoding="utf-8")
         collectors_run.append(source_name)
         logger.info("Collected %s -> %s", source_name, filename)
 
-    _write_meta(bundle_dir, cfg, collectors_run)
+    _write_meta(bundle_dir, cfg, collectors_run, since=since_dt, until=until_dt)
     logger.info("Context bundle saved: %s", bundle_dir)
     return bundle_dir
 

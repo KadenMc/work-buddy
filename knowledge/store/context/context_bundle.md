@@ -9,11 +9,19 @@ schema_version: wb-capability/v1
 parameters:
   days:
     type: int
-    description: Override all time windows to N days
+    description: Override all time windows to N days (day-granular)
     required: false
   hours:
     type: int
-    description: Override all time windows to N hours
+    description: Override all time windows to N hours (day-granular; takes precedence over days)
+    required: false
+  since:
+    type: str
+    description: 'Exact window start: ISO datetime or relative shorthand ("18h", "2d"). The precise, authoritative window for every source (minute-level); wins over hours/days.'
+    required: false
+  until:
+    type: str
+    description: 'Exact window end: ISO datetime or relative shorthand. Defaults to now when since is given.'
     required: false
   only:
     type: str
