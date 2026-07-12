@@ -21,6 +21,12 @@ APPLICATIONS_DIR="$HOME/Applications"
 EVIDENCE="$RUNNER_TEMP/work-buddy-macos-evidence"
 mkdir -p "$EXTRACT" "$HOME" "$DATA_DIR" "$APPLICATIONS_DIR" "$EVIDENCE"
 
+collect_service_logs() {
+  cp -R "$DATA_DIR/logs" "$EVIDENCE/service-logs" 2>/dev/null || true
+  cp -R "$HOME/Library/Logs/work-buddy" "$EVIDENCE/launchd-logs" 2>/dev/null || true
+}
+trap collect_service_logs EXIT
+
 for target in "$SANDBOX" "$HOME" "$APP_HOME" "$DATA_DIR" "$APPLICATIONS_DIR"; do
   require_under_runner_temp "$target" >/dev/null
 done
@@ -36,7 +42,8 @@ file "$PACKAGE/payload/vendor/uv" | tee "$EVIDENCE/uv-file.txt"
 grep -qi 'arm64' "$EVIDENCE/uv-file.txt"
 plutil -lint "$PACKAGE/app/Work Buddy.app/Contents/Info.plist" | tee "$EVIDENCE/plutil.txt"
 
-if launchctl print "gui/$(id -u)" >/dev/null 2>&1; then
+ACCOUNT_HOME="$(python3 -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')"
+if [ "$HOME" = "$ACCOUNT_HOME" ] && launchctl print "gui/$(id -u)" >/dev/null 2>&1; then
   AUTOSTART_MODE=require
 else
   AUTOSTART_MODE=skip
@@ -93,7 +100,6 @@ grep -F '# acceptance-config-sentinel' "$APP_HOME/config.local.yaml"
 grep -F 'preserve-me' "$DATA_DIR/acceptance/data-sentinel.txt"
 wait_for_url "http://127.0.0.1:5127/app/" 300
 
-cp -R "$DATA_DIR/logs" "$EVIDENCE/service-logs" 2>/dev/null || true
 bash "$APP_HOME/uninstall.command" \
   --home "$APP_HOME" --data-dir "$DATA_DIR" --applications-dir "$APPLICATIONS_DIR" \
   2>&1 | tee "$EVIDENCE/uninstall-preserve-data.log"

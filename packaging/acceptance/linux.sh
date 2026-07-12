@@ -37,7 +37,8 @@ PACKAGE="$EXTRACT/work-buddy"
 file "$PACKAGE/payload/vendor/uv" | tee "$EVIDENCE/uv-file.txt"
 grep -Eqi 'x86[-_ ]64|x86-64' "$EVIDENCE/uv-file.txt"
 
-if systemctl --user show-environment >/dev/null 2>&1; then
+ACCOUNT_HOME="$(getent passwd "$(id -u)" | cut -d: -f6)"
+if [ "$HOME" = "$ACCOUNT_HOME" ] && systemctl --user show-environment >/dev/null 2>&1; then
   AUTOSTART_MODE=require
 else
   AUTOSTART_MODE=skip
