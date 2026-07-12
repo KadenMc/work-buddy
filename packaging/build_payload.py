@@ -1,8 +1,8 @@
 """Assemble the work-buddy source-tree payload for the native installers.
 
 Copies the files the installer lays down in the user's HOME working copy: the
-work_buddy package, the shipped asset trees (knowledge/store, prompts,
-sidecar_jobs, .claude), config templates, docs, and the project metadata
+work_buddy package, the built React dashboard, the shipped asset trees
+(knowledge/store, prompts, sidecar_jobs, .claude), config templates, docs, and the project metadata
 (pyproject/README/LICENSE/CHANGELOG). Prunes dev-only trees (tests, .data,
 exploration, .git, caches) and bytecode by way of an allowlist.
 
@@ -34,6 +34,7 @@ INCLUDE = [
     "sidecar_jobs",
     ".claude",
     "docs",
+    "dashboard-react/dist",
     "config.example.yaml",
     "config.local.yaml.example",
     "pyproject.toml",
@@ -44,6 +45,8 @@ INCLUDE = [
     "CHANGELOG.md",
     ".mcp.json",
 ]
+
+REQUIRED = {"dashboard-react/dist"}
 
 # Pruned wherever they appear inside the copied trees.
 PRUNE_DIRS = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
@@ -89,11 +92,20 @@ def build_payload(root: Path, out: Path) -> dict:
             missing.append(name)
             continue
         dst = out / name
+        dst.parent.mkdir(parents=True, exist_ok=True)
         if src.is_dir():
             shutil.copytree(src, dst, ignore=_ignore)
         else:
             shutil.copy2(src, dst)
         copied.append(name)
+    required_missing = sorted(REQUIRED.intersection(missing))
+    if required_missing:
+        raise ValueError(
+            "installer payload is missing required build output: "
+            + ", ".join(required_missing)
+            + ". Run 'npm --prefix dashboard-react ci' and "
+            "'npm --prefix dashboard-react run build' first."
+        )
     return {"out": str(out), "copied": copied, "missing": missing}
 
 

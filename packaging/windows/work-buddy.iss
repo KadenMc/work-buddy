@@ -61,6 +61,8 @@ UninstallDisplayName=work-buddy
 ; The bootstrap downloads Python + dependencies after extraction (torch alone is
 ; hundreds of MB); make the wizard's free-space check account for it (5 GB).
 ExtraDiskSpaceRequired=5368709120
+SetupIconFile=docs\work-buddy.ico
+UninstallDisplayIcon={app}\docs\work-buddy.ico
 
 [Files]
 ; The source-tree payload (build_payload.py output), including vendor\uv.exe.
@@ -83,6 +85,7 @@ Name: "harness_none"; Description: "Skip agent harness setup"; Flags: exclusive
 ; the tray's Python extra is always installed, so `wbuddy tray enable` works
 ; later either way.
 Name: "traylogin"; Description: "Show the work-buddy tray icon (starts at login)"
+Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 
 [Run]
 ; The heavy step: uv sequence + provision + autostart. runhidden keeps the
@@ -96,7 +99,10 @@ Filename: "powershell.exe"; \
 ; bootstrap must never leave a launch action pointing at a venv that was not built.
 
 [Icons]
-Name: "{group}\work-buddy dashboard"; Filename: "{app}\.venv\Scripts\wbuddy.exe"; Parameters: "dashboard --open"
+; pythonw runs the shared self-healing launch operation without a console. On
+; failure, work_buddy.desktop_launcher supplies a native dialog + log pointer.
+Name: "{group}\work-buddy"; Filename: "{app}\.venv\Scripts\pythonw.exe"; Parameters: "-m work_buddy.desktop_launcher"; WorkingDir: "{app}"; IconFilename: "{app}\docs\work-buddy.ico"
+Name: "{autodesktop}\work-buddy"; Filename: "{app}\.venv\Scripts\pythonw.exe"; Parameters: "-m work_buddy.desktop_launcher"; WorkingDir: "{app}"; IconFilename: "{app}\docs\work-buddy.ico"; Tasks: desktopicon
 Name: "{group}\Uninstall work-buddy"; Filename: "{uninstallexe}"
 
 [UninstallRun]

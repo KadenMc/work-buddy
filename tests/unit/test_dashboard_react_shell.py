@@ -77,6 +77,26 @@ def test_app_assets_unknown_file_404s(client):
     assert client.get("/app/assets/nope-0000000000.js").status_code == 404
 
 
+@requires_dist
+def test_app_manifest_is_installable_and_targets_react_app(client):
+    resp = client.get("/app/manifest.webmanifest")
+    assert resp.status_code == 200
+    assert "application/manifest+json" in resp.headers.get("Content-Type", "")
+    manifest = resp.get_json()
+    assert manifest["start_url"] == "/app/"
+    assert manifest["scope"] == "/app/"
+    assert manifest["display"] == "standalone"
+    assert {icon["sizes"] for icon in manifest["icons"]} == {"192x192", "512x512"}
+
+
+@requires_dist
+def test_app_manifest_icons_are_served(client):
+    for name in ("app-192.png", "app-512.png", "app-maskable-512.png"):
+        resp = client.get(f"/app/icons/{name}")
+        assert resp.status_code == 200
+        assert "image/png" in resp.headers.get("Content-Type", "")
+
+
 def test_app_route_absent_dist_is_helpful_404(client):
     if _dist_built():
         pytest.skip("dist present; the not-built branch is unreachable here")

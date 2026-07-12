@@ -42,7 +42,7 @@ def restart_sidecar() -> dict:
     return lifecycle.start_sidecar()
 
 
-def open_dashboard(target_hash: str = "") -> dict:
+def open_dashboard(target_hash: str = "", *, app: bool = False) -> dict:
     """Focus an existing dashboard tab/window (or create one), smartly.
 
     Primary path: the Chrome extension's ``focus_or_create_tab`` (reuse the
@@ -56,9 +56,9 @@ def open_dashboard(target_hash: str = "") -> dict:
     (activate-only); treating unsaved input as first-class is a React-dashboard
     concern.
     """
-    from work_buddy.cli.commands import dashboard_local_url
+    from work_buddy.cli.commands import dashboard_app_url, dashboard_local_url
 
-    base = dashboard_local_url()
+    base = dashboard_app_url(local=True) if app else dashboard_local_url()
     try:
         from work_buddy.collectors.chrome_collector import focus_or_create_tab
 

@@ -1985,6 +1985,31 @@ def react_app_assets(filename: str):
     return resp
 
 
+@app.get("/app/manifest.webmanifest")
+def react_app_manifest():
+    """Serve the React app's PWA manifest with the required media type."""
+    target = _react_dist_dir() / "manifest.webmanifest"
+    if not target.is_file():
+        return "", 404
+    resp = send_file(target, mimetype="application/manifest+json")
+    resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
+@app.get("/app/icons/<path:filename>")
+def react_app_icon(filename: str):
+    """Serve the fixed-name PWA icons emitted from ``public/icons``."""
+    safe = filename.replace("\\", "/").lstrip("/")
+    if ".." in safe.split("/"):
+        return "", 404
+    target = _react_dist_dir() / "icons" / safe
+    if not target.is_file():
+        return "", 404
+    resp = send_file(target, mimetype="image/png")
+    resp.headers["Cache-Control"] = "public, max-age=86400"
+    return resp
+
+
 # ---------------------------------------------------------------------------
 # Review tab + Resolution Surface endpoints removed
 # ---------------------------------------------------------------------------
