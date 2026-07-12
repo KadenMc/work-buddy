@@ -24,7 +24,7 @@ After=default.target
 [Service]
 Type=simple
 WorkingDirectory={home}
-Environment=WORK_BUDDY_DATA_DIR={data}
+Environment={data_env}
 ExecStart={python} -m {module}
 Restart=on-failure
 RestartSec=10
@@ -32,6 +32,14 @@ RestartSec=10
 [Install]
 WantedBy=default.target
 """
+
+
+def _unit_quote(value: str) -> str:
+    """Quote one systemd directive value without allowing specifier expansion."""
+    if "\n" in value or "\r" in value:
+        raise ValueError("systemd unit values cannot contain newlines")
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
+    return f'"{escaped}"'
 
 
 def _unit_path(unit: str | None = None) -> Path:
@@ -61,9 +69,9 @@ def register(
     unit.parent.mkdir(parents=True, exist_ok=True)
     unit.write_text(
         _UNIT_TEMPLATE.format(
-            home=home_dir,
-            data=data_dir,
-            python=python_exe,
+            home=_unit_quote(home_dir),
+            data_env=_unit_quote(f"WORK_BUDDY_DATA_DIR={data_dir}"),
+            python=_unit_quote(python_exe),
             module=module,
             description=description,
         )

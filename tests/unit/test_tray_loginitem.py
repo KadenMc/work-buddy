@@ -93,7 +93,7 @@ class TestLinuxBackend:
         )
         assert res["ok"]
         text = (env / "wb-tray.service").read_text()
-        assert "ExecStart=/x/.venv/bin/python -m work_buddy.tray" in text
+        assert 'ExecStart="/x/.venv/bin/python" -m work_buddy.tray' in text
         assert "Description=work-buddy tray icon" in text
 
     def test_sidecar_default_unchanged(self, env):
@@ -101,7 +101,7 @@ class TestLinuxBackend:
             python_exe="/x/.venv/bin/python", home_dir="/x", data_dir="/data",
         )
         text = (env / "wb-sidecar.service").read_text()
-        assert "ExecStart=/x/.venv/bin/python -m work_buddy.sidecar" in text
+        assert 'ExecStart="/x/.venv/bin/python" -m work_buddy.sidecar' in text
         assert "Description=work-buddy sidecar daemon" in text
 
 

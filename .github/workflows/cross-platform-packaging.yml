@@ -1,0 +1,210 @@
+name: Cross-platform packaging
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    paths:
+      - ".github/workflows/cross-platform-packaging.yml"
+      - ".github/workflows/release.yml"
+      - "packaging/**"
+      - "dashboard-react/**"
+      - "docs/logo.svg"
+      - "scripts/gen_app_icons.py"
+      - "work_buddy/autostart/**"
+      - "work_buddy/desktop_launcher.py"
+      - "work_buddy/provision.py"
+      - "pyproject.toml"
+      - "uv.lock"
+  workflow_dispatch:
+    inputs:
+      full_acceptance:
+        description: "Install and exercise the uploaded artifacts on fresh native runners"
+        type: boolean
+        required: true
+        default: true
+      version_override:
+        description: "Optional artifact version label (default: pyproject version)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cross-platform-packaging-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.11.26"
+
+jobs:
+  build-linux:
+    if: github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-packaging-acceptance'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dashboard-react/package-lock.json
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          version="${{ github.event.inputs.version_override }}"
+          if [ -z "$version" ]; then version="$(python packaging/version.py)"; fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Check portable shell scripts
+        run: |
+          bash -n packaging/linux/build_tarball.sh packaging/linux/install.sh packaging/linux/uninstall.sh
+          bash -n packaging/macos/build_tarball.sh packaging/macos/install.command packaging/macos/uninstall.command
+          bash -n packaging/macos/app/work-buddy-launcher
+          bash -n packaging/acceptance/common.sh packaging/acceptance/linux.sh packaging/acceptance/macos.sh
+          shellcheck packaging/linux/*.sh packaging/macos/*.sh packaging/macos/*.command \
+            packaging/macos/app/work-buddy-launcher packaging/acceptance/*.sh
+
+      - name: Build Linux artifact
+        env:
+          UV_VERSION: ${{ env.UV_VERSION }}
+        run: bash packaging/linux/build_tarball.sh "${{ steps.version.outputs.version }}"
+
+      - name: Verify Linux artifact
+        run: |
+          python packaging/acceptance/verify_archive.py \
+            --archive "dist/work-buddy-${{ steps.version.outputs.version }}-linux-x86_64.tar.gz" \
+            --platform linux --version "${{ steps.version.outputs.version }}" \
+            --evidence dist/linux-archive-evidence.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: work-buddy-linux-x86_64
+          path: |
+            dist/work-buddy-${{ steps.version.outputs.version }}-linux-x86_64.tar.gz
+            dist/linux-archive-evidence.json
+          if-no-files-found: error
+          retention-days: 14
+
+  build-macos:
+    if: github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'full-packaging-acceptance'
+    runs-on: macos-15
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dashboard-react/package-lock.json
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          version="${{ github.event.inputs.version_override }}"
+          if [ -z "$version" ]; then version="$(python packaging/version.py)"; fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build macOS artifact
+        env:
+          UV_VERSION: ${{ env.UV_VERSION }}
+        run: bash packaging/macos/build_tarball.sh "${{ steps.version.outputs.version }}"
+
+      - name: Verify macOS artifact
+        run: |
+          python packaging/acceptance/verify_archive.py \
+            --archive "dist/work-buddy-${{ steps.version.outputs.version }}-macos-arm64.tar.gz" \
+            --platform macos --version "${{ steps.version.outputs.version }}" \
+            --evidence dist/macos-archive-evidence.json
+          plutil -lint "dist/macos/work-buddy/app/Work Buddy.app/Contents/Info.plist"
+          file "dist/macos/work-buddy/payload/vendor/uv" | grep -q arm64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: work-buddy-macos-arm64
+          path: |
+            dist/work-buddy-${{ steps.version.outputs.version }}-macos-arm64.tar.gz
+            dist/macos-archive-evidence.json
+          if-no-files-found: error
+          retention-days: 14
+
+  accept-linux:
+    needs: build-linux
+    if: >-
+      needs.build-linux.result == 'success' &&
+      ((github.event_name == 'workflow_dispatch' && inputs.full_acceptance) ||
+       (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-packaging-acceptance')))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: work-buddy-linux-x86_64
+          path: ${{ runner.temp }}/artifact
+
+      - name: Exercise downloaded Linux artifact
+        env:
+          WB_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          artifact="$(find "${RUNNER_TEMP}/artifact" -name '*.tar.gz' -type f -print -quit)"
+          bash packaging/acceptance/linux.sh "$artifact" "${{ needs.build-linux.outputs.version }}"
+
+      - name: Upload Linux acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: work-buddy-linux-acceptance-evidence
+          path: ${{ runner.temp }}/work-buddy-linux-evidence
+          if-no-files-found: warn
+          retention-days: 14
+
+  accept-macos:
+    needs: build-macos
+    if: >-
+      needs.build-macos.result == 'success' &&
+      ((github.event_name == 'workflow_dispatch' && inputs.full_acceptance) ||
+       (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'full-packaging-acceptance')))
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: work-buddy-macos-arm64
+          path: ${{ runner.temp }}/artifact
+
+      - name: Exercise downloaded macOS artifact
+        env:
+          WB_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          artifact="$(find "${RUNNER_TEMP}/artifact" -name '*.tar.gz' -type f -print -quit)"
+          bash packaging/acceptance/macos.sh "$artifact" "${{ needs.build-macos.outputs.version }}"
+
+      - name: Upload macOS acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: work-buddy-macos-acceptance-evidence
+          path: ${{ runner.temp }}/work-buddy-macos-evidence
+          if-no-files-found: warn
+          retention-days: 14

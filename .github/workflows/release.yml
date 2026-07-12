@@ -1,8 +1,7 @@
 name: Release
 
-# Builds the native installers on a version tag (e.g. 1.4.0) and attaches them to
-# a DRAFT GitHub Release for a human to review and publish. workflow_dispatch also
-# builds (no release) for manual verification.
+# Builds native artifacts on a version tag and attaches accepted outputs to one
+# draft GitHub Release. workflow_dispatch builds without publishing.
 
 on:
   push:
@@ -14,50 +13,58 @@ on:
         description: "Optional version label for a manual test build (default: pyproject version)"
         required: false
         default: ""
+      full_acceptance:
+        description: "Install and exercise Linux/macOS artifacts after building"
+        type: boolean
+        required: true
+        default: true
 
 permissions:
-  contents: write # create/upload the draft release
+  contents: read
 
 env:
-  # Keep in sync with packaging/vendor_uv.py UV_VERSION so the bundled uv and the
-  # CI-resolved uv are the same build.
   UV_VERSION: "0.11.26"
 
 jobs:
+  metadata:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Resolve and verify version
+        id: version
+        shell: bash
+        run: |
+          pyproject="$(python packaging/version.py)"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            if [ "$GITHUB_REF_NAME" != "$pyproject" ]; then
+              echo "::error::release tag ($GITHUB_REF_NAME) does not match pyproject version ($pyproject)." >&2
+              exit 1
+            fi
+            version="$GITHUB_REF_NAME"
+          elif [ -n "${{ github.event.inputs.version_override }}" ]; then
+            version="${{ github.event.inputs.version_override }}"
+          else
+            version="$pyproject"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
   windows:
+    needs: metadata
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
-      - name: Resolve and verify version
-        id: ver
-        shell: bash
-        run: |
-          # pyproject.toml is the single source of truth for the version.
-          PYPROJECT=$(python packaging/version.py)
-          if [ "${{ github.event_name }}" = "push" ]; then
-            TAG="${GITHUB_REF_NAME}"
-            if [ "$TAG" != "$PYPROJECT" ]; then
-              echo "::error::release tag ($TAG) does not match pyproject version ($PYPROJECT). Bump pyproject.toml and commit before tagging." >&2
-              exit 1
-            fi
-            echo "version=$TAG" >> "$GITHUB_OUTPUT"
-          elif [ -n "${{ github.event.inputs.version_override }}" ]; then
-            echo "version=${{ github.event.inputs.version_override }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=$PYPROJECT" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Install uv (pinned to the bundled version)
-        uses: astral-sh/setup-uv@v5
-        with:
-          version: ${{ env.UV_VERSION }}
 
       - name: Set up Node.js for the React dashboard
         uses: actions/setup-node@v4
@@ -83,47 +90,165 @@ jobs:
       - name: Compile installer
         shell: pwsh
         run: |
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=${{ steps.ver.outputs.version }} packaging\windows\work-buddy.iss
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=${{ needs.metadata.outputs.version }} packaging\windows\work-buddy.iss
 
-      - name: Upload installer as a workflow artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: work-buddy-windows-setup
           path: dist/work-buddy-*-setup.exe
           if-no-files-found: error
+          retention-days: 14
 
-      - name: Attach to draft release
-        if: github.event_name == 'push'
+  linux:
+    needs: metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dashboard-react/package-lock.json
+
+      - name: Build Linux artifact
+        run: bash packaging/linux/build_tarball.sh "${{ needs.metadata.outputs.version }}"
+
+      - name: Verify Linux artifact
+        run: |
+          python packaging/acceptance/verify_archive.py \
+            --archive "dist/work-buddy-${{ needs.metadata.outputs.version }}-linux-x86_64.tar.gz" \
+            --platform linux --version "${{ needs.metadata.outputs.version }}" \
+            --evidence dist/linux-archive-evidence.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: work-buddy-linux-x86_64
+          path: |
+            dist/work-buddy-${{ needs.metadata.outputs.version }}-linux-x86_64.tar.gz
+            dist/linux-archive-evidence.json
+          if-no-files-found: error
+          retention-days: 14
+
+  macos:
+    needs: metadata
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dashboard-react/package-lock.json
+
+      - name: Build macOS artifact
+        run: bash packaging/macos/build_tarball.sh "${{ needs.metadata.outputs.version }}"
+
+      - name: Verify macOS artifact
+        run: |
+          python packaging/acceptance/verify_archive.py \
+            --archive "dist/work-buddy-${{ needs.metadata.outputs.version }}-macos-arm64.tar.gz" \
+            --platform macos --version "${{ needs.metadata.outputs.version }}" \
+            --evidence dist/macos-archive-evidence.json
+          plutil -lint "dist/macos/work-buddy/app/Work Buddy.app/Contents/Info.plist"
+          file "dist/macos/work-buddy/payload/vendor/uv" | grep -q arm64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: work-buddy-macos-arm64
+          path: |
+            dist/work-buddy-${{ needs.metadata.outputs.version }}-macos-arm64.tar.gz
+            dist/macos-archive-evidence.json
+          if-no-files-found: error
+          retention-days: 14
+
+  accept-linux:
+    needs: [metadata, linux]
+    if: github.event_name == 'push' || inputs.full_acceptance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: work-buddy-linux-x86_64
+          path: ${{ runner.temp }}/artifact
+
+      - name: Exercise downloaded Linux artifact
+        env:
+          WB_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          artifact="$(find "${RUNNER_TEMP}/artifact" -name '*.tar.gz' -type f -print -quit)"
+          bash packaging/acceptance/linux.sh "$artifact" "${{ needs.metadata.outputs.version }}"
+
+      - name: Upload Linux acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: work-buddy-linux-acceptance-evidence
+          path: ${{ runner.temp }}/work-buddy-linux-evidence
+          if-no-files-found: warn
+          retention-days: 14
+
+  accept-macos:
+    needs: [metadata, macos]
+    if: github.event_name == 'push' || inputs.full_acceptance
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: work-buddy-macos-arm64
+          path: ${{ runner.temp }}/artifact
+
+      - name: Exercise downloaded macOS artifact
+        env:
+          WB_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          artifact="$(find "${RUNNER_TEMP}/artifact" -name '*.tar.gz' -type f -print -quit)"
+          bash packaging/acceptance/macos.sh "$artifact" "${{ needs.metadata.outputs.version }}"
+
+      - name: Upload macOS acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: work-buddy-macos-acceptance-evidence
+          path: ${{ runner.temp }}/work-buddy-macos-evidence
+          if-no-files-found: warn
+          retention-days: 14
+
+  draft-release:
+    if: github.event_name == 'push'
+    needs: [metadata, windows, linux, macos, accept-linux, accept-macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Attach accepted artifacts to one draft release
         uses: softprops/action-gh-release@v2
         with:
           draft: true
-          name: work-buddy ${{ steps.ver.outputs.version }}
+          name: work-buddy ${{ needs.metadata.outputs.version }}
           tag_name: ${{ github.ref_name }}
-          files: dist/work-buddy-*-setup.exe
-
-  # ---------------------------------------------------------------------------
-  # Phase E fast-follow (architecture ready; build scripts not yet written).
-  # Uncomment once packaging/macos/build_pkg.sh and packaging/linux/build_tarball.sh
-  # exist, and add their outputs to the draft-release `files:` globs.
-  #
-  # macos:
-  #   runs-on: macos-latest
-  #   timeout-minutes: 30
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: astral-sh/setup-uv@v5
-  #       with: { version: "${{ env.UV_VERSION }}" }
-  #     - run: python packaging/build_payload.py --out dist/payload
-  #     - run: python packaging/vendor_uv.py --target macos --out dist/payload/vendor --version ${{ env.UV_VERSION }}
-  #     - run: bash packaging/macos/build_pkg.sh
-  #
-  # linux:
-  #   runs-on: ubuntu-latest
-  #   timeout-minutes: 30
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: astral-sh/setup-uv@v5
-  #       with: { version: "${{ env.UV_VERSION }}" }
-  #     - run: python packaging/build_payload.py --out dist/payload
-  #     - run: python packaging/vendor_uv.py --target linux --out dist/payload/vendor --version ${{ env.UV_VERSION }}
-  #     - run: bash packaging/linux/build_tarball.sh
+          files: |
+            release-assets/work-buddy-windows-setup/*.exe
+            release-assets/work-buddy-linux-x86_64/*.tar.gz
+            release-assets/work-buddy-macos-arm64/*.tar.gz

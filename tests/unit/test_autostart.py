@@ -68,8 +68,8 @@ def test_windows_register_escapes_apostrophe(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(windows, "_run_ps", lambda script, timeout=60: calls.append(script) or _fake_cp())
     windows.register(
-        python_exe=r"C:\Users\O'Brien\.venv\Scripts\python.exe",
-        home_dir=r"C:\Users\O'Brien\work-buddy",
+        python_exe=r"C:\Accounts\O'Brien\.venv\Scripts\python.exe",
+        home_dir=r"C:\Accounts\O'Brien\work-buddy",
         data_dir=str(tmp_path),
     )
     assert "O''Brien" in calls[-1]  # doubled, i.e. escaped
@@ -81,12 +81,27 @@ def test_linux_register_writes_unit(monkeypatch, tmp_path):
     unit = tmp_path / "wb-sidecar.service"
     monkeypatch.setattr(linux, "_unit_path", lambda *a, **k: unit)
     monkeypatch.setattr(linux, "_systemctl", lambda *a, **k: _fake_cp())
-    res = linux.register(python_exe="/venv/bin/python", home_dir="/home/x", data_dir="/data")
+    res = linux.register(python_exe="/venv/bin/python", home_dir="/srv/work-buddy", data_dir="/data")
     assert res["ok"] is True
     txt = unit.read_text()
-    assert "ExecStart=/venv/bin/python -m work_buddy.sidecar" in txt
-    assert "WORK_BUDDY_DATA_DIR=/data" in txt
-    assert "WorkingDirectory=/home/x" in txt
+    assert 'ExecStart="/venv/bin/python" -m work_buddy.sidecar' in txt
+    assert 'Environment="WORK_BUDDY_DATA_DIR=/data"' in txt
+    assert 'WorkingDirectory="/srv/work-buddy"' in txt
+
+
+def test_linux_register_quotes_spaces_and_systemd_specifiers(monkeypatch, tmp_path):
+    unit = tmp_path / "wb-sidecar.service"
+    monkeypatch.setattr(linux, "_unit_path", lambda *a, **k: unit)
+    monkeypatch.setattr(linux, "_systemctl", lambda *a, **k: _fake_cp())
+    linux.register(
+        python_exe="/srv/Work Buddy 100%/.venv/bin/python",
+        home_dir="/srv/Work Buddy 100%",
+        data_dir="/srv/Work Buddy 100%/data",
+    )
+    text = unit.read_text()
+    assert 'WorkingDirectory="/srv/Work Buddy 100%%"' in text
+    assert 'ExecStart="/srv/Work Buddy 100%%/.venv/bin/python"' in text
+    assert 'Environment="WORK_BUDDY_DATA_DIR=/srv/Work Buddy 100%%/data"' in text
 
 
 def test_linux_is_registered(monkeypatch, tmp_path):
@@ -106,7 +121,7 @@ def test_macos_register_writes_plist(monkeypatch, tmp_path):
     monkeypatch.setattr(macos, "_log_dir", lambda: tmp_path / "logs")
     monkeypatch.setattr(macos.os, "getuid", lambda: 501, raising=False)
     monkeypatch.setattr(macos.subprocess, "run", lambda *a, **k: _fake_cp())
-    res = macos.register(python_exe="/venv/bin/python", home_dir="/home/x", data_dir="/data")
+    res = macos.register(python_exe="/venv/bin/python", home_dir="/srv/work-buddy", data_dir="/data")
     assert res["ok"] is True
     with open(plist, "rb") as fh:
         pl = plistlib.load(fh)
