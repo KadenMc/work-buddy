@@ -1,7 +1,7 @@
 ---
 name: Dev Release
 kind: workflow
-description: Cut a tagged work-buddy release with preflight gates (clean main, version/tag/CHANGELOG agreement, cross-repo compatibility), a consent-gated tag push, release-CI watch, draft-asset verification, and a human-only publish step.
+description: Cut a tagged three-platform work-buddy release with preflight gates, native artifact acceptance, one draft-release aggregation job, and a human-only publish step.
 workflow_name: dev-release
 execution: main
 allow_override: false
@@ -208,7 +208,7 @@ Advance with `{"tagged": true, "tag": "<version>"}`. If the user declines, advan
 
 ## watch_ci
 
-Reasoning step. The tag triggers the release workflow (payload build, uv vendoring, installer compile, draft-release upload). Watch it:
+Reasoning step. The tag triggers the release workflow: Windows installer compilation; native Linux x86-64 and macOS arm64 tarball builds; downloaded-artifact install, launch, repair, and uninstall acceptance on fresh hosted runners; then one draft-release aggregation job. Watch it:
 
 ```bash
 gh run list --workflow release.yml --limit 1
@@ -230,7 +230,7 @@ Reasoning step. The CI creates a DRAFT release. Verify it before handing it to t
 gh release view <version> --json isDraft,name,assets
 ```
 
-Check: it is a draft; the name matches the version; the Windows installer asset `work-buddy-<version>-setup.exe` is present with a plausible size (tens of MB, not KB). Write or polish the release notes body now (`gh release edit <version> --notes-file ...`): user-visible changes, install instructions pointer, known gaps (e.g. platforms not yet shipped).
+Check: it is a draft; the name matches the version; and all accepted artifacts are present with plausible sizes: `work-buddy-<version>-setup.exe`, `work-buddy-<version>-linux-x86_64.tar.gz`, and `work-buddy-<version>-macos-arm64.tar.gz`. Write or polish the release notes body now (`gh release edit <version> --notes-file ...`): user-visible changes, installation instructions, supported architectures, and the unsigned macOS Gatekeeper expectation.
 
 Advance with `{"draft_ok": true, "assets": ["..."]}`.
 

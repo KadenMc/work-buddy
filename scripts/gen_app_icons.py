@@ -45,6 +45,7 @@ def main() -> None:
     for name, size, maskable in (
         ("app-192.png", 192, False),
         ("app-512.png", 512, False),
+        ("app-1024.png", 1024, False),
         ("app-maskable-512.png", 512, True),
     ):
         target = PWA_DIR / name

@@ -140,8 +140,8 @@ def test_windows_shortcuts_use_consoleless_launcher_and_branded_icon():
     linux = (_REPO / "packaging" / "linux" / "install.sh").read_text(
         encoding="utf-8"
     )
-    assert "wbuddy launch" in linux
-    assert "dashboard-react/dist/icons/app-192.png" in linux
+    assert 'Exec="{executable}" launch' in linux
+    assert "app-192.png" in linux
 
 
 def test_release_builds_react_before_payload():
@@ -151,6 +151,69 @@ def test_release_builds_react_before_payload():
     react = workflow.index("npm --prefix dashboard-react run build")
     payload = workflow.index("python packaging/build_payload.py --out dist/payload")
     assert react < payload
+
+
+def test_cross_platform_workflows_use_pinned_native_runners_and_artifact_acceptance():
+    packaging_workflow = (
+        _REPO / ".github" / "workflows" / "cross-platform-packaging.yml"
+    ).read_text(encoding="utf-8")
+    release_workflow = (_REPO / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8"
+    )
+
+    for workflow in (packaging_workflow, release_workflow):
+        assert "runs-on: ubuntu-24.04" in workflow
+        assert "runs-on: macos-15" in workflow
+        assert "self-hosted" not in workflow
+        assert "permissions:\n  contents: read" in workflow
+        assert "packaging/acceptance/linux.sh" in workflow
+        assert "packaging/acceptance/macos.sh" in workflow
+        assert "actions/download-artifact@v4" in workflow
+
+    assert "full-packaging-acceptance" in packaging_workflow
+    assert "draft-release:" in release_workflow
+    assert "contents: write" in release_workflow
+    assert release_workflow.count("softprops/action-gh-release") == 1
+    assert "build_pkg.sh" not in release_workflow
+
+
+def test_cross_platform_installers_expose_lifecycle_controls():
+    linux = (_REPO / "packaging" / "linux" / "install.sh").read_text(encoding="utf-8")
+    macos = (_REPO / "packaging" / "macos" / "install.command").read_text(
+        encoding="utf-8"
+    )
+    for installer in (linux, macos):
+        assert "--autostart" in installer
+        assert "auto|require|skip" in installer
+        assert 'AUTOSTART_MODE="auto"' in installer
+        assert "work_buddy.cli autostart enable" in installer
+        assert "work_buddy.cli autostart status" in installer
+        assert "uninstall" in installer
+
+    assert "desktop-file" not in linux  # generated directly; validation belongs to native CI
+    assert 'Exec="{executable}" launch' in linux
+    assert 'APPLICATIONS_DIR="$HOME/Applications"' in macos
+    assert 'cp -R "$HERE/app/Work Buddy.app"' in macos
+
+
+def test_macos_app_bundle_uses_shared_consoleless_launcher():
+    plist = (_REPO / "packaging" / "macos" / "app" / "Info.plist").read_text(
+        encoding="utf-8"
+    )
+    launcher = (
+        _REPO / "packaging" / "macos" / "app" / "work-buddy-launcher"
+    ).read_text(encoding="utf-8")
+    builder = (_REPO / "packaging" / "macos" / "build_tarball.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "com.workbuddy.desktop" in plist
+    assert "__APP_VERSION__" in plist
+    assert "-m work_buddy.desktop_launcher" in launcher
+    assert "osascript" in launcher
+    assert "iconutil -c icns" in builder
+    assert "app-1024.png" in builder
+    assert (_REPO / "dashboard-react" / "public" / "icons" / "app-1024.png").is_file()
 
 
 def test_vendor_uv_url_construction():

@@ -8,6 +8,8 @@ terminal diagnostics with a durable log and a native error dialog.
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
 import sys
 import traceback
 from contextlib import ExitStack
@@ -27,13 +29,33 @@ def launcher_log_path() -> Path:
 
 
 def _show_native_error(detail: str, log_path: Path) -> None:
-    """Show the Windows failure surface for a shortcut with no console."""
+    """Show a best-effort native failure surface for a console-less launcher."""
     message = f"{detail}\n\nSee the launcher log for details:\n{log_path}"
     if os.name == "nt":
         import ctypes
 
         # MB_OK | MB_ICONERROR | MB_SETFOREGROUND
         ctypes.windll.user32.MessageBoxW(0, message, "work-buddy could not open", 0x10010)
+    elif sys.platform == "darwin":
+        subprocess.run(
+            [
+                "/usr/bin/osascript",
+                "-e", "on run argv",
+                "-e", 'display alert "Work Buddy could not open" message (item 1 of argv) as critical',
+                "-e", "end run",
+                message,
+            ],
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+    elif zenity := shutil.which("zenity"):
+        subprocess.run(
+            [zenity, "--error", "--title=Work Buddy could not open", f"--text={message}"],
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
 
 
 def _write_event(stream, level: str, detail: str) -> None:

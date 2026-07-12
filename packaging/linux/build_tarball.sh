@@ -17,7 +17,8 @@ npm --prefix "$REPO/dashboard-react" run build
 python "$REPO/packaging/build_payload.py" --out "$STAGE/payload" --root "$REPO"
 python "$REPO/packaging/vendor_uv.py" --target linux --out "$STAGE/payload/vendor" --version "$UV_VERSION"
 cp "$HERE/install.sh" "$STAGE/install.sh"
-chmod +x "$STAGE/install.sh"
+cp "$HERE/uninstall.sh" "$STAGE/uninstall.sh"
+chmod +x "$STAGE/install.sh" "$STAGE/uninstall.sh"
 
 OUT="$REPO/dist/work-buddy-${VERSION}-linux-x86_64.tar.gz"
 tar -C "$REPO/dist/linux" -czf "$OUT" work-buddy

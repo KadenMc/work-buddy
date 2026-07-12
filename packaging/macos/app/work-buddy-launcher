@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CONTENTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+APP_HOME_FILE="$CONTENTS_DIR/Resources/app-home"
+
+if [ ! -s "$APP_HOME_FILE" ]; then
+  /usr/bin/osascript -e 'display alert "Work Buddy could not open" message "The application is not connected to an installed Work Buddy home. Re-run install.command." as critical' >/dev/null 2>&1 || true
+  exit 1
+fi
+
+APP_HOME="$(cat "$APP_HOME_FILE")"
+PYTHON="$APP_HOME/.venv/bin/python"
+if [ ! -x "$PYTHON" ]; then
+  /usr/bin/osascript -e 'display alert "Work Buddy could not open" message "The installed Python environment is missing. Re-run install.command." as critical' >/dev/null 2>&1 || true
+  exit 1
+fi
+
+export WORK_BUDDY_CONFIG_DIR="$APP_HOME"
+export WORK_BUDDY_SESSION_ID="desktop-launcher"
+cd "$APP_HOME"
+exec "$PYTHON" -m work_buddy.desktop_launcher

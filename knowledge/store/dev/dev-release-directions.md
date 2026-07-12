@@ -22,6 +22,8 @@ parents:
 
 Run `/wb-dev-release` to cut a tagged work-buddy release. The workflow enforces assess (releasable main) → version gate → cross-repo pin check → consent-gated tag push → release-CI watch → draft verification → human publish → post-verify.
 
+Release CI builds the Windows setup executable, Linux x86-64 tarball, and Apple Silicon macOS tarball. Linux and macOS acceptance jobs download those uploaded artifacts into separate fresh native GitHub-hosted runners and exercise installation, runtime health, desktop launch, repair, and uninstall before one final job can attach the artifacts to the draft release. Draft verification requires all three platform artifacts.
+
 ## Before you run it
 
 The workflow verifies; it does not edit. Two things must already be true, both landed through `/wb-dev-pr` like any other change:
