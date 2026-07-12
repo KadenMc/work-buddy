@@ -58,16 +58,20 @@ Rules:
 The `collect` step writes a bundle directory. Read EVERY relevant file before drafting entries — a single source is never sufficient. Gaps here are how entire days of paper-lane work get silently dropped.
 
 1. `git_summary.md` — multi-repo scan across ALL repos under `repos_root`. Each commit is bucketed under `#### <project>` subheadings. This is the primary git evidence; trust it for commit-level activity in every registered project.
-2. `chat_summary.md` — each session header is tagged `[<repo-or-project>]` (e.g. `[electricrag]`, `[agentic-experiments]`, `[work-buddy]`). Multi-hour sessions in non-work-buddy projects are a strong signal of activity even when no commits landed. Cross-reference with the git summary; if a session is long and the matching repo has no commits, the work is real but unfinished — still log it as exploration.
-3. `claude_session_summary.md` — **interpreted** Claude Code session activity from the conversation_observability DB. One block per project, listing each session with its commits and uncommitted files. The interpretation makes it easier to spot multi-hour sessions whose work never reached a commit — those are usually exploration that should still be logged. If a session appears here with uncommitted files but no row in `git_summary.md`, that is real unfinished work, not a gap.
+2. `chat_summary.md` — in a bundle this carries only **SpecStory + CLI history** (the agent-harness conversations live in `agent_session_summary.md`, source 3). It may be **absent entirely** when nothing falls in the window — that is expected, not a gap.
+3. `agent_session_summary.md` — the **interpreted** surface, and your primary conversation evidence. Agent-session activity (Claude Code, Codex, …) from the conversation_observability DB, one block per project. Each session lists its **tldr**, a **topic timeline with wall-clock time ranges**, commits, uncommitted files, and PR activity. When a session has no summary yet (opted out, errored, or not yet generated) a `first message:` line stands in. A session with a multi-hour span and no commits is exploration you should still log; if it appears here with uncommitted files but no row in `git_summary.md`, that is real unfinished work, not a gap.
 4. `obsidian_summary.md` — Running Notes additions, task completions, journal sign-in.
 5. `session_activity_summary.md` — MCP gateway events for THIS session only; useful for sanity-checking your own actions but not project-wide activity.
+
+Every bundle file opens with a `*Window: …*` banner stating the exact window it covers; the sources are scoped to the journal's activity window, so what you see already belongs to the target day.
+
+**Drill when a session is opaque.** If `agent_session_summary.md` shows a long session with no commits and its topic titles don't tell you what happened, call `conversation_observability_get(session_id, include_topics=true, include_writes=true)` for the full per-session picture before logging (or leaving out) that exploration. `summary_search` finds sessions across the store by topic.
 
 If you produce a draft Log that mentions only one project across an active multi-hour day, treat that as a smell and re-check sources 1, 2, and 3 before presenting it to the user.
 
 ### Timestamp semantics across the bundle
 
-- **All bundle timestamps are local wall-clock time** (the configured `timezone` / `USER_TZ`), with no "UTC" label. Times in `git_summary.md`, `chat_summary.md`, `claude_session_summary.md`, and `obsidian_summary.md` sit on one local timeline, so they can be compared and ordered directly — and they line up with the journal's own local Sign-In, office-arrival, and Log times. Place events at the local time shown.
+- **All bundle timestamps are local wall-clock time** (the configured `timezone` / `USER_TZ`), with no "UTC" label. Times in `git_summary.md`, `chat_summary.md`, `agent_session_summary.md`, and `obsidian_summary.md` sit on one local timeline, so they can be compared and ordered directly — and they line up with the journal's own local Sign-In, office-arrival, and Log times. Place events at the local time shown.
 - **Chat and SpecStory sessions are windowed by real conversation time**, not file mtime. A Claude Code session's window membership comes from its message-derived start/end; a SpecStory session's from its filename stamp. A session resumed today but whose conversation happened days ago will NOT appear in today's window — and `chat_summary.md` labels every session with its real start/end, so a session header's date is the date the conversation actually happened.
 
 ## Approval + dedup — REQUIRED before any write
@@ -98,7 +102,7 @@ Do NOT pass pre-formatted strings like `* 6:08 PM - Description. #wb/journal/log
 - Don't repeat information already in existing Log entries
 - Don't include raw git hashes or file paths unless they add meaning
 - Don't add entries to sections other than Log
-- Don't synthesize from a single source — always cross-reference git + chat + claude_session_summary + obsidian
+- Don't synthesize from a single source — always cross-reference git + chat + agent_session_summary + obsidian
 - Don't omit a project tag out of laziness — you MUST run `project_list` and attempt resolution first; omit only after a genuine failed match, and always flag the omission at approval
 - Don't invent `#projects/unknown` or any placeholder slug for non-project activity — a genuine life event simply carries no project tag
 

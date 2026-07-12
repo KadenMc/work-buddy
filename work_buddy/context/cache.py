@@ -61,13 +61,16 @@ def bucket_key(source: str, request: ContextRequest) -> str:
     """Stable short hash identifying a cache bucket for ``source``.
 
     Folds only the fetch-affecting parameters — target_date,
-    window_days, and this source's custom params. Rendering options
-    (depth, max_chars) are irrelevant here.
+    window_days, the explicit since/until window, and this source's
+    custom params. Rendering options (depth, max_chars) are irrelevant
+    here.
     """
     payload = {
         "source": source,
         "target_date": request.target_date.isoformat() if request.target_date else None,
         "window_days": request.window_days,
+        "since": request.since.isoformat() if request.since else None,
+        "until": request.until.isoformat() if request.until else None,
         "custom": request.custom_for(source),
     }
     raw = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")

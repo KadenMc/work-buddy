@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from work_buddy.conversation_observability.db import get_connection
+from work_buddy.timefmt import parse_iso, parse_time_bound
 
 
 def _v2_summarization_enabled() -> bool:
@@ -145,6 +146,7 @@ def refresh_observed_sessions(
                 meta.get("message_count"),
                 len(session._span_map or {}),
                 json.dumps(tool_counts, ensure_ascii=False),
+                _first_user_message(session.turns),
             )
         except Exception as exc:
             err_record = (
@@ -179,8 +181,9 @@ def refresh_observed_sessions(
                 "(session_id, harness_id, native_session_id, project_name, "
                 " project_slug, cwd, source_path, "
                 " source_mtime, observed_at, start_time, end_time, "
-                " message_count, span_count, tool_names_json, status, error) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ok', NULL) "
+                " message_count, span_count, tool_names_json, "
+                " first_user_message, status, error) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ok', NULL) "
                 "ON CONFLICT(session_id) DO UPDATE SET "
                 "  harness_id=excluded.harness_id, "
                 "  native_session_id=excluded.native_session_id, "
@@ -195,6 +198,7 @@ def refresh_observed_sessions(
                 "  message_count=excluded.message_count, "
                 "  span_count=excluded.span_count, "
                 "  tool_names_json=excluded.tool_names_json, "
+                "  first_user_message=excluded.first_user_message, "
                 "  status='ok', error=NULL",
                 ok_record,
             )
@@ -351,19 +355,35 @@ def query_observed_session(session_id: str) -> dict[str, Any] | None:
 def list_observed_sessions(
     days: int | None = None,
     project: str | None = None,
+    since: str | datetime | None = None,
+    until: str | datetime | None = None,
 ) -> list[dict[str, Any]]:
-    """List observed sessions, optionally filtered by recency and project."""
+    """List observed sessions, filtered by **conversation** time and project.
+
+    Recency is measured by when the conversation happened (its start/end), not
+    when the row was last refreshed. A months-old session re-observed today
+    because its transcript file was touched does not resurface as "recent".
+
+    ``since`` / ``until`` (ISO strings, relative shorthand, or aware datetimes)
+    select an explicit window by overlap: a session is kept when its
+    ``[start, end]`` intersects ``[since, until]``. ``days`` is day-granular
+    sugar for ``since = now - days``. A NULL start/end endpoint is treated as
+    open (kept) rather than assumed out-of-window. Comparison happens on parsed
+    UTC datetimes, so mixed ``Z`` / ``+00:00`` / naive stored formats all sort
+    correctly.
+    """
+    from datetime import timedelta
+
+    since_dt = parse_time_bound(since)
+    until_dt = parse_time_bound(until)
+    if since_dt is None and days is not None:
+        since_dt = datetime.now(timezone.utc) - timedelta(days=days)
+
     clauses: list[str] = []
     params: list[Any] = []
     if project:
         clauses.append("project_name = ?")
         params.append(project)
-    if days is not None:
-        from datetime import timedelta
-
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-        clauses.append("observed_at >= ?")
-        params.append(cutoff)
     where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
 
     conn = get_connection()
@@ -375,12 +395,40 @@ def list_observed_sessions(
         ).fetchall()
     finally:
         conn.close()
+
     out = []
     for r in rows:
         rec = dict(r)
+        if since_dt is not None or until_dt is not None:
+            s = _as_utc(parse_iso(rec.get("start_time")))
+            e = _as_utc(parse_iso(rec.get("end_time")))
+            if since_dt is not None and e is not None and e < since_dt:
+                continue
+            if until_dt is not None and s is not None and s > until_dt:
+                continue
         try:
             rec["tool_names"] = json.loads(rec.pop("tool_names_json", "{}"))
         except (ValueError, TypeError):
             rec["tool_names"] = {}
         out.append(rec)
     return out
+
+
+def _as_utc(dt: datetime | None) -> datetime | None:
+    """Normalize a parsed timestamp to aware UTC (naive is assumed UTC)."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _first_user_message(turns: list[dict[str, Any]], limit: int = 2000) -> str | None:
+    """The first non-empty user turn's text, capped — a best-effort interpretive
+    line for sessions that have no LLM summary (opted out, errored, or queued)."""
+    for turn in turns:
+        if turn.get("role") == "user":
+            text = (turn.get("text") or "").strip()
+            if text:
+                return text[:limit]
+    return None

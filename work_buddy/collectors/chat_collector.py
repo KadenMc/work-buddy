@@ -484,17 +484,20 @@ def _get_agent_conversations(
 
     from work_buddy.transcripts import discover_sessions
 
-    # Provider discovery normally uses mtime as a cheap first-pass cutoff.
-    # An explicit historical window is authoritative, though: resumed files
-    # can have a recent mtime while their real message timestamps are old.
+    # Push the window start down into provider discovery as a coarse mtime
+    # floor (skips old files without opening them). The upper bound stays here:
+    # a resumed file can carry a recent mtime yet old turns, so mtime is a valid
+    # lower bound but not an upper one — the precise conversation-time overlap
+    # below owns the upper bound whenever real timestamps are available.
     sessions = discover_sessions(
-        days=0 if since or until else days,
+        since=cutoff,
+        until=upper,
         project_filter=project_filter,
         provider_ids=provider_ids,
     )
     for session in sessions:
         mtime = datetime.fromtimestamp(session.mtime, tz=timezone.utc)
-        if mtime < cutoff or mtime > upper:
+        if mtime < cutoff:
             continue
         key = _cache_key(session.path)
         if key and key in cache:
@@ -510,10 +513,14 @@ def _get_agent_conversations(
         s_real = parse_iso(summary.get("start_time"))
         e_real = parse_iso(summary.get("end_time"))
         if s_real or e_real:
+            # Precise conversation-time overlap with [cutoff, upper].
             s_eff = s_real or e_real
             e_eff = e_real or s_real
             if e_eff < cutoff or s_eff > upper:
                 continue
+        elif mtime > upper:
+            # No parsed timestamps: mtime is the only upper-bound signal.
+            continue
 
         summary_copy = dict(summary)
         summary_copy["modified"] = to_local_naive(mtime).strftime("%Y-%m-%d %H:%M")
@@ -541,12 +548,32 @@ def _get_claude_code_conversations(
     )
 
 
+def _window_label(since: str | None, until: str | None, days: int) -> str:
+    """Honest window label for a section header.
+
+    Reports the effective window: a precise ``since → until`` span (local time)
+    when an explicit window is set, otherwise the day-granular ``last N days``.
+    """
+    if since or until:
+        s = to_local_naive(parse_iso(since)) if since else None
+        u = to_local_naive(parse_iso(until)) if until else None
+        if s and u:
+            return f"{s.strftime('%Y-%m-%d %H:%M')} → {u.strftime('%Y-%m-%d %H:%M')}"
+        if s:
+            return f"since {s.strftime('%Y-%m-%d %H:%M')}"
+        if u:
+            return f"until {u.strftime('%Y-%m-%d %H:%M')}"
+    return f"last {days} days"
+
+
 def collect(cfg: dict[str, Any]) -> str:
     """Collect chat context and return markdown string.
 
     Args:
-        cfg: Configuration dict. Set ``chats.last=N`` to only include the N
-            most recent sessions from each source.
+        cfg: Configuration dict. ``chats.last=N`` caps each source to the N most
+            recent sessions; ``chats.include_agent_conversations=False`` drops
+            the agent-conversation section (used by context bundles, where the
+            interpreted agent_session_summary surface owns those sessions).
     """
     repos_root = Path(cfg["repos_root"])
     chat_cfg = cfg.get("chats", {})
@@ -554,24 +581,43 @@ def collect(cfg: dict[str, Any]) -> str:
     claude_days = chat_cfg.get("claude_history_days", 7)
     last_n = chat_cfg.get("last", None)
 
-    # Explicit time range overrides (from update-journal workflow)
+    # Explicit time-range overrides (from update-journal / a scoped bundle),
+    # read at the top level where the wrapper delivers them.
     range_since = cfg.get("since")
     range_until = cfg.get("until")
+
+    # Whether this file lists agent-harness conversations. In a context bundle
+    # the interpreted agent_session_summary surface owns them, so the bundle
+    # passes this False and the raw file carries only SpecStory + CLI history.
+    include_agent = cfg.get(
+        "include_agent_conversations",
+        chat_cfg.get("include_agent_conversations", True),
+    )
 
     now = datetime.now(timezone.utc)
 
     specstory_files = _find_specstory_files(repos_root, specstory_days, since=range_since, until=range_until)
     claude_sessions = _parse_claude_history(claude_days, since=range_since, until=range_until)
     project_filter = chat_cfg.get("project_filter", None)
-    agent_conversations = _get_agent_conversations(
-        claude_days, project_filter, since=range_since, until=range_until
-    )
+    agent_conversations: list[dict] = []
+    if include_agent:
+        agent_conversations = _get_agent_conversations(
+            claude_days, project_filter, since=range_since, until=range_until
+        )
 
     # Apply chats.last=N cap to each source
     if last_n is not None:
         specstory_files = specstory_files[:last_n]
         claude_sessions = claude_sessions[:last_n]
         agent_conversations = agent_conversations[:last_n]
+
+    # Nothing in the window: render empty so the bundle writer emits no file
+    # rather than a header-only template that wastes the reader's context.
+    if not specstory_files and not claude_sessions and not agent_conversations:
+        return ""
+
+    specstory_label = _window_label(range_since, range_until, specstory_days)
+    history_label = _window_label(range_since, range_until, claude_days)
 
     lines = [
         "# Chat Summary",
@@ -581,7 +627,7 @@ def collect(cfg: dict[str, Any]) -> str:
     ]
 
     if specstory_files:
-        lines.append(f"## SpecStory Sessions (last {specstory_days} days)")
+        lines.append(f"## SpecStory Sessions ({specstory_label})")
         lines.append("")
         for entry in specstory_files:
             lines.append(f"### [{entry['repo']}] {entry['title']}")
@@ -597,7 +643,7 @@ def collect(cfg: dict[str, Any]) -> str:
         lines.append("")
 
     if agent_conversations:
-        lines.append(f"## Agent Conversations (last {claude_days} days)")
+        lines.append(f"## Agent Conversations ({history_label})")
         lines.append("")
         for conv in agent_conversations[:20]:
             # Session header with duration
@@ -650,14 +696,14 @@ def collect(cfg: dict[str, Any]) -> str:
                     snippet = snippet[:200] + "..."
                 lines.append(f"Outcome: {snippet}")
                 lines.append("")
-    else:
+    elif include_agent:
         lines.append("## Agent Conversations")
         lines.append("")
         lines.append("*No recent agent conversations found.*")
         lines.append("")
 
     if claude_sessions:
-        lines.append(f"## Claude Code CLI History (last {claude_days} days)")
+        lines.append(f"## Claude Code CLI History ({history_label})")
         lines.append("")
         for session in claude_sessions[:20]:
             cmd_count = len(session["commands"])

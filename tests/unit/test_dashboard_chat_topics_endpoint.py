@@ -141,7 +141,8 @@ def test_chat_topics_endpoint_returns_full_legacy_shape(
     t0 = topics[0]
     assert set(t0.keys()) == {
         "id", "session_id", "topic_index", "title", "summary",
-        "span_start", "span_end", "turn_start", "turn_end", "keywords",
+        "span_start", "span_end", "turn_start", "turn_end",
+        "ts_start", "ts_end", "keywords",
     }
     assert t0["id"] == "sess-snapshot-1:0"
     assert t0["session_id"] == "sess-snapshot-1"
@@ -150,10 +151,13 @@ def test_chat_topics_endpoint_returns_full_legacy_shape(
     assert t0["summary"] == "First topic body."
     assert t0["span_start"] == 0
     assert t0["span_end"] == 5
-    # turn_start / turn_end depend on the session file existing; for a
-    # synthesised session, both are None (best-effort behavior preserved).
+    # turn_start / turn_end (and the wall-clock ts_start / ts_end derived from
+    # them) depend on the session file existing; for a synthesised session all
+    # are None (best-effort behavior preserved).
     assert t0["turn_start"] is None
     assert t0["turn_end"] is None
+    assert t0["ts_start"] is None
+    assert t0["ts_end"] is None
     assert t0["keywords"] == ["alpha", "beta"]
 
     # Second topic — keyset parity

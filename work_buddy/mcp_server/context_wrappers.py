@@ -186,26 +186,21 @@ def chrome_activity(
         filter: For ``details`` query — domain or title substring to match.
     """
     import json
-    import re as _re
-    from datetime import timedelta
 
     from work_buddy.collectors import chrome_ledger
     from work_buddy.journal import user_now
+    from work_buddy.timefmt import parse_time_bound, to_local_naive
 
-    now = user_now().replace(tzinfo=None)
+    now_aware = user_now()
+    now_local = now_aware.replace(tzinfo=None)
 
     def _parse_relative(val: str) -> str:
-        """Convert relative shorthand to ISO datetime string."""
-        rel = _re.fullmatch(r"(\d+)\s*(m|min|h|hour|hours|d|day|days)", val.strip())
-        if rel:
-            amount = int(rel.group(1))
-            unit = rel.group(2)[0]
-            deltas = {"m": timedelta(minutes=amount), "h": timedelta(hours=amount), "d": timedelta(days=amount)}
-            return (now - deltas[unit]).isoformat()
-        return val  # assume ISO
+        """Relative shorthand / ISO -> local-naive ISO string for the ledger."""
+        dt = parse_time_bound(val, now=now_aware)
+        return to_local_naive(dt).isoformat() if dt is not None else val
 
     since_iso = _parse_relative(since)
-    until_iso = _parse_relative(until) if until else now.isoformat()
+    until_iso = _parse_relative(until) if until else now_local.isoformat()
 
     if query == "hot_tabs":
         result = chrome_ledger.get_hot_tabs(since_iso, until_iso, limit=limit)
@@ -217,7 +212,7 @@ def chrome_activity(
         result = chrome_ledger.get_tab_sessions(since_iso, until_iso)
         return _format_tab_sessions(result)
     elif query == "tabs_at":
-        ts = _parse_relative(timestamp) if timestamp else now.isoformat()
+        ts = _parse_relative(timestamp) if timestamp else now_local.isoformat()
         result = chrome_ledger.get_tabs_at(ts)
         return _format_tabs_at(result)
     elif query == "context":
@@ -227,7 +222,7 @@ def chrome_activity(
     elif query == "details":
         if not filter:
             return "The `details` query requires a `filter` parameter (domain or title substring)."
-        ts = _parse_relative(timestamp) if timestamp else now.isoformat()
+        ts = _parse_relative(timestamp) if timestamp else now_local.isoformat()
         result = chrome_ledger.get_tabs_at(ts)
         return _format_tab_details(result, filter)
     elif query == "status":
@@ -1331,6 +1326,9 @@ def collect_bundle(
     days: int | None = None,
     hours: int | None = None,
     only: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    overrides: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Run all (or selected) collectors and save a context bundle to disk.
 
@@ -1341,14 +1339,30 @@ def collect_bundle(
     Args:
         days: Override all time windows to N days.
         hours: Override all time windows to N hours (takes precedence over days).
+        since: Exact window start — ISO datetime or relative shorthand
+            (``"18h"``, ``"2d"``). When given, it is the precise, authoritative
+            window for every source (minute-level, not day-granular) and wins
+            over ``hours`` / ``days``.
+        until: Exact window end — ISO datetime or relative shorthand. Defaults
+            to now when ``since`` is given without it.
         only: Comma-separated collector names to run (e.g. "git,chats").
             Valid names: git, obsidian, chats, chrome, messages, vault, calendar.
             Default: run all.
+        overrides: Per-source cfg overrides, ``{section: {key: value}}`` —
+            merged into the named collector's cfg section (e.g.
+            ``{"chats": {"include_agent_conversations": False}}``).
     """
     from work_buddy.collect import run_collection
     from work_buddy.config import load_config
+    from work_buddy.timefmt import parse_time_bound
 
     cfg = load_config()
+
+    # An explicit since/until is the precise, authoritative window; the scalar
+    # hours/days path stays for the day-granular back-compat callers (morning
+    # routine, `collect days=3`).
+    since_dt = parse_time_bound(since)
+    until_dt = parse_time_bound(until)
 
     # Apply global time override (same logic as CLI's _expand_overrides)
     if hours is not None or days is not None:
@@ -1361,6 +1375,23 @@ def collect_bundle(
                 d = d.setdefault(p, {})
             d[parts[-1]] = coerce(raw_days) if callable(coerce) else raw_days
 
+    # Per-source cfg overrides merge into the named collector's cfg section so
+    # the collector reads them like any other option.
+    if overrides:
+        for section, values in overrides.items():
+            if not isinstance(values, dict):
+                continue
+            dest = cfg.setdefault(section, {})
+            if isinstance(dest, dict):
+                dest.update(values)
+
+    # In a bundle the interpreted agent_session_summary surface owns agent
+    # conversations, so the raw chat file carries only SpecStory + CLI history
+    # unless a caller explicitly re-enables the section.
+    chats_cfg = cfg.setdefault("chats", {})
+    if isinstance(chats_cfg, dict):
+        chats_cfg.setdefault("include_agent_conversations", False)
+
     only_collector = None
     if only:
         # run_collection accepts a single --only, but we can call it per-collector
@@ -1369,11 +1400,13 @@ def collect_bundle(
         if len(collectors) == 1:
             only_collector = collectors[0]
         else:
-            # Multiple: run full collection but filter in the function
-            # For now, just run all — the overhead is minimal
+            # Multiple names: run the full collection — run_collection takes a
+            # single --only, and the extra sources' overhead is minimal.
             only_collector = None
 
-    bundle_path = run_collection(cfg, only=only_collector)
+    bundle_path = run_collection(
+        cfg, only=only_collector, since=since_dt, until=until_dt,
+    )
     return {
         "bundle_path": bundle_path.as_posix() if bundle_path else None,
         "message": f"Context bundle saved to {bundle_path}",
@@ -1400,20 +1433,15 @@ def activity_timeline(
         deep: Also collect git/chat/vault signals (default: false).
         target_date: Journal date YYYY-MM-DD (default: inferred from since).
     """
-    import re as _re
-    from datetime import timedelta
-
     from work_buddy.activity import format_timeline, infer_activity
     from work_buddy.journal import user_now
+    from work_buddy.timefmt import parse_time_bound, to_local_naive
 
-    # Parse relative since values like "2h", "1d", "30m"
-    rel_match = _re.fullmatch(r"(\d+)\s*(m|min|h|hour|hours|d|day|days)", since.strip())
-    if rel_match:
-        amount = int(rel_match.group(1))
-        unit = rel_match.group(2)[0]  # first char: m, h, or d
-        deltas = {"m": timedelta(minutes=amount), "h": timedelta(hours=amount), "d": timedelta(days=amount)}
-        since_dt = user_now().replace(tzinfo=None) - deltas[unit]
-        since = since_dt.isoformat()
+    # Relative shorthand ("2h"/"1d"/"30m") or an ISO datetime -> local-naive ISO
+    # string for infer_activity.
+    since_dt = parse_time_bound(since, now=user_now())
+    if since_dt is not None:
+        since = to_local_naive(since_dt).isoformat()
 
     timeline = infer_activity(
         since=since,

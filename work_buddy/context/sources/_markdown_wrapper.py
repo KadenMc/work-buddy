@@ -24,7 +24,7 @@ minimum rework.
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Callable
 
 from work_buddy.context.types import (
@@ -130,13 +130,17 @@ class MarkdownCollectorSource(BaseContextSource):
 
 def _window_bounds(
     request: ContextRequest,
-) -> tuple[date | None, date | None]:
-    """``(since, until)`` derived from request's target_date + window_days.
+) -> tuple[date | datetime | None, date | datetime | None]:
+    """``(since, until)`` for the request, by precedence.
 
-    ``target_date=None`` leaves both as None so each legacy collector
-    uses its own default window. When ``target_date`` is set the
-    window is centered on it with ``±window_days``.
+    1. Explicit ``request.since`` / ``request.until`` (aware datetimes) win —
+       a precise, possibly sub-day window, returned as-is. This is how the
+       journal passes its exact activity window through to the collectors.
+    2. Otherwise ``target_date`` ± ``window_days`` (dates). ``target_date=None``
+       leaves both as None so each legacy collector uses its own default.
     """
+    if request.since is not None or request.until is not None:
+        return request.since, request.until
     if request.target_date is None:
         return None, None
     center = request.target_date

@@ -17,6 +17,6 @@ locks), stale-only so unchanged JSONL files don't get re-parsed, and
 capped at 5 sessions per pass so the refresh stays bounded.
 
 The collector that feeds journal/context bundles
-(`claude_session_summary`) also triggers a stale-only refresh inline,
+(`agent_session_summary`) also triggers a stale-only refresh inline,
 so the cron is a backstop — it keeps the DB fresh between bundle
 collections.

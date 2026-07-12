@@ -10,7 +10,7 @@ existing consumers see no change:
 - the `conversation_observability_summarize` MCP capability (op binding in
   `mcp_server/ops/conversation_observability_ops.py`)
 - the `conversation_observability_summary_get` MCP capability
-- the `claude_session_summary` context collector
+- the `agent_session_summary` context collector
 - the sidecar job `conversation-observability-summarize.md`
 - the legacy test stubs that pass `llm_call=...` as a bare callable
 
@@ -143,125 +143,36 @@ def summarize_session(
 
 
 def query_session_summary(session_id: str) -> dict[str, Any] | None:
-    """Return the `session_summaries` row dict (with `topics`).
+    """Back-compat shim — delegates to the canonical row helper.
 
     Prefer
     :func:`work_buddy.conversation_observability.session_summary_row.session_summary_row`
-    in new code — it owns the canonical implementation. This function
-    remains as a back-compat shim for the sidecar job and any out-of-tree
-    caller that imports it directly; both paths return the same dict.
+    in new code. This name remains for the sidecar job and any out-of-tree
+    caller that imports it directly; both return the same dict (including the
+    per-topic turn ranges and timestamps the canonical helper derives).
 
-    Consumed by:
-    - the dashboard `/api/chats/<id>/topics` endpoint (via the canonical
-      row helper)
-    - the `claude_session_summary` context collector (via the canonical
-      row helper)
-    - the `session_summary_get` / `conversation_observability_summary_get`
-      MCP capabilities (both bind to the canonical row helper)
+    Consumed by: the dashboard `/api/chats/<id>/topics` endpoint, the
+    `agent_session_summary` context collector, and the `session_summary_get` /
+    `conversation_observability_summary_get` MCP capabilities — all via the
+    canonical helper.
     """
-    summarizer = get_session_summarizer()
-    store = summarizer.store
+    from work_buddy.conversation_observability.session_summary_row import (
+        session_summary_row,
+    )
 
-    meta = store.load_item_meta(session_id)
-    if meta is None:
-        return None
-
-    # Always load the tree, regardless of status — `record_error` preserves
-    # prior nodes when flipping status to 'error', and consumers (dashboard,
-    # `conversation_observability_summary_get`) expect the prior tldr to
-    # survive a transient LLM failure.
-    node = store.load(session_id)
-    tldr = node.summary if node is not None else ""
-
-    return {
-        "session_id": session_id,
-        "tldr": tldr,
-        "topic_count": meta.get("topic_count", 0),
-        "generated_at": meta.get("generated_at"),
-        "model": meta.get("model"),
-        "profile": meta.get("profile"),
-        "backend": meta.get("backend"),
-        "prompt_version": meta.get("prompt_version"),
-        "summary_schema_version": meta.get("summary_schema_version"),
-        "selection_version": meta.get("selection_version"),
-        "cache_version": meta.get("cache_version"),
-        "status": meta.get("status"),
-        "error": meta.get("error"),
-        "topics": query_topic_summaries(session_id),
-    }
+    return session_summary_row(session_id)
 
 
 def query_topic_summaries(session_id: str) -> list[dict[str, Any]]:
-    """Return the `topic_summaries` row dicts (one per child node).
+    """Back-compat shim — delegates to the canonical topic helper.
 
     Prefer
     :func:`work_buddy.conversation_observability.session_summary_row.session_topics`
-    in new code — same return shape, owned by the canonical helper module.
-
-    `turn_start` / `turn_end` are computed lazily from `span_start` /
-    `span_end` via `span_range_to_turn_range`. The framework's
-    `SummaryStrategy.parse` doesn't have session context, so computing at
-    read time is cleaner than persisting these fields. Cost: one
-    `ConversationSession` load per dashboard topics-tab view.
+    in new code. Same return shape, including the per-topic turn ranges and
+    wall-clock timestamps the canonical helper derives.
     """
-    summarizer = get_session_summarizer()
-    node = summarizer.store.load(session_id)
-    if node is None:
-        return []
+    from work_buddy.conversation_observability.session_summary_row import (
+        session_topics,
+    )
 
-    # Lazy session load for turn_range conversion. Best-effort: if the
-    # session file is missing we still return topics without turn_range.
-    session: Any | None = None
-    try:
-        from work_buddy.sessions.inspector import ConversationSession
-
-        session = ConversationSession(session_id)
-        session._ensure_loaded()
-    except Exception:
-        session = None
-
-    span_to_turn = None
-    if session is not None:
-        try:
-            from work_buddy.conversation_observability.sessions import (
-                span_range_to_turn_range,
-            )
-
-            span_to_turn = span_range_to_turn_range
-        except Exception:
-            span_to_turn = None
-
-    out: list[dict[str, Any]] = []
-    for i, child in enumerate(node.children):
-        extra = child.extra or {}
-        span_start = extra.get("span_start")
-        span_end = extra.get("span_end")
-        turn_start: int | None = None
-        turn_end: int | None = None
-        if (
-            session is not None
-            and span_to_turn is not None
-            and isinstance(span_start, int)
-            and isinstance(span_end, int)
-            and span_end > span_start
-        ):
-            try:
-                turn_start, turn_end = span_to_turn(
-                    session, span_start, span_end,
-                )
-            except Exception:
-                pass
-
-        out.append({
-            "id": f"{session_id}:{i}",
-            "session_id": session_id,
-            "topic_index": i,
-            "title": extra.get("title", ""),
-            "summary": child.summary,
-            "span_start": span_start,
-            "span_end": span_end,
-            "turn_start": turn_start,
-            "turn_end": turn_end,
-            "keywords": list(extra.get("keywords") or []),
-        })
-    return out
+    return session_topics(session_id)

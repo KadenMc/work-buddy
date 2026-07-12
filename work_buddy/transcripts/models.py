@@ -3,8 +3,32 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+
+def mtime_floor(days: int | None, since: datetime | None) -> float:
+    """Coarse mtime lower bound (epoch seconds) for provider discovery.
+
+    A transcript file whose mtime is below this cannot contain activity at or
+    after the window start, so a provider may skip it without opening it.
+    ``since`` (an aware datetime) is authoritative; ``days`` is day-granular
+    sugar (``now - days``); neither — or ``days <= 0`` — means "all history"
+    (floor ``0``).
+
+    The *upper* bound is deliberately not a provider concern: a resumed session
+    can carry a recent mtime yet old turns, so callers apply the precise
+    conversation-time window (including ``until``) to the discovered candidates
+    themselves.
+    """
+    if since is not None:
+        return since.timestamp()
+    if days is not None and days > 0:
+        import time
+
+        return time.time() - days * 86400.0
+    return 0.0
 
 
 @dataclass(frozen=True)

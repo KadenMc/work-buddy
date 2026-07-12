@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from importlib import metadata
 import logging
 from pathlib import Path
@@ -43,7 +44,9 @@ def get_provider(provider_id: str) -> TranscriptProvider:
 
 def discover_sessions(
     *,
-    days: int,
+    days: int | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
     project_filter: list[str] | None = None,
     provider_ids: Iterable[str] | None = None,
 ) -> list[TranscriptSession]:
@@ -55,7 +58,9 @@ def discover_sessions(
     sessions: list[TranscriptSession] = []
     seen: dict[str, str] = {}
     for provider in selected:
-        for session in provider.discover(days=days, project_filter=project_filter):
+        for session in provider.discover(
+            days=days, since=since, until=until, project_filter=project_filter
+        ):
             owner = seen.get(session.session_id)
             if owner is not None and owner != provider.id:
                 raise ValueError(

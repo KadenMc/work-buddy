@@ -13,7 +13,66 @@ discipline ``config.py``'s lazy ``USER_TZ`` getter exists to preserve.
 
 from __future__ import annotations
 
-from datetime import datetime
+import re
+from datetime import datetime, timedelta, timezone
+
+# Relative-window shorthand shared by every capability that takes a time bound
+# (chrome_activity, activity_timeline, hot_files, the context-bundle window, …):
+# an integer amount + a unit whose first letter is m / h / d.
+_RELATIVE_RE = re.compile(r"\s*(\d+)\s*(m|min|h|hour|hours|d|day|days)\s*", re.IGNORECASE)
+_RELATIVE_UNIT = {"m": "minutes", "h": "hours", "d": "days"}
+
+
+def parse_time_bound(
+    value: str | datetime | None,
+    *,
+    now: datetime | None = None,
+) -> datetime | None:
+    """Parse one end of a time window to an aware-UTC datetime.
+
+    The single canonical parser for the work-buddy window vocabulary used
+    across capability declarations and the context pipeline:
+
+      * **relative shorthand** — ``"2h"``, ``"30m"``, ``"1d"`` (also
+        ``min`` / ``hour(s)`` / ``day(s)``): resolved as ``now - delta``.
+      * **ISO datetime** — ``"2026-07-07T10:40:00"`` or with an offset / ``Z``.
+        A **naive** ISO string is read as the user's local wall-clock time —
+        the journal / collector convention, matching the strings
+        ``read_journal_state`` emits — and converted to UTC. An offset-aware
+        string is converted to UTC as-is.
+
+    ``now`` defaults to the current instant; a naive ``now`` is treated as UTC.
+    Returns an aware-UTC datetime, or ``None`` when *value* is falsy or
+    unparseable, so callers can forward an optional bound without pre-checking.
+
+    Note the deliberate asymmetry with :func:`to_local_naive`, which assumes a
+    naive datetime is *UTC*: that function renders UTC collector output to local
+    time, whereas this one parses a user-typed bound, which is local.
+    """
+    if value is None or value == "":
+        return None
+
+    if now is None:
+        now = datetime.now(timezone.utc)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    else:
+        now = now.astimezone(timezone.utc)
+
+    if isinstance(value, str):
+        rel = _RELATIVE_RE.fullmatch(value)
+        if rel:
+            unit = _RELATIVE_UNIT[rel.group(2)[0].lower()]
+            return now - timedelta(**{unit: int(rel.group(1))})
+
+    dt = parse_iso(value)
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        from work_buddy.config import USER_TZ
+
+        dt = dt.replace(tzinfo=USER_TZ)
+    return dt.astimezone(timezone.utc)
 
 
 def parse_iso(value: str | datetime | None) -> datetime | None:

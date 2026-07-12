@@ -5,7 +5,7 @@
 backwards-compatible `summaries.py` shims use it to preserve the existing
 read/write API (dashboard `/api/chats/<id>/topics`, the
 `conversation_observability_summarize` MCP capability, the sidecar job, the
-`claude_session_summary` context collector).
+`agent_session_summary` context collector).
 """
 
 from __future__ import annotations
