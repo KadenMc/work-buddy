@@ -82,9 +82,8 @@ import socket
 
 for port in range(5123, 5128):
     with socket.socket() as sock:
-        try:
-            sock.bind(("127.0.0.1", port))
-        except OSError as exc:
-            raise SystemExit(f"work-buddy port {port} is not free: {exc}")
+        sock.settimeout(0.2)
+        if sock.connect_ex(("127.0.0.1", port)) == 0:
+            raise SystemExit(f"work-buddy port {port} still has a listener")
 PY
 }

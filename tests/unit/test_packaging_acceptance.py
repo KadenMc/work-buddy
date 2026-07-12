@@ -109,3 +109,9 @@ def test_readiness_probe_fails_fast_on_http_errors():
     common = (_REPO / "packaging" / "acceptance" / "common.sh").read_text()
     assert "2??|3??) return 0" in common
     assert "returned HTTP $http_code" in common
+
+
+def test_port_safety_checks_for_listeners_not_bindability():
+    common = (_REPO / "packaging" / "acceptance" / "common.sh").read_text()
+    assert "sock.connect_ex" in common
+    assert "sock.bind" not in common
