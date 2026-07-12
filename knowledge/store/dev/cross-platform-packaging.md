@@ -30,10 +30,15 @@ dev_notes: |-
   draft-release job receives contents: write. Shared behavior lives in
   packaging/acceptance scripts.
 
-  Autostart uses require mode when a hosted user service-manager session exists
-  and records an explicit skip fallback otherwise. A fallback proves generated
-  integration plus direct runtime behavior but must not be reported as real
-  systemd/launchd lifecycle coverage.
+  Autostart uses require mode only when HOME is the login account's real home
+  and a hosted user service-manager session exists. The isolated acceptance
+  homes therefore record an explicit skip fallback. That fallback proves
+  generated integration plus direct runtime behavior but must not be reported
+  as real systemd/launchd lifecycle coverage.
+
+  Fresh provisioning deliberately leaves vault_root unconfigured. Dashboard
+  startup must remain available in that state: contract reads resolve to an
+  empty collection without trying to create the placeholder /path/to tree.
 ---
 
 work-buddy builds Linux x86-64 and Apple Silicon macOS tarballs on pinned native GitHub-hosted runners. Packaging pull requests run structural native builds; labeled, manual, and release runs can download the uploaded artifacts into separate fresh native VMs and exercise install, health, desktop launch, repair, and uninstall.

@@ -16,16 +16,22 @@ from work_buddy.config import load_config
 from work_buddy.frontmatter import parse_frontmatter, scan_frontmatter, filter_by_status
 
 
+def _configured_contracts_location() -> tuple[Path, Path]:
+    """Return ``(vault_root, contracts_dir)`` from the current config."""
+
+    cfg = load_config()
+    vault_root = Path(cfg.get("vault_root", ".")).expanduser()
+    subpath = cfg.get("contracts", {}).get("vault_path", "work-buddy/contracts")
+    return vault_root, vault_root / subpath
+
+
 def _default_contracts_dir() -> Path:
     """Resolve the default contracts directory from config.
 
     Reads ``contracts.vault_path`` (default ``"work-buddy/contracts"``)
     and resolves it relative to ``vault_root``.
     """
-    cfg = load_config()
-    vault_root = Path(cfg.get("vault_root", "."))
-    subpath = cfg.get("contracts", {}).get("vault_path", "work-buddy/contracts")
-    return vault_root / subpath
+    return _configured_contracts_location()[1]
 
 # Frontmatter fields that every contract should have
 _KEY_FIELDS = ("title", "status", "deadline", "type")
@@ -49,8 +55,20 @@ _CHECKBOX_RE = re.compile(r"^- \[([ xX])\] (.+)$", re.MULTILINE)
 
 
 def _contracts_dir(contracts_dir: Path | None) -> Path:
-    """Resolve the contracts directory, creating it if absent."""
-    d = contracts_dir or _default_contracts_dir()
+    """Resolve the contracts directory, creating it when configuration is usable.
+
+    A newly provisioned install intentionally starts with a placeholder
+    ``vault_root``.  Reads must degrade to an empty contracts collection in
+    that state; trying to create ``/path/to/...`` at dashboard import time
+    prevents the setup UI from opening on Linux and macOS.  Explicit paths
+    retain the historical create-on-use behavior.
+    """
+    if contracts_dir is None:
+        vault_root, d = _configured_contracts_location()
+        if not vault_root.is_dir():
+            return d
+    else:
+        d = contracts_dir
     d.mkdir(parents=True, exist_ok=True)
     return d
 
