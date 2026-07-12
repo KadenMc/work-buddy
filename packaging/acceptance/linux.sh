@@ -23,6 +23,12 @@ DATA_DIR="$XDG_DATA_HOME/work-buddy"
 EVIDENCE="$RUNNER_TEMP/work-buddy-linux-evidence"
 mkdir -p "$EXTRACT" "$HOME" "$XDG_DATA_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$EVIDENCE"
 
+collect_service_logs() {
+  cp -R "$DATA_DIR/logs" "$EVIDENCE/service-logs" 2>/dev/null || true
+  cp -R "$DATA_DIR/runtime/service_logs" "$EVIDENCE/runtime-service-logs" 2>/dev/null || true
+}
+trap collect_service_logs EXIT
+
 for target in "$SANDBOX" "$HOME" "$APP_HOME" "$DATA_DIR"; do
   require_under_runner_temp "$target" >/dev/null
 done
@@ -58,7 +64,16 @@ test -f "$APP_HOME/config.local.yaml"
 test -f "$APP_HOME/.mcp.json"
 test -f "$XDG_DATA_HOME/applications/work-buddy.desktop"
 test -x "$APP_HOME/uninstall.sh"
-desktop-file-validate "$XDG_DATA_HOME/applications/work-buddy.desktop"
+DESKTOP_FILE="$XDG_DATA_HOME/applications/work-buddy.desktop"
+if command -v desktop-file-validate >/dev/null 2>&1; then
+  desktop-file-validate "$DESKTOP_FILE" | tee "$EVIDENCE/desktop-file-validation.txt"
+else
+  echo "desktop-file-validate unavailable; applying required-field checks" \
+    | tee "$EVIDENCE/desktop-file-validation.txt"
+  grep -Fx '[Desktop Entry]' "$DESKTOP_FILE"
+  grep -Fx 'Type=Application' "$DESKTOP_FILE"
+  grep -Fx 'Name=Work Buddy' "$DESKTOP_FILE"
+fi
 grep -F 'Exec="' "$XDG_DATA_HOME/applications/work-buddy.desktop"
 
 wait_for_url "http://127.0.0.1:5127/app/" 300
@@ -94,7 +109,6 @@ grep -F '# acceptance-config-sentinel' "$APP_HOME/config.local.yaml"
 grep -F 'preserve-me' "$DATA_DIR/acceptance/data-sentinel.txt"
 wait_for_url "http://127.0.0.1:5127/app/" 300
 
-cp -R "$DATA_DIR/logs" "$EVIDENCE/service-logs" 2>/dev/null || true
 bash "$APP_HOME/uninstall.sh" --home "$APP_HOME" --data-dir "$DATA_DIR" \
   2>&1 | tee "$EVIDENCE/uninstall-preserve-data.log"
 test ! -e "$APP_HOME"

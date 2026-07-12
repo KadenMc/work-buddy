@@ -23,6 +23,7 @@ mkdir -p "$EXTRACT" "$HOME" "$DATA_DIR" "$APPLICATIONS_DIR" "$EVIDENCE"
 
 collect_service_logs() {
   cp -R "$DATA_DIR/logs" "$EVIDENCE/service-logs" 2>/dev/null || true
+  cp -R "$DATA_DIR/runtime/service_logs" "$EVIDENCE/runtime-service-logs" 2>/dev/null || true
   cp -R "$HOME/Library/Logs/work-buddy" "$EVIDENCE/launchd-logs" 2>/dev/null || true
 }
 trap collect_service_logs EXIT
