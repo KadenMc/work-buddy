@@ -246,3 +246,22 @@ test("resizing Quick Capture cannot remove its shared scroll boundary", async ({
   expect(metrics.scrollTop).toBeGreaterThan(0);
   await page.getByRole("button", { name: "Cancel" }).click();
 });
+
+test("wheel gestures over a fitting widget continue scrolling the page", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 500 });
+  await openJournal(page);
+
+  const widgetContents = page.locator(".wb-dashboard-grid-item .wb-widget-frame__content");
+  const fittingWidgetIndex = await widgetContents.evaluateAll((elements) =>
+    elements.findIndex((element) => element.scrollHeight <= element.clientHeight + 1),
+  );
+  expect(fittingWidgetIndex).toBeGreaterThanOrEqual(0);
+
+  const fittingWidget = widgetContents.nth(fittingWidgetIndex);
+  await fittingWidget.scrollIntoViewIfNeeded();
+  await fittingWidget.hover();
+  const before = await page.evaluate(() => window.scrollY);
+  await page.mouse.wheel(0, 400);
+
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(before);
+});
