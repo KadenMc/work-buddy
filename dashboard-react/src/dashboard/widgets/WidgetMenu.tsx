@@ -9,6 +9,10 @@ export interface WidgetMenuProps {
   readonly onConfigure?: () => void;
   readonly onHide?: () => void;
   readonly onRemove?: () => void;
+  readonly onMove?: (direction: "left" | "right" | "up" | "down") => void;
+  readonly onResize?: (
+    direction: "grow-width" | "shrink-width" | "grow-height" | "shrink-height",
+  ) => void;
 }
 
 export function WidgetMenu({
@@ -19,8 +23,10 @@ export function WidgetMenu({
   onConfigure,
   onHide,
   onRemove,
+  onMove,
+  onResize,
 }: WidgetMenuProps) {
-  if (!onRetry && !onConfigure && !onHide && !onRemove) {
+  if (!onRetry && !onConfigure && !onHide && !onRemove && !onMove && !onResize) {
     return null;
   }
   const required = presence === "required";
@@ -47,6 +53,43 @@ export function WidgetMenu({
           >
             Configure
           </button>
+        )}
+        {onMove && (
+          <fieldset className="wb-widget-menu__group">
+            <legend>Move</legend>
+            {(["left", "right", "up", "down"] as const).map((direction) => (
+              <button
+                key={direction}
+                className="wb-widget-menu__item"
+                type="button"
+                onClick={() => onMove(direction)}
+              >
+                {direction}
+              </button>
+            ))}
+          </fieldset>
+        )}
+        {onResize && (
+          <fieldset className="wb-widget-menu__group">
+            <legend>Resize</legend>
+            {(
+              [
+                ["grow-width", "Wider"],
+                ["shrink-width", "Narrower"],
+                ["grow-height", "Taller"],
+                ["shrink-height", "Shorter"],
+              ] as const
+            ).map(([direction, label]) => (
+              <button
+                key={direction}
+                className="wb-widget-menu__item"
+                type="button"
+                onClick={() => onResize(direction)}
+              >
+                {label}
+              </button>
+            ))}
+          </fieldset>
         )}
         {onHide && (
           <button

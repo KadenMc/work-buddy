@@ -1,6 +1,7 @@
 import type { ComponentType } from "react";
 
 import JournalPanel from "../components/JournalPanel";
+import { dashboardRegistry } from "./dashboardRegistry";
 
 /**
  * Temporary route projection used while the contribution registry is landing.
@@ -46,12 +47,20 @@ function defineDashboardRoutes(
   return Object.freeze([...definitions]);
 }
 
-export const dashboardRoutes = defineDashboardRoutes([
-  {
-    viewId: "wb.journal.main",
-    path: "journal",
-    label: "Journal",
-    component: JournalPanel,
-    isDefault: true,
-  },
-]);
+const viewComponents = new Map([["wb.journal.main", JournalPanel]]);
+
+export const dashboardRoutes = defineDashboardRoutes(
+  dashboardRegistry.listViews().map(({ definition }) => {
+    const component = viewComponents.get(definition.viewId);
+    if (component === undefined) {
+      throw new Error(`No dashboard view module registered for ${definition.viewId}`);
+    }
+    return {
+      viewId: definition.viewId,
+      path: definition.route,
+      label: definition.navigation.label,
+      component,
+      isDefault: definition.navigation.isDefault,
+    };
+  }),
+);

@@ -1,14 +1,55 @@
-// Intentional empty state: the Journal view is the first React surface
-// and lands in a follow-up change. No functionality lives here yet.
+import { useMemo } from "react";
+
+import { JournalViewChrome } from "../apps/journal/chrome/JournalViewChrome";
+import type { JournalViewModel } from "../apps/journal/contracts";
+import { JOURNAL_VIEW_DEFINITION } from "../apps/journal/viewDefinition";
+import { InMemoryJournalProvider } from "../apps/journal/providers/InMemoryJournalProvider";
+import "../apps/journal/styles.css";
+import { dashboardRegistry } from "../app/dashboardRegistry";
+import type { ViewSnapshot } from "../dashboard/contributions/contracts";
+import { selectViewProviderFromSearch } from "../dashboard/providers/providerSelection";
+import { LocalStoragePersonalizationRepository } from "../dashboard/personalization/repository";
+import { ViewHost } from "../dashboard/views/ViewHost";
+
 export default function JournalPanel() {
+  const provider = useMemo(() => new InMemoryJournalProvider(), []);
+  const repository = useMemo(
+    () => new LocalStoragePersonalizationRepository(window.localStorage),
+    [],
+  );
+  const selection = selectViewProviderFromSearch(
+    [
+      {
+        id: "demo",
+        label: "Demo data · in-memory provider",
+        isDemo: true,
+        provider,
+      },
+    ],
+    {
+      search: window.location.search,
+      defaultId: "demo",
+    },
+  );
+
   return (
-    <main className="tab-panel">
-      <div className="empty-state">
-        <div className="empty-state-title">Journal: coming soon</div>
-        <div className="empty-state-hint">
-          The Journal view is the first surface of the React dashboard.
-        </div>
-      </div>
-    </main>
+    <ViewHost
+      registry={dashboardRegistry}
+      definition={JOURNAL_VIEW_DEFINITION}
+      provider={selection.provider}
+      personalizationRepository={repository}
+      providerLabel={selection.label}
+      renderChrome={(snapshot: ViewSnapshot) => {
+        const model = snapshot.model as JournalViewModel;
+        return (
+          <JournalViewChrome
+            day={model.day}
+            access={model.access}
+            quality={model.quality}
+            source={model.source}
+          />
+        );
+      }}
+    />
   );
 }

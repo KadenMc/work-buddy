@@ -73,6 +73,10 @@ export interface WidgetHostProps<Input = unknown> {
   readonly onConfigure?: () => void;
   readonly onHide?: () => void;
   readonly onRemove?: () => void;
+  readonly onMove?: (direction: "left" | "right" | "up" | "down") => void;
+  readonly onResize?: (
+    direction: "grow-width" | "shrink-width" | "grow-height" | "shrink-height",
+  ) => void;
   readonly onRendererError?: (error: Error) => void;
 }
 
@@ -95,6 +99,8 @@ export function WidgetHost<Input>({
   onConfigure,
   onHide,
   onRemove,
+  onMove,
+  onResize,
   onRendererError,
 }: WidgetHostProps<Input>) {
   const themeRuntime = useTheme();
@@ -147,6 +153,8 @@ export function WidgetHost<Input>({
       onConfigure={onConfigure}
       onHide={onHide}
       onRemove={onRemove}
+      onMove={onMove}
+      onResize={onResize}
     />
   );
   const body = blockingStates.has(status) ? (

@@ -163,4 +163,118 @@
   .empty-state-hint {
     font-size: 13px;
   }
+
+  .wb-view-host {
+    max-width: 1440px;
+    margin: 0 auto;
+    padding: 20px 24px 40px;
+  }
+
+  .wb-view-host.is-customizing {
+    background-image:
+      linear-gradient(var(--wb-color-border-default) 1px, transparent 1px),
+      linear-gradient(90deg, var(--wb-color-border-default) 1px, transparent 1px);
+    background-size: 24px 24px;
+  }
+
+  .wb-view-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    margin: 12px 0;
+  }
+
+  .wb-view-toolbar button {
+    min-height: 34px;
+    padding: 5px 10px;
+    border: 1px solid var(--wb-color-border-default);
+    border-radius: var(--wb-radius-control);
+    background: var(--wb-color-surface-raised);
+    color: var(--wb-color-text-primary);
+    cursor: pointer;
+  }
+
+  .wb-view-toolbar button:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+
+  .wb-view-toolbar .wb-view-toolbar__primary {
+    border-color: var(--wb-color-action-primary);
+    background: var(--wb-color-action-primary);
+    color: var(--wb-color-text-on-accent);
+  }
+
+  .wb-view-toolbar__provider {
+    margin-right: auto;
+    color: var(--wb-color-text-muted);
+    font-size: 12px;
+  }
+
+  .wb-view-host__warning {
+    margin: 8px 0;
+    padding: 8px 10px;
+    border: 1px solid var(--wb-color-status-warning);
+    border-radius: var(--wb-radius-control);
+    background: var(--wb-color-status-warning-surface);
+    color: var(--wb-color-text-primary);
+  }
+
+  .wb-dashboard-grid-container {
+    min-width: 0;
+  }
+
+  .wb-dashboard-grid-item {
+    min-width: 0;
+  }
+
+  .wb-dashboard-grid-item > .wb-widget-frame {
+    height: 100%;
+  }
+
+  .wb-dashboard-grid-item .wb-widget-frame__content {
+    overflow: auto;
+  }
+
+  .wb-widget-drag-handle {
+    position: absolute;
+    z-index: 2;
+    top: 9px;
+    left: 10px;
+    width: 14px;
+    height: 14px;
+    border-radius: 3px;
+    background: radial-gradient(circle, var(--wb-color-text-muted) 1px, transparent 2px) 0 0 / 5px 5px;
+    cursor: grab;
+  }
+
+  .wb-dashboard-mobile-stack {
+    display: grid;
+    gap: 12px;
+  }
+
+  .wb-widget-menu__group {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px;
+    padding: 6px;
+    border: 0;
+  }
+
+  .wb-widget-menu__group legend {
+    grid-column: 1 / -1;
+    color: var(--wb-color-text-muted);
+    font-size: 11px;
+  }
+
+  @media (max-width: 767px) {
+    .wb-view-host {
+      padding: 12px;
+    }
+
+    .wb-view-toolbar {
+      flex-wrap: wrap;
+    }
+  }
 }
