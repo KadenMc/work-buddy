@@ -1,9 +1,52 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-wb-scheme="dark" data-wb-skin="wb.default">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#161b22" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#0d1117" />
+    <script>
+      (() => {
+        const fallback = { scheme: "system", skinId: "wb.default" };
+        const schemes = new Set(["system", "light", "dark"]);
+        const skins = new Set(["wb.default", "wb.conformance-stress"]);
+        let preference = fallback;
+
+        try {
+          const candidate = JSON.parse(
+            localStorage.getItem("wb.theme.preference.v1") || "null",
+          );
+          if (
+            candidate &&
+            candidate.version === 1 &&
+            schemes.has(candidate.scheme) &&
+            skins.has(candidate.skinId)
+          ) {
+            preference = candidate;
+          }
+        } catch {
+          preference = fallback;
+        }
+
+        const resolvedScheme =
+          preference.scheme === "system"
+            ? typeof window.matchMedia === "function" &&
+              window.matchMedia("(prefers-color-scheme: dark)").matches
+              ? "dark"
+              : "light"
+            : preference.scheme;
+
+        document.documentElement.dataset.wbScheme = resolvedScheme;
+        document.documentElement.dataset.wbSkin = preference.skinId;
+        document.documentElement.style.colorScheme = resolvedScheme;
+        document
+          .querySelector('meta[name="theme-color"]')
+          ?.setAttribute(
+            "content",
+            resolvedScheme === "dark" ? "#0d1117" : "#f6f8fa",
+          );
+      })();
+    </script>
     <meta name="application-name" content="work-buddy" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="manifest" href="/app/manifest.webmanifest" />

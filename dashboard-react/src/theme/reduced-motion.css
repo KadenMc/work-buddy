@@ -1,0 +1,20 @@
+@media (prefers-reduced-motion: reduce) {
+  @layer wb.tokens {
+    :root {
+      --wb-motion-duration-fast: 0ms;
+      --wb-motion-duration-standard: 0ms;
+      --wb-motion-easing-standard: linear;
+    }
+  }
+
+  @layer wb.utilities {
+    *,
+    *::before,
+    *::after {
+      scroll-behavior: auto !important;
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}

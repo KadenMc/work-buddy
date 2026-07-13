@@ -1,0 +1,50 @@
+@media (forced-colors: active) {
+  @layer wb.tokens {
+    :root {
+      --wb-color-surface-canvas: Canvas;
+      --wb-color-surface-raised: Canvas;
+      --wb-color-surface-overlay: Canvas;
+      --wb-color-surface-inset: Canvas;
+      --wb-color-text-primary: CanvasText;
+      --wb-color-text-secondary: CanvasText;
+      --wb-color-text-muted: GrayText;
+      --wb-color-text-on-accent: HighlightText;
+      --wb-color-text-link: LinkText;
+      --wb-color-border-default: CanvasText;
+      --wb-color-border-strong: CanvasText;
+      --wb-color-focus-ring: Highlight;
+      --wb-color-action-primary: Highlight;
+      --wb-color-action-primary-hover: Highlight;
+      --wb-color-action-secondary: ButtonFace;
+      --wb-color-selection: Highlight;
+      --wb-color-status-success: CanvasText;
+      --wb-color-status-success-surface: Canvas;
+      --wb-color-status-warning: CanvasText;
+      --wb-color-status-warning-surface: Canvas;
+      --wb-color-status-danger: CanvasText;
+      --wb-color-status-danger-surface: Canvas;
+      --wb-color-status-info: CanvasText;
+      --wb-color-status-info-surface: Canvas;
+      --wb-color-data-1: CanvasText;
+      --wb-color-data-2: Highlight;
+      --wb-color-data-3: CanvasText;
+      --wb-color-data-4: Highlight;
+      --wb-color-data-5: CanvasText;
+      --wb-color-data-6: Highlight;
+      --wb-color-data-7: CanvasText;
+      --wb-color-data-8: Highlight;
+      --wb-shadow-raised: none;
+      --wb-shadow-overlay: none;
+    }
+  }
+
+  @layer wb.components {
+    :focus-visible {
+      outline: 2px solid Highlight;
+    }
+
+    .status-dot {
+      border: 1px solid CanvasText;
+    }
+  }
+}
