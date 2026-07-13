@@ -565,6 +565,8 @@
     min-height: 0;
     flex: 1;
     overflow: auto;
+    /* Keep ordinary widgets in the browser's native vertical scroll chain. */
+    overscroll-behavior-y: auto;
     padding: var(--wb-widget-padding);
     scrollbar-gutter: stable;
   }

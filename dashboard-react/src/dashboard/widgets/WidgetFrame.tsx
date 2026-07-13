@@ -39,7 +39,10 @@ export function WidgetFrame({
         </div>
         {menu}
       </header>
-      <div className="wb-widget-frame__content">
+      <div
+        className="wb-widget-frame__content"
+        data-scroll-boundary-policy="native"
+      >
         {status}
         {children}
       </div>

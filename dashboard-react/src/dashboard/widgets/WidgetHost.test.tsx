@@ -127,6 +127,10 @@ describe("WidgetHost", () => {
 
     expect(load).toHaveBeenCalledTimes(1);
     expect(emit).toHaveBeenCalledWith(intent);
+    expect(container.querySelector(".wb-widget-frame__content")).toHaveAttribute(
+      "data-scroll-boundary-policy",
+      "native",
+    );
     await expectNoAccessibilityViolations(container);
   });
 

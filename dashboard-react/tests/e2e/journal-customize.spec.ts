@@ -265,3 +265,46 @@ test("wheel gestures over a fitting widget continue scrolling the page", async (
 
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(before);
 });
+
+test("a scrollable widget owns available movement and exposes the native boundary policy", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 500 });
+  await openJournal(page);
+  await beginCustomize(page);
+
+  for (let index = 0; index < 8; index += 1) {
+    const captureMenu = await openWidgetMenu(page, "Quick Capture");
+    const shorter = captureMenu.getByRole("menuitem", { name: "Shorter" });
+    if ((await shorter.getAttribute("aria-disabled")) === "true") {
+      await page.keyboard.press("Escape");
+      break;
+    }
+    await shorter.click();
+  }
+
+  const content = widget(page, "Quick Capture").locator(".wb-widget-frame__content");
+  await content.scrollIntoViewIfNeeded();
+  await content.evaluate((element) => {
+    element.scrollTop = 0;
+  });
+  await content.hover();
+
+  const pageBeforeInternalScroll = await page.evaluate(() => window.scrollY);
+  await page.mouse.wheel(0, 80);
+  await expect.poll(() => content.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  expect(await page.evaluate(() => window.scrollY)).toBe(pageBeforeInternalScroll);
+
+  const boundary = await content.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+    return {
+      scrollTop: element.scrollTop,
+      maximumScrollTop: element.scrollHeight - element.clientHeight,
+      overscrollBehaviorY: getComputedStyle(element).overscrollBehaviorY,
+      policy: element.getAttribute("data-scroll-boundary-policy"),
+    };
+  });
+  expect(boundary.scrollTop).toBe(boundary.maximumScrollTop);
+  expect(boundary.overscrollBehaviorY).toBe("auto");
+  expect(boundary.policy).toBe("native");
+});
