@@ -63,6 +63,7 @@ function deriveModel(
         ...timeline,
         revision,
         day,
+        access,
         density: options.timelineDensity ?? timeline.density,
         items: options.timelineItems ?? timeline.items,
       },

@@ -31,6 +31,7 @@ import {
   JULY11_DUMB_CAPTURE_INTENT,
   JULY11_DUMB_PERSISTED_FIXTURE,
   JULY11_READY_FIXTURE,
+  JULY11_REVISED_TIMELINE_ITEMS,
   JULY11_SMART_CAPTURE_INTENT,
   JULY11_SMART_PENDING_FIXTURE,
   JULY11_SMART_SETTLED_FIXTURE,
@@ -123,7 +124,6 @@ function captureIntentMatches(
     intent.intent_type !== expected.intent_type ||
     !("instance_id" in intent) ||
     intent.instance_id !== JOURNAL_INSTANCE_IDS.capture ||
-    intent.client_mutation_id !== expected.client_mutation_id ||
     !isRecord(intent.payload)
   ) {
     return false;
@@ -133,8 +133,35 @@ function captureIntentMatches(
     intent.payload.target_id === expected.payload.target_id &&
     intent.payload.mode === expected.payload.mode &&
     intent.payload.exact_text === expected.payload.exact_text &&
-    intent.payload.stated_at === expected.payload.stated_at
+    (intent.payload.stated_at === undefined ||
+      intent.payload.stated_at === expected.payload.stated_at)
   );
+}
+
+function bindCaptureMutationId(
+  fixture: PopulatedJournalFixtureState,
+  clientMutationId: string,
+): PopulatedJournalFixtureState {
+  const capture = fixture.model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.capture];
+  const submissions = capture.recentSubmissions;
+  const last = submissions[submissions.length - 1];
+  if (last === undefined) return fixture;
+  return {
+    ...fixture,
+    model: {
+      ...fixture.model,
+      widgetInputs: {
+        ...fixture.model.widgetInputs,
+        [JOURNAL_WIDGET_INSTANCE_IDS.capture]: {
+          ...capture,
+          recentSubmissions: [
+            ...submissions.slice(0, -1),
+            { ...last, clientMutationId },
+          ],
+        },
+      },
+    },
+  };
 }
 
 /**
@@ -151,7 +178,7 @@ export class InMemoryJournalProvider implements ViewProvider {
   #current: PopulatedJournalFixtureState;
   #pendingSettlement: PopulatedJournalFixtureState | null = null;
   #intentResults = new Map<string, IntentResult>();
-  #clockRevision = 0;
+  #revisionSequence = 0;
 
   constructor(initialFixture: PopulatedJournalFixtureState = JULY11_READY_FIXTURE) {
     this.#current = asInMemoryFixture(initialFixture);
@@ -215,11 +242,18 @@ export class InMemoryJournalProvider implements ViewProvider {
     }
 
     if (captureIntentMatches(intent, JULY11_SMART_CAPTURE_INTENT)) {
+      if (mutationId === undefined) {
+        return this.#result(intent, "rejected", "Capture requires client_mutation_id");
+      }
       if (this.#current.model.revision !== JULY11_READY_FIXTURE.model.revision) {
         return this.#result(intent, "conflict", "The demo Journal has already changed");
       }
-      this.#current = asInMemoryFixture(JULY11_SMART_PENDING_FIXTURE);
-      this.#pendingSettlement = asInMemoryFixture(JULY11_SMART_SETTLED_FIXTURE);
+      this.#current = asInMemoryFixture(
+        bindCaptureMutationId(JULY11_SMART_PENDING_FIXTURE, mutationId),
+      );
+      this.#pendingSettlement = asInMemoryFixture(
+        bindCaptureMutationId(JULY11_SMART_SETTLED_FIXTURE, mutationId),
+      );
       return this.#remember(
         intent,
         this.#result(
@@ -232,10 +266,15 @@ export class InMemoryJournalProvider implements ViewProvider {
     }
 
     if (captureIntentMatches(intent, JULY11_DUMB_CAPTURE_INTENT)) {
+      if (mutationId === undefined) {
+        return this.#result(intent, "rejected", "Capture requires client_mutation_id");
+      }
       if (this.#current.model.revision !== JULY11_READY_FIXTURE.model.revision) {
         return this.#result(intent, "conflict", "The demo Journal has already changed");
       }
-      this.#current = asInMemoryFixture(JULY11_DUMB_PERSISTED_FIXTURE);
+      this.#current = asInMemoryFixture(
+        bindCaptureMutationId(JULY11_DUMB_PERSISTED_FIXTURE, mutationId),
+      );
       this.#pendingSettlement = null;
       return this.#remember(
         intent,
@@ -246,6 +285,132 @@ export class InMemoryJournalProvider implements ViewProvider {
           this.#current.model.revision,
         ),
       );
+    }
+
+    if (
+      intent.intent_type === "wb.timeline.open-item" &&
+      "instance_id" in intent &&
+      intent.instance_id === JOURNAL_INSTANCE_IDS.timeline &&
+      isRecord(intent.payload) &&
+      typeof intent.payload.item_id === "string"
+    ) {
+      const itemId = intent.payload.item_id;
+      const item = this.#current.model.widgetInputs[
+        JOURNAL_WIDGET_INSTANCE_IDS.timeline
+      ].items.find((candidate) => candidate.itemId === itemId);
+      return item === undefined
+        ? this.#result(intent, "rejected", "Timeline item is not present in this revision")
+        : this.#result(intent, "accepted", `Open ${item.title}`);
+    }
+
+    if (
+      intent.intent_type === "wb.timeline.render-mode-changed" &&
+      "instance_id" in intent &&
+      intent.instance_id === JOURNAL_INSTANCE_IDS.timeline &&
+      isRecord(intent.payload) &&
+      (intent.payload.render_mode === "timeline" || intent.payload.render_mode === "list")
+    ) {
+      const renderMode = intent.payload.render_mode;
+      const revision = this.#commit("timeline-mode", (model) => ({
+        ...model,
+        widgetInputs: {
+          ...model.widgetInputs,
+          [JOURNAL_WIDGET_INSTANCE_IDS.timeline]: {
+            ...model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.timeline],
+            renderMode,
+          },
+        },
+      }));
+      return this.#result(intent, "accepted", `Timeline mode changed to ${renderMode}`, revision);
+    }
+
+    if (
+      intent.intent_type === "wb.timeline.replan-requested" &&
+      "instance_id" in intent &&
+      intent.instance_id === JOURNAL_INSTANCE_IDS.timeline &&
+      isRecord(intent.payload) &&
+      intent.payload.day_id === this.#current.model.day.dayId &&
+      typeof intent.payload.preserve_before === "string"
+    ) {
+      const revision = this.#commit("timeline-replan", (model) => ({
+        ...model,
+        widgetInputs: {
+          ...model.widgetInputs,
+          [JOURNAL_WIDGET_INSTANCE_IDS.timeline]: {
+            ...model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.timeline],
+            items: JULY11_REVISED_TIMELINE_ITEMS,
+          },
+        },
+      }));
+      return this.#result(
+        intent,
+        "accepted",
+        `Replanned only editable items after ${intent.payload.preserve_before}`,
+        revision,
+      );
+    }
+
+    if (
+      intent.intent_type === "wb.notes.edit-requested" &&
+      "instance_id" in intent &&
+      intent.instance_id === JOURNAL_INSTANCE_IDS.runningNotes &&
+      isRecord(intent.payload) &&
+      typeof intent.payload.item_id === "string" &&
+      typeof intent.payload.expected_version === "number" &&
+      typeof intent.payload.markdown === "string"
+    ) {
+      const itemId = intent.payload.item_id;
+      const expectedVersion = intent.payload.expected_version;
+      const markdown = intent.payload.markdown;
+      const items = this.#current.model.widgetInputs[
+        JOURNAL_WIDGET_INSTANCE_IDS.runningNotes
+      ].items;
+      const existing = items.find((item) => item.itemId === itemId);
+      if (existing === undefined) {
+        return this.#result(intent, "rejected", "Running note is not present");
+      }
+      if (existing.version !== expectedVersion) {
+        return this.#result(intent, "conflict", "Running note version changed");
+      }
+      const revision = this.#commit("notes-edit", (model) => ({
+        ...model,
+        widgetInputs: {
+          ...model.widgetInputs,
+          [JOURNAL_WIDGET_INSTANCE_IDS.runningNotes]: {
+            ...model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.runningNotes],
+            items: model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.runningNotes].items.map(
+              (item) =>
+                item.itemId === itemId
+                  ? {
+                      ...item,
+                      markdown,
+                      updatedAt: model.day.now,
+                      version: item.version + 1,
+                    }
+                  : item,
+            ),
+          },
+        },
+      }));
+      return this.#result(intent, "accepted", "Running note updated", revision);
+    }
+
+    if (
+      intent.intent_type === "wb.notes.open-thread-requested" &&
+      "instance_id" in intent &&
+      intent.instance_id === JOURNAL_INSTANCE_IDS.runningNotes &&
+      isRecord(intent.payload) &&
+      typeof intent.payload.item_id === "string" &&
+      typeof intent.payload.thread_id === "string"
+    ) {
+      const itemId = intent.payload.item_id;
+      const threadId = intent.payload.thread_id;
+      const item = this.#current.model.widgetInputs[
+        JOURNAL_WIDGET_INSTANCE_IDS.runningNotes
+      ].items.find((candidate) => candidate.itemId === itemId);
+      return item === undefined
+        ? this.#result(intent, "rejected", "Running note is not present")
+        : this.#result(intent, "accepted", `Open thread ${threadId}`);
     }
 
     return this.#result(
@@ -301,32 +466,21 @@ export class InMemoryJournalProvider implements ViewProvider {
     if (!Number.isFinite(Date.parse(now))) {
       throw new Error(`Invalid Journal clock value: ${now}`);
     }
-    this.#clockRevision += 1;
-    const revision = `${this.#current.model.revision}:clock:${this.#clockRevision}`;
-    const day = { ...this.#current.model.day, now };
-    const capture = this.#current.model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.capture];
-    const timeline = this.#current.model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.timeline];
-    const runningNotes =
-      this.#current.model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.runningNotes];
-
-    const model: JournalViewModel = {
-      ...this.#current.model,
-      revision,
-      day,
-      quality: { ...this.#current.model.quality, observedAt: now },
-      widgetInputs: {
-        [JOURNAL_WIDGET_INSTANCE_IDS.capture]: { ...capture, revision },
-        [JOURNAL_WIDGET_INSTANCE_IDS.timeline]: { ...timeline, revision, day },
-        [JOURNAL_WIDGET_INSTANCE_IDS.runningNotes]: { ...runningNotes, revision },
-      },
-    };
-    this.#current = {
-      ...this.#current,
-      fixtureId: `${this.#current.fixtureId}:clock:${this.#clockRevision}`,
-      observedAt: now,
-      model,
-    };
-    return revision;
+    return this.#commit("clock", (model) => {
+      const day = { ...model.day, now };
+      return {
+        ...model,
+        day,
+        quality: { ...model.quality, observedAt: now },
+        widgetInputs: {
+          ...model.widgetInputs,
+          [JOURNAL_WIDGET_INSTANCE_IDS.timeline]: {
+            ...model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.timeline],
+            day,
+          },
+        },
+      };
+    });
   }
 
   get revision(): string {
@@ -338,6 +492,34 @@ export class InMemoryJournalProvider implements ViewProvider {
       this.#intentResults.set(intent.client_mutation_id, result);
     }
     return result;
+  }
+
+  #commit(
+    label: string,
+    update: (model: JournalViewModel) => JournalViewModel,
+  ): string {
+    this.#revisionSequence += 1;
+    const candidate = update(this.#current.model);
+    const revision = `${this.#current.model.revision}:${label}:${this.#revisionSequence}`;
+    const capture = candidate.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.capture];
+    const timeline = candidate.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.timeline];
+    const runningNotes = candidate.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.runningNotes];
+    const model: JournalViewModel = {
+      ...candidate,
+      revision,
+      widgetInputs: {
+        [JOURNAL_WIDGET_INSTANCE_IDS.capture]: { ...capture, revision },
+        [JOURNAL_WIDGET_INSTANCE_IDS.timeline]: { ...timeline, revision },
+        [JOURNAL_WIDGET_INSTANCE_IDS.runningNotes]: { ...runningNotes, revision },
+      },
+    };
+    this.#current = {
+      ...this.#current,
+      fixtureId: `${this.#current.fixtureId}:${label}:${this.#revisionSequence}`,
+      observedAt: model.day.now,
+      model,
+    };
+    return revision;
   }
 
   #result(

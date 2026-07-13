@@ -228,7 +228,7 @@ const INITIAL_RUNNING_NOTES = [
 ] as const satisfies readonly JournalRunningNoteItem[];
 
 export const JULY11_SMART_CAPTURE_INTENT = {
-  intent_type: "wb.journal.capture.submit",
+  intent_type: "wb.capture.submit",
   schema_version: 1,
   intent_id: "intent:july11:meeting-ran-long",
   view_id: JOURNAL_VIEW_ID,
@@ -244,7 +244,7 @@ export const JULY11_SMART_CAPTURE_INTENT = {
 } as const satisfies JournalCaptureSubmitIntent;
 
 export const JULY11_DUMB_CAPTURE_INTENT = {
-  intent_type: "wb.journal.capture.submit",
+  intent_type: "wb.capture.submit",
   schema_version: 1,
   intent_id: "intent:july11:coffee-refill",
   view_id: JOURNAL_VIEW_ID,
@@ -353,6 +353,7 @@ function makeModel({
     instanceId: JOURNAL_WIDGET_INSTANCE_IDS.timeline,
     revision,
     day: JULY11_DAY,
+    access: { mode: "read_write" },
     renderMode: "timeline",
     density: "comfortable",
     items: timelineItems,

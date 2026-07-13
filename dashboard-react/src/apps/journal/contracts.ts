@@ -116,6 +116,7 @@ export interface JournalTimelineInput {
   readonly instanceId: typeof JOURNAL_WIDGET_INSTANCE_IDS.timeline;
   readonly revision: JournalRevision;
   readonly day: JournalDayBinding;
+  readonly access: JournalAccess;
   readonly renderMode: TimelineRenderMode;
   readonly density: TimelineDensity;
   readonly items: readonly JournalTimelineItem[];
@@ -191,6 +192,7 @@ export interface JournalRunningNoteItem {
   readonly processing: RunningNoteProcessing;
   readonly resolutionState: RunningNoteResolutionState;
   readonly groupId?: string;
+  readonly threadId?: string;
   readonly version: number;
 }
 
@@ -232,7 +234,7 @@ interface JournalIntentEnvelope<IntentType extends string, InstanceId extends Jo
 
 export interface JournalCaptureSubmitIntent
   extends JournalIntentEnvelope<
-    "wb.journal.capture.submit",
+    "wb.capture.submit",
     typeof JOURNAL_WIDGET_INSTANCE_IDS.capture
   > {
   readonly client_mutation_id: string;
@@ -247,7 +249,7 @@ export interface JournalCaptureSubmitIntent
 
 export interface JournalTimelineOpenItemIntent
   extends JournalIntentEnvelope<
-    "wb.journal.timeline.open-item",
+    "wb.timeline.open-item",
     typeof JOURNAL_WIDGET_INSTANCE_IDS.timeline
   > {
   readonly payload: { readonly item_id: string };
@@ -255,7 +257,7 @@ export interface JournalTimelineOpenItemIntent
 
 export interface JournalTimelineRequestReplanIntent
   extends JournalIntentEnvelope<
-    "wb.journal.timeline.replan-requested",
+    "wb.timeline.replan-requested",
     typeof JOURNAL_WIDGET_INSTANCE_IDS.timeline
   > {
   readonly payload: { readonly day_id: string; readonly preserve_before: IsoDateTime };
@@ -263,7 +265,7 @@ export interface JournalTimelineRequestReplanIntent
 
 export interface JournalTimelineSetRenderModeIntent
   extends JournalIntentEnvelope<
-    "wb.journal.timeline.render-mode-changed",
+    "wb.timeline.render-mode-changed",
     typeof JOURNAL_WIDGET_INSTANCE_IDS.timeline
   > {
   readonly payload: { readonly render_mode: TimelineRenderMode };
@@ -271,7 +273,7 @@ export interface JournalTimelineSetRenderModeIntent
 
 export interface JournalRunningNoteEditIntent
   extends JournalIntentEnvelope<
-    "wb.journal.running-notes.edit-requested",
+    "wb.notes.edit-requested",
     typeof JOURNAL_WIDGET_INSTANCE_IDS.runningNotes
   > {
   readonly payload: {
@@ -283,7 +285,7 @@ export interface JournalRunningNoteEditIntent
 
 export interface JournalRunningNoteOpenThreadIntent
   extends JournalIntentEnvelope<
-    "wb.journal.running-notes.open-thread-requested",
+    "wb.notes.open-thread-requested",
     typeof JOURNAL_WIDGET_INSTANCE_IDS.runningNotes
   > {
   readonly payload: { readonly item_id: string; readonly thread_id: string };
