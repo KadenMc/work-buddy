@@ -70,7 +70,7 @@ export interface WidgetHostProps<Input = unknown> {
   readonly height: number;
   readonly sizeMode: WidgetSizeMode;
   readonly editing: boolean;
-  emit(intent: WidgetIntent): void;
+  emit(intent: WidgetIntent): Promise<import("../contributions/contracts").IntentResult>;
   readonly presence?: DefaultWidgetSlot["presence"];
   readonly lockedReason?: string;
   readonly onRetry?: () => void;

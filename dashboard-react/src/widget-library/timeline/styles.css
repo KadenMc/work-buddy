@@ -38,6 +38,16 @@
     font-size: var(--wb-font-size-sm);
   }
 
+  .wb-day-timeline > .wb-calendar-surface {
+    min-height: 18rem;
+    flex: 1 1 auto;
+  }
+
+  .wb-widget-frame__content:has(> .wb-day-timeline > .wb-calendar-surface) {
+    overflow: hidden;
+    scrollbar-gutter: auto;
+  }
+
   .wb-temporal-canvas {
     position: relative;
     display: grid;

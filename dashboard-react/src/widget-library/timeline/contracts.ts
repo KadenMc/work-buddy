@@ -59,6 +59,16 @@ export interface TimelineRenderModeChangedIntent
   readonly intent_type: "wb.timeline.render-mode-changed";
 }
 
+export interface TimelineItemActionRequestedIntent
+  extends WidgetIntent<{
+    readonly item_id: string;
+    readonly action_id: string;
+    readonly expected_revision: string;
+  }> {
+  readonly intent_type: "wb.timeline.item-action-requested";
+  readonly client_mutation_id: string;
+}
+
 export interface TimelineReplanRequestedIntent
   extends WidgetIntent<{
     readonly day_id: string;
@@ -69,5 +79,6 @@ export interface TimelineReplanRequestedIntent
 
 export type DayTimelineIntent =
   | TimelineOpenItemIntent
+  | TimelineItemActionRequestedIntent
   | TimelineRenderModeChangedIntent
   | TimelineReplanRequestedIntent;

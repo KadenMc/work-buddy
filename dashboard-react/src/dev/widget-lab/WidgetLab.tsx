@@ -1,7 +1,10 @@
 import { useCallback, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
-import type { WidgetIntent } from "../../dashboard/contributions/contracts";
+import type {
+  IntentResult,
+  WidgetIntent,
+} from "../../dashboard/contributions/contracts";
 import { WidgetHost } from "../../dashboard/widgets/WidgetHost";
 import type { ThemeSchemePreference } from "../../theme/contracts";
 import { useTheme } from "../../theme/ThemeProvider";
@@ -31,7 +34,7 @@ function LabWidgetCase({
   onIntent,
 }: {
   readonly labCase: WidgetLabCase;
-  readonly onIntent: (intent: WidgetIntent) => void;
+  readonly onIntent: (intent: WidgetIntent) => Promise<IntentResult>;
 }) {
   const dimensions = WIDGET_LAB_DIMENSIONS[labCase.sizeMode];
   return (
@@ -117,7 +120,10 @@ export default function WidgetLab() {
   const traceCount = parseSyntheticCount(searchParams.get("count"));
   const [lastIntent, setLastIntent] = useState("No intent emitted");
   const recordIntent = useCallback(
-    (intent: WidgetIntent) => setLastIntent(intent.intent_type),
+    async (intent: WidgetIntent): Promise<IntentResult> => {
+      setLastIntent(intent.intent_type);
+      return { intent_id: intent.intent_id, status: "accepted" };
+    },
     [],
   );
 

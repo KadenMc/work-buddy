@@ -129,7 +129,7 @@ describe("DayTimelineWidget", () => {
     });
   });
 
-  it("allocates nearby short items to separate visual lanes", () => {
+  it("promotes point records into the FullCalendar surface without span styling", () => {
     const nearbyPoint: DayTimelineItem = {
       ...pointItem,
       itemId: "record-nearby",
@@ -144,13 +144,16 @@ describe("DayTimelineWidget", () => {
       />,
     );
 
-    const first = screen.getByText("Captured decision").closest("button");
-    const second = screen.getByText("Nearby captured decision").closest("button");
-    expect(first).not.toBeNull();
-    expect(second).not.toBeNull();
-    if (first === null || second === null) throw new Error("Timeline buttons were not rendered");
-    expect(first.style.getPropertyValue("--wb-timeline-left")).toBe("0%");
-    expect(second.style.getPropertyValue("--wb-timeline-left")).toBe("50%");
+    expect(
+      screen.getByRole("region", { name: "Calendar surface for 2026-07-11" }),
+    ).toHaveAttribute("data-wb-calendar-view", "calendar:day");
+    const first = document.querySelector('[data-wb-calendar-item-id="record-1"]');
+    const second = document.querySelector(
+      '[data-wb-calendar-item-id="record-nearby"]',
+    );
+    expect(first).toHaveClass("wb-calendar-event--point");
+    expect(second).toHaveClass("wb-calendar-event--point");
+    expect(first).toHaveAttribute("aria-haspopup", "dialog");
   });
 
   it("keeps a heavy collection available in semantic document order", () => {

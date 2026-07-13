@@ -1,0 +1,108 @@
+@layer wb.components {
+  .wb-calendar-inspector {
+    width: min(24rem, calc(100vw - 2rem));
+    max-height: min(36rem, calc(100vh - 2rem));
+    padding: 0;
+  }
+
+  .wb-calendar-inspector__dialog { outline: none; }
+
+  .wb-calendar-inspector__header {
+    display: flex;
+    align-items: start;
+    justify-content: space-between;
+    gap: var(--wb-space-5);
+    padding: var(--wb-space-6);
+    border-bottom: var(--wb-border-width) solid var(--wb-color-border-subtle);
+  }
+
+  .wb-calendar-inspector__header h2 {
+    margin-top: var(--wb-space-2);
+    color: var(--wb-color-text-strong);
+    font-size: var(--wb-font-size-lg);
+    line-height: var(--wb-line-height-tight);
+  }
+
+  .wb-calendar-inspector__kind {
+    color: var(--wb-color-accent);
+    font-size: var(--wb-font-size-2xs);
+    font-weight: var(--wb-font-weight-bold);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .wb-calendar-inspector__facts {
+    display: grid;
+    gap: var(--wb-space-3);
+    padding: var(--wb-space-5) var(--wb-space-6);
+  }
+
+  .wb-calendar-inspector__facts div {
+    display: grid;
+    grid-template-columns: 4rem minmax(0, 1fr);
+    gap: var(--wb-space-4);
+  }
+
+  .wb-calendar-inspector__facts dt {
+    color: var(--wb-color-text-muted);
+    font-size: var(--wb-font-size-xs);
+  }
+
+  .wb-calendar-inspector__facts dd {
+    color: var(--wb-color-text-primary);
+    font-size: var(--wb-font-size-sm);
+  }
+
+  .wb-calendar-inspector__detail {
+    margin: 0 var(--wb-space-6) var(--wb-space-5);
+    padding: var(--wb-space-4);
+    border-radius: var(--wb-radius-control);
+    background: var(--wb-color-surface-inset);
+    color: var(--wb-color-text-secondary);
+    font-size: var(--wb-font-size-xs);
+    line-height: var(--wb-line-height-body);
+  }
+
+  .wb-calendar-inspector__groups {
+    display: grid;
+    gap: var(--wb-space-3);
+    padding: 0 var(--wb-space-6) var(--wb-space-5);
+  }
+
+  .wb-calendar-inspector__groups section {
+    display: grid;
+    gap: var(--wb-space-2);
+  }
+
+  .wb-calendar-inspector__groups section + section {
+    padding-top: var(--wb-space-3);
+    border-top: var(--wb-border-width) solid var(--wb-color-border-subtle);
+  }
+
+  .wb-calendar-inspector__groups .wb-button {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .wb-calendar-inspector__groups .wb-button > span {
+    display: grid;
+    width: var(--wb-icon-size-md);
+    height: var(--wb-icon-size-md);
+    place-items: center;
+  }
+
+  .wb-calendar-inspector__groups .wb-button svg {
+    width: 100%;
+    height: 100%;
+  }
+
+  .wb-calendar-inspector__note {
+    margin: 0 var(--wb-space-6) var(--wb-space-6);
+    padding: var(--wb-space-4);
+    border-radius: var(--wb-radius-control);
+    background: var(--wb-color-status-info-surface);
+    color: var(--wb-color-text-secondary);
+    font-size: var(--wb-font-size-xs);
+    line-height: var(--wb-line-height-body);
+  }
+}

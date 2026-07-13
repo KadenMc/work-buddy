@@ -16,6 +16,7 @@ import {
 } from "../bindings";
 import {
   JOURNAL_WIDGET_INSTANCE_IDS,
+  type JournalCaptureSubmitIntent,
   type JournalTimelineItem,
 } from "../contracts";
 import {
@@ -228,6 +229,59 @@ describe("InMemoryJournalProvider", () => {
       beforeNotes,
     );
     expect(provider.advanceDemoProcessing()).toBe(false);
+  });
+
+  it("turns arbitrary Log text into an exact point record and deduplicates retries", async () => {
+    const provider = new InMemoryJournalProvider();
+    const intent = {
+      intent_type: "wb.capture.submit",
+      schema_version: 1,
+      intent_id: "intent:arbitrary-log",
+      view_id: "wb.journal.main",
+      instance_id: JOURNAL_WIDGET_INSTANCE_IDS.capture,
+      client_mutation_id: "capture:arbitrary-log",
+      payload: {
+        day_id: "journal-day:2026-07-11:America/New_York:05:00",
+        target_id: "log",
+        mode: "dumb",
+        exact_text: "Shipped the Journal calendar integration",
+      },
+    } as const satisfies JournalCaptureSubmitIntent;
+
+    const result = await provider.dispatch(toDashboardJournalIntent(intent));
+    const duplicate = await provider.dispatch(toDashboardJournalIntent(intent));
+    const snapshot = await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, {
+      reason: "refresh",
+    });
+    const timeline = snapshot.model.widgetInputs[
+      JOURNAL_WIDGET_INSTANCE_IDS.timeline
+    ].items;
+    const records = timeline.filter(
+      (item) => item.itemId === "timeline:capture:arbitrary-log",
+    );
+    const submissions = snapshot.model.widgetInputs[
+      JOURNAL_WIDGET_INSTANCE_IDS.capture
+    ].recentSubmissions;
+    const capture = submissions[submissions.length - 1];
+
+    expect(result).toMatchObject({
+      status: "accepted",
+      message: "Exact text persisted as a point record",
+    });
+    expect(duplicate).toEqual(result);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      kind: "record",
+      shape: "point",
+      at: snapshot.model.day.now,
+      title: intent.payload.exact_text,
+    });
+    expect(capture).toMatchObject({
+      clientMutationId: intent.client_mutation_id,
+      exactText: intent.payload.exact_text,
+      persistenceStatus: "persisted",
+      processingStatus: "not_requested",
+    });
   });
 
   it("rejects mutations while preserving a readable read-only snapshot", async () => {

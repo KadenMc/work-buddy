@@ -496,11 +496,19 @@ export function ViewHost({
         height={instance.layout.h * 32}
         sizeMode={isMobile ? "compact" : sizeModeFor(instance, defaultWidth)}
         editing={customizing}
-        emit={(intent: WidgetIntent) => {
-          void session.dispatch(intent).catch((error: unknown) => {
+        emit={(intent: WidgetIntent) =>
+          session.dispatch(intent).catch((error: unknown) => {
             announce(`Widget action failed: ${String(error)}`, "assertive");
-          });
-        }}
+            return {
+              intent_id: intent.intent_id,
+              ...(intent.client_mutation_id === undefined
+                ? {}
+                : { client_mutation_id: intent.client_mutation_id }),
+              status: "unavailable" as const,
+              message: error instanceof Error ? error.message : String(error),
+            };
+          })
+        }
         presence={instance.presence === "personal" ? undefined : instance.presence}
         lockedReason={slot?.lockedReason}
         onRetry={() => void session.reload("refresh")}

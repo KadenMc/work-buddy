@@ -1,0 +1,432 @@
+/*
+ * The only visual/structural seam between Work Buddy and FullCalendar.
+ * Keep this file unlayered: FullCalendar 6 injects unlayered runtime CSS, so a
+ * layered bridge would lose the cascade even when its selectors are specific.
+ */
+.wb-calendar-surface {
+  --fc-small-font-size: var(--wb-font-size-xs);
+  --fc-page-bg-color: var(--wb-color-surface-inset);
+  --fc-neutral-bg-color: color-mix(in srgb, var(--wb-color-surface-inset) 82%, var(--wb-color-surface-raised));
+  --fc-neutral-text-color: var(--wb-color-text-muted);
+  --fc-border-color: color-mix(in srgb, var(--wb-color-border-default) 72%, transparent);
+  --fc-button-text-color: var(--wb-color-text-primary);
+  --fc-button-bg-color: var(--wb-color-action-secondary);
+  --fc-button-border-color: var(--wb-color-border-default);
+  --fc-button-hover-bg-color: var(--wb-color-action-secondary-hover);
+  --fc-button-hover-border-color: var(--wb-color-border-interactive);
+  --fc-button-active-bg-color: var(--wb-color-action-secondary-pressed);
+  --fc-button-active-border-color: var(--wb-color-border-strong);
+  --fc-event-bg-color: color-mix(in srgb, var(--wb-color-action-primary) 6%, var(--wb-color-surface-raised));
+  --fc-event-border-color: var(--wb-color-border-default);
+  --fc-event-text-color: var(--wb-color-text-primary);
+  --fc-event-selected-overlay-color: color-mix(in srgb, var(--wb-color-selection) 32%, transparent);
+  --fc-more-link-bg-color: color-mix(in srgb, var(--wb-color-selection) 22%, var(--wb-color-surface-raised));
+  --fc-more-link-text-color: var(--wb-color-text-primary);
+  --fc-list-event-hover-bg-color: var(--wb-color-action-secondary-hover);
+  --fc-non-business-color: color-mix(in srgb, var(--wb-color-border-default) 8%, transparent);
+  --fc-bg-event-color: var(--wb-color-status-info);
+  --fc-bg-event-opacity: 0.12;
+  --fc-highlight-color: color-mix(in srgb, var(--wb-color-selection) 46%, transparent);
+  --fc-today-bg-color: color-mix(in srgb, var(--wb-color-action-primary) 8%, transparent);
+  --fc-now-indicator-color: var(--wb-color-action-primary);
+  --fc-event-resizer-thickness: var(--wb-space-4);
+  --fc-event-resizer-dot-total-width: var(--wb-space-5);
+  --fc-event-resizer-dot-border-width: var(--wb-border-width);
+  --fc-daygrid-event-dot-width: var(--wb-space-4);
+  --fc-list-event-dot-width: var(--wb-space-5);
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  flex: 1 1 auto;
+  isolation: isolate;
+  overflow: hidden;
+  border: var(--wb-border-width) solid var(--wb-color-border-subtle);
+  border-radius: var(--wb-radius-surface);
+  background: var(--wb-color-surface-inset);
+}
+
+.wb-calendar-surface > .fc {
+  height: 100%;
+  min-height: 0;
+  color: var(--wb-color-text-primary);
+  font-family: var(--wb-font-sans);
+}
+
+.wb-calendar-surface .fc-theme-standard .fc-scrollgrid {
+  border: 0;
+}
+
+.wb-calendar-surface .fc-theme-standard td,
+.wb-calendar-surface .fc-theme-standard th {
+  border-color: var(--fc-border-color);
+}
+
+.wb-calendar-surface .fc .fc-col-header-cell-cushion,
+.wb-calendar-surface .fc .fc-daygrid-day-number,
+.wb-calendar-surface .fc .fc-list-day-text,
+.wb-calendar-surface .fc .fc-list-day-side-text {
+  color: var(--wb-color-text-secondary);
+  text-decoration: none;
+}
+
+.wb-calendar-surface .fc .fc-timegrid-slot {
+  height: 1.75rem;
+  border-top-style: solid;
+}
+
+.wb-calendar-surface--compact .fc .fc-timegrid-slot {
+  height: 1.5rem;
+}
+
+.wb-calendar-surface .fc .fc-timegrid-slot-minor {
+  border-top-color: color-mix(in srgb, var(--wb-color-border-default) 28%, transparent);
+}
+
+.wb-calendar-surface .fc .fc-timegrid-slot-label-cushion {
+  padding-inline: var(--wb-space-5);
+  color: var(--wb-color-text-muted);
+  font-family: var(--wb-font-mono);
+  font-size: var(--wb-font-size-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.wb-calendar-surface .fc .fc-timegrid-now-indicator-line {
+  border-width: 2px 0 0;
+}
+
+.wb-calendar-surface .fc-direction-ltr .fc-timegrid-now-indicator-arrow {
+  border-width: 5px 0 5px 7px;
+}
+
+.wb-calendar-surface .fc .fc-timegrid-col-events {
+  margin-inline: var(--wb-space-2);
+}
+
+.wb-calendar-surface .fc .fc-daygrid-day-frame {
+  min-height: 5.5rem;
+}
+
+.wb-calendar-surface .fc .fc-daygrid-day:hover {
+  background: var(--wb-color-action-secondary-hover);
+}
+
+.wb-calendar-surface .fc .fc-popover {
+  border: var(--wb-border-width) solid var(--wb-color-border-default);
+  border-radius: var(--wb-radius-surface);
+  background: var(--wb-color-surface-overlay);
+  box-shadow: var(--wb-shadow-overlay);
+}
+
+.wb-calendar-surface .fc .fc-popover-header {
+  background: var(--wb-color-surface-raised);
+  color: var(--wb-color-text-strong);
+}
+
+.wb-calendar-surface .fc .wb-calendar-event {
+  --wb-calendar-event-tone: var(--wb-color-data-1);
+  overflow: hidden;
+  border: var(--wb-border-width) solid var(--wb-color-border-default);
+  border-left: 3px solid var(--wb-calendar-event-tone);
+  border-radius: var(--wb-radius-control);
+  background: color-mix(in srgb, var(--wb-color-surface-raised) 94%, var(--wb-calendar-event-tone));
+  color: var(--wb-color-text-primary);
+  box-shadow: var(--wb-shadow-raised);
+  cursor: pointer;
+  transition:
+    border-color var(--wb-motion-duration-fast) var(--wb-motion-easing-standard),
+    background var(--wb-motion-duration-fast) var(--wb-motion-easing-standard),
+    transform var(--wb-motion-duration-fast) var(--wb-motion-easing-standard);
+}
+
+.wb-calendar-surface .fc .fc-timegrid-event.wb-calendar-event {
+  container-name: wb-calendar-item;
+  container-type: size;
+}
+
+.wb-calendar-surface .fc .wb-calendar-event--tone-data-2 { --wb-calendar-event-tone: var(--wb-color-data-2); }
+.wb-calendar-surface .fc .wb-calendar-event--tone-data-3 { --wb-calendar-event-tone: var(--wb-color-data-3); }
+.wb-calendar-surface .fc .wb-calendar-event--tone-data-4 { --wb-calendar-event-tone: var(--wb-color-data-4); }
+.wb-calendar-surface .fc .wb-calendar-event--tone-data-5 { --wb-calendar-event-tone: var(--wb-color-data-5); }
+.wb-calendar-surface .fc .wb-calendar-event--tone-data-6 { --wb-calendar-event-tone: var(--wb-color-data-6); }
+.wb-calendar-surface .fc .wb-calendar-event--tone-data-7 { --wb-calendar-event-tone: var(--wb-color-data-7); }
+.wb-calendar-surface .fc .wb-calendar-event--tone-data-8 { --wb-calendar-event-tone: var(--wb-color-data-8); }
+
+.wb-calendar-surface .fc .wb-calendar-event:hover {
+  z-index: 2;
+  border-color: var(--wb-color-border-interactive);
+  background: var(--wb-color-surface-raised);
+  transform: translateX(1px);
+}
+
+.wb-calendar-surface .fc .wb-calendar-event:focus {
+  box-shadow: var(--wb-shadow-raised);
+}
+
+.wb-calendar-surface .fc .wb-calendar-event:focus::after {
+  display: none;
+}
+
+.wb-calendar-surface .fc .wb-calendar-event:focus-visible {
+  z-index: 4;
+  outline: var(--wb-focus-width) solid var(--wb-color-focus-ring);
+  outline-offset: 1px;
+  box-shadow: var(--wb-shadow-focus);
+}
+
+.wb-calendar-surface .fc .wb-calendar-event.fc-event-selected,
+.wb-calendar-surface .fc .wb-calendar-event.fc-event-dragging,
+.wb-calendar-surface .fc .wb-calendar-event.fc-event-resizing {
+  z-index: 5;
+  border-color: var(--wb-color-border-interactive);
+  box-shadow: var(--wb-shadow-focus), var(--wb-shadow-raised);
+}
+
+.wb-calendar-surface .fc .wb-calendar-event--editable {
+  cursor: grab;
+}
+
+.wb-calendar-surface .fc .wb-calendar-event--editable:active {
+  cursor: grabbing;
+}
+
+.wb-calendar-surface .fc .wb-calendar-event--fixed {
+  background: color-mix(in srgb, var(--wb-color-surface-raised) 90%, var(--wb-color-surface-inset));
+}
+
+.wb-calendar-surface .fc .wb-calendar-event--point {
+  border-left-style: dotted;
+}
+
+/*
+ * A point receives render-only geometry from FullCalendar so it remains clickable,
+ * but it must not look like a duration block. The dot/guide marks the exact instant;
+ * the raised label is annotation attached to that instant, not a fabricated window.
+ */
+.wb-calendar-surface .fc .fc-timegrid-event.wb-calendar-event--point {
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.wb-calendar-surface .fc .fc-timegrid-event.wb-calendar-event--point::before {
+  position: absolute;
+  z-index: 2;
+  top: -0.25rem;
+  left: -0.25rem;
+  width: 0.625rem;
+  height: 0.625rem;
+  border: 2px solid var(--wb-color-surface-inset);
+  border-radius: 50%;
+  background: var(--wb-calendar-event-tone);
+  box-shadow: 0 0 0 1px var(--wb-calendar-event-tone);
+  content: "";
+  pointer-events: none;
+}
+
+.wb-calendar-surface .fc .fc-timegrid-event.wb-calendar-event--point::after {
+  position: absolute;
+  z-index: 0;
+  top: 0;
+  right: 0;
+  left: 0;
+  border-top: 2px dotted var(--wb-calendar-event-tone);
+  content: "";
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.wb-calendar-surface .fc .fc-timegrid-event.wb-calendar-event--point .fc-event-main {
+  position: relative;
+  z-index: 1;
+  height: auto;
+  min-height: 2rem;
+  margin: 0 0 0 0.5rem;
+  border: var(--wb-border-width) solid var(--wb-color-border-default);
+  border-left: 3px dotted var(--wb-calendar-event-tone);
+  border-radius: var(--wb-radius-control);
+  background: color-mix(in srgb, var(--wb-color-surface-raised) 94%, var(--wb-calendar-event-tone));
+  box-shadow: var(--wb-shadow-raised);
+}
+
+.wb-calendar-surface .fc .wb-calendar-event--quiet {
+  opacity: 0.78;
+}
+
+.wb-calendar-surface .fc .wb-calendar-event--strong {
+  border-left-width: 5px;
+}
+
+.wb-calendar-surface .fc .wb-calendar-event .fc-event-main {
+  height: 100%;
+  padding: 0;
+  color: inherit;
+}
+
+.wb-calendar-surface .wb-calendar-event__content {
+  display: grid;
+  min-width: 0;
+  height: 100%;
+  grid-template-columns: 1rem minmax(0, 1fr);
+  gap: var(--wb-space-3);
+  overflow: hidden;
+  padding: var(--wb-space-3) var(--wb-space-4);
+}
+
+.wb-calendar-surface .wb-calendar-event__icon {
+  display: grid;
+  width: 1rem;
+  height: 1rem;
+  place-items: center;
+  color: var(--wb-calendar-event-tone);
+}
+
+.wb-calendar-surface .wb-calendar-event__icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.wb-calendar-surface .wb-calendar-event__copy,
+.wb-calendar-surface .wb-calendar-event__micro,
+.wb-calendar-surface .wb-calendar-event__full,
+.wb-calendar-surface .wb-calendar-event__eyebrow,
+.wb-calendar-surface .wb-calendar-event__title,
+.wb-calendar-surface .wb-calendar-event__detail {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-calendar-surface .wb-calendar-event__micro {
+  display: none;
+  height: 100%;
+  align-items: center;
+  gap: var(--wb-space-3);
+}
+
+.wb-calendar-surface .wb-calendar-event__micro-time {
+  flex: 0 0 auto;
+  color: var(--wb-color-text-muted);
+  font-family: var(--wb-font-mono);
+  font-size: var(--wb-font-size-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.wb-calendar-surface .wb-calendar-event__micro strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--wb-color-text-strong);
+  font-size: var(--wb-font-size-xs);
+  font-weight: var(--wb-font-weight-semibold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-calendar-surface .wb-calendar-event__eyebrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--wb-space-3);
+  color: var(--wb-color-text-muted);
+  font-family: var(--wb-font-mono);
+  font-size: var(--wb-font-size-2xs);
+  font-variant-numeric: tabular-nums;
+  text-transform: lowercase;
+}
+
+.wb-calendar-surface .wb-calendar-event__title {
+  margin-top: var(--wb-space-1);
+  color: var(--wb-color-text-strong);
+  font-size: var(--wb-font-size-xs);
+  font-weight: var(--wb-font-weight-semibold);
+  line-height: 1.25;
+}
+
+.wb-calendar-surface .wb-calendar-event__detail {
+  margin-top: var(--wb-space-1);
+  color: var(--wb-color-text-secondary);
+  font-family: var(--wb-font-mono);
+  font-size: var(--wb-font-size-2xs);
+}
+
+.wb-calendar-surface .fc .fc-timegrid-event-short .wb-calendar-event__content {
+  grid-template-columns: 0.875rem minmax(0, 1fr);
+  gap: var(--wb-space-2);
+  padding: var(--wb-space-2) var(--wb-space-3);
+}
+
+.wb-calendar-surface .fc .fc-timegrid-event-short .wb-calendar-event__micro {
+  display: flex;
+}
+
+.wb-calendar-surface .fc .fc-timegrid-event-short .wb-calendar-event__full {
+  display: none;
+}
+
+@container wb-calendar-item (max-height: 3.75rem) {
+  .wb-calendar-event__micro {
+    display: flex;
+  }
+
+  .wb-calendar-event__full {
+    display: none;
+  }
+}
+
+@container wb-calendar-item (max-width: 15rem) {
+  .wb-calendar-event__detail,
+  .wb-calendar-event__eyebrow > :last-child {
+    display: none;
+  }
+}
+
+.wb-calendar-surface .fc .fc-more-link {
+  display: inline-flex;
+  min-height: 1.75rem;
+  align-items: center;
+  justify-content: center;
+  padding-inline: var(--wb-space-3);
+  border: var(--wb-border-width) solid var(--wb-color-border-interactive);
+  border-radius: 999px;
+  background: var(--wb-color-surface-overlay);
+  color: var(--wb-color-text-primary);
+  font-size: var(--wb-font-size-2xs);
+  font-weight: var(--wb-font-weight-semibold);
+  box-shadow: var(--wb-shadow-raised);
+}
+
+.wb-calendar-surface .fc .fc-more-link:focus-visible {
+  outline: var(--wb-focus-width) solid var(--wb-color-focus-ring);
+  outline-offset: 2px;
+}
+
+@media (forced-colors: active) {
+  .wb-calendar-surface {
+    --fc-highlight-color: transparent;
+    --fc-today-bg-color: transparent;
+    --fc-now-indicator-color: Highlight;
+  }
+
+  .wb-calendar-surface .fc .wb-calendar-event {
+    border-color: CanvasText;
+    background: Canvas;
+    color: CanvasText;
+    box-shadow: none;
+    forced-color-adjust: auto;
+  }
+
+  .wb-calendar-surface .fc .wb-calendar-event:focus-visible,
+  .wb-calendar-surface .fc .wb-calendar-event.fc-event-selected {
+    outline-color: Highlight;
+    box-shadow: none;
+  }
+
+  .wb-calendar-surface .fc .fc-timegrid-now-indicator-arrow,
+  .wb-calendar-surface .fc .fc-timegrid-now-indicator-line {
+    border-color: Highlight;
+  }
+}

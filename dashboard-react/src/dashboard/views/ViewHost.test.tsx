@@ -105,7 +105,7 @@ describe("ViewHost", () => {
       rendered.container.querySelector(".wb-day-timeline__toolbar .wb-segmented-field"),
     ).not.toBeNull();
     expect(rendered.container.querySelector(".react-grid-layout")).not.toBeNull();
-    expect(rendered.container.querySelector(".wb-temporal-canvas")).not.toBeNull();
+    expect(rendered.container.querySelector(".wb-calendar-surface")).not.toBeNull();
     expect(rendered.container.querySelector(".wb-capture--standard")).not.toBeNull();
     await waitFor(
       () =>

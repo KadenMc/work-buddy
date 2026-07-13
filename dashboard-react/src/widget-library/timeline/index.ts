@@ -5,6 +5,7 @@ export type {
   TimelineDayWindow,
   TimelineDensity,
   TimelineItemKind,
+  TimelineItemActionRequestedIntent,
   TimelineItemMutability,
   TimelineItemStatus,
   TimelineOpenItemIntent,
@@ -12,6 +13,10 @@ export type {
   TimelineRenderModeChangedIntent,
   TimelineReplanRequestedIntent,
 } from "./contracts";
+export {
+  toCalendarSurfaceItem,
+  toCalendarSurfaceModel,
+} from "./calendar-surface/fromDayTimeline";
 export {
   DAY_TIMELINE_MODULE,
   DAY_TIMELINE_MODULE_ID,

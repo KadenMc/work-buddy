@@ -47,6 +47,11 @@ import { JOURNAL_APP_CONTRIBUTION } from "../contribution";
 import { JOURNAL_VIEW_DEFINITION } from "../viewDefinition";
 import { InMemoryJournalProvider } from "./InMemoryJournalProvider";
 
+const collectIntent = (emitted: DashboardIntent[]) => async (intent: DashboardIntent) => {
+  emitted.push(intent);
+  return { intent_id: intent.intent_id, status: "accepted" as const };
+};
+
 const theme: ResolvedThemeSummary = {
   contractVersion: 1,
   preference: { scheme: "dark", skinId: "wb.default" },
@@ -121,7 +126,7 @@ describe("Journal and the real widget library", () => {
     const view = render(
       <QuickTextCaptureWidget
         input={input}
-        emit={(intent) => emitted.push(intent)}
+        emit={collectIntent(emitted)}
         presentation={presentation(JOURNAL_INSTANCE_IDS.capture)}
       />,
     );
@@ -158,7 +163,7 @@ describe("Journal and the real widget library", () => {
         input={toQuickTextCaptureInput(
           pending.model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.capture],
         )}
-        emit={(intent) => emitted.push(intent)}
+        emit={collectIntent(emitted)}
         presentation={presentation(JOURNAL_INSTANCE_IDS.capture)}
       />,
     );
@@ -182,7 +187,7 @@ describe("Journal and the real widget library", () => {
         input={toQuickTextCaptureInput(
           snapshot.model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.capture],
         )}
-        emit={(intent) => emitted.push(intent)}
+        emit={collectIntent(emitted)}
         presentation={presentation(JOURNAL_INSTANCE_IDS.capture)}
       />,
     );
@@ -215,7 +220,7 @@ describe("Journal and the real widget library", () => {
         input={toDayTimelineInput(
           before.model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.timeline],
         )}
-        emit={(intent) => emitted.push(intent)}
+        emit={collectIntent(emitted)}
         presentation={presentation(JOURNAL_INSTANCE_IDS.timeline, "expanded")}
       />,
     );
@@ -253,7 +258,7 @@ describe("Journal and the real widget library", () => {
         input={toRunningNotesInput(
           before.model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.runningNotes],
         )}
-        emit={(intent) => emitted.push(intent)}
+        emit={collectIntent(emitted)}
         presentation={presentation(JOURNAL_INSTANCE_IDS.runningNotes)}
       />,
     );
@@ -288,7 +293,7 @@ describe("Journal and the real widget library", () => {
     render(
       <DayTimelineWidget
         input={input}
-        emit={() => undefined}
+        emit={async (intent) => ({ intent_id: intent.intent_id, status: "accepted" })}
         presentation={presentation(JOURNAL_INSTANCE_IDS.timeline, "compact")}
       />,
     );

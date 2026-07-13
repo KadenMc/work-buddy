@@ -8,6 +8,9 @@ import type { DashboardRouteDefinition } from "./routes";
 const WidgetLab = import.meta.env.DEV
   ? lazy(() => import("../dev/widget-lab/WidgetLab"))
   : null;
+const CalendarSpike = import.meta.env.DEV
+  ? lazy(() => import("../dev/calendar-spike/CalendarSpike"))
+  : null;
 
 interface DashboardAppProps {
   routes: readonly DashboardRouteDefinition[];
@@ -63,6 +66,22 @@ export default function DashboardApp({ routes }: DashboardAppProps) {
                 }
               >
                 <WidgetLab />
+              </Suspense>
+            }
+          />
+        )}
+        {CalendarSpike && (
+          <Route
+            path="__calendar-spike"
+            element={
+              <Suspense
+                fallback={
+                  <main className="tab-panel" aria-busy="true">
+                    <div className="empty-state">Loading Calendar spike…</div>
+                  </main>
+                }
+              >
+                <CalendarSpike />
               </Suspense>
             }
           />
