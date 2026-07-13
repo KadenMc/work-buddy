@@ -268,6 +268,59 @@
     font-size: 11px;
   }
 
+  .wb-widget-catalog {
+    position: fixed;
+    z-index: 100;
+    inset: 24px 24px 24px auto;
+    width: min(620px, calc(100vw - 48px));
+    overflow: auto;
+    padding: 18px;
+    border: 1px solid var(--wb-color-border-strong);
+    border-radius: var(--wb-radius-surface);
+    background: var(--wb-color-surface-overlay);
+    box-shadow: var(--wb-shadow-overlay);
+  }
+
+  .wb-widget-catalog > header {
+    display: flex;
+    position: sticky;
+    z-index: 1;
+    top: -18px;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 0;
+    background: var(--wb-color-surface-overlay);
+  }
+
+  .wb-widget-catalog > section {
+    margin-top: 18px;
+  }
+
+  .wb-widget-catalog__list {
+    display: grid;
+    gap: 10px;
+    margin-top: 8px;
+    list-style: none;
+  }
+
+  .wb-widget-catalog__card {
+    padding: 12px;
+    border: 1px solid var(--wb-color-border-default);
+    border-radius: var(--wb-radius-control);
+    background: var(--wb-color-surface-raised);
+  }
+
+  .wb-widget-catalog__provenance {
+    color: var(--wb-color-text-muted);
+    font-size: 12px;
+  }
+
+  .wb-widget-catalog__actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+  }
+
   @media (max-width: 767px) {
     .wb-view-host {
       padding: 12px;

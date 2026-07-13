@@ -10,10 +10,13 @@ import { useDashboardAnnouncer } from "../accessibility/DashboardAnnouncer";
 import type {
   ViewDefinition,
   ViewSnapshot,
+  WidgetDefinition,
   WidgetInstanceId,
   WidgetIntent,
 } from "../contributions/contracts";
+import { asWidgetInstanceId } from "../contributions/contracts";
 import type { ContributionRegistry } from "../contributions/registry";
+import type { RegisteredWidget } from "../contributions/registry";
 import { ReactGridLayoutAdapter } from "../layout/ReactGridLayoutAdapter";
 import type { DashboardLayout, LayoutCommand } from "../layout/contracts";
 import type { ViewProvider } from "../providers/ViewProvider";
@@ -31,8 +34,13 @@ import type {
   ViewPersonalizationPatch,
 } from "../personalization/contracts";
 import { WidgetFrame } from "../widgets/WidgetFrame";
+import { WidgetCatalogDrawer } from "../widgets/WidgetCatalogDrawer";
 import { WidgetHost } from "../widgets/WidgetHost";
 import { WidgetState } from "../widgets/WidgetStates";
+import {
+  findCompatibleWidgetReplacements,
+  planWidgetReplacement,
+} from "../widgets/replaceWidget";
 import { useViewSession } from "./useViewSession";
 
 export interface ViewHostProps {
@@ -108,6 +116,7 @@ export function ViewHost({
     beginViewEditSession(defaults),
   );
   const [customizing, setCustomizing] = useState(false);
+  const [catalogOpen, setCatalogOpen] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -145,9 +154,19 @@ export function ViewHost({
     announce("Customize view mode started");
   };
 
+  const openCatalog = () => {
+    if (!customizing) {
+      setEditState(beginViewEditSession(resolved));
+      setCustomizing(true);
+      announce("Customize view mode started");
+    }
+    setCatalogOpen(true);
+  };
+
   const cancelCustomize = () => {
     setEditState((current) => viewEditSessionReducer(current, { type: "cancel" }));
     setCustomizing(false);
+    setCatalogOpen(false);
     announce("View changes cancelled");
   };
 
@@ -158,12 +177,83 @@ export function ViewHost({
       setStoredPatch(patch);
       setEditState(beginViewEditSession(editState.present));
       setCustomizing(false);
+      setCatalogOpen(false);
       setPersonalizationError(undefined);
       announce("View layout saved");
     } catch (error) {
       setPersonalizationError(String(error));
       announce("View layout could not be saved", "assertive");
     }
+  };
+
+  const addWidget = (widget: WidgetDefinition) => {
+    const instanceId = asWidgetInstanceId(
+      `personal:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`}`,
+    );
+    const size = widget.sizeContract.default;
+    act({
+      type: "add",
+      instance: {
+        instanceId,
+        widgetTypeId: widget.typeId,
+        widgetDefinitionVersion: widget.definitionVersion,
+        roleCompatibilityVersion: widget.providesRoles[0],
+        settings: {},
+        settingsSchemaVersion: widget.settingsSchema.version,
+        bindings: {},
+        bindingVersion: 1,
+        visibility: "shown",
+        presence: "personal",
+        layout: {
+          instanceId,
+          x: 0,
+          y: 0,
+          w: size.w,
+          h: size.h,
+          minW: widget.sizeContract.min.w,
+          minH: widget.sizeContract.min.h,
+          ...(widget.sizeContract.max === undefined
+            ? {}
+            : {
+                maxW: widget.sizeContract.max.w,
+                maxH: widget.sizeContract.max.h,
+              }),
+        },
+      },
+    });
+    announce(`${widget.displayName} added to the draft view`);
+  };
+
+  const replaceWidget = (
+    instance: EffectiveWidgetInstance,
+    target: RegisteredWidget,
+  ) => {
+    const request = (allowExplicitReset: boolean) =>
+      planWidgetReplacement({
+        registry,
+        view: definition,
+        instance,
+        targetTypeId: target.definition.typeId,
+        migrations: [],
+        targetDefaults: { settings: {}, bindings: instance.bindings },
+        allowExplicitReset,
+      });
+    let result = request(false);
+    if (
+      !result.ok &&
+      result.reason === "migration-failed" &&
+      window.confirm(
+        `${target.definition.displayName} cannot preserve all settings. Reset incompatible settings and continue?`,
+      )
+    ) {
+      result = request(true);
+    }
+    if (!result.ok) {
+      announce(result.message, "assertive");
+      return;
+    }
+    act(result.plan.action);
+    announce(`Replaced widget with ${target.definition.displayName}`);
   };
 
   const issueLayoutCommand = (
@@ -264,6 +354,7 @@ export function ViewHost({
         {session.reconciling ? <span role="status">Refreshing…</span> : null}
         {customizing ? (
           <>
+            <button type="button" onClick={() => setCatalogOpen(true)}>Widgets</button>
             <button type="button" onClick={() => act({ type: "undo" })} disabled={editState.past.length === 0}>Undo</button>
             <button type="button" onClick={() => act({ type: "redo" })} disabled={editState.future.length === 0}>Redo</button>
             <button type="button" onClick={() => act({ type: "tidy" })}>Tidy</button>
@@ -272,7 +363,10 @@ export function ViewHost({
             <button type="button" className="wb-view-toolbar__primary" onClick={() => void saveCustomize()} disabled={!editState.dirty}>Done</button>
           </>
         ) : (
-          <button type="button" onClick={beginCustomize} disabled={isMobile}>Customize view</button>
+          <>
+            <button type="button" onClick={openCatalog} disabled={isMobile}>Widgets</button>
+            <button type="button" onClick={beginCustomize} disabled={isMobile}>Customize view</button>
+          </>
         )}
       </div>
       {personalizationError ? (
@@ -300,6 +394,34 @@ export function ViewHost({
           }}
         />
       )}
+      {catalogOpen ? (
+        <WidgetCatalogDrawer
+          registry={registry}
+          view={definition}
+          instances={editState.present.instances}
+          getPublisherPresentation={(widget) => ({
+            label: widget.app.displayName,
+            appId: widget.app.appId,
+            trust: widget.app.appId.startsWith("wb.") ? "native" : "unverified",
+          })}
+          onAction={act}
+          onAddRequested={addWidget}
+          onReplaceRequested={replaceWidget}
+          onRecoverRequested={(instance) => {
+            const replacement = findCompatibleWidgetReplacements(
+              registry,
+              definition,
+              instance,
+            )[0];
+            if (replacement === undefined) {
+              announce("No compatible replacement is installed", "assertive");
+            } else {
+              replaceWidget(instance, replacement);
+            }
+          }}
+          onClose={() => setCatalogOpen(false)}
+        />
+      ) : null}
     </main>
   );
 }
