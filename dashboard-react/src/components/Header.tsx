@@ -1,6 +1,7 @@
 import { useClock } from "../hooks/useClock";
 import { useLiveStatus } from "../hooks/useLiveStatus";
 import { useSidecarStatus } from "../hooks/useSidecarStatus";
+import { ThemeSchemeControl } from "../theme/ThemeSchemeControl";
 
 type DotKind = "healthy" | "unhealthy" | "stopped";
 
@@ -26,11 +27,8 @@ function SidecarIndicator() {
   );
 }
 
-// Mirrors the legacy header's #event-bus-status rendering
-// (work_buddy/dashboard/frontend/scripts/core/event_bus.py _setStatus):
-// open EventSource on /api/events, healthy dot + "live" while connected,
-// unhealthy dot + "reconnecting" after an error (the browser reconnects
-// on its own), stopped dot while the first connection is pending.
+// Presents the root DashboardEventProvider's connection state. Header is a
+// consumer only: it never creates a second EventSource.
 function LiveIndicator() {
   const live = useLiveStatus();
   const dot: DotKind =
@@ -55,6 +53,7 @@ export default function Header() {
         <span>work-buddy</span> dashboard
       </h1>
       <div className="header-meta">
+        <ThemeSchemeControl />
         <SidecarIndicator />
         <LiveIndicator />
         <Clock />
