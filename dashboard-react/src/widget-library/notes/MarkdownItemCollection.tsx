@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
-import { Button, InlineAlert } from "../../ui";
+import { Button, InlineAlert, TextAreaField } from "../../ui";
 import { formatTime, ProvenanceBadge, StatusBadge } from "../shared";
 import type {
   MarkdownNoteItem,
@@ -139,16 +139,12 @@ export function MarkdownItemCollection({
                           before saving.
                         </InlineAlert>
                       )}
-                      <label>
-                        <span>Edit note</span>
-                        <textarea
-                          value={edit.draft}
-                          rows={density === "expanded" ? 8 : 5}
-                          onChange={(event) =>
-                            setEdit({ ...edit, draft: event.currentTarget.value })
-                          }
-                        />
-                      </label>
+                      <TextAreaField
+                        label="Edit note"
+                        value={edit.draft}
+                        rows={density === "expanded" ? 8 : 5}
+                        onChange={(draft) => setEdit({ ...edit, draft })}
+                      />
                       <div className="wb-markdown-item__actions">
                         <Button onClick={() => setEdit(null)}>Cancel</Button>
                         <Button variant="primary" disabled={conflict} onClick={save}>

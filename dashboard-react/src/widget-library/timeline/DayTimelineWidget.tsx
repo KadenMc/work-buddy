@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
+import { ArrowsClockwise } from "@phosphor-icons/react/ArrowsClockwise";
 
 import type { WidgetRendererProps } from "../../dashboard/contributions/contracts";
-import { Button, InlineAlert } from "../../ui";
+import { Button, InlineAlert, SegmentedControl } from "../../ui";
 import { createWidgetIntent } from "../shared";
 import type {
   DayTimelineInput,
@@ -51,26 +52,19 @@ export default function DayTimelineWidget({
     <div className="wb-day-timeline">
       <div className="wb-day-timeline__toolbar">
         {!compact && (
-          <div className="wb-day-timeline__mode" aria-label="Timeline display mode">
-            <Button
-              variant={renderMode === "timeline" ? "primary" : "ghost"}
-              aria-pressed={renderMode === "timeline"}
-              onClick={() => setMode("timeline")}
-            >
-              Timeline
-            </Button>
-            <Button
-              variant={renderMode === "list" ? "primary" : "ghost"}
-              aria-pressed={renderMode === "list"}
-              onClick={() => setMode("list")}
-            >
-              List
-            </Button>
-          </div>
+          <SegmentedControl
+            label="Timeline display mode"
+            value={renderMode}
+            options={[
+              { value: "timeline", label: "Timeline" },
+              { value: "list", label: "List" },
+            ]}
+            onChange={setMode}
+          />
         )}
         {presentation.sizeMode === "expanded" && (
-          <Button disabled={readOnly} onClick={requestReplan}>
-            Request replan
+          <Button size="small" disabled={readOnly} onClick={requestReplan}>
+            <ArrowsClockwise aria-hidden="true" /> Request replan
           </Button>
         )}
       </div>
@@ -87,7 +81,7 @@ export default function DayTimelineWidget({
       ) : (
         <TemporalList day={input.day} items={input.items} onOpenItem={openItem} />
       )}
-      <p className="wb-day-timeline__legend">
+      <p className="wb-visually-hidden">
         Every item includes textual kind, status, provenance, and mutability; color is
         supplementary.
       </p>

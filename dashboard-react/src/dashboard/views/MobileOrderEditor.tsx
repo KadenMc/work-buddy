@@ -1,3 +1,8 @@
+import { ArrowDown } from "@phosphor-icons/react/ArrowDown";
+import { ArrowUp } from "@phosphor-icons/react/ArrowUp";
+import { X } from "@phosphor-icons/react/X";
+
+import { Button } from "../../ui";
 import type { ContributionRegistry } from "../contributions/registry";
 import type { WidgetInstanceId } from "../contributions/contracts";
 import type { EffectiveWidgetInstance } from "../personalization/contracts";
@@ -45,7 +50,9 @@ export function MobileOrderEditor({
           <h2 id="wb-mobile-order-title">Mobile order</h2>
           <p>Set the one-column reading, focus, and screen-reader order used on mobile.</p>
         </div>
-        <button type="button" onClick={onClose}>Close</button>
+        <Button size="small" variant="ghost" onClick={onClose}>
+          <X aria-hidden="true" /> Close
+        </Button>
       </header>
       <ol>
         {normalized.map((instanceId, index) => {
@@ -57,22 +64,24 @@ export function MobileOrderEditor({
                 <strong>{widget?.definition.displayName ?? instance.widgetTypeId}</strong>
               </span>
               <span className="wb-mobile-order-editor__actions">
-                <button
-                  type="button"
+                <Button
+                  size="small"
+                  variant="ghost"
                   disabled={index === 0}
                   aria-label={`Move ${widget?.definition.displayName ?? instance.widgetTypeId} earlier on mobile`}
                   onClick={() => onChange(swap(normalized, index, -1))}
                 >
-                  Earlier
-                </button>
-                <button
-                  type="button"
+                  <ArrowUp aria-hidden="true" /> Earlier
+                </Button>
+                <Button
+                  size="small"
+                  variant="ghost"
                   disabled={index === normalized.length - 1}
                   aria-label={`Move ${widget?.definition.displayName ?? instance.widgetTypeId} later on mobile`}
                   onClick={() => onChange(swap(normalized, index, 1))}
                 >
-                  Later
-                </button>
+                  <ArrowDown aria-hidden="true" /> Later
+                </Button>
               </span>
             </li>
           );

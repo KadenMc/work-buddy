@@ -116,7 +116,7 @@ describe("DayTimelineWidget", () => {
       />,
     );
 
-    await userEvent.click(screen.getByRole("button", { name: "List" }));
+    await userEvent.click(screen.getByRole("radio", { name: "List" }));
     await userEvent.click(screen.getByRole("button", { name: "Request replan" }));
 
     expect(emit.mock.calls.map(([intent]) => intent.intent_type)).toEqual([

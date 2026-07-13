@@ -1,15 +1,16 @@
 <!doctype html>
-<html lang="en" data-wb-scheme="dark" data-wb-skin="wb.default">
+<html lang="en" data-wb-scheme="dark" data-wb-skin="wb.default" data-wb-density="comfortable">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark light" />
-    <meta name="theme-color" content="#0d1117" />
+    <meta name="theme-color" content="#0c1519" />
     <script>
       (() => {
         const fallback = { scheme: "system", skinId: "wb.default" };
         const schemes = new Set(["system", "light", "dark"]);
-        const skins = new Set(["wb.default", "wb.conformance-stress"]);
+        const skins = new Set(["wb.default", "wb.studio", "wb.conformance-stress"]);
+        const densities = new Set(["compact", "comfortable", "spacious"]);
         let preference = fallback;
 
         try {
@@ -38,12 +39,21 @@
 
         document.documentElement.dataset.wbScheme = resolvedScheme;
         document.documentElement.dataset.wbSkin = preference.skinId;
+        const storedDensity = localStorage.getItem("wb.appearance.density.v1");
+        document.documentElement.dataset.wbDensity = densities.has(storedDensity)
+          ? storedDensity
+          : "comfortable";
         document.documentElement.style.colorScheme = resolvedScheme;
+        const canvasColors = {
+          "wb.default": { light: "#f4f2ed", dark: "#0c1519" },
+          "wb.studio": { light: "#f3f5f8", dark: "#11131a" },
+          "wb.conformance-stress": { light: "#fff7ed", dark: "#1e1b4b" },
+        };
         document
           .querySelector('meta[name="theme-color"]')
           ?.setAttribute(
             "content",
-            resolvedScheme === "dark" ? "#0d1117" : "#f6f8fa",
+            canvasColors[preference.skinId][resolvedScheme],
           );
       })();
     </script>

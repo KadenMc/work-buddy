@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import Header from "../../components/Header";
 import { ThemeProvider } from "../../theme/ThemeProvider";
+import { DensityProvider } from "../../theme/DensityProvider";
 import {
   DashboardEventProvider,
   normalizeDashboardEvent,
@@ -80,11 +81,13 @@ describe("DashboardEventProvider", () => {
   it("owns one EventSource for Header and every other consumer", async () => {
     const rendered = render(
       <ThemeProvider initialPreference={{ scheme: "dark", skinId: "wb.default" }}>
-        <DashboardEventProvider>
-          <Header />
-          <EventProbe testId="first" />
-          <EventProbe testId="second" />
-        </DashboardEventProvider>
+        <DensityProvider initialDensity="comfortable">
+          <DashboardEventProvider>
+            <Header />
+            <EventProbe testId="first" />
+            <EventProbe testId="second" />
+          </DashboardEventProvider>
+        </DensityProvider>
       </ThemeProvider>,
     );
 

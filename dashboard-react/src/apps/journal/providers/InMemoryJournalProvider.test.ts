@@ -57,7 +57,7 @@ describe("Journal contribution policy", () => {
     expect(captureSlot).toMatchObject({
       presence: "required",
       defaultWidgetTypeId: JOURNAL_WIDGET_TYPE_IDS.capture,
-      defaultLayout: { x: 0, y: 0, w: 8, h: 8 },
+      defaultLayout: { x: 0, y: 0, w: 8, h: 14 },
     });
     expect(captureSlot.lockedReason).toMatch(/cannot record/i);
     expect(timelineSlot).toMatchObject({
@@ -69,7 +69,7 @@ describe("Journal contribution policy", () => {
     expect(runningNotesSlot).toMatchObject({
       presence: "default_on",
       defaultWidgetTypeId: JOURNAL_WIDGET_TYPE_IDS.runningNotes,
-      defaultLayout: { x: 0, y: 8, w: 8, h: 8 },
+      defaultLayout: { x: 0, y: 14, w: 8, h: 6 },
     });
     expect(runningNotesSlot.lockedReason).toBeUndefined();
     expect(JOURNAL_VIEW_DEFINITION.mobileOrder).toEqual([

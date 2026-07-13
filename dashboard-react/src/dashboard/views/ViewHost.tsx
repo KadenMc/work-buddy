@@ -5,8 +5,17 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { ArrowCounterClockwise } from "@phosphor-icons/react/ArrowCounterClockwise";
+import { ArrowUDownLeft } from "@phosphor-icons/react/ArrowUDownLeft";
+import { Check } from "@phosphor-icons/react/Check";
+import { DeviceMobile } from "@phosphor-icons/react/DeviceMobile";
+import { GridFour } from "@phosphor-icons/react/GridFour";
+import { Layout } from "@phosphor-icons/react/Layout";
+import { SquaresFour } from "@phosphor-icons/react/SquaresFour";
+import { X } from "@phosphor-icons/react/X";
 
 import { useDashboardAnnouncer } from "../accessibility/DashboardAnnouncer";
+import { Button } from "../../ui";
 import type {
   ViewDefinition,
   ViewSnapshot,
@@ -525,23 +534,84 @@ export function ViewHost({
     <main className={`wb-view-host${customizing ? " is-customizing" : ""}`}>
       {renderChrome?.(snapshot)}
       <div className="wb-view-toolbar" aria-label="View controls">
-        {providerLabel ? <span className="wb-view-toolbar__provider">{providerLabel}</span> : null}
-        {session.reconciling ? <span role="status">Refreshing…</span> : null}
+        {providerLabel && renderChrome === undefined ? (
+          <span className="wb-view-toolbar__provider">{providerLabel}</span>
+        ) : null}
+        {session.reconciling ? <span role="status" aria-label="Refreshing…">Refreshing…</span> : null}
         {customizing ? (
           <>
-            <button type="button" onClick={() => setCatalogOpen(true)}>Widgets</button>
-            <button type="button" onClick={() => setMobileOrderOpen((open) => !open)} aria-expanded={mobileOrderOpen}>Mobile order</button>
-            <button type="button" onClick={() => { act({ type: "undo" }); setResetPatchRequested(false); }} disabled={editState.past.length === 0}>Undo</button>
-            <button type="button" onClick={() => act({ type: "redo" })} disabled={editState.future.length === 0}>Redo</button>
-            <button type="button" onClick={() => act({ type: "tidy" })}>Tidy</button>
-            <button type="button" onClick={() => { act({ type: "reset", defaults }); setResetPatchRequested(true); }}>Reset</button>
-            <button type="button" onClick={cancelCustomize}>Cancel</button>
-            <button type="button" className="wb-view-toolbar__primary" onClick={() => void saveCustomize()} disabled={!editState.dirty && !resetPatchRequested}>Done</button>
+            <span className="wb-view-toolbar__mode">
+              <Layout weight="duotone" aria-hidden="true" />
+              Editing layout
+            </span>
+            <span className="wb-view-toolbar__group">
+              <Button size="small" onClick={() => setCatalogOpen(true)}>
+                <SquaresFour aria-hidden="true" /> Widgets
+              </Button>
+              <Button
+                size="small"
+                onClick={() => setMobileOrderOpen((open) => !open)}
+                aria-expanded={mobileOrderOpen}
+              >
+                <DeviceMobile aria-hidden="true" /> Mobile order
+              </Button>
+            </span>
+            <span className="wb-view-toolbar__group">
+              <Button
+                size="small"
+                variant="ghost"
+                onClick={() => {
+                  act({ type: "undo" });
+                  setResetPatchRequested(false);
+                }}
+                disabled={editState.past.length === 0}
+              >
+                <ArrowCounterClockwise aria-hidden="true" /> Undo
+              </Button>
+              <Button
+                size="small"
+                variant="ghost"
+                onClick={() => act({ type: "redo" })}
+                disabled={editState.future.length === 0}
+              >
+                <ArrowUDownLeft aria-hidden="true" /> Redo
+              </Button>
+              <Button size="small" variant="ghost" onClick={() => act({ type: "tidy" })}>
+                <GridFour aria-hidden="true" /> Tidy
+              </Button>
+              <Button
+                size="small"
+                variant="ghost"
+                onClick={() => {
+                  act({ type: "reset", defaults });
+                  setResetPatchRequested(true);
+                }}
+              >
+                Reset
+              </Button>
+            </span>
+            <span className="wb-view-toolbar__group">
+              <Button size="small" variant="ghost" onClick={cancelCustomize}>
+                <X aria-hidden="true" /> Cancel
+              </Button>
+              <Button
+                size="small"
+                variant="primary"
+                onClick={() => void saveCustomize()}
+                disabled={!editState.dirty && !resetPatchRequested}
+              >
+                <Check weight="bold" aria-hidden="true" /> Done
+              </Button>
+            </span>
           </>
         ) : (
           <>
-            <button type="button" onClick={openCatalog} disabled={isMobile}>Widgets</button>
-            <button type="button" onClick={beginCustomize} disabled={isMobile}>Customize view</button>
+            <Button size="small" variant="ghost" onClick={openCatalog} disabled={isMobile}>
+              <SquaresFour aria-hidden="true" /> Widgets
+            </Button>
+            <Button size="small" onClick={beginCustomize} disabled={isMobile}>
+              <Layout aria-hidden="true" /> Customize view
+            </Button>
           </>
         )}
       </div>

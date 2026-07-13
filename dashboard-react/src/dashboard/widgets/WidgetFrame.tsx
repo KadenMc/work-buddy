@@ -2,6 +2,7 @@ import { type ReactNode, useId } from "react";
 
 export interface WidgetFrameProps {
   readonly title: string;
+  readonly icon?: ReactNode;
   readonly children: ReactNode;
   readonly menu?: ReactNode;
   readonly status?: ReactNode;
@@ -11,6 +12,7 @@ export interface WidgetFrameProps {
 
 export function WidgetFrame({
   title,
+  icon,
   children,
   menu,
   status,
@@ -25,9 +27,16 @@ export function WidgetFrame({
       aria-busy={busy || undefined}
     >
       <header className="wb-widget-frame__header">
-        <h2 id={titleId} className="wb-widget-frame__title">
-          {title}
-        </h2>
+        <div className="wb-widget-frame__identity">
+          {icon ? (
+            <span className="wb-widget-frame__icon" aria-hidden="true">
+              {icon}
+            </span>
+          ) : null}
+          <h2 id={titleId} className="wb-widget-frame__title">
+            {title}
+          </h2>
+        </div>
         {menu}
       </header>
       <div className="wb-widget-frame__content">

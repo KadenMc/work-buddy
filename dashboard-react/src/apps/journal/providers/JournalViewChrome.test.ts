@@ -18,11 +18,11 @@ describe("JournalViewChrome", () => {
     );
 
     expect(screen.getByRole("heading", { name: "Journal" })).toBeInTheDocument();
-    expect(screen.getByText("Day boundary 5:00 AM")).toBeInTheDocument();
+    expect(screen.getByText("Day starts 5:00 AM")).toBeInTheDocument();
     expect(screen.getByText("Opened 8:42 AM")).toBeInTheDocument();
     expect(screen.getByText("Demo data")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Open previous Journal day" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Open next Journal day" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Open previous Journal day" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open next Journal day" })).not.toBeInTheDocument();
   });
 
   it("exposes explicit date-navigation actions", async () => {

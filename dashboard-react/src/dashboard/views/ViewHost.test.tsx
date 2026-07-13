@@ -96,12 +96,14 @@ describe("ViewHost", () => {
 
     expect(
       await screen.findByRole(
-        "button",
+        "radio",
         { name: "Timeline" },
         { timeout: 15_000 },
       ),
     ).toBeVisible();
-    expect(rendered.container.querySelector(".wb-day-timeline__mode")).not.toBeNull();
+    expect(
+      rendered.container.querySelector(".wb-day-timeline__toolbar .wb-segmented-field"),
+    ).not.toBeNull();
     expect(rendered.container.querySelector(".react-grid-layout")).not.toBeNull();
     expect(rendered.container.querySelector(".wb-temporal-canvas")).not.toBeNull();
     expect(rendered.container.querySelector(".wb-capture--standard")).not.toBeNull();

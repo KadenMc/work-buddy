@@ -1,0 +1,92 @@
+@layer wb.foundations {
+  :root {
+    --wb-font-sans: "Geist Variable", "Segoe UI Variable", "Segoe UI", sans-serif;
+    --wb-font-mono: "Geist Mono Variable", "Cascadia Code", Consolas, monospace;
+
+    --wb-font-size-2xs: 0.6875rem;
+    --wb-font-size-xs: 0.75rem;
+    --wb-font-size-sm: 0.8125rem;
+    --wb-font-size-md: 0.875rem;
+    --wb-font-size-lg: 1rem;
+    --wb-font-size-xl: 1.25rem;
+    --wb-font-size-2xl: clamp(1.5rem, 2.2vw, 2rem);
+    --wb-line-height-tight: 1.2;
+    --wb-line-height-body: 1.5;
+    --wb-line-height-relaxed: 1.65;
+    --wb-font-weight-regular: 430;
+    --wb-font-weight-medium: 540;
+    --wb-font-weight-semibold: 640;
+    --wb-font-weight-bold: 720;
+
+    --wb-space-0: 0;
+    --wb-space-1: 0.125rem;
+    --wb-space-2: 0.25rem;
+    --wb-space-3: 0.375rem;
+    --wb-space-4: 0.5rem;
+    --wb-space-5: 0.75rem;
+    --wb-space-6: 1rem;
+    --wb-space-7: 1.25rem;
+    --wb-space-8: 1.5rem;
+    --wb-space-9: 2rem;
+    --wb-space-10: 2.5rem;
+    --wb-space-11: 3rem;
+
+    --wb-control-height-sm: 2rem;
+    --wb-control-height-md: 2.5rem;
+    --wb-control-height-lg: 2.75rem;
+    --wb-control-padding-inline: 0.875rem;
+    --wb-control-gap: 0.5rem;
+    --wb-icon-size-sm: 1rem;
+    --wb-icon-size-md: 1.125rem;
+    --wb-icon-size-lg: 1.375rem;
+    --wb-target-size: 2.5rem;
+
+    --wb-view-gutter: clamp(1rem, 2.4vw, 2rem);
+    --wb-view-max-width: 96rem;
+    --wb-widget-padding: 1rem;
+    --wb-widget-header-height: 3rem;
+    --wb-widget-gap: 0.75rem;
+    --wb-grid-row-height: 2rem;
+
+    --wb-radius-xs: 0.375rem;
+    --wb-radius-control: 0.625rem;
+    --wb-radius-surface: 0.875rem;
+    --wb-radius-panel: 1.125rem;
+    --wb-radius-round: 999px;
+
+    --wb-border-width: 1px;
+    --wb-focus-width: 2px;
+    --wb-z-base: 0;
+    --wb-z-raised: 10;
+    --wb-z-overlay: 100;
+    --wb-z-modal: 1000;
+
+    --wb-motion-duration-fast: 120ms;
+    --wb-motion-duration-standard: 190ms;
+    --wb-motion-duration-slow: 280ms;
+    --wb-motion-easing-standard: cubic-bezier(0.2, 0, 0, 1);
+    --wb-motion-easing-enter: cubic-bezier(0, 0, 0, 1);
+  }
+
+  :root[data-wb-density="compact"] {
+    --wb-control-height-md: 2.125rem;
+    --wb-control-height-lg: 2.375rem;
+    --wb-control-padding-inline: 0.75rem;
+    --wb-view-gutter: clamp(0.75rem, 2vw, 1.5rem);
+    --wb-widget-padding: 0.75rem;
+    --wb-widget-header-height: 2.625rem;
+    --wb-widget-gap: 0.625rem;
+    --wb-grid-row-height: 1.875rem;
+  }
+
+  :root[data-wb-density="spacious"] {
+    --wb-control-height-md: 2.75rem;
+    --wb-control-height-lg: 3rem;
+    --wb-control-padding-inline: 1rem;
+    --wb-view-gutter: clamp(1.25rem, 3vw, 2.5rem);
+    --wb-widget-padding: 1.25rem;
+    --wb-widget-header-height: 3.375rem;
+    --wb-widget-gap: 1rem;
+    --wb-grid-row-height: 2.125rem;
+  }
+}

@@ -161,10 +161,16 @@ describe("WidgetHost", () => {
     });
 
     await userEvent.click(
-      screen.getByText("Actions for Test summary", { selector: "span" }),
+      screen.getByRole("button", { name: "Actions for Test summary" }),
     );
-    expect(screen.getByRole("button", { name: "Hide" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Remove" })).toBeDisabled();
+    expect(screen.getByRole("menuitem", { name: "Hide" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    expect(screen.getByRole("menuitem", { name: "Remove" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
     expect(
       screen.getByText("Capture is required to preserve the view's primary job."),
     ).toBeInTheDocument();

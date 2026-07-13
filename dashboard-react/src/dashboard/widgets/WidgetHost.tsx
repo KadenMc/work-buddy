@@ -4,6 +4,10 @@ import {
   Suspense,
   useMemo,
 } from "react";
+import { ClockCounterClockwise } from "@phosphor-icons/react/ClockCounterClockwise";
+import { NotePencil } from "@phosphor-icons/react/NotePencil";
+import { SquaresFour } from "@phosphor-icons/react/SquaresFour";
+import { TextAlignLeft } from "@phosphor-icons/react/TextAlignLeft";
 
 import { useTheme } from "../../theme/ThemeProvider";
 import type {
@@ -174,6 +178,17 @@ export function WidgetHost<Input>({
   return (
     <WidgetFrame
       title={definition.displayName}
+      icon={
+        definition.libraryPath[0] === "Capture" ? (
+          <NotePencil weight="duotone" />
+        ) : definition.libraryPath[0] === "Time" ? (
+          <ClockCounterClockwise weight="duotone" />
+        ) : definition.libraryPath[0] === "Notes" ? (
+          <TextAlignLeft weight="duotone" />
+        ) : (
+          <SquaresFour weight="duotone" />
+        )
+      }
       menu={menu}
       busy={status === "loading"}
       status={

@@ -86,13 +86,12 @@ describe("WidgetLab", () => {
   it("switches scheme and skin through the shared ThemeProvider contract", async () => {
     renderLab("/app/__widget-lab?count=3");
 
-    await userEvent.selectOptions(screen.getByLabelText("Widget Lab scheme"), "dark");
+    await userEvent.click(screen.getByRole("button", { name: /Widget Lab scheme/ }));
+    await userEvent.click(await screen.findByRole("option", { name: "Dark" }));
     expect(document.documentElement).toHaveAttribute("data-wb-scheme", "dark");
 
-    await userEvent.selectOptions(
-      screen.getByLabelText("Widget Lab skin"),
-      "wb.conformance-stress",
-    );
+    await userEvent.click(screen.getByRole("button", { name: /Widget Lab skin/ }));
+    await userEvent.click(await screen.findByRole("option", { name: /Conformance stress/i }));
     expect(document.documentElement).toHaveAttribute(
       "data-wb-skin",
       "wb.conformance-stress",

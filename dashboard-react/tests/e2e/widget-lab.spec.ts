@@ -10,11 +10,11 @@ test("keeps the development Widget Lab off navigation while mounting real widget
   await expect(page.getByTestId("widget-lab-host")).toHaveCount(50);
   await expect(page.locator(".wb-widget-frame")).toHaveCount(50);
 
-  await page.getByLabel("Widget Lab scheme").selectOption("dark");
+  await page.getByRole("button", { name: /Widget Lab scheme/ }).click();
+  await page.getByRole("option", { name: "Dark" }).click();
   await expect(page.locator("html")).toHaveAttribute("data-wb-scheme", "dark");
-  await page
-    .getByLabel("Widget Lab skin")
-    .selectOption("wb.conformance-stress");
+  await page.getByRole("button", { name: /Widget Lab skin/ }).click();
+  await page.getByRole("option", { name: /Conformance stress/i }).click();
   await expect(page.locator("html")).toHaveAttribute(
     "data-wb-skin",
     "wb.conformance-stress",

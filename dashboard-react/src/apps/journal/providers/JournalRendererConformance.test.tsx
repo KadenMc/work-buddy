@@ -126,7 +126,8 @@ describe("Journal and the real widget library", () => {
       />,
     );
 
-    await user.selectOptions(screen.getByRole("combobox", { name: "Destination" }), "running_notes");
+    await user.click(screen.getByRole("button", { name: /Destination/ }));
+    await user.click(await screen.findByRole("option", { name: /^Running notes/ }));
     await user.type(screen.getByRole("textbox", { name: "Capture text" }), "Meeting ran long");
     await user.click(screen.getByRole("button", { name: "Capture" }));
 
@@ -219,7 +220,7 @@ describe("Journal and the real widget library", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "List" }));
+    await user.click(screen.getByRole("radio", { name: "List" }));
     await user.click(screen.getByRole("button", { name: "Request replan" }));
     expect(emitted.map((intent) => intent.intent_type)).toEqual([
       "wb.timeline.render-mode-changed",

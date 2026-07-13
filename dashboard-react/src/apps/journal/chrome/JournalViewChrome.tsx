@@ -1,3 +1,11 @@
+import { CalendarDots } from "@phosphor-icons/react/CalendarDots";
+import { CaretLeft } from "@phosphor-icons/react/CaretLeft";
+import { CaretRight } from "@phosphor-icons/react/CaretRight";
+import { Clock } from "@phosphor-icons/react/Clock";
+import { Database } from "@phosphor-icons/react/Database";
+import { SunHorizon } from "@phosphor-icons/react/SunHorizon";
+
+import { Button, IconButton, InlineAlert } from "../../../ui";
 import type {
   JournalAccess,
   JournalDataQuality,
@@ -42,7 +50,7 @@ function formatTime(value: string, timezone?: string): string {
   }
 }
 
-/** Journal-owned date/boundary/access chrome; widget composition remains host-owned. */
+/** Journal owns meaning and actions; Dashboard Core owns the visual primitives. */
 export function JournalViewChrome({
   day,
   access,
@@ -58,69 +66,72 @@ export function JournalViewChrome({
       <div className="journal-view-chrome__main">
         <div className="journal-view-chrome__identity">
           <div className="journal-view-chrome__mark" aria-hidden="true">
-            ◫
+            <CalendarDots weight="duotone" />
           </div>
-          <div>
+          <div className="journal-view-chrome__copy">
             <div className="journal-view-chrome__title-row">
-              <button
-                type="button"
-                className="journal-view-chrome__day-button"
-                aria-label="Open previous Journal day"
-                disabled={onNavigateDay === undefined}
-                onClick={() => onNavigateDay?.("previous")}
-              >
-                ‹
-              </button>
+              {onNavigateDay ? (
+                <IconButton
+                  label="Open previous Journal day"
+                  icon={<CaretLeft weight="bold" />}
+                  variant="ghost"
+                  size="small"
+                  onClick={() => onNavigateDay("previous")}
+                />
+              ) : null}
               <h1 id="journal-view-title">Journal</h1>
-              <button
-                type="button"
-                className="journal-view-chrome__day-button"
-                aria-label="Open next Journal day"
-                disabled={onNavigateDay === undefined}
-                onClick={() => onNavigateDay?.("next")}
-              >
-                ›
-              </button>
+              {onNavigateDay ? (
+                <IconButton
+                  label="Open next Journal day"
+                  icon={<CaretRight weight="bold" />}
+                  variant="ghost"
+                  size="small"
+                  onClick={() => onNavigateDay("next")}
+                />
+              ) : null}
             </div>
             <p className="journal-view-chrome__date">{formatDate(day)}</p>
-            <p className="journal-view-chrome__metadata">
-              <span>Day boundary {formatTime(day.dayBoundaryStart)}</span>
+            <div className="journal-view-chrome__metadata">
+              <span>
+                <SunHorizon weight="duotone" aria-hidden="true" />
+                Day starts {formatTime(day.dayBoundaryStart)}
+              </span>
               {day.openedAt !== undefined ? (
-                <span>Opened {formatTime(day.openedAt, day.timezone)}</span>
+                <span>
+                  <Clock weight="duotone" aria-hidden="true" />
+                  Opened {formatTime(day.openedAt, day.timezone)}
+                </span>
               ) : null}
-            </p>
+            </div>
           </div>
         </div>
 
         <div className="journal-view-chrome__actions">
           {source.kind !== "live" ? (
-            <span className="journal-view-chrome__badge" role="status">
+            <span className="journal-view-chrome__source" role="status">
+              <Database weight="duotone" aria-hidden="true" />
               {source.label}
             </span>
           ) : null}
           {onReturnToToday !== undefined ? (
-            <button
-              type="button"
-              className="journal-view-chrome__today-button"
-              onClick={onReturnToToday}
-            >
+            <Button size="small" variant="ghost" onClick={onReturnToToday}>
               Today
-            </button>
+            </Button>
           ) : null}
         </div>
       </div>
 
       {access.mode === "read_only" ? (
-        <p className="journal-view-chrome__notice journal-view-chrome__notice--warning" role="status">
+        <InlineAlert className="journal-view-chrome__notice" tone="warning" role="status">
           <strong>Read only.</strong> {access.reason}
-        </p>
+        </InlineAlert>
       ) : null}
 
       {quality.freshness !== "current" ? (
-        <p className="journal-view-chrome__notice" role="status">
+        <InlineAlert className="journal-view-chrome__notice" role="status">
           <strong>{quality.freshness === "offline" ? "Offline." : "Data may be stale."}</strong>{" "}
           {issueMessage}
-        </p>
+        </InlineAlert>
       ) : null}
     </header>
   );

@@ -219,7 +219,9 @@ describe("ViewHost provider-bound catalog additions", () => {
       </ThemeProvider>,
     );
 
-    expect(await screen.findByDisplayValue("stale provider value")).toBeVisible();
+    expect(
+      await screen.findByDisplayValue("stale provider value", undefined, { timeout: 5_000 }),
+    ).toBeVisible();
     expect(screen.getByText("Default input is behind")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Widgets" }));
 

@@ -10,6 +10,9 @@ export function StatusBadge({
   readonly tone?: StatusBadgeTone;
 }) {
   return (
-    <span className={`wb-library-badge wb-library-badge--${tone}`}>{label}</span>
+    <span className={`wb-library-status wb-library-status--${tone}`}>
+      {tone !== "neutral" ? <span className="wb-library-status__dot" aria-hidden="true" /> : null}
+      {label}
+    </span>
   );
 }

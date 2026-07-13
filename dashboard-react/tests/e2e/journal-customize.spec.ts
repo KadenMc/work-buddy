@@ -15,14 +15,16 @@ test("required widget menus protect view purpose while optional widgets remain h
   await beginCustomize(page);
 
   const captureMenu = await openWidgetMenu(page, "Quick Capture");
-  await expect(captureMenu.getByRole("button", { name: "Hide" })).toBeDisabled();
-  await expect(captureMenu.getByRole("button", { name: "Remove" })).toBeDisabled();
-  await expect(captureMenu).toContainText(/required|cannot record/i);
+  await expect(captureMenu.getByRole("menuitem", { name: "Hide" })).toHaveAttribute("aria-disabled", "true");
+  await expect(captureMenu.getByRole("menuitem", { name: "Remove" })).toHaveAttribute("aria-disabled", "true");
+  await expect(page.getByText(/required|cannot record/i)).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(captureMenu).toBeHidden();
 
   const notesMenu = await openWidgetMenu(page, "Running Notes");
-  await expect(notesMenu.getByRole("button", { name: "Hide" })).toBeEnabled();
-  await expect(notesMenu.getByRole("button", { name: "Remove" })).toBeEnabled();
-  await notesMenu.getByRole("button", { name: "Hide" }).click();
+  await expect(notesMenu.getByRole("menuitem", { name: "Hide" })).not.toHaveAttribute("aria-disabled", "true");
+  await expect(notesMenu.getByRole("menuitem", { name: "Remove" })).not.toHaveAttribute("aria-disabled", "true");
+  await notesMenu.getByRole("menuitem", { name: "Hide" }).click();
   await expect(widget(page, "Running Notes")).toHaveCount(0);
 
   await page.getByRole("button", { name: "Cancel" }).click();
@@ -36,16 +38,17 @@ test("keyboard-opened menus provide move and resize alternatives and reject coll
   await openJournal(page);
   await beginCustomize(page);
 
-  const timelineMenu = await openWidgetMenu(page, "Day Timeline", true);
-  await timelineMenu.getByRole("button", { name: "down", exact: true }).click();
+  let timelineMenu = await openWidgetMenu(page, "Day Timeline", true);
+  await timelineMenu.getByRole("menuitem", { name: "down", exact: true }).click();
   await expect(page.getByRole("button", { name: "Done" })).toBeEnabled();
   await expect(page.locator("[aria-live='polite']")).toContainText("Widget moved");
 
-  await timelineMenu.getByRole("button", { name: "Taller" }).click();
+  timelineMenu = await openWidgetMenu(page, "Day Timeline", true);
+  await timelineMenu.getByRole("menuitem", { name: "Taller" }).click();
   await expect(page.locator("[aria-live='polite']")).toContainText("Widget resized");
 
   const captureMenu = await openWidgetMenu(page, "Quick Capture");
-  await captureMenu.getByRole("button", { name: "Taller" }).click();
+  await captureMenu.getByRole("menuitem", { name: "Taller" }).click();
   await expect(page.getByRole("status").filter({ hasText: "collision" })).toBeVisible();
 
   await page.getByRole("button", { name: "Cancel" }).click();
@@ -74,16 +77,17 @@ test("pointer drag and resize preserve unrelated widget geometry", async ({ page
   if (beforeNotes === null || beforeTimeline === null || handle === null || gridBox === null) return;
   expect(
     await page.evaluate(
-      ({ x, y }) => document.elementFromPoint(x, y)?.className ?? "",
+      ({ x, y }) =>
+        document.elementFromPoint(x, y)?.closest(".wb-widget-drag-handle") !== null,
       { x: handle.x + handle.width / 2, y: handle.y + handle.height / 2 },
     ),
-  ).toContain("wb-widget-drag-handle");
+  ).toBe(true);
 
   const dragX = handle.x + handle.width / 2;
   const dragY = handle.y + handle.height / 2;
   await page.mouse.move(dragX, dragY);
   await page.mouse.down();
-  // Move the 8-row Notes widget completely below the 16-row Timeline
+  // Move Notes completely below the 16-row Timeline
   // before widening it; otherwise collision rejection may correctly veto
   // the resize depending on which grid row the drag snaps to.
   await page.mouse.move(dragX, dragY + 396, { steps: 24 });
@@ -132,17 +136,18 @@ test("undo, cancel, done, reload, and reset preserve the personal-patch lifecycl
   await beginCustomize(page);
 
   let timelineMenu = await openWidgetMenu(page, "Day Timeline");
-  await timelineMenu.getByRole("button", { name: "down", exact: true }).click();
+  await timelineMenu.getByRole("menuitem", { name: "down", exact: true }).click();
   await page.getByRole("button", { name: "Undo" }).click();
   await expect(page.getByRole("button", { name: "Done" })).toBeDisabled();
 
-  await timelineMenu.getByRole("button", { name: "down", exact: true }).click();
+  timelineMenu = await openWidgetMenu(page, "Day Timeline");
+  await timelineMenu.getByRole("menuitem", { name: "down", exact: true }).click();
   await page.getByRole("button", { name: "Cancel" }).click();
   expect(await readPersonalization(page)).toBeNull();
 
   await beginCustomize(page);
   timelineMenu = await openWidgetMenu(page, "Day Timeline");
-  await timelineMenu.getByRole("button", { name: "down", exact: true }).click();
+  await timelineMenu.getByRole("menuitem", { name: "down", exact: true }).click();
   await page.getByRole("button", { name: "Done" }).click();
 
   let patch = await readPersonalization(page);
