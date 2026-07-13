@@ -15,6 +15,14 @@ interface PositionedItem {
   readonly lane: number;
 }
 
+const TIMELINE_HEIGHT_PX: Record<TimelineDensity, number> = {
+  comfortable: 720,
+  compact: 560,
+};
+
+/** Keep lane allocation consistent with the card's CSS minimum height. */
+const MINIMUM_CARD_HEIGHT_PX = 42;
+
 interface TimelinePositionStyle extends CSSProperties {
   readonly "--wb-timeline-top": string;
   readonly "--wb-timeline-height": string;
@@ -28,11 +36,17 @@ const itemTimes = (item: DayTimelineItem): readonly [number, number] => {
   return [start, end];
 };
 
-function positionItems(items: readonly DayTimelineItem[]): {
+function positionItems(
+  items: readonly DayTimelineItem[],
+  windowDuration: number,
+  density: TimelineDensity,
+): {
   readonly items: readonly PositionedItem[];
   readonly lanes: number;
 } {
   const laneEnds: number[] = [];
+  const minimumVisibleDuration =
+    (windowDuration * MINIMUM_CARD_HEIGHT_PX) / TIMELINE_HEIGHT_PX[density];
   const positioned = [...items]
     .map((item) => ({ item, times: itemTimes(item) }))
     .filter(({ times }) => times.every(Number.isFinite))
@@ -41,7 +55,7 @@ function positionItems(items: readonly DayTimelineItem[]): {
       const [start, end] = times;
       let lane = laneEnds.findIndex((laneEnd) => laneEnd <= start);
       if (lane < 0) lane = laneEnds.length;
-      laneEnds[lane] = Math.max(end, start + 60_000);
+      laneEnds[lane] = Math.max(end, start + minimumVisibleDuration);
       return { item, start, end, lane };
     });
   return { items: positioned, lanes: Math.max(1, laneEnds.length) };
@@ -102,7 +116,7 @@ export function TemporalCanvas({
   const windowEnd = Date.parse(day.windowEnd);
   const duration = Math.max(1, windowEnd - windowStart);
   const now = Date.parse(day.now);
-  const positioned = positionItems(items);
+  const positioned = positionItems(items, duration, density);
   const ticks = Array.from({ length: 13 }, (_, index) => {
     const instant = windowStart + (duration * index) / 12;
     return { instant, top: (index / 12) * 100 };

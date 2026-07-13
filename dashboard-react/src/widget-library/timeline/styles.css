@@ -94,7 +94,7 @@
     top: var(--wb-timeline-top);
     left: var(--wb-timeline-left);
     width: calc(var(--wb-timeline-width) - 4px);
-    height: max(var(--wb-timeline-height), 38px);
+    height: max(var(--wb-timeline-height), 42px);
     min-width: 0;
     overflow: hidden;
     padding: 5px 7px;

@@ -26,10 +26,10 @@ describe("widget-library publisher contributions", () => {
 
     expect(registry.listApps()).toHaveLength(3);
     expect(registry.requireWidget(QUICK_TEXT_CAPTURE_TYPE_ID).definition.sizeContract).toMatchObject(
-      { default: { w: 8, h: 4 }, min: { w: 6, h: 3 } },
+      { default: { w: 8, h: 8 }, min: { w: 6, h: 6 } },
     );
     expect(registry.requireWidget(DAY_TIMELINE_TYPE_ID).definition.sizeContract).toMatchObject(
-      { default: { w: 16, h: 12 }, min: { w: 12, h: 8 } },
+      { default: { w: 16, h: 16 }, min: { w: 12, h: 8 } },
     );
     expect(registry.requireWidget(RUNNING_NOTES_TYPE_ID).definition.sizeContract).toMatchObject(
       { default: { w: 8, h: 8 }, min: { w: 6, h: 6 } },

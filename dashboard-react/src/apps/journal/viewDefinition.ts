@@ -40,7 +40,7 @@ export const JOURNAL_VIEW_DEFINITION = {
         day: JOURNAL_BINDING_KEYS.day,
         access: JOURNAL_BINDING_KEYS.access,
       },
-      defaultLayout: { x: 0, y: 0, w: 8, h: 4 },
+      defaultLayout: { x: 0, y: 0, w: 8, h: 8 },
       allowedSubstitution: { minimumDefinitionVersion: 1 },
     },
     {
@@ -54,7 +54,7 @@ export const JOURNAL_VIEW_DEFINITION = {
         day: JOURNAL_BINDING_KEYS.day,
         access: JOURNAL_BINDING_KEYS.access,
       },
-      defaultLayout: { x: 0, y: 4, w: 8, h: 8 },
+      defaultLayout: { x: 0, y: 8, w: 8, h: 8 },
       allowedSubstitution: { minimumDefinitionVersion: 1 },
     },
     {
@@ -70,7 +70,7 @@ export const JOURNAL_VIEW_DEFINITION = {
         day: JOURNAL_BINDING_KEYS.day,
         quality: JOURNAL_BINDING_KEYS.quality,
       },
-      defaultLayout: { x: 8, y: 0, w: 16, h: 12 },
+      defaultLayout: { x: 8, y: 0, w: 16, h: 16 },
       allowedSubstitution: { minimumDefinitionVersion: 1 },
     },
   ],

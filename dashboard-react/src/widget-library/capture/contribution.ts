@@ -43,12 +43,12 @@ export const CAPTURE_APP_CONTRIBUTION = {
       inputSchema: { schemaId: "wb.capture.quick-text.input", version: 1 },
       outputIntentSchemas: [{ schemaId: "wb.capture.submit", version: 1 }],
       sizeContract: {
-        default: { w: 8, h: 4 },
-        min: { w: 6, h: 3 },
-        max: { w: 24, h: 12 },
+        default: { w: 8, h: 8 },
+        min: { w: 6, h: 6 },
+        max: { w: 24, h: 16 },
         modes: ["compact", "standard", "expanded"],
       },
-      multiplicity: "multiple_per_view",
+      multiplicity: "single_per_view",
       rendererModuleId: QUICK_TEXT_CAPTURE_MODULE_ID,
       theme: {
         contractVersion: 1,

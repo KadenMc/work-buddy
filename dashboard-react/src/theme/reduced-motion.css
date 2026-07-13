@@ -1,6 +1,6 @@
 @media (prefers-reduced-motion: reduce) {
   @layer wb.tokens {
-    :root {
+    :root[data-wb-skin][data-wb-scheme] {
       --wb-motion-duration-fast: 0ms;
       --wb-motion-duration-standard: 0ms;
       --wb-motion-easing-standard: linear;

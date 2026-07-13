@@ -57,19 +57,19 @@ describe("Journal contribution policy", () => {
     expect(captureSlot).toMatchObject({
       presence: "required",
       defaultWidgetTypeId: JOURNAL_WIDGET_TYPE_IDS.capture,
-      defaultLayout: { x: 0, y: 0, w: 8, h: 4 },
+      defaultLayout: { x: 0, y: 0, w: 8, h: 8 },
     });
     expect(captureSlot.lockedReason).toMatch(/cannot record/i);
     expect(timelineSlot).toMatchObject({
       presence: "required",
       defaultWidgetTypeId: JOURNAL_WIDGET_TYPE_IDS.timeline,
-      defaultLayout: { x: 8, y: 0, w: 16, h: 12 },
+      defaultLayout: { x: 8, y: 0, w: 16, h: 16 },
     });
     expect(timelineSlot.lockedReason).toMatch(/cannot reconcile/i);
     expect(runningNotesSlot).toMatchObject({
       presence: "default_on",
       defaultWidgetTypeId: JOURNAL_WIDGET_TYPE_IDS.runningNotes,
-      defaultLayout: { x: 0, y: 4, w: 8, h: 8 },
+      defaultLayout: { x: 0, y: 8, w: 8, h: 8 },
     });
     expect(runningNotesSlot.lockedReason).toBeUndefined();
     expect(JOURNAL_VIEW_DEFINITION.mobileOrder).toEqual([

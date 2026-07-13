@@ -129,6 +129,30 @@ describe("DayTimelineWidget", () => {
     });
   });
 
+  it("allocates nearby short items to separate visual lanes", () => {
+    const nearbyPoint: DayTimelineItem = {
+      ...pointItem,
+      itemId: "record-nearby",
+      at: "2026-07-11T09:30:00-04:00",
+      title: "Nearby captured decision",
+    };
+    render(
+      <DayTimelineWidget
+        input={{ ...input, items: [pointItem, nearbyPoint] }}
+        emit={vi.fn()}
+        presentation={presentation}
+      />,
+    );
+
+    const first = screen.getByText("Captured decision").closest("button");
+    const second = screen.getByText("Nearby captured decision").closest("button");
+    expect(first).not.toBeNull();
+    expect(second).not.toBeNull();
+    if (first === null || second === null) throw new Error("Timeline buttons were not rendered");
+    expect(first.style.getPropertyValue("--wb-timeline-left")).toBe("0%");
+    expect(second.style.getPropertyValue("--wb-timeline-left")).toBe("50%");
+  });
+
   it("keeps a heavy collection available in semantic document order", () => {
     const heavyItems = Array.from({ length: 180 }, (_, index): DayTimelineItem => ({
       ...pointItem,

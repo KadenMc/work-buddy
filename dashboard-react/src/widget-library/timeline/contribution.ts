@@ -51,12 +51,12 @@ export const TIMELINE_APP_CONTRIBUTION = {
         { schemaId: "wb.timeline.replan-requested", version: 1 },
       ],
       sizeContract: {
-        default: { w: 16, h: 12 },
+        default: { w: 16, h: 16 },
         min: { w: 12, h: 8 },
         max: { w: 24, h: 24 },
         modes: ["compact", "standard", "expanded"],
       },
-      multiplicity: "multiple_per_view",
+      multiplicity: "single_per_view",
       rendererModuleId: DAY_TIMELINE_MODULE_ID,
       theme: {
         contractVersion: 1,

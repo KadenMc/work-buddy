@@ -54,7 +54,7 @@ export const NOTES_APP_CONTRIBUTION = {
         max: { w: 24, h: 24 },
         modes: ["compact", "standard", "expanded"],
       },
-      multiplicity: "multiple_per_view",
+      multiplicity: "single_per_view",
       rendererModuleId: RUNNING_NOTES_MODULE_ID,
       theme: {
         contractVersion: 1,
