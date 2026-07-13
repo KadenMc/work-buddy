@@ -1,0 +1,41 @@
+@layer wb.widgets {
+  .wb-library-badge {
+    display: inline-flex;
+    min-height: 22px;
+    align-items: center;
+    padding: 2px 7px;
+    border: 1px solid var(--wb-color-border-default);
+    border-radius: 999px;
+    background: var(--wb-color-surface-inset);
+    color: var(--wb-color-text-secondary);
+    font-size: 11px;
+    line-height: 1.2;
+  }
+
+  .wb-library-badge--info {
+    border-color: var(--wb-color-status-info);
+    background: var(--wb-color-status-info-surface);
+  }
+
+  .wb-library-badge--success {
+    border-color: var(--wb-color-status-success);
+    background: var(--wb-color-status-success-surface);
+  }
+
+  .wb-library-badge--warning {
+    border-color: var(--wb-color-status-warning);
+    background: var(--wb-color-status-warning-surface);
+  }
+
+  .wb-library-badge--danger {
+    border-color: var(--wb-color-status-danger);
+    background: var(--wb-color-status-danger-surface);
+  }
+
+  .wb-library-meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+  }
+}

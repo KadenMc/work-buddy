@@ -1,0 +1,159 @@
+@layer wb.widgets {
+  .wb-day-timeline {
+    display: grid;
+    gap: 10px;
+    min-height: 0;
+  }
+
+  .wb-day-timeline__toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .wb-day-timeline__mode {
+    display: inline-flex;
+    padding: 2px;
+    border: 1px solid var(--wb-color-border-default);
+    border-radius: var(--wb-radius-control);
+  }
+
+  .wb-day-timeline__mode .wb-button {
+    min-height: 30px;
+    padding: 3px 9px;
+  }
+
+  .wb-day-timeline__empty,
+  .wb-day-timeline__legend {
+    color: var(--wb-color-text-muted);
+    font-size: 12px;
+  }
+
+  .wb-temporal-canvas {
+    position: relative;
+    display: grid;
+    grid-template-columns: 64px minmax(0, 1fr);
+    height: 720px;
+    min-height: 420px;
+    overflow-y: auto;
+    border: 1px solid var(--wb-color-border-default);
+    border-radius: var(--wb-radius-surface);
+    background: var(--wb-color-surface-inset);
+  }
+
+  .wb-temporal-canvas--compact {
+    height: 560px;
+  }
+
+  .wb-temporal-canvas__axis,
+  .wb-temporal-canvas__track {
+    position: relative;
+    min-height: 100%;
+  }
+
+  .wb-temporal-canvas__axis {
+    border-right: 1px solid var(--wb-color-border-default);
+    color: var(--wb-color-text-muted);
+    font-size: 10px;
+  }
+
+  .wb-temporal-canvas__axis > span {
+    position: absolute;
+    right: 7px;
+    transform: translateY(-50%);
+  }
+
+  .wb-temporal-canvas__grid-line,
+  .wb-temporal-canvas__now {
+    position: absolute;
+    right: 0;
+    left: 0;
+    border-top: 1px solid var(--wb-color-border-default);
+    pointer-events: none;
+  }
+
+  .wb-temporal-canvas__now {
+    z-index: 2;
+    border-top: 2px solid var(--wb-color-status-danger);
+  }
+
+  .wb-temporal-canvas__now::before {
+    position: absolute;
+    top: -5px;
+    left: -4px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--wb-color-status-danger);
+    content: "";
+  }
+
+  .wb-temporal-item {
+    position: absolute;
+    top: var(--wb-timeline-top);
+    left: var(--wb-timeline-left);
+    width: calc(var(--wb-timeline-width) - 4px);
+    height: max(var(--wb-timeline-height), 38px);
+    min-width: 0;
+    overflow: hidden;
+    padding: 5px 7px;
+    border: 1px solid var(--wb-color-border-default);
+    border-left: 3px solid var(--wb-color-status-info);
+    border-radius: var(--wb-radius-control);
+    background: var(--wb-color-surface-raised);
+    color: var(--wb-color-text-primary);
+    text-align: left;
+    cursor: pointer;
+    content-visibility: auto;
+  }
+
+  .wb-temporal-item--calendar {
+    border-left-color: var(--wb-color-data-2);
+  }
+
+  .wb-temporal-item--plan {
+    border-left-color: var(--wb-color-data-5);
+  }
+
+  .wb-temporal-item__time,
+  .wb-temporal-item__title,
+  .wb-temporal-item__detail {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .wb-temporal-item__time,
+  .wb-temporal-item__detail {
+    color: var(--wb-color-text-secondary);
+    font-size: 11px;
+  }
+
+  .wb-temporal-list {
+    display: grid;
+    gap: 8px;
+    max-height: 680px;
+    overflow-y: auto;
+    list-style: none;
+  }
+
+  .wb-temporal-list li {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 90px;
+  }
+
+  .wb-temporal-list button {
+    display: grid;
+    width: 100%;
+    gap: 4px;
+    padding: 9px 10px;
+    border: 1px solid var(--wb-color-border-default);
+    border-radius: var(--wb-radius-control);
+    background: var(--wb-color-surface-raised);
+    color: var(--wb-color-text-primary);
+    text-align: left;
+    cursor: pointer;
+  }
+}

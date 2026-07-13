@@ -1,0 +1,120 @@
+@layer wb.widgets {
+  .wb-capture {
+    display: grid;
+    gap: 12px;
+  }
+
+  .wb-capture__field,
+  .wb-capture__controls > label {
+    display: grid;
+    gap: 5px;
+    color: var(--wb-color-text-secondary);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .wb-capture textarea,
+  .wb-capture select {
+    width: 100%;
+    border: 1px solid var(--wb-color-border-default);
+    border-radius: var(--wb-radius-control);
+    background: var(--wb-color-surface-inset);
+    color: var(--wb-color-text-primary);
+  }
+
+  .wb-capture textarea {
+    min-height: 68px;
+    padding: 9px 10px;
+    line-height: 1.45;
+    resize: vertical;
+  }
+
+  .wb-capture select {
+    min-height: 36px;
+    padding: 5px 8px;
+  }
+
+  .wb-capture__controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    gap: 10px;
+  }
+
+  .wb-capture__controls > label {
+    min-width: 140px;
+    flex: 1;
+  }
+
+  .wb-capture__modes {
+    display: flex;
+    min-width: 220px;
+    flex: 2;
+    flex-wrap: wrap;
+    gap: 5px 12px;
+    padding: 5px 8px;
+    border: 1px solid var(--wb-color-border-default);
+    border-radius: var(--wb-radius-control);
+  }
+
+  .wb-capture__modes legend {
+    padding: 0 3px;
+    color: var(--wb-color-text-secondary);
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .wb-capture__modes label {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+  }
+
+  .wb-capture__destination-note,
+  .wb-capture__count {
+    color: var(--wb-color-text-muted);
+    font-size: 12px;
+  }
+
+  .wb-capture__recent {
+    display: grid;
+    gap: 6px;
+  }
+
+  .wb-capture__recent h3 {
+    font-size: 12px;
+  }
+
+  .wb-capture__recent ul {
+    display: grid;
+    gap: 6px;
+    list-style: none;
+  }
+
+  .wb-capture__recent li {
+    display: grid;
+    gap: 5px;
+    padding: 7px 9px;
+    border-left: 3px solid var(--wb-color-border-strong);
+    background: var(--wb-color-surface-inset);
+  }
+
+  .wb-capture__exact-text {
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+  }
+
+  .wb-capture--compact {
+    gap: 8px;
+  }
+
+  .wb-capture--compact .wb-capture__controls {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .wb-capture--compact .wb-capture__modes {
+    grid-column: 1 / -1;
+  }
+}
