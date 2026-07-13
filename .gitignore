@@ -27,6 +27,10 @@ tasks/task_metadata.db*
 projects/projects.db*
 logs/
 packs/
+# The generic runtime packs directory is local data, but the React dashboard's
+# theme-pack registry is product source and must survive a fresh checkout.
+!dashboard-react/src/theme/packs/
+!dashboard-react/src/theme/packs/**
 sidecar.pid
 sidecar_state.json
 agent_registry.json
