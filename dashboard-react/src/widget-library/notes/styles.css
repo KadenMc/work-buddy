@@ -19,9 +19,7 @@
     display: grid;
     min-height: 0;
     gap: var(--wb-space-5);
-    overflow-y: auto;
-    padding-right: var(--wb-space-2);
-    scrollbar-gutter: stable;
+    overflow: visible;
   }
 
   .wb-markdown-collection__group {
@@ -91,7 +89,6 @@
 
   .wb-markdown-collection--compact {
     overflow: visible;
-    padding-right: 0;
   }
 
   .wb-markdown-collection--compact .wb-markdown-item {

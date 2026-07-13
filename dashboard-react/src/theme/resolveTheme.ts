@@ -43,17 +43,17 @@ export function resolveThemeSummary(
 }
 
 const fallbackLight: CanvasThemeSnapshot = Object.freeze({
-  surfaceCanvas: "#f4f2ed",
-  surfaceRaised: "#fffdf9",
-  textPrimary: "#26343a",
-  textSecondary: "#526168",
-  borderDefault: "#d1ccc2",
-  focusRing: "#28778b",
+  surfaceCanvas: "#f6f1e9",
+  surfaceRaised: "#fffaf4",
+  textPrimary: "#3b2b25",
+  textSecondary: "#69564d",
+  borderDefault: "#d8c7b8",
+  focusRing: "#bd4c24",
   dataSeries: [
-    "#2c7181",
+    "#b64d28",
     "#28774d",
+    "#276f77",
     "#a76f18",
-    "#b84f32",
     "#765b9d",
     "#277c79",
     "#a55227",
@@ -62,17 +62,17 @@ const fallbackLight: CanvasThemeSnapshot = Object.freeze({
 });
 
 const fallbackDark: CanvasThemeSnapshot = Object.freeze({
-  surfaceCanvas: "#0c1519",
-  surfaceRaised: "#17252b",
-  textPrimary: "#e2eae9",
-  textSecondary: "#adbdc0",
-  borderDefault: "#30464d",
-  focusRing: "#76c4d5",
+  surfaceCanvas: "#15110f",
+  surfaceRaised: "#251e1a",
+  textPrimary: "#eee2d8",
+  textSecondary: "#c4b2a6",
+  borderDefault: "#4e3d34",
+  focusRing: "#ff9a63",
   dataSeries: [
-    "#69b6c8",
+    "#ff9a63",
     "#68c18c",
+    "#73c3c9",
     "#dfb255",
-    "#e77b5d",
     "#b39add",
     "#65c2ba",
     "#dc8b54",

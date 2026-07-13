@@ -564,8 +564,10 @@
   .wb-widget-frame__content {
     min-height: 0;
     flex: 1;
-    overflow: hidden;
+    overflow: auto;
+    overscroll-behavior: contain;
     padding: var(--wb-widget-padding);
+    scrollbar-gutter: stable;
   }
 
   .wb-widget-state {

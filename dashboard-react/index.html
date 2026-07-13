@@ -4,12 +4,17 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark light" />
-    <meta name="theme-color" content="#0c1519" />
+    <meta name="theme-color" content="#15110f" />
     <script>
       (() => {
         const fallback = { scheme: "system", skinId: "wb.default" };
         const schemes = new Set(["system", "light", "dark"]);
-        const skins = new Set(["wb.default", "wb.studio", "wb.conformance-stress"]);
+        const skins = new Set([
+          "wb.default",
+          "wb.calm-workshop",
+          "wb.studio",
+          "wb.conformance-stress",
+        ]);
         const densities = new Set(["compact", "comfortable", "spacious"]);
         let preference = fallback;
 
@@ -45,7 +50,8 @@
           : "comfortable";
         document.documentElement.style.colorScheme = resolvedScheme;
         const canvasColors = {
-          "wb.default": { light: "#f4f2ed", dark: "#0c1519" },
+          "wb.default": { light: "#f6f1e9", dark: "#15110f" },
+          "wb.calm-workshop": { light: "#f4f2ed", dark: "#0c1519" },
           "wb.studio": { light: "#f3f5f8", dark: "#11131a" },
           "wb.conformance-stress": { light: "#fff7ed", dark: "#1e1b4b" },
         };

@@ -265,16 +265,6 @@ export function ViewHost({
     announce("Customize view mode started");
   };
 
-  const openCatalog = () => {
-    if (!customizing) {
-      setEditState(beginViewEditSession(resolved));
-      setCustomizing(true);
-      setResetPatchRequested(false);
-      announce("Customize view mode started");
-    }
-    setCatalogOpen(true);
-  };
-
   const cancelCustomize = () => {
     setEditState((current) => viewEditSessionReducer(current, { type: "cancel" }));
     setCustomizing(false);
@@ -605,14 +595,9 @@ export function ViewHost({
             </span>
           </>
         ) : (
-          <>
-            <Button size="small" variant="ghost" onClick={openCatalog} disabled={isMobile}>
-              <SquaresFour aria-hidden="true" /> Widgets
-            </Button>
-            <Button size="small" onClick={beginCustomize} disabled={isMobile}>
-              <Layout aria-hidden="true" /> Customize view
-            </Button>
-          </>
+          <Button size="small" onClick={beginCustomize} disabled={isMobile}>
+            <Layout aria-hidden="true" /> Customize view
+          </Button>
         )}
       </div>
       {customizing && mobileOrderOpen ? (

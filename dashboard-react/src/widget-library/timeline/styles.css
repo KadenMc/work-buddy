@@ -210,10 +210,8 @@
     display: grid;
     min-height: 0;
     gap: var(--wb-space-4);
-    overflow-y: auto;
-    padding-right: var(--wb-space-2);
+    overflow: visible;
     list-style: none;
-    scrollbar-gutter: stable;
   }
 
   .wb-temporal-list li {
@@ -249,6 +247,6 @@
 
   @media (max-width: 47.99rem) {
     .wb-day-timeline { height: auto; }
-    .wb-temporal-list { overflow: visible; padding-right: 0; }
+    .wb-temporal-list { overflow: visible; }
   }
 }

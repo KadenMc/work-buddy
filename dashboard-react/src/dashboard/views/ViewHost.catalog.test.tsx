@@ -223,6 +223,8 @@ describe("ViewHost provider-bound catalog additions", () => {
       await screen.findByDisplayValue("stale provider value", undefined, { timeout: 5_000 }),
     ).toBeVisible();
     expect(screen.getByText("Default input is behind")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Widgets" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Customize view" }));
     await user.click(screen.getByRole("button", { name: "Widgets" }));
 
     expect(screen.queryByRole("button", { name: "Add Unsupported Input" })).not.toBeInTheDocument();

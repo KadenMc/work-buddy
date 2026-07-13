@@ -15,7 +15,7 @@ const schemeOptions: readonly {
   readonly value: ThemeSchemePreference;
   readonly label: string;
 }[] = [
-  { value: "system", label: "Follow this device" },
+  { value: "system", label: "System" },
   { value: "light", label: "Light" },
   { value: "dark", label: "Dark" },
 ];

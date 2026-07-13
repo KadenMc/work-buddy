@@ -23,7 +23,7 @@ const presentation: WidgetPresentationContext = {
     contractVersion: 1,
     preference: { scheme: "light", skinId: "wb.default" },
     resolvedScheme: "light",
-    skin: { id: "wb.default", version: 1, publisherAppId: "wb.core" },
+    skin: { id: "wb.default", version: 2, publisherAppId: "wb.core" },
     accessibility: {
       forcedColors: false,
       reducedMotion: false,

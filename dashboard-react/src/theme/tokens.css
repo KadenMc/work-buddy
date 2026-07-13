@@ -2,6 +2,109 @@
   :root,
   [data-wb-skin="wb.default"][data-wb-scheme="light"] {
     color-scheme: light;
+    --wb-palette-canvas: #f6f1e9;
+    --wb-palette-workspace: #ece5db;
+    --wb-palette-raised: #fffaf4;
+    --wb-palette-overlay: #fffdf9;
+    --wb-palette-inset: #f1e8dd;
+    --wb-palette-sunken: #e7ddcf;
+    --wb-palette-selected: #f7dfd1;
+    --wb-palette-text-strong: #261a15;
+    --wb-palette-text-default: #3b2b25;
+    --wb-palette-text-secondary: #69564d;
+    --wb-palette-text-muted: #76645b;
+    --wb-palette-text-disabled: #aa9a91;
+    --wb-palette-text-inverse: #fffaf4;
+    --wb-palette-border-subtle: #eadfd4;
+    --wb-palette-border-default: #d8c7b8;
+    --wb-palette-border-strong: #aa8e7c;
+    --wb-palette-border-interactive: #b64d28;
+    --wb-palette-accent: #b64d28;
+    --wb-palette-accent-hover: #923b1f;
+    --wb-palette-accent-soft: #f8ded0;
+    --wb-palette-action-primary: #a83f1f;
+    --wb-palette-action-primary-hover: #8e3318;
+    --wb-palette-action-primary-pressed: #722812;
+    --wb-palette-action-neutral: #eee5da;
+    --wb-palette-action-neutral-hover: #e3d6c9;
+    --wb-palette-action-neutral-pressed: #d7c5b6;
+    --wb-palette-selection: #f4cfbb;
+    --wb-palette-focus: #bd4c24;
+    --wb-palette-success: #28774d;
+    --wb-palette-success-surface: #e0f1e7;
+    --wb-palette-warning: #956516;
+    --wb-palette-warning-surface: #f8edcf;
+    --wb-palette-danger: #b23b3f;
+    --wb-palette-danger-surface: #f8e2e1;
+    --wb-palette-info: #276f77;
+    --wb-palette-info-surface: #dfeded;
+    --wb-palette-data-1: #b64d28;
+    --wb-palette-data-2: #28774d;
+    --wb-palette-data-3: #276f77;
+    --wb-palette-data-4: #a76f18;
+    --wb-palette-data-5: #765b9d;
+    --wb-palette-data-6: #277c79;
+    --wb-palette-data-7: #a55227;
+    --wb-palette-data-8: #667278;
+    --wb-shadow-raised: 0 1px 2px rgb(55 37 27 / 7%), 0 9px 26px rgb(55 37 27 / 6%);
+    --wb-shadow-overlay: 0 18px 50px rgb(55 37 27 / 20%), 0 2px 8px rgb(55 37 27 / 9%);
+    --wb-shadow-focus: 0 0 0 3px rgb(189 76 36 / 20%);
+  }
+
+  [data-wb-skin="wb.default"][data-wb-scheme="dark"],
+  :root[data-wb-scheme="dark"] {
+    color-scheme: dark;
+    --wb-palette-canvas: #15110f;
+    --wb-palette-workspace: #1c1714;
+    --wb-palette-raised: #251e1a;
+    --wb-palette-overlay: #302620;
+    --wb-palette-inset: #1c1613;
+    --wb-palette-sunken: #0f0c0a;
+    --wb-palette-selected: #45271a;
+    --wb-palette-text-strong: #fff8f1;
+    --wb-palette-text-default: #eee2d8;
+    --wb-palette-text-secondary: #c4b2a6;
+    --wb-palette-text-muted: #9d897d;
+    --wb-palette-text-disabled: #695b54;
+    --wb-palette-text-inverse: #20120b;
+    --wb-palette-border-subtle: #3a2e28;
+    --wb-palette-border-default: #4e3d34;
+    --wb-palette-border-strong: #765b4c;
+    --wb-palette-border-interactive: #ed8750;
+    --wb-palette-accent: #ff9a63;
+    --wb-palette-accent-hover: #ffb184;
+    --wb-palette-accent-soft: #432619;
+    --wb-palette-action-primary: #e86f38;
+    --wb-palette-action-primary-hover: #f4864f;
+    --wb-palette-action-primary-pressed: #c65b2b;
+    --wb-palette-action-neutral: #332821;
+    --wb-palette-action-neutral-hover: #44342a;
+    --wb-palette-action-neutral-pressed: #564135;
+    --wb-palette-selection: #67361f;
+    --wb-palette-focus: #ff9a63;
+    --wb-palette-success: #68c18c;
+    --wb-palette-success-surface: #163326;
+    --wb-palette-warning: #e0b75b;
+    --wb-palette-warning-surface: #382f1a;
+    --wb-palette-danger: #ee7f82;
+    --wb-palette-danger-surface: #3a2023;
+    --wb-palette-info: #73c3c9;
+    --wb-palette-info-surface: #173235;
+    --wb-palette-data-1: #ff9a63;
+    --wb-palette-data-2: #68c18c;
+    --wb-palette-data-3: #73c3c9;
+    --wb-palette-data-4: #dfb255;
+    --wb-palette-data-5: #b39add;
+    --wb-palette-data-6: #65c2ba;
+    --wb-palette-data-7: #dc8b54;
+    --wb-palette-data-8: #93a4a8;
+    --wb-shadow-raised: 0 1px 1px rgb(0 0 0 / 30%), 0 12px 30px rgb(0 0 0 / 22%);
+    --wb-shadow-overlay: 0 24px 70px rgb(0 0 0 / 58%), 0 2px 10px rgb(0 0 0 / 38%);
+    --wb-shadow-focus: 0 0 0 3px rgb(255 154 99 / 24%);
+  }
+
+  [data-wb-skin="wb.calm-workshop"][data-wb-scheme="light"] {
+    color-scheme: light;
     --wb-palette-canvas: #f4f2ed;
     --wb-palette-workspace: #ebe8e1;
     --wb-palette-raised: #fffdf9;
@@ -51,8 +154,7 @@
     --wb-shadow-focus: 0 0 0 3px rgb(44 113 129 / 18%);
   }
 
-  [data-wb-skin="wb.default"][data-wb-scheme="dark"],
-  :root[data-wb-scheme="dark"] {
+  [data-wb-skin="wb.calm-workshop"][data-wb-scheme="dark"] {
     color-scheme: dark;
     --wb-palette-canvas: #0c1519;
     --wb-palette-workspace: #101c21;

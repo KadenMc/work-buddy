@@ -48,6 +48,51 @@ test("default light desktop Journal visual baseline", async ({ page }) => {
   });
 });
 
+test("Calm Workshop dark desktop Journal visual baseline", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await installThemePreference(page, "dark", "wb.calm-workshop");
+  await openJournal(page);
+  await materializeVisualContent(page);
+
+  await expect(page).toHaveScreenshot("journal-calm-workshop-dark-desktop.png", {
+    animations: "disabled",
+    fullPage: true,
+    mask: [page.locator(".clock")],
+    maskColor: "#808080",
+  });
+});
+
+test("default dark widget catalog visual baseline", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await installThemePreference(page, "dark");
+  await openJournal(page);
+  await page.getByRole("button", { name: "Customize view" }).click();
+  await page.getByRole("button", { name: "Widgets" }).click();
+  await expect(page.getByRole("dialog", { name: "Widgets" })).toBeVisible();
+
+  await expect(page).toHaveScreenshot("widget-catalog-dark-desktop.png", {
+    animations: "disabled",
+    mask: [page.locator(".clock")],
+    maskColor: "#808080",
+  });
+});
+
+test("default dark mobile-order editor visual baseline", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await installThemePreference(page, "dark");
+  await openJournal(page);
+  await page.getByRole("button", { name: "Customize view" }).click();
+  await page.getByRole("button", { name: "Mobile order" }).click();
+  await expect(page.getByRole("grid", { name: "Mobile widget order" })).toBeVisible();
+
+  await expect(page).toHaveScreenshot("mobile-order-editor-dark-desktop.png", {
+    animations: "disabled",
+    fullPage: true,
+    mask: [page.locator(".clock")],
+    maskColor: "#808080",
+  });
+});
+
 test("adversarial skin desktop Journal visual baseline", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await installThemePreference(page, "dark", "wb.conformance-stress");

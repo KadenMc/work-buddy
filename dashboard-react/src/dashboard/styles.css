@@ -125,6 +125,19 @@
     border-color: var(--wb-color-accent) !important;
   }
 
+  .wb-view-host.is-customizing .react-grid-item.react-grid-placeholder {
+    z-index: 2;
+    border: 2px dashed var(--wb-color-border-interactive);
+    border-radius: var(--wb-radius-surface);
+    background: var(--wb-color-edit-selection) !important;
+    box-shadow:
+      inset 0 0 0 1px color-mix(in srgb, var(--wb-color-accent) 18%, transparent),
+      var(--wb-shadow-raised);
+    opacity: 0.72 !important;
+    transition-duration: var(--wb-motion-duration-fast) !important;
+    user-select: none;
+  }
+
   .wb-dashboard-mobile-stack {
     display: grid;
     gap: var(--wb-space-6);
@@ -191,27 +204,109 @@
 
   .wb-widget-catalog__list {
     display: grid;
-    gap: var(--wb-space-5);
+    gap: var(--wb-space-3);
     margin-top: var(--wb-space-5);
     list-style: none;
   }
 
   .wb-widget-catalog__card {
-    display: grid;
-    gap: var(--wb-space-3);
-    padding: var(--wb-space-6);
+    overflow: hidden;
     border: var(--wb-border-width) solid var(--wb-color-border-subtle);
     border-radius: var(--wb-radius-surface);
     background: var(--wb-color-surface-raised);
+  }
+
+  .wb-widget-catalog__summary {
+    display: grid;
+    min-height: 3.75rem;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--wb-space-4);
+    padding: var(--wb-space-3) var(--wb-space-4) var(--wb-space-3) var(--wb-space-5);
+  }
+
+  .wb-widget-catalog__trigger {
+    display: flex;
+    min-width: 0;
+    align-self: stretch;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--wb-space-4);
+    border: 0;
+    background: transparent;
+    color: var(--wb-color-text-primary);
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .wb-widget-catalog__trigger > svg {
+    width: var(--wb-icon-size-sm);
+    height: var(--wb-icon-size-sm);
+    flex: 0 0 auto;
+    color: var(--wb-color-text-muted);
+    transition: transform var(--wb-motion-duration-fast) var(--wb-motion-easing-standard);
+  }
+
+  [data-expanded] > .wb-widget-catalog__summary .wb-widget-catalog__trigger > svg {
+    transform: rotate(180deg);
+  }
+
+  .wb-widget-catalog__identity {
+    display: grid;
+    min-width: 0;
+    gap: var(--wb-space-1);
+  }
+
+  .wb-widget-catalog__identity strong,
+  .wb-widget-catalog__identity span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .wb-widget-catalog__identity strong {
+    color: var(--wb-color-text-strong);
+    font-size: var(--wb-font-size-sm);
+  }
+
+  .wb-widget-catalog__identity span {
+    color: var(--wb-color-text-muted);
+    font-size: var(--wb-font-size-2xs);
   }
 
   .wb-widget-catalog__provenance { color: var(--wb-color-text-muted) !important; }
 
   .wb-widget-catalog__actions {
     display: flex;
-    flex-wrap: wrap;
+    gap: var(--wb-space-2);
+  }
+
+  .wb-widget-catalog__actions .wb-button {
+    min-height: 2rem;
+    padding-inline: var(--wb-space-3);
+  }
+
+  .wb-widget-catalog__details {
+    display: grid;
     gap: var(--wb-space-3);
-    margin-top: var(--wb-space-4);
+    padding: var(--wb-space-5);
+    border-top: var(--wb-border-width) solid var(--wb-color-border-subtle);
+    background: var(--wb-color-surface-inset);
+  }
+
+  .wb-widget-catalog__replacements,
+  .wb-widget-catalog__replacements ul {
+    display: grid;
+    gap: var(--wb-space-3);
+  }
+
+  .wb-widget-catalog__replacements li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--wb-space-4);
+    color: var(--wb-color-text-secondary);
+    font-size: var(--wb-font-size-xs);
   }
 
   .wb-mobile-order-editor {
@@ -225,9 +320,7 @@
     box-shadow: var(--wb-shadow-raised);
   }
 
-  .wb-mobile-order-editor > header,
-  .wb-mobile-order-editor li,
-  .wb-mobile-order-editor__actions {
+  .wb-mobile-order-editor > header {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -235,13 +328,46 @@
   }
 
   .wb-mobile-order-editor header p { color: var(--wb-color-text-muted); font-size: var(--wb-font-size-xs); }
-  .wb-mobile-order-editor ol { display: grid; gap: var(--wb-space-4); list-style-position: inside; }
+  .wb-mobile-order-editor__list { display: grid; gap: var(--wb-space-3); outline: none; }
 
-  .wb-mobile-order-editor li {
-    padding: var(--wb-space-5) var(--wb-space-6);
+  .wb-mobile-order-editor__item {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--wb-space-4);
+    padding: var(--wb-space-3) var(--wb-space-5) var(--wb-space-3) var(--wb-space-3);
     border: var(--wb-border-width) solid var(--wb-color-border-subtle);
     border-radius: var(--wb-radius-control);
     background: var(--wb-color-surface-inset);
+  }
+
+  .wb-mobile-order-editor__item[data-dragging] { opacity: 0.55; }
+
+  .wb-mobile-order-editor__drag-handle {
+    display: grid;
+    width: var(--wb-control-height-sm);
+    height: var(--wb-control-height-sm);
+    place-items: center;
+    border: var(--wb-border-width) solid var(--wb-color-border-default);
+    border-radius: var(--wb-radius-control);
+    background: var(--wb-color-surface-raised);
+    color: var(--wb-color-accent);
+    cursor: grab;
+  }
+
+  .wb-mobile-order-editor__drag-handle[data-pressed] { cursor: grabbing; }
+  .wb-mobile-order-editor__drag-handle svg { width: var(--wb-icon-size-md); height: var(--wb-icon-size-md); }
+  .wb-mobile-order-editor__hint { color: var(--wb-color-text-muted); font-size: var(--wb-font-size-xs); }
+
+  .wb-mobile-order-editor .react-aria-DropIndicator {
+    height: 2px;
+    margin-inline: var(--wb-space-5);
+    border-radius: 999px;
+  }
+
+  .wb-mobile-order-editor .react-aria-DropIndicator[data-drop-target] {
+    background: var(--wb-color-accent);
+    box-shadow: var(--wb-shadow-focus);
   }
 
   @media (max-width: 47.99rem) {
@@ -250,6 +376,8 @@
     .wb-dashboard-mobile-stack .wb-widget-frame { min-height: 0; }
     .wb-dashboard-mobile-stack .wb-widget-frame__content { overflow: visible; }
     .wb-dashboard-mobile-stack .wb-widget-frame { overflow: visible; }
+    .wb-widget-catalog__summary { grid-template-columns: minmax(0, 1fr); }
+    .wb-widget-catalog__actions { justify-content: flex-end; }
   }
 
   @media (prefers-reduced-transparency: reduce) {

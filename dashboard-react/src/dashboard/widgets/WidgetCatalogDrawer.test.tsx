@@ -238,6 +238,7 @@ describe("WidgetCatalogDrawer", () => {
       '[data-instance-id="default:summary"]',
     ) as HTMLElement;
     expect(within(required).getByRole("button", { name: "Hide" })).toBeDisabled();
+    await user.click(within(required).getByRole("button", { name: "Show details for Current" }));
     expect(
       within(required).getByRole("button", { name: "Replace with Quick Summary" }),
     ).toBeInTheDocument();
@@ -266,7 +267,7 @@ describe("WidgetCatalogDrawer", () => {
     const orphan = container.querySelector(
       '[data-instance-id="wi_orphan"]',
     ) as HTMLElement;
-    await user.click(within(orphan).getByRole("button", { name: "Find replacement" }));
+    await user.click(within(orphan).getByRole("button", { name: "Find replacement for missing.publisher.summary" }));
     expect(onRecover).toHaveBeenCalledWith(instances[2]);
 
     fireEvent(dialog, new Event("cancel", { cancelable: true }));

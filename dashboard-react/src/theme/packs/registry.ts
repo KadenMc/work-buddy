@@ -1,6 +1,7 @@
 import type { ThemeSkinIdentity } from "../contracts";
 
 export const DEFAULT_SKIN_ID = "wb.default";
+export const CALM_WORKSHOP_SKIN_ID = "wb.calm-workshop";
 export const STUDIO_SKIN_ID = "wb.studio";
 export const CONFORMANCE_STRESS_SKIN_ID = "wb.conformance-stress";
 
@@ -16,6 +17,17 @@ const skins: Readonly<Record<string, ThemeSkinDefinition>> = Object.freeze({
   [DEFAULT_SKIN_ID]: {
     identity: {
       id: DEFAULT_SKIN_ID,
+      version: 2,
+      publisherAppId: "wb.core",
+    },
+    label: "Default",
+    description: "Warm neutral surfaces with Work Buddy orange leading the way.",
+    schemes: ["light", "dark"],
+    purpose: "product",
+  },
+  [CALM_WORKSHOP_SKIN_ID]: {
+    identity: {
+      id: CALM_WORKSHOP_SKIN_ID,
       version: 1,
       publisherAppId: "wb.core",
     },

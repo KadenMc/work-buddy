@@ -51,7 +51,7 @@ const theme: ResolvedThemeSummary = {
   contractVersion: 1,
   preference: { scheme: "dark", skinId: "wb.default" },
   resolvedScheme: "dark",
-  skin: { id: "wb.default", version: 1, publisherAppId: "wb.core" },
+  skin: { id: "wb.default", version: 2, publisherAppId: "wb.core" },
   accessibility: {
     forcedColors: false,
     reducedMotion: false,

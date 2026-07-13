@@ -1,6 +1,12 @@
-import { ArrowDown } from "@phosphor-icons/react/ArrowDown";
-import { ArrowUp } from "@phosphor-icons/react/ArrowUp";
+import { DotsSixVertical } from "@phosphor-icons/react/DotsSixVertical";
 import { X } from "@phosphor-icons/react/X";
+import {
+  Button as AriaButton,
+  GridList,
+  GridListItem,
+  useDragAndDrop,
+} from "react-aria-components";
+import type { Key } from "react";
 
 import { Button } from "../../ui";
 import type { ContributionRegistry } from "../contributions/registry";
@@ -15,16 +21,26 @@ export interface MobileOrderEditorProps {
   onClose(): void;
 }
 
-const swap = (
+interface MobileOrderDropTarget {
+  readonly key: Key;
+  readonly dropPosition: "before" | "after" | "on";
+}
+
+export const reorderMobileWidgets = (
   order: readonly WidgetInstanceId[],
-  index: number,
-  offset: -1 | 1,
+  movingKeys: Iterable<Key>,
+  target: MobileOrderDropTarget,
 ): readonly WidgetInstanceId[] => {
-  const target = index + offset;
-  if (target < 0 || target >= order.length) return order;
-  const next = [...order];
-  [next[index], next[target]] = [next[target]!, next[index]!];
-  return next;
+  const movingIds = new Set([...movingKeys].map(String));
+  const moving = order.filter((instanceId) => movingIds.has(instanceId));
+  if (moving.length === 0) return order;
+
+  const remaining = order.filter((instanceId) => !movingIds.has(instanceId));
+  const targetIndex = remaining.findIndex((instanceId) => instanceId === String(target.key));
+  if (targetIndex < 0) return order;
+  const insertAt = targetIndex + (target.dropPosition === "after" ? 1 : 0);
+  remaining.splice(insertAt, 0, ...moving);
+  return remaining;
 };
 
 export function MobileOrderEditor({
@@ -42,6 +58,24 @@ export function MobileOrderEditor({
       .map((instance) => instance.instanceId)
       .filter((instanceId) => !order.includes(instanceId)),
   ];
+  const items = normalized.map((instanceId) => {
+    const instance = byId.get(instanceId)!;
+    const widget = registry.getWidget(instance.widgetTypeId);
+    return {
+      id: instanceId,
+      title: widget?.definition.displayName ?? instance.widgetTypeId,
+    };
+  });
+  const { dragAndDropHooks } = useDragAndDrop({
+    getItems: (keys) =>
+      [...keys].map((key) => ({
+        "text/plain": String(key),
+      })),
+    getAllowedDropOperations: () => ["move"],
+    onReorder: (event) => {
+      onChange(reorderMobileWidgets(normalized, event.keys, event.target));
+    },
+  });
 
   return (
     <section className="wb-mobile-order-editor" aria-labelledby="wb-mobile-order-title">
@@ -54,39 +88,27 @@ export function MobileOrderEditor({
           <X aria-hidden="true" /> Close
         </Button>
       </header>
-      <ol>
-        {normalized.map((instanceId, index) => {
-          const instance = byId.get(instanceId)!;
-          const widget = registry.getWidget(instance.widgetTypeId);
-          return (
-            <li key={instanceId}>
-              <span>
-                <strong>{widget?.definition.displayName ?? instance.widgetTypeId}</strong>
-              </span>
-              <span className="wb-mobile-order-editor__actions">
-                <Button
-                  size="small"
-                  variant="ghost"
-                  disabled={index === 0}
-                  aria-label={`Move ${widget?.definition.displayName ?? instance.widgetTypeId} earlier on mobile`}
-                  onClick={() => onChange(swap(normalized, index, -1))}
-                >
-                  <ArrowUp aria-hidden="true" /> Earlier
-                </Button>
-                <Button
-                  size="small"
-                  variant="ghost"
-                  disabled={index === normalized.length - 1}
-                  aria-label={`Move ${widget?.definition.displayName ?? instance.widgetTypeId} later on mobile`}
-                  onClick={() => onChange(swap(normalized, index, 1))}
-                >
-                  <ArrowDown aria-hidden="true" /> Later
-                </Button>
-              </span>
-            </li>
-          );
-        })}
-      </ol>
+      <GridList
+        aria-label="Mobile widget order"
+        items={items}
+        selectionMode="none"
+        dragAndDropHooks={dragAndDropHooks}
+        className="wb-mobile-order-editor__list"
+      >
+        {(item) => (
+          <GridListItem id={item.id} textValue={item.title} className="wb-mobile-order-editor__item">
+            <AriaButton
+              slot="drag"
+              className="wb-mobile-order-editor__drag-handle"
+              aria-label={`Drag ${item.title} to reorder on mobile`}
+            >
+              <DotsSixVertical weight="bold" aria-hidden="true" />
+            </AriaButton>
+            <strong>{item.title}</strong>
+            <span className="wb-mobile-order-editor__hint">Drag to reorder</span>
+          </GridListItem>
+        )}
+      </GridList>
     </section>
   );
 }

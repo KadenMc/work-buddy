@@ -5,8 +5,7 @@
     height: 100%;
     flex-direction: column;
     gap: var(--wb-widget-gap);
-    overflow: auto;
-    scrollbar-gutter: stable;
+    overflow: visible;
   }
 
   .wb-capture__field { flex: 0 0 auto; }
@@ -87,7 +86,7 @@
     white-space: pre-wrap;
   }
 
-  .wb-capture--compact { gap: var(--wb-space-5); overflow: visible; }
+  .wb-capture--compact { gap: var(--wb-space-5); }
   .wb-capture--compact .wb-capture__field .wb-textarea { min-height: 4.5rem; }
   .wb-capture--compact .wb-capture__controls { grid-template-columns: minmax(0, 1fr) auto; }
 

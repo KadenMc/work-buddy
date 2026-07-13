@@ -91,6 +91,19 @@ test("pointer drag and resize preserve unrelated widget geometry", async ({ page
   // before widening it; otherwise collision rejection may correctly veto
   // the resize depending on which grid row the drag snaps to.
   await page.mouse.move(dragX, dragY + 396, { steps: 24 });
+  const placeholder = page.locator(".react-grid-placeholder");
+  await expect(placeholder).toBeVisible();
+  const placeholderStyle = await placeholder.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      backgroundColor: style.backgroundColor,
+      borderRadius: style.borderRadius,
+      borderStyle: style.borderStyle,
+    };
+  });
+  expect(placeholderStyle.backgroundColor).not.toBe("rgb(255, 0, 0)");
+  expect(placeholderStyle.borderRadius).not.toBe("0px");
+  expect(placeholderStyle.borderStyle).toBe("dashed");
   await page.mouse.up();
 
   const movedNotes = await notes.boundingBox();
@@ -170,13 +183,20 @@ test("undo, cancel, done, reload, and reset preserve the personal-patch lifecycl
   expect(patch).toBeNull();
 });
 
-test("desktop mobile-order controls persist canonical mobile DOM order", async ({ page }) => {
+test("desktop drag-and-drop persists canonical mobile DOM order", async ({ page }) => {
   await openJournal(page);
   await beginCustomize(page);
   await page.getByRole("button", { name: "Mobile order" }).click();
-  await page
-    .getByRole("button", { name: "Move Day Timeline earlier on mobile" })
-    .click();
+  await expect(page.getByText("Earlier")).toHaveCount(0);
+  await expect(page.getByText("Later")).toHaveCount(0);
+  const timelineRow = page.getByRole("row", { name: "Day Timeline" });
+  const captureRow = page.getByRole("row", { name: "Quick Capture" });
+  const captureBox = await captureRow.boundingBox();
+  expect(captureBox).not.toBeNull();
+  if (captureBox === null) return;
+  await timelineRow.dragTo(captureRow, {
+    targetPosition: { x: captureBox.width / 2, y: 2 },
+  });
   await page.getByRole("button", { name: "Done" }).click();
 
   const patch = await readPersonalization(page);
@@ -194,4 +214,35 @@ test("desktop mobile-order controls persist canonical mobile DOM order", async (
     "Quick Capture",
     "Running Notes",
   ]);
+});
+
+test("resizing Quick Capture cannot remove its shared scroll boundary", async ({ page }) => {
+  await openJournal(page);
+  await beginCustomize(page);
+
+  for (let index = 0; index < 8; index += 1) {
+    const captureMenu = await openWidgetMenu(page, "Quick Capture");
+    const shorter = captureMenu.getByRole("menuitem", { name: "Shorter" });
+    if ((await shorter.getAttribute("aria-disabled")) === "true") {
+      await page.keyboard.press("Escape");
+      break;
+    }
+    await shorter.click();
+  }
+
+  const content = widget(page, "Quick Capture").locator(".wb-widget-frame__content");
+  const metrics = await content.evaluate((element) => {
+    const style = getComputedStyle(element);
+    element.scrollTop = element.scrollHeight;
+    return {
+      overflowY: style.overflowY,
+      clientHeight: element.clientHeight,
+      scrollHeight: element.scrollHeight,
+      scrollTop: element.scrollTop,
+    };
+  });
+  expect(metrics.overflowY).toBe("auto");
+  expect(metrics.scrollHeight).toBeGreaterThan(metrics.clientHeight);
+  expect(metrics.scrollTop).toBeGreaterThan(0);
+  await page.getByRole("button", { name: "Cancel" }).click();
 });
