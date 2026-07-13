@@ -2,6 +2,7 @@ import type {
   AppContribution,
   AppId,
   DefaultWidgetSlot,
+  JsonSchemaReference,
   ViewDefinition,
   ViewId,
   WidgetDefinition,
@@ -235,15 +236,19 @@ export const validateWidgetThemeDeclaration = (
 export const widgetSatisfiesSlotRole = (
   widget: WidgetDefinition,
   slot: DefaultWidgetSlot,
+  roleContracts?: ReadonlyMap<WidgetRoleId, WidgetRoleContract>,
 ): boolean => {
   const rule = slot.allowedSubstitution;
   const acceptedRoles = new Set([
     slot.requiredRole,
     ...(rule?.compatibleRoleIds ?? []),
   ]);
-  const providesAcceptedRole = widget.providesRoles.some((roleId) =>
-    acceptedRoles.has(roleId),
-  );
+  const providesAcceptedRole = widget.providesRoles.some((roleId) => {
+    if (!acceptedRoles.has(roleId)) return false;
+    if (roleContracts === undefined) return true;
+    const role = roleContracts.get(roleId);
+    return role !== undefined && widgetSatisfiesRoleContract(widget, role);
+  });
   const allowedPublisher =
     rule?.allowedPublisherAppIds === undefined ||
     rule.allowedPublisherAppIds.includes(widget.publisherAppId);
@@ -252,6 +257,24 @@ export const widgetSatisfiesSlotRole = (
     widget.definitionVersion >= rule.minimumDefinitionVersion;
   return providesAcceptedRole && allowedPublisher && allowedVersion;
 };
+
+const schemaReferencesEqual = (
+  left: JsonSchemaReference,
+  right: JsonSchemaReference,
+): boolean => left.schemaId === right.schemaId && left.version === right.version;
+
+/** A claimed role is executable compatibility, not merely a matching label. */
+export const widgetSatisfiesRoleContract = (
+  widget: WidgetDefinition,
+  role: WidgetRoleContract,
+): boolean =>
+  (role.inputSchema === undefined ||
+    schemaReferencesEqual(widget.inputSchema, role.inputSchema)) &&
+  (role.outputIntentSchemas ?? []).every((requiredIntent) =>
+    widget.outputIntentSchemas.some((providedIntent) =>
+      schemaReferencesEqual(providedIntent, requiredIntent),
+    ),
+  );
 
 const validateWidgetSize = (
   widget: WidgetDefinition,
@@ -348,14 +371,40 @@ const validateWidgetDefinition = (
   }
   widget.providesRoles.forEach((roleId, roleIndex) => {
     validateRoleId(roleId, `${path}.providesRoles[${roleIndex}]`, issues);
-    if (!roles.has(roleId)) {
+    const role = roles.get(roleId);
+    if (role === undefined) {
       addIssue(
         issues,
         "unknown_widget_role",
         `${path}.providesRoles[${roleIndex}]`,
         `references unregistered role ${roleId}`,
       );
+      return;
     }
+    if (
+      role.inputSchema !== undefined &&
+      !schemaReferencesEqual(widget.inputSchema, role.inputSchema)
+    ) {
+      addIssue(
+        issues,
+        "widget_role_input_schema_mismatch",
+        `${path}.inputSchema`,
+        `must exactly match input schema ${role.inputSchema.schemaId}@${role.inputSchema.version} required by ${roleId}`,
+      );
+    }
+    (role.outputIntentSchemas ?? []).forEach((requiredIntent) => {
+      const providesIntent = widget.outputIntentSchemas.some((providedIntent) =>
+        schemaReferencesEqual(providedIntent, requiredIntent),
+      );
+      if (!providesIntent) {
+        addIssue(
+          issues,
+          "widget_role_output_intent_missing",
+          `${path}.outputIntentSchemas`,
+          `must provide output intent ${requiredIntent.schemaId}@${requiredIntent.version} required by ${roleId}`,
+        );
+      }
+    });
   });
   validateWidgetSize(widget, path, issues);
   issues.push(...validateWidgetThemeDeclaration(widget.theme, `${path}.theme`));
@@ -604,7 +653,7 @@ const validateViewDefinition = (
       );
       return;
     }
-    if (!widgetSatisfiesSlotRole(widget, slot)) {
+    if (!widgetSatisfiesSlotRole(widget, slot, roles)) {
       addIssue(
         issues,
         "incompatible_default_widget",

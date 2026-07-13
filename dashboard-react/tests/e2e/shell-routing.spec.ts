@@ -31,13 +31,17 @@ test("Quick Capture persists exact text and updates bound sibling input through 
   await capture.getByRole("combobox", { name: "Destination" }).selectOption("running_notes");
   await capture.getByRole("button", { name: "Capture", exact: true }).click();
 
-  await expect(capture.getByRole("region", { name: "Recent captures" })).toContainText(
+  const submittedCapture = capture
+    .getByRole("region", { name: "Recent captures" })
+    .locator("li")
+    .filter({ hasText: "Meeting ran long" });
+  await expect(submittedCapture).toContainText("Meeting ran long");
+  await expect(submittedCapture).toContainText("persisted");
+  await expect(page.getByRole("region", { name: "Running Notes", exact: true })).toContainText(
     "Meeting ran long",
   );
-  await expect(capture.getByRole("region", { name: "Recent captures" })).toContainText(
-    "pending",
-  );
-  await expect(page.getByRole("region", { name: "Running notes", exact: true })).toContainText(
-    "Meeting ran long",
+  await expect(submittedCapture).toContainText("succeeded");
+  await expect(page.getByRole("region", { name: "Running Notes", exact: true })).toContainText(
+    "The meeting ran long; only the open afternoon was replanned.",
   );
 });

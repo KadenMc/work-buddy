@@ -1,8 +1,14 @@
-import { useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useEffect, useRef, type SyntheticEvent } from "react";
 
 import { Button } from "../../ui";
-import type { AppId, ViewDefinition, WidgetDefinition } from "../contributions/contracts";
 import type {
+  AppId,
+  ViewDefinition,
+  WidgetDefinition,
+  WidgetTypeId,
+} from "../contributions/contracts";
+import type {
+  ContributionTrustProvenance,
   ContributionRegistry,
   RegisteredWidget,
 } from "../contributions/registry";
@@ -12,12 +18,7 @@ import type {
 } from "../personalization/contracts";
 import { findCompatibleWidgetReplacements } from "./replaceWidget";
 
-export type WidgetPublisherTrust =
-  | "native"
-  | "standard"
-  | "personal-proposed"
-  | "developer-local"
-  | "unverified";
+export type WidgetPublisherTrust = ContributionTrustProvenance;
 
 export interface WidgetPublisherPresentation {
   readonly label: string;
@@ -29,6 +30,8 @@ export interface WidgetCatalogDrawerProps {
   readonly registry: ContributionRegistry;
   readonly view: ViewDefinition;
   readonly instances: readonly EffectiveWidgetInstance[];
+  /** Provider-approved types that can be hydrated for this specific view. */
+  readonly addableWidgetTypeIds: readonly WidgetTypeId[];
   readonly title?: string;
   getPublisherPresentation?(widget: RegisteredWidget): WidgetPublisherPresentation;
   onAction(action: ViewEditAction): void;
@@ -72,7 +75,7 @@ const defaultPublisherPresentation = (
 ): WidgetPublisherPresentation => ({
   label: widget.app.displayName,
   appId: widget.app.appId,
-  trust: "unverified",
+  trust: widget.trust,
 });
 
 function PublisherLine({
@@ -187,6 +190,7 @@ export function WidgetCatalogDrawer({
   registry,
   view,
   instances,
+  addableWidgetTypeIds,
   title = "Widgets",
   getPublisherPresentation = defaultPublisherPresentation,
   onAction,
@@ -195,35 +199,36 @@ export function WidgetCatalogDrawer({
   onRecoverRequested,
   onClose,
 }: WidgetCatalogDrawerProps) {
-  const dialogRef = useRef<HTMLDivElement>(null);
+  const dialogRef = useRef<HTMLDialogElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    const previouslyFocused = document.activeElement as HTMLElement | null;
-    closeRef.current?.focus();
-    return () => {
+  const previouslyFocusedRef = useRef<HTMLElement | null>(null);
+  const restoreFocus = (): void => {
+    const previouslyFocused = previouslyFocusedRef.current;
+    if (previouslyFocused?.isConnected) previouslyFocused.focus();
+    globalThis.setTimeout(() => {
       if (previouslyFocused?.isConnected) previouslyFocused.focus();
-    };
+    }, 0);
+  };
+  useEffect(() => {
+    previouslyFocusedRef.current = document.activeElement as HTMLElement | null;
+    const dialog = dialogRef.current;
+    if (dialog !== null && !dialog.open) {
+      if (typeof dialog.showModal === "function") dialog.showModal();
+      else dialog.setAttribute("open", "");
+    }
+    closeRef.current?.focus();
+    return restoreFocus;
   }, []);
-  const onDialogKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>): void => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      onClose();
-      return;
-    }
-    if (event.key !== "Tab") return;
-    const focusable = [...(dialogRef.current?.querySelectorAll<HTMLElement>(
-      'button:not([disabled]),summary,[href],input,select,textarea,[tabindex]:not([tabindex="-1"])',
-    ) ?? [])];
-    if (focusable.length === 0) return;
-    const first = focusable[0]!;
-    const last = focusable[focusable.length - 1]!;
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
+  const requestClose = (): void => {
+    const dialog = dialogRef.current;
+    if (dialog?.open && typeof dialog.close === "function") dialog.close();
+    else dialog?.removeAttribute("open");
+    onClose();
+    restoreFocus();
+  };
+  const onDialogCancel = (event: SyntheticEvent<HTMLDialogElement>): void => {
+    event.preventDefault();
+    requestClose();
   };
   const unavailable = instances.filter(
     (instance) =>
@@ -237,10 +242,12 @@ export function WidgetCatalogDrawer({
     (instance) => instance.visibility === "hidden" && !unavailableIds.has(instance.instanceId),
   );
   const installedTypeIds = new Set(instances.map((instance) => instance.widgetTypeId));
+  const providerAddableTypeIds = new Set(addableWidgetTypeIds);
   const available = registry.listWidgets().filter(
     (widget) =>
-      widget.definition.multiplicity === "multiple_per_view" ||
-      !installedTypeIds.has(widget.definition.typeId),
+      providerAddableTypeIds.has(widget.definition.typeId) &&
+      (widget.definition.multiplicity === "multiple_per_view" ||
+        !installedTypeIds.has(widget.definition.typeId)),
   );
   const publisher = (widget: RegisteredWidget) => getPublisherPresentation(widget);
 
@@ -271,17 +278,19 @@ export function WidgetCatalogDrawer({
   );
 
   return (
-    <div
+    <dialog
       ref={dialogRef}
       className="wb-widget-catalog"
-      role="dialog"
-      aria-modal="true"
       aria-labelledby="wb-widget-catalog-title"
-      onKeyDown={onDialogKeyDown}
+      onCancel={onDialogCancel}
     >
       <header>
         <h2 id="wb-widget-catalog-title">{title}</h2>
-        <Button ref={closeRef} onClick={onClose} aria-label="Close Widgets drawer">
+        <Button
+          ref={closeRef}
+          onClick={requestClose}
+          aria-label="Close Widgets drawer"
+        >
           Close
         </Button>
       </header>
@@ -330,6 +339,6 @@ export function WidgetCatalogDrawer({
           ))
         )}
       </section>
-    </div>
+    </dialog>
   );
 }

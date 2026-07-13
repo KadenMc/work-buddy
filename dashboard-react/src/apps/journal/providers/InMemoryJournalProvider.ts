@@ -50,6 +50,11 @@ export type JournalProviderViewSnapshot = ViewSnapshot<
 
 export type JournalProviderWidgetSnapshot = WidgetSnapshot<JournalWidgetInput | null>;
 
+export interface InMemoryJournalProviderOptions {
+  /** Delay for the visible demo-only smart-processing phase. */
+  readonly settlementDelayMs?: number;
+}
+
 function snapshotStatus(fixture: PopulatedJournalFixtureState): SnapshotStatus {
   if (fixture.loadStatus === "stale" || fixture.loadStatus === "offline") {
     return fixture.loadStatus;
@@ -179,9 +184,21 @@ export class InMemoryJournalProvider implements ViewProvider {
   #pendingSettlement: PopulatedJournalFixtureState | null = null;
   #intentResults = new Map<string, IntentResult>();
   #revisionSequence = 0;
+  #listeners = new Set<(invalidation: AppInvalidation) => void>();
+  #settlementTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
+  readonly #settlementDelayMs: number;
 
-  constructor(initialFixture: PopulatedJournalFixtureState = JULY11_READY_FIXTURE) {
+  constructor(
+    initialFixture: PopulatedJournalFixtureState = JULY11_READY_FIXTURE,
+    options: InMemoryJournalProviderOptions = {},
+  ) {
     this.#current = asInMemoryFixture(initialFixture);
+    this.#settlementDelayMs = options.settlementDelayMs ?? 650;
+  }
+
+  subscribeInvalidations(listener: (invalidation: AppInvalidation) => void): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
   }
 
   async loadView(
@@ -254,6 +271,7 @@ export class InMemoryJournalProvider implements ViewProvider {
       this.#pendingSettlement = asInMemoryFixture(
         bindCaptureMutationId(JULY11_SMART_SETTLED_FIXTURE, mutationId),
       );
+      this.#scheduleSettlement();
       return this.#remember(
         intent,
         this.#result(
@@ -456,6 +474,10 @@ export class InMemoryJournalProvider implements ViewProvider {
   /** Advances the deterministic async phase without scheduling a timer. */
   advanceDemoProcessing(): boolean {
     if (this.#pendingSettlement === null) return false;
+    if (this.#settlementTimer !== null) {
+      globalThis.clearTimeout(this.#settlementTimer);
+      this.#settlementTimer = null;
+    }
     this.#current = this.#pendingSettlement;
     this.#pendingSettlement = null;
     return true;
@@ -485,6 +507,23 @@ export class InMemoryJournalProvider implements ViewProvider {
 
   get revision(): string {
     return this.#current.model.revision;
+  }
+
+  #scheduleSettlement(): void {
+    if (this.#listeners.size === 0 || this.#settlementTimer !== null) return;
+    this.#settlementTimer = globalThis.setTimeout(() => {
+      this.#settlementTimer = null;
+      if (!this.advanceDemoProcessing()) return;
+      const invalidation: AppInvalidation = {
+        id: `journal-demo-settled:${this.#current.model.revision}`,
+        appId: JOURNAL_APP_ID,
+        viewIds: [JOURNAL_VIEW_DEFINITION_ID],
+        revision: this.#current.model.revision,
+        reason: "demo-smart-processing-settled",
+        observedAt: this.#current.observedAt,
+      };
+      this.#listeners.forEach((listener) => listener(invalidation));
+    }, this.#settlementDelayMs);
   }
 
   #remember(intent: DashboardIntent, result: IntentResult): IntentResult {

@@ -11,6 +11,11 @@ import type {
   WidgetRoleId,
   WidgetTypeId,
 } from "./contracts";
+import type {
+  LoadedStandardWidgetViewModule,
+  StandardWidgetViewModule,
+  ViewModule,
+} from "./viewModules";
 import {
   ContributionValidationError,
   assertValidAppContribution,
@@ -21,22 +26,47 @@ import {
 export interface RegisteredView {
   readonly app: AppContribution;
   readonly definition: ViewDefinition;
+  readonly trust: ContributionTrustProvenance;
 }
 
 export interface RegisteredWidget {
   readonly app: AppContribution;
   readonly definition: WidgetDefinition;
   readonly module: WidgetModule;
+  readonly trust: ContributionTrustProvenance;
+}
+
+export interface RegisteredViewModule {
+  readonly app: AppContribution;
+  readonly definition: ViewDefinition;
+  readonly module: StandardWidgetViewModule;
+  readonly trust: ContributionTrustProvenance;
+}
+
+export type ContributionTrustProvenance =
+  | "native"
+  | "verified"
+  | "personal"
+  | "developer"
+  | "unverified";
+
+export interface AppRegistrationOptions {
+  /** Assigned by the trusted installer/bootstrap caller; never inferred from IDs. */
+  readonly trust?: ContributionTrustProvenance;
 }
 
 export interface RegistrationReceipt {
   readonly appId: AppId;
   readonly viewIds: readonly ViewId[];
   readonly widgetTypeIds: readonly WidgetTypeId[];
+  readonly trust: ContributionTrustProvenance;
 }
 
 export class UnknownContributionError extends Error {
-  constructor(kind: "app" | "view" | "widget" | "role", id: string) {
+  constructor(
+    kind: "app" | "view" | "view-module" | "widget" | "role",
+    id: string,
+  ) {
     super(`Unknown dashboard ${kind}: ${id}`);
     this.name = "UnknownContributionError";
   }
@@ -53,13 +83,22 @@ export class ContributionRegistry {
   readonly #roles = new Map<WidgetRoleId, WidgetRoleContract>();
   readonly #modules = new Map<WidgetModuleId, WidgetModule>();
   readonly #widgetModules = new Map<WidgetTypeId, WidgetModule>();
+  readonly #viewModules = new Map<ViewId, StandardWidgetViewModule>();
+  readonly #moduleIds = new Set<string>();
+  readonly #trust = new Map<AppId, ContributionTrustProvenance>();
   readonly #routes = new Set<string>();
 
   registerApp(
     contribution: AppContribution,
     widgetModules: readonly WidgetModule[],
+    viewModules: readonly ViewModule[] = [],
+    options: AppRegistrationOptions = {},
   ): RegistrationReceipt {
-    const moduleIssues = this.#validateModules(contribution, widgetModules);
+    const trust = options.trust ?? "unverified";
+    const moduleIssues = [
+      ...this.#validateModules(contribution, widgetModules),
+      ...this.#validateViewModules(contribution, viewModules, widgetModules),
+    ];
     if (moduleIssues.length > 0) {
       throw new ContributionValidationError(moduleIssues);
     }
@@ -76,6 +115,7 @@ export class ContributionRegistry {
     });
 
     this.#apps.set(contribution.appId, contribution);
+    this.#trust.set(contribution.appId, trust);
     contribution.widgetRoles.forEach((role) => this.#roles.set(role.roleId, role));
     contribution.widgetDefinitions.forEach((widget) =>
       this.#widgets.set(widget.typeId, widget),
@@ -87,12 +127,19 @@ export class ContributionRegistry {
     widgetModules.forEach((module) => {
       this.#modules.set(module.moduleId, module);
       this.#widgetModules.set(module.widgetTypeId, module);
+      this.#moduleIds.add(module.moduleId);
+    });
+    viewModules.forEach((module) => {
+      if (module.kind !== "standard-widget-view") return;
+      this.#viewModules.set(module.viewId, module);
+      this.#moduleIds.add(module.moduleId);
     });
 
     return {
       appId: contribution.appId,
       viewIds: contribution.views.map((view) => view.viewId),
       widgetTypeIds: contribution.widgetDefinitions.map((widget) => widget.typeId),
+      trust,
     };
   }
 
@@ -113,7 +160,11 @@ export class ContributionRegistry {
     if (definition === undefined) {
       return undefined;
     }
-    return { app: this.requireApp(definition.ownerAppId), definition };
+    return {
+      app: this.requireApp(definition.ownerAppId),
+      definition,
+      trust: this.requireAppTrust(definition.ownerAppId),
+    };
   }
 
   requireView(viewId: ViewId): RegisteredView {
@@ -135,7 +186,12 @@ export class ContributionRegistry {
     if (definition === undefined || module === undefined) {
       return undefined;
     }
-    return { app: this.requireApp(definition.publisherAppId), definition, module };
+    return {
+      app: this.requireApp(definition.publisherAppId),
+      definition,
+      module,
+      trust: this.requireAppTrust(definition.publisherAppId),
+    };
   }
 
   requireWidget(widgetTypeId: WidgetTypeId): RegisteredWidget {
@@ -158,6 +214,18 @@ export class ContributionRegistry {
     return role;
   }
 
+  getAppTrust(appId: AppId): ContributionTrustProvenance | undefined {
+    return this.#trust.get(appId);
+  }
+
+  requireAppTrust(appId: AppId): ContributionTrustProvenance {
+    const trust = this.getAppTrust(appId);
+    if (trust === undefined) {
+      throw new UnknownContributionError("app", appId);
+    }
+    return trust;
+  }
+
   listApps(): readonly AppContribution[] {
     return [...this.#apps.values()];
   }
@@ -169,10 +237,7 @@ export class ContributionRegistry {
           left.navigation.order - right.navigation.order ||
           left.navigation.label.localeCompare(right.navigation.label),
       )
-      .map((definition) => ({
-        app: this.requireApp(definition.ownerAppId),
-        definition,
-      }));
+      .map((definition) => this.requireView(definition.viewId));
   }
 
   listWidgets(): readonly RegisteredWidget[] {
@@ -190,6 +255,39 @@ export class ContributionRegistry {
       loaded.default === undefined
     ) {
       throw new Error(`Widget module ${widgetTypeId} has no default renderer export`);
+    }
+    return loaded;
+  }
+
+  getViewModule(viewId: ViewId): RegisteredViewModule | undefined {
+    const view = this.getView(viewId);
+    const module = this.#viewModules.get(viewId);
+    if (view === undefined || module === undefined) {
+      return undefined;
+    }
+    return { ...view, module };
+  }
+
+  requireViewModule(viewId: ViewId): RegisteredViewModule {
+    const module = this.getViewModule(viewId);
+    if (module === undefined) {
+      throw new UnknownContributionError("view-module", viewId);
+    }
+    return module;
+  }
+
+  async loadViewModule(viewId: ViewId): Promise<LoadedStandardWidgetViewModule> {
+    const loaded = await this.requireViewModule(viewId).module.load();
+    if (
+      typeof loaded !== "object" ||
+      loaded === null ||
+      loaded.hostContractVersion !== 1 ||
+      !("createRuntime" in loaded) ||
+      typeof loaded.createRuntime !== "function"
+    ) {
+      throw new Error(
+        `View module ${viewId} did not resolve the standard widget-view host contract`,
+      );
     }
     return loaded;
   }
@@ -221,7 +319,10 @@ export class ContributionRegistry {
           message: "must be a lowercase namespaced widget type ID",
         });
       }
-      if (localModuleIds.has(module.moduleId) || this.#modules.has(module.moduleId)) {
+      if (
+        localModuleIds.has(module.moduleId) ||
+        this.#moduleIds.has(module.moduleId)
+      ) {
         issues.push({
           code: "duplicate_widget_module_id",
           path: `${path}.moduleId`,
@@ -251,6 +352,86 @@ export class ContributionRegistry {
       }
       localModuleIds.add(module.moduleId);
       localModuleWidgetIds.add(module.widgetTypeId);
+    });
+
+    return issues;
+  }
+
+  #validateViewModules(
+    contribution: AppContribution,
+    viewModules: readonly ViewModule[],
+    widgetModules: readonly WidgetModule[],
+  ): readonly ValidationIssue[] {
+    const issues: ValidationIssue[] = [];
+    const localViewIds = new Set(contribution.views.map((view) => view.viewId));
+    const localModuleIds = new Set<string>(
+      widgetModules.map((module) => module.moduleId),
+    );
+    const localModuleViewIds = new Set<ViewId>();
+
+    viewModules.forEach((module, index) => {
+      const path = `viewModules[${index}]`;
+      if (!isNamespacedDashboardId(module.moduleId)) {
+        issues.push({
+          code: "invalid_namespaced_id",
+          path: `${path}.moduleId`,
+          message: "must be a lowercase namespaced module ID",
+        });
+      }
+      if (!isNamespacedDashboardId(module.viewId)) {
+        issues.push({
+          code: "invalid_namespaced_id",
+          path: `${path}.viewId`,
+          message: "must bind a lowercase namespaced view ID",
+        });
+      }
+      if (module.kind !== "standard-widget-view") {
+        issues.push({
+          code: "unsupported_view_module_kind",
+          path: `${path}.kind`,
+          message:
+            "the standard registry only accepts standard-widget-view modules; developer roots require a separate trust-gated registry",
+        });
+      } else if (module.hostContractVersion !== 1) {
+        issues.push({
+          code: "unsupported_view_host_contract",
+          path: `${path}.hostContractVersion`,
+          message: "must target standard widget-view host contract version 1",
+        });
+      }
+      if (localModuleIds.has(module.moduleId) || this.#moduleIds.has(module.moduleId)) {
+        issues.push({
+          code: "duplicate_view_module_id",
+          path: `${path}.moduleId`,
+          message: `module ${module.moduleId} is already registered in this batch or registry`,
+        });
+      }
+      if (
+        localModuleViewIds.has(module.viewId) ||
+        this.#viewModules.has(module.viewId)
+      ) {
+        issues.push({
+          code: "duplicate_view_module_binding",
+          path: `${path}.viewId`,
+          message: `view ${module.viewId} has more than one page module`,
+        });
+      }
+      if (!localViewIds.has(module.viewId)) {
+        issues.push({
+          code: "orphan_view_module",
+          path: `${path}.viewId`,
+          message: "must bind a view definition from the same App contribution",
+        });
+      }
+      if (typeof module.load !== "function") {
+        issues.push({
+          code: "invalid_view_module_loader",
+          path: `${path}.load`,
+          message: "must be a lazy module loader function",
+        });
+      }
+      localModuleIds.add(module.moduleId);
+      localModuleViewIds.add(module.viewId);
     });
 
     return issues;

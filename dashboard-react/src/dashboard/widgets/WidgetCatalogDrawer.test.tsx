@@ -1,5 +1,6 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 import { expectNoAccessibilityViolations } from "../../test/setup";
@@ -183,6 +184,7 @@ describe("WidgetCatalogDrawer", () => {
         registry={registry}
         view={view}
         instances={instances}
+        addableWidgetTypeIds={[compatibleType]}
         getPublisherPresentation={(widget) => ({
           label: widget.app.displayName,
           appId: widget.app.appId,
@@ -218,6 +220,7 @@ describe("WidgetCatalogDrawer", () => {
         registry={registry}
         view={view}
         instances={instances}
+        addableWidgetTypeIds={[compatibleType]}
         onAction={onAction}
         onAddRequested={onAdd}
         onReplaceRequested={onReplace}
@@ -227,8 +230,9 @@ describe("WidgetCatalogDrawer", () => {
     );
 
     expect(screen.getByRole("button", { name: "Close Widgets drawer" })).toHaveFocus();
-    await user.keyboard("{Escape}");
-    expect(onClose).toHaveBeenCalledOnce();
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.tagName).toBe("DIALOG");
+    expect(dialog).toHaveAttribute("open");
 
     const required = container.querySelector(
       '[data-instance-id="default:summary"]',
@@ -264,5 +268,62 @@ describe("WidgetCatalogDrawer", () => {
     ) as HTMLElement;
     await user.click(within(orphan).getByRole("button", { name: "Find replacement" }));
     expect(onRecover).toHaveBeenCalledWith(instances[2]);
+
+    fireEvent(dialog, new Event("cancel", { cancelable: true }));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("does not advertise installed renderers the provider did not declare addable", () => {
+    const { registry, view, instances } = setup();
+    render(
+      <WidgetCatalogDrawer
+        registry={registry}
+        view={view}
+        instances={instances}
+        addableWidgetTypeIds={[]}
+        onAction={vi.fn()}
+        onAddRequested={vi.fn()}
+        onReplaceRequested={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Available (0)" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Add Quick Summary" })).not.toBeInTheDocument();
+  });
+
+  it("returns focus to the opener when the native modal is dismissed", async () => {
+    const user = userEvent.setup();
+    const { registry, view, instances } = setup();
+    function Harness() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <button type="button" onClick={() => setOpen(true)}>Open widget catalog</button>
+          {open ? (
+            <WidgetCatalogDrawer
+              registry={registry}
+              view={view}
+              instances={instances}
+              addableWidgetTypeIds={[compatibleType]}
+              onAction={vi.fn()}
+              onAddRequested={vi.fn()}
+              onReplaceRequested={vi.fn()}
+              onClose={() => setOpen(false)}
+            />
+          ) : null}
+        </>
+      );
+    }
+    render(<Harness />);
+
+    const opener = screen.getByRole("button", { name: "Open widget catalog" });
+    await user.click(opener);
+    const dialog = screen.getByRole("dialog");
+    expect(screen.getByRole("button", { name: "Close Widgets drawer" })).toHaveFocus();
+    fireEvent(dialog, new Event("cancel", { cancelable: true }));
+
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await waitFor(() => expect(opener).toHaveFocus());
   });
 });

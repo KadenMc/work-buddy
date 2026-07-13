@@ -24,6 +24,7 @@ export type WidgetSlotId = DashboardId<"widget-slot">;
 export type WidgetInstanceId = DashboardId<"widget-instance">;
 export type WidgetRoleId = DashboardId<"widget-role">;
 export type WidgetModuleId = DashboardId<"widget-module">;
+export type ViewModuleId = DashboardId<"view-module">;
 
 export const asAppId = (value: string): AppId => value as AppId;
 export const asViewId = (value: string): ViewId => value as ViewId;
@@ -33,6 +34,7 @@ export const asWidgetInstanceId = (value: string): WidgetInstanceId =>
   value as WidgetInstanceId;
 export const asWidgetRoleId = (value: string): WidgetRoleId => value as WidgetRoleId;
 export const asWidgetModuleId = (value: string): WidgetModuleId => value as WidgetModuleId;
+export const asViewModuleId = (value: string): ViewModuleId => value as ViewModuleId;
 
 export interface JsonSchemaReference {
   readonly schemaId: string;
@@ -136,7 +138,7 @@ export interface ViewDefinition {
   readonly mobileOrder: readonly WidgetSlotId[];
 }
 
-/** Pure contribution data; executable modules are registered through WidgetModule. */
+/** Pure contribution data; executable widget/view modules are registered separately. */
 export interface AppContribution {
   readonly schemaVersion: 1;
   readonly appId: AppId;

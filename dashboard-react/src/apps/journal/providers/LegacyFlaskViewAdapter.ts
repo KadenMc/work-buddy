@@ -563,12 +563,18 @@ export class LegacyFlaskViewAdapter implements ViewProvider {
       };
     }
 
-    const snapshot = await this.loadView(JOURNAL_VIEW_DEFINITION_ID, {
-      reason: "refresh",
-      ...(request.knownRevision === undefined
-        ? {}
-        : { knownRevision: request.knownRevision }),
-    });
+    const cached = this.#lastSnapshot;
+    const snapshot =
+      cached !== undefined &&
+      (request.knownRevision === undefined ||
+        Object.is(cached.revision, request.knownRevision))
+        ? cached
+        : await this.loadView(JOURNAL_VIEW_DEFINITION_ID, {
+            reason: "refresh",
+            ...(request.knownRevision === undefined
+              ? {}
+              : { knownRevision: request.knownRevision }),
+          });
     const input = snapshot.widgetInputs[JOURNAL_INSTANCE_IDS.timeline];
     return {
       widgetTypeId,

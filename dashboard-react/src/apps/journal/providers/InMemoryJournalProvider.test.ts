@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   asAppId,
   asViewId,
@@ -174,6 +174,41 @@ describe("InMemoryJournalProvider", () => {
     const settledNote = settledNotes[settledNotes.length - 1];
     expect(settledNote?.markdown).toBe("Meeting ran long");
     expect(settledNote?.processing.state).toBe("succeeded");
+  });
+
+  it("publishes a local invalidation when mounted demo smart processing settles", async () => {
+    vi.useFakeTimers();
+    try {
+      const provider = new InMemoryJournalProvider(undefined, { settlementDelayMs: 25 });
+      const listener = vi.fn();
+      const unsubscribe = provider.subscribeInvalidations(listener);
+
+      const result = await provider.dispatch(
+        toDashboardJournalIntent(JULY11_SMART_CAPTURE_INTENT),
+      );
+      expect(result.status).toBe("accepted");
+      expect(listener).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(25);
+      expect(listener).toHaveBeenCalledOnce();
+      expect(listener).toHaveBeenCalledWith(
+        expect.objectContaining({
+          appId: JOURNAL_APP_ID,
+          viewIds: [JOURNAL_VIEW_DEFINITION_ID],
+          revision: JULY11_SMART_SETTLED_REVISION,
+          reason: "demo-smart-processing-settled",
+        }),
+      );
+
+      const settled = await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, {
+        reason: "reconcile",
+        knownRevision: result.revision,
+      });
+      expect(settled.revision).toBe(JULY11_SMART_SETTLED_REVISION);
+      unsubscribe();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("persists dumb Log capture without scheduling per-entry processing", async () => {

@@ -173,6 +173,30 @@ describe("LegacyFlaskViewAdapter", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  it("hydrates the Timeline from the cached atomic view revision without a second HTTP read", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(READY_PAYLOAD));
+    const provider = new LegacyFlaskViewAdapter({
+      fetchImpl,
+      timezone: "America/New_York",
+    });
+    const view = await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, {
+      reason: "mount",
+    });
+
+    const timeline = await provider.loadWidget(JOURNAL_WIDGET_TYPE_IDS.timeline, {
+      viewId: JOURNAL_VIEW_DEFINITION_ID,
+      instanceId: JOURNAL_INSTANCE_IDS.timeline,
+      knownRevision: view.revision,
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(timeline.revision).toBe(view.revision);
+    expect(timeline.observedAt).toBe(view.observedAt);
+    expect(timeline.input).toEqual(
+      view.widgetInputs[JOURNAL_INSTANCE_IDS.timeline],
+    );
+  });
+
   it("rejects every intent without issuing a write request", async () => {
     const fetchImpl = vi.fn(async () => jsonResponse(READY_PAYLOAD));
     const provider = new LegacyFlaskViewAdapter({ fetchImpl, timezone: "UTC" });

@@ -37,7 +37,7 @@ export default function RunningNotesWidget({
   };
 
   return (
-    <section className="wb-running-notes" aria-label="Running notes">
+    <div className="wb-running-notes">
       {readOnly && <InlineAlert tone="warning">{input.access.reason}</InlineAlert>}
       {input.items.length === 0 ? (
         <p className="wb-running-notes__empty">No running notes for this collection.</p>
@@ -52,6 +52,6 @@ export default function RunningNotesWidget({
           onOpenThread={openThread}
         />
       )}
-    </section>
+    </div>
   );
 }

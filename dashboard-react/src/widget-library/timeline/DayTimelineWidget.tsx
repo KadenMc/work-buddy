@@ -48,7 +48,7 @@ export default function DayTimelineWidget({
   };
 
   return (
-    <section className="wb-day-timeline" aria-label="Day timeline">
+    <div className="wb-day-timeline">
       <div className="wb-day-timeline__toolbar">
         {!compact && (
           <div className="wb-day-timeline__mode" aria-label="Timeline display mode">
@@ -91,6 +91,6 @@ export default function DayTimelineWidget({
         Every item includes textual kind, status, provenance, and mutability; color is
         supplementary.
       </p>
-    </section>
+    </div>
   );
 }

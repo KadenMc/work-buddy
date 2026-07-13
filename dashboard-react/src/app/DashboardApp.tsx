@@ -1,8 +1,13 @@
+import { lazy, Suspense } from "react";
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 
 import Header from "../components/Header";
 import TabBar from "../components/TabBar";
 import type { DashboardRouteDefinition } from "./routes";
+
+const WidgetLab = import.meta.env.DEV
+  ? lazy(() => import("../dev/widget-lab/WidgetLab"))
+  : null;
 
 interface DashboardAppProps {
   routes: readonly DashboardRouteDefinition[];
@@ -32,10 +37,36 @@ export default function DashboardApp({ routes }: DashboardAppProps) {
             <Route
               key={route.viewId}
               path={route.path}
-              element={<ViewComponent />}
+              element={
+                <Suspense
+                  fallback={
+                    <main className="tab-panel" aria-busy="true">
+                      <div className="empty-state">Loading view…</div>
+                    </main>
+                  }
+                >
+                  <ViewComponent />
+                </Suspense>
+              }
             />
           );
         })}
+        {WidgetLab && (
+          <Route
+            path="__widget-lab"
+            element={
+              <Suspense
+                fallback={
+                  <main className="tab-panel" aria-busy="true">
+                    <div className="empty-state">Loading Widget Lab…</div>
+                  </main>
+                }
+              >
+                <WidgetLab />
+              </Suspense>
+            }
+          />
+        )}
         <Route
           path="*"
           element={

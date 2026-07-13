@@ -248,5 +248,27 @@ describe("portable personalization patch", () => {
       layout: { y: 5 },
     });
   });
-});
 
+  it("preserves opaque overrides for App slots removed by a later definition", () => {
+    const original = resolveViewPersonalization(view(1), definitions);
+    const customized = viewEditSessionReducer(beginViewEditSession(original), {
+      type: "configure",
+      instanceId: asWidgetInstanceId("default:notes"),
+      settings: { density: "comfortable", filter: "private" },
+      settingsSchemaVersion: 1,
+    });
+    const prior = createPersonalizationPatch(view(1), definitions, customized.present);
+    const upgraded = {
+      ...view(2),
+      defaultSlots: view(2).defaultSlots.slice(0, 1),
+      readingOrder: [asWidgetSlotId("primary")],
+      mobileOrder: [asWidgetSlotId("primary")],
+    } satisfies ViewDefinition;
+
+    const resolved = resolveViewPersonalization(upgraded, definitions, prior);
+    const resaved = createPersonalizationPatch(upgraded, definitions, resolved, prior);
+
+    expect(resolved.instances).toHaveLength(1);
+    expect(resaved.defaultSlotOverrides.notes).toEqual(prior.defaultSlotOverrides.notes);
+  });
+});

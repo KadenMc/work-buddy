@@ -1,4 +1,5 @@
 import { JOURNAL_APP_CONTRIBUTION } from "../apps/journal/contribution";
+import { JOURNAL_VIEW_MODULE } from "../apps/journal/viewModule";
 import { createContributionRegistry } from "../dashboard/contributions/registry";
 import {
   WIDGET_LIBRARY_CONTRIBUTIONS,
@@ -11,9 +12,16 @@ for (const contribution of WIDGET_LIBRARY_CONTRIBUTIONS) {
   dashboardRegistry.registerApp(
     contribution,
     WIDGET_LIBRARY_MODULES_BY_APP.get(contribution.appId) ?? [],
+    [],
+    { trust: "native" },
   );
 }
 
-// Journal intentionally owns only its ViewDefinition. The selected reusable widget
+// Journal owns its ViewDefinition and lazy page module. The selected reusable widget
 // roles and renderers must already exist so registration can validate the composition.
-dashboardRegistry.registerApp(JOURNAL_APP_CONTRIBUTION, []);
+dashboardRegistry.registerApp(
+  JOURNAL_APP_CONTRIBUTION,
+  [],
+  [JOURNAL_VIEW_MODULE],
+  { trust: "native" },
+);

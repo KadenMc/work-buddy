@@ -14,6 +14,12 @@ import type {
 } from "../contributions/contracts";
 import { useDashboardEvents } from "../events/DashboardEventProvider";
 import type { ViewProvider } from "../providers/ViewProvider";
+import {
+  assertDashboardIntent,
+  assertIntentResult,
+  assertReconcileResult,
+  assertViewSnapshot,
+} from "../providers/validateProviderBoundary";
 
 export type ViewSessionStatus = "loading" | SnapshotStatus;
 
@@ -85,11 +91,7 @@ export function useViewSession({
       if (!isCurrent(epoch, request)) {
         return false;
       }
-      if (snapshot.viewId !== viewId) {
-        throw new Error(
-          `Provider returned snapshot ${snapshot.viewId} for requested view ${viewId}`,
-        );
-      }
+      assertViewSnapshot(snapshot, viewId);
       snapshotRef.current = snapshot;
       setState((current) => ({
         ...current,
@@ -165,6 +167,7 @@ export function useViewSession({
 
       try {
         const result = await provider.reconcile(providerInvalidation);
+        assertReconcileResult(result, viewId);
         if (!isCurrent(epoch, request)) {
           return undefined;
         }
@@ -203,9 +206,7 @@ export function useViewSession({
 
   const dispatch = useCallback(
     async (intent: DashboardIntent): Promise<IntentResult> => {
-      if (intent.view_id !== viewId) {
-        throw new Error(`Intent ${intent.intent_id} targets ${intent.view_id}, not ${viewId}`);
-      }
+      assertDashboardIntent(intent, viewId);
       const epoch = epochRef.current;
       setState((current) => ({
         ...current,
@@ -215,6 +216,7 @@ export function useViewSession({
       }));
       try {
         const result = await provider.dispatch(intent);
+        assertIntentResult(result, intent);
         if (epochRef.current === epoch && result.status === "accepted") {
           await reconcile({
             id: `intent:${intent.intent_id}`,
@@ -244,6 +246,13 @@ export function useViewSession({
     },
     [provider, reconcile, viewId],
   );
+
+  useEffect(() => {
+    if (provider.subscribeInvalidations === undefined) return;
+    return provider.subscribeInvalidations((invalidation) => {
+      void reconcile(invalidation);
+    });
+  }, [provider, reconcile]);
 
   useEffect(() => {
     epochRef.current += 1;

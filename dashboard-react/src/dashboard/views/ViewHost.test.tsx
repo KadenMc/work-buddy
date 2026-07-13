@@ -55,6 +55,65 @@ describe("ViewHost", () => {
       .map((heading) => heading.textContent);
     expect(headings).toEqual(["Quick Capture", "Day Timeline", "Running Notes"]);
     expect(rendered.container.querySelector(".react-grid-layout")).toBeNull();
+    expect(
+      await screen.findByRole(
+        "list",
+        { name: "Day timeline items" },
+        { timeout: 15_000 },
+      ),
+    ).toBeVisible();
+    expect(screen.getByText("Mapped Journal data contracts")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Timeline" })).not.toBeInTheDocument();
+    expect(rendered.container.querySelector(".wb-temporal-canvas")).toBeNull();
+    expect(rendered.container.querySelector(".wb-capture--compact")).not.toBeNull();
+    await waitFor(
+      () =>
+        expect(
+          rendered.container.querySelector(".wb-markdown-collection--compact"),
+        ).not.toBeNull(),
+      { timeout: 15_000 },
+    );
     expect(screen.getByRole("button", { name: "Customize view" })).toBeDisabled();
-  });
+  }, 20_000);
+
+  it("keeps the desktop grid and standard timeline presentation", async () => {
+    vi.stubGlobal("matchMedia", vi.fn(() => media(false)));
+
+    const rendered = render(
+      <ThemeProvider initialPreference={{ scheme: "light", skinId: "wb.default" }}>
+        <DashboardEventProvider>
+          <DashboardAnnouncer>
+            <ViewHost
+              registry={dashboardRegistry}
+              definition={JOURNAL_VIEW_DEFINITION}
+              provider={new InMemoryJournalProvider()}
+              personalizationRepository={new InMemoryPersonalizationRepository()}
+            />
+          </DashboardAnnouncer>
+        </DashboardEventProvider>
+      </ThemeProvider>,
+    );
+
+    expect(
+      await screen.findByRole(
+        "button",
+        { name: "Timeline" },
+        { timeout: 15_000 },
+      ),
+    ).toBeVisible();
+    expect(rendered.container.querySelector(".wb-day-timeline__mode")).not.toBeNull();
+    expect(rendered.container.querySelector(".react-grid-layout")).not.toBeNull();
+    expect(rendered.container.querySelector(".wb-temporal-canvas")).not.toBeNull();
+    expect(rendered.container.querySelector(".wb-capture--standard")).not.toBeNull();
+    await waitFor(
+      () =>
+        expect(
+          rendered.container.querySelector(".wb-markdown-collection--standard"),
+        ).not.toBeNull(),
+      { timeout: 15_000 },
+    );
+    expect(
+      screen.queryByRole("list", { name: "Day timeline items" }),
+    ).not.toBeInTheDocument();
+  }, 20_000);
 });

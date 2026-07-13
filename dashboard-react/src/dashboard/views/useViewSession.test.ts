@@ -197,4 +197,66 @@ describe("useViewSession", () => {
     expect(rendered.result.current.snapshot?.revision).toBe(2);
     expect(rendered.result.current.pendingIntentIds).toEqual([]);
   });
+
+  it("reconciles provider-local invalidations through the same session boundary", async () => {
+    let notify: ((invalidation: AppInvalidation) => void) | undefined;
+    const provider: ViewProvider = {
+      appId,
+      subscribeInvalidations: vi.fn((listener) => {
+        notify = listener;
+        return () => {
+          notify = undefined;
+        };
+      }),
+      loadView: vi.fn(async () => snapshot(firstViewId, 1, "Before")),
+      loadWidget: vi.fn(),
+      dispatch: vi.fn(),
+      reconcile: vi.fn(async () => ({
+        changed: true,
+        revision: 2,
+        snapshot: snapshot(firstViewId, 2, "After local invalidation"),
+      })),
+    };
+    const rendered = renderHook(() => useViewSession({ provider, viewId: firstViewId }), {
+      wrapper,
+    });
+    await waitFor(() => expect(rendered.result.current.status).toBe("ready"));
+
+    act(() =>
+      notify?.({
+        id: "local-1",
+        appId,
+        viewIds: [firstViewId],
+        revision: 2,
+        reason: "local-provider-settled",
+        observedAt: "2026-07-12T12:00:01Z",
+      }),
+    );
+
+    await waitFor(() => expect(rendered.result.current.snapshot?.revision).toBe(2));
+    expect(provider.reconcile).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: "local-provider-settled" }),
+    );
+  });
+
+  it("rejects malformed provider snapshots before they reach renderers", async () => {
+    const invalid = {
+      ...snapshot(firstViewId, 1, "Invalid"),
+      model: { callback: () => undefined },
+    } as unknown as ViewSnapshot;
+    const provider: ViewProvider = {
+      appId,
+      loadView: vi.fn(async () => invalid),
+      loadWidget: vi.fn(),
+      dispatch: vi.fn(),
+      reconcile: vi.fn(async () => ({ changed: false })),
+    };
+    const rendered = renderHook(() => useViewSession({ provider, viewId: firstViewId }), {
+      wrapper,
+    });
+
+    await waitFor(() => expect(rendered.result.current.status).toBe("error"));
+    expect(rendered.result.current.snapshot).toBeUndefined();
+    expect(rendered.result.current.error?.message).toMatch(/contract violation/i);
+  });
 });

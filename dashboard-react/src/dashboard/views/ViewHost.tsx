@@ -13,6 +13,7 @@ import type {
   WidgetDefinition,
   WidgetInstanceId,
   WidgetIntent,
+  WidgetSnapshot,
 } from "../contributions/contracts";
 import { asWidgetInstanceId } from "../contributions/contracts";
 import type { ContributionRegistry } from "../contributions/registry";
@@ -20,6 +21,7 @@ import type { RegisteredWidget } from "../contributions/registry";
 import { ReactGridLayoutAdapter } from "../layout/ReactGridLayoutAdapter";
 import type { DashboardLayout, LayoutCommand } from "../layout/contracts";
 import type { ViewProvider } from "../providers/ViewProvider";
+import { assertWidgetSnapshot } from "../providers/validateProviderBoundary";
 import type { PersonalizationRepository } from "../personalization/repository";
 import {
   beginViewEditSession,
@@ -41,6 +43,7 @@ import {
   findCompatibleWidgetReplacements,
   planWidgetReplacement,
 } from "../widgets/replaceWidget";
+import { MobileOrderEditor } from "./MobileOrderEditor";
 import { useViewSession } from "./useViewSession";
 
 export interface ViewHostProps {
@@ -71,6 +74,12 @@ const layoutFor = (state: ViewEditSessionState): DashboardLayout =>
   state.present.instances
     .filter((instance) => instance.visibility === "shown")
     .map((instance) => instance.layout);
+
+const patchHasUserState = (patch: ViewPersonalizationPatch): boolean =>
+  Object.keys(patch.defaultSlotOverrides).length > 0 ||
+  patch.addedInstances.length > 0 ||
+  patch.orphanedInstances.length > 0 ||
+  patch.mobileOrderOverride !== null;
 
 const sizeModeFor = (
   instance: EffectiveWidgetInstance,
@@ -117,6 +126,23 @@ export function ViewHost({
   );
   const [customizing, setCustomizing] = useState(false);
   const [catalogOpen, setCatalogOpen] = useState(false);
+  const [mobileOrderOpen, setMobileOrderOpen] = useState(false);
+  const [resetPatchRequested, setResetPatchRequested] = useState(false);
+  const [widgetSnapshots, setWidgetSnapshots] = useState<
+    ReadonlyMap<WidgetInstanceId, WidgetSnapshot>
+  >(() => new Map());
+  const [widgetSnapshotErrors, setWidgetSnapshotErrors] = useState<
+    ReadonlyMap<WidgetInstanceId, string>
+  >(() => new Map());
+  const addableWidgetTypeIds =
+    provider.getAddableWidgetTypeIds?.(definition.viewId) ?? [];
+  const widgetHydrationKey = editState.present.instances
+    .filter((instance) => instance.visibility === "shown")
+    .map(
+      (instance) =>
+        `${instance.instanceId}\u0000${instance.widgetTypeId}\u0000${JSON.stringify(instance.bindings)}`,
+    )
+    .join("\u0001");
 
   useEffect(() => {
     let active = true;
@@ -144,6 +170,81 @@ export function ViewHost({
     if (!customizing) setEditState(beginViewEditSession(resolved));
   }, [customizing, resolved]);
 
+  useEffect(() => {
+    const viewSnapshot = session.snapshot;
+    if (viewSnapshot === undefined) {
+      setWidgetSnapshots(new Map());
+      setWidgetSnapshotErrors(new Map());
+      return;
+    }
+
+    let active = true;
+    const instances = editState.present.instances.filter(
+      (instance) => instance.visibility === "shown",
+    );
+    const visibleIds = new Set(instances.map((instance) => instance.instanceId));
+
+    void Promise.all(
+      instances.map(async (instance) => {
+        try {
+          const loaded = await provider.loadWidget(instance.widgetTypeId, {
+            viewId: definition.viewId,
+            instanceId: instance.instanceId,
+            ...(viewSnapshot.revision === undefined
+              ? {}
+              : { knownRevision: viewSnapshot.revision }),
+            bindings: instance.bindings,
+          });
+          assertWidgetSnapshot(
+            loaded,
+            instance.widgetTypeId,
+            instance.instanceId,
+            viewSnapshot.revision,
+          );
+          return {
+            ok: true,
+            instanceId: instance.instanceId,
+            snapshot: loaded,
+          } as const;
+        } catch (error) {
+          return {
+            ok: false,
+            instanceId: instance.instanceId,
+            error: error instanceof Error ? error.message : String(error),
+          } as const;
+        }
+      }),
+    ).then((results) => {
+      if (!active) return;
+      setWidgetSnapshots((current) => {
+        const next = new Map(
+          [...current].filter(([instanceId]) => visibleIds.has(instanceId)),
+        );
+        results.forEach((result) => {
+          if (result.ok) next.set(result.instanceId, result.snapshot);
+        });
+        return next;
+      });
+      setWidgetSnapshotErrors(() => {
+        const next = new Map<WidgetInstanceId, string>();
+        results.forEach((result) => {
+          if (!result.ok) next.set(result.instanceId, result.error);
+        });
+        return next;
+      });
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [
+    definition.viewId,
+    provider,
+    session.snapshot,
+    session.snapshot?.revision,
+    widgetHydrationKey,
+  ]);
+
   const act = useCallback((action: ViewEditAction) => {
     setEditState((current) => viewEditSessionReducer(current, action));
   }, []);
@@ -151,6 +252,7 @@ export function ViewHost({
   const beginCustomize = () => {
     setEditState(beginViewEditSession(resolved));
     setCustomizing(true);
+    setResetPatchRequested(false);
     announce("Customize view mode started");
   };
 
@@ -158,6 +260,7 @@ export function ViewHost({
     if (!customizing) {
       setEditState(beginViewEditSession(resolved));
       setCustomizing(true);
+      setResetPatchRequested(false);
       announce("Customize view mode started");
     }
     setCatalogOpen(true);
@@ -167,30 +270,96 @@ export function ViewHost({
     setEditState((current) => viewEditSessionReducer(current, { type: "cancel" }));
     setCustomizing(false);
     setCatalogOpen(false);
+    setMobileOrderOpen(false);
+    setResetPatchRequested(false);
     announce("View changes cancelled");
   };
 
   const saveCustomize = async () => {
-    const patch = createPersonalizationPatch(definition, definitions, editState.present);
+    const atCurrentDefaults = JSON.stringify(editState.present) === JSON.stringify(defaults);
+    const patch = createPersonalizationPatch(
+      definition,
+      definitions,
+      editState.present,
+      resetPatchRequested && atCurrentDefaults ? undefined : storedPatch,
+    );
     try {
-      await personalizationRepository.save(patch);
-      setStoredPatch(patch);
+      if (!patchHasUserState(patch)) {
+        await personalizationRepository.reset(definition.viewId);
+        setStoredPatch(undefined);
+      } else {
+        await personalizationRepository.save(patch);
+        setStoredPatch(patch);
+      }
       setEditState(beginViewEditSession(editState.present));
       setCustomizing(false);
       setCatalogOpen(false);
+      setMobileOrderOpen(false);
+      setResetPatchRequested(false);
       setPersonalizationError(undefined);
-      announce("View layout saved");
+      announce(patchHasUserState(patch) ? "View layout saved" : "View reset to App defaults");
     } catch (error) {
       setPersonalizationError(String(error));
       announce("View layout could not be saved", "assertive");
     }
   };
 
-  const addWidget = (widget: WidgetDefinition) => {
+  const addWidget = async (widget: WidgetDefinition) => {
+    if (!addableWidgetTypeIds.includes(widget.typeId)) {
+      announce(
+        `${widget.displayName} cannot be added because this view provider does not support it`,
+        "assertive",
+      );
+      return;
+    }
     const instanceId = asWidgetInstanceId(
       `personal:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`}`,
     );
+    let hydrated: WidgetSnapshot;
+    try {
+      hydrated = await provider.loadWidget(widget.typeId, {
+        viewId: definition.viewId,
+        instanceId,
+        ...(session.snapshot?.revision === undefined
+          ? {}
+          : { knownRevision: session.snapshot.revision }),
+        bindings: {},
+      });
+      assertWidgetSnapshot(
+        hydrated,
+        widget.typeId,
+        instanceId,
+        session.snapshot?.revision,
+      );
+    } catch (error) {
+      announce(
+        `${widget.displayName} could not be added: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        "assertive",
+      );
+      return;
+    }
+    if (
+      hydrated.status === "unavailable" ||
+      hydrated.status === "permission-denied" ||
+      hydrated.status === "error"
+    ) {
+      announce(
+        `${widget.displayName} could not be added: ${
+          hydrated.quality.message ?? hydrated.status
+        }`,
+        "assertive",
+      );
+      return;
+    }
     const size = widget.sizeContract.default;
+    setWidgetSnapshots((current) => new Map(current).set(instanceId, hydrated));
+    setWidgetSnapshotErrors((current) => {
+      const next = new Map(current);
+      next.delete(instanceId);
+      return next;
+    });
     act({
       type: "add",
       instance: {
@@ -303,12 +472,16 @@ export function ViewHost({
       );
     }
     const slot = definition.defaultSlots.find((candidate) => candidate.slotId === instance.slotId);
-    const input = snapshot.widgetInputs[instance.instanceId];
+    const widgetSnapshot = widgetSnapshots.get(instance.instanceId);
+    const widgetSnapshotError = widgetSnapshotErrors.get(instance.instanceId);
+    const input = widgetSnapshot?.input;
     const defaultWidth = registered.definition.sizeContract.default.w;
     const status =
-      instance.unavailableReason !== undefined || input === undefined
+      instance.unavailableReason !== undefined
         ? "unavailable"
-        : snapshot.status;
+        : widgetSnapshotError !== undefined
+          ? "error"
+          : widgetSnapshot?.status ?? "loading";
     return (
       <WidgetHost
         definition={registered.definition}
@@ -317,10 +490,12 @@ export function ViewHost({
         viewId={definition.viewId}
         input={input}
         status={status}
-        statusMessage={instance.unavailableReason ?? snapshot.quality.message}
+        statusMessage={
+          instance.unavailableReason ?? widgetSnapshotError ?? widgetSnapshot?.quality.message
+        }
         width={instance.layout.w * 54}
         height={instance.layout.h * 32}
-        sizeMode={sizeModeFor(instance, defaultWidth)}
+        sizeMode={isMobile ? "compact" : sizeModeFor(instance, defaultWidth)}
         editing={customizing}
         emit={(intent: WidgetIntent) => {
           void session.dispatch(intent).catch((error: unknown) => {
@@ -355,12 +530,13 @@ export function ViewHost({
         {customizing ? (
           <>
             <button type="button" onClick={() => setCatalogOpen(true)}>Widgets</button>
-            <button type="button" onClick={() => act({ type: "undo" })} disabled={editState.past.length === 0}>Undo</button>
+            <button type="button" onClick={() => setMobileOrderOpen((open) => !open)} aria-expanded={mobileOrderOpen}>Mobile order</button>
+            <button type="button" onClick={() => { act({ type: "undo" }); setResetPatchRequested(false); }} disabled={editState.past.length === 0}>Undo</button>
             <button type="button" onClick={() => act({ type: "redo" })} disabled={editState.future.length === 0}>Redo</button>
             <button type="button" onClick={() => act({ type: "tidy" })}>Tidy</button>
-            <button type="button" onClick={() => act({ type: "reset", defaults })}>Reset</button>
+            <button type="button" onClick={() => { act({ type: "reset", defaults }); setResetPatchRequested(true); }}>Reset</button>
             <button type="button" onClick={cancelCustomize}>Cancel</button>
-            <button type="button" className="wb-view-toolbar__primary" onClick={() => void saveCustomize()} disabled={!editState.dirty}>Done</button>
+            <button type="button" className="wb-view-toolbar__primary" onClick={() => void saveCustomize()} disabled={!editState.dirty && !resetPatchRequested}>Done</button>
           </>
         ) : (
           <>
@@ -369,6 +545,18 @@ export function ViewHost({
           </>
         )}
       </div>
+      {customizing && mobileOrderOpen ? (
+        <MobileOrderEditor
+          registry={registry}
+          instances={editState.present.instances}
+          order={editState.present.mobileOrder}
+          onChange={(order) => {
+            act({ type: "set-mobile-order", order });
+            announce("Mobile widget order updated");
+          }}
+          onClose={() => setMobileOrderOpen(false)}
+        />
+      ) : null}
       {personalizationError ? (
         <p className="wb-view-host__warning" role="alert">{personalizationError}</p>
       ) : null}
@@ -399,10 +587,11 @@ export function ViewHost({
           registry={registry}
           view={definition}
           instances={editState.present.instances}
+          addableWidgetTypeIds={addableWidgetTypeIds}
           getPublisherPresentation={(widget) => ({
             label: widget.app.displayName,
             appId: widget.app.appId,
-            trust: widget.app.appId.startsWith("wb.") ? "native" : "unverified",
+            trust: widget.trust,
           })}
           onAction={act}
           onAddRequested={addWidget}

@@ -459,9 +459,17 @@ export function createPersonalizationPatch(
   view: ViewDefinition,
   definitions: ReadonlyMap<WidgetTypeId, WidgetDefinition>,
   snapshot: ViewEditSnapshot,
+  priorPatch?: ViewPersonalizationPatch,
 ): ViewPersonalizationPatch {
   const defaultSlotOverrides: Record<string, DefaultSlotOverride> = {};
-  const slotIds = new Set(view.defaultSlots.map((slot) => slot.slotId));
+  const slotIds = new Set<string>(view.defaultSlots.map((slot) => slot.slotId));
+
+  // Preserve customized slots removed by a newer App definition byte-for-byte. The
+  // current definition cannot safely reconstruct their former defaults, but keeping the
+  // opaque override prevents a save from destroying recoverable user configuration.
+  Object.entries(priorPatch?.defaultSlotOverrides ?? {}).forEach(([slotId, override]) => {
+    if (!slotIds.has(slotId)) defaultSlotOverrides[slotId] = override;
+  });
 
   view.defaultSlots.forEach((slot) => {
     const current = snapshot.instances.find((instance) => instance.slotId === slot.slotId);

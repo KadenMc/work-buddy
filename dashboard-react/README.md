@@ -1,45 +1,82 @@
-# dashboard-react
+# Work Buddy React dashboard
 
-The React frontend for the work-buddy dashboard, migrating over from the
-Python-generated frontend one view at a time (Journal first). Today it is a
-shell: header with the sidecar and live indicators, a clock, and an empty
-Journal tab.
+This package contains the contribution-driven React dashboard. The first complete
+vertical slice is the Journal view: a standard composition of reusable Capture,
+Timeline, and Notes widgets running through the same registry, provider, host, layout,
+personalization, event, and theme boundaries intended for later Apps.
 
-## Build (required before Flask can serve it)
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for the durable contract and ownership model.
 
-The build output (`dist/`) is gitignored, so serve-from-Flask needs a local
-build first:
+## Run locally
 
-```
+Install the pinned dependency tree and start Vite:
+
+```powershell
 cd dashboard-react
-npm install
-npm run build
-```
-
-The Flask dashboard then serves the app same-origin at
-`http://127.0.0.1:5127/app` (no separate server, no extra port). `GET /app`
-returns the built `index.html` with no-store headers; the hashed build
-output under `dist/assets/` is served from `/app/assets/<file>` with an
-immutable one-year cache policy, so rebuilds cache-bust automatically
-through the changed filenames.
-
-## Dev mode
-
-```
+npm ci
 npm run dev
 ```
 
-Runs the Vite dev server with HMR. `/api` (and `/favicon.svg`) are proxied
-to the local dashboard at `http://127.0.0.1:5127`, so the header indicators
-work against real endpoints. The proxy is a dev convenience only: the
-production app is served same-origin by Flask and never touches a sibling
-localhost port.
+Vite serves the app with HMR and proxies `/api` and the favicon to the Flask dashboard
+at `http://127.0.0.1:5127`. Production does not use that proxy: Flask serves the built
+assets same-origin beneath `/app/`.
 
-## Header indicator wiring
+Available Journal entries:
 
-Same sources as the legacy header:
+- `/app/` redirects to the default registered view.
+- `/app/journal` uses the deterministic interactive in-memory provider and is visibly
+  labelled `Demo data`.
+- `/app/journal?provider=legacy` uses the partial, read-only adapter for
+  `GET /api/automation/today`. It never substitutes demo behavior after a live failure.
 
-- sidecar: `GET /api/state`, `status === "running"` plus the `read_only`
-  flag, refreshed on load and when the tab returns to the foreground
-- live: an `EventSource` on `/api/events`, "live" while open,
-  "reconnecting" after an error (the browser retries on its own)
+The provider query value must match an explicitly registered provider. An unknown value
+is an error rather than a silent fallback.
+
+Development builds also expose `/app/__widget-lab`. It renders the reusable widget
+library across size, lifecycle, accessibility, and theme states, and accepts
+`?count=50` for a real-host stress run. The route and its code are absent from the
+production bundle.
+
+## Build for Flask
+
+```powershell
+cd dashboard-react
+npm run build
+```
+
+`build` runs TypeScript checking and Vite's production build. The generated `dist/`
+directory is gitignored but is required in payloads that serve the React dashboard.
+Flask serves history-fallback HTML with no-store headers and hashed assets from
+`/app/assets/` with immutable caching.
+
+## Verification
+
+```powershell
+npm run typecheck
+npm test
+npm run build
+npm run test:e2e
+```
+
+`npm test` runs Vitest component and contract tests. `npm run test:e2e` starts Vite and
+runs Playwright against Chromium and Firefox; use `npm run test:e2e:ui` for the
+interactive runner. Set `PLAYWRIGHT_PORT` if port `4173` is unavailable.
+
+Focused Flask, launcher, and packaging tests live in the repository-level Python test
+suite and should be run through `uv run pytest ...` from the repository root.
+
+## Contribution rules in brief
+
+- A view owns stable purposes (slots), presence policy, default widget selections, and
+  default layout. A widget publisher owns reusable roles, definitions, and lazy renderer
+  modules. The user owns instances and personalization.
+- Renderers receive already-bound input and emit typed UI intents. They must not fetch,
+  open an EventSource, discover Work Buddy resources, or call App/System internals.
+- Standard widgets declare Theme Contract v1 support for light, dark, forced-colors, and
+  reduced-motion, and style through semantic `--wb-*` tokens or host primitives. They do
+  not ship private light/dark palettes.
+- Widget type ID, view slot ID, and widget instance ID have different lifecycles and
+  must remain independent.
+- Shareable skins replace an allowlisted set of semantic values; they cannot inject
+  CSS, scripts, external assets, selectors, or layout rules. Standard widget manifests
+  must declare the complete Theme Contract v1 accessibility matrix.

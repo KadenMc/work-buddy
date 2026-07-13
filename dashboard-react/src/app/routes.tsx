@@ -1,13 +1,14 @@
-import type { ComponentType } from "react";
+import { lazy, useMemo, type ComponentType } from "react";
 
-import JournalPanel from "../components/JournalPanel";
+import type { ViewDefinition } from "../dashboard/contributions/contracts";
+import type { LoadedStandardWidgetViewModule } from "../dashboard/contributions/viewModules";
+import type { ContributionRegistry } from "../dashboard/contributions/registry";
+import { ViewHost } from "../dashboard/views/ViewHost";
 import { dashboardRegistry } from "./dashboardRegistry";
 
 /**
- * Temporary route projection used while the contribution registry is landing.
- * The shell consumes only this generic shape; the integration step can project
- * registered ViewDefinitions into it without adding view-specific branches to
- * DashboardApp or TabBar.
+ * Generic route projection consumed by the dashboard shell. Both metadata and
+ * the lazy page component are discovered by View ID from contribution registry.
  */
 export interface DashboardRouteDefinition {
   readonly viewId: string;
@@ -17,7 +18,7 @@ export interface DashboardRouteDefinition {
   readonly isDefault?: boolean;
 }
 
-function defineDashboardRoutes(
+export function defineDashboardRoutes(
   definitions: readonly DashboardRouteDefinition[],
 ): readonly DashboardRouteDefinition[] {
   if (definitions.length === 0) {
@@ -47,20 +48,66 @@ function defineDashboardRoutes(
   return Object.freeze([...definitions]);
 }
 
-const viewComponents = new Map([["wb.journal.main", JournalPanel]]);
+interface StandardWidgetViewMountProps {
+  readonly registry: ContributionRegistry;
+  readonly definition: ViewDefinition;
+  readonly loaded: LoadedStandardWidgetViewModule;
+}
 
-export const dashboardRoutes = defineDashboardRoutes(
-  dashboardRegistry.listViews().map(({ definition }) => {
-    const component = viewComponents.get(definition.viewId);
-    if (component === undefined) {
-      throw new Error(`No dashboard view module registered for ${definition.viewId}`);
-    }
-    return {
-      viewId: definition.viewId,
-      path: definition.route,
-      label: definition.navigation.label,
-      component,
-      isDefault: definition.navigation.isDefault,
-    };
-  }),
-);
+function StandardWidgetViewMount({
+  registry,
+  definition,
+  loaded,
+}: StandardWidgetViewMountProps) {
+  const runtime = useMemo(
+    () =>
+      loaded.createRuntime({
+        search: window.location.search,
+        storage: window.localStorage,
+      }),
+    [loaded],
+  );
+  return (
+    <ViewHost
+      registry={registry}
+      definition={definition}
+      provider={runtime.provider}
+      personalizationRepository={runtime.personalizationRepository}
+      providerLabel={runtime.providerLabel}
+      renderChrome={runtime.renderChrome}
+    />
+  );
+}
+
+export function projectDashboardRoutes(
+  registry: ContributionRegistry,
+): readonly DashboardRouteDefinition[] {
+  return defineDashboardRoutes(
+    registry.listViews().map(({ definition }) => {
+      // Fail during registry projection, rather than after a user navigates, if an
+      // App published route metadata without its executable page binding.
+      registry.requireViewModule(definition.viewId);
+      const component = lazy(async () => {
+        const loaded = await registry.loadViewModule(definition.viewId);
+        return {
+          default: () => (
+            <StandardWidgetViewMount
+              registry={registry}
+              definition={definition}
+              loaded={loaded}
+            />
+          ),
+        };
+      });
+      return {
+        viewId: definition.viewId,
+        path: definition.route,
+        label: definition.navigation.label,
+        component,
+        isDefault: definition.navigation.isDefault,
+      };
+    }),
+  );
+}
+
+export const dashboardRoutes = projectDashboardRoutes(dashboardRegistry);
