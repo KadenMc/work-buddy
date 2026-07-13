@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 from pathlib import Path
@@ -1926,16 +1927,8 @@ def _react_dist_dir() -> Path:
     return paths.asset_root() / "dashboard-react" / "dist"
 
 
-@app.get("/app")
-@app.get("/app/")
-def react_app():
-    """Serve the built React dashboard's ``index.html``.
-
-    The document is no-store, mirroring ``GET /``: it always references the
-    current content-hashed asset names (Vite's ``base`` is ``/app/``), and
-    the ``/app/assets/`` route below serves those with an immutable cache
-    policy, so a rebuild cache-busts automatically through changed URLs.
-    """
+def _serve_react_app_index() -> Response:
+    """Return the no-store React document for root and history routes."""
     index = _react_dist_dir() / "index.html"
     if not index.is_file():
         return Response(
@@ -1951,6 +1944,36 @@ def react_app():
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     resp.headers["Pragma"] = "no-cache"
     return resp
+
+
+@app.get("/app")
+@app.get("/app/")
+def react_app():
+    """Serve the built React dashboard's ``index.html``.
+
+    The document is no-store, mirroring ``GET /``: it always references the
+    current content-hashed asset names (Vite's ``base`` is ``/app/``), and
+    the ``/app/assets/`` route below serves those with an immutable cache
+    policy, so a rebuild cache-busts automatically through changed URLs.
+    """
+    return _serve_react_app_index()
+
+
+_REACT_VIEW_ROUTE_RE = re.compile(r"^[a-z0-9](?:[a-z0-9_-]{0,63})$", re.IGNORECASE)
+
+
+@app.get("/app/<view_name>")
+def react_app_view(view_name: str):
+    """Serve the React document for a safe, single-segment view route.
+
+    The deliberately narrow slug grammar prevents the SPA fallback from
+    swallowing asset-looking or traversal-shaped requests. Static asset,
+    icon, and manifest routes retain their independent cache and MIME rules.
+    Unknown but well-formed view slugs reach the client-side not-found view.
+    """
+    if _REACT_VIEW_ROUTE_RE.fullmatch(view_name) is None:
+        return "", 404
+    return _serve_react_app_index()
 
 
 @app.get("/app/assets/<path:filename>")

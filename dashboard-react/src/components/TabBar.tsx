@@ -1,20 +1,22 @@
-const TABS = [{ id: "journal", label: "Journal" }] as const;
+import { NavLink } from "react-router-dom";
 
-type TabId = (typeof TABS)[number]["id"];
+export interface DashboardTab {
+  readonly id: string;
+  readonly label: string;
+  readonly to: string;
+}
 
-// Single-tab bar for now. The shape (list of tabs, active id) is the one
-// the migration grows into; only Journal exists in the shell.
-export default function TabBar({ activeTab }: { activeTab: TabId }) {
+export default function TabBar({ tabs }: { tabs: readonly DashboardTab[] }) {
   return (
-    <nav className="tab-bar">
-      {TABS.map((tab) => (
-        <button
+    <nav className="tab-bar" aria-label="Dashboard views">
+      {tabs.map((tab) => (
+        <NavLink
           key={tab.id}
-          type="button"
-          className={`tab-btn${tab.id === activeTab ? " active" : ""}`}
+          to={tab.to}
+          className={({ isActive }) => `tab-btn${isActive ? " active" : ""}`}
         >
           {tab.label}
-        </button>
+        </NavLink>
       ))}
     </nav>
   );

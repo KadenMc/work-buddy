@@ -84,6 +84,8 @@ work_buddy/chrome_native_host/host.sh
 # deliberate build-on-demand artifact, so name it explicitly.
 node_modules/
 dashboard-react/dist/
+dashboard-react/test-results/
+dashboard-react/playwright-report/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
