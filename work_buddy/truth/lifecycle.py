@@ -60,6 +60,12 @@ CONFIRM_GESTURE_KINDS = frozenset({"confirm", "reaffirm", "edit_confirm"})
 REJECTION_CLASSES = frozenset(
     {"reject_plain", "reject_as_false", "reject_as_preference"}
 )
+REJECTION_BINDING_FIELDS = (
+    "rejection_class",
+    "source_canonical_sha256",
+    "result_canonical_sha256",
+)
+REJECTION_BINDING_HASH_FIELD = "rejection_binding_sha256"
 REVIEW_BASIS_KINDS = frozenset({"rule", "sweep", "conflict"})
 
 _BASE_TRANSITIONS: Mapping[str, frozenset[str]] = {
@@ -137,6 +143,34 @@ def negated_proposition(proposition: str) -> str:
     """Return the deterministic proposition attested by ``reject_as_false``."""
 
     return f"It is not the case that {_text(proposition, 'proposition')}"
+
+
+def rejection_binding_role(
+    *,
+    rejection_class: str,
+    source_canonical_sha256: str,
+    result_canonical_sha256: str,
+) -> dict[str, str]:
+    """Build the immutable, non-content binding for a reasoned rejection."""
+
+    rejection = _text(rejection_class, "rejection_class")
+    if rejection not in REJECTION_CLASSES:
+        raise TransitionError(f"unsupported rejection class {rejection!r}")
+    binding = {
+        "rejection_class": rejection,
+        "source_canonical_sha256": _digest(
+            source_canonical_sha256,
+            "source_canonical_sha256",
+        ),
+        "result_canonical_sha256": _digest(
+            result_canonical_sha256,
+            "result_canonical_sha256",
+        ),
+    }
+    return {
+        **binding,
+        REJECTION_BINDING_HASH_FIELD: sha256_text(canonical_json(binding)),
+    }
 
 
 def _text(value: str, label: str) -> str:
@@ -819,12 +853,12 @@ class TruthLifecycle:
             ).fetchall()
             for row in rows:
                 other_id = row["from_claim_id"]
-                other_status = self.store._latest_status_locked(
-                    conn,
-                    other_id,
-                    include_overlay=False,
-                )
-                if other_status is not None and other_status.status == "confirmed":
+                ever_confirmed = conn.execute(
+                    "SELECT 1 FROM claim_status_events "
+                    "WHERE claim_id = ? AND status = 'confirmed' LIMIT 1",
+                    (other_id,),
+                ).fetchone()
+                if ever_confirmed is not None:
                     conflicts.add(other_id)
         return tuple(sorted(conflicts))
 
@@ -996,6 +1030,28 @@ class TruthLifecycle:
             if base is None or base.status not in {"confirmed", "challenged"}:
                 state = "missing" if base is None else base.status
                 raise TransitionError(f"cannot challenge claim from {state}")
+            challenging_claim = self.store._get_claim_locked(write_conn, challenger)
+            if challenging_claim is None:
+                raise InvariantViolation(
+                    f"challenging claim does not exist: {challenger}"
+                )
+            challenger_base = self.store._latest_status_locked(
+                write_conn,
+                challenger,
+                include_overlay=False,
+            )
+            if challenger_base is None:
+                raise InvariantViolation(
+                    f"challenging claim has no status history: {challenger}"
+                )
+            if challenger_base.status in TERMINAL_STATUSES:
+                raise TransitionError(
+                    "a terminal claim cannot serve as a live challenge"
+                )
+            if challenging_claim.redacted_at is not None:
+                raise TransitionError(
+                    "a claim with redacted content cannot serve as a live challenge"
+                )
             support = self._assess_support_locked(write_conn, challenger)
             if not support.usable_span_ids:
                 raise TransitionError(
@@ -1299,7 +1355,7 @@ class TruthLifecycle:
             if rejection == "reject_plain":
                 if result_claim_id is not None:
                     raise TransitionError("plain rejection cannot carry a result claim")
-                self._verify_gesture_locked(
+                gesture = self._verify_gesture_locked(
                     write_conn,
                     gesture_id,
                     actor=actor,
@@ -1309,6 +1365,11 @@ class TruthLifecycle:
                     allowed_kinds={rejection},
                     observed_at=observed,
                 )
+                if gesture.surface not in self.store.profile.gate.confirmation_surfaces:
+                    raise GestureError(
+                        f"confirmation surface {gesture.surface!r} "
+                        "is not allowed by profile"
+                    )
                 consumed = self.store._consume_gesture_locked(
                     write_conn,
                     gesture_id,
@@ -1426,6 +1487,11 @@ class TruthLifecycle:
 
             refutes: ClaimLinkRecord | None = None
             if rejection == "reject_as_false":
+                binding_role = rejection_binding_role(
+                    rejection_class=rejection,
+                    source_canonical_sha256=source.canonical_sha256,
+                    result_canonical_sha256=result.canonical_sha256,
+                )
                 existing = _row_link(
                     write_conn.execute(
                         "SELECT l.* FROM claim_links l "
@@ -1436,16 +1502,24 @@ class TruthLifecycle:
                         (result_id, source_id),
                     ).fetchone()
                 )
-                refutes = existing or self.store.add_link(
-                    from_claim_id=result_id,
-                    link_type="refutes",
-                    to_kind="claim",
-                    to_ref=source_id,
-                    actor=actor,
-                    record_id=link_id,
-                    created_at=at,
-                    conn=write_conn,
-                )
+                if existing is not None:
+                    if existing.role_json != canonical_json(binding_role):
+                        raise TransitionError(
+                            "existing refutes link has an incompatible rejection binding"
+                        )
+                    refutes = existing
+                else:
+                    refutes = self.store.add_link(
+                        from_claim_id=result_id,
+                        link_type="refutes",
+                        to_kind="claim",
+                        to_ref=source_id,
+                        actor=actor,
+                        role=binding_role,
+                        record_id=link_id,
+                        created_at=at,
+                        conn=write_conn,
+                    )
             source_event = self._transition_locked(
                 write_conn,
                 claim_id=source_id,
@@ -1491,6 +1565,8 @@ class TruthLifecycle:
 __all__ = [
     "CONFIRM_GESTURE_KINDS",
     "GESTURE_KINDS",
+    "REJECTION_BINDING_FIELDS",
+    "REJECTION_BINDING_HASH_FIELD",
     "REJECTION_CLASSES",
     "ConfirmationResult",
     "PremiseAssessment",
@@ -1500,4 +1576,5 @@ __all__ = [
     "TruthLifecycle",
     "hash_context",
     "negated_proposition",
+    "rejection_binding_role",
 ]
