@@ -142,6 +142,32 @@ def test_create_refuses_identity_mismatch_and_open_refuses_future_schema(
         TruthStore.open(truth_root)
 
 
+def test_future_schema_refusal_does_not_mutate_journal_mode_or_database(
+    truth_root: Path,
+) -> None:
+    store = TruthStore.create(truth_root, _profile())
+    conn = sqlite3.connect(store.paths.db, isolation_level=None)
+    try:
+        assert conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone() is not None
+        assert conn.execute("PRAGMA journal_mode = DELETE").fetchone()[0] == "delete"
+        conn.execute("PRAGMA user_version = 999")
+    finally:
+        conn.close()
+
+    before = sha256_bytes(store.paths.db.read_bytes())
+    with pytest.raises(StoreVersionError, match="only knows up to"):
+        TruthStore.open(truth_root)
+
+    assert sha256_bytes(store.paths.db.read_bytes()) == before
+    assert not Path(f"{store.paths.db}-wal").exists()
+    assert not Path(f"{store.paths.db}-shm").exists()
+    probe = sqlite3.connect(store.paths.db)
+    try:
+        assert probe.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+    finally:
+        probe.close()
+
+
 def test_supplied_connection_must_be_active_and_target_this_store(
     store: TruthStore,
     tmp_path: Path,

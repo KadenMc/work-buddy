@@ -484,7 +484,10 @@ class TruthStore:
             inline_content_bytes=inline_content_bytes,
             on_commit=on_commit,
         )
-        conn = store._open_connection()
+        # Refuse a future schema before applying any persistent connection
+        # tuning.  In particular, PRAGMA journal_mode mutates the database
+        # even when no application rows are written.
+        conn = store._open_connection(configure_storage=False)
         changed = False
         try:
             starting_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
@@ -547,6 +550,7 @@ class TruthStore:
                 if conn.in_transaction:
                     conn.execute("ROLLBACK")
                 raise
+            store._configure_storage(conn)
         except SchemaVersionTooNew as exc:
             raise StoreVersionError(str(exc)) from exc
         finally:
@@ -578,7 +582,9 @@ class TruthStore:
             inline_content_bytes=inline_content_bytes,
             on_commit=on_commit,
         )
-        conn = store._open_connection()
+        # Version and identity checks must precede persistent PRAGMAs so an
+        # older engine leaves a future store byte-for-byte untouched.
+        conn = store._open_connection(configure_storage=False)
         migrated = False
         try:
             try:
@@ -605,6 +611,7 @@ class TruthStore:
                 raise StoreVersionError(
                     "store_info schema version does not match SQLite user_version"
                 )
+            store._configure_storage(conn)
         finally:
             conn.close()
         if migrated:
@@ -623,7 +630,16 @@ class TruthStore:
     def profile(self) -> StoreProfile:
         return load_profile(self._paths.config)
 
-    def _open_connection(self) -> sqlite3.Connection:
+    @staticmethod
+    def _configure_storage(conn: sqlite3.Connection) -> None:
+        conn.execute("PRAGMA journal_mode = WAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
+
+    def _open_connection(
+        self,
+        *,
+        configure_storage: bool = True,
+    ) -> sqlite3.Connection:
         conn = sqlite3.connect(
             str(self._paths.db),
             timeout=SQLITE_TIMEOUT_SECONDS,
@@ -632,8 +648,8 @@ class TruthStore:
         conn.row_factory = sqlite3.Row
         conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
         conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA synchronous = NORMAL")
+        if configure_storage:
+            self._configure_storage(conn)
         return conn
 
     def connect(self) -> sqlite3.Connection:
