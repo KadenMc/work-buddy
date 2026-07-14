@@ -33,10 +33,7 @@ def _normalize_text(value: str) -> str:
 
 def _normalize_json_value(value: Any) -> Any:
     if isinstance(value, Mapping):
-        return {
-            str(key): _normalize_json_value(item)
-            for key, item in value.items()
-        }
+        return {str(key): _normalize_json_value(item) for key, item in value.items()}
     if isinstance(value, list):
         return [_normalize_json_value(item) for item in value]
     if isinstance(value, tuple):

@@ -146,8 +146,7 @@ def test_web_archive_or_matching_local_snapshot_promotes_to_class_b() -> None:
         {
             "retrieved_at": "2026-07-11T16:00:00Z",
             "archived_uri": (
-                "https://web.archive.org/web/20260711160000/"
-                "https://example.org/page"
+                "https://web.archive.org/web/20260711160000/https://example.org/page"
             ),
         },
     )
@@ -212,8 +211,7 @@ def test_unicode_web_uri_is_normalized_without_fetching() -> None:
     )
 
     assert result.locator == (
-        "https://xn--r8jz45g.xn--zckzah/"
-        "%E8%B3%87%E6%96%99?q=%E2%9C%93#%E7%AF%80"
+        "https://xn--r8jz45g.xn--zckzah/%E8%B3%87%E6%96%99?q=%E2%9C%93#%E7%AF%80"
     )
 
 
@@ -265,7 +263,7 @@ def test_academic_snapshot_promotes_to_b_and_normalizes_pinpoint() -> None:
                 "locator": " 42-44 ",
                 "label": "Page",
                 "extension": {"z": 2, "a": 1},
-            }
+            },
         },
         SHA256.upper(),
     )

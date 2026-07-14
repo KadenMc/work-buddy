@@ -62,8 +62,7 @@ def test_fingerprint_helpers_distinguish_current_stale_and_unreviewed() -> None:
     assert not is_fingerprint_stale("about_entity", reviewed, reviewed)
 
     assert (
-        fingerprint_status("about_entity", reviewed, changed)
-        is FingerprintStatus.STALE
+        fingerprint_status("about_entity", reviewed, changed) is FingerprintStatus.STALE
     )
     assert is_fingerprint_stale("about_entity", reviewed, changed)
     assert is_fingerprint_stale("about_entity", reviewed, None)
@@ -78,8 +77,7 @@ def test_fingerprint_helpers_distinguish_current_stale_and_unreviewed() -> None:
 
 def test_immutable_fingerprint_status_is_not_applicable() -> None:
     assert (
-        fingerprint_status("supersedes", None, None)
-        is FingerprintStatus.NOT_APPLICABLE
+        fingerprint_status("supersedes", None, None) is FingerprintStatus.NOT_APPLICABLE
     )
     assert not is_fingerprint_current("supersedes", None, None)
     assert not is_fingerprint_stale("supersedes", None, None)

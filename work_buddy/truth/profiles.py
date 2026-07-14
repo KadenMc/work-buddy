@@ -84,7 +84,9 @@ def _require_bool(value: Any, label: str) -> bool:
     return value
 
 
-def _unique_strings(value: Any, label: str, *, nonempty: bool = True) -> tuple[str, ...]:
+def _unique_strings(
+    value: Any, label: str, *, nonempty: bool = True
+) -> tuple[str, ...]:
     if not isinstance(value, (list, tuple)):
         raise ProfileError(f"{label} must be a list")
     items = tuple(_require_nonempty_string(item, label) for item in value)
@@ -117,7 +119,9 @@ def _normalize_proposal_max_age(value: Any) -> int | str | None:
     if value is None:
         return None
     if isinstance(value, bool):
-        raise ProfileError("proposal_max_age must be null, positive seconds, or a duration")
+        raise ProfileError(
+            "proposal_max_age must be null, positive seconds, or a duration"
+        )
     if isinstance(value, int):
         if value <= 0:
             raise ProfileError("proposal_max_age seconds must be positive")
@@ -219,7 +223,9 @@ def _parse_gate(value: Any) -> GatePolicy:
         raw.get("block_materialize_on_flags"),
         "gate.block_materialize_on_flags",
     )
-    extras = {key: _plain_copy(item) for key, item in raw.items() if key not in _GATE_KEYS}
+    extras = {
+        key: _plain_copy(item) for key, item in raw.items() if key not in _GATE_KEYS
+    }
     return GatePolicy(
         rejected_content=rejected_content,
         confirmation_surfaces=confirmation_surfaces,
@@ -315,12 +321,8 @@ def validate_profile(value: StoreProfile | Mapping[str, Any]) -> StoreProfile:
         required_fields=required_fields,
         gate=gate,
         projection=projection,
-        export_committed=_require_bool(
-            raw.get("export_committed"), "export_committed"
-        ),
-        proposal_max_age=_normalize_proposal_max_age(
-            raw.get("proposal_max_age")
-        ),
+        export_committed=_require_bool(raw.get("export_committed"), "export_committed"),
+        proposal_max_age=_normalize_proposal_max_age(raw.get("proposal_max_age")),
         validators=_plain_copy(dict(validators)),
         extensions=_plain_copy(dict(extensions)),
         extra=extra,
@@ -431,9 +433,7 @@ def validate_new_claim(
         )
 
     if confirmation_surface is not None:
-        surface = _require_nonempty_string(
-            confirmation_surface, "confirmation_surface"
-        )
+        surface = _require_nonempty_string(confirmation_surface, "confirmation_surface")
         if surface not in profile.gate.confirmation_surfaces:
             raise ProfileError(
                 f"confirmation surface {surface!r} is not allowed by profile "

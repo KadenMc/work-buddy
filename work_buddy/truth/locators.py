@@ -113,9 +113,7 @@ def _normalize_kind(value: str) -> str:
         raise LocatorError("evidence kind must be a string")
     normalized = value.strip().lower()
     if normalized not in EVIDENCE_KINDS:
-        raise LocatorError(
-            f"evidence kind must be one of {sorted(EVIDENCE_KINDS)}"
-        )
+        raise LocatorError(f"evidence kind must be one of {sorted(EVIDENCE_KINDS)}")
     return normalized
 
 
@@ -383,9 +381,7 @@ def _snapshot_updates(
     if declared is not None:
         declared_digest = _require_sha256(declared, "snapshot_sha256")
         if content_sha256 is None:
-            raise LocatorError(
-                "snapshot_sha256 requires captured content_sha256"
-            )
+            raise LocatorError("snapshot_sha256 requires captured content_sha256")
         if declared_digest != content_sha256:
             raise LocatorError("snapshot_sha256 does not match content_sha256")
     return {"snapshot_sha256": content_sha256} if content_sha256 is not None else {}
@@ -493,9 +489,7 @@ def _validate_swh(
         qualifiers[name] = value
 
     missing = [
-        name
-        for name in ("origin", "anchor", "path", "lines")
-        if name not in qualifiers
+        name for name in ("origin", "anchor", "path", "lines") if name not in qualifiers
     ]
     if missing:
         raise LocatorError(
@@ -507,15 +501,10 @@ def _validate_swh(
         visit_match = _SWH_CORE_RE.fullmatch(qualifiers["visit"])
         if visit_match is None or visit_match.group(1).lower() != "snp":
             raise LocatorError("SWHID visit must be an unqualified snapshot SWHID")
-        qualifiers["visit"] = (
-            f"swh:1:snp:{visit_match.group(2).lower()}"
-        )
+        qualifiers["visit"] = f"swh:1:snp:{visit_match.group(2).lower()}"
 
     anchor_match = _SWH_CORE_RE.fullmatch(qualifiers["anchor"])
-    if (
-        anchor_match is None
-        or anchor_match.group(1).lower() not in _SWH_ANCHOR_TYPES
-    ):
+    if anchor_match is None or anchor_match.group(1).lower() not in _SWH_ANCHOR_TYPES:
         raise LocatorError(
             "SWHID anchor must be an unqualified dir, rev, rel, or snp SWHID"
         )
@@ -606,9 +595,7 @@ def _validate_web(
         if archived_uri == normalized_locator:
             raise LocatorError("archived_uri must differ from the live locator")
         if archived_uri.startswith("file:") and content_sha256 is None:
-            raise LocatorError(
-                "a local archived_uri requires captured content_sha256"
-            )
+            raise LocatorError("a local archived_uri requires captured content_sha256")
         updates["archived_uri"] = archived_uri
 
     if archived_uri is not None or content_sha256 is not None:
@@ -741,9 +728,7 @@ def _validate_session(
 
     declared_digest = meta.get("transcript_sha256")
     if declared_digest is not None:
-        normalized_declared = _require_sha256(
-            declared_digest, "transcript_sha256"
-        )
+        normalized_declared = _require_sha256(declared_digest, "transcript_sha256")
         if normalized_declared != digest:
             raise LocatorError("transcript_sha256 does not match content_sha256")
     updates = {"transcript_sha256": digest}
