@@ -21,6 +21,14 @@ logger = get_logger(__name__)
 
 SCHEMA_VERSION = 1
 
+# Redacted spans retain their immutable identity/hash but not their quote or
+# quote context.  Keep the selector valid JSON (and valid for the existing
+# selector parser) so recovery exports and integrity scans can still process
+# the row without preserving any source text or source-text length.
+REDACTED_SELECTOR_JSON = (
+    '[{"exact":"[redacted]","prefix":"","suffix":"","type":"TextQuoteSelector"}]'
+)
+
 
 def _m001_initial_schema(conn: sqlite3.Connection) -> None:
     """Create the first truth ledger schema and its database guards."""
@@ -230,12 +238,10 @@ def _m001_initial_schema(conn: sqlite3.Connection) -> None:
         "ON claim_status_events(basis_ref) "
         "WHERE status = 'confirmed' AND basis_kind = 'gesture' "
         "AND basis_ref IS NOT NULL",
-        "CREATE INDEX IF NOT EXISTS idx_claim_links_from "
-        "ON claim_links(from_claim_id)",
+        "CREATE INDEX IF NOT EXISTS idx_claim_links_from ON claim_links(from_claim_id)",
         "CREATE INDEX IF NOT EXISTS idx_claim_links_target "
         "ON claim_links(to_kind, to_ref)",
-        "CREATE INDEX IF NOT EXISTS idx_claims_scope_kind "
-        "ON claims(scope, claim_kind)",
+        "CREATE INDEX IF NOT EXISTS idx_claims_scope_kind ON claims(scope, claim_kind)",
         "CREATE INDEX IF NOT EXISTS idx_claims_scope_valid_from "
         "ON claims(scope, valid_from DESC)",
         "CREATE INDEX IF NOT EXISTS idx_claims_canonical_sha256 "
@@ -294,16 +300,16 @@ def _m001_initial_schema(conn: sqlite3.Connection) -> None:
             SELECT RAISE(ABORT, 'append-only');
         END
         """,
-        """
+        f"""
         CREATE TRIGGER IF NOT EXISTS evidence_spans_append_only_update
         BEFORE UPDATE ON evidence_spans
         WHEN NOT (
             OLD.redacted_at IS NULL
             AND NEW.redacted_at IS NOT NULL
             AND NEW.quote_exact IS NULL
+            AND NEW.selector_json = '{REDACTED_SELECTOR_JSON}'
             AND NEW.id IS OLD.id
             AND NEW.evidence_id IS OLD.evidence_id
-            AND NEW.selector_json IS OLD.selector_json
             AND NEW.span_sha256 IS OLD.span_sha256
             AND NEW.author_kind IS OLD.author_kind
             AND NEW.author_ref IS OLD.author_ref
@@ -343,18 +349,44 @@ def _m001_initial_schema(conn: sqlite3.Connection) -> None:
         CREATE TRIGGER IF NOT EXISTS gestures_append_only_update
         BEFORE UPDATE ON gestures
         WHEN NOT (
-            OLD.consumed_at IS NULL
-            AND NEW.consumed_at IS NOT NULL
-            AND NEW.id IS OLD.id
+            NEW.id IS OLD.id
             AND NEW.at IS OLD.at
             AND NEW.surface IS OLD.surface
             AND NEW.actor_ref IS OLD.actor_ref
             AND NEW.kind IS OLD.kind
             AND NEW.subject_ref IS OLD.subject_ref
             AND NEW.payload_sha256 IS OLD.payload_sha256
-            AND NEW.payload_excerpt IS OLD.payload_excerpt
             AND NEW.context_sha256 IS OLD.context_sha256
             AND NEW.expires_at IS OLD.expires_at
+            AND (
+                (
+                    OLD.consumed_at IS NULL
+                    AND NEW.consumed_at IS NOT NULL
+                    AND NEW.payload_excerpt IS OLD.payload_excerpt
+                )
+                OR (
+                    NEW.consumed_at IS OLD.consumed_at
+                    AND OLD.payload_excerpt <> '[redacted]'
+                    AND NEW.payload_excerpt = '[redacted]'
+                    AND (
+                        EXISTS (
+                            SELECT 1 FROM claims
+                            WHERE id = OLD.subject_ref
+                            AND redacted_at IS NOT NULL
+                        )
+                        OR EXISTS (
+                            SELECT 1 FROM evidence
+                            WHERE id = OLD.subject_ref
+                            AND redacted_at IS NOT NULL
+                        )
+                        OR EXISTS (
+                            SELECT 1 FROM evidence_spans
+                            WHERE id = OLD.subject_ref
+                            AND redacted_at IS NOT NULL
+                        )
+                    )
+                )
+            )
         )
         BEGIN
             SELECT RAISE(ABORT, 'append-only');
@@ -493,8 +525,7 @@ class _TruthMigrationRunner(MigrationRunner):
         migration.fn(conn)
         if _table_exists(conn, "store_info"):
             conn.execute(
-                "UPDATE store_info SET schema_version = ? "
-                "WHERE schema_version < ?",
+                "UPDATE store_info SET schema_version = ? WHERE schema_version < ?",
                 (migration.version, migration.version),
             )
         conn.execute(
@@ -611,9 +642,7 @@ def migrate(
                 f"truth: DB at v{observed} but this code only knows up to v{target}"
             )
         applied = [
-            item
-            for item in TRUTH_MIGRATIONS.migrations
-            if item.version <= observed
+            item for item in TRUTH_MIGRATIONS.migrations if item.version <= observed
         ]
         preflight = _TruthMigrationRunner(TRUTH_MIGRATIONS.name, applied)
         try:

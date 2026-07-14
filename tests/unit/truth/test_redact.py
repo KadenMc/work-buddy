@@ -7,8 +7,10 @@ import pytest
 
 from work_buddy.truth.anchors import CompositeSelector
 from work_buddy.truth.contracts import Actor, GestureError, InvariantViolation
+from work_buddy.truth.export import export_store
 from work_buddy.truth.identity import new_id, utc_now
 from work_buddy.truth.lifecycle import TruthLifecycle
+from work_buddy.truth.migrations import REDACTED_SELECTOR_JSON
 from work_buddy.truth.redact import TruthRedactor, policy_basis_ref
 from work_buddy.truth.store import GestureRecord, PostCommitHookError, TruthStore
 
@@ -133,6 +135,7 @@ def _gesture(
     payload_sha256: str,
     context_sha256: str | None = None,
     actor_ref: str = HUMAN.ref or "",
+    payload_excerpt: str = "content shown to the human",
 ) -> GestureRecord:
     record = GestureRecord(
         id=new_id(),
@@ -142,7 +145,7 @@ def _gesture(
         kind="redact",
         subject_ref=subject_ref,
         payload_sha256=payload_sha256,
-        payload_excerpt="content shown to the human",
+        payload_excerpt=payload_excerpt,
         context_sha256=context_sha256,
         expires_at=None,
         consumed_at=None,
@@ -185,7 +188,10 @@ def test_gesture_redaction_retains_claim_identity_hash_and_appends_costatus(
     assert result.status_event.basis_kind == "redaction"
     assert result.status_event.basis_ref == result.event.id
     with store.connect() as conn:
-        assert store._get_gesture_locked(conn, gesture.id).consumed_at is not None
+        stored_gesture = store._get_gesture_locked(conn, gesture.id)
+        assert stored_gesture.consumed_at is not None
+        assert stored_gesture.payload_excerpt == "[redacted]"
+        assert stored_gesture.payload_sha256 == claim.canonical_sha256
 
     with store.connect() as conn:
         ledger_types = [
@@ -223,7 +229,9 @@ def test_redaction_composes_with_the_real_lifecycle_gesture_seam(
     assert result.status_event is not None
     assert lifecycle.latest_status(claim.id).status == "retracted"
     with store.connect() as conn:
-        assert store._get_gesture_locked(conn, gesture.id).consumed_at is not None
+        stored_gesture = store._get_gesture_locked(conn, gesture.id)
+        assert stored_gesture.consumed_at is not None
+        assert stored_gesture.payload_excerpt == "[redacted]"
 
 
 @pytest.mark.parametrize(
@@ -396,10 +404,16 @@ def test_evidence_redaction_cascades_quotes_and_deletes_unshared_blob(
     )
 
     assert store.get_evidence(evidence.id).content_path is None
-    assert store.get_span(span.id).quote_exact is None
+    redacted_span = store.get_span(span.id)
+    assert redacted_span.quote_exact is None
+    assert redacted_span.selector_json == REDACTED_SELECTOR_JSON
     assert result.cascade_events[0].subject_ref == span.id
     assert result.blob_deleted is True
     assert not path.exists()
+    with store.connect() as conn:
+        assert (
+            store._get_gesture_locked(conn, gesture.id).payload_excerpt == "[redacted]"
+        )
 
 
 def test_post_commit_hook_failure_still_deletes_redacted_blob(
@@ -529,6 +543,315 @@ def test_caller_transaction_refuses_blob_redaction_without_side_effects(
     assert redactor.cleanup_redacted_blob(evidence.content_sha256) is False
 
 
+def test_direct_span_redaction_scrubs_selector_and_only_bound_gestures(
+    store: TruthStore,
+    redactor: TruthRedactor,
+) -> None:
+    private_exact = "PRIVATE-SPAN-8d951f"
+    source = f"public prefix {private_exact} public middle SAFE-SPAN public suffix"
+    evidence = store.capture_evidence(
+        kind="document",
+        source_locator="file:///direct-span.txt",
+        actor=HUMAN,
+        acquisition_method="paste",
+        content=source,
+    )
+    private_span = store.mark_span(
+        evidence_id=evidence.id,
+        selector=CompositeSelector(
+            exact=private_exact,
+            prefix="public prefix ",
+            suffix=" public middle",
+        ),
+        actor=HUMAN,
+    )
+    sibling_span = store.mark_span(
+        evidence_id=evidence.id,
+        selector=CompositeSelector(exact="SAFE-SPAN"),
+        actor=HUMAN,
+    )
+    private_gesture = _gesture(
+        store,
+        subject_ref=private_span.id,
+        payload_sha256=private_span.span_sha256,
+        payload_excerpt=f"reviewed {private_exact}",
+    )
+    sibling_gesture = _gesture(
+        store,
+        subject_ref=sibling_span.id,
+        payload_sha256=sibling_span.span_sha256,
+        payload_excerpt="reviewed SAFE-SPAN",
+    )
+    sibling_selector = sibling_span.selector_json
+
+    result = redactor.redact(
+        subject_kind="span",
+        subject_ref=private_span.id,
+        actor=HUMAN,
+        reason="privacy",
+        basis_kind="gesture",
+        basis_ref=private_gesture.id,
+    )
+
+    assert result.event.subject_ref == private_span.id
+    redacted = store.get_span(private_span.id)
+    assert redacted.id == private_span.id
+    assert redacted.span_sha256 == private_span.span_sha256
+    assert redacted.quote_exact is None
+    assert redacted.selector_json == REDACTED_SELECTOR_JSON
+    assert store.get_evidence(evidence.id).redacted_at is None
+    assert store.get_span(sibling_span.id).selector_json == sibling_selector
+    with store.connect() as conn:
+        stored_private = store._get_gesture_locked(conn, private_gesture.id)
+        stored_sibling = store._get_gesture_locked(conn, sibling_gesture.id)
+    assert stored_private.payload_excerpt == "[redacted]"
+    assert stored_private.payload_sha256 == private_span.span_sha256
+    assert stored_private.consumed_at is not None
+    assert stored_sibling.payload_excerpt == "reviewed SAFE-SPAN"
+    assert stored_sibling.consumed_at is None
+
+
+def test_redaction_removes_secrets_from_database_and_recovery_export(
+    store: TruthStore,
+) -> None:
+    lifecycle = TruthLifecycle(store)
+    redactor = TruthRedactor(store, lifecycle=lifecycle)
+    claim_secret = "PRIVATE-CLAIM-c1358a"
+    structured_secret = "PRIVATE-STRUCTURED-47f31b"
+    exact_secret = "PRIVATE-EXACT-671ea4"
+    prefix_secret = "PRIVATE-PREFIX-5be37d "
+    suffix_secret = " PRIVATE-SUFFIX-a326e9"
+    evidence_secret = f"{prefix_secret}{exact_secret}{suffix_secret}"
+    secrets = (
+        claim_secret,
+        structured_secret,
+        exact_secret,
+        prefix_secret.strip(),
+        suffix_secret.strip(),
+    )
+
+    claim = store.propose_claim(
+        proposition=claim_secret,
+        claim_kind="fact",
+        structured={"private": structured_secret},
+        actor=HUMAN,
+    ).claim
+    claim_gesture = _gesture(
+        store,
+        subject_ref=claim.id,
+        payload_sha256=claim.canonical_sha256,
+        payload_excerpt=f"{claim_secret} {structured_secret}",
+    )
+    claim_result = redactor.redact(
+        subject_kind="claim",
+        subject_ref=claim.id,
+        actor=HUMAN,
+        reason="privacy",
+        basis_kind="gesture",
+        basis_ref=claim_gesture.id,
+    )
+
+    evidence = store.capture_evidence(
+        kind="document",
+        source_locator="file:///privacy-export.txt",
+        actor=HUMAN,
+        acquisition_method="paste",
+        content=evidence_secret,
+    )
+    span = store.mark_span(
+        evidence_id=evidence.id,
+        selector=CompositeSelector(
+            exact=exact_secret,
+            prefix=prefix_secret,
+            suffix=suffix_secret,
+        ),
+        actor=HUMAN,
+    )
+    evidence_gesture = _gesture(
+        store,
+        subject_ref=evidence.id,
+        payload_sha256=evidence.content_sha256,
+        payload_excerpt=evidence_secret,
+    )
+    span_gesture = _gesture(
+        store,
+        subject_ref=span.id,
+        payload_sha256=span.span_sha256,
+        payload_excerpt=f"{prefix_secret}{exact_secret}{suffix_secret}",
+    )
+
+    public_evidence = store.capture_evidence(
+        kind="document",
+        source_locator="file:///public-export.txt",
+        actor=HUMAN,
+        acquisition_method="paste",
+        content="PUBLIC-PREFIX SAFE-EXACT PUBLIC-SUFFIX",
+    )
+    public_span = store.mark_span(
+        evidence_id=public_evidence.id,
+        selector=CompositeSelector(
+            exact="SAFE-EXACT",
+            prefix="PUBLIC-PREFIX ",
+            suffix=" PUBLIC-SUFFIX",
+        ),
+        actor=HUMAN,
+    )
+    public_gesture = _gesture(
+        store,
+        subject_ref=public_span.id,
+        payload_sha256=public_span.span_sha256,
+        payload_excerpt="PUBLIC-PREFIX SAFE-EXACT PUBLIC-SUFFIX",
+    )
+
+    evidence_result = redactor.redact(
+        subject_kind="evidence",
+        subject_ref=evidence.id,
+        actor=HUMAN,
+        reason="privacy",
+        basis_kind="gesture",
+        basis_ref=evidence_gesture.id,
+    )
+
+    redacted_claim = store.get_claim(claim.id)
+    redacted_evidence = store.get_evidence(evidence.id)
+    redacted_span = store.get_span(span.id)
+    assert (redacted_claim.id, redacted_claim.canonical_sha256) == (
+        claim.id,
+        claim.canonical_sha256,
+    )
+    assert (redacted_evidence.id, redacted_evidence.content_sha256) == (
+        evidence.id,
+        evidence.content_sha256,
+    )
+    assert (redacted_span.id, redacted_span.span_sha256) == (
+        span.id,
+        span.span_sha256,
+    )
+    assert redacted_span.selector_json == REDACTED_SELECTOR_JSON
+    assert evidence_result.cascade_events[0].subject_ref == span.id
+    assert claim_result.event.subject_ref == claim.id
+
+    with store.connect() as conn:
+        event_subjects = {
+            (row["subject_kind"], row["subject_ref"])
+            for row in conn.execute(
+                "SELECT subject_kind, subject_ref FROM redaction_events"
+            )
+        }
+        gestures = {
+            row["id"]: row
+            for row in conn.execute(
+                "SELECT id, payload_sha256, payload_excerpt FROM gestures"
+            )
+        }
+        logical_rows = b"\n".join(
+            repr(tuple(row)).encode("utf-8")
+            for table in ("claims", "evidence", "evidence_spans", "gestures")
+            for row in conn.execute(f"SELECT * FROM {table}")
+        )
+    assert {("claim", claim.id), ("evidence", evidence.id), ("span", span.id)} <= (
+        event_subjects
+    )
+    assert gestures[claim_gesture.id]["payload_excerpt"] == "[redacted]"
+    assert gestures[evidence_gesture.id]["payload_excerpt"] == "[redacted]"
+    assert gestures[span_gesture.id]["payload_excerpt"] == "[redacted]"
+    assert gestures[claim_gesture.id]["payload_sha256"] == claim.canonical_sha256
+    assert gestures[evidence_gesture.id]["payload_sha256"] == evidence.content_sha256
+    assert gestures[span_gesture.id]["payload_sha256"] == span.span_sha256
+    assert gestures[public_gesture.id]["payload_excerpt"] == (
+        "PUBLIC-PREFIX SAFE-EXACT PUBLIC-SUFFIX"
+    )
+    assert store.get_span(public_span.id).selector_json == public_span.selector_json
+
+    export_path = store.paths.export_dir / "privacy-check.jsonl"
+    export_store(store, export_path)
+    exported = export_path.read_bytes()
+    with store.connect() as conn:
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    database_files = (
+        store.paths.db,
+        Path(f"{store.paths.db}-wal"),
+    )
+    database_bytes = b"".join(
+        path.read_bytes() for path in database_files if path.exists()
+    )
+    for secret in secrets:
+        assert secret.encode() not in logical_rows
+        assert secret.encode() not in database_bytes
+        assert secret.encode() not in exported
+
+
+def test_cascade_failure_rolls_back_all_content_receipts_events_and_consumption(
+    store: TruthStore,
+    redactor: TruthRedactor,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "ROLLBACK-PRIVATE-2c68a1"
+    source = f"prefix {secret} suffix"
+    evidence = store.capture_evidence(
+        kind="document",
+        source_locator="file:///redaction-rollback.txt",
+        actor=HUMAN,
+        acquisition_method="paste",
+        content=source,
+    )
+    span = store.mark_span(
+        evidence_id=evidence.id,
+        selector=CompositeSelector(
+            exact=secret,
+            prefix="prefix ",
+            suffix=" suffix",
+        ),
+        actor=HUMAN,
+    )
+    evidence_gesture = _gesture(
+        store,
+        subject_ref=evidence.id,
+        payload_sha256=evidence.content_sha256,
+        payload_excerpt=source,
+    )
+    span_gesture = _gesture(
+        store,
+        subject_ref=span.id,
+        payload_sha256=span.span_sha256,
+        payload_excerpt=secret,
+    )
+    original_insert = redactor._insert_event_locked
+
+    def fail_on_cascade(conn, **kwargs):
+        if kwargs["subject_kind"] == "span":
+            raise RuntimeError("forced cascade audit failure")
+        return original_insert(conn, **kwargs)
+
+    monkeypatch.setattr(redactor, "_insert_event_locked", fail_on_cascade)
+    with pytest.raises(RuntimeError, match="forced cascade audit failure"):
+        redactor.redact(
+            subject_kind="evidence",
+            subject_ref=evidence.id,
+            actor=HUMAN,
+            reason="privacy",
+            basis_kind="gesture",
+            basis_ref=evidence_gesture.id,
+        )
+
+    restored_evidence = store.get_evidence(evidence.id)
+    restored_span = store.get_span(span.id)
+    assert restored_evidence.content_path == evidence.content_path
+    assert restored_evidence.redacted_at is None
+    assert restored_span.quote_exact == secret
+    assert restored_span.selector_json == span.selector_json
+    assert restored_span.redacted_at is None
+    assert store.resolve_blob_path(evidence.content_path or "").exists()
+    with store.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM redaction_events").fetchone()[0] == 0
+        restored_evidence_gesture = store._get_gesture_locked(conn, evidence_gesture.id)
+        restored_span_gesture = store._get_gesture_locked(conn, span_gesture.id)
+    assert restored_evidence_gesture.payload_excerpt == source
+    assert restored_evidence_gesture.consumed_at is None
+    assert restored_span_gesture.payload_excerpt == secret
+    assert restored_span_gesture.consumed_at is None
+
+
 def test_redaction_is_idempotent_without_consuming_a_second_gesture(
     store: TruthStore,
     redactor: TruthRedactor,
@@ -566,3 +889,7 @@ def test_redaction_is_idempotent_without_consuming_a_second_gesture(
     assert second.event == first.event
     with store.connect() as conn:
         assert store._get_gesture_locked(conn, second_gesture.id).consumed_at is None
+        assert (
+            store._get_gesture_locked(conn, second_gesture.id).payload_excerpt
+            == "[redacted]"
+        )
