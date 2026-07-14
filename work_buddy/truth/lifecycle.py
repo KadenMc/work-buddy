@@ -352,6 +352,11 @@ class TruthLifecycle:
         gesture = self.store._get_gesture_locked(conn, identifier)
         if gesture is None:
             raise GestureError(f"gesture does not exist: {identifier}")
+        if _parse_timestamp(observed, "gesture observed_at") < _parse_timestamp(
+            gesture.at,
+            "gesture at",
+        ):
+            raise GestureError("gesture use cannot predate the human decision")
         if gesture.consumed_at is not None:
             raise GestureError("gesture has already been consumed")
         if gesture.actor_ref != actor_ref:
