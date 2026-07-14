@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from work_buddy.truth.contracts import Actor, InvariantViolation, TERMINAL_STATUSES
+from work_buddy.truth.migrations import REDACTED_SELECTOR_JSON
 from work_buddy.truth.store import (
     PostCommitHookError,
     TruthStore,
@@ -333,10 +334,24 @@ class TruthRedactor:
             )
         else:
             conn.execute(
-                "UPDATE evidence_spans SET quote_exact = NULL, redacted_at = ? "
-                "WHERE id = ?",
-                (at, subject.ref),
+                "UPDATE evidence_spans SET selector_json = ?, "
+                "quote_exact = NULL, redacted_at = ? WHERE id = ?",
+                (REDACTED_SELECTOR_JSON, at, subject.ref),
             )
+        self._redact_gesture_excerpts_locked(conn, subject.ref)
+
+    @staticmethod
+    def _redact_gesture_excerpts_locked(
+        conn: sqlite3.Connection,
+        subject_ref: str,
+    ) -> None:
+        """Destroy readable receipts bound to a now-redacted subject."""
+
+        conn.execute(
+            "UPDATE gestures SET payload_excerpt = '[redacted]' "
+            "WHERE subject_ref = ? AND payload_excerpt <> '[redacted]'",
+            (subject_ref,),
+        )
 
     def _cascade_evidence_spans_locked(
         self,
@@ -423,6 +438,11 @@ class TruthRedactor:
             conn,
             lambda: blob_digest,
         ) as write_conn:
+            # SQLite otherwise may leave the replaced quote/excerpt bytes in a
+            # b-tree freeblock even though SQL readers see only tombstones.
+            # This connection-local setting makes each sanctioned mutation
+            # overwrite the retired payload bytes as part of the transaction.
+            write_conn.execute("PRAGMA secure_delete = ON")
             subject = self._subject_locked(write_conn, kind, reference)
             if subject.redacted_at is not None:
                 existing = self._redaction_event_locked(write_conn, kind, reference)
@@ -430,6 +450,10 @@ class TruthRedactor:
                     raise InvariantViolation(
                         "redacted subject is missing its redaction audit event"
                     )
+                # A later engine-created gesture can only display the tombstone,
+                # but scrub it here as well so idempotent calls preserve the
+                # stronger invariant for imported or repaired stores.
+                self._redact_gesture_excerpts_locked(write_conn, subject.ref)
                 return RedactionResult(event=existing, created=False)
             if _parse_time(timestamp, "redaction at") < _parse_time(
                 subject.created_at,
