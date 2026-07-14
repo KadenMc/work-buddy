@@ -477,8 +477,6 @@ class TruthStore:
         validated = validate_profile(profile)
         paths = StorePaths.from_root(root)
         paths.sidecar.mkdir(parents=True, exist_ok=True)
-        paths.blobs.mkdir(parents=True, exist_ok=True)
-        paths.export_dir.mkdir(parents=True, exist_ok=True)
         store = cls(
             paths,
             inline_content_bytes=inline_content_bytes,
@@ -555,6 +553,11 @@ class TruthStore:
             raise StoreVersionError(str(exc)) from exc
         finally:
             conn.close()
+        # Auxiliary paths are part of a successfully opened store.  Creating
+        # them before migration preflight would mutate an otherwise untouched
+        # future-version store that this engine must refuse.
+        paths.blobs.mkdir(parents=True, exist_ok=True)
+        paths.export_dir.mkdir(parents=True, exist_ok=True)
         if changed:
             store._run_on_commit()
         return cls.open(
@@ -729,6 +732,23 @@ class TruthStore:
                 from work_buddy.truth.export import export_store
 
                 export_store(self)
+        except Exception as exc:
+            # The old export describes pre-commit state and can retain content
+            # that a sanctioned redaction just destroyed.  Profile loading is
+            # part of this guarded phase: when policy cannot be read, removing
+            # a rebuildable export is the privacy-safe default.
+            try:
+                self.paths.claims_export.unlink(missing_ok=True)
+            except OSError as cleanup_exc:
+                raise PostCommitHookError(
+                    "truth ledger commit succeeded but the required recovery "
+                    "export failed and its stale predecessor could not be removed"
+                ) from cleanup_exc
+            raise PostCommitHookError(
+                "truth ledger commit succeeded but the post-commit hook failed; "
+                "the stale recovery export was removed"
+            ) from exc
+        try:
             if self._on_commit is not None:
                 self._on_commit(self)
         except Exception as exc:

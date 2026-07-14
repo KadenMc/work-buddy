@@ -452,6 +452,38 @@ def test_post_commit_hook_failure_still_deletes_redacted_blob(
     assert not path.exists()
 
 
+def test_failed_recovery_export_cannot_leave_pre_redaction_plaintext(
+    store: TruthStore,
+    redactor: TruthRedactor,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "STALE-EXPORT-PRIVATE-8d3f24"
+    claim = _claim(store, secret)
+    gesture = _gesture(
+        store,
+        subject_ref=claim.id,
+        payload_sha256=claim.canonical_sha256,
+    )
+    assert secret.encode() in store.paths.claims_export.read_bytes()
+
+    def fail_export(_store: TruthStore, *_args, **_kwargs) -> None:
+        raise RuntimeError("forced recovery export failure")
+
+    monkeypatch.setattr("work_buddy.truth.export.export_store", fail_export)
+    with pytest.raises(PostCommitHookError, match="post-commit hook failed"):
+        redactor.redact(
+            subject_kind="claim",
+            subject_ref=claim.id,
+            actor=HUMAN,
+            reason="privacy",
+            basis_kind="gesture",
+            basis_ref=gesture.id,
+        )
+
+    assert store.get_claim(claim.id).proposition == "[redacted]"
+    assert not store.paths.claims_export.exists()
+
+
 def test_shared_blob_survives_until_last_reference_is_redacted(
     store: TruthStore,
     redactor: TruthRedactor,
