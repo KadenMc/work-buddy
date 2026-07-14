@@ -1835,6 +1835,11 @@ class TruthStore:
             link = self._get_link_locked(write_conn, identifier)
             if link is None:
                 raise InvariantViolation(f"claim link does not exist: {identifier}")
+            if _parse_time(timestamp, "link retraction at") < _parse_time(
+                link.created_at,
+                "link created_at",
+            ):
+                raise InvariantViolation("link retraction cannot predate its link")
             existing = self.get_link_retraction(identifier, conn=write_conn)
             if existing is not None:
                 return existing

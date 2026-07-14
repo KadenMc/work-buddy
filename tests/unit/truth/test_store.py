@@ -657,6 +657,24 @@ def test_link_retraction_is_append_only_and_idempotent(store: TruthStore):
     assert second == first
 
 
+def test_link_retraction_cannot_predate_its_link(store: TruthStore):
+    source = _claim(store, "Chronological retraction source")
+    link = store.add_link(
+        from_claim_id=source.id,
+        link_type="relates_to",
+        to_kind="entity",
+        to_ref="wb-entity://chronology",
+        actor=HUMAN,
+        created_at=LATER,
+    )
+
+    with pytest.raises(InvariantViolation, match="cannot predate"):
+        store.retract_link(link_id=link.id, actor=HUMAN, at=NOW)
+
+    assert store.get_link_retraction(link.id) is None
+    assert store.retract_link(link_id=link.id, actor=HUMAN, at=LATER).at == LATER
+
+
 def test_current_supersession_authority_link_cannot_be_retracted(
     store: TruthStore,
 ):
