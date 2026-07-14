@@ -14,6 +14,7 @@ import work_buddy.truth.migrations as truth_migrations
 from work_buddy.storage.migrations import Migration
 from work_buddy.truth.contracts import Actor
 from work_buddy.truth.identity import truth_uri
+from work_buddy.truth.profiles import dump_profile
 from work_buddy.truth.store import TruthStore
 
 from .fixture_runner import WorkloadRunner, load_workload
@@ -157,59 +158,12 @@ def test_each_workload_runs_through_the_joined_k0_surface(
     FIXTURE_PATHS,
     ids=lambda path: path.stem,
 )
-def test_each_workload_survives_v1_to_synthetic_v2_upgrade(
+def test_checked_in_frozen_v1_store_migrates_with_history_and_workload_intact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     fixture_path: Path,
 ) -> None:
     fixture = load_workload(fixture_path)
-    root = tmp_path / (fixture_path.stem + "-upgraded")
-    root.mkdir()
-    frozen_v1 = TruthStore.create(root, fixture["profile"])
-    assert _database_version(frozen_v1.paths.db) == 1
-    frozen_export = (
-        frozen_v1.paths.claims_export.read_bytes()
-        if frozen_v1.profile.export_committed
-        else None
-    )
-
-    monkeypatch.setattr(truth_migrations, "TRUTH_MIGRATIONS", _v2_runner())
-    monkeypatch.setattr(truth_export, "SCHEMA_VERSION", 2)
-    upgraded = TruthStore.open(root)
-
-    snapshot = upgraded.paths.db.with_name("store.pre-v1.db")
-    assert snapshot.is_file()
-    assert _database_version(snapshot) == 1
-    assert _database_version(upgraded.paths.db) == 2
-    if upgraded.profile.export_committed:
-        upgraded_export = upgraded.paths.claims_export.read_bytes()
-        assert upgraded_export != frozen_export
-        assert b'"schema_version":2' in upgraded_export
-    else:
-        assert frozen_export is None
-        assert not upgraded.paths.claims_export.exists()
-    conn = upgraded.connect()
-    try:
-        assert (
-            conn.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table' "
-                "AND name = 'migration_v2_marker'"
-            ).fetchone()
-            is not None
-        )
-    finally:
-        conn.close()
-
-    result = WorkloadRunner(upgraded, fixture).run()
-
-    assert result.restored_store.store_id == upgraded.store_id
-    assert _database_version(result.restored_store.paths.db) == 2
-
-
-def test_checked_in_frozen_v1_store_migrates_with_history_and_workload_intact(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
     root, manifest = _restore_checked_in_frozen_v1(tmp_path)
     database = root / ".wb-truth" / "store.db"
     assert _database_version(database) == 1
@@ -291,7 +245,21 @@ def test_checked_in_frozen_v1_store_migrates_with_history_and_workload_intact(
         ).fetchone()
     assert marker is not None
 
-    fixture = load_workload(FIXTURE_DIR / "electricrag_supersession.yaml")
+    # Profiles constrain new writes only. Exercise each declarative workload
+    # against this same released-store artifact by adopting that workload's
+    # mutable policy while retaining the frozen store's permanent identity.
+    workload_profile = json.loads(json.dumps(fixture["profile"]))
+    workload_profile.update(
+        {
+            "store_id": FROZEN_STORE_ID,
+            "profile": "project-canon",
+            "title": "Checked-in frozen truth schema v1",
+        }
+    )
+    dump_profile(workload_profile, upgraded.paths.config)
+    upgraded = TruthStore.open(root)
+    assert upgraded.store_id == FROZEN_STORE_ID
+
     result = WorkloadRunner(upgraded, fixture).run()
 
     assert result.restored_store.store_id == FROZEN_STORE_ID
