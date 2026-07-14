@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -17,9 +18,11 @@ from work_buddy.truth.contracts import (
 )
 from work_buddy.truth.identity import new_id, truth_uri
 from work_buddy.truth.lifecycle import (
+    REJECTION_BINDING_HASH_FIELD,
     TruthLifecycle,
     hash_context,
     negated_proposition,
+    rejection_binding_role,
 )
 from work_buddy.truth.redact import TruthRedactor
 from work_buddy.truth.store import AcquisitionOrigin, PremiseRef, TruthStore
@@ -732,6 +735,78 @@ def test_challenge_requires_conflict_edge_and_evidence_then_can_reaffirm(
     assert reaffirmed.event.status == "confirmed"
 
 
+def test_rejected_claim_cannot_challenge_even_when_it_has_support(
+    store: TruthStore,
+    lifecycle: TruthLifecycle,
+):
+    target = _claim(store, "Current release assessment")
+    challenger = _claim(store, "Rejected release assessment")
+    _support(store, challenger, content="a durable but rejected receipt")
+    _confirm(lifecycle, target)
+    gesture = _gesture(lifecycle, challenger, kind="reject_plain")
+    lifecycle.reject_claim(
+        source_claim_id=challenger.id,
+        gesture_id=gesture.id,
+        actor=HUMAN,
+        reason_class="reject_plain",
+        expected_context_sha256=None,
+        observed_at=LATER,
+    )
+
+    with pytest.raises(TransitionError, match="terminal claim"):
+        lifecycle.challenge_claim(
+            claim_id=target.id,
+            challenging_claim_id=challenger.id,
+            actor=HUMAN,
+            at=AFTER_LATER,
+        )
+
+    assert lifecycle.latest_status(target.id).status == "confirmed"
+    with store.connect() as conn:
+        conflict_count = conn.execute(
+            "SELECT COUNT(*) FROM claim_links WHERE from_claim_id = ? "
+            "AND link_type = 'conflicts_with' AND to_ref = ?",
+            (challenger.id, target.id),
+        ).fetchone()[0]
+    assert conflict_count == 0
+
+
+def test_redacted_claim_cannot_challenge_even_if_status_is_not_terminal(
+    store: TruthStore,
+    lifecycle: TruthLifecycle,
+):
+    target = _claim(store, "Target protected from redacted challenges")
+    challenger = _claim(store, "Redacted but otherwise active challenger")
+    _support(store, challenger, content="support remains independently durable")
+    _confirm(lifecycle, target)
+
+    # Exercise the independent content guard against an imported or damaged store
+    # whose lifecycle and content tombstone disagree.
+    with store.write_transaction() as conn:
+        conn.execute(
+            "UPDATE claims SET proposition = '[redacted]', structured_json = NULL, "
+            "redacted_at = ? WHERE id = ?",
+            (LATER, challenger.id),
+        )
+
+    with pytest.raises(TransitionError, match="redacted content"):
+        lifecycle.challenge_claim(
+            claim_id=target.id,
+            challenging_claim_id=challenger.id,
+            actor=HUMAN,
+            at=AFTER_LATER,
+        )
+
+    assert lifecycle.latest_status(target.id).status == "confirmed"
+    with store.connect() as conn:
+        conflict_count = conn.execute(
+            "SELECT COUNT(*) FROM claim_links WHERE from_claim_id = ? "
+            "AND link_type = 'conflicts_with' AND to_ref = ?",
+            (challenger.id, target.id),
+        ).fetchone()[0]
+    assert conflict_count == 0
+
+
 def test_weakest_link_blocks_local_premises_until_all_are_confirmed(
     store: TruthStore,
     lifecycle: TruthLifecycle,
@@ -1048,6 +1123,66 @@ def test_single_confirmed_successor_race_lands_competitor_in_needs_review(
     assert lifecycle.latest_status(predecessor.id).status == "superseded"
 
 
+def test_retracted_confirmed_successor_still_blocks_a_second_confirmation(
+    store: TruthStore,
+    lifecycle: TruthLifecycle,
+):
+    predecessor = _claim(store, "One historical deployment")
+    _confirm(lifecycle, predecessor)
+    first = _claim(
+        store,
+        "First historical successor",
+        valid_from="2026-07-15",
+    )
+    second = _claim(
+        store,
+        "Second historical successor",
+        valid_from="2026-07-15",
+    )
+    for successor in (first, second):
+        lifecycle.supersede_claim(
+            successor_claim_id=successor.id,
+            predecessor_claim_id=predecessor.id,
+            reason="updated",
+            actor=HUMAN,
+        )
+
+    first_result, _ = _confirm(lifecycle, first)
+    assert first_result.event is not None
+    redact_gesture = _gesture(
+        lifecycle,
+        first,
+        kind="redact",
+        at=AFTER_LATER,
+    )
+    TruthRedactor(store, lifecycle=lifecycle).redact(
+        subject_kind="claim",
+        subject_ref=first.id,
+        actor=HUMAN,
+        reason="privacy",
+        basis_kind="gesture",
+        basis_ref=redact_gesture.id,
+        at=AFTER_LATER,
+    )
+    assert lifecycle.latest_status(first.id).status == "retracted"
+
+    second_gesture = _gesture(lifecycle, second, at=AFTER_AFTER)
+    second_result = lifecycle.confirm_claim(
+        claim_id=second.id,
+        gesture_id=second_gesture.id,
+        actor=HUMAN,
+        expected_context_sha256=None,
+        observed_at=AFTER_AFTER,
+        at=AFTER_AFTER,
+    )
+
+    assert second_result.event is None
+    assert second_result.needs_review_event is not None
+    assert second_result.gesture.consumed_at == AFTER_AFTER
+    assert lifecycle.latest_status(second.id).status == "needs_review"
+    assert lifecycle.latest_status(predecessor.id).status == "superseded"
+
+
 def test_plain_rejection_is_gestured_and_applies_profile_redaction(
     store: TruthStore,
     lifecycle: TruthLifecycle,
@@ -1082,6 +1217,45 @@ def test_plain_rejection_is_gestured_and_applies_profile_redaction(
             reason_class="reject_plain",
             expected_context_sha256=None,
         )
+
+
+def test_plain_rejection_refuses_unapproved_surface_without_side_effects(
+    store: TruthStore,
+    lifecycle: TruthLifecycle,
+):
+    source = _claim(store, "Reject only from an approved confirmation surface")
+    gesture = _gesture(
+        lifecycle,
+        source,
+        kind="reject_plain",
+        surface="rogue-surface",
+    )
+
+    with pytest.raises(GestureError, match="not allowed by profile"):
+        lifecycle.reject_claim(
+            source_claim_id=source.id,
+            gesture_id=gesture.id,
+            actor=HUMAN,
+            reason_class="reject_plain",
+            expected_context_sha256=None,
+            observed_at=LATER,
+        )
+
+    assert lifecycle.latest_status(source.id).status == "proposed"
+    assert store.get_claim(source.id).proposition == source.proposition
+    assert store.get_claim(source.id).redacted_at is None
+    assert (
+        lifecycle.verify_gesture(
+            gesture.id,
+            actor=HUMAN,
+            subject_ref=source.id,
+            payload_sha256=source.canonical_sha256,
+            expected_context_sha256=None,
+            allowed_kinds={"reject_plain"},
+            observed_at=LATER,
+        ).consumed_at
+        is None
+    )
 
 
 def test_plain_rejection_retains_content_when_profile_says_retain(
@@ -1178,6 +1352,13 @@ def test_reject_as_false_confirms_preallocated_negative_and_refutes_source(
     assert result.refutes_link is not None
     assert result.refutes_link.from_claim_id == negative.id
     assert result.refutes_link.to_ref == source.id
+    expected_role = rejection_binding_role(
+        rejection_class="reject_as_false",
+        source_canonical_sha256=source.canonical_sha256,
+        result_canonical_sha256=negative.canonical_sha256,
+    )
+    assert json.loads(result.refutes_link.role_json or "{}") == expected_role
+    assert len(expected_role[REJECTION_BINDING_HASH_FIELD]) == 64
     assert result.gesture.consumed_at == LATER
     assert store.get_claim(source.id).proposition == "[redacted]"
 
