@@ -11,7 +11,6 @@ import work_buddy.truth.export as truth_export
 import work_buddy.truth.migrations as truth_migrations
 from work_buddy.storage.migrations import Migration
 from work_buddy.truth.contracts import Actor
-from work_buddy.truth.export import export_store
 from work_buddy.truth.store import TruthStore
 
 from .fixture_runner import WorkloadRunner, load_workload
@@ -87,6 +86,11 @@ def test_each_workload_survives_frozen_v1_to_synthetic_v2_upgrade(
     root.mkdir()
     frozen_v1 = TruthStore.create(root, fixture["profile"])
     assert _database_version(frozen_v1.paths.db) == 1
+    frozen_export = (
+        frozen_v1.paths.claims_export.read_bytes()
+        if frozen_v1.profile.export_committed
+        else None
+    )
 
     monkeypatch.setattr(truth_migrations, "TRUTH_MIGRATIONS", _v2_runner())
     monkeypatch.setattr(truth_export, "SCHEMA_VERSION", 2)
@@ -96,6 +100,13 @@ def test_each_workload_survives_frozen_v1_to_synthetic_v2_upgrade(
     assert snapshot.is_file()
     assert _database_version(snapshot) == 1
     assert _database_version(upgraded.paths.db) == 2
+    if upgraded.profile.export_committed:
+        upgraded_export = upgraded.paths.claims_export.read_bytes()
+        assert upgraded_export != frozen_export
+        assert b'"schema_version":2' in upgraded_export
+    else:
+        assert frozen_export is None
+        assert not upgraded.paths.claims_export.exists()
     conn = upgraded.connect()
     try:
         assert (
@@ -122,14 +133,13 @@ def test_real_export_hook_runs_once_after_commit_and_never_after_rollback(
     root.mkdir()
     calls: list[str] = []
 
-    def export_after_commit(store: TruthStore) -> None:
+    def observe_commit(store: TruthStore) -> None:
         calls.append(store.store_id)
-        export_store(store)
 
     store = TruthStore.create(
         root,
         fixture["profile"],
-        on_commit=export_after_commit,
+        on_commit=observe_commit,
     )
     assert calls == [store.store_id]
     assert store.paths.claims_export.is_file()

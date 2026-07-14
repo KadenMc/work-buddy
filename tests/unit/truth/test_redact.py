@@ -10,7 +10,7 @@ from work_buddy.truth.contracts import Actor, GestureError, InvariantViolation
 from work_buddy.truth.identity import new_id, utc_now
 from work_buddy.truth.lifecycle import TruthLifecycle
 from work_buddy.truth.redact import TruthRedactor, policy_basis_ref
-from work_buddy.truth.store import GestureRecord, TruthStore
+from work_buddy.truth.store import GestureRecord, PostCommitHookError, TruthStore
 
 
 HUMAN = Actor("human", "human:test")
@@ -399,6 +399,42 @@ def test_evidence_redaction_cascades_quotes_and_deletes_unshared_blob(
     assert store.get_span(span.id).quote_exact is None
     assert result.cascade_events[0].subject_ref == span.id
     assert result.blob_deleted is True
+    assert not path.exists()
+
+
+def test_post_commit_hook_failure_still_deletes_redacted_blob(
+    store: TruthStore,
+    redactor: TruthRedactor,
+) -> None:
+    evidence = store.capture_evidence(
+        kind="document",
+        source_locator="file:///hook-failure.bin",
+        actor=HUMAN,
+        acquisition_method="paste",
+        content=b"sensitive bytes must not survive",
+    )
+    path = store.resolve_blob_path(evidence.content_path or "")
+    gesture = _gesture(
+        store,
+        subject_ref=evidence.id,
+        payload_sha256=evidence.content_sha256,
+    )
+
+    def fail_observer(_store: TruthStore) -> None:
+        raise RuntimeError("observer failed")
+
+    store._on_commit = fail_observer
+    with pytest.raises(PostCommitHookError, match="post-commit hook failed"):
+        redactor.redact(
+            subject_kind="evidence",
+            subject_ref=evidence.id,
+            actor=HUMAN,
+            reason="privacy",
+            basis_kind="gesture",
+            basis_ref=gesture.id,
+        )
+
+    assert store.get_evidence(evidence.id).redacted_at is not None
     assert not path.exists()
 
 

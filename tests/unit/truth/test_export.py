@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -21,7 +23,7 @@ from work_buddy.truth.export import (
     import_store,
 )
 from work_buddy.truth.identity import canonical_json, new_id, sha256_bytes
-from work_buddy.truth.store import GestureRecord, TruthStore
+from work_buddy.truth.store import GestureRecord, PostCommitHookError, TruthStore
 
 
 NOW = "2026-07-14T16:00:00.000+00:00"
@@ -206,9 +208,7 @@ def _populate_full_store(root: Path) -> TruthStore:
             "'gesture', ?, 'privacy')",
             (REDACTION_ID, derived.id, LATER, GESTURE_ID),
         )
-        store._insert_ledger_record_locked(
-            conn, "redaction_event", REDACTION_ID
-        )
+        store._insert_ledger_record_locked(conn, "redaction_event", REDACTION_ID)
         conn.execute(
             "INSERT INTO sweeps (id, kind, at, params_json) "
             "VALUES (?, 'integrity', ?, ?)",
@@ -260,16 +260,11 @@ def _v2_payload(objects: list[dict[str, Any]]) -> bytes:
     prefix = b"".join(_canonical_line(item) for item in objects[:-1])
     footer = objects[-1]
     footer["record_count"] = sum(
-        item["record_type"] not in {"header", "blob", "end"}
-        for item in objects
+        item["record_type"] not in {"header", "blob", "end"} for item in objects
     )
-    footer["blob_count"] = sum(
-        item["record_type"] == "blob" for item in objects
-    )
+    footer["blob_count"] = sum(item["record_type"] == "blob" for item in objects)
     data = [
-        item
-        for item in objects
-        if item["record_type"] not in {"header", "blob", "end"}
+        item for item in objects if item["record_type"] not in {"header", "blob", "end"}
     ]
     footer["last_seq"] = data[-1]["seq"] if data else 0
     footer["stream_sha256"] = sha256_bytes(prefix)
@@ -279,7 +274,9 @@ def _v2_payload(objects: list[dict[str, Any]]) -> bytes:
 def _table_rows(store: TruthStore, table: str, order: str) -> list[dict[str, Any]]:
     conn = store.connect()
     try:
-        return [dict(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY {order}")]
+        return [
+            dict(row) for row in conn.execute(f"SELECT * FROM {table} ORDER BY {order}")
+        ]
     finally:
         conn.close()
 
@@ -298,17 +295,17 @@ def test_export_is_byte_deterministic_lossless_and_round_trips(tmp_path: Path) -
     assert objects[0]["format_version"] == FORMAT_VERSION
     assert objects[0]["profile"]["extensions"]["privacy_scope"] == "private-test"
     data = [
-        item
-        for item in objects
-        if item["record_type"] not in {"header", "blob", "end"}
+        item for item in objects if item["record_type"] not in {"header", "blob", "end"}
     ]
     assert [item["seq"] for item in data] == sorted(item["seq"] for item in data)
     assert len([item for item in objects if item["record_type"] == "blob"]) == 1
-    assert all(item["record_type"] not in {"projection", "claims_current"} for item in objects)
+    assert all(
+        item["record_type"] not in {"projection", "claims_current"} for item in objects
+    )
     redacted = next(
-        item for item in data
-        if item["record_type"] == "claim"
-        and item["record"]["id"] == DERIVED_CLAIM_ID
+        item
+        for item in data
+        if item["record_type"] == "claim" and item["record"]["id"] == DERIVED_CLAIM_ID
     )
     assert redacted["record"]["proposition"] == "[redacted]"
     assert redacted["record"]["redacted_at"] == LATER
@@ -481,9 +478,7 @@ def test_import_preflight_rejects_corrupt_records_without_touching_target(
     source = _populate_full_store(tmp_path / "source")
     objects = _objects(export_store(source).path.read_bytes())
     data = [
-        item
-        for item in objects
-        if item["record_type"] not in {"header", "blob", "end"}
+        item for item in objects if item["record_type"] not in {"header", "blob", "end"}
     ]
     if mutation == "record_key":
         data[0]["record_key"] = "ff" * 16
@@ -596,3 +591,98 @@ def test_export_refuses_missing_blob_and_unordered_base_rows(tmp_path: Path) -> 
         conn.close()
     with pytest.raises(TruthExportError, match="missing from ledger_records"):
         export_store(other)
+
+
+def test_export_publication_cannot_regress_behind_a_newer_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from work_buddy.truth import export as export_module
+
+    store = _create_store(tmp_path / "publication-lock")
+    store.propose_claim(
+        proposition="First committed claim",
+        claim_kind="fact",
+        actor=HUMAN,
+        created_at=NOW,
+        status_at=NOW,
+    )
+
+    first_publish_entered = threading.Event()
+    release_first_publish = threading.Event()
+    second_writer_started = threading.Event()
+    second_writer_done = threading.Event()
+    original_atomic_write = export_module.atomic_write_bytes
+    publish_count = 0
+    publish_count_lock = threading.Lock()
+
+    def paused_atomic_write(path: Path, payload: bytes) -> None:
+        nonlocal publish_count
+        with publish_count_lock:
+            publish_count += 1
+            ordinal = publish_count
+        if ordinal == 1:
+            first_publish_entered.set()
+            assert release_first_publish.wait(timeout=10)
+        original_atomic_write(path, payload)
+
+    monkeypatch.setattr(export_module, "atomic_write_bytes", paused_atomic_write)
+
+    def publish_old_snapshot() -> None:
+        export_store(store)
+
+    def commit_and_publish_newer_snapshot() -> None:
+        second_writer_started.set()
+        store.propose_claim(
+            proposition="Second committed claim",
+            claim_kind="fact",
+            actor=HUMAN,
+            created_at=LATER,
+            status_at=LATER,
+        )
+        second_writer_done.set()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        older = executor.submit(publish_old_snapshot)
+        assert first_publish_entered.wait(timeout=10)
+        newer = executor.submit(commit_and_publish_newer_snapshot)
+        assert second_writer_started.wait(timeout=10)
+        assert not second_writer_done.wait(timeout=0.2)
+        release_first_publish.set()
+        older.result(timeout=10)
+        newer.result(timeout=10)
+
+    footer = _objects(store.paths.claims_export.read_bytes())[-1]
+    with store.connect() as conn:
+        db_last_seq = conn.execute(
+            "SELECT COALESCE(MAX(seq), 0) FROM ledger_records"
+        ).fetchone()[0]
+    assert footer["last_seq"] == db_last_seq
+
+
+def test_failed_automatic_export_surfaces_after_commit_and_preserves_prior_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import work_buddy.truth.export as export_module
+
+    store = _create_store(tmp_path / "failed-hook")
+    prior_export = store.paths.claims_export.read_bytes()
+    claim_id = "11" * 16
+
+    def fail_publication(path: Path, payload: bytes) -> None:
+        raise OSError("forced publication failure")
+
+    monkeypatch.setattr(export_module, "atomic_write_bytes", fail_publication)
+    with pytest.raises(PostCommitHookError, match="commit succeeded"):
+        store.propose_claim(
+            proposition="The row commits before its recovery export fails",
+            claim_kind="fact",
+            actor=HUMAN,
+            record_id=claim_id,
+            created_at=NOW,
+            status_at=NOW,
+        )
+
+    assert store.get_claim(claim_id) is not None
+    assert store.paths.claims_export.read_bytes() == prior_export

@@ -16,12 +16,19 @@ from work_buddy.truth.contracts import (
     TransitionError,
 )
 from work_buddy.truth.identity import new_id, truth_uri
-from work_buddy.truth.lifecycle import TruthLifecycle, hash_context
+from work_buddy.truth.lifecycle import (
+    TruthLifecycle,
+    hash_context,
+    negated_proposition,
+)
+from work_buddy.truth.redact import TruthRedactor
 from work_buddy.truth.store import AcquisitionOrigin, PremiseRef, TruthStore
 
 
 NOW = "2026-07-14T10:00:00.000+00:00"
 LATER = "2026-07-14T10:01:00.000+00:00"
+AFTER_LATER = "2026-07-14T10:02:00.000+00:00"
+AFTER_AFTER = "2026-07-14T10:03:00.000+00:00"
 TWO_HOURS = "2026-07-14T12:00:00.000+00:00"
 HUMAN = Actor("human", "user-1")
 OTHER_HUMAN = Actor("human", "user-2")
@@ -219,15 +226,18 @@ def test_confirmation_is_human_gestured_exact_and_idempotent(
             expected_context_sha256=context,
             observed_at=LATER,
         )
-    assert lifecycle.verify_gesture(
-        fresh.id,
-        actor=HUMAN,
-        subject_ref=claim.id,
-        payload_sha256=claim.canonical_sha256,
-        expected_context_sha256=context,
-        allowed_kinds={"confirm"},
-        observed_at=LATER,
-    ).consumed_at is None
+    assert (
+        lifecycle.verify_gesture(
+            fresh.id,
+            actor=HUMAN,
+            subject_ref=claim.id,
+            payload_sha256=claim.canonical_sha256,
+            expected_context_sha256=context,
+            allowed_kinds={"confirm"},
+            observed_at=LATER,
+        ).consumed_at
+        is None
+    )
     conn = store.connect()
     try:
         count = conn.execute(
@@ -280,15 +290,18 @@ def test_gesture_verification_fails_closed_on_every_binding(
         kwargs["allowed_kinds"] = {"reject_plain"}
     with pytest.raises(GestureError, match=match):
         lifecycle.verify_gesture(gesture.id, **kwargs)
-    assert lifecycle.verify_gesture(
-        gesture.id,
-        actor=HUMAN,
-        subject_ref=claim.id,
-        payload_sha256=claim.canonical_sha256,
-        expected_context_sha256=context,
-        allowed_kinds={"confirm"},
-        observed_at=LATER,
-    ).consumed_at is None
+    assert (
+        lifecycle.verify_gesture(
+            gesture.id,
+            actor=HUMAN,
+            subject_ref=claim.id,
+            payload_sha256=claim.canonical_sha256,
+            expected_context_sha256=context,
+            allowed_kinds={"confirm"},
+            observed_at=LATER,
+        ).consumed_at
+        is None
+    )
 
 
 def test_gesture_mint_is_server_composed_and_deferred_expiry_is_exact(
@@ -412,15 +425,18 @@ def test_profile_confirmation_surface_is_enforced_at_decision_time(
             expected_context_sha256=None,
             observed_at=LATER,
         )
-    assert lifecycle.verify_gesture(
-        gesture.id,
-        actor=HUMAN,
-        subject_ref=claim.id,
-        payload_sha256=claim.canonical_sha256,
-        expected_context_sha256=None,
-        allowed_kinds={"confirm"},
-        observed_at=LATER,
-    ).consumed_at is None
+    assert (
+        lifecycle.verify_gesture(
+            gesture.id,
+            actor=HUMAN,
+            subject_ref=claim.id,
+            payload_sha256=claim.canonical_sha256,
+            expected_context_sha256=None,
+            allowed_kinds={"confirm"},
+            observed_at=LATER,
+        ).consumed_at
+        is None
+    )
 
 
 def test_needs_review_is_rule_only_overlay_and_human_reaffirmation_clears_it(
@@ -440,11 +456,13 @@ def test_needs_review_is_rule_only_overlay_and_human_reaffirmation_clears_it(
         actor=SYSTEM,
         basis_kind="sweep",
         basis_ref=new_id(),
-        at=NOW,
+        at=AFTER_LATER,
     )
     assert review.created is True
     assert lifecycle.latest_status(claim.id).status == "needs_review"
-    assert lifecycle.latest_status(claim.id, include_overlay=False).status == "confirmed"
+    assert (
+        lifecycle.latest_status(claim.id, include_overlay=False).status == "confirmed"
+    )
     duplicate = lifecycle.mark_needs_review(
         claim_id=claim.id,
         actor=SYSTEM,
@@ -452,7 +470,7 @@ def test_needs_review_is_rule_only_overlay_and_human_reaffirmation_clears_it(
     )
     assert duplicate.created is False
 
-    reaffirmed, _ = _confirm(lifecycle, claim, kind="reaffirm", at=NOW)
+    reaffirmed, _ = _confirm(lifecycle, claim, kind="reaffirm", at=AFTER_AFTER)
     assert reaffirmed.created is True
     assert reaffirmed.event is not None
     assert reaffirmed.event.seq > review.event.seq
@@ -466,26 +484,46 @@ def test_proposed_retracted_and_terminal_transitions_are_append_only(
     lifecycle: TruthLifecycle,
 ):
     claim = _claim(store, "Withdraw this proposal")
-    event_id = new_id()
-    result = lifecycle.transition_claim(
-        claim_id=claim.id,
-        status="retracted",
+    with pytest.raises(TransitionError, match="redaction event"):
+        lifecycle.transition_claim(
+            claim_id=claim.id,
+            status="retracted",
+            actor=SYSTEM,
+            basis_kind="policy",
+            basis_ref="policy-1",
+            at=LATER,
+        )
+    gesture = _gesture(lifecycle, claim, kind="redact")
+    redacted = TruthRedactor(store, lifecycle=lifecycle).redact(
+        subject_kind="claim",
+        subject_ref=claim.id,
         actor=HUMAN,
-        basis_kind="redaction",
-        basis_ref=new_id(),
-        event_id=event_id,
+        reason="privacy",
+        basis_kind="gesture",
+        basis_ref=gesture.id,
         at=LATER,
     )
-    assert result.event.id == event_id
-    assert result.previous_status == "proposed"
+    assert redacted.status_event is not None
+    result = redacted.status_event
+    assert result.status == "retracted"
     duplicate = lifecycle.transition_claim(
         claim_id=claim.id,
         status="retracted",
         actor=HUMAN,
         basis_kind="redaction",
-        basis_ref=new_id(),
+        basis_ref=redacted.event.id,
+        at=redacted.event.at,
     )
     assert duplicate.created is False
+    with pytest.raises(TransitionError, match="redaction event"):
+        lifecycle.transition_claim(
+            claim_id=claim.id,
+            status="retracted",
+            actor=HUMAN,
+            basis_kind="redaction",
+            basis_ref=new_id(),
+            at=redacted.event.at,
+        )
     with pytest.raises(TransitionError, match="terminal"):
         lifecycle.mark_needs_review(
             claim_id=claim.id,
@@ -507,13 +545,34 @@ def test_confirmed_and_challenged_can_retract(
 ):
     confirmed_claim = _claim(store, "Confirmed then withdrawn")
     _confirm(lifecycle, confirmed_claim)
-    assert lifecycle.transition_claim(
-        claim_id=confirmed_claim.id,
-        status="retracted",
-        actor=SYSTEM,
-        basis_kind="policy",
-        basis_ref="policy-1",
-    ).event.status == "retracted"
+    with pytest.raises(TransitionError, match="redaction event"):
+        lifecycle.transition_claim(
+            claim_id=confirmed_claim.id,
+            status="retracted",
+            actor=SYSTEM,
+            basis_kind="policy",
+            basis_ref="policy-1",
+        )
+    confirmed_redact = _gesture(
+        lifecycle,
+        confirmed_claim,
+        kind="redact",
+        at=AFTER_LATER,
+    )
+    assert (
+        TruthRedactor(store, lifecycle=lifecycle)
+        .redact(
+            subject_kind="claim",
+            subject_ref=confirmed_claim.id,
+            actor=HUMAN,
+            reason="privacy",
+            basis_kind="gesture",
+            basis_ref=confirmed_redact.id,
+            at=AFTER_LATER,
+        )
+        .status_event.status
+        == "retracted"
+    )
 
     challenged_claim = _claim(store, "Challenged then withdrawn")
     challenger = _claim(store, "Counter evidence exists")
@@ -523,14 +582,106 @@ def test_confirmed_and_challenged_can_retract(
         claim_id=challenged_claim.id,
         challenging_claim_id=challenger.id,
         actor=AGENT,
+        at=AFTER_LATER,
     )
-    assert lifecycle.transition_claim(
-        claim_id=challenged_claim.id,
-        status="retracted",
-        actor=HUMAN,
-        basis_kind="redaction",
-        basis_ref=new_id(),
-    ).event.status == "retracted"
+    challenged_redact = _gesture(
+        lifecycle,
+        challenged_claim,
+        kind="redact",
+        at=AFTER_AFTER,
+    )
+    assert (
+        TruthRedactor(store, lifecycle=lifecycle)
+        .redact(
+            subject_kind="claim",
+            subject_ref=challenged_claim.id,
+            actor=HUMAN,
+            reason="privacy",
+            basis_kind="gesture",
+            basis_ref=challenged_redact.id,
+            at=AFTER_AFTER,
+        )
+        .status_event.status
+        == "retracted"
+    )
+
+
+def test_gesture_status_event_cannot_predate_human_decision(
+    store: TruthStore,
+    lifecycle: TruthLifecycle,
+):
+    claim = _claim(store, "Decision time precedes belief time")
+    gesture = _gesture(lifecycle, claim, at=LATER)
+
+    with pytest.raises(TransitionError, match="human decision"):
+        lifecycle.confirm_claim(
+            claim_id=claim.id,
+            gesture_id=gesture.id,
+            actor=HUMAN,
+            expected_context_sha256=None,
+            observed_at=LATER,
+            at=NOW,
+        )
+
+    assert lifecycle.latest_status(claim.id).status == "proposed"
+    assert (
+        lifecycle.verify_gesture(
+            gesture_id=gesture.id,
+            actor=HUMAN,
+            subject_ref=claim.id,
+            payload_sha256=claim.canonical_sha256,
+            expected_context_sha256=None,
+            allowed_kinds={"confirm"},
+            observed_at=LATER,
+        ).consumed_at
+        is None
+    )
+
+
+def test_status_event_cannot_regress_behind_latest_overlay(
+    store: TruthStore,
+    lifecycle: TruthLifecycle,
+):
+    claim = _claim(store, "Transaction time stays monotonic")
+    _confirm(lifecycle, claim, at=LATER)
+    lifecycle.mark_needs_review(
+        claim_id=claim.id,
+        actor=SYSTEM,
+        basis_kind="rule",
+        basis_ref="freshness",
+        at=TWO_HOURS,
+    )
+    stale_time = "2026-07-14T11:00:00.000+00:00"
+    gesture = _gesture(
+        lifecycle,
+        claim,
+        kind="reaffirm",
+        at=stale_time,
+    )
+
+    with pytest.raises(TransitionError, match="latest status event"):
+        lifecycle.confirm_claim(
+            claim_id=claim.id,
+            gesture_id=gesture.id,
+            actor=HUMAN,
+            expected_context_sha256=None,
+            observed_at=stale_time,
+            at=stale_time,
+        )
+
+    assert lifecycle.latest_status(claim.id).status == "needs_review"
+    assert (
+        lifecycle.verify_gesture(
+            gesture_id=gesture.id,
+            actor=HUMAN,
+            subject_ref=claim.id,
+            payload_sha256=claim.canonical_sha256,
+            expected_context_sha256=None,
+            allowed_kinds={"reaffirm"},
+            observed_at=stale_time,
+        ).consumed_at
+        is None
+    )
 
 
 def test_challenge_requires_conflict_edge_and_evidence_then_can_reaffirm(
@@ -552,6 +703,7 @@ def test_challenge_requires_conflict_edge_and_evidence_then_can_reaffirm(
         challenging_claim_id=challenger.id,
         actor=AGENT,
         note="CI receipt conflicts",
+        at=AFTER_LATER,
     )
     assert challenged.event.status == "challenged"
     conn = store.connect()
@@ -570,7 +722,12 @@ def test_challenge_requires_conflict_edge_and_evidence_then_can_reaffirm(
         conn.close()
     assert conflict is not None and support is not None
 
-    reaffirmed, _ = _confirm(lifecycle, target, kind="reaffirm")
+    reaffirmed, _ = _confirm(
+        lifecycle,
+        target,
+        kind="reaffirm",
+        at=AFTER_AFTER,
+    )
     assert reaffirmed.event is not None
     assert reaffirmed.event.status == "confirmed"
 
@@ -751,12 +908,15 @@ def test_all_typed_supersession_reasons_are_durable(
     assert reason in str(link.role_json)
     assert lifecycle.latest_status(predecessor.id).status == "confirmed"
     assert lifecycle.latest_status(successor.id).status == "proposed"
-    assert lifecycle.supersede_claim(
-        successor_claim_id=successor.id,
-        predecessor_claim_id=predecessor.id,
-        reason=reason,
-        actor=HUMAN,
-    ).id == link.id
+    assert (
+        lifecycle.supersede_claim(
+            successor_claim_id=successor.id,
+            predecessor_claim_id=predecessor.id,
+            reason=reason,
+            actor=HUMAN,
+        ).id
+        == link.id
+    )
 
 
 @pytest.mark.parametrize(
@@ -837,6 +997,7 @@ def test_challenged_predecessor_can_be_resolved_by_supersession(
         claim_id=predecessor.id,
         challenging_claim_id=challenger.id,
         actor=HUMAN,
+        at=AFTER_LATER,
     )
     successor = _claim(store, "Corrected wording")
     lifecycle.supersede_claim(
@@ -845,7 +1006,7 @@ def test_challenged_predecessor_can_be_resolved_by_supersession(
         reason="corrected",
         actor=HUMAN,
     )
-    _confirm(lifecycle, successor)
+    _confirm(lifecycle, successor, at=AFTER_AFTER)
     assert lifecycle.latest_status(predecessor.id).status == "superseded"
 
 
@@ -887,7 +1048,7 @@ def test_single_confirmed_successor_race_lands_competitor_in_needs_review(
     assert lifecycle.latest_status(predecessor.id).status == "superseded"
 
 
-def test_plain_rejection_is_gestured_and_does_not_redact_content(
+def test_plain_rejection_is_gestured_and_applies_profile_redaction(
     store: TruthStore,
     lifecycle: TruthLifecycle,
 ):
@@ -903,7 +1064,16 @@ def test_plain_rejection_is_gestured_and_does_not_redact_content(
     )
     assert result.source_event.status == "rejected"
     assert result.result_claim is None
-    assert store.get_claim(source.id).redacted_at is None
+    rejected = store.get_claim(source.id)
+    assert rejected.redacted_at == result.source_event.at
+    assert rejected.proposition == "[redacted]"
+    with store.connect() as conn:
+        redaction = conn.execute(
+            "SELECT basis_kind, reason FROM redaction_events "
+            "WHERE subject_kind = 'claim' AND subject_ref = ?",
+            (source.id,),
+        ).fetchone()
+    assert tuple(redaction) == ("policy", "rejected_content")
     with pytest.raises(TransitionError, match="cannot reject"):
         lifecycle.reject_claim(
             source_claim_id=source.id,
@@ -914,12 +1084,76 @@ def test_plain_rejection_is_gestured_and_does_not_redact_content(
         )
 
 
+def test_plain_rejection_retains_content_when_profile_says_retain(
+    truth_root: Path,
+):
+    profile = _profile()
+    gate = profile["gate"]
+    assert isinstance(gate, dict)
+    gate["rejected_content"] = "retain"
+    store = TruthStore.create(truth_root / "retain", profile)
+    lifecycle = TruthLifecycle(store)
+    source = _claim(store, "Keep the rejected wording")
+    gesture = _gesture(lifecycle, source, kind="reject_plain")
+
+    lifecycle.reject_claim(
+        source_claim_id=source.id,
+        gesture_id=gesture.id,
+        actor=HUMAN,
+        reason_class="reject_plain",
+        expected_context_sha256=None,
+        observed_at=LATER,
+    )
+
+    retained = store.get_claim(source.id)
+    assert retained.proposition == source.proposition
+    assert retained.redacted_at is None
+
+
+def test_rejection_rolls_back_when_required_policy_redaction_fails(
+    store: TruthStore,
+    lifecycle: TruthLifecycle,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    source = _claim(store, "Rollback the entire rejection")
+    gesture = _gesture(lifecycle, source, kind="reject_plain")
+
+    def fail_redaction(*args, **kwargs):
+        raise RuntimeError("forced policy failure")
+
+    monkeypatch.setattr(TruthRedactor, "redact", fail_redaction)
+    with pytest.raises(RuntimeError, match="forced policy failure"):
+        lifecycle.reject_claim(
+            source_claim_id=source.id,
+            gesture_id=gesture.id,
+            actor=HUMAN,
+            reason_class="reject_plain",
+            expected_context_sha256=None,
+            observed_at=LATER,
+        )
+
+    assert lifecycle.latest_status(source.id).status == "proposed"
+    assert store.get_claim(source.id).proposition == source.proposition
+    assert (
+        lifecycle.verify_gesture(
+            gesture.id,
+            actor=HUMAN,
+            subject_ref=source.id,
+            payload_sha256=source.canonical_sha256,
+            expected_context_sha256=None,
+            allowed_kinds={"reject_plain"},
+            observed_at=LATER,
+        ).consumed_at
+        is None
+    )
+
+
 def test_reject_as_false_confirms_preallocated_negative_and_refutes_source(
     store: TruthStore,
     lifecycle: TruthLifecycle,
 ):
     source = _claim(store, "The deployment passed")
-    negative = _claim(store, "The deployment did not pass")
+    negative = _claim(store, negated_proposition(source.proposition))
     receipts = {"evidence": ["ci-failure"], "source_hash": source.canonical_sha256}
     context = lifecycle.rejection_context_sha256(source.id, receipts)
     gesture = _gesture(
@@ -945,6 +1179,57 @@ def test_reject_as_false_confirms_preallocated_negative_and_refutes_source(
     assert result.refutes_link.from_claim_id == negative.id
     assert result.refutes_link.to_ref == source.id
     assert result.gesture.consumed_at == LATER
+    assert store.get_claim(source.id).proposition == "[redacted]"
+
+
+def test_reject_as_false_refuses_unrelated_result_without_side_effects(
+    store: TruthStore,
+    lifecycle: TruthLifecycle,
+):
+    source = _claim(store, "The deployment passed")
+    unrelated = _claim(store, "Penguins prefer jazz")
+    receipts = {"evidence": ["ci-failure"]}
+    context = lifecycle.rejection_context_sha256(source.id, receipts)
+    gesture = _gesture(
+        lifecycle,
+        unrelated,
+        kind="reject_as_false",
+        context=context,
+    )
+
+    with pytest.raises(TransitionError, match="deterministic negation"):
+        lifecycle.reject_claim(
+            source_claim_id=source.id,
+            result_claim_id=unrelated.id,
+            gesture_id=gesture.id,
+            actor=HUMAN,
+            reason_class="reject_as_false",
+            expected_context_sha256=context,
+            displayed_receipts=receipts,
+            observed_at=LATER,
+        )
+
+    assert lifecycle.latest_status(source.id).status == "proposed"
+    assert lifecycle.latest_status(unrelated.id).status == "proposed"
+    assert (
+        lifecycle.verify_gesture(
+            gesture_id=gesture.id,
+            actor=HUMAN,
+            subject_ref=unrelated.id,
+            payload_sha256=unrelated.canonical_sha256,
+            expected_context_sha256=context,
+            allowed_kinds={"reject_as_false"},
+            observed_at=LATER,
+        ).consumed_at
+        is None
+    )
+    with store.connect() as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM claim_links WHERE link_type = 'refutes'"
+            ).fetchone()[0]
+            == 0
+        )
 
 
 def test_reject_as_preference_uses_safe_result_bound_gesture(
@@ -1029,7 +1314,7 @@ def test_reasoned_rejection_rolls_back_source_link_gesture_and_result_on_failure
     lifecycle: TruthLifecycle,
 ):
     source = _claim(store, "Rollback source")
-    negative = _claim(store, "Rollback negative")
+    negative = _claim(store, negated_proposition(source.proposition))
     receipts = {"receipt": "atomic"}
     context = lifecycle.rejection_context_sha256(source.id, receipts)
     gesture = _gesture(
@@ -1054,15 +1339,18 @@ def test_reasoned_rejection_rolls_back_source_link_gesture_and_result_on_failure
         )
     assert lifecycle.latest_status(source.id).status == "proposed"
     assert lifecycle.latest_status(negative.id).status == "proposed"
-    assert lifecycle.verify_gesture(
-        gesture.id,
-        actor=HUMAN,
-        subject_ref=negative.id,
-        payload_sha256=negative.canonical_sha256,
-        expected_context_sha256=context,
-        allowed_kinds={"reject_as_false"},
-        observed_at=LATER,
-    ).consumed_at is None
+    assert (
+        lifecycle.verify_gesture(
+            gesture.id,
+            actor=HUMAN,
+            subject_ref=negative.id,
+            payload_sha256=negative.canonical_sha256,
+            expected_context_sha256=context,
+            allowed_kinds={"reject_as_false"},
+            observed_at=LATER,
+        ).consumed_at
+        is None
+    )
     conn = store.connect()
     try:
         links = conn.execute(
@@ -1100,6 +1388,7 @@ def test_proposal_expiry_uses_proposed_event_time_and_is_idempotent(
     assert expired.event.status == "expired"
     assert expired.event.at == TWO_HOURS
     assert expired.event.basis_ref == "proposal_max_age:7200"
+    assert store.get_claim(claim.id).proposition == "[redacted]"
     duplicate = lifecycle.expire_claim(
         claim_id=claim.id,
         actor=SYSTEM,
@@ -1108,6 +1397,28 @@ def test_proposal_expiry_uses_proposed_event_time_and_is_idempotent(
     assert duplicate.created is False
     with pytest.raises(TransitionError, match="cannot confirm"):
         _confirm(lifecycle, claim)
+
+
+def test_expiry_rolls_back_when_required_policy_redaction_fails(
+    store: TruthStore,
+    lifecycle: TruthLifecycle,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    claim = _claim(store, "Expiry must be all or nothing")
+
+    def fail_redaction(*args, **kwargs):
+        raise RuntimeError("forced policy failure")
+
+    monkeypatch.setattr(TruthRedactor, "redact", fail_redaction)
+    with pytest.raises(RuntimeError, match="forced policy failure"):
+        lifecycle.expire_claim(
+            claim_id=claim.id,
+            actor=SYSTEM,
+            observed_at=TWO_HOURS,
+        )
+
+    assert lifecycle.latest_status(claim.id).status == "proposed"
+    assert store.get_claim(claim.id).proposition == claim.proposition
 
 
 def test_session_end_expiry_is_an_explicit_system_only_rule(
@@ -1173,15 +1484,18 @@ def test_confirmation_inside_caller_transaction_rolls_back_status_and_consumptio
     finally:
         conn.close()
     assert lifecycle.latest_status(claim.id).status == "proposed"
-    assert lifecycle.verify_gesture(
-        gesture.id,
-        actor=HUMAN,
-        subject_ref=claim.id,
-        payload_sha256=claim.canonical_sha256,
-        expected_context_sha256=None,
-        allowed_kinds={"confirm"},
-        observed_at=LATER,
-    ).consumed_at is None
+    assert (
+        lifecycle.verify_gesture(
+            gesture.id,
+            actor=HUMAN,
+            subject_ref=claim.id,
+            payload_sha256=claim.canonical_sha256,
+            expected_context_sha256=None,
+            allowed_kinds={"confirm"},
+            observed_at=LATER,
+        ).consumed_at
+        is None
+    )
 
 
 def test_supplied_connections_fail_closed_across_stores(

@@ -133,6 +133,12 @@ def hash_context(value: Any) -> str:
         raise InvariantViolation("gesture context must be canonical JSON data") from exc
 
 
+def negated_proposition(proposition: str) -> str:
+    """Return the deterministic proposition attested by ``reject_as_false``."""
+
+    return f"It is not the case that {_text(proposition, 'proposition')}"
+
+
 def _text(value: str, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise InvariantViolation(f"{label} must be a nonempty string")
@@ -289,12 +295,18 @@ class TruthLifecycle:
             "displayed_payload_sha256",
         )
         context_digest = (
-            None if context_sha256 is None else _digest(context_sha256, "context_sha256")
+            None
+            if context_sha256 is None
+            else _digest(context_sha256, "context_sha256")
         )
-        identifier = new_id() if gesture_id is None else _record_id(gesture_id, "gesture_id")
+        identifier = (
+            new_id() if gesture_id is None else _record_id(gesture_id, "gesture_id")
+        )
         timestamp = _timestamp(at, "gesture at")
         expiry = None if expires_at is None else _timestamp(expires_at, "expires_at")
-        if expiry is not None and _parse_timestamp(expiry, "expires_at") <= _parse_timestamp(
+        if expiry is not None and _parse_timestamp(
+            expiry, "expires_at"
+        ) <= _parse_timestamp(
             timestamp,
             "gesture at",
         ):
@@ -303,7 +315,9 @@ class TruthLifecycle:
         with self.store.write_transaction(conn) as write_conn:
             payload_digest, excerpt = self._subject_payload_locked(write_conn, subject)
             if displayed_digest != payload_digest:
-                raise GestureError("displayed payload hash does not match the durable subject")
+                raise GestureError(
+                    "displayed payload hash does not match the durable subject"
+                )
             record = GestureRecord(
                 id=identifier,
                 at=timestamp,
@@ -340,7 +354,9 @@ class TruthLifecycle:
         identifier = _record_id(gesture_id, "gesture_id")
         subject = _record_id(subject_ref, "subject_ref")
         payload = _digest(payload_sha256, "payload_sha256")
-        allowed = frozenset(_text(item, "allowed gesture kind") for item in allowed_kinds)
+        allowed = frozenset(
+            _text(item, "allowed gesture kind") for item in allowed_kinds
+        )
         if not allowed:
             raise GestureError("allowed_kinds cannot be empty")
         context = (
@@ -533,7 +549,9 @@ class TruthLifecycle:
             row["trust_class"] == "agent_authored" or row["author_kind"] == "agent_run"
             for row in usable
         )
-        store_derived_only = bool(rows) and not usable and len(store_derived_rows) == len(rows)
+        store_derived_only = (
+            bool(rows) and not usable and len(store_derived_rows) == len(rows)
+        )
         return SupportAssessment(
             support_span_ids=support_ids,
             usable_span_ids=usable_ids,
@@ -585,11 +603,20 @@ class TruthLifecycle:
             raise TransitionError("status event cannot predate claim creation")
         if status == "needs_review":
             if actor.kind != "system" or basis_kind not in REVIEW_BASIS_KINDS:
-                raise TransitionError("needs_review may only be entered by a sweep or rule")
+                raise TransitionError(
+                    "needs_review may only be entered by a sweep or rule"
+                )
             if full.status == "needs_review":
                 return TransitionResult(full, False, previous)
             if base.status in TERMINAL_STATUSES:
                 raise TransitionError("terminal claims cannot enter needs_review")
+            if _parse_timestamp(event_at, "status event at") < _parse_timestamp(
+                full.at,
+                "latest status event at",
+            ):
+                raise TransitionError(
+                    "status event cannot predate the latest status event"
+                )
             event = self.store._insert_status_event_locked(
                 conn,
                 claim_id=claim_id,
@@ -605,15 +632,60 @@ class TruthLifecycle:
 
         if status not in _BASE_TRANSITIONS:
             raise TransitionError(f"unsupported base status {status!r}")
+        if status == "retracted":
+            if basis_kind != "redaction" or not basis_ref:
+                raise TransitionError(
+                    "retraction requires a sanctioned redaction event"
+                )
+            redaction = conn.execute(
+                "SELECT subject_kind, subject_ref, actor_ref, at "
+                "FROM redaction_events WHERE id = ?",
+                (basis_ref,),
+            ).fetchone()
+            if redaction is None:
+                raise TransitionError(
+                    "retraction basis does not identify a redaction event"
+                )
+            if (
+                redaction["subject_kind"] != "claim"
+                or redaction["subject_ref"] != claim_id
+                or redaction["actor_ref"] != actor.ref
+                or redaction["at"] != event_at
+            ):
+                raise TransitionError(
+                    "retraction basis does not match this claim transition"
+                )
         human_clear = actor.kind == "human" and basis_kind == "gesture"
-        if base.status == status and not (full.status == "needs_review" and human_clear):
+        if base.status == status and not (
+            full.status == "needs_review" and human_clear
+        ):
             return TransitionResult(base, False, previous)
-        overlay_clear = base.status == status and full.status == "needs_review" and human_clear
+        overlay_clear = (
+            base.status == status and full.status == "needs_review" and human_clear
+        )
         if not overlay_clear and status not in _BASE_TRANSITIONS.get(
             base.status,
             frozenset(),
         ):
             raise TransitionError(f"cannot transition {base.status} to {status}")
+        if _parse_timestamp(event_at, "status event at") < _parse_timestamp(
+            full.at,
+            "latest status event at",
+        ):
+            raise TransitionError("status event cannot predate the latest status event")
+        if basis_kind == "gesture":
+            if not basis_ref:
+                raise TransitionError("gesture-based transitions require a gesture id")
+            gesture = self.store._get_gesture_locked(conn, basis_ref)
+            if gesture is None:
+                raise TransitionError(f"gesture does not exist: {basis_ref}")
+            if _parse_timestamp(event_at, "status event at") < _parse_timestamp(
+                gesture.at,
+                "gesture at",
+            ):
+                raise TransitionError(
+                    "gesture-based status events cannot predate the human decision"
+                )
         event = self.store._insert_status_event_locked(
             conn,
             claim_id=claim_id,
@@ -640,7 +712,12 @@ class TruthLifecycle:
         at: str | None = None,
         conn: sqlite3.Connection | None = None,
     ) -> TransitionResult:
-        """Append a generic retraction while preserving guarded transitions."""
+        """Append the status half of an already-recorded sanctioned redaction.
+
+        Callers cannot use this as a general-purpose terminal transition. The
+        referenced redaction event must already exist for the same claim,
+        actor, and timestamp in the enclosing transaction.
+        """
 
         identifier = _record_id(claim_id, "claim_id")
         target = _text(status, "status")
@@ -706,7 +783,9 @@ class TruthLifecycle:
             )
         support = self._assess_support_locked(conn, claim_id)
         if support.support_span_ids and not support.usable_span_ids:
-            raise TransitionError("confirmation has no usable non-store-derived support")
+            raise TransitionError(
+                "confirmation has no usable non-store-derived support"
+            )
         return support
 
     def _active_supersedes_locked(
@@ -919,7 +998,9 @@ class TruthLifecycle:
                 raise TransitionError(f"cannot challenge claim from {state}")
             support = self._assess_support_locked(write_conn, challenger)
             if not support.usable_span_ids:
-                raise TransitionError("challenging claim requires usable supporting evidence")
+                raise TransitionError(
+                    "challenging claim requires usable supporting evidence"
+                )
             raw = write_conn.execute(
                 "SELECT l.* FROM claim_links l "
                 "LEFT JOIN link_retractions lr ON lr.link_id = l.id "
@@ -971,7 +1052,9 @@ class TruthLifecycle:
         predecessor_id = _record_id(predecessor_claim_id, "predecessor_claim_id")
         relation_reason = _text(reason, "reason")
         if relation_reason not in SUPERSESSION_REASONS:
-            raise TransitionError(f"unsupported supersession reason {relation_reason!r}")
+            raise TransitionError(
+                f"unsupported supersession reason {relation_reason!r}"
+            )
         with self.store.write_transaction(conn) as write_conn:
             successor = self.store._get_claim_locked(write_conn, successor_id)
             predecessor = self.store._get_claim_locked(write_conn, predecessor_id)
@@ -994,10 +1077,14 @@ class TruthLifecycle:
                 "challenged",
             }:
                 raise TransitionError("a supersession predecessor must be confirmed")
-            if relation_reason in {
-                "updated",
-                "preference_changed",
-            } and successor.valid_from is None:
+            if (
+                relation_reason
+                in {
+                    "updated",
+                    "preference_changed",
+                }
+                and successor.valid_from is None
+            ):
                 raise TransitionError(
                     f"supersession reason {relation_reason!r} requires successor valid_from"
                 )
@@ -1018,7 +1105,9 @@ class TruthLifecycle:
                 role = json.loads(existing.role_json or "{}")
                 if role.get("supersession_reason") == relation_reason:
                     return existing
-                raise TransitionError("an active supersession already uses a different reason")
+                raise TransitionError(
+                    "an active supersession already uses a different reason"
+                )
             role: dict[str, Any] = {"supersession_reason": relation_reason}
             if note is not None:
                 role["note"] = _text(note, "note")
@@ -1065,6 +1154,12 @@ class TruthLifecycle:
             if base is None:
                 raise InvariantViolation(f"claim does not exist: {identifier}")
             if base.status == "expired":
+                self._apply_terminal_content_policy_locked(
+                    write_conn,
+                    claim_id=identifier,
+                    terminal_status="expired",
+                    at=base.at,
+                )
                 return TransitionResult(base, False, base.status)
             if base.status != "proposed":
                 raise TransitionError(f"cannot expire claim from {base.status}")
@@ -1087,7 +1182,7 @@ class TruthLifecycle:
                 basis_ref = f"proposal_max_age:{max_age}"
             else:
                 basis_ref = "session_end"
-            return self._transition_locked(
+            transition = self._transition_locked(
                 write_conn,
                 claim_id=identifier,
                 status="expired",
@@ -1098,6 +1193,50 @@ class TruthLifecycle:
                 event_id=event_id,
                 at=observed,
             )
+            self._apply_terminal_content_policy_locked(
+                write_conn,
+                claim_id=identifier,
+                terminal_status="expired",
+                at=transition.event.at,
+            )
+            return transition
+
+    def _apply_terminal_content_policy_locked(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        claim_id: str,
+        terminal_status: str,
+        at: str,
+    ) -> None:
+        """Apply the profile's terminal content policy in the same transaction."""
+
+        reason: str | None = None
+        if (
+            terminal_status == "rejected"
+            and self.store.profile.gate.rejected_content == "redact"
+        ):
+            reason = "rejected_content"
+        elif terminal_status == "expired" and (
+            self.store.profile.proposal_max_age_seconds is not None
+            or self.store.profile.extensions.get("expired_proposal_content") == "redact"
+        ):
+            reason = "expired_content"
+        if reason is None:
+            return
+
+        from work_buddy.truth.redact import TruthRedactor, policy_basis_ref
+
+        TruthRedactor(self.store, lifecycle=self).redact(
+            subject_kind="claim",
+            subject_ref=claim_id,
+            actor=Actor("system", "truth-lifecycle-policy"),
+            reason=reason,
+            basis_kind="policy",
+            basis_ref=policy_basis_ref(self.store, reason),
+            at=at,
+            conn=conn,
+        )
 
     def rejection_context_sha256(
         self,
@@ -1138,7 +1277,7 @@ class TruthLifecycle:
         at: str | None = None,
         conn: sqlite3.Connection | None = None,
     ) -> RejectionResult:
-        """Apply a reason-classed rejection without mutating or redacting content."""
+        """Apply a reason-classed rejection and the profile's content policy."""
 
         source_id = _record_id(source_claim_id, "source_claim_id")
         rejection = _text(reason_class, "reason_class")
@@ -1186,6 +1325,12 @@ class TruthLifecycle:
                     event_id=source_event_id,
                     at=at or observed,
                 ).event
+                self._apply_terminal_content_policy_locked(
+                    write_conn,
+                    claim_id=source_id,
+                    terminal_status="rejected",
+                    at=source_event.at,
+                )
                 return RejectionResult(
                     source_event=source_event,
                     result_claim=None,
@@ -1195,15 +1340,31 @@ class TruthLifecycle:
                 )
 
             if result_claim_id is None:
-                raise TransitionError(f"{rejection} requires a preallocated result claim")
+                raise TransitionError(
+                    f"{rejection} requires a preallocated result claim"
+                )
             result_id = _record_id(result_claim_id, "result_claim_id")
             if result_id == source_id:
                 raise TransitionError("the rejection result must be a different claim")
             result = self.store._get_claim_locked(write_conn, result_id)
             if result is None:
                 raise InvariantViolation(f"result claim does not exist: {result_id}")
-            if rejection == "reject_as_preference" and result.claim_kind != "preference":
-                raise TransitionError("preference rejection requires a preference result claim")
+            if (
+                rejection == "reject_as_preference"
+                and result.claim_kind != "preference"
+            ):
+                raise TransitionError(
+                    "preference rejection requires a preference result claim"
+                )
+            if rejection == "reject_as_false" and (
+                result.proposition != negated_proposition(source.proposition)
+                or result.claim_kind != source.claim_kind
+                or result.scope != source.scope
+            ):
+                raise TransitionError(
+                    "false rejection result must be the deterministic negation "
+                    "of the source claim in the same kind and scope"
+                )
             result_status = self.store._latest_status_locked(
                 write_conn,
                 result_id,
@@ -1259,7 +1420,9 @@ class TruthLifecycle:
                 supersedes,
             )
             if supersedes or conflicts:
-                raise TransitionError("rejection result cannot also be a supersession proposal")
+                raise TransitionError(
+                    "rejection result cannot also be a supersession proposal"
+                )
 
             refutes: ClaimLinkRecord | None = None
             if rejection == "reject_as_false":
@@ -1310,6 +1473,12 @@ class TruthLifecycle:
                 event_id=result_event_id,
                 at=at or observed,
             ).event
+            self._apply_terminal_content_policy_locked(
+                write_conn,
+                claim_id=source_id,
+                terminal_status="rejected",
+                at=source_event.at,
+            )
             return RejectionResult(
                 source_event=source_event,
                 result_claim=result,
@@ -1330,4 +1499,5 @@ __all__ = [
     "TransitionResult",
     "TruthLifecycle",
     "hash_context",
+    "negated_proposition",
 ]
