@@ -440,8 +440,9 @@ class TruthRedactor:
         ) as write_conn:
             # SQLite otherwise may leave the replaced quote/excerpt bytes in a
             # b-tree freeblock even though SQL readers see only tombstones.
-            # This connection-local setting makes each sanctioned mutation
-            # overwrite the retired payload bytes as part of the transaction.
+            # This overwrites retired payload bytes in the committed database;
+            # a reader that already owns an older WAL snapshot can retain that
+            # pre-redaction view until it releases the snapshot.
             write_conn.execute("PRAGMA secure_delete = ON")
             subject = self._subject_locked(write_conn, kind, reference)
             if subject.redacted_at is not None:

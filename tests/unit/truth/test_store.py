@@ -16,6 +16,7 @@ from work_buddy.truth.lifecycle import TruthLifecycle
 from work_buddy.truth.queries import integrity_findings
 from work_buddy.truth.store import (
     AcquisitionOrigin,
+    PostCommitHookError,
     PremiseRef,
     TruthStore,
 )
@@ -166,6 +167,29 @@ def test_future_schema_refusal_does_not_mutate_journal_mode_or_database(
         assert probe.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
     finally:
         probe.close()
+
+    store.paths.claims_export.unlink()
+    store.paths.export_dir.rmdir()
+    store.paths.blobs.rmdir()
+    with pytest.raises(StoreVersionError, match="only knows up to"):
+        TruthStore.create(
+            truth_root,
+            _profile(store_id=store.store_id),
+        )
+    assert not store.paths.export_dir.exists()
+    assert not store.paths.blobs.exists()
+
+
+def test_post_commit_profile_failure_removes_stale_recovery_export(
+    store: TruthStore,
+) -> None:
+    assert store.paths.claims_export.is_file()
+    store.paths.config.unlink()
+
+    with pytest.raises(PostCommitHookError, match="stale recovery export was removed"):
+        store._run_on_commit()
+
+    assert not store.paths.claims_export.exists()
 
 
 def test_supplied_connection_must_be_active_and_target_this_store(
