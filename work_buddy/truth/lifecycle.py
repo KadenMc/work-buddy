@@ -594,6 +594,38 @@ class TruthLifecycle:
             store_derived_only=store_derived_only,
         )
 
+    def _has_usable_support_at_locked(
+        self,
+        conn: sqlite3.Connection,
+        claim_id: str,
+        boundary_at: str,
+    ) -> bool:
+        """Return whether usable support already existed at a decision boundary.
+
+        Challenge writes may receive an explicit historical timestamp. Current
+        support alone is therefore insufficient: a later support edge must not
+        make a backdated challenge valid. Rows are already present before the
+        challenge event is appended, so equal timestamps are valid here; the
+        ledger sequence disambiguates equal-time history during integrity reads.
+        """
+
+        row = conn.execute(
+            "SELECT 1 FROM claim_links l "
+            "JOIN evidence_spans s ON s.id = l.to_ref "
+            "JOIN evidence e ON e.id = s.evidence_id "
+            "LEFT JOIN link_retractions lr ON lr.link_id = l.id "
+            "WHERE l.from_claim_id = ? AND l.link_type = 'supports_span' "
+            "AND l.to_kind = 'evidence_span' AND lr.link_id IS NULL "
+            "AND julianday(l.created_at) <= julianday(?) "
+            "AND julianday(s.created_at) <= julianday(?) "
+            "AND julianday(e.created_at) <= julianday(?) "
+            "AND s.redacted_at IS NULL AND e.redacted_at IS NULL "
+            "AND e.derived_from_store IS NULL AND e.trust_class IS NOT NULL "
+            "LIMIT 1",
+            (claim_id, boundary_at, boundary_at, boundary_at),
+        ).fetchone()
+        return row is not None
+
     def assess_support(
         self,
         claim_id: str,
@@ -1021,6 +1053,7 @@ class TruthLifecycle:
             raise TransitionError("a claim cannot challenge itself")
         if actor.kind == "system":
             raise TransitionError("system actors cannot author a challenge")
+        event_at = _timestamp(at, "challenge at")
         with self.store.write_transaction(conn) as write_conn:
             base = self.store._latest_status_locked(
                 write_conn,
@@ -1048,14 +1081,25 @@ class TruthLifecycle:
                 raise TransitionError(
                     "a terminal claim cannot serve as a live challenge"
                 )
+            if _parse_timestamp(event_at, "challenge at") < _parse_timestamp(
+                challenger_base.at,
+                "challenger latest status at",
+            ):
+                raise TransitionError(
+                    "challenge cannot predate the challenger's latest status"
+                )
             if challenging_claim.redacted_at is not None:
                 raise TransitionError(
                     "a claim with redacted content cannot serve as a live challenge"
                 )
-            support = self._assess_support_locked(write_conn, challenger)
-            if not support.usable_span_ids:
+            if not self._has_usable_support_at_locked(
+                write_conn,
+                challenger,
+                event_at,
+            ):
                 raise TransitionError(
-                    "challenging claim requires usable supporting evidence"
+                    "challenging claim requires usable supporting evidence "
+                    "at the challenge boundary"
                 )
             raw = write_conn.execute(
                 "SELECT l.* FROM claim_links l "
@@ -1074,9 +1118,14 @@ class TruthLifecycle:
                     to_ref=target,
                     actor=actor,
                     record_id=link_id,
-                    created_at=at,
+                    created_at=event_at,
                     conn=write_conn,
                 )
+            elif _parse_timestamp(
+                link.created_at,
+                "conflict link created_at",
+            ) > _parse_timestamp(event_at, "challenge at"):
+                raise TransitionError("challenge cannot predate its conflict link")
             transition = self._transition_locked(
                 write_conn,
                 claim_id=target,
@@ -1086,7 +1135,7 @@ class TruthLifecycle:
                 basis_ref=link.id,
                 note=note,
                 event_id=event_id,
-                at=at,
+                at=event_at,
             )
             return transition
 
@@ -1517,7 +1566,7 @@ class TruthLifecycle:
                         actor=actor,
                         role=binding_role,
                         record_id=link_id,
-                        created_at=at,
+                        created_at=at or observed,
                         conn=write_conn,
                     )
             source_event = self._transition_locked(

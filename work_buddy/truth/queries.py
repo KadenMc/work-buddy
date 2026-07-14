@@ -1659,19 +1659,152 @@ def integrity_findings(
             detail=detail,
         )
 
-    def available_at(redacted_at: Any, boundary: datetime | None) -> bool:
-        if redacted_at is None:
-            return True
-        if boundary is None:
-            return False
-        try:
-            return _time_key(redacted_at, "redacted_at") > boundary
-        except InvariantViolation:
-            return False
-
     with _read_connection(store, conn) as read_conn:
+        ledger_rows = read_conn.execute(
+            "SELECT * FROM ledger_records ORDER BY seq"
+        ).fetchall()
+        ledger_sequence = {
+            (row["record_type"], row["record_key"]): int(row["seq"])
+            for row in ledger_rows
+        }
         claim_rows = read_conn.execute("SELECT * FROM claims ORDER BY id").fetchall()
         claims_by_id = {row["id"]: ClaimRecord(**dict(row)) for row in claim_rows}
+        link_rows = read_conn.execute(
+            "SELECT * FROM claim_links ORDER BY id"
+        ).fetchall()
+        links_by_id = {row["id"]: ClaimLinkRecord(**dict(row)) for row in link_rows}
+        span_rows = read_conn.execute(
+            "SELECT * FROM evidence_spans ORDER BY id"
+        ).fetchall()
+        spans_by_id = {row["id"]: row for row in span_rows}
+        evidence_rows = read_conn.execute(
+            "SELECT * FROM evidence ORDER BY id"
+        ).fetchall()
+        evidence_by_id = {row["id"]: row for row in evidence_rows}
+        retraction_rows = read_conn.execute(
+            "SELECT * FROM link_retractions ORDER BY link_id"
+        ).fetchall()
+        retractions_by_link = {row["link_id"]: row for row in retraction_rows}
+        redaction_rows = read_conn.execute(
+            "SELECT * FROM redaction_events ORDER BY id"
+        ).fetchall()
+        redaction_sequence_by_subject: dict[tuple[str, str, str], int] = {}
+        for row in redaction_rows:
+            subject_kind = (
+                "span"
+                if row["subject_kind"] == "evidence_span"
+                else row["subject_kind"]
+            )
+            sequence = ledger_sequence.get(("redaction_event", row["id"]))
+            if sequence is None:
+                continue
+            key = (subject_kind, row["subject_ref"], row["at"])
+            previous = redaction_sequence_by_subject.get(key)
+            if previous is None or sequence < previous:
+                redaction_sequence_by_subject[key] = sequence
+
+        def boundary_parts(
+            boundary_event: sqlite3.Row,
+        ) -> tuple[datetime | None, int | None]:
+            try:
+                boundary_time = _time_key(boundary_event["at"], "status event at")
+            except InvariantViolation:
+                boundary_time = None
+            boundary_sequence = ledger_sequence.get(
+                ("claim_status_event", boundary_event["id"])
+            )
+            return boundary_time, boundary_sequence
+
+        def record_existed_at(
+            *,
+            record_at: Any,
+            record_type: str,
+            record_key: str,
+            boundary_event: sqlite3.Row,
+        ) -> bool:
+            boundary_time, boundary_sequence = boundary_parts(boundary_event)
+            if boundary_time is None:
+                return False
+            try:
+                created = _time_key(record_at, f"{record_type} created_at")
+            except InvariantViolation:
+                return False
+            if created < boundary_time:
+                return True
+            if created > boundary_time:
+                return False
+            record_sequence = ledger_sequence.get((record_type, record_key))
+            return (
+                record_sequence is not None
+                and boundary_sequence is not None
+                and record_sequence < boundary_sequence
+            )
+
+        def subject_available_at(
+            *,
+            subject_kind: str,
+            subject_ref: str,
+            redacted_at: Any,
+            boundary_event: sqlite3.Row,
+        ) -> bool:
+            if redacted_at is None:
+                return True
+            boundary_time, boundary_sequence = boundary_parts(boundary_event)
+            if boundary_time is None:
+                return False
+            try:
+                redacted = _time_key(redacted_at, "redacted_at")
+            except InvariantViolation:
+                return False
+            if redacted > boundary_time:
+                return True
+            if redacted < boundary_time:
+                return False
+            redaction_sequence = redaction_sequence_by_subject.get(
+                (subject_kind, subject_ref, redacted_at)
+            )
+            return (
+                redaction_sequence is not None
+                and boundary_sequence is not None
+                and redaction_sequence > boundary_sequence
+            )
+
+        def link_active_at_event(
+            link: sqlite3.Row | ClaimLinkRecord,
+            boundary_event: sqlite3.Row,
+        ) -> bool:
+            link_id = link["id"] if isinstance(link, sqlite3.Row) else link.id
+            created_at = (
+                link["created_at"] if isinstance(link, sqlite3.Row) else link.created_at
+            )
+            if not record_existed_at(
+                record_at=created_at,
+                record_type="claim_link",
+                record_key=link_id,
+                boundary_event=boundary_event,
+            ):
+                return False
+            retraction = retractions_by_link.get(link_id)
+            if retraction is None:
+                return True
+            boundary_time, boundary_sequence = boundary_parts(boundary_event)
+            if boundary_time is None:
+                return False
+            try:
+                retracted = _time_key(retraction["at"], "link retraction at")
+            except InvariantViolation:
+                return False
+            if retracted > boundary_time:
+                return True
+            if retracted < boundary_time:
+                return False
+            retraction_sequence = ledger_sequence.get(("link_retraction", link_id))
+            return (
+                retraction_sequence is not None
+                and boundary_sequence is not None
+                and retraction_sequence > boundary_sequence
+            )
+
         states, races = _resolve_claim_states_locked(read_conn, belief_at=None)
         states_by_id = {state.claim_id: state for state in states}
 
@@ -1855,16 +1988,15 @@ def integrity_findings(
                         source_event["id"],
                         "false rejection result is not the deterministic negation",
                     )
-                refutations = read_conn.execute(
-                    "SELECT l.* FROM claim_links AS l WHERE l.from_claim_id = ? "
-                    "AND l.link_type = 'refutes' AND l.to_kind = 'claim' "
-                    "AND l.to_ref = ? "
-                    "AND julianday(l.created_at) <= julianday(?) "
-                    "AND NOT EXISTS (SELECT 1 FROM link_retractions AS r "
-                    "WHERE r.link_id = l.id "
-                    "AND julianday(r.at) <= julianday(?)) ORDER BY l.id",
-                    (result.id, source.id, source_event["at"], source_event["at"]),
-                ).fetchall()
+                refutations = [
+                    link
+                    for link in link_rows
+                    if link["from_claim_id"] == result.id
+                    and link["link_type"] == "refutes"
+                    and link["to_kind"] == "claim"
+                    and link["to_ref"] == source.id
+                    and link_active_at_event(link, source_event)
+                ]
                 if not refutations:
                     add(
                         "missing_rejection_binding_link",
@@ -2138,29 +2270,54 @@ def integrity_findings(
                         f"gesture kind {gesture['kind']!r} cannot confirm a claim",
                     )
                 if status == "confirmed":
-                    support_rows = read_conn.execute(
-                        "SELECT l.id AS link_id, s.id AS span_id, "
-                        "s.redacted_at AS span_redacted_at, e.id AS evidence_id, "
-                        "e.redacted_at AS evidence_redacted_at, e.trust_class, "
-                        "e.derived_from_store FROM claim_links AS l "
-                        "LEFT JOIN evidence_spans AS s ON s.id = l.to_ref "
-                        "LEFT JOIN evidence AS e ON e.id = s.evidence_id "
-                        "WHERE l.from_claim_id = ? AND l.link_type = 'supports_span' "
-                        "AND l.to_kind = 'evidence_span' "
-                        "AND julianday(l.created_at) <= julianday(?) "
-                        "AND NOT EXISTS (SELECT 1 FROM link_retractions AS r "
-                        "WHERE r.link_id = l.id "
-                        "AND julianday(r.at) <= julianday(?))",
-                        (claim_id, row["at"], row["at"]),
-                    ).fetchall()
+                    support_rows: list[
+                        tuple[sqlite3.Row, sqlite3.Row | None, sqlite3.Row | None]
+                    ] = []
+                    for support_link in link_rows:
+                        if (
+                            support_link["from_claim_id"] != claim_id
+                            or support_link["link_type"] != "supports_span"
+                            or support_link["to_kind"] != "evidence_span"
+                        ):
+                            continue
+                        span = spans_by_id.get(support_link["to_ref"])
+                        evidence = (
+                            None
+                            if span is None
+                            else evidence_by_id.get(span["evidence_id"])
+                        )
+                        support_rows.append((support_link, span, evidence))
                     usable_support = [
-                        support
-                        for support in support_rows
-                        if support["span_id"] is not None
-                        and support["evidence_id"] is not None
-                        and available_at(support["span_redacted_at"], event_time)
-                        and available_at(support["evidence_redacted_at"], event_time)
-                        and support["derived_from_store"] is None
+                        (support_link, span, evidence)
+                        for support_link, span, evidence in support_rows
+                        if span is not None
+                        and evidence is not None
+                        and link_active_at_event(support_link, row)
+                        and record_existed_at(
+                            record_at=span["created_at"],
+                            record_type="evidence_span",
+                            record_key=span["id"],
+                            boundary_event=row,
+                        )
+                        and record_existed_at(
+                            record_at=evidence["created_at"],
+                            record_type="evidence",
+                            record_key=evidence["id"],
+                            boundary_event=row,
+                        )
+                        and subject_available_at(
+                            subject_kind="span",
+                            subject_ref=span["id"],
+                            redacted_at=span["redacted_at"],
+                            boundary_event=row,
+                        )
+                        and subject_available_at(
+                            subject_kind="evidence",
+                            subject_ref=evidence["id"],
+                            redacted_at=evidence["redacted_at"],
+                            boundary_event=row,
+                        )
+                        and evidence["derived_from_store"] is None
                     ]
                     if support_rows and not usable_support:
                         add(
@@ -2170,8 +2327,9 @@ def integrity_findings(
                             "claim support is entirely missing, redacted, or store-derived",
                         )
                     quarantined_only = bool(usable_support) and all(
-                        support["trust_class"] == "external_quarantined"
-                        for support in usable_support
+                        evidence is not None
+                        and evidence["trust_class"] == "external_quarantined"
+                        for _support_link, _span, evidence in usable_support
                     )
                     if (
                         quarantined_only
@@ -2372,40 +2530,6 @@ def integrity_findings(
                     "expires_at must be later than gesture at",
                 )
 
-        link_rows = read_conn.execute(
-            "SELECT * FROM claim_links ORDER BY id"
-        ).fetchall()
-        links_by_id = {row["id"]: ClaimLinkRecord(**dict(row)) for row in link_rows}
-        span_rows = read_conn.execute(
-            "SELECT * FROM evidence_spans ORDER BY id"
-        ).fetchall()
-        spans_by_id = {row["id"]: row for row in span_rows}
-        evidence_rows = read_conn.execute(
-            "SELECT * FROM evidence ORDER BY id"
-        ).fetchall()
-        evidence_by_id = {row["id"]: row for row in evidence_rows}
-        retraction_rows = read_conn.execute(
-            "SELECT * FROM link_retractions ORDER BY link_id"
-        ).fetchall()
-        retractions_by_link = {row["link_id"]: row for row in retraction_rows}
-
-        def link_active_at(link: sqlite3.Row | ClaimLinkRecord, at: str) -> bool:
-            try:
-                created = (
-                    _time_key(link["created_at"], "link created_at")
-                    if isinstance(link, sqlite3.Row)
-                    else _time_key(link.created_at, "link created_at")
-                )
-                boundary = _time_key(at, "status event at")
-                link_id = link["id"] if isinstance(link, sqlite3.Row) else link.id
-                retraction = retractions_by_link.get(link_id)
-                return created <= boundary and (
-                    retraction is None
-                    or _time_key(retraction["at"], "link retraction at") > boundary
-                )
-            except InvariantViolation:
-                return False
-
         confirmed_events_by_claim: dict[str, list[sqlite3.Row]] = defaultdict(list)
         for event in status_rows:
             if event["status"] == "confirmed":
@@ -2436,18 +2560,14 @@ def integrity_findings(
 
         def challenger_has_usable_support_at(
             challenger_id: str,
-            boundary_at: str,
+            boundary_event: sqlite3.Row,
         ) -> bool:
-            try:
-                boundary = _time_key(boundary_at, "challenge at")
-            except InvariantViolation:
-                return False
             for link in link_rows:
                 if (
                     link["from_claim_id"] != challenger_id
                     or link["link_type"] != "supports_span"
                     or link["to_kind"] != "evidence_span"
-                    or not link_active_at(link, boundary_at)
+                    or not link_active_at_event(link, boundary_event)
                 ):
                     continue
                 span = spans_by_id.get(link["to_ref"])
@@ -2456,18 +2576,31 @@ def integrity_findings(
                 evidence = evidence_by_id.get(span["evidence_id"])
                 if evidence is None:
                     continue
-                try:
-                    existed = (
-                        _time_key(span["created_at"], "span created_at") <= boundary
-                        and _time_key(evidence["created_at"], "evidence created_at")
-                        <= boundary
-                    )
-                except InvariantViolation:
-                    existed = False
                 if (
-                    existed
-                    and available_at(span["redacted_at"], boundary)
-                    and available_at(evidence["redacted_at"], boundary)
+                    record_existed_at(
+                        record_at=span["created_at"],
+                        record_type="evidence_span",
+                        record_key=span["id"],
+                        boundary_event=boundary_event,
+                    )
+                    and record_existed_at(
+                        record_at=evidence["created_at"],
+                        record_type="evidence",
+                        record_key=evidence["id"],
+                        boundary_event=boundary_event,
+                    )
+                    and subject_available_at(
+                        subject_kind="span",
+                        subject_ref=span["id"],
+                        redacted_at=span["redacted_at"],
+                        boundary_event=boundary_event,
+                    )
+                    and subject_available_at(
+                        subject_kind="evidence",
+                        subject_ref=evidence["id"],
+                        redacted_at=evidence["redacted_at"],
+                        boundary_event=boundary_event,
+                    )
                     and evidence["derived_from_store"] is None
                     and evidence["trust_class"] is not None
                 ):
@@ -2503,7 +2636,7 @@ def integrity_findings(
             return (
                 confirmed_at == transition_at
                 and int(confirmation["seq"]) < int(status_event["seq"])
-                and link_active_at(link, confirmation["at"])
+                and link_active_at_event(link, confirmation)
             )
 
         for event in status_rows:
@@ -2516,7 +2649,7 @@ def integrity_findings(
                     or basis.link_type != "conflicts_with"
                     or basis.to_kind != "claim"
                     or basis.to_ref != event["claim_id"]
-                    or not link_active_at(basis, event["at"])
+                    or not link_active_at_event(basis, event)
                 ):
                     add(
                         "invalid_challenge_link",
@@ -2542,13 +2675,11 @@ def integrity_findings(
                         event["id"],
                         f"challenger had non-live base status {state!r} at challenge time",
                     )
-                try:
-                    challenge_time = _time_key(event["at"], "challenge at")
-                except InvariantViolation:
-                    challenge_time = None
-                if challenger is not None and not available_at(
-                    challenger.redacted_at,
-                    challenge_time,
+                if challenger is not None and not subject_available_at(
+                    subject_kind="claim",
+                    subject_ref=challenger.id,
+                    redacted_at=challenger.redacted_at,
+                    boundary_event=event,
                 ):
                     add(
                         "redacted_challenge_challenger",
@@ -2558,7 +2689,7 @@ def integrity_findings(
                     )
                 if not challenger_has_usable_support_at(
                     basis.from_claim_id,
-                    event["at"],
+                    event,
                 ):
                     add(
                         "challenge_without_usable_support",
@@ -2572,7 +2703,7 @@ def integrity_findings(
                 or basis.link_type != "supersedes"
                 or basis.to_kind != "claim"
                 or basis.to_ref != event["claim_id"]
-                or not link_active_at(basis, event["at"])
+                or not link_active_at_event(basis, event)
             ):
                 add(
                     "invalid_superseded_link",
@@ -2791,6 +2922,11 @@ def integrity_findings(
                             str(exc),
                         )
 
+        current_base_events: dict[str, sqlite3.Row] = {}
+        for status_event in status_rows:
+            if status_event["status"] != "needs_review":
+                current_base_events[status_event["claim_id"]] = status_event
+
         for row in retraction_rows:
             link = links_by_id.get(row["link_id"])
             if link is None:
@@ -2825,6 +2961,36 @@ def integrity_findings(
                     row["link_id"],
                     str(exc),
                 )
+            if link.to_kind == "claim":
+                current = current_base_events.get(link.to_ref)
+                if (
+                    link.link_type == "supersedes"
+                    and current is not None
+                    and current["status"] == "superseded"
+                    and current["basis_kind"] == "claim_link"
+                    and current["basis_ref"] == link.id
+                ):
+                    add(
+                        "retracted_current_supersession_authority",
+                        "link_retraction",
+                        row["link_id"],
+                        "retraction removes the link authorizing the current "
+                        "superseded status",
+                    )
+                if (
+                    link.link_type == "conflicts_with"
+                    and current is not None
+                    and current["status"] == "challenged"
+                    and current["basis_kind"] == "conflict_link"
+                    and current["basis_ref"] == link.id
+                ):
+                    add(
+                        "retracted_current_challenge_authority",
+                        "link_retraction",
+                        row["link_id"],
+                        "retraction removes the link authorizing the current "
+                        "challenged status",
+                    )
 
         for race in races:
             add(
@@ -3265,9 +3431,6 @@ def integrity_findings(
                     "agent callers cannot assert human span authorship",
                 )
 
-        redaction_rows = read_conn.execute(
-            "SELECT * FROM redaction_events ORDER BY id"
-        ).fetchall()
         redactions_by_subject: dict[tuple[str, str], list[sqlite3.Row]] = defaultdict(
             list
         )
@@ -3820,9 +3983,6 @@ def integrity_findings(
                 for row in premise_rows
             },
         }
-        ledger_rows = read_conn.execute(
-            "SELECT * FROM ledger_records ORDER BY seq"
-        ).fetchall()
         actual_ledger: dict[str, set[str]] = defaultdict(set)
         for row in ledger_rows:
             actual_ledger[row["record_type"]].add(row["record_key"])

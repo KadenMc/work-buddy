@@ -735,6 +735,57 @@ def test_challenge_requires_conflict_edge_and_evidence_then_can_reaffirm(
     assert reaffirmed.event.status == "confirmed"
 
 
+def test_challenge_refuses_support_created_after_its_decision_boundary(
+    store: TruthStore,
+    lifecycle: TruthLifecycle,
+):
+    target = _claim(store, "Backdated challenge target")
+    challenger = _claim(store, "Backdated challenge source")
+    _confirm(lifecycle, target, at=LATER)
+    evidence = store.capture_evidence(
+        kind="document",
+        source_locator="file:///late-challenge-support.txt",
+        actor=HUMAN,
+        acquisition_method="paste",
+        content="support arrived after the claimed decision",
+        created_at=AFTER_LATER,
+        acquired_at=AFTER_LATER,
+    )
+    span = store.mark_span(
+        evidence_id=evidence.id,
+        selector=CompositeSelector(exact="support arrived after the claimed decision"),
+        actor=HUMAN,
+        created_at=AFTER_LATER,
+    )
+    store.add_link(
+        from_claim_id=challenger.id,
+        link_type="supports_span",
+        to_kind="evidence_span",
+        to_ref=span.id,
+        actor=HUMAN,
+        created_at=AFTER_LATER,
+    )
+
+    with pytest.raises(TransitionError, match="challenge boundary"):
+        lifecycle.challenge_claim(
+            claim_id=target.id,
+            challenging_claim_id=challenger.id,
+            actor=HUMAN,
+            at=LATER,
+        )
+
+    assert lifecycle.latest_status(target.id).status == "confirmed"
+    with store.connect() as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM claim_links WHERE from_claim_id = ? "
+                "AND link_type = 'conflicts_with' AND to_ref = ?",
+                (challenger.id, target.id),
+            ).fetchone()[0]
+            == 0
+        )
+
+
 def test_rejected_claim_cannot_challenge_even_when_it_has_support(
     store: TruthStore,
     lifecycle: TruthLifecycle,
