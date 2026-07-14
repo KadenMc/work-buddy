@@ -788,11 +788,17 @@ def test_current_challenge_authority_link_cannot_be_retracted(
         observed_at=LATER,
         at=LATER,
     )
-    evidence = _capture(store, "health check failed")
+    evidence = _capture(
+        store,
+        "health check failed",
+        created_at=LATER,
+        acquired_at=LATER,
+    )
     span = store.mark_span(
         evidence_id=evidence.id,
         selector=CompositeSelector(exact="health check failed"),
         actor=HUMAN,
+        created_at=LATER,
     )
     store.add_link(
         from_claim_id=challenger.id,
@@ -800,6 +806,7 @@ def test_current_challenge_authority_link_cannot_be_retracted(
         to_kind="evidence_span",
         to_ref=span.id,
         actor=HUMAN,
+        created_at=LATER,
     )
     challenged = lifecycle.challenge_claim(
         claim_id=target.id,
