@@ -37,6 +37,10 @@ def _insert_store_info(conn: sqlite3.Connection, version: int = 1) -> None:
 def _seed_all_tables(conn: sqlite3.Connection) -> None:
     _insert_store_info(conn)
     conn.execute(
+        "INSERT INTO ledger_records (record_type, record_key) "
+        "VALUES ('claim', 'c1')"
+    )
+    conn.execute(
         "INSERT INTO evidence "
         "(id, kind, source_locator, content_sha256, content, content_path, "
         "media_type, acquired_at, acquired_by_kind, acquired_by_ref, "
@@ -167,6 +171,7 @@ EXPECTED_COLUMNS = {
     "store_info": {
         "store_id", "profile", "schema_version", "title", "created_at",
     },
+    "ledger_records": {"seq", "record_type", "record_key"},
     "evidence": {
         "id", "kind", "source_locator", "content_sha256", "content",
         "content_path", "media_type", "acquired_at", "acquired_by_kind",
@@ -274,7 +279,7 @@ def test_schema_v1_has_all_committed_tables_columns_indexes_and_triggers(
             "SELECT name FROM sqlite_master WHERE type = 'trigger'"
         )
     }
-    assert len(triggers) == 27
+    assert len(triggers) == 29
     assert not any(name.startswith("projections_") for name in triggers)
     assert not any(name.startswith("claims_current_") for name in triggers)
     assert truth_migrations.current_version(conn) == truth_migrations.SCHEMA_VERSION
@@ -290,12 +295,13 @@ def test_reopening_is_idempotent(tmp_path: Path):
     ).fetchone()[0] == 1
     assert conn.execute(
         "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger'"
-    ).fetchone()[0] == 27
+    ).fetchone()[0] == 29
     conn.close()
 
 
 INVALID_UPDATES = (
     "UPDATE store_info SET title = 'changed' WHERE store_id = 'store-1'",
+    "UPDATE ledger_records SET record_key = 'changed' WHERE seq = 1",
     "UPDATE evidence SET meta_json = '{\"x\":1}' WHERE id = 'e1'",
     "UPDATE evidence_spans SET selector_json = '{}' WHERE id = 'sp1'",
     "UPDATE claims SET proposition = 'changed' WHERE id = 'c1'",
@@ -324,6 +330,7 @@ def test_non_sanctioned_updates_are_rejected(migrated_db, sql: str):
     "table",
     (
         "store_info",
+        "ledger_records",
         "evidence",
         "evidence_spans",
         "claims",
@@ -457,6 +464,26 @@ def test_canonical_hash_index_is_not_unique(migrated_db):
         for row in conn.execute("PRAGMA index_list(claims)")
     }
     assert index["idx_claims_canonical_sha256"] == 0
+
+
+def test_ledger_records_supply_one_global_append_order(migrated_db):
+    conn, _ = migrated_db
+    first = conn.execute(
+        "INSERT INTO ledger_records (record_type, record_key) VALUES (?, ?)",
+        ("evidence", "e2"),
+    ).lastrowid
+    second = conn.execute(
+        "INSERT INTO ledger_records (record_type, record_key) VALUES (?, ?)",
+        ("claim_status_event", "se2"),
+    ).lastrowid
+
+    assert second == first + 1
+    with pytest.raises(sqlite3.IntegrityError, match="UNIQUE"):
+        conn.execute(
+            "INSERT INTO ledger_records (record_type, record_key) VALUES (?, ?)",
+            ("evidence", "e2"),
+        )
+    conn.rollback()
 
 
 def _m002_add_marker(conn: sqlite3.Connection) -> None:

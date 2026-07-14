@@ -35,6 +35,14 @@ def _m001_initial_schema(conn: sqlite3.Connection) -> None:
         )
         """,
         """
+        CREATE TABLE IF NOT EXISTS ledger_records (
+            seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+            record_type  TEXT NOT NULL,
+            record_key   TEXT NOT NULL,
+            UNIQUE (record_type, record_key)
+        )
+        """,
+        """
         CREATE TABLE IF NOT EXISTS evidence (
             id                  TEXT PRIMARY KEY,
             kind                TEXT NOT NULL,
@@ -373,6 +381,7 @@ def _m001_initial_schema(conn: sqlite3.Connection) -> None:
         conn.execute(statement)
 
     immutable_update_tables = (
+        "ledger_records",
         "derivations",
         "derivation_premises",
         "claim_links",
@@ -394,6 +403,7 @@ def _m001_initial_schema(conn: sqlite3.Connection) -> None:
 
     protected_delete_tables = (
         "store_info",
+        "ledger_records",
         "evidence",
         "evidence_spans",
         "claims",
