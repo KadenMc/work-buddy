@@ -11,6 +11,9 @@ from typing import Any
 
 import pytest
 
+import work_buddy.truth.export as truth_export
+import work_buddy.truth.migrations as truth_migrations
+from work_buddy.storage.migrations import Migration
 from work_buddy.truth.anchors import CompositeSelector
 from work_buddy.truth.contracts import Actor
 from work_buddy.truth.export import (
@@ -85,6 +88,24 @@ def _create_store(
         root,
         _profile(store_id),
         inline_content_bytes=inline_content_bytes,
+    )
+
+
+def _synthetic_v2(conn) -> None:
+    conn.execute("CREATE TABLE import_v2_marker (id TEXT PRIMARY KEY)")
+
+
+def _v2_runner() -> truth_migrations._TruthMigrationRunner:
+    return truth_migrations._TruthMigrationRunner(
+        "truth",
+        migrations=[
+            Migration(
+                1,
+                "initial truth ledger schema",
+                truth_migrations._m001_initial_schema,
+            ),
+            Migration(2, "synthetic import v2", _synthetic_v2),
+        ],
     )
 
 
@@ -536,6 +557,38 @@ def test_import_rejects_newer_malformed_duplicate_header_and_trailing_records(
     with pytest.raises(TruthImportError, match="malformed JSON"):
         import_store(duplicate_header, target, registry=FakeRegistry())
     assert list(target.iterdir()) == []
+
+
+def test_older_schema_export_rebuilds_under_a_newer_engine(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _create_store(tmp_path / "v1-source")
+    claim = source.propose_claim(
+        proposition="Portable history outlives the SQLite schema",
+        claim_kind="fact",
+        actor=HUMAN,
+        created_at=NOW,
+        status_at=NOW,
+    ).claim
+    v1_payload = source.paths.claims_export.read_bytes()
+    assert _objects(v1_payload)[0]["store_info"]["schema_version"] == 1
+
+    monkeypatch.setattr(truth_migrations, "TRUTH_MIGRATIONS", _v2_runner())
+    monkeypatch.setattr(truth_export, "SCHEMA_VERSION", 2)
+    target = tmp_path / "v2-target"
+    target.mkdir()
+
+    restored = import_store(v1_payload, target, registry=FakeRegistry()).store
+
+    assert restored.get_claim(claim.id).canonical_sha256 == claim.canonical_sha256
+    with restored.connect() as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name = 'import_v2_marker'"
+        ).fetchone()
+    header = _objects(restored.paths.claims_export.read_bytes())[0]
+    assert header["store_info"]["schema_version"] == 2
 
 
 def test_staging_failure_is_not_published_and_existing_empty_target_is_restored(

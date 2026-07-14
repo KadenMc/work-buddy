@@ -437,10 +437,6 @@ def _validate_header(bundle: _Bundle) -> StoreProfile:
         raise TruthImportError(
             f"store schema v{schema_version} is newer than supported v{SCHEMA_VERSION}"
         )
-    if schema_version != SCHEMA_VERSION:
-        raise TruthImportError(
-            f"store schema v{schema_version} has no import upcaster to v{SCHEMA_VERSION}"
-        )
     if info["title"] is not None and not isinstance(info["title"], str):
         raise TruthImportError("store_info.title must be text or null")
     _timestamp(info["created_at"], "store_info.created_at")
@@ -1175,7 +1171,24 @@ def _parse_v2(objects: list[dict[str, Any]]) -> _Bundle:
 def _parse_bundle(source: str | Path | bytes | bytearray | memoryview) -> _Bundle:
     objects = _read_objects(source)
     version = _parse_header(objects)
-    return _parse_v1(objects) if version == 1 else _parse_v2(objects)
+    bundle = _parse_v1(objects) if version == 1 else _parse_v2(objects)
+    source_schema = int(bundle.store_info["schema_version"])
+    if source_schema == SCHEMA_VERSION:
+        return bundle
+
+    # The JSONL format, not SQLite's internal schema version, governs the
+    # portable record contract. Older streams have already been transport-
+    # upcast and validated against the current record shapes above, so rebuild
+    # them directly into the current schema and publish a current header.
+    store_info = dict(bundle.store_info)
+    store_info["schema_version"] = SCHEMA_VERSION
+    return _Bundle(
+        source_format_version=bundle.source_format_version,
+        store_info=store_info,
+        profile=bundle.profile,
+        records=bundle.records,
+        blobs=bundle.blobs,
+    )
 
 
 def _preflight_target(
