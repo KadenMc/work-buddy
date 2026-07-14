@@ -1143,12 +1143,27 @@ def test_integrity_requires_unredacted_supported_challenger_at_event_boundary(
     second_target = _claim(store, "Target for unsupported challenger")
     _confirm(store, target, at=T1)
     _confirm(store, second_target, at=T1)
+    redaction_id = new_id()
     with store.write_transaction() as conn:
         conn.execute(
             "UPDATE claims SET proposition = '[redacted]', structured_json = NULL, "
             "redacted_at = ? WHERE id = ?",
             (T2, challenger.id),
         )
+        conn.execute(
+            "INSERT INTO redaction_events "
+            "(id, subject_kind, subject_ref, at, actor_ref, basis_kind, "
+            "basis_ref, reason) VALUES (?, 'claim', ?, ?, ?, 'policy', ?, ?)",
+            (
+                redaction_id,
+                challenger.id,
+                T2,
+                "truth-policy-test",
+                policy_basis_ref(store, "rejected_content"),
+                "rejected_content",
+            ),
+        )
+        store._insert_ledger_record_locked(conn, "redaction_event", redaction_id)
     for challenged, challenging in (
         (target, challenger),
         (second_target, unsupported),
@@ -1262,6 +1277,94 @@ def test_later_same_timestamp_support_does_not_retroactively_validate_challenge(
     }
 
 
+def test_later_ledger_backdated_support_does_not_retroactively_validate_challenge(
+    store: TruthStore,
+) -> None:
+    target = _claim(store, "Target challenged before backdated support")
+    challenger = _claim(store, "Unsupported at the recorded challenge")
+    _confirm(store, target, at=T1)
+    conflict = store.add_link(
+        from_claim_id=challenger.id,
+        link_type="conflicts_with",
+        to_kind="claim",
+        to_ref=target.id,
+        actor=HUMAN,
+        created_at=T1,
+    )
+    _raw_status(
+        store,
+        target,
+        status="challenged",
+        actor=HUMAN,
+        basis_kind="conflict_link",
+        basis_ref=conflict.id,
+        at=T2,
+    )
+    evidence = store.capture_evidence(
+        kind="document",
+        source_locator="file:///later-ledger-backdated-support.txt",
+        actor=HUMAN,
+        acquisition_method="paste",
+        content="backdated support appended after the challenge",
+        created_at=T1,
+    )
+    span = store.mark_span(
+        evidence_id=evidence.id,
+        selector=CompositeSelector(
+            exact="backdated support appended after the challenge"
+        ),
+        actor=HUMAN,
+        created_at=T1,
+    )
+    store.add_link(
+        from_claim_id=challenger.id,
+        link_type="supports_span",
+        to_kind="evidence_span",
+        to_ref=span.id,
+        actor=HUMAN,
+        created_at=T1,
+    )
+
+    assert "challenge_without_usable_support" in {
+        item.code for item in integrity_findings(store)
+    }
+
+
+def test_later_ledger_backdated_authority_does_not_validate_challenge(
+    store: TruthStore,
+) -> None:
+    target = _claim(store, "Target challenged before its authority link")
+    challenger = _supported_claim(store, "Challenger with timely support")
+    _confirm(store, target, at=T1)
+    conflict_id = new_id()
+    _raw_status(
+        store,
+        target,
+        status="challenged",
+        actor=HUMAN,
+        basis_kind="conflict_link",
+        basis_ref=conflict_id,
+        at=T2,
+    )
+    conflict = ClaimLinkRecord(
+        id=conflict_id,
+        from_claim_id=challenger.id,
+        link_type="conflicts_with",
+        to_kind="claim",
+        to_ref=target.id,
+        role_json=None,
+        target_fingerprint=None,
+        fingerprint_reviewed_at=None,
+        created_at=T1,
+        created_by_kind=HUMAN.kind,
+        created_by_ref=HUMAN.ref,
+    )
+    with store.write_transaction() as conn:
+        store._insert_link_locked(conn, conflict)
+
+    assert "invalid_challenge_link" in {item.code for item in integrity_findings(store)}
+
+
 def test_later_same_timestamp_link_retraction_preserves_challenge_history(
     store: TruthStore,
 ) -> None:
@@ -1297,6 +1400,90 @@ def test_later_same_timestamp_link_retraction_preserves_challenge_history(
         actor=HUMAN,
         at=T2,
     )
+
+    assert integrity_findings(store) == ()
+
+
+def test_later_ledger_backdated_redaction_preserves_challenge_history(
+    truth_root: Path,
+) -> None:
+    store = _redacting_store(truth_root)
+    target = _claim(store, "Backdated redaction challenge target")
+    challenger = _supported_claim(store, "Later-ledger backdated redaction source")
+    _confirm(store, target, at=T1)
+    lifecycle = TruthLifecycle(store)
+    lifecycle.challenge_claim(
+        claim_id=target.id,
+        challenging_claim_id=challenger.id,
+        actor=HUMAN,
+        at=T2,
+    )
+    gesture = lifecycle.mint_gesture(
+        subject_ref=challenger.id,
+        actor=HUMAN,
+        surface="dashboard",
+        kind="redact",
+        displayed_payload_sha256=challenger.canonical_sha256,
+        at=T1,
+    )
+    TruthRedactor(store, lifecycle=lifecycle).redact(
+        subject_kind="claim",
+        subject_ref=challenger.id,
+        actor=HUMAN,
+        reason="privacy",
+        basis_kind="gesture",
+        basis_ref=gesture.id,
+        at=T1,
+    )
+
+    assert integrity_findings(store) == ()
+
+
+def test_later_ledger_backdated_retraction_preserves_challenge_history(
+    store: TruthStore,
+) -> None:
+    target = _claim(store, "Backdated retraction challenge target")
+    challenger = _supported_claim(store, "Backdated retraction challenger")
+    _confirm(store, target, at=T1)
+    conflict = store.add_link(
+        from_claim_id=challenger.id,
+        link_type="conflicts_with",
+        to_kind="claim",
+        to_ref=target.id,
+        actor=HUMAN,
+        created_at=T0,
+    )
+    lifecycle = TruthLifecycle(store)
+    lifecycle.challenge_claim(
+        claim_id=target.id,
+        challenging_claim_id=challenger.id,
+        actor=HUMAN,
+        at=T2,
+    )
+    gesture = lifecycle.mint_gesture(
+        subject_ref=target.id,
+        actor=HUMAN,
+        surface="dashboard",
+        kind="reaffirm",
+        displayed_payload_sha256=target.canonical_sha256,
+        at=T3,
+    )
+    lifecycle.confirm_claim(
+        claim_id=target.id,
+        gesture_id=gesture.id,
+        actor=HUMAN,
+        expected_context_sha256=None,
+        observed_at=T3,
+        at=T3,
+    )
+    with store.write_transaction() as conn:
+        conn.execute(
+            "INSERT INTO link_retractions "
+            "(link_id, at, actor_kind, actor_ref, reason) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (conflict.id, T1, HUMAN.kind, HUMAN.ref, "backdated raw retraction"),
+        )
+        store._insert_ledger_record_locked(conn, "link_retraction", conflict.id)
 
     assert integrity_findings(store) == ()
 

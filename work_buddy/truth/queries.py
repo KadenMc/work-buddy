@@ -1729,13 +1729,10 @@ def integrity_findings(
                 created = _time_key(record_at, f"{record_type} created_at")
             except InvariantViolation:
                 return False
-            if created < boundary_time:
-                return True
-            if created > boundary_time:
-                return False
             record_sequence = ledger_sequence.get((record_type, record_key))
             return (
-                record_sequence is not None
+                created <= boundary_time
+                and record_sequence is not None
                 and boundary_sequence is not None
                 and record_sequence < boundary_sequence
             )
@@ -1755,19 +1752,18 @@ def integrity_findings(
             try:
                 redacted = _time_key(redacted_at, "redacted_at")
             except InvariantViolation:
-                return False
+                return True
             if redacted > boundary_time:
                 return True
-            if redacted < boundary_time:
-                return False
             redaction_sequence = redaction_sequence_by_subject.get(
                 (subject_kind, subject_ref, redacted_at)
             )
-            return (
+            was_effective = (
                 redaction_sequence is not None
                 and boundary_sequence is not None
-                and redaction_sequence > boundary_sequence
+                and redaction_sequence < boundary_sequence
             )
+            return not was_effective
 
         def link_active_at_event(
             link: sqlite3.Row | ClaimLinkRecord,
@@ -1793,17 +1789,16 @@ def integrity_findings(
             try:
                 retracted = _time_key(retraction["at"], "link retraction at")
             except InvariantViolation:
-                return False
+                return True
             if retracted > boundary_time:
                 return True
-            if retracted < boundary_time:
-                return False
             retraction_sequence = ledger_sequence.get(("link_retraction", link_id))
-            return (
+            was_effective = (
                 retraction_sequence is not None
                 and boundary_sequence is not None
-                and retraction_sequence > boundary_sequence
+                and retraction_sequence < boundary_sequence
             )
+            return not was_effective
 
         states, races = _resolve_claim_states_locked(read_conn, belief_at=None)
         states_by_id = {state.claim_id: state for state in states}
