@@ -15,6 +15,7 @@ from work_buddy.truth.identity import (
     sha256_text,
     truth_uri,
 )
+from work_buddy.truth.lifecycle import TruthLifecycle, negated_proposition
 from work_buddy.truth.queries import (
     PremiseResolution,
     SweepFindingSpec,
@@ -32,6 +33,7 @@ from work_buddy.truth.queries import (
     successor_races,
     supersession_sweep_candidates,
 )
+from work_buddy.truth.redact import TruthRedactor, policy_basis_ref
 from work_buddy.truth.store import (
     ClaimLinkRecord,
     ClaimRecord,
@@ -150,32 +152,15 @@ def _supersede(
     reason: str,
     at: str = T2,
 ) -> ClaimLinkRecord:
-    if reason != "expanded_scope":
-        return store.add_link(
-            from_claim_id=successor.id,
-            link_type="supersedes",
-            to_kind="claim",
-            to_ref=predecessor.id,
-            actor=HUMAN,
-            role={"supersession_reason": reason},
-            created_at=at,
-        )
-    record = ClaimLinkRecord(
-        id=new_id(),
+    return store.add_link(
         from_claim_id=successor.id,
         link_type="supersedes",
         to_kind="claim",
         to_ref=predecessor.id,
-        role_json=canonical_json({"supersession_reason": reason}),
-        target_fingerprint=None,
-        fingerprint_reviewed_at=None,
+        actor=HUMAN,
+        role={"supersession_reason": reason},
         created_at=at,
-        created_by_kind=HUMAN.kind,
-        created_by_ref=HUMAN.ref,
     )
-    with store.write_transaction() as conn:
-        store._insert_link_locked(conn, record)
-    return record
 
 
 def _reasoned_rejection(
@@ -191,7 +176,11 @@ def _reasoned_rejection(
     )
     result = _claim(
         store,
-        f"{kind} result",
+        (
+            negated_proposition(source.proposition)
+            if kind == "reject_as_false"
+            else f"{kind} result"
+        ),
         claim_kind="preference" if preference else "fact",
     )
     gesture = GestureRecord(
@@ -243,6 +232,73 @@ def _reasoned_rejection(
 
 def _states(store: TruthStore) -> dict[str, object]:
     return {state.claim_id: state for state in resolve_claim_states(store)}
+
+
+def _raw_status(
+    store: TruthStore,
+    claim: ClaimRecord,
+    *,
+    status: str,
+    actor: Actor,
+    basis_kind: str,
+    basis_ref: str | None,
+    at: str,
+    note: str | None = None,
+) -> str:
+    event_id = new_id()
+    conn = store.connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        store._insert_status_event_locked(
+            conn,
+            claim_id=claim.id,
+            status=status,
+            actor=actor,
+            basis_kind=basis_kind,
+            basis_ref=basis_ref,
+            note=note,
+            event_id=event_id,
+            at=at,
+        )
+        conn.execute("COMMIT")
+    finally:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        conn.close()
+    return event_id
+
+
+def _raw_link(
+    store: TruthStore,
+    successor: ClaimRecord,
+    predecessor: ClaimRecord,
+    *,
+    reason: str,
+    at: str = T1,
+) -> ClaimLinkRecord:
+    record = ClaimLinkRecord(
+        id=new_id(),
+        from_claim_id=successor.id,
+        link_type="supersedes",
+        to_kind="claim",
+        to_ref=predecessor.id,
+        role_json=canonical_json({"supersession_reason": reason}),
+        target_fingerprint=None,
+        fingerprint_reviewed_at=None,
+        created_at=at,
+        created_by_kind=HUMAN.kind,
+        created_by_ref=HUMAN.ref,
+    )
+    conn = store.connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        store._insert_link_locked(conn, record)
+        conn.execute("COMMIT")
+    finally:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        conn.close()
+    return record
 
 
 def test_status_overlay_activates_at_boundary_and_human_gesture_clears_it(
@@ -317,6 +373,40 @@ def test_as_of_and_valid_time_boundaries_use_ledger_not_projection(
         assert conn.execute("SELECT COUNT(*) FROM claims_current").fetchone()[0] == 0
 
 
+def test_as_of_preserves_pre_redaction_belief_as_a_tombstone(
+    store: TruthStore,
+) -> None:
+    claim = _claim(store, "Historically believed secret")
+    _confirm(store, claim, at=T1)
+    lifecycle = TruthLifecycle(store)
+    gesture = lifecycle.mint_gesture(
+        subject_ref=claim.id,
+        actor=HUMAN,
+        surface="dashboard",
+        kind="redact",
+        displayed_payload_sha256=claim.canonical_sha256,
+        at=T3,
+    )
+    TruthRedactor(store, lifecycle=lifecycle).redact(
+        subject_kind="claim",
+        subject_ref=claim.id,
+        actor=HUMAN,
+        reason="privacy",
+        basis_kind="gesture",
+        basis_ref=gesture.id,
+        at=T3,
+    )
+
+    historical = claims_as_of(store, belief_at=T2)
+    assert [item.claim_id for item in historical] == [claim.id]
+    assert historical[0].claim.proposition == "[redacted]"
+    assert historical[0].claim.canonical_sha256 == claim.canonical_sha256
+    assert historical[0].health == "redacted"
+    assert "content_redacted_after_belief" in (historical[0].health_reason or "")
+    assert claims_as_of(store, belief_at=T3) == ()
+    assert current_claims(store) == ()
+
+
 def test_interval_derivation_respects_each_supersession_reason(
     store: TruthStore,
 ) -> None:
@@ -335,10 +425,16 @@ def test_interval_derivation_respects_each_supersession_reason(
         valid_to="2024-01-01",
     )
     refined_new = _claim(store, "Precise fact")
-    expanded_old = _claim(store, "Narrow scope", valid_from="2017-01-01")
-    expanded_new = _claim(
+    preference_old = _claim(
         store,
-        "Broad scope",
+        "Old preference",
+        claim_kind="preference",
+        valid_from="2017-01-01",
+    )
+    preference_new = _claim(
+        store,
+        "New preference",
+        claim_kind="preference",
         valid_from="2022-05-01",
     )
     for claim in (
@@ -348,14 +444,19 @@ def test_interval_derivation_respects_each_supersession_reason(
         closed_new,
         refined_old,
         refined_new,
-        expanded_old,
-        expanded_new,
+        preference_old,
+        preference_new,
     ):
         _confirm(store, claim)
     _supersede(store, corrected_new, corrected_old, reason="corrected")
     _supersede(store, closed_new, closed_old, reason="valid_time_closed")
     _supersede(store, refined_new, refined_old, reason="refined")
-    _supersede(store, expanded_new, expanded_old, reason="expanded_scope")
+    _supersede(
+        store,
+        preference_new,
+        preference_old,
+        reason="preference_changed",
+    )
 
     states = _states(store)
     assert states[corrected_old.id].voided is True
@@ -376,8 +477,8 @@ def test_interval_derivation_respects_each_supersession_reason(
     assert states[closed_new.id].effective_valid_from == "2019-01-01"
     assert states[refined_new.id].effective_valid_from == "2018-01-01"
     assert states[refined_new.id].effective_valid_to == "2024-01-01"
-    assert states[expanded_old.id].effective_valid_to is None
-    assert states[expanded_new.id].effective_valid_from == "2022-05-01"
+    assert states[preference_old.id].effective_valid_to == "2022-05-01"
+    assert states[preference_new.id].effective_valid_from == "2022-05-01"
 
 
 def test_projection_rebuild_is_deterministic_idempotent_and_ledger_neutral(
@@ -389,7 +490,9 @@ def test_projection_rebuild_is_deterministic_idempotent_and_ledger_neutral(
     _overlay(store, review)
     timestamp = "2026-01-02T00:00:00.000+00:00"
     with store.connect() as conn:
-        ledger_before = conn.execute("SELECT COUNT(*) FROM ledger_records").fetchone()[0]
+        ledger_before = conn.execute("SELECT COUNT(*) FROM ledger_records").fetchone()[
+            0
+        ]
 
     first = rebuild_claims_current(store, rebuilt_at=timestamp)
     with store.connect() as conn:
@@ -453,9 +556,9 @@ def test_conflicts_honor_link_and_retraction_boundaries(store: TruthStore) -> No
     )
     assert conflicts(store, belief_at=T1) == ()
     active = conflicts(store, claim_id=right.id, belief_at=T2)
-    assert [(item.link_id, item.conflict_type, item.conflict_class) for item in active] == [
-        (link.id, "undercut", "scope")
-    ]
+    assert [
+        (item.link_id, item.conflict_type, item.conflict_class) for item in active
+    ] == [(link.id, "undercut", "scope")]
     store.retract_link(link_id=link.id, actor=HUMAN, at=T3)
     assert len(conflicts(store, belief_at=T2)) == 1
     assert conflicts(store, belief_at=T3) == ()
@@ -579,9 +682,10 @@ def test_source_sweep_follows_support_then_derivations_and_ignores_retractions(
         premises=[sourced.id],
         actor=HUMAN,
     )
-    assert [item.subject_ref for item in source_sweep_candidates(
-        store, evidence_id=evidence.id
-    )] == [sourced.id, derived.id]
+    assert [
+        item.subject_ref
+        for item in source_sweep_candidates(store, evidence_id=evidence.id)
+    ] == [sourced.id, derived.id]
     store.retract_link(link_id=support.id, actor=HUMAN, at=T3)
     assert source_sweep_candidates(store, span_id=span.id) == ()
 
@@ -661,7 +765,9 @@ def test_fingerprint_states_cover_current_stale_unreviewed_and_immutable(
         store,
         current_targets={reviewed.id: sha256_text("version two")},
     )
-    assert {item.link_id: item.status for item in changed}[reviewed.id] is FingerprintStatus.STALE
+    assert {item.link_id: item.status for item in changed}[
+        reviewed.id
+    ] is FingerprintStatus.STALE
 
 
 def test_integrity_is_clean_for_valid_rows_and_reports_raw_corruption(
@@ -673,9 +779,11 @@ def test_integrity_is_clean_for_valid_rows_and_reports_raw_corruption(
 
     broken = _claim(store, "Missing gesture")
     missing_gesture_id = new_id()
-    with store.write_transaction() as conn:
+    raw_status = store.connect()
+    try:
+        raw_status.execute("BEGIN IMMEDIATE")
         store._insert_status_event_locked(
-            conn,
+            raw_status,
             claim_id=broken.id,
             status="confirmed",
             actor=HUMAN,
@@ -683,6 +791,11 @@ def test_integrity_is_clean_for_valid_rows_and_reports_raw_corruption(
             basis_ref=missing_gesture_id,
             at=T2,
         )
+        raw_status.execute("COMMIT")
+    finally:
+        if raw_status.in_transaction:
+            raw_status.execute("ROLLBACK")
+        raw_status.close()
 
     dangling_target = new_id()
     raw = store.connect()
@@ -720,6 +833,298 @@ def test_integrity_is_clean_for_valid_rows_and_reports_raw_corruption(
     assert "claim_hash_mismatch" in codes
     assert "dangling_status_gesture" in codes
     assert "dangling_link_claim" in codes
+
+
+def test_integrity_accepts_human_reaffirmation_that_clears_review_overlay(
+    store: TruthStore,
+) -> None:
+    claim = _claim(store, "Reaffirm after review")
+    _confirm(store, claim, at=T1)
+    lifecycle = TruthLifecycle(store)
+    lifecycle.mark_needs_review(
+        claim_id=claim.id,
+        actor=SYSTEM,
+        basis_kind="rule",
+        basis_ref="freshness",
+        at=T2,
+    )
+    gesture = lifecycle.mint_gesture(
+        subject_ref=claim.id,
+        actor=HUMAN,
+        surface="dashboard",
+        kind="reaffirm",
+        displayed_payload_sha256=claim.canonical_sha256,
+        at=T3,
+    )
+    lifecycle.confirm_claim(
+        claim_id=claim.id,
+        gesture_id=gesture.id,
+        actor=HUMAN,
+        expected_context_sha256=None,
+        observed_at=T3,
+        at=T3,
+    )
+
+    assert integrity_findings(store) == ()
+
+
+def test_integrity_enforces_status_actor_basis_gesture_and_surface_laws(
+    store: TruthStore,
+) -> None:
+    review = _claim(store, "Review actor law")
+    _raw_status(
+        store,
+        review,
+        status="needs_review",
+        actor=HUMAN,
+        basis_kind="rule",
+        basis_ref=None,
+        at=T1,
+    )
+
+    expired = _claim(store, "Expiry actor law")
+    _raw_status(
+        store,
+        expired,
+        status="expired",
+        actor=HUMAN,
+        basis_kind="rule",
+        basis_ref=None,
+        at=T1,
+    )
+
+    retracted = _claim(store, "Retraction basis law")
+    _raw_status(
+        store,
+        retracted,
+        status="retracted",
+        actor=SYSTEM,
+        basis_kind="rule",
+        basis_ref="cleanup",
+        at=T1,
+    )
+
+    rejected = _claim(store, "Rejection gesture law")
+    invalid_reject_gesture = GestureRecord(
+        id=new_id(),
+        at=T1,
+        surface="unapproved-surface",
+        actor_ref="user-1",
+        kind="scope",
+        subject_ref=rejected.id,
+        payload_sha256=rejected.canonical_sha256,
+        payload_excerpt=rejected.proposition,
+        context_sha256=None,
+        expires_at=None,
+        consumed_at=T1,
+    )
+    conn = store.connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        store._insert_gesture_locked(conn, invalid_reject_gesture)
+        store._insert_status_event_locked(
+            conn,
+            claim_id=rejected.id,
+            status="rejected",
+            actor=HUMAN,
+            basis_kind="gesture",
+            basis_ref=invalid_reject_gesture.id,
+            note="reject_plain",
+            at=T1,
+        )
+        conn.execute("COMMIT")
+    finally:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        conn.close()
+
+    challenged = _claim(store, "Challenge target")
+    challenger = _claim(store, "Challenge source")
+    _confirm(store, challenged, at=T1)
+    conflict_link = store.add_link(
+        from_claim_id=challenger.id,
+        link_type="conflicts_with",
+        to_kind="claim",
+        to_ref=challenged.id,
+        actor=HUMAN,
+        created_at=T2,
+    )
+    _raw_status(
+        store,
+        challenged,
+        status="challenged",
+        actor=SYSTEM,
+        basis_kind="conflict_link",
+        basis_ref=conflict_link.id,
+        at=T2,
+    )
+
+    predecessor = _claim(store, "Supersession target")
+    successor = _claim(store, "Supersession source")
+    _confirm(store, predecessor, at=T1)
+    supersedes = _raw_link(
+        store,
+        successor,
+        predecessor,
+        reason="refined",
+        at=T1,
+    )
+    _confirm(store, successor, at=T2)
+    _raw_status(
+        store,
+        predecessor,
+        status="superseded",
+        actor=Actor("agent_run", "run-1"),
+        basis_kind="claim_link",
+        basis_ref=supersedes.id,
+        at=T2,
+    )
+
+    codes = {item.code for item in integrity_findings(store)}
+    assert {
+        "invalid_review_overlay_actor",
+        "invalid_review_overlay_basis_ref",
+        "invalid_expiry_basis",
+        "invalid_expiry_basis_ref",
+        "invalid_retraction_basis",
+        "invalid_rejection_gesture_kind",
+        "invalid_rejection_surface",
+        "invalid_challenge_basis",
+        "invalid_superseded_basis",
+    } <= codes
+
+
+def test_integrity_requires_bidirectional_atomic_supersession_pairs(
+    store: TruthStore,
+) -> None:
+    missing_predecessor = _claim(store, "Missing superseded half")
+    missing_successor = _claim(store, "Confirmed successor without pair")
+    _confirm(store, missing_predecessor, at=T1)
+    _raw_link(
+        store,
+        missing_successor,
+        missing_predecessor,
+        reason="refined",
+        at=T1,
+    )
+    _confirm(store, missing_successor, at=T2)
+
+    late_predecessor = _claim(store, "Late superseded half")
+    late_successor = _claim(store, "Earlier successor confirmation")
+    _confirm(store, late_predecessor, at=T1)
+    late_link = _raw_link(
+        store,
+        late_successor,
+        late_predecessor,
+        reason="refined",
+        at=T1,
+    )
+    _confirm(store, late_successor, at=T2)
+    _raw_status(
+        store,
+        late_predecessor,
+        status="superseded",
+        actor=HUMAN,
+        basis_kind="claim_link",
+        basis_ref=late_link.id,
+        at=T3,
+    )
+
+    orphan_predecessor = _claim(store, "Superseded without confirmation")
+    orphan_successor = _claim(store, "Unconfirmed successor")
+    _confirm(store, orphan_predecessor, at=T1)
+    orphan_link = _raw_link(
+        store,
+        orphan_successor,
+        orphan_predecessor,
+        reason="refined",
+        at=T1,
+    )
+    _raw_status(
+        store,
+        orphan_predecessor,
+        status="superseded",
+        actor=HUMAN,
+        basis_kind="claim_link",
+        basis_ref=orphan_link.id,
+        at=T2,
+    )
+
+    codes = {item.code for item in integrity_findings(store)}
+    assert "active_supersession_without_status" in codes
+    assert "supersession_time_mismatch" in codes
+    assert "superseded_before_successor_confirmation" in codes
+    assert "superseded_without_successor" in codes
+
+
+def test_integrity_uses_frozen_supersession_reasons_and_required_intervals(
+    store: TruthStore,
+) -> None:
+    links: dict[str, ClaimLinkRecord] = {}
+    for reason, valid_from, valid_to in (
+        ("source_retracted", None, None),
+        ("preference_changed", "2025-01-01", None),
+        ("correction", None, None),
+        ("expanded_scope", None, None),
+        ("updated", None, None),
+        ("valid_time_closed", None, None),
+    ):
+        predecessor = _claim(store, f"{reason} predecessor")
+        successor = _claim(
+            store,
+            f"{reason} successor",
+            valid_from=valid_from,
+            valid_to=valid_to,
+        )
+        links[reason] = _raw_link(
+            store,
+            successor,
+            predecessor,
+            reason=reason,
+        )
+
+    findings = integrity_findings(store)
+    invalid_reason_refs = {
+        item.subject_ref
+        for item in findings
+        if item.code == "invalid_supersession_reason"
+    }
+    assert invalid_reason_refs == {
+        links["correction"].id,
+        links["expanded_scope"].id,
+    }
+    assert any(
+        item.code == "supersession_missing_successor_valid_from"
+        and item.subject_ref == links["updated"].id
+        for item in findings
+    )
+    assert any(
+        item.code == "supersession_missing_successor_valid_to"
+        and item.subject_ref == links["valid_time_closed"].id
+        for item in findings
+    )
+
+
+def test_integrity_weakest_link_treats_review_overlay_as_unconfirmed(
+    store: TruthStore,
+) -> None:
+    premise = _claim(store, "Premise under review")
+    conclusion = _claim(store, "Derived conclusion")
+    _confirm(store, premise, at=T1)
+    _overlay(store, premise, at=T2, basis_kind="rule")
+    store.add_derivation(
+        claim_id=conclusion.id,
+        method="entailment",
+        premises=[premise.id],
+        actor=HUMAN,
+        created_at=T2,
+    )
+    _confirm(store, conclusion, at=T3)
+
+    assert any(
+        item.code == "confirmed_derivation_has_unconfirmed_premise" and item.subject_ref
+        for item in integrity_findings(store)
+    )
 
 
 def test_integrity_allows_only_fully_bound_reasoned_rejection_replay(
@@ -765,6 +1170,218 @@ def test_integrity_allows_only_fully_bound_reasoned_rejection_replay(
             at=T2,
         )
     assert "gesture_replay" in {item.code for item in integrity_findings(store)}
+
+
+def test_integrity_is_fail_soft_for_malformed_rows_and_checks_producer_trust_ledger(
+    store: TruthStore,
+) -> None:
+    agent_claim = _claim(store, "Raw agent claim")
+    malformed = store.capture_evidence(
+        kind="document",
+        source_locator="file:///malformed.txt",
+        actor=HUMAN,
+        acquisition_method="paste",
+        content="malformed source",
+        created_at=T0,
+    )
+    reviewed_external = store.capture_evidence(
+        kind="web",
+        source_locator="https://example.test/source",
+        actor=HUMAN,
+        acquisition_method="fetch",
+        origin="external",
+        external_reviewed=True,
+        content="reviewed source",
+        created_at=T0,
+    )
+    producer_meta = canonical_json(
+        {
+            "model": "test-model",
+            "harness": "pytest",
+            "surface": "test",
+            "session_id": "session-1",
+        }
+    )
+
+    conn = store.connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("DROP TRIGGER claims_append_only_update")
+        conn.execute("DROP TRIGGER evidence_append_only_update")
+        conn.execute(
+            "UPDATE claims SET created_by_kind = 'agent_run', "
+            "created_by_ref = 'run-bad', meta_json = '{}' WHERE id = ?",
+            (agent_claim.id,),
+        )
+        conn.execute(
+            "UPDATE evidence SET kind = ?, source_locator = ?, "
+            "acquired_by_kind = 'agent_run', acquired_by_ref = 'run-bad', "
+            "meta_json = '{}' WHERE id = ?",
+            (42, 42, malformed.id),
+        )
+        conn.execute(
+            "UPDATE evidence SET acquired_by_kind = 'agent_run', "
+            "acquired_by_ref = 'run-reviewed', meta_json = ? WHERE id = ?",
+            (producer_meta, reviewed_external.id),
+        )
+        conn.execute(
+            "INSERT INTO ledger_records (record_type, record_key) VALUES (?, ?)",
+            ("future_record_type", new_id()),
+        )
+        conn.execute("COMMIT")
+    finally:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        conn.close()
+
+    source_states = source_integrity_states(store)
+    malformed_state = next(
+        item for item in source_states if item.evidence_id == malformed.id
+    )
+    assert malformed_state.state == "invalid_locator"
+
+    findings = integrity_findings(store)
+    codes = {item.code for item in findings}
+    assert {
+        "missing_agent_producer_identity",
+        "human_trust_without_human_origin",
+        "agent_cleared_external_quarantine",
+        "invalid_evidence_kind",
+        "source_invalid_locator",
+        "unknown_ledger_record_type",
+    } <= codes
+
+
+def test_integrity_checks_redaction_gesture_binding_and_freshness(
+    store: TruthStore,
+) -> None:
+    claim = _claim(store, "Redaction integrity target")
+    _confirm(store, claim, at=T1)
+    lifecycle = TruthLifecycle(store)
+    gesture = lifecycle.mint_gesture(
+        subject_ref=claim.id,
+        actor=HUMAN,
+        surface="dashboard",
+        kind="redact",
+        displayed_payload_sha256=claim.canonical_sha256,
+        at=T2,
+    )
+    redaction = TruthRedactor(store, lifecycle=lifecycle).redact(
+        subject_kind="claim",
+        subject_ref=claim.id,
+        actor=HUMAN,
+        reason="privacy",
+        basis_kind="gesture",
+        basis_ref=gesture.id,
+        at=T2,
+    )
+
+    conn = store.connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("DROP TRIGGER gestures_append_only_update")
+        conn.execute("DROP TRIGGER redaction_events_append_only_update")
+        conn.execute("DROP TRIGGER claim_status_events_append_only_update")
+        conn.execute(
+            "UPDATE gestures SET kind = 'scope', consumed_at = ? WHERE id = ?",
+            (T1, gesture.id),
+        )
+        conn.execute(
+            "UPDATE redaction_events SET actor_ref = 'another-user', "
+            "reason = 'unknown-reason' WHERE id = ?",
+            (redaction.event.id,),
+        )
+        conn.execute(
+            "UPDATE claim_status_events SET at = ? WHERE basis_kind = 'redaction' "
+            "AND basis_ref = ?",
+            (T3, redaction.event.id),
+        )
+        conn.execute("COMMIT")
+    finally:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        conn.close()
+
+    codes = {item.code for item in integrity_findings(store)}
+    assert {
+        "invalid_redaction_reason",
+        "redaction_gesture_actor_mismatch",
+        "invalid_redaction_gesture_kind",
+        "redaction_gesture_consumption_mismatch",
+        "status_redaction_time_mismatch",
+        "status_redaction_actor_mismatch",
+        "status_redaction_reason_mismatch",
+    } <= codes
+
+
+def test_integrity_checks_standing_policy_redaction_contract(store: TruthStore) -> None:
+    rejected = _claim(store, "Retained rejection")
+    lifecycle = TruthLifecycle(store)
+    reject_gesture = lifecycle.mint_gesture(
+        subject_ref=rejected.id,
+        actor=HUMAN,
+        surface="dashboard",
+        kind="reject_plain",
+        displayed_payload_sha256=rejected.canonical_sha256,
+        at=T1,
+    )
+    lifecycle.reject_claim(
+        source_claim_id=rejected.id,
+        gesture_id=reject_gesture.id,
+        actor=HUMAN,
+        reason_class="reject_plain",
+        expected_context_sha256=None,
+        observed_at=T1,
+        at=T1,
+    )
+    confirmed = _claim(store, "Ever-confirmed policy target")
+    _confirm(store, confirmed, at=T1)
+
+    conn = store.connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("DROP TRIGGER claims_append_only_update")
+        events = (
+            (new_id(), rejected, "wrong-policy-key"),
+            (
+                new_id(),
+                confirmed,
+                policy_basis_ref(store, "rejected_content"),
+            ),
+        )
+        for event_id, claim, basis_ref in events:
+            conn.execute(
+                "UPDATE claims SET proposition = '[redacted]', "
+                "structured_json = NULL, redacted_at = ? WHERE id = ?",
+                (T2, claim.id),
+            )
+            conn.execute(
+                "INSERT INTO redaction_events "
+                "(id, subject_kind, subject_ref, at, actor_ref, basis_kind, "
+                "basis_ref, reason) VALUES (?, 'claim', ?, ?, ?, 'policy', ?, ?)",
+                (
+                    event_id,
+                    claim.id,
+                    T2,
+                    "truth-policy-test",
+                    basis_ref,
+                    "rejected_content",
+                ),
+            )
+            store._insert_ledger_record_locked(conn, "redaction_event", event_id)
+        conn.execute("COMMIT")
+    finally:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        conn.close()
+
+    codes = {item.code for item in integrity_findings(store)}
+    assert {
+        "invalid_policy_redaction_basis_ref",
+        "undeclared_policy_redaction",
+        "invalid_policy_redaction_status",
+        "policy_redaction_of_confirmed",
+    } <= codes
 
 
 def test_cross_store_premise_resolution_is_fail_soft_and_status_aware(
@@ -866,7 +1483,9 @@ def test_redaction_integrity_accepts_evidence_cascade_and_direct_span_gestures(
         expires_at=None,
         consumed_at=T2,
     )
-    with store.write_transaction() as conn:
+    conn = store.connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
         store._insert_gesture_locked(conn, cascade_gesture)
         store._insert_gesture_locked(conn, direct_gesture)
         conn.execute(
@@ -919,6 +1538,11 @@ def test_redaction_integrity_accepts_evidence_cascade_and_direct_span_gestures(
                 ),
             )
             store._insert_ledger_record_locked(conn, "redaction_event", event_id)
+        conn.execute("COMMIT")
+    finally:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        conn.close()
 
     findings = integrity_findings(store)
     assert {item.code for item in findings} == {"redaction_subject_kind_alias"}
@@ -968,6 +1592,7 @@ def test_redacted_claim_never_appears_as_current(store: TruthStore) -> None:
             actor=HUMAN,
             basis_kind="redaction",
             basis_ref=redaction_id,
+            note="privacy",
             at=T2,
         )
     assert current_claims(store) == ()
