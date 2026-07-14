@@ -23,6 +23,7 @@ from work_buddy.truth.contracts import (
     TERMINAL_STATUSES,
     VALID_ACTOR_KINDS,
     VALID_STATUSES,
+    validate_agent_producer_meta,
 )
 from work_buddy.truth.fingerprints import (
     FingerprintStatus,
@@ -44,8 +45,24 @@ from work_buddy.truth.locators import (
     LocatorError,
     LocatorRegistry,
 )
+from work_buddy.truth.lifecycle import (
+    CONFIRM_GESTURE_KINDS,
+    GESTURE_KINDS,
+    REJECTION_CLASSES,
+    REVIEW_BASIS_KINDS,
+    negated_proposition,
+)
+from work_buddy.truth.redact import (
+    REDACTION_BASIS_KINDS,
+    REDACTION_REASONS,
+    policy_basis_ref,
+)
 from work_buddy.truth.store import (
+    ACQUISITION_METHODS,
+    AUTHORSHIP_KINDS,
+    EVIDENCE_KINDS,
     LINK_TARGETS,
+    SUPERSESSION_REASONS,
     ClaimLinkRecord,
     ClaimRecord,
     EvidenceRecord,
@@ -273,9 +290,9 @@ _CLAIM_COLUMNS = (
     "created_by_ref",
 )
 _CLOSING_AT_SUCCESSOR_START = frozenset({"updated", "preference_changed"})
-_VOIDING_REASONS = frozenset({"corrected", "correction"})
+_VOIDING_REASONS = frozenset({"corrected"})
 _INHERITED_INTERVAL_REASONS = frozenset({"refined", "valid_time_closed"})
-_NON_CLOSING_REASONS = frozenset({"refined", "expanded_scope"})
+_NON_CLOSING_REASONS = frozenset({"refined"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -412,8 +429,7 @@ CrossStoreResolver = Callable[
     [str], PremiseResolution | Mapping[str, Any] | bool | None
 ]
 TargetFingerprintSource = (
-    Mapping[str, str | None]
-    | Callable[[ClaimLinkRecord], str | None]
+    Mapping[str, str | None] | Callable[[ClaimLinkRecord], str | None]
 )
 
 
@@ -607,9 +623,7 @@ def _derive_intervals(
 
     races: list[SuccessorRace] = []
     for predecessor_id, predecessor_edges in sorted(outgoing.items()):
-        successor_ids = tuple(
-            sorted({edge.successor_id for edge in predecessor_edges})
-        )
+        successor_ids = tuple(sorted({edge.successor_id for edge in predecessor_edges}))
         if len(successor_ids) <= 1:
             continue
         issues[predecessor_id].add("single_confirmed_successor_race")
@@ -653,12 +667,8 @@ def _derive_intervals(
         predecessor_group = union.find(predecessor.id)
         if edge.reason in _CLOSING_AT_SUCCESSOR_START:
             if successor.valid_from is None:
-                issues[predecessor.id].add(
-                    "supersession_requires_successor_valid_from"
-                )
-                issues[successor.id].add(
-                    "supersession_requires_successor_valid_from"
-                )
+                issues[predecessor.id].add("supersession_requires_successor_valid_from")
+                issues[successor.id].add("supersession_requires_successor_valid_from")
             else:
                 group_ends[predecessor_group].append(successor.valid_from)
         elif edge.reason in _VOIDING_REASONS:
@@ -710,6 +720,7 @@ def _derive_intervals(
 def _health_for_state(
     claim: ClaimRecord,
     *,
+    belief_at: str | None,
     base_status: str | None,
     needs_review: bool,
     voided: bool,
@@ -720,6 +731,15 @@ def _health_for_state(
         reasons.add("missing_base_status")
     if needs_review:
         reasons.add("active_needs_review_overlay")
+    if claim.redacted_at is not None and belief_at is not None:
+        try:
+            if _time_key(claim.redacted_at, "redacted_at") > _time_key(
+                belief_at,
+                "belief_at",
+            ):
+                reasons.add("content_redacted_after_belief")
+        except InvariantViolation:
+            reasons.add("invalid_redacted_at")
     reason = ",".join(sorted(reasons)) or None
     if claim.redacted_at is not None:
         return "redacted", reason
@@ -767,6 +787,7 @@ def _resolve_claim_states_locked(
         voided = claim.id in voided_claims
         health, reason = _health_for_state(
             claim,
+            belief_at=belief_at,
             base_status=row["base_status"],
             needs_review=needs_review,
             voided=voided,
@@ -847,6 +868,20 @@ def _valid_at(state: ClaimState, valid_at: str) -> bool:
     return True
 
 
+def _redacted_by_belief(state: ClaimState, belief_at: str) -> bool:
+    """Fail closed only when redaction had occurred by the belief boundary."""
+
+    if state.claim.redacted_at is None:
+        return False
+    try:
+        return _time_key(state.claim.redacted_at, "redacted_at") <= _time_key(
+            belief_at,
+            "belief_at",
+        )
+    except InvariantViolation:
+        return True
+
+
 def claims_as_of(
     store: TruthStore,
     *,
@@ -870,7 +905,7 @@ def claims_as_of(
         state
         for state in states
         if state.base_status == "confirmed"
-        and state.claim.redacted_at is None
+        and not _redacted_by_belief(state, cutoff)
         and not state.voided
         and (include_needs_review or not state.needs_review)
         and (scope is None or state.claim.scope == scope)
@@ -1228,7 +1263,9 @@ def record_sweep(
             continue
         seen.add(stripped)
         normalized.append(SweepFindingSpec(*stripped))
-    normalized.sort(key=lambda item: (item.subject_kind, item.subject_ref, item.finding))
+    normalized.sort(
+        key=lambda item: (item.subject_kind, item.subject_ref, item.finding)
+    )
 
     with store.write_transaction(conn) as write_conn:
         existing = write_conn.execute(
@@ -1312,9 +1349,10 @@ def _looks_like_sha256(value: str | None) -> bool:
 
 
 def _locator_scheme_hint(locator: str) -> str | None:
-    if (
-        (len(locator) >= 3 and locator[1:3] in {":\\", ":/"})
-        or locator.startswith(("/", "\\\\"))
+    if not isinstance(locator, str) or not locator.strip():
+        raise LocatorError("source locator must be a nonempty string")
+    if (len(locator) >= 3 and locator[1:3] in {":\\", ":/"}) or locator.startswith(
+        ("/", "\\\\")
     ):
         return "file"
     parsed = urlparse(locator)
@@ -1335,18 +1373,24 @@ def source_integrity_states(
         results: list[SourceIntegrityState] = []
         for row in rows:
             evidence = EvidenceRecord(**dict(row))
-            scheme_hint = _locator_scheme_hint(evidence.source_locator)
-            if evidence.redacted_at is not None:
+            locator_display = (
+                evidence.source_locator
+                if isinstance(evidence.source_locator, str)
+                else repr(evidence.source_locator)
+            )
+            try:
+                scheme_hint = _locator_scheme_hint(evidence.source_locator)
+            except (LocatorError, TypeError, ValueError) as exc:
                 results.append(
                     SourceIntegrityState(
                         evidence_id=evidence.id,
-                        locator=evidence.source_locator,
-                        locator_scheme=scheme_hint,
+                        locator=locator_display,
+                        locator_scheme=None,
                         verifiability_class=None,
                         integrity_recipe={},
                         snapshot_present=False,
-                        state="redacted",
-                        detail=None,
+                        state="invalid_locator",
+                        detail=str(exc),
                     )
                 )
                 continue
@@ -1359,7 +1403,7 @@ def source_integrity_states(
                 results.append(
                     SourceIntegrityState(
                         evidence_id=evidence.id,
-                        locator=evidence.source_locator,
+                        locator=locator_display,
                         locator_scheme=scheme_hint,
                         verifiability_class=None,
                         integrity_recipe={},
@@ -1373,7 +1417,7 @@ def source_integrity_states(
                 results.append(
                     SourceIntegrityState(
                         evidence_id=evidence.id,
-                        locator=evidence.source_locator,
+                        locator=locator_display,
                         locator_scheme=scheme_hint,
                         verifiability_class=None,
                         integrity_recipe={},
@@ -1385,14 +1429,14 @@ def source_integrity_states(
                 continue
 
             byte_error: str | None = None
-            if snapshot_present:
+            if snapshot_present and evidence.redacted_at is None:
                 try:
                     store.read_evidence_bytes(evidence, conn=read_conn)
-                except InvariantViolation as exc:
+                except Exception as exc:  # corrupt SQLite values must stay inspectable
                     byte_error = str(exc)
 
             registry_meta = dict(meta)
-            if not snapshot_present:
+            if not snapshot_present and evidence.redacted_at is None:
                 registry_meta.pop("snapshot_sha256", None)
                 registry_meta.pop("transcript_sha256", None)
             try:
@@ -1400,28 +1444,40 @@ def source_integrity_states(
                     evidence.kind,
                     evidence.source_locator,
                     registry_meta,
-                    evidence.content_sha256 if snapshot_present else None,
+                    (
+                        evidence.content_sha256
+                        if snapshot_present or evidence.redacted_at is not None
+                        else None
+                    ),
                 )
-            except LocatorError as exc:
+            except Exception as exc:  # one malformed raw row cannot abort integrity
                 missing_snapshot = (
                     not snapshot_present
+                    and evidence.redacted_at is None
                     and scheme_hint in {"file", "wb-session"}
                 )
                 results.append(
                     SourceIntegrityState(
                         evidence_id=evidence.id,
-                        locator=evidence.source_locator,
+                        locator=locator_display,
                         locator_scheme=scheme_hint,
                         verifiability_class=None,
                         integrity_recipe={},
                         snapshot_present=snapshot_present,
-                        state=("missing_snapshot" if missing_snapshot else "invalid_locator"),
+                        state=(
+                            "missing_snapshot"
+                            if missing_snapshot
+                            else "invalid_locator"
+                        ),
                         detail=str(exc),
                     )
                 )
                 continue
 
-            if byte_error is not None:
+            if evidence.redacted_at is not None:
+                state = "redacted"
+                detail = None
+            elif byte_error is not None:
                 state = "corrupt_snapshot"
                 detail = byte_error
             elif validation.locator != evidence.source_locator:
@@ -1433,7 +1489,7 @@ def source_integrity_states(
             results.append(
                 SourceIntegrityState(
                     evidence_id=evidence.id,
-                    locator=evidence.source_locator,
+                    locator=locator_display,
                     locator_scheme=validation.locator_scheme,
                     verifiability_class=validation.verifiability_class,
                     integrity_recipe=dict(validation.integrity_recipe),
@@ -1537,18 +1593,6 @@ _BASE_TRANSITIONS: Mapping[str | None, frozenset[str]] = {
     "superseded": frozenset(),
     "retracted": frozenset(),
 }
-_SUPERSESSION_REASONS = frozenset(
-    {
-        "updated",
-        "corrected",
-        "correction",
-        "refined",
-        "expanded_scope",
-        "valid_time_closed",
-        "source_retracted",
-        "preference_changed",
-    }
-)
 
 
 def _coerce_premise_resolution(value: Any) -> PremiseResolution:
@@ -1612,11 +1656,19 @@ def integrity_findings(
             detail=detail,
         )
 
+    def available_at(redacted_at: Any, boundary: datetime | None) -> bool:
+        if redacted_at is None:
+            return True
+        if boundary is None:
+            return False
+        try:
+            return _time_key(redacted_at, "redacted_at") > boundary
+        except InvariantViolation:
+            return False
+
     with _read_connection(store, conn) as read_conn:
         claim_rows = read_conn.execute("SELECT * FROM claims ORDER BY id").fetchall()
-        claims_by_id = {
-            row["id"]: ClaimRecord(**dict(row)) for row in claim_rows
-        }
+        claims_by_id = {row["id"]: ClaimRecord(**dict(row)) for row in claim_rows}
         states, races = _resolve_claim_states_locked(read_conn, belief_at=None)
         states_by_id = {state.claim_id: state for state in states}
 
@@ -1632,10 +1684,26 @@ def integrity_findings(
                 _time_key(claim.created_at, "claim created_at")
             except InvariantViolation as exc:
                 add("invalid_claim_time", "claim", claim.id, str(exc))
-            if claim.meta_json is not None:
-                _, error = _try_json_object(claim.meta_json)
-                if error is not None:
-                    add("invalid_claim_meta", "claim", claim.id, error)
+            claim_meta, claim_meta_error = _try_json_object(claim.meta_json)
+            if claim_meta_error is not None:
+                add("invalid_claim_meta", "claim", claim.id, claim_meta_error)
+            elif claim.created_by_kind == "agent_run":
+                try:
+                    validate_agent_producer_meta(claim_meta)
+                except InvariantViolation as exc:
+                    add(
+                        "missing_agent_producer_identity",
+                        "claim",
+                        claim.id,
+                        str(exc),
+                    )
+            if not _looks_like_sha256(claim.canonical_sha256):
+                add(
+                    "invalid_claim_hash",
+                    "claim",
+                    claim.id,
+                    "canonical_sha256 is not a lowercase SHA-256 digest",
+                )
             structured: Mapping[str, Any] | str | None = claim.structured_json
             if claim.structured_json is not None:
                 try:
@@ -1710,7 +1778,9 @@ def integrity_findings(
                         f"canonical hash {digest} is shared by {sorted(claim_ids)}",
                     )
 
-        gesture_rows = read_conn.execute("SELECT * FROM gestures ORDER BY id").fetchall()
+        gesture_rows = read_conn.execute(
+            "SELECT * FROM gestures ORDER BY id"
+        ).fetchall()
         gestures = {row["id"]: row for row in gesture_rows}
         gesture_uses: dict[str, list[str]] = defaultdict(list)
         status_rows = read_conn.execute(
@@ -1730,7 +1800,6 @@ def integrity_findings(
             if rejection_kind not in {
                 "reject_as_false",
                 "reject_as_preference",
-                "preference_changed",
             }:
                 continue
             rejected = [row for row in events if row["status"] == "rejected"]
@@ -1757,11 +1826,21 @@ def integrity_findings(
             ):
                 continue
             if rejection_kind == "reject_as_false":
+                if (
+                    result.proposition != negated_proposition(source.proposition)
+                    or result.claim_kind != source.claim_kind
+                    or result.scope != source.scope
+                ):
+                    continue
                 has_refutation = read_conn.execute(
-                    "SELECT 1 FROM claim_links WHERE from_claim_id = ? "
-                    "AND link_type = 'refutes' AND to_kind = 'claim' "
-                    "AND to_ref = ? LIMIT 1",
-                    (result.id, source.id),
+                    "SELECT 1 FROM claim_links AS l WHERE l.from_claim_id = ? "
+                    "AND l.link_type = 'refutes' AND l.to_kind = 'claim' "
+                    "AND l.to_ref = ? "
+                    "AND julianday(l.created_at) <= julianday(?) "
+                    "AND NOT EXISTS (SELECT 1 FROM link_retractions AS r "
+                    "WHERE r.link_id = l.id "
+                    "AND julianday(r.at) <= julianday(?)) LIMIT 1",
+                    (result.id, source.id, source_event["at"], source_event["at"]),
                 ).fetchone()
                 if has_refutation is None:
                     continue
@@ -1770,6 +1849,7 @@ def integrity_findings(
             reasoned_rejection_sources.add(source_event["id"])
             reasoned_rejection_gestures.add(gesture_id)
         previous_status: dict[str, str | None] = defaultdict(lambda: None)
+        active_review_overlay: dict[str, bool] = defaultdict(bool)
         previous_event_time: dict[str, datetime] = {}
         for row in status_rows:
             event_id = row["id"]
@@ -1825,12 +1905,29 @@ def integrity_findings(
                         pass
 
             if status == "needs_review":
-                if row["basis_kind"] not in {"rule", "sweep", "conflict"}:
+                if row["actor_kind"] != "system":
+                    add(
+                        "invalid_review_overlay_actor",
+                        "status_event",
+                        event_id,
+                        "needs_review overlays require a system actor",
+                    )
+                if row["basis_kind"] not in REVIEW_BASIS_KINDS:
                     add(
                         "invalid_review_overlay_basis",
                         "status_event",
                         event_id,
                         "needs_review overlays require rule, sweep, or conflict basis",
+                    )
+                if (
+                    not isinstance(row["basis_ref"], str)
+                    or not row["basis_ref"].strip()
+                ):
+                    add(
+                        "invalid_review_overlay_basis_ref",
+                        "status_event",
+                        event_id,
+                        "needs_review overlays require a nonempty basis_ref",
                     )
                 if previous_status[claim_id] in TERMINAL_STATUSES:
                     add(
@@ -1839,10 +1936,17 @@ def integrity_findings(
                         event_id,
                         "needs_review overlay follows a terminal base status",
                     )
+                active_review_overlay[claim_id] = True
             elif status in VALID_STATUSES:
                 prior = previous_status[claim_id]
                 allowed = _BASE_TRANSITIONS.get(prior, frozenset())
-                if status not in allowed:
+                clears_overlay = (
+                    active_review_overlay[claim_id]
+                    and status == prior
+                    and row["actor_kind"] == "human"
+                    and row["basis_kind"] == "gesture"
+                )
+                if status not in allowed and not clears_overlay:
                     add(
                         "invalid_status_transition",
                         "status_event",
@@ -1850,7 +1954,18 @@ def integrity_findings(
                         f"transition {prior!r} -> {status!r} is not allowed",
                     )
                 previous_status[claim_id] = status
+                if row["actor_kind"] == "human" and row["basis_kind"] == "gesture":
+                    active_review_overlay[claim_id] = False
 
+            if status == "proposed" and (
+                row["basis_kind"] != "rule" or row["basis_ref"] != claim_id
+            ):
+                add(
+                    "invalid_proposal_basis",
+                    "status_event",
+                    event_id,
+                    "proposed status requires rule basis bound to its claim",
+                )
             if status == "confirmed" and (
                 row["actor_kind"] != "human" or row["basis_kind"] != "gesture"
             ):
@@ -1859,6 +1974,64 @@ def integrity_findings(
                     "status_event",
                     event_id,
                     "confirmed status requires a human actor and gesture basis",
+                )
+            if status == "rejected" and (
+                row["actor_kind"] != "human" or row["basis_kind"] != "gesture"
+            ):
+                add(
+                    "rejection_without_human_gesture",
+                    "status_event",
+                    event_id,
+                    "rejected status requires a human actor and gesture basis",
+                )
+            if status == "expired" and (
+                row["actor_kind"] != "system" or row["basis_kind"] != "rule"
+            ):
+                add(
+                    "invalid_expiry_basis",
+                    "status_event",
+                    event_id,
+                    "expired status requires a system actor and rule basis",
+                )
+            if status == "expired" and (
+                not isinstance(row["basis_ref"], str) or not row["basis_ref"].strip()
+            ):
+                add(
+                    "invalid_expiry_basis_ref",
+                    "status_event",
+                    event_id,
+                    "expired status requires a nonempty rule basis_ref",
+                )
+            if status == "challenged" and (
+                row["actor_kind"] == "system"
+                or row["basis_kind"] != "conflict_link"
+                or not row["basis_ref"]
+            ):
+                add(
+                    "invalid_challenge_basis",
+                    "status_event",
+                    event_id,
+                    "challenged status requires a human or agent conflict_link basis",
+                )
+            if status == "superseded" and (
+                row["actor_kind"] != "human"
+                or row["basis_kind"] != "claim_link"
+                or not row["basis_ref"]
+            ):
+                add(
+                    "invalid_superseded_basis",
+                    "status_event",
+                    event_id,
+                    "superseded status requires a human claim_link basis",
+                )
+            if status == "retracted" and (
+                row["basis_kind"] != "redaction" or not row["basis_ref"]
+            ):
+                add(
+                    "invalid_retraction_basis",
+                    "status_event",
+                    event_id,
+                    "retracted status requires a redaction-event basis",
                 )
             if row["basis_kind"] == "gesture":
                 gesture_id = row["basis_ref"]
@@ -1881,6 +2054,9 @@ def integrity_findings(
                     )
                     continue
                 is_reasoned_source = event_id in reasoned_rejection_sources
+                is_reasoned_result = (
+                    status == "confirmed" and gesture_id in reasoned_rejection_gestures
+                )
                 if gesture["subject_ref"] != claim_id and not is_reasoned_source:
                     add(
                         "gesture_subject_mismatch",
@@ -1894,6 +2070,102 @@ def integrity_findings(
                         "status_event",
                         event_id,
                         "gesture actor does not match the transition actor",
+                    )
+                if (
+                    status == "confirmed"
+                    and not is_reasoned_result
+                    and gesture["kind"]
+                    not in CONFIRM_GESTURE_KINDS | {"confirm_quarantined_support"}
+                ):
+                    add(
+                        "invalid_confirmation_gesture_kind",
+                        "status_event",
+                        event_id,
+                        f"gesture kind {gesture['kind']!r} cannot confirm a claim",
+                    )
+                if status == "confirmed" and gesture["surface"] not in (
+                    store.profile.gate.confirmation_surfaces
+                ):
+                    add(
+                        "invalid_confirmation_surface",
+                        "status_event",
+                        event_id,
+                        f"surface {gesture['surface']!r} is not allowed by the profile",
+                    )
+                if status == "confirmed":
+                    support_rows = read_conn.execute(
+                        "SELECT l.id AS link_id, s.id AS span_id, "
+                        "s.redacted_at AS span_redacted_at, e.id AS evidence_id, "
+                        "e.redacted_at AS evidence_redacted_at, e.trust_class, "
+                        "e.derived_from_store FROM claim_links AS l "
+                        "LEFT JOIN evidence_spans AS s ON s.id = l.to_ref "
+                        "LEFT JOIN evidence AS e ON e.id = s.evidence_id "
+                        "WHERE l.from_claim_id = ? AND l.link_type = 'supports_span' "
+                        "AND l.to_kind = 'evidence_span' "
+                        "AND julianday(l.created_at) <= julianday(?) "
+                        "AND NOT EXISTS (SELECT 1 FROM link_retractions AS r "
+                        "WHERE r.link_id = l.id "
+                        "AND julianday(r.at) <= julianday(?))",
+                        (claim_id, row["at"], row["at"]),
+                    ).fetchall()
+                    usable_support = [
+                        support
+                        for support in support_rows
+                        if support["span_id"] is not None
+                        and support["evidence_id"] is not None
+                        and available_at(support["span_redacted_at"], event_time)
+                        and available_at(support["evidence_redacted_at"], event_time)
+                        and support["derived_from_store"] is None
+                    ]
+                    if support_rows and not usable_support:
+                        add(
+                            "confirmation_without_usable_support",
+                            "status_event",
+                            event_id,
+                            "claim support is entirely missing, redacted, or store-derived",
+                        )
+                    quarantined_only = bool(usable_support) and all(
+                        support["trust_class"] == "external_quarantined"
+                        for support in usable_support
+                    )
+                    if (
+                        quarantined_only
+                        and gesture["kind"] != "confirm_quarantined_support"
+                    ):
+                        add(
+                            "quarantined_confirmation_without_override",
+                            "status_event",
+                            event_id,
+                            "quarantined-only support requires an explicit override gesture",
+                        )
+                    if (
+                        not quarantined_only
+                        and gesture["kind"] == "confirm_quarantined_support"
+                    ):
+                        add(
+                            "unnecessary_quarantine_override",
+                            "status_event",
+                            event_id,
+                            "quarantine override gesture has no quarantined-only support",
+                        )
+                if status == "rejected" and (
+                    gesture["kind"] not in REJECTION_CLASSES
+                    or row["note"] != gesture["kind"]
+                ):
+                    add(
+                        "invalid_rejection_gesture_kind",
+                        "status_event",
+                        event_id,
+                        "rejected status note and gesture kind must name the same rejection class",
+                    )
+                if status == "rejected" and gesture["surface"] not in (
+                    store.profile.gate.confirmation_surfaces
+                ):
+                    add(
+                        "invalid_rejection_surface",
+                        "status_event",
+                        event_id,
+                        f"surface {gesture['surface']!r} is not allowed by the profile",
                     )
                 if (
                     claim is not None
@@ -1937,17 +2209,23 @@ def integrity_findings(
                             )
                     except InvariantViolation as exc:
                         add("invalid_gesture_time", "gesture", gesture_id, str(exc))
-        for gesture_id, event_ids in gesture_uses.items():
-            if len(event_ids) > 1 and gesture_id not in reasoned_rejection_gestures:
-                add(
-                    "gesture_replay",
-                    "gesture",
-                    gesture_id,
-                    f"gesture is referenced by status events {sorted(event_ids)}",
-                )
-
         for row in gesture_rows:
             gesture_id = row["id"]
+            if row["kind"] not in GESTURE_KINDS:
+                add(
+                    "invalid_gesture_kind",
+                    "gesture",
+                    gesture_id,
+                    f"unsupported gesture kind {row['kind']!r}",
+                )
+            for column in ("surface", "actor_ref", "payload_excerpt"):
+                if not isinstance(row[column], str) or not row[column].strip():
+                    add(
+                        f"invalid_gesture_{column}",
+                        "gesture",
+                        gesture_id,
+                        f"{column} must be a nonempty string",
+                    )
             subject_ref = row["subject_ref"]
             subject_matches: list[tuple[str, str]] = []
             claim_subject = claims_by_id.get(subject_ref)
@@ -2007,9 +2285,7 @@ def integrity_findings(
                 if row[column] is None:
                     continue
                 try:
-                    parsed_times[column] = _time_key(
-                        row[column], f"gesture {column}"
-                    )
+                    parsed_times[column] = _time_key(row[column], f"gesture {column}")
                 except InvariantViolation as exc:
                     add("invalid_gesture_time", "gesture", gesture_id, str(exc))
             if (
@@ -2023,20 +2299,157 @@ def integrity_findings(
                     gesture_id,
                     "consumed_at precedes gesture at",
                 )
+            if (
+                "expires_at" in parsed_times
+                and "at" in parsed_times
+                and parsed_times["expires_at"] <= parsed_times["at"]
+            ):
+                add(
+                    "gesture_expiry_not_after_mint",
+                    "gesture",
+                    gesture_id,
+                    "expires_at must be later than gesture at",
+                )
 
-        link_rows = read_conn.execute("SELECT * FROM claim_links ORDER BY id").fetchall()
-        links_by_id = {
-            row["id"]: ClaimLinkRecord(**dict(row)) for row in link_rows
-        }
+        link_rows = read_conn.execute(
+            "SELECT * FROM claim_links ORDER BY id"
+        ).fetchall()
+        links_by_id = {row["id"]: ClaimLinkRecord(**dict(row)) for row in link_rows}
         span_rows = read_conn.execute(
             "SELECT * FROM evidence_spans ORDER BY id"
         ).fetchall()
         spans_by_id = {row["id"]: row for row in span_rows}
-        evidence_rows = read_conn.execute("SELECT * FROM evidence ORDER BY id").fetchall()
+        evidence_rows = read_conn.execute(
+            "SELECT * FROM evidence ORDER BY id"
+        ).fetchall()
         evidence_by_id = {row["id"]: row for row in evidence_rows}
         retraction_rows = read_conn.execute(
             "SELECT * FROM link_retractions ORDER BY link_id"
         ).fetchall()
+        retractions_by_link = {row["link_id"]: row for row in retraction_rows}
+
+        def link_active_at(link: sqlite3.Row | ClaimLinkRecord, at: str) -> bool:
+            try:
+                created = (
+                    _time_key(link["created_at"], "link created_at")
+                    if isinstance(link, sqlite3.Row)
+                    else _time_key(link.created_at, "link created_at")
+                )
+                boundary = _time_key(at, "status event at")
+                link_id = link["id"] if isinstance(link, sqlite3.Row) else link.id
+                retraction = retractions_by_link.get(link_id)
+                return created <= boundary and (
+                    retraction is None
+                    or _time_key(retraction["at"], "link retraction at") > boundary
+                )
+            except InvariantViolation:
+                return False
+
+        confirmed_events_by_claim: dict[str, list[sqlite3.Row]] = defaultdict(list)
+        for event in status_rows:
+            if event["status"] == "confirmed":
+                confirmed_events_by_claim[event["claim_id"]].append(event)
+
+        def confirmation_precedes_status(
+            confirmation: sqlite3.Row,
+            status_event: sqlite3.Row,
+        ) -> bool:
+            try:
+                confirmed_at = _time_key(confirmation["at"], "confirmation at")
+                transition_at = _time_key(status_event["at"], "status event at")
+            except InvariantViolation:
+                return False
+            return confirmed_at < transition_at or (
+                confirmed_at == transition_at
+                and int(confirmation["seq"]) < int(status_event["seq"])
+            )
+
+        def confirmation_matches_supersession(
+            confirmation: sqlite3.Row,
+            status_event: sqlite3.Row,
+            link: ClaimLinkRecord,
+        ) -> bool:
+            """Require the atomic pair's transaction timestamps to agree exactly."""
+
+            try:
+                confirmed_at = _time_key(confirmation["at"], "confirmation at")
+                transition_at = _time_key(status_event["at"], "status event at")
+            except InvariantViolation:
+                return False
+            return (
+                confirmed_at == transition_at
+                and int(confirmation["seq"]) < int(status_event["seq"])
+                and link_active_at(link, confirmation["at"])
+            )
+
+        for event in status_rows:
+            if event["status"] not in {"challenged", "superseded"}:
+                continue
+            basis = links_by_id.get(event["basis_ref"])
+            if event["status"] == "challenged":
+                if (
+                    basis is None
+                    or basis.link_type != "conflicts_with"
+                    or basis.to_kind != "claim"
+                    or basis.to_ref != event["claim_id"]
+                    or not link_active_at(basis, event["at"])
+                ):
+                    add(
+                        "invalid_challenge_link",
+                        "status_event",
+                        event["id"],
+                        "challenge basis is not an active conflict link targeting the claim",
+                    )
+                continue
+            if (
+                basis is None
+                or basis.link_type != "supersedes"
+                or basis.to_kind != "claim"
+                or basis.to_ref != event["claim_id"]
+                or not link_active_at(basis, event["at"])
+            ):
+                add(
+                    "invalid_superseded_link",
+                    "status_event",
+                    event["id"],
+                    "superseded basis is not an active supersedes link targeting the claim",
+                )
+                continue
+            confirmations = confirmed_events_by_claim.get(basis.from_claim_id, [])
+            preceding = [
+                item
+                for item in confirmations
+                if confirmation_precedes_status(item, event)
+            ]
+            matching = [
+                item
+                for item in preceding
+                if confirmation_matches_supersession(item, event, basis)
+            ]
+            if not preceding:
+                add(
+                    "superseded_before_successor_confirmation",
+                    "status_event",
+                    event["id"],
+                    "predecessor was superseded before its successor was confirmed",
+                )
+            elif not matching:
+                add(
+                    "supersession_time_mismatch",
+                    "status_event",
+                    event["id"],
+                    "predecessor supersession must share the successor confirmation timestamp",
+                )
+            elif (
+                event["actor_ref"] != matching[-1]["actor_ref"]
+                or event["actor_kind"] != matching[-1]["actor_kind"]
+            ):
+                add(
+                    "supersession_actor_mismatch",
+                    "status_event",
+                    event["id"],
+                    "predecessor and successor confirmation actors do not match",
+                )
         for row in link_rows:
             link_id = row["id"]
             link_type = row["link_type"]
@@ -2078,12 +2491,35 @@ def integrity_findings(
                 add("invalid_link_role", "claim_link", link_id, role_error)
             if link_type == "supersedes":
                 reason = role.get("supersession_reason")
-                if reason not in _SUPERSESSION_REASONS:
+                if reason not in SUPERSESSION_REASONS:
                     add(
                         "invalid_supersession_reason",
                         "claim_link",
                         link_id,
                         f"unsupported supersession_reason {reason!r}",
+                    )
+                successor = claims_by_id.get(row["from_claim_id"])
+                if (
+                    reason in _CLOSING_AT_SUCCESSOR_START
+                    and successor is not None
+                    and successor.valid_from is None
+                ):
+                    add(
+                        "supersession_missing_successor_valid_from",
+                        "claim_link",
+                        link_id,
+                        f"{reason} supersession requires successor valid_from",
+                    )
+                if (
+                    reason == "valid_time_closed"
+                    and successor is not None
+                    and successor.valid_to is None
+                ):
+                    add(
+                        "supersession_missing_successor_valid_to",
+                        "claim_link",
+                        link_id,
+                        "valid_time_closed supersession requires successor valid_to",
                     )
             if row["to_kind"] == "claim":
                 if row["to_ref"] not in claims_by_id:
@@ -2120,9 +2556,9 @@ def integrity_findings(
                             link_id,
                             "support link targets redacted evidence",
                         )
-            elif row["to_kind"] == "external_uri" and not urlparse(
-                row["to_ref"]
-            ).scheme:
+            elif (
+                row["to_kind"] == "external_uri" and not urlparse(row["to_ref"]).scheme
+            ):
                 add(
                     "invalid_external_uri",
                     "claim_link",
@@ -2211,6 +2647,21 @@ def integrity_findings(
             )
         active_edges = _active_supersession_edges(read_conn, belief_at=None)
         predecessors_with_successors = {edge.predecessor_id for edge in active_edges}
+        superseded_events_by_link = {
+            (row["claim_id"], row["basis_ref"]): row
+            for row in status_rows
+            if row["status"] == "superseded" and row["basis_kind"] == "claim_link"
+        }
+        for edge in active_edges:
+            state = states_by_id.get(edge.predecessor_id)
+            event = superseded_events_by_link.get((edge.predecessor_id, edge.link.id))
+            if state is None or state.base_status != "superseded" or event is None:
+                add(
+                    "active_supersession_without_status",
+                    "claim_link",
+                    edge.link.id,
+                    "confirmed supersession has no matching predecessor superseded event",
+                )
         for state in states:
             if (
                 state.base_status == "superseded"
@@ -2221,6 +2672,58 @@ def integrity_findings(
                     "claim",
                     state.claim_id,
                     "superseded status has no active confirmed successor link",
+                )
+
+        current_race_predecessors = {race.predecessor_id for race in races}
+        activation_periods: dict[
+            str,
+            list[tuple[str, datetime, datetime | None, str]],
+        ] = defaultdict(list)
+        for row in link_rows:
+            if row["link_type"] != "supersedes" or row["to_kind"] != "claim":
+                continue
+            confirmations = confirmed_events_by_claim.get(row["from_claim_id"], [])
+            if not confirmations:
+                continue
+            try:
+                start = max(
+                    _time_key(row["created_at"], "link created_at"),
+                    _time_key(confirmations[0]["at"], "confirmation at"),
+                )
+                retraction = retractions_by_link.get(row["id"])
+                end = (
+                    None
+                    if retraction is None
+                    else _time_key(retraction["at"], "link retraction at")
+                )
+            except InvariantViolation:
+                continue
+            if end is not None and end <= start:
+                continue
+            activation_periods[row["to_ref"]].append(
+                (row["from_claim_id"], start, end, row["id"])
+            )
+        for predecessor_id, periods in activation_periods.items():
+            if predecessor_id in current_race_predecessors:
+                continue
+            overlapping: set[str] = set()
+            for index, left in enumerate(periods):
+                for right in periods[index + 1 :]:
+                    if left[0] == right[0]:
+                        continue
+                    left_end = left[2]
+                    right_end = right[2]
+                    if (left_end is None or right[1] < left_end) and (
+                        right_end is None or left[1] < right_end
+                    ):
+                        overlapping.update((left[0], right[0]))
+            if overlapping:
+                add(
+                    "single_confirmed_successor_race",
+                    "claim",
+                    predecessor_id,
+                    "historically overlapping confirmed successors are "
+                    f"{sorted(overlapping)}",
                 )
 
         derivation_rows = read_conn.execute(
@@ -2261,7 +2764,7 @@ def integrity_findings(
                     premise_state = states_by_id.get(premise_ref)
                     premise_exists = premise_state is not None
                     premise_status = (
-                        premise_state.base_status if premise_state is not None else None
+                        premise_state.status if premise_state is not None else None
                     )
                     if not premise_exists:
                         add(
@@ -2293,9 +2796,7 @@ def integrity_findings(
                         premise_state = states_by_id.get(parsed.record_id)
                         premise_exists = premise_state is not None
                         premise_status = (
-                            premise_state.base_status
-                            if premise_state is not None
-                            else None
+                            premise_state.status if premise_state is not None else None
                         )
                         if not premise_exists:
                             add(
@@ -2388,6 +2889,59 @@ def integrity_findings(
                     state.detail or state.state,
                 )
         for row in evidence_rows:
+            evidence_id = row["id"]
+            if row["kind"] not in EVIDENCE_KINDS:
+                add(
+                    "invalid_evidence_kind",
+                    "evidence",
+                    evidence_id,
+                    f"unknown evidence kind {row['kind']!r}",
+                )
+            if row["acquisition_method"] not in ACQUISITION_METHODS:
+                add(
+                    "invalid_acquisition_method",
+                    "evidence",
+                    evidence_id,
+                    f"unknown acquisition_method {row['acquisition_method']!r}",
+                )
+            if row["trust_class"] not in AUTHORSHIP_KINDS:
+                add(
+                    "invalid_trust_class",
+                    "evidence",
+                    evidence_id,
+                    f"unknown trust_class {row['trust_class']!r}",
+                )
+            if (
+                row["trust_class"] in {"user_authored", "user_curated"}
+                and row["acquired_by_kind"] != "human"
+            ):
+                add(
+                    "human_trust_without_human_origin",
+                    "evidence",
+                    evidence_id,
+                    f"{row['trust_class']} evidence requires a human acquisition actor",
+                )
+            if (
+                row["trust_class"] == "external"
+                and row["acquired_by_kind"] == "agent_run"
+            ):
+                add(
+                    "agent_cleared_external_quarantine",
+                    "evidence",
+                    evidence_id,
+                    "agent acquisitions cannot assign reviewed external trust",
+                )
+            evidence_meta, evidence_meta_error = _try_json_object(row["meta_json"])
+            if evidence_meta_error is None and row["acquired_by_kind"] == "agent_run":
+                try:
+                    validate_agent_producer_meta(evidence_meta)
+                except InvariantViolation as exc:
+                    add(
+                        "missing_agent_producer_identity",
+                        "evidence",
+                        evidence_id,
+                        str(exc),
+                    )
             if row["content"] is not None and row["content_path"] is not None:
                 add(
                     "evidence_has_two_payloads",
@@ -2425,7 +2979,8 @@ def integrity_findings(
                 add("invalid_evidence_time", "evidence", row["id"], str(exc))
         for row in span_rows:
             span_id = row["id"]
-            if row["evidence_id"] not in evidence_by_id:
+            parent_evidence = evidence_by_id.get(row["evidence_id"])
+            if parent_evidence is None:
                 add(
                     "dangling_span_evidence",
                     "evidence_span",
@@ -2443,9 +2998,10 @@ def integrity_findings(
                     span_id,
                     "span_sha256 is not a lowercase SHA-256 digest",
                 )
-            elif row["quote_exact"] is not None and sha256_text(
-                row["quote_exact"]
-            ) != row["span_sha256"]:
+            elif (
+                row["quote_exact"] is not None
+                and sha256_text(row["quote_exact"]) != row["span_sha256"]
+            ):
                 add(
                     "span_hash_mismatch",
                     "evidence_span",
@@ -2473,11 +3029,60 @@ def integrity_findings(
                     span_id,
                     f"unknown author_kind {row['author_kind']!r}",
                 )
+            if parent_evidence is not None:
+                trust_class = parent_evidence["trust_class"]
+                expected_author = {
+                    "user_authored": "human",
+                    "agent_authored": "agent_run",
+                }.get(trust_class)
+                if trust_class == "mixed" and row["author_kind"] is None:
+                    add(
+                        "mixed_span_missing_authorship",
+                        "evidence_span",
+                        span_id,
+                        "mixed evidence requires explicit span author_kind",
+                    )
+                if (
+                    expected_author is not None
+                    and row["author_kind"] != expected_author
+                ):
+                    add(
+                        "span_authorship_mismatch",
+                        "evidence_span",
+                        span_id,
+                        f"{trust_class} evidence requires {expected_author} span authorship",
+                    )
+            if (
+                row["author_kind"] == "agent_run"
+                and not str(row["author_ref"] or "").strip()
+            ):
+                add(
+                    "missing_span_author_ref",
+                    "evidence_span",
+                    span_id,
+                    "agent_run span authorship requires author_ref",
+                )
+            if row["author_kind"] == "unknown" and row["author_ref"] is not None:
+                add(
+                    "unknown_span_has_author_ref",
+                    "evidence_span",
+                    span_id,
+                    "unknown span authorship cannot carry author_ref",
+                )
+            if row["created_by_kind"] == "agent_run" and row["author_kind"] == "human":
+                add(
+                    "agent_asserted_human_span",
+                    "evidence_span",
+                    span_id,
+                    "agent callers cannot assert human span authorship",
+                )
 
         redaction_rows = read_conn.execute(
             "SELECT * FROM redaction_events ORDER BY id"
         ).fetchall()
-        redactions_by_subject: dict[tuple[str, str], list[sqlite3.Row]] = defaultdict(list)
+        redactions_by_subject: dict[tuple[str, str], list[sqlite3.Row]] = defaultdict(
+            list
+        )
         redactable: Mapping[str, Mapping[str, sqlite3.Row | ClaimRecord]] = {
             "claim": claims_by_id,
             "evidence": evidence_by_id,
@@ -2491,10 +3096,38 @@ def integrity_findings(
                 row["reason"],
             )
             for row in redaction_rows
-            if row["subject_kind"] == "evidence"
-            and row["basis_kind"] == "gesture"
+            if row["subject_kind"] == "evidence" and row["basis_kind"] == "gesture"
         }
+        redaction_gesture_uses: dict[str, list[str]] = defaultdict(list)
         for row in redaction_rows:
+            if row["basis_kind"] not in REDACTION_BASIS_KINDS:
+                add(
+                    "invalid_redaction_basis",
+                    "redaction_event",
+                    row["id"],
+                    f"unsupported redaction basis {row['basis_kind']!r}",
+                )
+            if row["reason"] not in REDACTION_REASONS:
+                add(
+                    "invalid_redaction_reason",
+                    "redaction_event",
+                    row["id"],
+                    f"unsupported redaction reason {row['reason']!r}",
+                )
+            if not isinstance(row["basis_ref"], str) or not row["basis_ref"].strip():
+                add(
+                    "invalid_redaction_basis_ref",
+                    "redaction_event",
+                    row["id"],
+                    "redaction basis_ref must be nonempty",
+                )
+            if not isinstance(row["actor_ref"], str) or not row["actor_ref"].strip():
+                add(
+                    "invalid_redaction_actor_ref",
+                    "redaction_event",
+                    row["id"],
+                    "redaction actor_ref must be nonempty",
+                )
             raw_subject_kind = row["subject_kind"]
             subject_kind = (
                 "span" if raw_subject_kind == "evidence_span" else raw_subject_kind
@@ -2530,6 +3163,26 @@ def integrity_findings(
                     f"{raw_subject_kind} {row['subject_ref']} does not exist",
                 )
                 continue
+            subject_created_at = (
+                subject.created_at
+                if isinstance(subject, ClaimRecord)
+                else subject["created_at"]
+            )
+            redaction_time: datetime | None = None
+            try:
+                redaction_time = _time_key(row["at"], "redaction at")
+                if redaction_time < _time_key(
+                    subject_created_at,
+                    "subject created_at",
+                ):
+                    add(
+                        "redaction_before_subject",
+                        "redaction_event",
+                        row["id"],
+                        "redaction predates its subject",
+                    )
+            except InvariantViolation as exc:
+                add("invalid_redaction_time", "redaction_event", row["id"], str(exc))
             redacted_at = (
                 subject.redacted_at
                 if isinstance(subject, ClaimRecord)
@@ -2560,10 +3213,11 @@ def integrity_findings(
                     )
                 else:
                     gesture_matches = gesture["subject_ref"] == row["subject_ref"]
+                    cascade_match = False
                     if not gesture_matches and subject_kind == "span":
                         span = spans_by_id.get(row["subject_ref"])
                         if span is not None:
-                            gesture_matches = (
+                            cascade_match = (
                                 gesture["subject_ref"] == span["evidence_id"]
                                 and (
                                     span["evidence_id"],
@@ -2573,12 +3227,27 @@ def integrity_findings(
                                 )
                                 in evidence_cascade_redactions
                             )
+                            gesture_matches = cascade_match
                     if not gesture_matches:
                         add(
                             "redaction_gesture_subject_mismatch",
                             "redaction_event",
                             row["id"],
                             "redaction gesture targets another subject",
+                        )
+                    if gesture["actor_ref"] != row["actor_ref"]:
+                        add(
+                            "redaction_gesture_actor_mismatch",
+                            "redaction_event",
+                            row["id"],
+                            "redaction actor does not match the gesture actor",
+                        )
+                    if gesture["kind"] != "redact":
+                        add(
+                            "invalid_redaction_gesture_kind",
+                            "redaction_event",
+                            row["id"],
+                            f"gesture kind {gesture['kind']!r} cannot redact content",
                         )
                     if gesture["consumed_at"] is None:
                         add(
@@ -2587,14 +3256,176 @@ def integrity_findings(
                             row["id"],
                             "redaction gesture was not consumed",
                         )
-            try:
-                _time_key(row["at"], "redaction at")
-            except InvariantViolation as exc:
-                add("invalid_redaction_time", "redaction_event", row["id"], str(exc))
+                    if redaction_time is not None:
+                        try:
+                            decision_time = _time_key(gesture["at"], "gesture at")
+                            if redaction_time < decision_time:
+                                add(
+                                    "redaction_before_gesture",
+                                    "redaction_event",
+                                    row["id"],
+                                    "redaction predates its gesture",
+                                )
+                            if gesture[
+                                "expires_at"
+                            ] is not None and redaction_time >= _time_key(
+                                gesture["expires_at"],
+                                "gesture expires_at",
+                            ):
+                                add(
+                                    "expired_redaction_gesture",
+                                    "redaction_event",
+                                    row["id"],
+                                    "redaction gesture was expired at use time",
+                                )
+                            if (
+                                gesture["consumed_at"] is not None
+                                and _time_key(
+                                    gesture["consumed_at"],
+                                    "gesture consumed_at",
+                                )
+                                != redaction_time
+                            ):
+                                add(
+                                    "redaction_gesture_consumption_mismatch",
+                                    "redaction_event",
+                                    row["id"],
+                                    "gesture consumed_at must equal the redaction time",
+                                )
+                        except InvariantViolation as exc:
+                            add(
+                                "invalid_gesture_time",
+                                "gesture",
+                                row["basis_ref"],
+                                str(exc),
+                            )
+                    if gesture_matches and not cascade_match:
+                        redaction_gesture_uses[row["basis_ref"]].append(row["id"])
+            elif row["basis_kind"] == "policy":
+                if subject_kind != "claim":
+                    add(
+                        "policy_redaction_of_non_claim",
+                        "redaction_event",
+                        row["id"],
+                        "standing profile policy can redact claim content only",
+                    )
+                    continue
+                expected_status = {
+                    "rejected_content": "rejected",
+                    "expired_content": "expired",
+                }.get(row["reason"])
+                if expected_status is None:
+                    add(
+                        "invalid_policy_redaction_reason",
+                        "redaction_event",
+                        row["id"],
+                        "standing policy supports rejected_content or expired_content only",
+                    )
+                else:
+                    try:
+                        expected_basis = policy_basis_ref(store, row["reason"])
+                    except InvariantViolation:
+                        expected_basis = None
+                    if row["basis_ref"] != expected_basis:
+                        add(
+                            "invalid_policy_redaction_basis_ref",
+                            "redaction_event",
+                            row["id"],
+                            f"policy basis must be exactly {expected_basis!r}",
+                        )
+                    prior_base_events: list[sqlite3.Row] = []
+                    for status_event in status_rows:
+                        if (
+                            status_event["claim_id"] != row["subject_ref"]
+                            or status_event["status"] == "needs_review"
+                            or (
+                                status_event["basis_kind"] == "redaction"
+                                and status_event["basis_ref"] == row["id"]
+                            )
+                        ):
+                            continue
+                        try:
+                            if _time_key(
+                                status_event["at"],
+                                "status event at",
+                            ) <= _time_key(row["at"], "redaction at"):
+                                prior_base_events.append(status_event)
+                        except InvariantViolation:
+                            continue
+                    prior_status = (
+                        prior_base_events[-1]["status"] if prior_base_events else None
+                    )
+                    if prior_status != expected_status:
+                        add(
+                            "invalid_policy_redaction_status",
+                            "redaction_event",
+                            row["id"],
+                            f"{row['reason']} policy requires prior base status "
+                            f"{expected_status!r}, found {prior_status!r}",
+                        )
+                    if any(
+                        event["claim_id"] == row["subject_ref"]
+                        and event["status"] == "confirmed"
+                        for event in status_rows
+                    ):
+                        add(
+                            "policy_redaction_of_confirmed",
+                            "redaction_event",
+                            row["id"],
+                            "content that was ever confirmed requires a human gesture",
+                        )
+                    if (
+                        row["reason"] == "rejected_content"
+                        and store.profile.gate.rejected_content != "redact"
+                    ):
+                        add(
+                            "undeclared_policy_redaction",
+                            "redaction_event",
+                            row["id"],
+                            "profile retains rejected claim content",
+                        )
+                    if (
+                        row["reason"] == "expired_content"
+                        and store.profile.proposal_max_age_seconds is None
+                        and store.profile.extensions.get("expired_proposal_content")
+                        != "redact"
+                    ):
+                        add(
+                            "undeclared_policy_redaction",
+                            "redaction_event",
+                            row["id"],
+                            "profile does not declare expired-content redaction",
+                        )
+
+        for (subject_kind, subject_ref), events in redactions_by_subject.items():
+            if len(events) > 1:
+                add(
+                    "duplicate_redaction_event",
+                    subject_kind,
+                    subject_ref,
+                    f"subject has {len(events)} redaction events",
+                )
+
+        all_gesture_ids = set(gesture_uses) | set(redaction_gesture_uses)
+        for gesture_id in all_gesture_ids:
+            status_uses = gesture_uses.get(gesture_id, [])
+            operation_count = len(status_uses)
+            if gesture_id in reasoned_rejection_gestures:
+                operation_count = 1
+            operation_count += len(redaction_gesture_uses.get(gesture_id, []))
+            if operation_count > 1:
+                add(
+                    "gesture_replay",
+                    "gesture",
+                    gesture_id,
+                    f"gesture was consumed by {operation_count} operations",
+                )
         redactions_by_id = {row["id"]: row for row in redaction_rows}
+        status_redactions_by_id: dict[str, list[sqlite3.Row]] = defaultdict(list)
         for row in status_rows:
             if row["basis_kind"] != "redaction":
                 continue
+            status_redactions_by_id[row["basis_ref"]].append(row)
             event = redactions_by_id.get(row["basis_ref"])
             if event is None:
                 add(
@@ -2603,14 +3434,92 @@ def integrity_findings(
                     row["id"],
                     f"redaction event {row['basis_ref']} does not exist",
                 )
-            elif event["subject_kind"] != "claim" or event["subject_ref"] != row[
-                "claim_id"
-            ]:
+            elif (
+                event["subject_kind"] != "claim"
+                or event["subject_ref"] != row["claim_id"]
+            ):
                 add(
                     "status_redaction_subject_mismatch",
                     "status_event",
                     row["id"],
                     "redaction basis targets another subject",
+                )
+            else:
+                if row["status"] != "retracted":
+                    add(
+                        "invalid_status_redaction_kind",
+                        "status_event",
+                        row["id"],
+                        "redaction basis can produce only a retracted status",
+                    )
+                if row["at"] != event["at"]:
+                    add(
+                        "status_redaction_time_mismatch",
+                        "status_event",
+                        row["id"],
+                        "claim retraction time differs from its redaction event",
+                    )
+                if row["actor_ref"] != event["actor_ref"]:
+                    add(
+                        "status_redaction_actor_mismatch",
+                        "status_event",
+                        row["id"],
+                        "claim retraction actor differs from its redaction event",
+                    )
+                if row["note"] != event["reason"]:
+                    add(
+                        "status_redaction_reason_mismatch",
+                        "status_event",
+                        row["id"],
+                        "claim retraction note differs from its redaction reason",
+                    )
+                if event["basis_kind"] == "gesture" and row["actor_kind"] != "human":
+                    add(
+                        "status_redaction_actor_kind_mismatch",
+                        "status_event",
+                        row["id"],
+                        "gesture redaction requires a human retraction actor",
+                    )
+
+        for row in redaction_rows:
+            if row["subject_kind"] != "claim":
+                continue
+            prior_base_events = []
+            for status_event in status_rows:
+                if (
+                    status_event["claim_id"] != row["subject_ref"]
+                    or status_event["status"] == "needs_review"
+                    or (
+                        status_event["basis_kind"] == "redaction"
+                        and status_event["basis_ref"] == row["id"]
+                    )
+                ):
+                    continue
+                try:
+                    if _time_key(
+                        status_event["at"],
+                        "status event at",
+                    ) <= _time_key(row["at"], "redaction at"):
+                        prior_base_events.append(status_event)
+                except InvariantViolation:
+                    continue
+            prior_status = (
+                prior_base_events[-1]["status"] if prior_base_events else None
+            )
+            co_statuses = status_redactions_by_id.get(row["id"], [])
+            if prior_status not in TERMINAL_STATUSES and not co_statuses:
+                add(
+                    "missing_claim_redaction_status",
+                    "redaction_event",
+                    row["id"],
+                    f"redaction from live status {prior_status!r} lacks retraction event",
+                )
+            if len(co_statuses) > 1:
+                add(
+                    "duplicate_claim_redaction_status",
+                    "redaction_event",
+                    row["id"],
+                    f"redaction has {len(co_statuses)} retraction events",
                 )
         for kind, subject_rows in redactable.items():
             for subject_ref, subject in subject_rows.items():
@@ -2680,11 +3589,7 @@ def integrity_findings(
                         row["resolved_at"], "sweep finding resolved_at"
                     )
                     sweep = next(
-                        (
-                            item
-                            for item in sweep_rows
-                            if item["id"] == row["sweep_id"]
-                        ),
+                        (item for item in sweep_rows if item["id"] == row["sweep_id"]),
                         None,
                     )
                     if sweep is not None and resolved_at < _time_key(
@@ -2756,7 +3661,14 @@ def integrity_findings(
         for row in ledger_rows:
             actual_ledger[row["record_type"]].add(row["record_key"])
             expected = expected_ledger.get(row["record_type"])
-            if expected is not None and row["record_key"] not in expected:
+            if expected is None:
+                add(
+                    "unknown_ledger_record_type",
+                    "ledger_record",
+                    str(row["seq"]),
+                    f"unknown record_type {row['record_type']!r}",
+                )
+            elif row["record_key"] not in expected:
                 add(
                     "orphan_ledger_record",
                     "ledger_record",
