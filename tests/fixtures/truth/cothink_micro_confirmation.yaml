@@ -1,0 +1,145 @@
+fixture_version: wb-truth-fixture/v1
+name: cothink-micro-confirmation-expiry-redaction
+description: A conversation slice confirms one decision, expires an untouched proposal, and redacts rejected content.
+profile:
+  store_id: c3000000000040008000000000000001
+  profile: cothink-doc
+  title: Co-Think document truth
+  allowed_claim_kinds:
+    - design_decision
+    - preference
+  required_fields:
+    design_decision:
+      - topic
+      - decision
+    preference:
+      - topic
+      - value
+  gate:
+    rejected_content: redact
+    confirmation_surfaces:
+      - fold
+      - dashboard
+      - chat_consent
+    block_materialize_on_flags: true
+  projection: on_demand
+  export_committed: false
+  proposal_max_age: 2h
+  validators:
+    sensitive_preference:
+      claim_kinds:
+        - preference
+      policy: redact_on_rejection
+  extensions:
+    workload: co-think
+    micro_confirmation_surface: fold
+    expired_proposal_content: redact
+ids:
+  source_conversation: c3000000000040008000000000000011
+  span_decision: c3000000000040008000000000000012
+  claim_confirmed_decision: c3000000000040008000000000000013
+  claim_expiring_option: c3000000000040008000000000000014
+  claim_sensitive_preference: c3000000000040008000000000000015
+  expiry_event: c3000000000040008000000000000016
+  redaction_event: c3000000000040008000000000000017
+steps:
+  - op: capture
+    id: source_conversation
+    input:
+      locator: conversation://session/cothink-slice-01
+      media_type: application/json
+      content: The source card should stay collapsed by default. We might also add a floating inspector. Keep my private employer search out of exports.
+    expect:
+      source_state: captured
+      digest_verified: true
+  - op: mark_span
+    id: span_decision
+    input:
+      source_ref: source_conversation
+      selector:
+        type: text_quote
+        exact: The source card should stay collapsed by default.
+    expect:
+      anchor_state: exact
+  - op: propose
+    id: claim_confirmed_decision
+    input:
+      claim_kind: design_decision
+      proposition: Source cards stay collapsed by default.
+      structured:
+        topic: source_card_initial_state
+        decision: collapsed
+      evidence_span_ref: span_decision
+    expect:
+      status: proposed
+      fold_state: awaiting_micro_confirmation
+  - op: confirm
+    id: claim_confirmed_decision
+    input:
+      claim_ref: claim_confirmed_decision
+      claim_kind: design_decision
+      structured:
+        topic: source_card_initial_state
+        decision: collapsed
+      surface: fold
+      gesture: accept
+    expect:
+      status: confirmed
+      gesture_consumed: true
+  - op: propose
+    id: claim_expiring_option
+    input:
+      claim_kind: design_decision
+      proposition: Add a floating source inspector.
+      structured:
+        topic: source_inspector_mode
+        decision: floating
+      proposed_at: "2026-07-14T10:00:00Z"
+    expect:
+      status: proposed
+      expires_at: "2026-07-14T12:00:00Z"
+  - op: expire
+    id: expiry_event
+    input:
+      claim_ref: claim_expiring_option
+      observed_at: "2026-07-14T12:00:01Z"
+      basis: proposal_max_age
+      redaction_reason: expired_content
+    expect:
+      status: expired
+      proposition: null
+      structured: null
+      content_retained: false
+      redaction_reason: expired_content
+  - op: propose
+    id: claim_sensitive_preference
+    input:
+      claim_kind: preference
+      proposition: Keep my private employer search out of exports.
+      structured:
+        topic: employer_search_visibility
+        value: private_and_excluded
+      policy_flags:
+        - sensitive_personal_data
+    expect:
+      status: proposed
+      materialization_blocked: true
+  - op: redact
+    id: redaction_event
+    input:
+      claim_ref: claim_sensitive_preference
+      reason: privacy
+    expect:
+      status: retracted
+      proposition: null
+      structured: null
+      audit_metadata_retained: true
+expected_outcomes:
+  confirmed_claim_ref: claim_confirmed_decision
+  confirmed_surface: fold
+  expired_claim_ref: claim_expiring_option
+  expired_reason: proposal_max_age
+  expired_content_retained: false
+  redacted_claim_ref: claim_sensitive_preference
+  redacted_claim_status: retracted
+  redacted_content_retained: false
