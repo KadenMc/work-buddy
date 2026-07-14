@@ -59,9 +59,7 @@ def _normalize_digest(value: str | None, label: str) -> str | None:
         raise ValueError(f"{label} must be a hexadecimal string or None")
     normalized = value.strip().lower()
     if not _SHA256_RE.fullmatch(normalized):
-        raise ValueError(
-            f"{label} must be a 64-character hexadecimal SHA-256 digest"
-        )
+        raise ValueError(f"{label} must be a 64-character hexadecimal SHA-256 digest")
     return normalized
 
 

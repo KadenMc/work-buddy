@@ -61,9 +61,7 @@ class Actor:
 
     def __post_init__(self) -> None:
         if self.kind not in VALID_ACTOR_KINDS:
-            raise ValueError(
-                f"actor kind must be one of {sorted(VALID_ACTOR_KINDS)}"
-            )
+            raise ValueError(f"actor kind must be one of {sorted(VALID_ACTOR_KINDS)}")
         if self.kind == "agent_run" and not self.ref:
             raise ValueError("agent_run actor requires ref")
 
@@ -84,9 +82,7 @@ class StorePaths:
     def from_root(cls, root: str | Path) -> "StorePaths":
         root_path = Path(root).expanduser().resolve()
         sidecar = (
-            root_path
-            if root_path.name == ".wb-truth"
-            else root_path / ".wb-truth"
+            root_path if root_path.name == ".wb-truth" else root_path / ".wb-truth"
         )
         scope_root = sidecar.parent
         export_dir = sidecar / "export"
@@ -101,9 +97,7 @@ class StorePaths:
         )
 
 
-AGENT_PRODUCER_META_KEYS = frozenset(
-    {"model", "harness", "surface", "session_id"}
-)
+AGENT_PRODUCER_META_KEYS = frozenset({"model", "harness", "surface", "session_id"})
 
 
 def validate_agent_producer_meta(meta: Mapping[str, Any]) -> None:
@@ -113,6 +107,5 @@ def validate_agent_producer_meta(meta: Mapping[str, Any]) -> None:
     )
     if missing:
         raise InvariantViolation(
-            "agent write is missing producer identity fields: "
-            + ", ".join(missing)
+            "agent write is missing producer identity fields: " + ", ".join(missing)
         )

@@ -68,9 +68,7 @@ class CompositeSelector:
                 "TextPositionSelector start and end must be integer code-point offsets"
             )
         if self.start < 0 or self.end <= self.start:
-            raise AnchorError(
-                "TextPositionSelector requires 0 <= start < end"
-            )
+            raise AnchorError("TextPositionSelector requires 0 <= start < end")
         if self.end - self.start != len(self.exact):
             raise AnchorError(
                 "TextPositionSelector range length must equal the exact quote's "
@@ -126,7 +124,9 @@ class CompositeSelector:
             selector_type = item.get("type")
             if selector_type == "TextQuoteSelector":
                 if quote is not None:
-                    raise AnchorError("selector JSON contains duplicate quote selectors")
+                    raise AnchorError(
+                        "selector JSON contains duplicate quote selectors"
+                    )
                 quote = item
             elif selector_type == "TextPositionSelector":
                 if position is not None:
@@ -183,9 +183,7 @@ def verify_snapshot_sha256(text: str, expected_sha256: str) -> str:
         raise AnchorError("snapshot SHA-256 must be a hexadecimal string")
     expected = expected_sha256.strip().lower()
     if not _SHA256_RE.fullmatch(expected):
-        raise AnchorError(
-            "snapshot SHA-256 must be a 64-character hexadecimal digest"
-        )
+        raise AnchorError("snapshot SHA-256 must be a 64-character hexadecimal digest")
     actual = sha256_text(text)
     if not hmac.compare_digest(expected, actual):
         raise AnchorError(
@@ -230,7 +228,9 @@ def locate_all(text: str, exact: str) -> tuple[ResolvedAnchor, ...]:
     offset = text.find(exact)
     while offset >= 0:
         matches.append(
-            ResolvedAnchor(offset, offset + len(exact), text[offset : offset + len(exact)])
+            ResolvedAnchor(
+                offset, offset + len(exact), text[offset : offset + len(exact)]
+            )
         )
         offset = text.find(exact, offset + 1)
     if matches:

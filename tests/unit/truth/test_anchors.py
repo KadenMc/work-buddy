@@ -84,11 +84,14 @@ def test_position_offsets_are_unicode_code_points() -> None:
 
     expected = ResolvedAnchor(start=2, end=6, exact="café")
     assert validate_position(text, selector) == expected
-    assert reanchor(
-        text,
-        selector,
-        expected_snapshot_sha256=sha256_text(text),
-    ) == expected
+    assert (
+        reanchor(
+            text,
+            selector,
+            expected_snapshot_sha256=sha256_text(text),
+        )
+        == expected
+    )
 
 
 def test_position_selector_requires_the_exact_quote_at_its_offsets() -> None:
