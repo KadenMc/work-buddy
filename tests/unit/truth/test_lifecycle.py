@@ -319,6 +319,16 @@ def test_gesture_mint_is_server_composed_and_deferred_expiry_is_exact(
         at=NOW,
         expires_at=LATER,
     )
+    with pytest.raises(GestureError, match="cannot predate"):
+        lifecycle.verify_gesture(
+            gesture.id,
+            actor=HUMAN,
+            subject_ref=claim.id,
+            payload_sha256=claim.canonical_sha256,
+            expected_context_sha256=None,
+            allowed_kinds={"confirm"},
+            observed_at="2026-07-14T09:59:59.999+00:00",
+        )
     lifecycle.verify_gesture(
         gesture.id,
         actor=HUMAN,
