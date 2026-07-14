@@ -210,6 +210,20 @@ def _reasoned_rejection(
         expires_at=None,
         consumed_at=T1,
     )
+    if kind == "reject_as_false":
+        store.add_link(
+            from_claim_id=result.id,
+            link_type="refutes",
+            to_kind="claim",
+            to_ref=source.id,
+            actor=HUMAN,
+            role=rejection_binding_role(
+                rejection_class=kind,
+                source_canonical_sha256=source.canonical_sha256,
+                result_canonical_sha256=result.canonical_sha256,
+            ),
+            created_at=T1,
+        )
     with store.write_transaction() as conn:
         store._insert_gesture_locked(conn, gesture)
         store._insert_status_event_locked(
@@ -231,20 +245,6 @@ def _reasoned_rejection(
             basis_ref=gesture.id,
             note=kind,
             at=T1,
-        )
-    if kind == "reject_as_false":
-        store.add_link(
-            from_claim_id=result.id,
-            link_type="refutes",
-            to_kind="claim",
-            to_ref=source.id,
-            actor=HUMAN,
-            role=rejection_binding_role(
-                rejection_class=kind,
-                source_canonical_sha256=source.canonical_sha256,
-                result_canonical_sha256=result.canonical_sha256,
-            ),
-            created_at=T1,
         )
     return source, result, gesture
 
@@ -275,7 +275,6 @@ def _lifecycle_reject_as_false(
         displayed_receipts=receipts,
         result_claim_id=result.id,
         observed_at=T1,
-        at=T1,
     )
     assert rejection.refutes_link is not None
     return source, result, rejection.gesture, rejection.refutes_link
@@ -1177,6 +1176,184 @@ def test_integrity_requires_unredacted_supported_challenger_at_event_boundary(
     assert "challenge_without_usable_support" in codes
 
 
+def test_later_same_timestamp_redaction_preserves_valid_challenge_history(
+    truth_root: Path,
+) -> None:
+    store = _redacting_store(truth_root)
+    target = _claim(store, "Same-time redaction challenge target")
+    challenger = _supported_claim(store, "Same-time redacted challenger")
+    _confirm(store, target, at=T1)
+    lifecycle = TruthLifecycle(store)
+    lifecycle.challenge_claim(
+        claim_id=target.id,
+        challenging_claim_id=challenger.id,
+        actor=HUMAN,
+        at=T2,
+    )
+    gesture = lifecycle.mint_gesture(
+        subject_ref=challenger.id,
+        actor=HUMAN,
+        surface="dashboard",
+        kind="redact",
+        displayed_payload_sha256=challenger.canonical_sha256,
+        at=T2,
+    )
+    TruthRedactor(store, lifecycle=lifecycle).redact(
+        subject_kind="claim",
+        subject_ref=challenger.id,
+        actor=HUMAN,
+        reason="privacy",
+        basis_kind="gesture",
+        basis_ref=gesture.id,
+        at=T2,
+    )
+
+    assert integrity_findings(store) == ()
+
+
+def test_later_same_timestamp_support_does_not_retroactively_validate_challenge(
+    store: TruthStore,
+) -> None:
+    target = _claim(store, "Target challenged before same-time support")
+    challenger = _claim(store, "Unsupported at the challenge boundary")
+    _confirm(store, target, at=T1)
+    conflict = store.add_link(
+        from_claim_id=challenger.id,
+        link_type="conflicts_with",
+        to_kind="claim",
+        to_ref=target.id,
+        actor=HUMAN,
+        created_at=T2,
+    )
+    _raw_status(
+        store,
+        target,
+        status="challenged",
+        actor=HUMAN,
+        basis_kind="conflict_link",
+        basis_ref=conflict.id,
+        at=T2,
+    )
+    evidence = store.capture_evidence(
+        kind="document",
+        source_locator="file:///late-same-time-support.txt",
+        actor=HUMAN,
+        acquisition_method="paste",
+        content="support appended after the challenge",
+        created_at=T2,
+    )
+    span = store.mark_span(
+        evidence_id=evidence.id,
+        selector=CompositeSelector(exact="support appended after the challenge"),
+        actor=HUMAN,
+        created_at=T2,
+    )
+    store.add_link(
+        from_claim_id=challenger.id,
+        link_type="supports_span",
+        to_kind="evidence_span",
+        to_ref=span.id,
+        actor=HUMAN,
+        created_at=T2,
+    )
+
+    assert "challenge_without_usable_support" in {
+        item.code for item in integrity_findings(store)
+    }
+
+
+def test_later_same_timestamp_link_retraction_preserves_challenge_history(
+    store: TruthStore,
+) -> None:
+    target = _claim(store, "Same-time retraction challenge target")
+    challenger = _supported_claim(store, "Same-time retraction challenger")
+    _confirm(store, target, at=T1)
+    lifecycle = TruthLifecycle(store)
+    challenged = lifecycle.challenge_claim(
+        claim_id=target.id,
+        challenging_claim_id=challenger.id,
+        actor=HUMAN,
+        at=T2,
+    )
+    assert challenged.event.basis_ref is not None
+    gesture = lifecycle.mint_gesture(
+        subject_ref=target.id,
+        actor=HUMAN,
+        surface="dashboard",
+        kind="reaffirm",
+        displayed_payload_sha256=target.canonical_sha256,
+        at=T2,
+    )
+    lifecycle.confirm_claim(
+        claim_id=target.id,
+        gesture_id=gesture.id,
+        actor=HUMAN,
+        expected_context_sha256=None,
+        observed_at=T2,
+        at=T2,
+    )
+    store.retract_link(
+        link_id=challenged.event.basis_ref,
+        actor=HUMAN,
+        at=T2,
+    )
+
+    assert integrity_findings(store) == ()
+
+
+def test_integrity_rejects_retracted_current_status_authority(
+    store: TruthStore,
+) -> None:
+    challenge_target = _claim(store, "Challenge authority target")
+    challenger = _supported_claim(store, "Challenge authority source")
+    _confirm(store, challenge_target, at=T1)
+    lifecycle = TruthLifecycle(store)
+    challenged = lifecycle.challenge_claim(
+        claim_id=challenge_target.id,
+        challenging_claim_id=challenger.id,
+        actor=HUMAN,
+        at=T2,
+    )
+    assert challenged.event.basis_ref is not None
+
+    predecessor = _claim(store, "Supersession authority predecessor")
+    successor = _claim(store, "Supersession authority successor")
+    _confirm(store, predecessor, at=T1)
+    supersedes = _raw_link(
+        store,
+        successor,
+        predecessor,
+        reason="refined",
+        at=T1,
+    )
+    _confirm(store, successor, at=T2)
+    _raw_status(
+        store,
+        predecessor,
+        status="superseded",
+        actor=HUMAN,
+        basis_kind="claim_link",
+        basis_ref=supersedes.id,
+        at=T2,
+    )
+    assert integrity_findings(store) == ()
+
+    with store.write_transaction() as conn:
+        for link_id in (challenged.event.basis_ref, supersedes.id):
+            conn.execute(
+                "INSERT INTO link_retractions "
+                "(link_id, at, actor_kind, actor_ref, reason) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (link_id, T3, HUMAN.kind, HUMAN.ref, "raw corruption"),
+            )
+            store._insert_ledger_record_locked(conn, "link_retraction", link_id)
+
+    assert {
+        "retracted_current_challenge_authority",
+        "retracted_current_supersession_authority",
+    } <= {item.code for item in integrity_findings(store)}
+
+
 def test_integrity_requires_bidirectional_atomic_supersession_pairs(
     store: TruthStore,
 ) -> None:
@@ -1359,9 +1536,10 @@ def test_redacting_profile_reject_as_false_is_integrity_clean(
     truth_root: Path,
 ) -> None:
     store = _redacting_store(truth_root)
-    source, _result, _gesture, _link = _lifecycle_reject_as_false(store)
+    source, _result, _gesture, link = _lifecycle_reject_as_false(store)
 
     assert store.get_claim(source.id).proposition == "[redacted]"
+    assert link.created_at == T1
     assert integrity_findings(store) == ()
 
 
