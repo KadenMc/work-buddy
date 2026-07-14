@@ -13,6 +13,7 @@ from work_buddy.truth.anchors import CompositeSelector
 from work_buddy.truth.contracts import Actor, InvariantViolation, StoreVersionError
 from work_buddy.truth.identity import canonical_json, new_id, sha256_bytes, truth_uri
 from work_buddy.truth.lifecycle import TruthLifecycle
+from work_buddy.truth.queries import integrity_findings
 from work_buddy.truth.store import (
     AcquisitionOrigin,
     PremiseRef,
@@ -672,6 +673,7 @@ def test_link_retraction_cannot_predate_its_link(store: TruthStore):
         store.retract_link(link_id=link.id, actor=HUMAN, at=NOW)
 
     assert store.get_link_retraction(link.id) is None
+    assert integrity_findings(store) == ()
     assert store.retract_link(link_id=link.id, actor=HUMAN, at=LATER).at == LATER
 
 
