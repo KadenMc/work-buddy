@@ -113,6 +113,11 @@ def test_swhid_validation_fails_closed(locator: str, message: str) -> None:
         LocatorRegistry().validate("document", locator, {}, SHA256)
 
 
+def test_swhid_requires_the_human_display_permalink() -> None:
+    with pytest.raises(LocatorError, match="permalink_template"):
+        LocatorRegistry().validate("document", _qualified_swhid(), {}, SHA256)
+
+
 def test_bare_web_url_requires_retrieval_state_and_is_class_d() -> None:
     result = LocatorRegistry().validate(
         "web",
@@ -188,6 +193,15 @@ def test_web_snapshot_hash_and_retrieval_aliases_must_match() -> None:
                 "retrieved_datetime": "2026-07-12T16:00:00Z",
             },
         )
+    with pytest.raises(LocatorError, match="local archived_uri"):
+        registry.validate(
+            "web",
+            "https://example.org/page",
+            {
+                "retrieved_at": "2026-07-11T16:00:00Z",
+                "archived_uri": "file:///C:/captures/page.html",
+            },
+        )
 
 
 def test_unicode_web_uri_is_normalized_without_fetching() -> None:
@@ -246,6 +260,7 @@ def test_academic_snapshot_promotes_to_b_and_normalizes_pinpoint() -> None:
         "document",
         "doi:10.5555/EXAMPLE",
         {
+            "csl_json": {"title": "Example"},
             "pinpoint": {
                 "locator": " 42-44 ",
                 "label": "Page",
@@ -277,6 +292,11 @@ def test_academic_snapshot_promotes_to_b_and_normalizes_pinpoint() -> None:
 def test_malformed_academic_identifiers_are_rejected(locator: str) -> None:
     with pytest.raises(LocatorError):
         LocatorRegistry().validate("document", locator, {})
+
+
+def test_academic_locator_requires_csl_metadata() -> None:
+    with pytest.raises(LocatorError, match="requires csl_json"):
+        LocatorRegistry().validate("document", "doi:10.5555/example", {})
 
 
 @pytest.mark.parametrize("kind", ["chat", "utterance"])

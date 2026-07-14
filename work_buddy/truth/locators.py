@@ -467,7 +467,7 @@ def _validate_swh(
     meta: Mapping[str, Any],
     content_sha256: str | None,
 ) -> SchemeValidation:
-    del kind, meta
+    del kind
     pieces = locator.split(";")
     core_match = _SWH_CORE_RE.fullmatch(pieces[0])
     if core_match is None:
@@ -564,6 +564,11 @@ def _validate_swh(
     }
     if content_sha256 is not None:
         recipe["snapshot_sha256"] = content_sha256
+    permalink_template = meta.get("permalink_template")
+    if not isinstance(permalink_template, str) or not permalink_template.strip():
+        raise LocatorError(
+            "Git-sourced evidence requires a nonempty permalink_template"
+        )
     return SchemeValidation(normalized_locator, "A", recipe)
 
 
@@ -600,6 +605,10 @@ def _validate_web(
         archived_uri = _normalize_archive_uri(meta["archived_uri"])
         if archived_uri == normalized_locator:
             raise LocatorError("archived_uri must differ from the live locator")
+        if archived_uri.startswith("file:") and content_sha256 is None:
+            raise LocatorError(
+                "a local archived_uri requires captured content_sha256"
+            )
         updates["archived_uri"] = archived_uri
 
     if archived_uri is not None or content_sha256 is not None:
@@ -663,7 +672,9 @@ def _validate_academic(
     del kind
     scheme = _detect_scheme(locator)
     identifier, resolver_uri = _academic_identifier(scheme, locator)
-    if "csl_json" in meta and not isinstance(meta["csl_json"], Mapping):
+    if "csl_json" not in meta:
+        raise LocatorError("academic evidence requires csl_json metadata")
+    if not isinstance(meta["csl_json"], Mapping):
         raise LocatorError("csl_json must be a mapping")
     updates = _normalize_pinpoint(meta)
     updates.update(_snapshot_updates(meta, content_sha256))
