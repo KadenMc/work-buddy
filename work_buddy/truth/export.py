@@ -620,10 +620,7 @@ def _validate_record_values(item: _DataRecord) -> None:
 
 
 def _validate_foreign_refs(records: tuple[_DataRecord, ...]) -> None:
-    index = {
-        (item.record_type, item.record_key): item.seq
-        for item in records
-    }
+    index = {(item.record_type, item.record_key): item.seq for item in records}
 
     def require_prior(
         record_type: str,
@@ -685,7 +682,9 @@ def _validate_foreign_refs(records: tuple[_DataRecord, ...]) -> None:
                 "evidence": "evidence",
                 "span": "evidence_span",
             }[row["subject_kind"]]
-            require_prior(subject_type, row["subject_ref"], item.seq, "redaction subject")
+            require_prior(
+                subject_type, row["subject_ref"], item.seq, "redaction subject"
+            )
             if row["basis_kind"] == "gesture":
                 require_prior("gesture", row["basis_ref"], item.seq, "redaction basis")
         elif item.record_type == "sweep_finding":
@@ -763,7 +762,9 @@ def _fetch_row(
         try:
             key = json.loads(record_key)
         except json.JSONDecodeError as exc:
-            raise TruthExportError("derivation premise ledger key is malformed") from exc
+            raise TruthExportError(
+                "derivation premise ledger key is malformed"
+            ) from exc
         if not isinstance(key, dict) or set(key) != {"derivation_id", "premise_ref"}:
             raise TruthExportError("derivation premise ledger key is malformed")
         key_column = "derivation_id = ? AND premise_ref"
@@ -802,19 +803,28 @@ def _assert_all_rows_are_ordered(
                 )
 
 
-def _collect_export_bundle(store: TruthStore) -> _Bundle:
+def _collect_export_bundle(
+    store: TruthStore,
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> _Bundle:
     profile = store.profile.to_dict()
-    conn = store.connect()
+    export_conn = store.connect() if conn is None else conn
+    owns_transaction = conn is None
+    if conn is not None:
+        store._validate_connection_target(conn)
+        store._require_transaction(conn)
     try:
-        conn.execute("BEGIN IMMEDIATE")
-        info_rows = conn.execute("SELECT * FROM store_info").fetchall()
+        if owns_transaction:
+            export_conn.execute("BEGIN IMMEDIATE")
+        info_rows = export_conn.execute("SELECT * FROM store_info").fetchall()
         if len(info_rows) != 1:
             raise TruthExportError("store_info must contain exactly one row")
         store_info = dict(info_rows[0])
         records: list[_DataRecord] = []
         ordered_keys: set[tuple[str, str]] = set()
         previous_seq = 0
-        for ledger in conn.execute(
+        for ledger in export_conn.execute(
             "SELECT seq, record_type, record_key FROM ledger_records ORDER BY seq"
         ):
             seq = int(ledger["seq"])
@@ -836,10 +846,10 @@ def _collect_export_bundle(store: TruthStore) -> _Bundle:
                     seq=seq,
                     record_type=record_type,
                     record_key=record_key,
-                    record=_fetch_row(conn, record_type, record_key),
+                    record=_fetch_row(export_conn, record_type, record_key),
                 )
             )
-        _assert_all_rows_are_ordered(conn, ordered_keys)
+        _assert_all_rows_are_ordered(export_conn, ordered_keys)
 
         blobs: dict[str, bytes] = {}
         for item in records:
@@ -853,17 +863,23 @@ def _collect_export_bundle(store: TruthStore) -> _Bundle:
             try:
                 content = path.read_bytes()
             except OSError as exc:
-                raise TruthExportError(f"live evidence blob is unavailable: {path}") from exc
+                raise TruthExportError(
+                    f"live evidence blob is unavailable: {path}"
+                ) from exc
             if sha256_bytes(content) != digest:
-                raise TruthExportError("live evidence blob does not match content_sha256")
+                raise TruthExportError(
+                    "live evidence blob does not match content_sha256"
+                )
             blobs[digest] = content
-        conn.execute("COMMIT")
+        if owns_transaction:
+            export_conn.execute("COMMIT")
     except Exception:
-        if conn.in_transaction:
-            conn.execute("ROLLBACK")
+        if owns_transaction and export_conn.in_transaction:
+            export_conn.execute("ROLLBACK")
         raise
     finally:
-        conn.close()
+        if owns_transaction:
+            export_conn.close()
 
     bundle = _Bundle(
         source_format_version=FORMAT_VERSION,
@@ -926,14 +942,28 @@ def export_store(
     """Write a deterministic, atomic recovery export for ``store``."""
     if not isinstance(store, TruthStore):
         raise TypeError("store must be a TruthStore")
-    bundle = _collect_export_bundle(store)
-    payload = _serialize_bundle(bundle)
     path = (
         store.paths.claims_export
         if destination is None
         else Path(destination).expanduser().resolve()
     )
-    atomic_write_bytes(path, payload)
+    # Keep the store's cross-process SQLite writer lock until the atomic file
+    # publication completes. Without this, an older post-commit hook can
+    # collect seq N, pause, and overwrite a newer seq N+K export after the
+    # newer writer has published it.
+    conn = store.connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        bundle = _collect_export_bundle(store, conn=conn)
+        payload = _serialize_bundle(bundle)
+        atomic_write_bytes(path, payload)
+        conn.execute("COMMIT")
+    except Exception:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.close()
     return ExportResult(
         path=path,
         sha256=sha256_bytes(payload),
@@ -960,7 +990,9 @@ def _reject_json_constant(value: str) -> Any:
     raise ValueError(f"non-finite JSON value {value}")
 
 
-def _read_objects(source: str | Path | bytes | bytearray | memoryview) -> list[dict[str, Any]]:
+def _read_objects(
+    source: str | Path | bytes | bytearray | memoryview,
+) -> list[dict[str, Any]]:
     if isinstance(source, (bytes, bytearray, memoryview)):
         payload = bytes(source)
     else:
@@ -991,7 +1023,9 @@ def _read_objects(source: str | Path | bytes | bytearray | memoryview) -> list[d
             raise TruthImportError(f"line {number} must contain a JSON object")
         objects.append(value)
     end_positions = [
-        index for index, value in enumerate(objects) if value.get("record_type") == "end"
+        index
+        for index, value in enumerate(objects)
+        if value.get("record_type") == "end"
     ]
     if not end_positions:
         raise TruthImportError("truth export is missing its end record")
@@ -1028,7 +1062,9 @@ def _parse_v1(objects: list[dict[str, Any]]) -> _Bundle:
         record_type = value.get("record_type")
         if record_type not in _RECORD_COLUMNS:
             raise TruthImportError(f"v1 line {number} has an unknown record type")
-        _require_exact_keys(value, {"record", "record_type", "seq"}, f"v1 line {number}")
+        _require_exact_keys(
+            value, {"record", "record_type", "seq"}, f"v1 line {number}"
+        )
         row = _require_mapping(value["record"], f"v1 line {number} record")
         records.append(
             _DataRecord(
@@ -1159,7 +1195,9 @@ def _preflight_target(
     try:
         registered_paths = registry.paths_for_store_id(store_id)
     except AttributeError as exc:
-        raise TruthImportError("registry does not implement paths_for_store_id") from exc
+        raise TruthImportError(
+            "registry does not implement paths_for_store_id"
+        ) from exc
     target = paths.sidecar.resolve()
     for registered in registered_paths:
         existing = StorePaths.from_root(registered).sidecar.resolve()
@@ -1252,7 +1290,7 @@ def import_store(
     bundle = _parse_bundle(source)
     profile = _validate_bundle(bundle)
     target_paths = StorePaths.from_root(target)
-    existed_empty = _preflight_target(target_paths, profile.store_id, registry)
+    _preflight_target(target_paths, profile.store_id, registry)
 
     container = Path(
         tempfile.mkdtemp(prefix=".wb-truth-import-", dir=target_paths.root)

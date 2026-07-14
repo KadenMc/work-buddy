@@ -12,6 +12,7 @@ import pytest
 from work_buddy.truth.anchors import CompositeSelector
 from work_buddy.truth.contracts import Actor, InvariantViolation, StoreVersionError
 from work_buddy.truth.identity import canonical_json, new_id, sha256_bytes, truth_uri
+from work_buddy.truth.lifecycle import TruthLifecycle
 from work_buddy.truth.store import (
     AcquisitionOrigin,
     PremiseRef,
@@ -124,6 +125,15 @@ def test_create_refuses_identity_mismatch_and_open_refuses_future_schema(
     with pytest.raises(InvariantViolation, match="identity"):
         TruthStore.create(truth_root, _profile())
 
+    profile_text = store.paths.config.read_text(encoding="utf-8")
+    store.paths.config.write_text(
+        profile_text.replace("Test truth store", "Renamed behind the ledger"),
+        encoding="utf-8",
+    )
+    with pytest.raises(InvariantViolation, match="identity"):
+        TruthStore.open(truth_root)
+    store.paths.config.write_text(profile_text, encoding="utf-8")
+
     conn = store.connect()
     conn.execute("PRAGMA user_version = 999")
     conn.close()
@@ -227,6 +237,32 @@ def test_failed_owned_capture_removes_only_new_unreferenced_blob(truth_root: Pat
         _capture(store, "rolled back", record_id=duplicate_id)
     assert not store.resolve_blob_path(f"blobs/{failed_digest}").exists()
     assert store.resolve_blob_path(existing.content_path).exists()
+
+
+def test_new_blob_capture_refuses_caller_owned_transaction(truth_root: Path):
+    store = TruthStore.create(truth_root, _profile(), inline_content_bytes=0)
+    digest = sha256_bytes(b"outer rollback")
+    conn = store.connect()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        with pytest.raises(InvariantViolation, match="caller-owned transaction"):
+            _capture(store, "outer rollback", conn=conn)
+    finally:
+        conn.execute("ROLLBACK")
+        conn.close()
+    assert not store.resolve_blob_path(f"blobs/{digest}").exists()
+
+    shared = _capture(store, "already durable")
+    conn = store.connect()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        duplicate = _capture(store, "already durable", conn=conn)
+        assert duplicate.content_path == shared.content_path
+    finally:
+        conn.execute("ROLLBACK")
+        conn.close()
+    assert store.blob_reference_count(shared.content_sha256) == 1
+    assert store.resolve_blob_path(shared.content_path).exists()
 
 
 @pytest.mark.parametrize(
@@ -408,6 +444,29 @@ def test_span_authorship_laws_for_curated_mixed_and_agents(store: TruthStore):
         author_ref="run-1",
     )
     assert agent_span.author_ref == "run-1"
+
+    human_captured_agent_text = store.capture_evidence(
+        kind="document",
+        source_locator="file:///human-captured-agent.md",
+        actor=HUMAN,
+        acquisition_method="paste",
+        origin=AcquisitionOrigin.AGENT_GENERATED,
+        content="generated elsewhere",
+    )
+    with pytest.raises(InvariantViolation, match="requires author_ref"):
+        store.mark_span(
+            evidence_id=human_captured_agent_text.id,
+            selector=CompositeSelector(exact="generated elsewhere"),
+            actor=HUMAN,
+        )
+    attributed = store.mark_span(
+        evidence_id=human_captured_agent_text.id,
+        selector=CompositeSelector(exact="generated elsewhere"),
+        actor=HUMAN,
+        author_ref="run-original-author",
+    )
+    assert attributed.author_kind == "agent_run"
+    assert attributed.author_ref == "run-original-author"
 
 
 def test_propose_normalizes_validates_profile_and_deduplicates(store: TruthStore):
@@ -596,6 +655,121 @@ def test_link_retraction_is_append_only_and_idempotent(store: TruthStore):
     first = store.retract_link(link_id=link.id, actor=HUMAN, reason="mistake")
     second = store.retract_link(link_id=link.id, actor=HUMAN, reason="ignored")
     assert second == first
+
+
+def test_current_supersession_authority_link_cannot_be_retracted(
+    store: TruthStore,
+):
+    predecessor = _claim(store, "Old wording", created_at=NOW, status_at=NOW)
+    successor = _claim(store, "Correct wording", created_at=NOW, status_at=NOW)
+    lifecycle = TruthLifecycle(store)
+    predecessor_gesture = lifecycle.mint_gesture(
+        subject_ref=predecessor.id,
+        actor=HUMAN,
+        surface="dashboard",
+        kind="confirm",
+        displayed_payload_sha256=predecessor.canonical_sha256,
+        at=LATER,
+    )
+    lifecycle.confirm_claim(
+        claim_id=predecessor.id,
+        gesture_id=predecessor_gesture.id,
+        actor=HUMAN,
+        expected_context_sha256=None,
+        observed_at=LATER,
+        at=LATER,
+    )
+    link = store.add_link(
+        from_claim_id=successor.id,
+        link_type="supersedes",
+        to_kind="claim",
+        to_ref=predecessor.id,
+        actor=HUMAN,
+        role={"supersession_reason": "corrected"},
+    )
+    successor_at = "2026-07-14T12:02:00.000+00:00"
+    gesture = lifecycle.mint_gesture(
+        subject_ref=successor.id,
+        actor=HUMAN,
+        surface="dashboard",
+        kind="confirm",
+        displayed_payload_sha256=successor.canonical_sha256,
+        at=successor_at,
+    )
+    lifecycle.confirm_claim(
+        claim_id=successor.id,
+        gesture_id=gesture.id,
+        actor=HUMAN,
+        expected_context_sha256=None,
+        observed_at=successor_at,
+        at=successor_at,
+    )
+
+    with pytest.raises(InvariantViolation, match="current superseded status"):
+        store.retract_link(link_id=link.id, actor=HUMAN, reason="break history")
+    assert store.get_link_retraction(link.id) is None
+
+
+def test_current_challenge_authority_link_cannot_be_retracted(
+    store: TruthStore,
+):
+    target = _claim(
+        store,
+        "The deployment is healthy",
+        created_at=NOW,
+        status_at=NOW,
+    )
+    challenger = _claim(
+        store,
+        "The deployment is unhealthy",
+        created_at=NOW,
+        status_at=NOW,
+    )
+    lifecycle = TruthLifecycle(store)
+    gesture = lifecycle.mint_gesture(
+        subject_ref=target.id,
+        actor=HUMAN,
+        surface="dashboard",
+        kind="confirm",
+        displayed_payload_sha256=target.canonical_sha256,
+        at=LATER,
+    )
+    lifecycle.confirm_claim(
+        claim_id=target.id,
+        gesture_id=gesture.id,
+        actor=HUMAN,
+        expected_context_sha256=None,
+        observed_at=LATER,
+        at=LATER,
+    )
+    evidence = _capture(store, "health check failed")
+    span = store.mark_span(
+        evidence_id=evidence.id,
+        selector=CompositeSelector(exact="health check failed"),
+        actor=HUMAN,
+    )
+    store.add_link(
+        from_claim_id=challenger.id,
+        link_type="supports_span",
+        to_kind="evidence_span",
+        to_ref=span.id,
+        actor=HUMAN,
+    )
+    challenged = lifecycle.challenge_claim(
+        claim_id=target.id,
+        challenging_claim_id=challenger.id,
+        actor=HUMAN,
+        at="2026-07-14T12:02:00.000+00:00",
+    )
+    assert challenged.event.basis_ref is not None
+
+    with pytest.raises(InvariantViolation, match="current challenged status"):
+        store.retract_link(
+            link_id=challenged.event.basis_ref,
+            actor=HUMAN,
+            reason="break challenge history",
+        )
+    assert store.get_link_retraction(challenged.event.basis_ref) is None
 
 
 def test_derivations_validate_and_preserve_local_and_uri_premises(store: TruthStore):

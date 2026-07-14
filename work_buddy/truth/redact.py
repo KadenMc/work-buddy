@@ -7,9 +7,11 @@ and the event history survive; only human-readable content is destroyed.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from work_buddy.truth.contracts import Actor, InvariantViolation, TERMINAL_STATUSES
 from work_buddy.truth.store import (
@@ -98,6 +100,33 @@ class TruthRedactor:
 
             lifecycle = TruthLifecycle(store)
         self.lifecycle = lifecycle
+
+    @contextmanager
+    def _write_with_cleanup_on_hook_failure(
+        self,
+        conn: sqlite3.Connection | None,
+        pending_blob: Callable[[], str | None],
+    ) -> Iterator[sqlite3.Connection]:
+        """Finish sensitive blob cleanup when a post-commit hook fails."""
+
+        body_completed = False
+        try:
+            with self.store.write_transaction(conn) as write_conn:
+                yield write_conn
+                body_completed = True
+        except PostCommitHookError:
+            if not body_completed:
+                raise
+            digest = pending_blob()
+            if digest is not None:
+                try:
+                    self.store._remove_unreferenced_blob(digest)
+                except Exception as cleanup_exc:
+                    raise PostCommitHookError(
+                        "redaction committed but blob cleanup failed after a "
+                        "post-commit hook failure"
+                    ) from cleanup_exc
+            raise
 
     @staticmethod
     def _require_actor_ref(actor: Actor) -> str:
@@ -390,7 +419,10 @@ class TruthRedactor:
         blob_path: Path | None = None
         cascade_events: tuple[RedactionEventRecord, ...] = ()
         status_event: StatusEventRecord | None = None
-        with self.store.write_transaction(conn) as write_conn:
+        with self._write_with_cleanup_on_hook_failure(
+            conn,
+            lambda: blob_digest,
+        ) as write_conn:
             subject = self._subject_locked(write_conn, kind, reference)
             if subject.redacted_at is not None:
                 existing = self._redaction_event_locked(write_conn, kind, reference)

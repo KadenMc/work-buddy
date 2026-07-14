@@ -461,6 +461,8 @@ class TruthStore:
             raise ValueError("inline_content_bytes cannot be negative")
         self._paths = paths
         self._inline_content_bytes = inline_content_bytes
+        # Optional observer only. The profile's committed export is a built-in
+        # post-commit action, so observers must not call export_store again.
         self._on_commit = on_commit
 
     @classmethod
@@ -485,7 +487,11 @@ class TruthStore:
         conn = store._open_connection()
         changed = False
         try:
+            starting_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
             migrate(conn, paths.db)
+            changed = int(conn.execute("PRAGMA user_version").fetchone()[0]) != (
+                starting_version
+            )
             conn.execute("BEGIN IMMEDIATE")
             try:
                 rows = conn.execute("SELECT * FROM store_info").fetchall()
@@ -573,16 +579,25 @@ class TruthStore:
             on_commit=on_commit,
         )
         conn = store._open_connection()
+        migrated = False
         try:
             try:
+                starting_version = int(
+                    conn.execute("PRAGMA user_version").fetchone()[0]
+                )
                 version = migrate(conn, paths.db)
+                migrated = version != starting_version
             except SchemaVersionTooNew as exc:
                 raise StoreVersionError(str(exc)) from exc
             rows = conn.execute("SELECT * FROM store_info").fetchall()
             if len(rows) != 1:
                 raise InvariantViolation("store_info must contain exactly one row")
             info = StoreInfo(**dict(rows[0]))
-            if info.store_id != profile.store_id or info.profile != profile.profile:
+            if (
+                info.store_id != profile.store_id
+                or info.profile != profile.profile
+                or info.title != profile.title
+            ):
                 raise InvariantViolation(
                     "store_info identity does not match store.yaml"
                 )
@@ -592,6 +607,8 @@ class TruthStore:
                 )
         finally:
             conn.close()
+        if migrated:
+            store._run_on_commit()
         return store
 
     @property
@@ -655,7 +672,12 @@ class TruthStore:
         self,
         conn: sqlite3.Connection | None = None,
     ) -> Iterator[sqlite3.Connection]:
-        """Own one write transaction, or compose inside a supplied one."""
+        """Own one write transaction, or compose inside a supplied one.
+
+        Only the store-owned outer context can run post-commit export and
+        observer actions. A supplied connection leaves commit ownership—and
+        any required post-commit work—with its caller.
+        """
         if conn is not None:
             self._validate_connection_target(conn)
             if not conn.in_transaction:
@@ -684,10 +706,15 @@ class TruthStore:
     _write_transaction = write_transaction
 
     def _run_on_commit(self) -> None:
-        if self._on_commit is None:
-            return
+        """Publish the required recovery export, then notify the observer."""
+
         try:
-            self._on_commit(self)
+            if self.profile.export_committed:
+                from work_buddy.truth.export import export_store
+
+                export_store(self)
+            if self._on_commit is not None:
+                self._on_commit(self)
         except Exception as exc:
             raise PostCommitHookError(
                 "truth ledger commit succeeded but the post-commit hook failed"
@@ -1398,6 +1425,13 @@ class TruthStore:
             redacted_at=None,
             created_at=created,
         )
+        if blob_data is not None and conn is not None:
+            blob_path = self.resolve_blob_path(f"blobs/{digest}")
+            if not blob_path.exists():
+                raise InvariantViolation(
+                    "new blob-backed evidence cannot be captured inside a "
+                    "caller-owned transaction"
+                )
         blob_created = False
         try:
             with self.write_transaction(conn) as write_conn:
@@ -1481,7 +1515,8 @@ class TruthStore:
                     resolved_ref = resolved_ref or evidence.acquired_by_ref
                 elif evidence.trust_class == "agent_authored":
                     resolved_author = "agent_run"
-                    resolved_ref = resolved_ref or evidence.acquired_by_ref
+                    if evidence.acquired_by_kind == "agent_run":
+                        resolved_ref = resolved_ref or evidence.acquired_by_ref
                 else:
                     resolved_author = "unknown"
             if resolved_author not in SPAN_AUTHOR_KINDS:
@@ -1797,11 +1832,44 @@ class TruthStore:
         timestamp = _timestamp(at, "link retraction at")
         normalized_reason = None if reason is None else _require_text(reason, "reason")
         with self.write_transaction(conn) as write_conn:
-            if self._get_link_locked(write_conn, identifier) is None:
+            link = self._get_link_locked(write_conn, identifier)
+            if link is None:
                 raise InvariantViolation(f"claim link does not exist: {identifier}")
             existing = self.get_link_retraction(identifier, conn=write_conn)
             if existing is not None:
                 return existing
+            if link.link_type == "supersedes" and link.to_kind == "claim":
+                predecessor_status = self._latest_status_locked(
+                    write_conn,
+                    link.to_ref,
+                    include_overlay=False,
+                )
+                if (
+                    predecessor_status is not None
+                    and predecessor_status.status == "superseded"
+                    and predecessor_status.basis_kind == "claim_link"
+                    and predecessor_status.basis_ref == identifier
+                ):
+                    raise InvariantViolation(
+                        "cannot retract the supersedes link that authorizes a "
+                        "claim's current superseded status"
+                    )
+            if link.link_type == "conflicts_with" and link.to_kind == "claim":
+                challenged_status = self._latest_status_locked(
+                    write_conn,
+                    link.to_ref,
+                    include_overlay=False,
+                )
+                if (
+                    challenged_status is not None
+                    and challenged_status.status == "challenged"
+                    and challenged_status.basis_kind == "conflict_link"
+                    and challenged_status.basis_ref == identifier
+                ):
+                    raise InvariantViolation(
+                        "cannot retract the conflict link that authorizes a "
+                        "claim's current challenged status"
+                    )
             record = LinkRetractionRecord(
                 link_id=identifier,
                 at=timestamp,
