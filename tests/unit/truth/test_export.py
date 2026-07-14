@@ -713,14 +713,14 @@ def test_export_publication_cannot_regress_behind_a_newer_commit(
     assert footer["last_seq"] == db_last_seq
 
 
-def test_failed_automatic_export_surfaces_after_commit_and_preserves_prior_file(
+def test_failed_automatic_export_surfaces_after_commit_and_removes_stale_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import work_buddy.truth.export as export_module
 
     store = _create_store(tmp_path / "failed-hook")
-    prior_export = store.paths.claims_export.read_bytes()
+    assert store.paths.claims_export.is_file()
     claim_id = "11" * 16
 
     def fail_publication(path: Path, payload: bytes) -> None:
@@ -738,4 +738,4 @@ def test_failed_automatic_export_surfaces_after_commit_and_preserves_prior_file(
         )
 
     assert store.get_claim(claim_id) is not None
-    assert store.paths.claims_export.read_bytes() == prior_export
+    assert not store.paths.claims_export.exists()
