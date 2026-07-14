@@ -451,6 +451,11 @@ class TruthRedactor:
                     raise InvariantViolation(
                         "redaction cannot predate the latest claim status"
                     )
+            if subject.content_path is not None and conn is not None:
+                raise InvariantViolation(
+                    "blob-backed evidence cannot be redacted inside a "
+                    "caller-owned transaction"
+                )
 
             if basis_kind == "gesture":
                 if actor.kind != "human":
