@@ -48,9 +48,12 @@ from work_buddy.truth.locators import (
 from work_buddy.truth.lifecycle import (
     CONFIRM_GESTURE_KINDS,
     GESTURE_KINDS,
+    REJECTION_BINDING_FIELDS,
+    REJECTION_BINDING_HASH_FIELD,
     REJECTION_CLASSES,
     REVIEW_BASIS_KINDS,
     negated_proposition,
+    rejection_binding_role,
 )
 from work_buddy.truth.redact import (
     REDACTION_BASIS_KINDS,
@@ -1825,29 +1828,80 @@ def integrity_findings(
                 or not _looks_like_sha256(gesture["context_sha256"])
             ):
                 continue
+            # The one gesture intentionally attests both halves of a reasoned
+            # rejection.  Recognize that event shape independently from the
+            # refutation binding so a corrupted link produces one precise
+            # binding finding instead of spurious replay/subject/kind noise.
+            reasoned_rejection_sources.add(source_event["id"])
+            reasoned_rejection_gestures.add(gesture_id)
             if rejection_kind == "reject_as_false":
                 if (
-                    result.proposition != negated_proposition(source.proposition)
-                    or result.claim_kind != source.claim_kind
+                    result.claim_kind != source.claim_kind
                     or result.scope != source.scope
                 ):
-                    continue
-                has_refutation = read_conn.execute(
-                    "SELECT 1 FROM claim_links AS l WHERE l.from_claim_id = ? "
+                    add(
+                        "invalid_rejection_semantics",
+                        "status_event",
+                        source_event["id"],
+                        "false rejection result must preserve source kind and scope",
+                    )
+                if (
+                    source.redacted_at is None
+                    and result.proposition != negated_proposition(source.proposition)
+                ):
+                    add(
+                        "invalid_rejection_semantics",
+                        "status_event",
+                        source_event["id"],
+                        "false rejection result is not the deterministic negation",
+                    )
+                refutations = read_conn.execute(
+                    "SELECT l.* FROM claim_links AS l WHERE l.from_claim_id = ? "
                     "AND l.link_type = 'refutes' AND l.to_kind = 'claim' "
                     "AND l.to_ref = ? "
                     "AND julianday(l.created_at) <= julianday(?) "
                     "AND NOT EXISTS (SELECT 1 FROM link_retractions AS r "
                     "WHERE r.link_id = l.id "
-                    "AND julianday(r.at) <= julianday(?)) LIMIT 1",
+                    "AND julianday(r.at) <= julianday(?)) ORDER BY l.id",
                     (result.id, source.id, source_event["at"], source_event["at"]),
-                ).fetchone()
-                if has_refutation is None:
-                    continue
+                ).fetchall()
+                if not refutations:
+                    add(
+                        "missing_rejection_binding_link",
+                        "status_event",
+                        source_event["id"],
+                        "false rejection has no active refutes link at decision time",
+                    )
+                else:
+                    expected_role = rejection_binding_role(
+                        rejection_class=rejection_kind,
+                        source_canonical_sha256=source.canonical_sha256,
+                        result_canonical_sha256=result.canonical_sha256,
+                    )
+                    if len(refutations) != 1:
+                        add(
+                            "invalid_rejection_binding",
+                            "status_event",
+                            source_event["id"],
+                            "false rejection must have exactly one active bound "
+                            "refutes link at decision time",
+                        )
+                    for refutation in refutations:
+                        role, role_error = _try_json_object(refutation["role_json"])
+                        if role_error is not None or role != expected_role:
+                            add(
+                                "invalid_rejection_binding",
+                                "claim_link",
+                                refutation["id"],
+                                "refutes link does not preserve the exact rejection binding",
+                            )
             elif result.claim_kind != "preference":
-                continue
-            reasoned_rejection_sources.add(source_event["id"])
-            reasoned_rejection_gestures.add(gesture_id)
+                add(
+                    "invalid_rejection_semantics",
+                    "status_event",
+                    source_event["id"],
+                    "preference rejection result must be a preference claim",
+                )
         previous_status: dict[str, str | None] = defaultdict(lambda: None)
         active_review_overlay: dict[str, bool] = defaultdict(bool)
         previous_event_time: dict[str, datetime] = {}
@@ -2083,15 +2137,6 @@ def integrity_findings(
                         event_id,
                         f"gesture kind {gesture['kind']!r} cannot confirm a claim",
                     )
-                if status == "confirmed" and gesture["surface"] not in (
-                    store.profile.gate.confirmation_surfaces
-                ):
-                    add(
-                        "invalid_confirmation_surface",
-                        "status_event",
-                        event_id,
-                        f"surface {gesture['surface']!r} is not allowed by the profile",
-                    )
                 if status == "confirmed":
                     support_rows = read_conn.execute(
                         "SELECT l.id AS link_id, s.id AS span_id, "
@@ -2158,15 +2203,6 @@ def integrity_findings(
                         event_id,
                         "rejected status note and gesture kind must name the same rejection class",
                     )
-                if status == "rejected" and gesture["surface"] not in (
-                    store.profile.gate.confirmation_surfaces
-                ):
-                    add(
-                        "invalid_rejection_surface",
-                        "status_event",
-                        event_id,
-                        f"surface {gesture['surface']!r} is not allowed by the profile",
-                    )
                 if (
                     claim is not None
                     and gesture["payload_sha256"] != claim.canonical_sha256
@@ -2227,22 +2263,36 @@ def integrity_findings(
                         f"{column} must be a nonempty string",
                     )
             subject_ref = row["subject_ref"]
-            subject_matches: list[tuple[str, str]] = []
+            subject_matches: list[tuple[str, str, str | None]] = []
             claim_subject = claims_by_id.get(subject_ref)
             if claim_subject is not None:
-                subject_matches.append(("claim", claim_subject.canonical_sha256))
+                subject_matches.append(
+                    (
+                        "claim",
+                        claim_subject.canonical_sha256,
+                        claim_subject.redacted_at,
+                    )
+                )
             evidence_subject = read_conn.execute(
-                "SELECT content_sha256 FROM evidence WHERE id = ?",
+                "SELECT content_sha256, redacted_at FROM evidence WHERE id = ?",
                 (subject_ref,),
             ).fetchone()
             if evidence_subject is not None:
-                subject_matches.append(("evidence", evidence_subject["content_sha256"]))
+                subject_matches.append(
+                    (
+                        "evidence",
+                        evidence_subject["content_sha256"],
+                        evidence_subject["redacted_at"],
+                    )
+                )
             span_subject = read_conn.execute(
-                "SELECT span_sha256 FROM evidence_spans WHERE id = ?",
+                "SELECT span_sha256, redacted_at FROM evidence_spans WHERE id = ?",
                 (subject_ref,),
             ).fetchone()
             if span_subject is not None:
-                subject_matches.append(("span", span_subject["span_sha256"]))
+                subject_matches.append(
+                    ("span", span_subject["span_sha256"], span_subject["redacted_at"])
+                )
             if not subject_matches:
                 add(
                     "dangling_gesture_subject",
@@ -2263,6 +2313,17 @@ def integrity_findings(
                     "gesture",
                     gesture_id,
                     f"payload hash does not match {subject_matches[0][0]} subject",
+                )
+            if (
+                len(subject_matches) == 1
+                and subject_matches[0][2] is not None
+                and row["payload_excerpt"] != "[redacted]"
+            ):
+                add(
+                    "gesture_excerpt_retains_redacted_content",
+                    "gesture",
+                    gesture_id,
+                    "gesture receipt for a redacted subject was not tombstoned",
                 )
             if not _looks_like_sha256(row["payload_sha256"]):
                 add(
@@ -2350,6 +2411,69 @@ def integrity_findings(
             if event["status"] == "confirmed":
                 confirmed_events_by_claim[event["claim_id"]].append(event)
 
+        def base_status_at_event(
+            claim_id: str,
+            boundary_event: sqlite3.Row,
+        ) -> sqlite3.Row | None:
+            try:
+                boundary = _time_key(boundary_event["at"], "challenge at")
+            except InvariantViolation:
+                return None
+            eligible: list[sqlite3.Row] = []
+            for candidate in status_rows:
+                if (
+                    candidate["claim_id"] != claim_id
+                    or candidate["status"] == "needs_review"
+                    or int(candidate["seq"]) >= int(boundary_event["seq"])
+                ):
+                    continue
+                try:
+                    if _time_key(candidate["at"], "challenger status at") <= boundary:
+                        eligible.append(candidate)
+                except InvariantViolation:
+                    continue
+            return eligible[-1] if eligible else None
+
+        def challenger_has_usable_support_at(
+            challenger_id: str,
+            boundary_at: str,
+        ) -> bool:
+            try:
+                boundary = _time_key(boundary_at, "challenge at")
+            except InvariantViolation:
+                return False
+            for link in link_rows:
+                if (
+                    link["from_claim_id"] != challenger_id
+                    or link["link_type"] != "supports_span"
+                    or link["to_kind"] != "evidence_span"
+                    or not link_active_at(link, boundary_at)
+                ):
+                    continue
+                span = spans_by_id.get(link["to_ref"])
+                if span is None:
+                    continue
+                evidence = evidence_by_id.get(span["evidence_id"])
+                if evidence is None:
+                    continue
+                try:
+                    existed = (
+                        _time_key(span["created_at"], "span created_at") <= boundary
+                        and _time_key(evidence["created_at"], "evidence created_at")
+                        <= boundary
+                    )
+                except InvariantViolation:
+                    existed = False
+                if (
+                    existed
+                    and available_at(span["redacted_at"], boundary)
+                    and available_at(evidence["redacted_at"], boundary)
+                    and evidence["derived_from_store"] is None
+                    and evidence["trust_class"] is not None
+                ):
+                    return True
+            return False
+
         def confirmation_precedes_status(
             confirmation: sqlite3.Row,
             status_event: sqlite3.Row,
@@ -2399,6 +2523,48 @@ def integrity_findings(
                         "status_event",
                         event["id"],
                         "challenge basis is not an active conflict link targeting the claim",
+                    )
+                    continue
+                challenger = claims_by_id.get(basis.from_claim_id)
+                challenger_status = base_status_at_event(basis.from_claim_id, event)
+                if (
+                    challenger_status is None
+                    or challenger_status["status"] in TERMINAL_STATUSES
+                ):
+                    state = (
+                        None
+                        if challenger_status is None
+                        else challenger_status["status"]
+                    )
+                    add(
+                        "invalid_challenge_challenger_status",
+                        "status_event",
+                        event["id"],
+                        f"challenger had non-live base status {state!r} at challenge time",
+                    )
+                try:
+                    challenge_time = _time_key(event["at"], "challenge at")
+                except InvariantViolation:
+                    challenge_time = None
+                if challenger is not None and not available_at(
+                    challenger.redacted_at,
+                    challenge_time,
+                ):
+                    add(
+                        "redacted_challenge_challenger",
+                        "status_event",
+                        event["id"],
+                        "challenger content was redacted at challenge time",
+                    )
+                if not challenger_has_usable_support_at(
+                    basis.from_claim_id,
+                    event["at"],
+                ):
+                    add(
+                        "challenge_without_usable_support",
+                        "status_event",
+                        event["id"],
+                        "challenger had no usable support at challenge time",
                     )
                 continue
             if (
@@ -2489,6 +2655,28 @@ def integrity_findings(
             role, role_error = _try_json_object(row["role_json"])
             if role_error is not None:
                 add("invalid_link_role", "claim_link", link_id, role_error)
+            rejection_binding_keys = set(REJECTION_BINDING_FIELDS) | {
+                REJECTION_BINDING_HASH_FIELD
+            }
+            if link_type == "refutes" and rejection_binding_keys.intersection(role):
+                source = claims_by_id.get(row["to_ref"])
+                result = claims_by_id.get(row["from_claim_id"])
+                if source is not None and result is not None:
+                    try:
+                        expected_binding = rejection_binding_role(
+                            rejection_class=role.get("rejection_class", ""),
+                            source_canonical_sha256=source.canonical_sha256,
+                            result_canonical_sha256=result.canonical_sha256,
+                        )
+                    except InvariantViolation:
+                        expected_binding = None
+                    if role != expected_binding:
+                        add(
+                            "invalid_rejection_binding",
+                            "claim_link",
+                            link_id,
+                            "refutes link does not preserve the exact rejection binding",
+                        )
             if link_type == "supersedes":
                 reason = role.get("supersession_reason")
                 if reason not in SUPERSESSION_REASONS:
@@ -3373,28 +3561,6 @@ def integrity_findings(
                             "redaction_event",
                             row["id"],
                             "content that was ever confirmed requires a human gesture",
-                        )
-                    if (
-                        row["reason"] == "rejected_content"
-                        and store.profile.gate.rejected_content != "redact"
-                    ):
-                        add(
-                            "undeclared_policy_redaction",
-                            "redaction_event",
-                            row["id"],
-                            "profile retains rejected claim content",
-                        )
-                    if (
-                        row["reason"] == "expired_content"
-                        and store.profile.proposal_max_age_seconds is None
-                        and store.profile.extensions.get("expired_proposal_content")
-                        != "redact"
-                    ):
-                        add(
-                            "undeclared_policy_redaction",
-                            "redaction_event",
-                            row["id"],
-                            "profile does not declare expired-content redaction",
                         )
 
         for (subject_kind, subject_ref), events in redactions_by_subject.items():

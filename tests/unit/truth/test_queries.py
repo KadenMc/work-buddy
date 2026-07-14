@@ -15,7 +15,13 @@ from work_buddy.truth.identity import (
     sha256_text,
     truth_uri,
 )
-from work_buddy.truth.lifecycle import TruthLifecycle, negated_proposition
+from work_buddy.truth.lifecycle import (
+    TruthLifecycle,
+    negated_proposition,
+    rejection_binding_role,
+)
+from work_buddy.truth.migrations import REDACTED_SELECTOR_JSON
+from work_buddy.truth.profiles import dump_profile
 from work_buddy.truth.queries import (
     PremiseResolution,
     SweepFindingSpec,
@@ -65,6 +71,14 @@ def _profile() -> dict[str, object]:
         "projection": "none",
         "export_committed": True,
     }
+
+
+def _redacting_store(root: Path) -> TruthStore:
+    profile = _profile()
+    gate = dict(profile["gate"])
+    gate["rejected_content"] = "redact"
+    profile["gate"] = gate
+    return TruthStore.create(root, profile)
 
 
 @pytest.fixture
@@ -225,9 +239,73 @@ def _reasoned_rejection(
             to_kind="claim",
             to_ref=source.id,
             actor=HUMAN,
+            role=rejection_binding_role(
+                rejection_class=kind,
+                source_canonical_sha256=source.canonical_sha256,
+                result_canonical_sha256=result.canonical_sha256,
+            ),
             created_at=T1,
         )
     return source, result, gesture
+
+
+def _lifecycle_reject_as_false(
+    store: TruthStore,
+) -> tuple[ClaimRecord, ClaimRecord, GestureRecord, ClaimLinkRecord]:
+    source = _claim(store, "The source assertion")
+    result = _claim(store, negated_proposition(source.proposition))
+    lifecycle = TruthLifecycle(store)
+    receipts: list[object] = []
+    context_sha256 = lifecycle.rejection_context_sha256(source.id, receipts)
+    gesture = lifecycle.mint_gesture(
+        subject_ref=result.id,
+        actor=HUMAN,
+        surface="dashboard",
+        kind="reject_as_false",
+        displayed_payload_sha256=result.canonical_sha256,
+        context_sha256=context_sha256,
+        at=T1,
+    )
+    rejection = lifecycle.reject_claim(
+        source_claim_id=source.id,
+        gesture_id=gesture.id,
+        actor=HUMAN,
+        reason_class="reject_as_false",
+        expected_context_sha256=context_sha256,
+        displayed_receipts=receipts,
+        result_claim_id=result.id,
+        observed_at=T1,
+        at=T1,
+    )
+    assert rejection.refutes_link is not None
+    return source, result, rejection.gesture, rejection.refutes_link
+
+
+def _supported_claim(store: TruthStore, proposition: str) -> ClaimRecord:
+    claim = _claim(store, proposition)
+    evidence = store.capture_evidence(
+        kind="document",
+        source_locator=f"file:///{claim.id}.txt",
+        actor=HUMAN,
+        acquisition_method="paste",
+        content=proposition,
+        created_at=T0,
+    )
+    span = store.mark_span(
+        evidence_id=evidence.id,
+        selector=CompositeSelector(exact=proposition),
+        actor=HUMAN,
+        created_at=T1,
+    )
+    store.add_link(
+        from_claim_id=claim.id,
+        link_type="supports_span",
+        to_kind="evidence_span",
+        to_ref=span.id,
+        actor=HUMAN,
+        created_at=T1,
+    )
+    return claim
 
 
 def _states(store: TruthStore) -> dict[str, object]:
@@ -868,7 +946,7 @@ def test_integrity_accepts_human_reaffirmation_that_clears_review_overlay(
     assert integrity_findings(store) == ()
 
 
-def test_integrity_enforces_status_actor_basis_gesture_and_surface_laws(
+def test_integrity_enforces_status_actor_basis_and_gesture_laws(
     store: TruthStore,
 ) -> None:
     review = _claim(store, "Review actor law")
@@ -988,10 +1066,115 @@ def test_integrity_enforces_status_actor_basis_gesture_and_surface_laws(
         "invalid_expiry_basis_ref",
         "invalid_retraction_basis",
         "invalid_rejection_gesture_kind",
-        "invalid_rejection_surface",
         "invalid_challenge_basis",
         "invalid_superseded_basis",
     } <= codes
+
+
+@pytest.mark.parametrize(
+    ("terminal_status", "actor", "basis_kind"),
+    [
+        ("rejected", HUMAN, "gesture"),
+        ("expired", SYSTEM, "rule"),
+        ("superseded", HUMAN, "claim_link"),
+        ("retracted", HUMAN, "redaction"),
+    ],
+)
+def test_integrity_rejects_terminal_challengers_at_the_challenge_boundary(
+    store: TruthStore,
+    terminal_status: str,
+    actor: Actor,
+    basis_kind: str,
+) -> None:
+    target = _claim(store, f"Target for {terminal_status} challenger")
+    challenger = _supported_claim(store, f"{terminal_status} challenger")
+    _confirm(store, target, at=T1)
+    _raw_status(
+        store,
+        challenger,
+        status=terminal_status,
+        actor=actor,
+        basis_kind=basis_kind,
+        basis_ref=new_id(),
+        at=T2,
+    )
+    conflict = ClaimLinkRecord(
+        id=new_id(),
+        from_claim_id=challenger.id,
+        link_type="conflicts_with",
+        to_kind="claim",
+        to_ref=target.id,
+        role_json=None,
+        target_fingerprint=None,
+        fingerprint_reviewed_at=None,
+        created_at=T3,
+        created_by_kind=HUMAN.kind,
+        created_by_ref=HUMAN.ref,
+    )
+    conn = store.connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        store._insert_link_locked(conn, conflict)
+        store._insert_status_event_locked(
+            conn,
+            claim_id=target.id,
+            status="challenged",
+            actor=HUMAN,
+            basis_kind="conflict_link",
+            basis_ref=conflict.id,
+            at=T3,
+        )
+        conn.execute("COMMIT")
+    finally:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        conn.close()
+
+    assert "invalid_challenge_challenger_status" in {
+        item.code for item in integrity_findings(store)
+    }
+
+
+def test_integrity_requires_unredacted_supported_challenger_at_event_boundary(
+    store: TruthStore,
+) -> None:
+    target = _claim(store, "Target for raw redacted challenger")
+    challenger = _supported_claim(store, "Raw redacted challenger")
+    unsupported = _claim(store, "Unsupported challenger")
+    second_target = _claim(store, "Target for unsupported challenger")
+    _confirm(store, target, at=T1)
+    _confirm(store, second_target, at=T1)
+    with store.write_transaction() as conn:
+        conn.execute(
+            "UPDATE claims SET proposition = '[redacted]', structured_json = NULL, "
+            "redacted_at = ? WHERE id = ?",
+            (T2, challenger.id),
+        )
+    for challenged, challenging in (
+        (target, challenger),
+        (second_target, unsupported),
+    ):
+        conflict = store.add_link(
+            from_claim_id=challenging.id,
+            link_type="conflicts_with",
+            to_kind="claim",
+            to_ref=challenged.id,
+            actor=HUMAN,
+            created_at=T3,
+        )
+        _raw_status(
+            store,
+            challenged,
+            status="challenged",
+            actor=HUMAN,
+            basis_kind="conflict_link",
+            basis_ref=conflict.id,
+            at=T3,
+        )
+
+    codes = {item.code for item in integrity_findings(store)}
+    assert "redacted_challenge_challenger" in codes
+    assert "challenge_without_usable_support" in codes
 
 
 def test_integrity_requires_bidirectional_atomic_supersession_pairs(
@@ -1170,6 +1353,96 @@ def test_integrity_allows_only_fully_bound_reasoned_rejection_replay(
             at=T2,
         )
     assert "gesture_replay" in {item.code for item in integrity_findings(store)}
+
+
+def test_redacting_profile_reject_as_false_is_integrity_clean(
+    truth_root: Path,
+) -> None:
+    store = _redacting_store(truth_root)
+    source, _result, _gesture, _link = _lifecycle_reject_as_false(store)
+
+    assert store.get_claim(source.id).proposition == "[redacted]"
+    assert integrity_findings(store) == ()
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "source_canonical_sha256",
+        "result_canonical_sha256",
+        "rejection_binding_sha256",
+    ],
+)
+def test_integrity_detects_rejection_binding_hash_tampering(
+    truth_root: Path,
+    field: str,
+) -> None:
+    store = _redacting_store(truth_root)
+    source, result, _gesture, link = _lifecycle_reject_as_false(store)
+    role = rejection_binding_role(
+        rejection_class="reject_as_false",
+        source_canonical_sha256=source.canonical_sha256,
+        result_canonical_sha256=result.canonical_sha256,
+    )
+    role[field] = "0" * 64
+
+    conn = store.connect()
+    try:
+        conn.execute("DROP TRIGGER claim_links_append_only_update")
+        conn.execute(
+            "UPDATE claim_links SET role_json = ? WHERE id = ?",
+            (canonical_json(role), link.id),
+        )
+    finally:
+        conn.close()
+
+    assert "invalid_rejection_binding" in {
+        item.code for item in integrity_findings(store)
+    }
+
+
+@pytest.mark.parametrize(
+    ("corruption", "expected_code"),
+    [
+        ("missing_link", "missing_rejection_binding_link"),
+        ("wrong_link", "missing_rejection_binding_link"),
+        ("missing_proof", "invalid_rejection_binding"),
+    ],
+)
+def test_integrity_requires_exact_rejection_link_and_proof(
+    truth_root: Path,
+    corruption: str,
+    expected_code: str,
+) -> None:
+    store = _redacting_store(truth_root)
+    source, result, _gesture, link = _lifecycle_reject_as_false(store)
+
+    conn = store.connect()
+    try:
+        conn.execute("DROP TRIGGER claim_links_append_only_update")
+        conn.execute("DROP TRIGGER claim_links_append_only_delete")
+        if corruption == "missing_link":
+            conn.execute("DELETE FROM claim_links WHERE id = ?", (link.id,))
+        elif corruption == "wrong_link":
+            conn.execute(
+                "UPDATE claim_links SET link_type = 'conflicts_with' WHERE id = ?",
+                (link.id,),
+            )
+        else:
+            role = rejection_binding_role(
+                rejection_class="reject_as_false",
+                source_canonical_sha256=source.canonical_sha256,
+                result_canonical_sha256=result.canonical_sha256,
+            )
+            role.pop("rejection_binding_sha256")
+            conn.execute(
+                "UPDATE claim_links SET role_json = ? WHERE id = ?",
+                (canonical_json(role), link.id),
+            )
+    finally:
+        conn.close()
+
+    assert expected_code in {item.code for item in integrity_findings(store)}
 
 
 def test_integrity_is_fail_soft_for_malformed_rows_and_checks_producer_trust_ledger(
@@ -1378,10 +1651,24 @@ def test_integrity_checks_standing_policy_redaction_contract(store: TruthStore) 
     codes = {item.code for item in integrity_findings(store)}
     assert {
         "invalid_policy_redaction_basis_ref",
-        "undeclared_policy_redaction",
         "invalid_policy_redaction_status",
         "policy_redaction_of_confirmed",
     } <= codes
+
+
+def test_profile_tightening_does_not_retroactively_invalidate_history(
+    truth_root: Path,
+) -> None:
+    store = _redacting_store(truth_root)
+    _lifecycle_reject_as_false(store)
+    assert integrity_findings(store) == ()
+
+    tightened = store.profile.to_dict()
+    tightened["gate"]["rejected_content"] = "retain"
+    tightened["gate"]["confirmation_surfaces"] = ["cli"]
+    dump_profile(tightened, store.paths.config)
+
+    assert integrity_findings(store) == ()
 
 
 def test_cross_store_premise_resolution_is_fail_soft_and_status_aware(
@@ -1494,14 +1781,20 @@ def test_redaction_integrity_accepts_evidence_cascade_and_direct_span_gestures(
             (T2, cascade_evidence.id),
         )
         conn.execute(
-            "UPDATE evidence_spans SET quote_exact = NULL, redacted_at = ? "
+            "UPDATE evidence_spans SET selector_json = ?, quote_exact = NULL, "
+            "redacted_at = ? "
             "WHERE evidence_id = ?",
-            (T2, cascade_evidence.id),
+            (REDACTED_SELECTOR_JSON, T2, cascade_evidence.id),
         )
         conn.execute(
-            "UPDATE evidence_spans SET quote_exact = NULL, redacted_at = ? "
+            "UPDATE evidence_spans SET selector_json = ?, quote_exact = NULL, "
+            "redacted_at = ? "
             "WHERE id = ?",
-            (T2, direct_span.id),
+            (REDACTED_SELECTOR_JSON, T2, direct_span.id),
+        )
+        conn.execute(
+            "UPDATE gestures SET payload_excerpt = '[redacted]' WHERE id IN (?, ?)",
+            (cascade_gesture.id, direct_gesture.id),
         )
 
         events = [
@@ -1577,6 +1870,10 @@ def test_redacted_claim_never_appears_as_current(store: TruthStore) -> None:
             "UPDATE claims SET proposition = '[redacted]', structured_json = NULL, "
             "redacted_at = ? WHERE id = ?",
             (T2, claim.id),
+        )
+        conn.execute(
+            "UPDATE gestures SET payload_excerpt = '[redacted]' WHERE subject_ref = ?",
+            (claim.id,),
         )
         conn.execute(
             "INSERT INTO redaction_events "
