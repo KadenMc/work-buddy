@@ -1,0 +1,28 @@
+store_id: f1000000000040008000000000000001
+profile: project-canon
+title: Checked-in frozen truth schema v1
+allowed_claim_kinds:
+- measurement
+- decision_outcome
+required_fields:
+  measurement:
+  - subject_entity
+  - metric.name
+  - value.amount
+  - value.unit
+  decision_outcome:
+  - decision
+  - outcome
+gate:
+  rejected_content: redact
+  confirmation_surfaces:
+  - dashboard
+  - cli
+  - chat_consent
+  block_materialize_on_flags: true
+projection: resident
+export_committed: true
+proposal_max_age: 14d
+extensions:
+  fixture: checked-in-frozen-v1
+
