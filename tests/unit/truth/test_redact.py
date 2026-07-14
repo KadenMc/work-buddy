@@ -486,7 +486,7 @@ def test_shared_blob_survives_until_last_reference_is_redacted(
     assert not path.exists()
 
 
-def test_caller_transaction_defers_cleanup_and_rollback_preserves_blob(
+def test_caller_transaction_refuses_blob_redaction_without_side_effects(
     store: TruthStore,
     redactor: TruthRedactor,
 ) -> None:
@@ -507,16 +507,16 @@ def test_caller_transaction_defers_cleanup_and_rollback_preserves_blob(
     conn = store.connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        result = redactor.redact(
-            subject_kind="evidence",
-            subject_ref=evidence.id,
-            actor=HUMAN,
-            reason="privacy",
-            basis_kind="gesture",
-            basis_ref=gesture.id,
-            conn=conn,
-        )
-        assert result.blob_cleanup_pending is True
+        with pytest.raises(InvariantViolation, match="caller-owned transaction"):
+            redactor.redact(
+                subject_kind="evidence",
+                subject_ref=evidence.id,
+                actor=HUMAN,
+                reason="privacy",
+                basis_kind="gesture",
+                basis_ref=gesture.id,
+                conn=conn,
+            )
         assert path.exists()
         conn.rollback()
     finally:
@@ -524,6 +524,8 @@ def test_caller_transaction_defers_cleanup_and_rollback_preserves_blob(
 
     assert store.get_evidence(evidence.id).redacted_at is None
     assert path.exists()
+    with store.connect() as verify:
+        assert store._get_gesture_locked(verify, gesture.id).consumed_at is None
     assert redactor.cleanup_redacted_blob(evidence.content_sha256) is False
 
 
