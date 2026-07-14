@@ -142,6 +142,7 @@ steps:
     input:
       claim_kind: measurement
       proposition: ElectricRAG evaluation size is 144 queries.
+      valid_from: "2026-07-14T00:00:00Z"
       structured:
         subject_entity: project:electricrag
         metric:
@@ -158,11 +159,12 @@ steps:
     input:
       predecessor_ref: claim_eval_v1
       successor_ref: claim_eval_v2
-      reason: Evaluation corpus expanded after the first accepted measurement.
+      supersession_reason: updated
+      reason_note: Evaluation corpus expanded after the first accepted measurement.
     expect:
-      predecessor_status: superseded
+      predecessor_status: confirmed
       successor_status: proposed
-      link_kind: successor
+      link_kind: supersedes
   - op: confirm
     id: claim_eval_v2
     input:
@@ -178,6 +180,7 @@ steps:
       surface: dashboard
     expect:
       status: confirmed
+      predecessor_status: superseded
   - op: sweep
     id: sweep_eval
     input:
