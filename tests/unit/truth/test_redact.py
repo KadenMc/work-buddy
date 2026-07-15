@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from base64 import b64encode
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,6 +18,10 @@ from work_buddy.truth.store import GestureRecord, PostCommitHookError, TruthStor
 
 HUMAN = Actor("human", "human:test")
 SYSTEM = Actor("system", "system:truth-policy")
+
+
+class _SimulatedCrash(BaseException):
+    """Interrupt execution without exercising normal exception cleanup."""
 
 
 def _profile(**overrides):
@@ -450,6 +455,430 @@ def test_post_commit_hook_failure_still_deletes_redacted_blob(
 
     assert store.get_evidence(evidence.id).redacted_at is not None
     assert not path.exists()
+
+
+def test_commit_boundary_crash_recovers_export_marker_and_blob_on_open(
+    store: TruthStore,
+    redactor: TruthRedactor,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = b"COMMIT-BOUNDARY-BLOB-PRIVATE-93f7a2"
+    locator = "file:///commit-boundary-private.bin"
+    evidence = store.capture_evidence(
+        kind="document",
+        source_locator=locator,
+        actor=HUMAN,
+        acquisition_method="paste",
+        content=secret,
+    )
+    blob = store.resolve_blob_path(evidence.content_path or "")
+    gesture = _gesture(
+        store,
+        subject_ref=evidence.id,
+        payload_sha256=evidence.content_sha256,
+    )
+    event_id = new_id()
+    encoded_secret = b64encode(secret)
+    assert encoded_secret in store.paths.claims_export.read_bytes()
+
+    def crash_before_post_commit_hook() -> None:
+        raise _SimulatedCrash("immediately after SQLite commit")
+
+    monkeypatch.setattr(store, "_run_on_commit", crash_before_post_commit_hook)
+    with pytest.raises(_SimulatedCrash, match="after SQLite commit"):
+        redactor.redact(
+            subject_kind="evidence",
+            subject_ref=evidence.id,
+            actor=HUMAN,
+            reason="privacy",
+            basis_kind="gesture",
+            basis_ref=gesture.id,
+            event_id=event_id,
+        )
+
+    recovery = store._redaction_recovery_intent_path(event_id)
+    blob_intent = store._blob_cleanup_intent_path(evidence.content_sha256)
+    current = store.get_evidence(evidence.id)
+    assert current is not None and current.redacted_at is not None
+    assert current.content_path is None
+    assert recovery.name == event_id
+    assert recovery.read_bytes() == b""
+    assert secret.decode() not in str(recovery)
+    assert locator not in str(recovery)
+    assert blob_intent.is_file()
+    assert blob.is_file()
+    # The pre-redaction projection is destroyed before COMMIT; a hard crash
+    # can leave it absent, never stale with readable content.
+    assert not store.paths.claims_export.exists()
+
+    reopened = TruthStore.open(store.paths.sidecar, inline_content_bytes=8)
+
+    assert not recovery.exists()
+    assert not blob_intent.exists()
+    assert not blob.exists()
+    assert encoded_secret not in reopened.paths.claims_export.read_bytes()
+
+
+def test_commit_boundary_crash_recovers_claim_export_on_open(
+    store: TruthStore,
+    redactor: TruthRedactor,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "COMMIT-BOUNDARY-CLAIM-PRIVATE-8b41df"
+    claim = _claim(store, secret)
+    gesture = _gesture(
+        store,
+        subject_ref=claim.id,
+        payload_sha256=claim.canonical_sha256,
+    )
+    event_id = new_id()
+    assert secret.encode() in store.paths.claims_export.read_bytes()
+
+    monkeypatch.setattr(
+        store,
+        "_run_on_commit",
+        lambda: (_ for _ in ()).throw(_SimulatedCrash()),
+    )
+    with pytest.raises(_SimulatedCrash):
+        redactor.redact(
+            subject_kind="claim",
+            subject_ref=claim.id,
+            actor=HUMAN,
+            reason="privacy",
+            basis_kind="gesture",
+            basis_ref=gesture.id,
+            event_id=event_id,
+        )
+
+    recovery = store._redaction_recovery_intent_path(event_id)
+    assert store.get_claim(claim.id).proposition == "[redacted]"
+    assert recovery.read_bytes() == b""
+    assert secret not in str(recovery)
+    assert not store.paths.claims_export.exists()
+
+    reopened = TruthStore.open(store.paths.sidecar, inline_content_bytes=8)
+
+    assert not recovery.exists()
+    assert secret.encode() not in reopened.paths.claims_export.read_bytes()
+
+
+def test_commit_boundary_crash_recovers_inline_evidence_export_on_open(
+    store: TruthStore,
+    redactor: TruthRedactor,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "INL7x9"
+    locator = "file:///inline-commit-boundary.txt"
+    evidence = store.capture_evidence(
+        kind="document",
+        source_locator=locator,
+        actor=HUMAN,
+        acquisition_method="paste",
+        content=secret,
+    )
+    assert evidence.content == secret
+    assert evidence.content_path is None
+    gesture = _gesture(
+        store,
+        subject_ref=evidence.id,
+        payload_sha256=evidence.content_sha256,
+    )
+    event_id = new_id()
+    assert secret.encode() in store.paths.claims_export.read_bytes()
+
+    monkeypatch.setattr(
+        store,
+        "_run_on_commit",
+        lambda: (_ for _ in ()).throw(_SimulatedCrash()),
+    )
+    with pytest.raises(_SimulatedCrash):
+        redactor.redact(
+            subject_kind="evidence",
+            subject_ref=evidence.id,
+            actor=HUMAN,
+            reason="privacy",
+            basis_kind="gesture",
+            basis_ref=gesture.id,
+            event_id=event_id,
+        )
+
+    recovery = store._redaction_recovery_intent_path(event_id)
+    current = store.get_evidence(evidence.id)
+    assert current is not None and current.redacted_at is not None
+    assert current.content is None
+    assert recovery.read_bytes() == b""
+    assert secret not in str(recovery)
+    assert locator not in str(recovery)
+    assert not store.paths.claims_export.exists()
+
+    reopened = TruthStore.open(store.paths.sidecar, inline_content_bytes=8)
+
+    assert not recovery.exists()
+    assert secret.encode() not in reopened.paths.claims_export.read_bytes()
+
+
+def test_precommit_rollback_leaves_safe_intent_that_open_cancels(
+    store: TruthStore,
+    redactor: TruthRedactor,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = b"ROLLBACK-PRIVATE-BLOB-4af951"
+    locator = "file:///rollback-before-commit-private.bin"
+    evidence = store.capture_evidence(
+        kind="document",
+        source_locator=locator,
+        actor=HUMAN,
+        acquisition_method="paste",
+        content=secret,
+    )
+    blob = store.resolve_blob_path(evidence.content_path or "")
+    gesture = _gesture(
+        store,
+        subject_ref=evidence.id,
+        payload_sha256=evidence.content_sha256,
+    )
+    queue = store._queue_blob_cleanup_locked
+
+    def queue_then_abort(conn, digest: str) -> Path:
+        intent = queue(conn, digest)
+        assert intent.name == evidence.content_sha256
+        assert intent.read_bytes() == b""
+        assert secret.decode() not in str(intent)
+        assert locator not in str(intent)
+        raise RuntimeError("fail before database commit")
+
+    monkeypatch.setattr(store, "_queue_blob_cleanup_locked", queue_then_abort)
+    with pytest.raises(RuntimeError, match="before database commit"):
+        redactor.redact(
+            subject_kind="evidence",
+            subject_ref=evidence.id,
+            actor=HUMAN,
+            reason="privacy",
+            basis_kind="gesture",
+            basis_ref=gesture.id,
+        )
+
+    intent = store._blob_cleanup_intent_path(evidence.content_sha256)
+    current = store.get_evidence(evidence.id)
+    assert current is not None and current.redacted_at is None
+    assert current.content_path == evidence.content_path
+    assert intent.is_file()
+    assert blob.is_file()
+
+    reopened = TruthStore.open(store.paths.sidecar, inline_content_bytes=8)
+
+    assert reopened.blob_reference_count(evidence.content_sha256) == 1
+    assert blob.is_file()
+    assert not intent.exists()
+
+
+def test_next_open_recovers_crash_after_redaction_commit_before_unlink(
+    store: TruthStore,
+    redactor: TruthRedactor,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = b"COMMITTED-PRIVATE-BLOB-9c150e"
+    locator = "file:///commit-before-unlink-private.bin"
+    evidence = store.capture_evidence(
+        kind="document",
+        source_locator=locator,
+        actor=HUMAN,
+        acquisition_method="paste",
+        content=secret,
+    )
+    blob = store.resolve_blob_path(evidence.content_path or "")
+    gesture = _gesture(
+        store,
+        subject_ref=evidence.id,
+        payload_sha256=evidence.content_sha256,
+    )
+
+    def crash_before_unlink(_digest: str) -> bool:
+        raise _SimulatedCrash("after commit, before unlink")
+
+    monkeypatch.setattr(store, "_finish_blob_cleanup", crash_before_unlink)
+    with pytest.raises(_SimulatedCrash, match="before unlink"):
+        redactor.redact(
+            subject_kind="evidence",
+            subject_ref=evidence.id,
+            actor=HUMAN,
+            reason="privacy",
+            basis_kind="gesture",
+            basis_ref=gesture.id,
+        )
+
+    intent = store._blob_cleanup_intent_path(evidence.content_sha256)
+    current = store.get_evidence(evidence.id)
+    assert current is not None and current.redacted_at is not None
+    assert current.content_path is None
+    assert intent.name == evidence.content_sha256
+    assert intent.read_bytes() == b""
+    assert secret.decode() not in str(intent)
+    assert locator not in str(intent)
+    assert blob.is_file()
+
+    reopened = TruthStore.open(store.paths.sidecar, inline_content_bytes=8)
+
+    assert not blob.exists()
+    assert not intent.exists()
+    assert reopened.recover_pending_blob_cleanups() == ()
+
+
+def test_explicit_deferred_cleanup_finishes_and_clears_durable_intent(
+    store: TruthStore,
+    redactor: TruthRedactor,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence = store.capture_evidence(
+        kind="document",
+        source_locator="file:///caller-finished-cleanup.bin",
+        actor=HUMAN,
+        acquisition_method="paste",
+        content=b"CALLER-FINISHED-PRIVATE-BLOB-52c3d6",
+    )
+    blob = store.resolve_blob_path(evidence.content_path or "")
+    gesture = _gesture(
+        store,
+        subject_ref=evidence.id,
+        payload_sha256=evidence.content_sha256,
+    )
+
+    with monkeypatch.context() as crash_patch:
+        crash_patch.setattr(
+            store,
+            "_finish_blob_cleanup",
+            lambda _digest: (_ for _ in ()).throw(_SimulatedCrash()),
+        )
+        with pytest.raises(_SimulatedCrash):
+            redactor.redact(
+                subject_kind="evidence",
+                subject_ref=evidence.id,
+                actor=HUMAN,
+                reason="privacy",
+                basis_kind="gesture",
+                basis_ref=gesture.id,
+            )
+
+    intent = store._blob_cleanup_intent_path(evidence.content_sha256)
+    assert intent.is_file()
+
+    assert redactor.cleanup_redacted_blob(evidence.content_sha256) is True
+    assert not blob.exists()
+    assert not intent.exists()
+
+
+def test_next_open_recovers_crash_after_unlink_before_intent_removal(
+    store: TruthStore,
+    redactor: TruthRedactor,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence = store.capture_evidence(
+        kind="document",
+        source_locator="file:///unlink-before-intent-removal.bin",
+        actor=HUMAN,
+        acquisition_method="paste",
+        content=b"UNLINKED-PRIVATE-BLOB-01b6c3",
+    )
+    blob = store.resolve_blob_path(evidence.content_path or "")
+    gesture = _gesture(
+        store,
+        subject_ref=evidence.id,
+        payload_sha256=evidence.content_sha256,
+    )
+
+    with monkeypatch.context() as crash_patch:
+        crash_patch.setattr(
+            store,
+            "_finish_blob_cleanup",
+            lambda _digest: (_ for _ in ()).throw(_SimulatedCrash()),
+        )
+        with pytest.raises(_SimulatedCrash):
+            redactor.redact(
+                subject_kind="evidence",
+                subject_ref=evidence.id,
+                actor=HUMAN,
+                reason="privacy",
+                basis_kind="gesture",
+                basis_ref=gesture.id,
+            )
+
+    intent = store._blob_cleanup_intent_path(evidence.content_sha256)
+    path_type = type(intent)
+    unlink = path_type.unlink
+
+    def crash_removing_intent(path: Path, *args, **kwargs) -> None:
+        if path == intent:
+            raise _SimulatedCrash("after unlink, before intent removal")
+        unlink(path, *args, **kwargs)
+
+    with monkeypatch.context() as crash_patch:
+        crash_patch.setattr(path_type, "unlink", crash_removing_intent)
+        with pytest.raises(_SimulatedCrash, match="intent removal"):
+            store.recover_pending_blob_cleanups()
+
+    assert not blob.exists()
+    assert intent.is_file()
+
+    reopened = TruthStore.open(store.paths.sidecar, inline_content_bytes=8)
+
+    assert not blob.exists()
+    assert not intent.exists()
+    assert reopened.recover_pending_blob_cleanups() == ()
+
+
+def test_reintroduced_reference_cancels_pending_cleanup_on_open(
+    store: TruthStore,
+    redactor: TruthRedactor,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    content = b"REINTRODUCED-SHARED-BLOB-d74432"
+    evidence = store.capture_evidence(
+        kind="document",
+        source_locator="file:///original-private.bin",
+        actor=HUMAN,
+        acquisition_method="paste",
+        content=content,
+    )
+    blob = store.resolve_blob_path(evidence.content_path or "")
+    gesture = _gesture(
+        store,
+        subject_ref=evidence.id,
+        payload_sha256=evidence.content_sha256,
+    )
+
+    with monkeypatch.context() as crash_patch:
+        crash_patch.setattr(
+            store,
+            "_finish_blob_cleanup",
+            lambda _digest: (_ for _ in ()).throw(_SimulatedCrash()),
+        )
+        with pytest.raises(_SimulatedCrash):
+            redactor.redact(
+                subject_kind="evidence",
+                subject_ref=evidence.id,
+                actor=HUMAN,
+                reason="privacy",
+                basis_kind="gesture",
+                basis_ref=gesture.id,
+            )
+
+    intent = store._blob_cleanup_intent_path(evidence.content_sha256)
+    replacement = store.capture_evidence(
+        kind="document",
+        source_locator="file:///new-live-reference.bin",
+        actor=HUMAN,
+        acquisition_method="paste",
+        content=content,
+    )
+    assert replacement.content_sha256 == evidence.content_sha256
+    assert intent.is_file()
+
+    reopened = TruthStore.open(store.paths.sidecar, inline_content_bytes=8)
+
+    assert reopened.blob_reference_count(evidence.content_sha256) == 1
+    assert reopened.read_evidence_bytes(replacement.id) == content
+    assert blob.is_file()
+    assert not intent.exists()
 
 
 def test_failed_recovery_export_cannot_leave_pre_redaction_plaintext(

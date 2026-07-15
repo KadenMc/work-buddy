@@ -10,7 +10,6 @@ import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from work_buddy.truth.contracts import Actor, InvariantViolation, TERMINAL_STATUSES
@@ -121,7 +120,7 @@ class TruthRedactor:
             digest = pending_blob()
             if digest is not None:
                 try:
-                    self.store._remove_unreferenced_blob(digest)
+                    self.store._finish_blob_cleanup(digest)
                 except Exception as cleanup_exc:
                     raise PostCommitHookError(
                         "redaction committed but blob cleanup failed after a "
@@ -430,8 +429,15 @@ class TruthRedactor:
         actor_ref = self._require_actor_ref(actor)
         timestamp = _timestamp(at, "redaction at")
 
+        # A process can be interrupted after a prior redaction commits but
+        # before its blob is unlinked.  Normal store opening already retries
+        # these durable intents; doing the same here also makes a same-process
+        # idempotent retry repair that window before inspecting the tombstone.
+        if conn is None:
+            self.store.recover_pending_redactions()
+            self.store.recover_pending_blob_cleanups()
+
         blob_digest: str | None = None
-        blob_path: Path | None = None
         cascade_events: tuple[RedactionEventRecord, ...] = ()
         status_event: StatusEventRecord | None = None
         with self._write_with_cleanup_on_hook_failure(
@@ -507,7 +513,6 @@ class TruthRedactor:
 
             if subject.content_path is not None:
                 blob_digest = subject.payload_sha256
-                blob_path = self.store.resolve_blob_path(subject.content_path)
             self._redact_content_locked(write_conn, subject, timestamp)
             event = self._insert_event_locked(
                 write_conn,
@@ -550,18 +555,24 @@ class TruthRedactor:
                         conn=write_conn,
                     )
                     status_event = transition.event if transition.created else None
+            # Remove the pre-redaction recovery export before this transaction
+            # can commit.  The content-free event marker survives any crash
+            # until the post-commit hook republishes the redacted projection.
+            self.store._queue_redaction_recovery_locked(write_conn, event.id)
+            if blob_digest is not None:
+                # The digest-only marker must exist before the redaction commit
+                # so interruption at any later point remains recoverable.
+                self.store._queue_blob_cleanup_locked(write_conn, blob_digest)
 
         cleanup_pending = conn is not None and blob_digest is not None
         blob_deleted = False
         if conn is None and blob_digest is not None:
-            existed = bool(blob_path and blob_path.exists())
             try:
-                self.store._remove_unreferenced_blob(blob_digest)
+                blob_deleted = self.store._finish_blob_cleanup(blob_digest)
             except Exception as exc:
                 raise PostCommitHookError(
                     "redaction committed but blob cleanup failed"
                 ) from exc
-            blob_deleted = existed and bool(blob_path and not blob_path.exists())
         return RedactionResult(
             event=event,
             cascade_events=cascade_events,
@@ -576,5 +587,11 @@ class TruthRedactor:
 
         path = self.store.resolve_blob_path(f"blobs/{digest}")
         existed = path.exists()
+        intent = self.store._blob_cleanup_intent_path(digest)
+        if intent.is_file():
+            deleted = self.store._finish_blob_cleanup(digest)
+            return deleted or (existed and not path.exists())
+        # Compatibility for callers cleaning stores written before durable
+        # intents existed.  New redactions always take the intent path above.
         self.store._remove_unreferenced_blob(digest)
         return existed and not path.exists()
