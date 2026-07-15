@@ -450,4 +450,3 @@ INSERT INTO "sqlite_sequence" VALUES('ledger_records',4);
 INSERT INTO "sqlite_sequence" VALUES('claim_status_events',2);
 COMMIT;
 PRAGMA user_version=1;
-
