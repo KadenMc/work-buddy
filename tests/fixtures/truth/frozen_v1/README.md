@@ -12,4 +12,3 @@ those durable identities.
 
 Do not regenerate this fixture when adding v2. Add a new frozen directory for
 the newly released schema only after that schema settles.
-

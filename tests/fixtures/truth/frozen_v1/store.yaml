@@ -25,4 +25,3 @@ export_committed: true
 proposal_max_age: 14d
 extensions:
   fixture: checked-in-frozen-v1
-
