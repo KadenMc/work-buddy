@@ -801,6 +801,72 @@ def test_import_round_trip_preserves_valid_confirmation_and_later_drift_warning(
     assert restored_weakest_link[0].severity == "warning"
 
 
+def test_import_rejects_status_seq_that_reverses_canonical_ledger_order(
+    tmp_path: Path,
+) -> None:
+    source = _create_store(tmp_path / "source")
+    premise = source.propose_claim(
+        proposition="Premise whose overlay must remain active",
+        claim_kind="fact",
+        actor=HUMAN,
+        created_at=NOW,
+        status_at=NOW,
+    ).claim
+    conclusion = source.propose_claim(
+        proposition="Conclusion blocked by the active overlay",
+        claim_kind="fact",
+        actor=HUMAN,
+        created_at=NOW,
+        status_at=NOW,
+    ).claim
+    source.add_derivation(
+        claim_id=conclusion.id,
+        method="entailment",
+        premises=[premise.id],
+        actor=HUMAN,
+        created_at=NOW,
+    )
+    _confirm_claim(source, premise, at=LATER)
+    TruthLifecycle(source).mark_needs_review(
+        claim_id=premise.id,
+        actor=SYSTEM,
+        basis_kind="rule",
+        basis_ref="active-premise-review",
+        at=LATER,
+    )
+    _force_confirm_without_weakest_link(source, conclusion, at=LATER)
+
+    objects = _objects(export_store(source).path.read_bytes())
+    premise_statuses = [
+        item
+        for item in objects
+        if item["record_type"] == "claim_status_event"
+        and item["record"]["claim_id"] == premise.id
+    ]
+    confirmed = next(
+        item for item in premise_statuses if item["record"]["status"] == "confirmed"
+    )
+    overlay = next(
+        item
+        for item in premise_statuses
+        if item["record"]["status"] == "needs_review"
+    )
+    confirmed["record"]["seq"], overlay["record"]["seq"] = (
+        overlay["record"]["seq"],
+        confirmed["record"]["seq"],
+    )
+
+    target = tmp_path / "target"
+    target.mkdir()
+    with pytest.raises(
+        TruthImportError,
+        match="status_sequence_ledger_order_mismatch",
+    ):
+        import_store(_v2_payload(objects), target, registry=FakeRegistry())
+
+    assert list(target.iterdir()) == []
+
+
 @pytest.mark.parametrize("followup", ["needs_review", "retracted"])
 def test_import_rejects_historical_weakest_link_violation_after_later_states(
     tmp_path: Path,
