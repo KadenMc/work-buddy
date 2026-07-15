@@ -100,6 +100,8 @@ LINK_TARGETS: Mapping[str, frozenset[str]] = {
 }
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _RECORD_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+_BLOB_CLEANUP_DIRNAME = "pending-blob-deletions"
+_REDACTION_RECOVERY_DIRNAME = "pending-redaction-recoveries"
 
 
 class PostCommitHookError(InvariantViolation):
@@ -617,8 +619,18 @@ class TruthStore:
             store._configure_storage(conn)
         finally:
             conn.close()
-        if migrated:
-            store._run_on_commit()
+        # Redaction removes the old rebuildable export before commit and leaves
+        # a content-free recovery marker until post-commit publication succeeds.
+        # Rebuild that projection before returning an interrupted store.  Blob
+        # cleanup is attempted even if projection recovery reports a hook error,
+        # so one failed observer cannot strand sensitive bytes indefinitely.
+        try:
+            if migrated or store._pending_redaction_recovery_paths():
+                store._run_on_commit()
+        except Exception:
+            store.recover_pending_blob_cleanups()
+            raise
+        store.recover_pending_blob_cleanups()
         return store
 
     @property
@@ -727,6 +739,7 @@ class TruthStore:
     def _run_on_commit(self) -> None:
         """Publish the required recovery export, then notify the observer."""
 
+        redaction_recoveries = self._pending_redaction_recovery_paths()
         try:
             if self.profile.export_committed:
                 from work_buddy.truth.export import export_store
@@ -754,6 +767,13 @@ class TruthStore:
         except Exception as exc:
             raise PostCommitHookError(
                 "truth ledger commit succeeded but the post-commit hook failed"
+            ) from exc
+        try:
+            self._clear_redaction_recovery_paths(redaction_recoveries)
+        except Exception as exc:
+            raise PostCommitHookError(
+                "truth ledger commit succeeded but its redaction recovery "
+                "marker could not be cleared"
             ) from exc
 
     @staticmethod
@@ -1273,6 +1293,189 @@ class TruthStore:
             raise
         finally:
             cleanup.close()
+
+    def _blob_cleanup_intent_path(self, digest: str) -> Path:
+        """Return the digest-only durable intent path for one blob cleanup."""
+
+        normalized = _valid_digest(digest, "content_sha256")
+        return self._paths.sidecar / _BLOB_CLEANUP_DIRNAME / normalized
+
+    def _queue_blob_cleanup_locked(
+        self,
+        conn: sqlite3.Connection,
+        digest: str,
+    ) -> Path:
+        """Durably request post-commit deletion while the redaction is locked.
+
+        The empty, SHA-256-named marker is intentionally created before the
+        database commit.  If the transaction rolls back or another live
+        reference is added before recovery, the reference check in
+        ``_finish_blob_cleanup`` cancels the stale request without deleting the
+        blob.  The marker contains neither evidence content nor its locator.
+        """
+
+        self._require_transaction(conn)
+        intent = self._blob_cleanup_intent_path(digest)
+        atomic_write_bytes(intent, b"")
+        return intent
+
+    def _redaction_recovery_intent_path(self, event_id: str) -> Path:
+        """Return the content-free recovery marker for one redaction event."""
+
+        normalized = _valid_record_id(event_id, "redaction event id")
+        return self._paths.sidecar / _REDACTION_RECOVERY_DIRNAME / normalized
+
+    def _pending_redaction_recovery_paths(self) -> tuple[Path, ...]:
+        """Snapshot complete redaction recovery markers in stable order."""
+
+        recovery_dir = self._paths.sidecar / _REDACTION_RECOVERY_DIRNAME
+        if not recovery_dir.is_dir():
+            return ()
+        return tuple(
+            candidate
+            for candidate in sorted(
+                recovery_dir.iterdir(),
+                key=lambda path: path.name,
+            )
+            if candidate.is_file()
+            and _RECORD_ID_RE.fullmatch(candidate.name) is not None
+        )
+
+    def _queue_redaction_recovery_locked(
+        self,
+        conn: sqlite3.Connection,
+        event_id: str,
+    ) -> Path:
+        """Make a redaction's post-commit projection work crash-recoverable.
+
+        The empty marker contains only the random redaction-event identifier.
+        It is published before the old recovery export is removed, both while
+        the database writer lock is held.  A rollback may therefore leave a
+        missing rebuildable export, but a successful commit can never leave a
+        pre-redaction export containing the destroyed payload.
+        """
+
+        self._require_transaction(conn)
+        intent = self._redaction_recovery_intent_path(event_id)
+        atomic_write_bytes(intent, b"")
+        try:
+            self._paths.claims_export.unlink(missing_ok=True)
+        except OSError as exc:
+            raise InvariantViolation(
+                "could not remove the pre-redaction recovery export"
+            ) from exc
+        return intent
+
+    def _clear_redaction_recovery_paths(self, paths: Sequence[Path]) -> None:
+        """Clear only the marker snapshot covered by a successful export."""
+
+        if not paths:
+            return
+        recovery_dir = (
+            self._paths.sidecar / _REDACTION_RECOVERY_DIRNAME
+        ).resolve()
+        cleanup = self._open_connection()
+        try:
+            # Wait out a redaction that may have published its marker before
+            # committing or rolling back.  New markers use different random
+            # event ids and are not part of this snapshot.
+            cleanup.execute("BEGIN IMMEDIATE")
+            for path in paths:
+                resolved = path.resolve()
+                if resolved.parent != recovery_dir:
+                    raise InvariantViolation(
+                        "redaction recovery marker resolves outside its directory"
+                    )
+                _valid_record_id(resolved.name, "redaction recovery marker")
+                resolved.unlink(missing_ok=True)
+            cleanup.execute("COMMIT")
+        except Exception:
+            if cleanup.in_transaction:
+                cleanup.execute("ROLLBACK")
+            raise
+        finally:
+            cleanup.close()
+        try:
+            recovery_dir.rmdir()
+        except OSError:
+            pass
+
+    def recover_pending_redactions(self) -> tuple[str, ...]:
+        """Rebuild post-redaction projections and clear covered markers."""
+
+        pending = self._pending_redaction_recovery_paths()
+        if not pending:
+            return ()
+        self._run_on_commit()
+        return tuple(path.name for path in pending if not path.exists())
+
+    def _finish_blob_cleanup(self, digest: str) -> bool:
+        """Finish one durable deletion intent under a fresh reference check.
+
+        Filesystem deletion happens while ``BEGIN IMMEDIATE`` excludes captures
+        and redactions that could change the blob refcount.  The intent is
+        removed only after unlink succeeds.  Therefore interruption before
+        unlink leaves both files for retry, while interruption after unlink
+        leaves an idempotent marker whose retry observes a missing blob.
+        """
+
+        normalized = _valid_digest(digest, "content_sha256")
+        intent = self._blob_cleanup_intent_path(normalized)
+        cleanup_dir = intent.parent
+        cleanup = self._open_connection()
+        deleted = False
+        try:
+            cleanup.execute("BEGIN IMMEDIATE")
+            if not intent.is_file():
+                cleanup.execute("COMMIT")
+                return False
+            count = cleanup.execute(
+                "SELECT COUNT(*) FROM evidence WHERE content_sha256 = ? "
+                "AND content_path IS NOT NULL",
+                (normalized,),
+            ).fetchone()[0]
+            if int(count) == 0:
+                blob = self.resolve_blob_path(f"blobs/{normalized}")
+                existed = blob.exists()
+                blob.unlink(missing_ok=True)
+                deleted = existed and not blob.exists()
+            # A live reference makes this intent stale.  The future redaction
+            # of that reference will enqueue a new request if deletion is then
+            # permitted.
+            intent.unlink(missing_ok=True)
+            cleanup.execute("COMMIT")
+        except Exception:
+            if cleanup.in_transaction:
+                cleanup.execute("ROLLBACK")
+            raise
+        finally:
+            cleanup.close()
+        try:
+            cleanup_dir.rmdir()
+        except OSError:
+            # Another intent (or an interrupted atomic-write temp file) still
+            # owns the directory.  A later open will scan it again.
+            pass
+        return deleted
+
+    def recover_pending_blob_cleanups(self) -> tuple[str, ...]:
+        """Retry every complete digest-only blob deletion intent."""
+
+        cleanup_dir = self._paths.sidecar / _BLOB_CLEANUP_DIRNAME
+        if not cleanup_dir.is_dir():
+            return ()
+        recovered: list[str] = []
+        for candidate in sorted(cleanup_dir.iterdir(), key=lambda path: path.name):
+            if not candidate.is_file() or _SHA256_RE.fullmatch(candidate.name) is None:
+                continue
+            digest = candidate.name
+            self._finish_blob_cleanup(digest)
+            recovered.append(digest)
+        try:
+            cleanup_dir.rmdir()
+        except OSError:
+            pass
+        return tuple(recovered)
 
     def _read_evidence_bytes_locked(
         self,
