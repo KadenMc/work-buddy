@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from base64 import b64encode
 from pathlib import Path
+from threading import Event, Thread
 from types import SimpleNamespace
 
 import pytest
@@ -157,6 +158,32 @@ def _gesture(
     )
     with store.write_transaction() as conn:
         return store._insert_gesture_locked(conn, record)
+
+
+def _begin_inflight_claim_redaction(
+    store: TruthStore,
+    claim_id: str,
+    event_id: str,
+):
+    """Publish a recovery marker while retaining the SQLite writer lock."""
+
+    at = utc_now()
+    conn = store.connect()
+    conn.execute("BEGIN IMMEDIATE")
+    conn.execute(
+        "UPDATE claims SET proposition = '[redacted]', structured_json = NULL, "
+        "redacted_at = ? WHERE id = ?",
+        (at, claim_id),
+    )
+    conn.execute(
+        "INSERT INTO redaction_events "
+        "(id, subject_kind, subject_ref, at, actor_ref, basis_kind, "
+        "basis_ref, reason) VALUES (?, 'claim', ?, ?, ?, 'gesture', ?, 'privacy')",
+        (event_id, claim_id, at, HUMAN.ref, f"gesture:{event_id}"),
+    )
+    store._insert_ledger_record_locked(conn, "redaction_event", event_id)
+    store._queue_redaction_recovery_locked(conn, event_id)
+    return conn
 
 
 def test_gesture_redaction_retains_claim_identity_hash_and_appends_costatus(
@@ -481,7 +508,7 @@ def test_commit_boundary_crash_recovers_export_marker_and_blob_on_open(
     encoded_secret = b64encode(secret)
     assert encoded_secret in store.paths.claims_export.read_bytes()
 
-    def crash_before_post_commit_hook() -> None:
+    def crash_before_post_commit_hook(**_kwargs) -> None:
         raise _SimulatedCrash("immediately after SQLite commit")
 
     monkeypatch.setattr(store, "_run_on_commit", crash_before_post_commit_hook)
@@ -537,7 +564,7 @@ def test_commit_boundary_crash_recovers_claim_export_on_open(
     monkeypatch.setattr(
         store,
         "_run_on_commit",
-        lambda: (_ for _ in ()).throw(_SimulatedCrash()),
+        lambda **_kwargs: (_ for _ in ()).throw(_SimulatedCrash()),
     )
     with pytest.raises(_SimulatedCrash):
         redactor.redact(
@@ -560,6 +587,216 @@ def test_commit_boundary_crash_recovers_claim_export_on_open(
 
     assert not recovery.exists()
     assert secret.encode() not in reopened.paths.claims_export.read_bytes()
+
+
+def test_export_disabled_recovery_observer_waits_for_inflight_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = TruthStore.create(
+        tmp_path / "observer-barrier",
+        _profile(export_committed=False),
+        inline_content_bytes=8,
+    )
+    claim = _claim(store, "OBSERVER-MUST-NOT-SEE-PRECOMMIT-SECRET")
+    observed: list[str] = []
+    observer_called = Event()
+
+    def observer(recovered: TruthStore) -> None:
+        observed.append(recovered.get_claim(claim.id).proposition)
+        observer_called.set()
+
+    recovery = TruthStore.open(
+        store.paths.sidecar,
+        inline_content_bytes=8,
+        on_commit=observer,
+    )
+    event_id = new_id()
+    conn = _begin_inflight_claim_redaction(store, claim.id, event_id)
+    barrier_entered = Event()
+    release_barrier = Event()
+
+    def controlled_barrier() -> None:
+        barrier_entered.set()
+        assert release_barrier.wait(timeout=10)
+
+    monkeypatch.setattr(recovery, "_writer_barrier", controlled_barrier)
+    results: list[tuple[str, ...]] = []
+    failures: list[BaseException] = []
+
+    def recover() -> None:
+        try:
+            results.append(recovery.recover_pending_redactions())
+        except BaseException as exc:  # pragma: no cover - assertion reports detail
+            failures.append(exc)
+
+    worker = Thread(target=recover)
+    worker.start()
+    assert barrier_entered.wait(timeout=10)
+    assert not observer_called.is_set()
+
+    conn.execute("COMMIT")
+    conn.close()
+    release_barrier.set()
+    worker.join(timeout=10)
+
+    assert not worker.is_alive()
+    assert failures == []
+    assert results == [(event_id,)]
+    assert observed == ["[redacted]"]
+    assert not store._redaction_recovery_intent_path(event_id).exists()
+
+
+def test_recovery_recheck_avoids_duplicate_export_disabled_observer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = TruthStore.create(
+        tmp_path / "observer-recheck",
+        _profile(export_committed=False),
+        inline_content_bytes=8,
+    )
+    claim = _claim(store, "ORIGINAL-HOOK-WINS-WHILE-RECOVERY-WAITS")
+    observed: list[str] = []
+
+    def observer(recovered: TruthStore) -> None:
+        observed.append(recovered.get_claim(claim.id).proposition)
+
+    store._on_commit = observer
+    recovery = TruthStore.open(
+        store.paths.sidecar,
+        inline_content_bytes=8,
+        on_commit=observer,
+    )
+    event_id = new_id()
+    conn = _begin_inflight_claim_redaction(store, claim.id, event_id)
+    barrier_entered = Event()
+    release_barrier = Event()
+
+    def controlled_barrier() -> None:
+        barrier_entered.set()
+        assert release_barrier.wait(timeout=10)
+
+    monkeypatch.setattr(recovery, "_writer_barrier", controlled_barrier)
+    failures: list[BaseException] = []
+
+    def recover() -> None:
+        try:
+            recovery.recover_pending_redactions()
+        except BaseException as exc:  # pragma: no cover - assertion reports detail
+            failures.append(exc)
+
+    worker = Thread(target=recover)
+    worker.start()
+    assert barrier_entered.wait(timeout=10)
+
+    conn.execute("COMMIT")
+    conn.close()
+    store._run_on_commit(required=False)
+    assert observed == ["[redacted]"]
+
+    release_barrier.set()
+    worker.join(timeout=10)
+
+    assert not worker.is_alive()
+    assert failures == []
+    assert observed == ["[redacted]"]
+    assert not store._redaction_recovery_intent_path(event_id).exists()
+
+
+def test_rolled_back_redaction_rebuilds_export_without_commit_observer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = TruthStore.create(
+        tmp_path / "observer-rollback",
+        _profile(export_committed=True),
+        inline_content_bytes=8,
+    )
+    secret = "ROLLED-BACK-REDACTION-REMAINS-LIVE"
+    claim = _claim(store, secret)
+    observed: list[str] = []
+
+    def observer(recovered: TruthStore) -> None:
+        observed.append(recovered.get_claim(claim.id).proposition)
+
+    recovery = TruthStore.open(
+        store.paths.sidecar,
+        inline_content_bytes=8,
+        on_commit=observer,
+    )
+    event_id = new_id()
+    conn = _begin_inflight_claim_redaction(store, claim.id, event_id)
+    assert not store.paths.claims_export.exists()
+    barrier_entered = Event()
+    release_barrier = Event()
+
+    def controlled_barrier() -> None:
+        barrier_entered.set()
+        assert release_barrier.wait(timeout=10)
+
+    monkeypatch.setattr(recovery, "_writer_barrier", controlled_barrier)
+    results: list[tuple[str, ...]] = []
+    failures: list[BaseException] = []
+
+    def recover() -> None:
+        try:
+            results.append(recovery.recover_pending_redactions())
+        except BaseException as exc:  # pragma: no cover - assertion reports detail
+            failures.append(exc)
+
+    worker = Thread(target=recover)
+    worker.start()
+    assert barrier_entered.wait(timeout=10)
+    assert observed == []
+
+    conn.execute("ROLLBACK")
+    conn.close()
+    release_barrier.set()
+    worker.join(timeout=10)
+
+    assert not worker.is_alive()
+    assert failures == []
+    assert results == [(event_id,)]
+    assert observed == []
+    assert store.get_claim(claim.id).proposition == secret
+    assert secret.encode() in store.paths.claims_export.read_bytes()
+    assert not store._redaction_recovery_intent_path(event_id).exists()
+
+
+@pytest.mark.parametrize(
+    ("directory_name", "recover"),
+    [
+        (
+            "pending-redaction-recoveries",
+            lambda store: store._pending_redaction_recovery_paths(),
+        ),
+        (
+            "pending-blob-deletions",
+            lambda store: store.recover_pending_blob_cleanups(),
+        ),
+    ],
+)
+def test_concurrent_recovery_directory_removal_is_an_empty_snapshot(
+    store: TruthStore,
+    monkeypatch: pytest.MonkeyPatch,
+    directory_name: str,
+    recover,
+) -> None:
+    directory = store.paths.sidecar / directory_name
+    directory.mkdir()
+    path_type = type(directory)
+    iterdir = path_type.iterdir
+
+    def remove_before_enumeration(path: Path):
+        if path == directory:
+            directory.rmdir()
+            raise FileNotFoundError(directory)
+        return iterdir(path)
+
+    monkeypatch.setattr(path_type, "iterdir", remove_before_enumeration)
+
+    assert recover(store) == ()
 
 
 def test_commit_boundary_crash_recovers_inline_evidence_export_on_open(
@@ -589,7 +826,7 @@ def test_commit_boundary_crash_recovers_inline_evidence_export_on_open(
     monkeypatch.setattr(
         store,
         "_run_on_commit",
-        lambda: (_ for _ in ()).throw(_SimulatedCrash()),
+        lambda **_kwargs: (_ for _ in ()).throw(_SimulatedCrash()),
     )
     with pytest.raises(_SimulatedCrash):
         redactor.redact(
