@@ -1917,6 +1917,33 @@ def integrity_findings(
         status_rows = read_conn.execute(
             "SELECT * FROM claim_status_events ORDER BY claim_id, seq"
         ).fetchall()
+        highest_status_ledger_seq = 0
+        highest_status_event_id: str | None = None
+        for row in sorted(status_rows, key=lambda item: int(item["seq"])):
+            event_id = row["id"]
+            event_ledger_seq = ledger_sequence.get(
+                ("claim_status_event", event_id)
+            )
+            if event_ledger_seq is None:
+                add(
+                    "missing_ledger_record",
+                    "claim_status_event",
+                    event_id,
+                    "durable row is absent from ledger_records",
+                )
+                continue
+            if event_ledger_seq < highest_status_ledger_seq:
+                add(
+                    "status_sequence_ledger_order_mismatch",
+                    "status_event",
+                    event_id,
+                    f"status seq {row['seq']} follows event "
+                    f"{highest_status_event_id} but ledger seq "
+                    f"{event_ledger_seq} precedes {highest_status_ledger_seq}",
+                )
+                continue
+            highest_status_ledger_seq = event_ledger_seq
+            highest_status_event_id = event_id
         events_by_gesture: dict[str, list[sqlite3.Row]] = defaultdict(list)
         for row in status_rows:
             if row["basis_kind"] == "gesture" and row["basis_ref"] is not None:
@@ -2554,26 +2581,11 @@ def integrity_findings(
                 and candidate_ledger_seq < boundary_ledger_seq
             )
 
-        def base_status_at_event(
+        def ordered_status_events_before(
             claim_id: str,
             boundary_event: sqlite3.Row,
-        ) -> sqlite3.Row | None:
-            eligible: list[sqlite3.Row] = []
-            for candidate in status_rows:
-                if (
-                    candidate["claim_id"] != claim_id
-                    or candidate["status"] == "needs_review"
-                    or not status_event_precedes(candidate, boundary_event)
-                ):
-                    continue
-                eligible.append(candidate)
-            return eligible[-1] if eligible else None
-
-        def resolved_status_at_event(
-            claim_id: str,
-            boundary_event: sqlite3.Row,
-        ) -> sqlite3.Row | None:
-            """Resolve base state plus review overlay immediately before a boundary."""
+        ) -> list[sqlite3.Row]:
+            """Return eligible history in canonical ledger order."""
 
             eligible = [
                 candidate
@@ -2581,6 +2593,35 @@ def integrity_findings(
                 if candidate["claim_id"] == claim_id
                 and status_event_precedes(candidate, boundary_event)
             ]
+            return sorted(
+                eligible,
+                key=lambda candidate: ledger_sequence[
+                    ("claim_status_event", candidate["id"])
+                ],
+            )
+
+        def base_status_at_event(
+            claim_id: str,
+            boundary_event: sqlite3.Row,
+        ) -> sqlite3.Row | None:
+            return next(
+                (
+                    candidate
+                    for candidate in reversed(
+                        ordered_status_events_before(claim_id, boundary_event)
+                    )
+                    if candidate["status"] != "needs_review"
+                ),
+                None,
+            )
+
+        def resolved_status_at_event(
+            claim_id: str,
+            boundary_event: sqlite3.Row,
+        ) -> sqlite3.Row | None:
+            """Resolve base state plus review overlay immediately before a boundary."""
+
+            eligible = ordered_status_events_before(claim_id, boundary_event)
             base = next(
                 (
                     candidate
@@ -2599,9 +2640,9 @@ def integrity_findings(
                 ),
                 None,
             )
-            human_clear_seq = max(
+            human_clear_ledger_seq = max(
                 (
-                    int(candidate["seq"])
+                    ledger_sequence[("claim_status_event", candidate["id"])]
                     for candidate in eligible
                     if candidate["status"] != "needs_review"
                     and candidate["actor_kind"] == "human"
@@ -2611,7 +2652,8 @@ def integrity_findings(
             )
             if (
                 overlay is not None
-                and int(overlay["seq"]) > human_clear_seq
+                and ledger_sequence[("claim_status_event", overlay["id"])]
+                > human_clear_ledger_seq
                 and base["status"] not in TERMINAL_STATUSES
             ):
                 return overlay
@@ -3335,16 +3377,21 @@ def integrity_findings(
                 if (
                     conclusion is not None
                     and conclusion.base_status == "confirmed"
-                    and conclusion_confirmations
                     and not confirmation_errors
                     and (not premise_exists or premise_status != "confirmed")
                 ):
+                    detail = (
+                        f"premise {premise_ref} is no longer confirmed after a "
+                        "valid conclusion confirmation"
+                        if conclusion_confirmations
+                        else f"premise {premise_ref} is unconfirmed on a derivation "
+                        "attached after the conclusion was confirmed"
+                    )
                     add(
                         "confirmed_derivation_has_unconfirmed_premise",
                         "derivation",
                         derivation_id,
-                        f"premise {premise_ref} is no longer confirmed after a "
-                        "valid conclusion confirmation",
+                        detail,
                         severity="warning",
                     )
         for row in premise_rows:

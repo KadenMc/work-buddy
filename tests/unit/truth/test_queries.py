@@ -1677,6 +1677,72 @@ def test_integrity_weakest_link_treats_review_overlay_as_unconfirmed(
     assert {item.severity for item in weakest_link} == {"error"}
 
 
+def test_integrity_uses_ledger_order_when_status_seq_is_forged(
+    store: TruthStore,
+) -> None:
+    premise = _claim(store, "Premise with forged status order")
+    conclusion = _claim(store, "Conclusion must see the review overlay")
+    store.add_derivation(
+        claim_id=conclusion.id,
+        method="entailment",
+        premises=[premise.id],
+        actor=HUMAN,
+        created_at=T0,
+    )
+    _confirm(store, premise, at=T1)
+    _overlay(store, premise, at=T1, basis_kind="rule")
+    _confirm(store, conclusion, at=T1)
+
+    conn = store.connect()
+    try:
+        rows = {
+            row["status"]: row
+            for row in conn.execute(
+                "SELECT id, status, seq FROM claim_status_events "
+                "WHERE claim_id = ? AND status IN ('confirmed', 'needs_review')",
+                (premise.id,),
+            )
+        }
+        confirmed = rows["confirmed"]
+        overlay = rows["needs_review"]
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("DROP TRIGGER claim_status_events_append_only_update")
+        conn.execute(
+            "UPDATE claim_status_events SET seq = -1 WHERE id = ?",
+            (confirmed["id"],),
+        )
+        conn.execute(
+            "UPDATE claim_status_events SET seq = ? WHERE id = ?",
+            (confirmed["seq"], overlay["id"]),
+        )
+        conn.execute(
+            "UPDATE claim_status_events SET seq = ? WHERE id = ?",
+            (overlay["seq"], confirmed["id"]),
+        )
+        conn.execute("COMMIT")
+    finally:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        conn.close()
+
+    findings = integrity_findings(store)
+    sequence_findings = [
+        item
+        for item in findings
+        if item.code == "status_sequence_ledger_order_mismatch"
+    ]
+    weakest_link = [
+        item
+        for item in findings
+        if item.code == "confirmed_derivation_has_unconfirmed_premise"
+    ]
+    assert sequence_findings
+    assert {item.severity for item in sequence_findings} == {"error"}
+    assert weakest_link
+    assert {item.severity for item in weakest_link} == {"error"}
+    assert any("status 'needs_review'" in item.detail for item in weakest_link)
+
+
 def test_integrity_weakest_link_uses_confirmation_time_then_warns_on_drift(
     store: TruthStore,
 ) -> None:
@@ -1795,7 +1861,7 @@ def test_integrity_weakest_link_keeps_historical_error_after_later_states(
     assert any("status 'proposed'" in item.detail for item in weakest_link)
 
 
-def test_integrity_does_not_retroactively_apply_a_later_derivation(
+def test_integrity_warns_without_retroactive_error_for_a_later_derivation(
     store: TruthStore,
 ) -> None:
     premise = _claim(store, "Later provenance premise")
@@ -1809,10 +1875,14 @@ def test_integrity_does_not_retroactively_apply_a_later_derivation(
         created_at=T2,
     )
 
-    assert not any(
-        item.code == "confirmed_derivation_has_unconfirmed_premise"
+    weakest_link = [
+        item
         for item in integrity_findings(store)
-    )
+        if item.code == "confirmed_derivation_has_unconfirmed_premise"
+    ]
+    assert len(weakest_link) == 1
+    assert weakest_link[0].severity == "warning"
+    assert "attached after" in weakest_link[0].detail
 
 
 def test_integrity_allows_only_fully_bound_reasoned_rejection_replay(
