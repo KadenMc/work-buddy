@@ -625,8 +625,13 @@ class TruthStore:
         # cleanup is attempted even if projection recovery reports a hook error,
         # so one failed observer cannot strand sensitive bytes indefinitely.
         try:
-            if migrated or store._pending_redaction_recovery_paths():
+            if migrated:
+                # Migration is itself a committed state change and retains its
+                # normal hook even if another recovery caller just cleared a
+                # redaction marker.
                 store._run_on_commit()
+            else:
+                store.recover_pending_redactions()
         except Exception:
             store.recover_pending_blob_cleanups()
             raise
@@ -720,9 +725,17 @@ class TruthStore:
 
         owned = self._open_connection()
         committed = False
+        created_redaction_recovery = False
         try:
             owned.execute("BEGIN IMMEDIATE")
+            recovery_names_before = {
+                path.name for path in self._pending_redaction_recovery_paths()
+            }
             yield owned
+            created_redaction_recovery = any(
+                path.name not in recovery_names_before
+                for path in self._pending_redaction_recovery_paths()
+            )
             owned.execute("COMMIT")
             committed = True
         except Exception:
@@ -732,14 +745,78 @@ class TruthStore:
         finally:
             owned.close()
         if committed:
-            self._run_on_commit()
+            self._run_on_commit(required=not created_redaction_recovery)
 
     _write_transaction = write_transaction
 
-    def _run_on_commit(self) -> None:
+    def _writer_barrier(self) -> None:
+        """Wait for any filesystem-visible, in-flight writer to settle."""
+
+        barrier = self._open_connection()
+        try:
+            barrier.execute("BEGIN IMMEDIATE")
+            barrier.execute("COMMIT")
+        except Exception:
+            if barrier.in_transaction:
+                barrier.execute("ROLLBACK")
+            raise
+        finally:
+            barrier.close()
+
+    def _run_on_commit(self, *, required: bool = True) -> None:
         """Publish the required recovery export, then notify the observer."""
 
-        redaction_recoveries = self._pending_redaction_recovery_paths()
+        initial_recoveries = self._pending_redaction_recovery_paths()
+        if initial_recoveries:
+            # A marker is published inside the redaction transaction, before
+            # COMMIT.  Its filesystem visibility therefore cannot prove that
+            # the corresponding database state is readable yet.  Wait for the
+            # writer, then retain only markers that still need recovery.
+            self._writer_barrier()
+            current = {
+                path.name: path
+                for path in self._pending_redaction_recovery_paths()
+            }
+            redaction_recoveries = tuple(
+                current[path.name]
+                for path in initial_recoveries
+                if path.name in current
+            )
+        else:
+            redaction_recoveries = ()
+        if not required and not redaction_recoveries:
+            # Another post-commit caller completed this redaction while we
+            # waited.  Its observer ran after the same writer barrier, so a
+            # second recovery notification would be redundant.
+            return
+        if not required and not self._committed_redaction_recovery_paths(
+            redaction_recoveries
+        ):
+            # The transaction that published these markers rolled back after
+            # removing the rebuildable export.  Restore that projection, but do
+            # not report a commit that never happened.
+            self._publish_recovery_export()
+            self._clear_redaction_recovery_paths(redaction_recoveries)
+            return
+        self._publish_recovery_export()
+        try:
+            if self._on_commit is not None:
+                self._on_commit(self)
+        except Exception as exc:
+            raise PostCommitHookError(
+                "truth ledger commit succeeded but the post-commit hook failed"
+            ) from exc
+        try:
+            self._clear_redaction_recovery_paths(redaction_recoveries)
+        except Exception as exc:
+            raise PostCommitHookError(
+                "truth ledger commit succeeded but its redaction recovery "
+                "marker could not be cleared"
+            ) from exc
+
+    def _publish_recovery_export(self) -> None:
+        """Publish the configured recovery export with privacy-safe failure."""
+
         try:
             if self.profile.export_committed:
                 from work_buddy.truth.export import export_store
@@ -760,20 +837,6 @@ class TruthStore:
             raise PostCommitHookError(
                 "truth ledger commit succeeded but the post-commit hook failed; "
                 "the stale recovery export was removed"
-            ) from exc
-        try:
-            if self._on_commit is not None:
-                self._on_commit(self)
-        except Exception as exc:
-            raise PostCommitHookError(
-                "truth ledger commit succeeded but the post-commit hook failed"
-            ) from exc
-        try:
-            self._clear_redaction_recovery_paths(redaction_recoveries)
-        except Exception as exc:
-            raise PostCommitHookError(
-                "truth ledger commit succeeded but its redaction recovery "
-                "marker could not be cleared"
             ) from exc
 
     @staticmethod
@@ -1331,15 +1394,40 @@ class TruthStore:
         recovery_dir = self._paths.sidecar / _REDACTION_RECOVERY_DIRNAME
         if not recovery_dir.is_dir():
             return ()
-        return tuple(
-            candidate
-            for candidate in sorted(
+        try:
+            candidates = sorted(
                 recovery_dir.iterdir(),
                 key=lambda path: path.name,
             )
+        except FileNotFoundError:
+            # A concurrent recovery cleared its last marker and removed the
+            # operational directory after our existence check.
+            return ()
+        return tuple(
+            candidate
+            for candidate in candidates
             if candidate.is_file()
             and _RECORD_ID_RE.fullmatch(candidate.name) is not None
         )
+
+    def _committed_redaction_recovery_paths(
+        self,
+        paths: Sequence[Path],
+    ) -> tuple[Path, ...]:
+        """Return recovery markers backed by committed redaction events."""
+
+        if not paths:
+            return ()
+        committed: list[Path] = []
+        with self._read_connection() as conn:
+            for path in paths:
+                row = conn.execute(
+                    "SELECT 1 FROM redaction_events WHERE id = ?",
+                    (path.name,),
+                ).fetchone()
+                if row is not None:
+                    committed.append(path)
+        return tuple(committed)
 
     def _queue_redaction_recovery_locked(
         self,
@@ -1406,7 +1494,7 @@ class TruthStore:
         pending = self._pending_redaction_recovery_paths()
         if not pending:
             return ()
-        self._run_on_commit()
+        self._run_on_commit(required=False)
         return tuple(path.name for path in pending if not path.exists())
 
     def _finish_blob_cleanup(self, digest: str) -> bool:
@@ -1464,8 +1552,15 @@ class TruthStore:
         cleanup_dir = self._paths.sidecar / _BLOB_CLEANUP_DIRNAME
         if not cleanup_dir.is_dir():
             return ()
+        try:
+            candidates = sorted(
+                cleanup_dir.iterdir(),
+                key=lambda path: path.name,
+            )
+        except FileNotFoundError:
+            return ()
         recovered: list[str] = []
-        for candidate in sorted(cleanup_dir.iterdir(), key=lambda path: path.name):
+        for candidate in candidates:
             if not candidate.is_file() or _SHA256_RE.fullmatch(candidate.name) is None:
                 continue
             digest = candidate.name
