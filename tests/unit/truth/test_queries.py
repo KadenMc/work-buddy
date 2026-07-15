@@ -1668,8 +1668,149 @@ def test_integrity_weakest_link_treats_review_overlay_as_unconfirmed(
     )
     _confirm(store, conclusion, at=T3)
 
-    assert any(
-        item.code == "confirmed_derivation_has_unconfirmed_premise" and item.subject_ref
+    weakest_link = [
+        item
+        for item in integrity_findings(store)
+        if item.code == "confirmed_derivation_has_unconfirmed_premise"
+    ]
+    assert weakest_link
+    assert {item.severity for item in weakest_link} == {"error"}
+
+
+def test_integrity_weakest_link_uses_confirmation_time_then_warns_on_drift(
+    store: TruthStore,
+) -> None:
+    premise = _claim(store, "Premise later superseded")
+    conclusion = _claim(store, "Conclusion valid when confirmed")
+    successor = _claim(
+        store,
+        "Replacement premise",
+        valid_from=T3,
+    )
+    _confirm(store, premise, at=T1)
+    store.add_derivation(
+        claim_id=conclusion.id,
+        method="entailment",
+        premises=[premise.id],
+        actor=HUMAN,
+        created_at=T1,
+    )
+    # The equal decision time intentionally proves cross-claim ordering comes
+    # from the canonical ledger, not from a strict timestamp comparison.
+    _confirm(store, conclusion, at=T1)
+
+    lifecycle = TruthLifecycle(store)
+    lifecycle.supersede_claim(
+        successor_claim_id=successor.id,
+        predecessor_claim_id=premise.id,
+        reason="updated",
+        actor=HUMAN,
+        created_at=T2,
+    )
+    gesture = lifecycle.mint_gesture(
+        subject_ref=successor.id,
+        actor=HUMAN,
+        surface="dashboard",
+        kind="confirm",
+        displayed_payload_sha256=successor.canonical_sha256,
+        at=T3,
+    )
+    lifecycle.confirm_claim(
+        claim_id=successor.id,
+        gesture_id=gesture.id,
+        actor=HUMAN,
+        expected_context_sha256=None,
+        observed_at=T3,
+    )
+    lifecycle.mark_needs_review(
+        claim_id=conclusion.id,
+        actor=SYSTEM,
+        basis_kind="rule",
+        basis_ref="premise-superseded",
+        at=T3,
+    )
+
+    weakest_link = [
+        item
+        for item in integrity_findings(store)
+        if item.code == "confirmed_derivation_has_unconfirmed_premise"
+    ]
+    assert len(weakest_link) == 1
+    assert weakest_link[0].severity == "warning"
+    assert "valid conclusion confirmation" in weakest_link[0].detail
+
+
+@pytest.mark.parametrize("followup", ["needs_review", "retracted"])
+def test_integrity_weakest_link_keeps_historical_error_after_later_states(
+    store: TruthStore,
+    followup: str,
+) -> None:
+    premise = _claim(store, f"Premise confirmed too late for {followup}")
+    conclusion = _claim(store, f"Invalid conclusion later {followup}")
+    store.add_derivation(
+        claim_id=conclusion.id,
+        method="entailment",
+        premises=[premise.id],
+        actor=HUMAN,
+        created_at=T0,
+    )
+    _confirm(store, conclusion, at=T1)
+    _confirm(store, premise, at=T2)
+
+    lifecycle = TruthLifecycle(store)
+    if followup == "needs_review":
+        lifecycle.mark_needs_review(
+            claim_id=conclusion.id,
+            actor=SYSTEM,
+            basis_kind="rule",
+            basis_ref="late-premise-confirmation",
+            at=T3,
+        )
+    else:
+        gesture = lifecycle.mint_gesture(
+            subject_ref=conclusion.id,
+            actor=HUMAN,
+            surface="dashboard",
+            kind="redact",
+            displayed_payload_sha256=conclusion.canonical_sha256,
+            at=T3,
+        )
+        TruthRedactor(store, lifecycle=lifecycle).redact(
+            subject_kind="claim",
+            subject_ref=conclusion.id,
+            actor=HUMAN,
+            reason="privacy",
+            basis_kind="gesture",
+            basis_ref=gesture.id,
+            at=T3,
+        )
+
+    weakest_link = [
+        item
+        for item in integrity_findings(store)
+        if item.code == "confirmed_derivation_has_unconfirmed_premise"
+    ]
+    assert weakest_link
+    assert {item.severity for item in weakest_link} == {"error"}
+    assert any("status 'proposed'" in item.detail for item in weakest_link)
+
+
+def test_integrity_does_not_retroactively_apply_a_later_derivation(
+    store: TruthStore,
+) -> None:
+    premise = _claim(store, "Later provenance premise")
+    conclusion = _claim(store, "Already confirmed conclusion")
+    _confirm(store, conclusion, at=T1)
+    store.add_derivation(
+        claim_id=conclusion.id,
+        method="later-provenance-attachment",
+        premises=[premise.id],
+        actor=HUMAN,
+        created_at=T2,
+    )
+
+    assert not any(
+        item.code == "confirmed_derivation_has_unconfirmed_premise"
         for item in integrity_findings(store)
     )
 

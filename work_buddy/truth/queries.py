@@ -2530,28 +2530,92 @@ def integrity_findings(
             if event["status"] == "confirmed":
                 confirmed_events_by_claim[event["claim_id"]].append(event)
 
+        def status_event_precedes(
+            candidate: sqlite3.Row,
+            boundary_event: sqlite3.Row,
+        ) -> bool:
+            """Order cross-claim status history by time and canonical ledger seq."""
+
+            try:
+                candidate_at = _time_key(candidate["at"], "candidate status at")
+                boundary_at = _time_key(boundary_event["at"], "boundary status at")
+            except InvariantViolation:
+                return False
+            candidate_ledger_seq = ledger_sequence.get(
+                ("claim_status_event", candidate["id"])
+            )
+            boundary_ledger_seq = ledger_sequence.get(
+                ("claim_status_event", boundary_event["id"])
+            )
+            return (
+                candidate_at <= boundary_at
+                and candidate_ledger_seq is not None
+                and boundary_ledger_seq is not None
+                and candidate_ledger_seq < boundary_ledger_seq
+            )
+
         def base_status_at_event(
             claim_id: str,
             boundary_event: sqlite3.Row,
         ) -> sqlite3.Row | None:
-            try:
-                boundary = _time_key(boundary_event["at"], "challenge at")
-            except InvariantViolation:
-                return None
             eligible: list[sqlite3.Row] = []
             for candidate in status_rows:
                 if (
                     candidate["claim_id"] != claim_id
                     or candidate["status"] == "needs_review"
-                    or int(candidate["seq"]) >= int(boundary_event["seq"])
+                    or not status_event_precedes(candidate, boundary_event)
                 ):
                     continue
-                try:
-                    if _time_key(candidate["at"], "challenger status at") <= boundary:
-                        eligible.append(candidate)
-                except InvariantViolation:
-                    continue
+                eligible.append(candidate)
             return eligible[-1] if eligible else None
+
+        def resolved_status_at_event(
+            claim_id: str,
+            boundary_event: sqlite3.Row,
+        ) -> sqlite3.Row | None:
+            """Resolve base state plus review overlay immediately before a boundary."""
+
+            eligible = [
+                candidate
+                for candidate in status_rows
+                if candidate["claim_id"] == claim_id
+                and status_event_precedes(candidate, boundary_event)
+            ]
+            base = next(
+                (
+                    candidate
+                    for candidate in reversed(eligible)
+                    if candidate["status"] != "needs_review"
+                ),
+                None,
+            )
+            if base is None:
+                return None
+            overlay = next(
+                (
+                    candidate
+                    for candidate in reversed(eligible)
+                    if candidate["status"] == "needs_review"
+                ),
+                None,
+            )
+            human_clear_seq = max(
+                (
+                    int(candidate["seq"])
+                    for candidate in eligible
+                    if candidate["status"] != "needs_review"
+                    and candidate["actor_kind"] == "human"
+                    and candidate["basis_kind"] == "gesture"
+                ),
+                default=0,
+            )
+            if (
+                overlay is not None
+                and int(overlay["seq"]) > human_clear_seq
+                and base["status"] not in TERMINAL_STATUSES
+            ):
+                return overlay
+            return base
 
         def challenger_has_usable_support_at(
             challenger_id: str,
@@ -3107,9 +3171,11 @@ def integrity_findings(
             for premise in premises:
                 premise_kind = premise["premise_kind"]
                 premise_ref = premise["premise_ref"]
+                local_premise_id: str | None = None
                 premise_status: str | None = None
                 premise_exists = False
                 if premise_kind == "local":
+                    local_premise_id = premise_ref
                     premise_state = states_by_id.get(premise_ref)
                     premise_exists = premise_state is not None
                     premise_status = (
@@ -3142,6 +3208,7 @@ def integrity_findings(
                         )
                         continue
                     if parsed.store_id == store.store_id:
+                        local_premise_id = parsed.record_id
                         premise_state = states_by_id.get(parsed.record_id)
                         premise_exists = premise_state is not None
                         premise_status = (
@@ -3204,16 +3271,81 @@ def integrity_findings(
                         f"unknown premise_kind {premise_kind!r}",
                     )
                     continue
+                if local_premise_id is None:
+                    continue
+
+                confirmation_errors = False
+                premise_ledger_key = canonical_json(
+                    {
+                        "derivation_id": derivation_id,
+                        "premise_ref": premise_ref,
+                    }
+                )
+                premise_ledger_seq = ledger_sequence.get(
+                    ("derivation_premise", premise_ledger_key)
+                )
+                # add_derivation intentionally permits later provenance
+                # attachment.  Only confirmations made after this derivation
+                # and this premise row existed exercised the weakest-link gate.
+                conclusion_confirmations = [
+                    confirmation
+                    for confirmation in confirmed_events_by_claim.get(
+                        conclusion_id,
+                        [],
+                    )
+                    if record_existed_at(
+                        record_at=row["created_at"],
+                        record_type="derivation",
+                        record_key=derivation_id,
+                        boundary_event=confirmation,
+                    )
+                    and premise_ledger_seq is not None
+                    and (
+                        ledger_sequence.get(
+                            ("claim_status_event", confirmation["id"])
+                        )
+                        or 0
+                    )
+                    > premise_ledger_seq
+                ]
+                for confirmation in conclusion_confirmations:
+                    premise_at_confirmation = resolved_status_at_event(
+                        local_premise_id,
+                        confirmation,
+                    )
+                    if (
+                        premise_at_confirmation is not None
+                        and premise_at_confirmation["status"] == "confirmed"
+                    ):
+                        continue
+                    confirmation_errors = True
+                    status_at_confirmation = (
+                        None
+                        if premise_at_confirmation is None
+                        else premise_at_confirmation["status"]
+                    )
+                    add(
+                        "confirmed_derivation_has_unconfirmed_premise",
+                        "derivation",
+                        derivation_id,
+                        f"premise {premise_ref} had status "
+                        f"{status_at_confirmation!r} when conclusion confirmation "
+                        f"{confirmation['id']} occurred",
+                    )
                 if (
                     conclusion is not None
                     and conclusion.base_status == "confirmed"
+                    and conclusion_confirmations
+                    and not confirmation_errors
                     and (not premise_exists or premise_status != "confirmed")
                 ):
                     add(
                         "confirmed_derivation_has_unconfirmed_premise",
                         "derivation",
                         derivation_id,
-                        f"premise {premise_ref} is not confirmed",
+                        f"premise {premise_ref} is no longer confirmed after a "
+                        "valid conclusion confirmation",
+                        severity="warning",
                     )
         for row in premise_rows:
             if row["derivation_id"] not in derivation_ids:

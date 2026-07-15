@@ -27,13 +27,22 @@ from work_buddy.truth.export import (
 )
 from work_buddy.truth.identity import canonical_json, new_id, sha256_bytes, truth_uri
 from work_buddy.truth.lifecycle import TruthLifecycle
+from work_buddy.truth.queries import integrity_findings
 from work_buddy.truth.redact import TruthRedactor
-from work_buddy.truth.store import GestureRecord, PostCommitHookError, TruthStore
+from work_buddy.truth.store import (
+    ClaimRecord,
+    GestureRecord,
+    PostCommitHookError,
+    TruthStore,
+)
 
 
 NOW = "2026-07-14T16:00:00.000+00:00"
 LATER = "2026-07-14T16:01:00.000+00:00"
+AFTER = "2026-07-14T16:02:00.000+00:00"
+FINAL = "2026-07-14T16:03:00.000+00:00"
 HUMAN = Actor("human", "user-1")
+SYSTEM = Actor("system", "truth-export-test")
 
 EVIDENCE_ID = "01" * 16
 BLOB_EVIDENCE_ID = "02" * 16
@@ -314,6 +323,58 @@ def _confirmed_payload(root: Path) -> bytes:
         at=LATER,
     )
     return export_store(store).path.read_bytes()
+
+
+def _confirm_claim(
+    store: TruthStore,
+    claim: ClaimRecord,
+    *,
+    at: str,
+) -> None:
+    lifecycle = TruthLifecycle(store)
+    gesture = lifecycle.mint_gesture(
+        subject_ref=claim.id,
+        actor=HUMAN,
+        surface="dashboard",
+        kind="confirm",
+        displayed_payload_sha256=claim.canonical_sha256,
+        at=at,
+    )
+    lifecycle.confirm_claim(
+        claim_id=claim.id,
+        gesture_id=gesture.id,
+        actor=HUMAN,
+        expected_context_sha256=None,
+        observed_at=at,
+    )
+
+
+def _force_confirm_without_weakest_link(
+    store: TruthStore,
+    claim: ClaimRecord,
+    *,
+    at: str,
+) -> None:
+    lifecycle = TruthLifecycle(store)
+    gesture = lifecycle.mint_gesture(
+        subject_ref=claim.id,
+        actor=HUMAN,
+        surface="dashboard",
+        kind="confirm",
+        displayed_payload_sha256=claim.canonical_sha256,
+        at=at,
+    )
+    with store.write_transaction() as conn:
+        store._consume_gesture_locked(conn, gesture.id, consumed_at=at)
+        store._insert_status_event_locked(
+            conn,
+            claim_id=claim.id,
+            status="confirmed",
+            actor=HUMAN,
+            basis_kind="gesture",
+            basis_ref=gesture.id,
+            at=at,
+        )
 
 
 def _table_rows(store: TruthStore, table: str, order: str) -> list[dict[str, Any]]:
@@ -647,30 +708,159 @@ def test_import_rejects_confirmed_derivation_with_unconfirmed_premise(
         actor=HUMAN,
         created_at=NOW,
     )
-    lifecycle = TruthLifecycle(source)
-    gesture = lifecycle.mint_gesture(
-        subject_ref=conclusion.id,
-        actor=HUMAN,
-        surface="dashboard",
-        kind="confirm",
-        displayed_payload_sha256=conclusion.canonical_sha256,
-        at=LATER,
-    )
-    with source.write_transaction() as conn:
-        source._consume_gesture_locked(conn, gesture.id, consumed_at=LATER)
-        source._insert_status_event_locked(
-            conn,
-            claim_id=conclusion.id,
-            status="confirmed",
-            actor=HUMAN,
-            basis_kind="gesture",
-            basis_ref=gesture.id,
-            at=LATER,
-        )
+    _force_confirm_without_weakest_link(source, conclusion, at=LATER)
 
     target = tmp_path / "target"
     target.mkdir()
 
+    with pytest.raises(
+        TruthImportError,
+        match="confirmed_derivation_has_unconfirmed_premise",
+    ):
+        import_store(export_store(source).path, target, registry=FakeRegistry())
+
+    assert list(target.iterdir()) == []
+
+
+def test_import_round_trip_preserves_valid_confirmation_and_later_drift_warning(
+    tmp_path: Path,
+) -> None:
+    source = _create_store(tmp_path / "source")
+    premise = source.propose_claim(
+        proposition="Premise valid at decision time",
+        claim_kind="fact",
+        actor=HUMAN,
+        created_at=NOW,
+        status_at=NOW,
+    ).claim
+    conclusion = source.propose_claim(
+        proposition="Conclusion whose foundation later moves",
+        claim_kind="fact",
+        actor=HUMAN,
+        created_at=NOW,
+        status_at=NOW,
+    ).claim
+    successor = source.propose_claim(
+        proposition="Replacement premise",
+        claim_kind="fact",
+        actor=HUMAN,
+        valid_from=AFTER,
+        created_at=NOW,
+        status_at=NOW,
+    ).claim
+    _confirm_claim(source, premise, at=LATER)
+    source.add_derivation(
+        claim_id=conclusion.id,
+        method="entailment",
+        premises=[premise.id],
+        actor=HUMAN,
+        created_at=LATER,
+    )
+    # Premise and conclusion decisions share a timestamp; ledger order proves
+    # the premise was already authoritative for the conclusion confirmation.
+    _confirm_claim(source, conclusion, at=LATER)
+    lifecycle = TruthLifecycle(source)
+    lifecycle.supersede_claim(
+        successor_claim_id=successor.id,
+        predecessor_claim_id=premise.id,
+        reason="updated",
+        actor=HUMAN,
+        created_at=AFTER,
+    )
+    _confirm_claim(source, successor, at=AFTER)
+    lifecycle.mark_needs_review(
+        claim_id=conclusion.id,
+        actor=SYSTEM,
+        basis_kind="rule",
+        basis_ref="premise-superseded",
+        at=FINAL,
+    )
+
+    source_weakest_link = [
+        item
+        for item in integrity_findings(source)
+        if item.code == "confirmed_derivation_has_unconfirmed_premise"
+    ]
+    assert len(source_weakest_link) == 1
+    assert source_weakest_link[0].severity == "warning"
+
+    target = tmp_path / "target"
+    target.mkdir()
+    restored = import_store(
+        export_store(source).path,
+        target,
+        registry=FakeRegistry(),
+    ).store
+
+    restored_weakest_link = [
+        item
+        for item in integrity_findings(restored)
+        if item.code == "confirmed_derivation_has_unconfirmed_premise"
+    ]
+    assert len(restored_weakest_link) == 1
+    assert restored_weakest_link[0].severity == "warning"
+
+
+@pytest.mark.parametrize("followup", ["needs_review", "retracted"])
+def test_import_rejects_historical_weakest_link_violation_after_later_states(
+    tmp_path: Path,
+    followup: str,
+) -> None:
+    source = _create_store(tmp_path / "source")
+    premise = source.propose_claim(
+        proposition=f"Premise confirmed too late for {followup}",
+        claim_kind="fact",
+        actor=HUMAN,
+        created_at=NOW,
+        status_at=NOW,
+    ).claim
+    conclusion = source.propose_claim(
+        proposition=f"Invalid conclusion later {followup}",
+        claim_kind="fact",
+        actor=HUMAN,
+        created_at=NOW,
+        status_at=NOW,
+    ).claim
+    source.add_derivation(
+        claim_id=conclusion.id,
+        method="deduction",
+        premises=[premise.id],
+        actor=HUMAN,
+        created_at=NOW,
+    )
+    _force_confirm_without_weakest_link(source, conclusion, at=LATER)
+    _confirm_claim(source, premise, at=AFTER)
+
+    lifecycle = TruthLifecycle(source)
+    if followup == "needs_review":
+        lifecycle.mark_needs_review(
+            claim_id=conclusion.id,
+            actor=SYSTEM,
+            basis_kind="rule",
+            basis_ref="late-premise-confirmation",
+            at=FINAL,
+        )
+    else:
+        gesture = lifecycle.mint_gesture(
+            subject_ref=conclusion.id,
+            actor=HUMAN,
+            surface="dashboard",
+            kind="redact",
+            displayed_payload_sha256=conclusion.canonical_sha256,
+            at=FINAL,
+        )
+        TruthRedactor(source, lifecycle=lifecycle).redact(
+            subject_kind="claim",
+            subject_ref=conclusion.id,
+            actor=HUMAN,
+            reason="privacy",
+            basis_kind="gesture",
+            basis_ref=gesture.id,
+            at=FINAL,
+        )
+
+    target = tmp_path / "target"
+    target.mkdir()
     with pytest.raises(
         TruthImportError,
         match="confirmed_derivation_has_unconfirmed_premise",

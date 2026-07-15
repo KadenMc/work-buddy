@@ -120,6 +120,7 @@ class WorkloadRunner:
             assert [item.code for item in findings] == [
                 "confirmed_derivation_has_unconfirmed_premise"
             ]
+            assert [item.severity for item in findings] == ["warning"]
             conn = self.store.connect()
             try:
                 conclusion = conn.execute(
