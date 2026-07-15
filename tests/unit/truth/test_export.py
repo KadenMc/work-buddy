@@ -25,8 +25,9 @@ from work_buddy.truth.export import (
     export_store,
     import_store,
 )
-from work_buddy.truth.identity import canonical_json, new_id, sha256_bytes
+from work_buddy.truth.identity import canonical_json, new_id, sha256_bytes, truth_uri
 from work_buddy.truth.lifecycle import TruthLifecycle
+from work_buddy.truth.redact import TruthRedactor
 from work_buddy.truth.store import GestureRecord, PostCommitHookError, TruthStore
 
 
@@ -203,34 +204,27 @@ def _populate_full_store(root: Path) -> TruthStore:
         at=LATER,
     )
 
-    gesture = GestureRecord(
-        id=GESTURE_ID,
-        at=LATER,
-        surface="dashboard",
-        actor_ref="user-1",
-        kind="redact",
+    lifecycle = TruthLifecycle(store)
+    gesture = lifecycle.mint_gesture(
         subject_ref=derived.id,
-        payload_sha256=derived.canonical_sha256,
-        payload_excerpt=derived.proposition,
-        context_sha256=None,
-        expires_at=None,
-        consumed_at=LATER,
+        actor=HUMAN,
+        surface="dashboard",
+        kind="redact",
+        displayed_payload_sha256=derived.canonical_sha256,
+        gesture_id=GESTURE_ID,
+        at=LATER,
+    )
+    TruthRedactor(store, lifecycle=lifecycle).redact(
+        subject_kind="claim",
+        subject_ref=derived.id,
+        actor=HUMAN,
+        reason="privacy",
+        basis_kind="gesture",
+        basis_ref=gesture.id,
+        event_id=REDACTION_ID,
+        at=LATER,
     )
     with store.write_transaction() as conn:
-        store._insert_gesture_locked(conn, gesture)
-        conn.execute(
-            "UPDATE claims SET proposition = '[redacted]', structured_json = NULL, "
-            "redacted_at = ? WHERE id = ?",
-            (LATER, derived.id),
-        )
-        conn.execute(
-            "INSERT INTO redaction_events "
-            "(id, subject_kind, subject_ref, at, actor_ref, basis_kind, "
-            "basis_ref, reason) VALUES (?, 'claim', ?, ?, 'user-1', "
-            "'gesture', ?, 'privacy')",
-            (REDACTION_ID, derived.id, LATER, GESTURE_ID),
-        )
-        store._insert_ledger_record_locked(conn, "redaction_event", REDACTION_ID)
         conn.execute(
             "INSERT INTO sweeps (id, kind, at, params_json) "
             "VALUES (?, 'integrity', ?, ?)",
@@ -626,6 +620,92 @@ def test_import_rejects_tampered_status_authority_before_publication(
         import_store(_v2_payload(objects), target, registry=FakeRegistry())
 
     assert list(target.iterdir()) == []
+
+
+def test_import_rejects_confirmed_derivation_with_unconfirmed_premise(
+    tmp_path: Path,
+) -> None:
+    source = _create_store(tmp_path / "source")
+    premise = source.propose_claim(
+        proposition="Unconfirmed premise",
+        claim_kind="fact",
+        actor=HUMAN,
+        created_at=NOW,
+        status_at=NOW,
+    ).claim
+    conclusion = source.propose_claim(
+        proposition="Invalid confirmed conclusion",
+        claim_kind="fact",
+        actor=HUMAN,
+        created_at=NOW,
+        status_at=NOW,
+    ).claim
+    source.add_derivation(
+        claim_id=conclusion.id,
+        method="deduction",
+        premises=[premise.id],
+        actor=HUMAN,
+        created_at=NOW,
+    )
+    lifecycle = TruthLifecycle(source)
+    gesture = lifecycle.mint_gesture(
+        subject_ref=conclusion.id,
+        actor=HUMAN,
+        surface="dashboard",
+        kind="confirm",
+        displayed_payload_sha256=conclusion.canonical_sha256,
+        at=LATER,
+    )
+    with source.write_transaction() as conn:
+        source._consume_gesture_locked(conn, gesture.id, consumed_at=LATER)
+        source._insert_status_event_locked(
+            conn,
+            claim_id=conclusion.id,
+            status="confirmed",
+            actor=HUMAN,
+            basis_kind="gesture",
+            basis_ref=gesture.id,
+            at=LATER,
+        )
+
+    target = tmp_path / "target"
+    target.mkdir()
+
+    with pytest.raises(
+        TruthImportError,
+        match="confirmed_derivation_has_unconfirmed_premise",
+    ):
+        import_store(export_store(source).path, target, registry=FakeRegistry())
+
+    assert list(target.iterdir()) == []
+
+
+def test_import_preserves_warning_only_external_premise(tmp_path: Path) -> None:
+    source = _create_store(tmp_path / "source")
+    conclusion = source.propose_claim(
+        proposition="Portable unresolved external premise",
+        claim_kind="fact",
+        actor=HUMAN,
+        created_at=NOW,
+        status_at=NOW,
+    ).claim
+    source.add_derivation(
+        claim_id=conclusion.id,
+        method="federated",
+        premises=[truth_uri(new_id(), "claim", new_id())],
+        actor=HUMAN,
+        created_at=NOW,
+    )
+    target = tmp_path / "target"
+    target.mkdir()
+
+    restored = import_store(
+        export_store(source).path,
+        target,
+        registry=FakeRegistry(),
+    ).store
+
+    assert restored.get_claim(conclusion.id) is not None
 
 
 def test_import_rejects_newer_malformed_duplicate_header_and_trailing_records(

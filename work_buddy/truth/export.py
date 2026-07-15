@@ -1261,58 +1261,27 @@ def _insert_records(store: TruthStore, bundle: _Bundle) -> None:
         conn.close()
 
 
-def _validate_staged_status_history(store: TruthStore) -> None:
-    """Reject imported lifecycle rows that could not be authored by the kernel.
+def _validate_staged_integrity(store: TruthStore) -> None:
+    """Reject imported rows that violate canonical kernel integrity.
 
     Transport validation proves that rows are well shaped and refer to earlier
-    ledger records.  It is not enough for lifecycle authority: an untrusted
-    stream could otherwise label a status ``confirmed`` while claiming a rule
-    basis, or bind it to a mismatched, unconsumed, or ineligible gesture.
-
-    The integrity engine is the canonical replay validator for those temporal
-    rules.  Block every error attached to a status event and every error on a
-    gesture used by status history.  Unrelated findings remain inspectable
-    after recovery instead of making the lossless transport unusable.
+    ledger records. It is not enough for kernel authority: an untrusted stream
+    could otherwise label a status ``confirmed`` while claiming a rule basis,
+    bind it to an ineligible gesture, break weakest-link derivation, or publish
+    competing confirmed successors. The integrity engine is the canonical
+    replay validator for those cross-record and temporal rules. Warnings remain
+    portable because they include intentionally unresolved external state;
+    errors may not be published as a live store.
     """
 
     from work_buddy.truth.queries import integrity_findings
 
-    conn = store.connect()
-    try:
-        status_rows = conn.execute(
-            "SELECT id, basis_kind, basis_ref FROM claim_status_events"
-        ).fetchall()
-    finally:
-        conn.close()
-    status_event_ids = {str(row["id"]) for row in status_rows}
-    status_gesture_ids = {
-        str(row["basis_ref"])
-        for row in status_rows
-        if row["basis_kind"] == "gesture" and row["basis_ref"] is not None
-    }
-
     try:
         findings = integrity_findings(store)
     except Exception as exc:
-        raise TruthImportError(
-            "staged truth status history could not be validated"
-        ) from exc
+        raise TruthImportError("staged truth store could not be validated") from exc
     blockers = sorted(
-        (
-            finding
-            for finding in findings
-            if finding.severity == "error"
-            and (
-                (
-                    finding.subject_kind == "status_event"
-                    and finding.subject_ref in status_event_ids
-                )
-                or (
-                    finding.subject_kind == "gesture"
-                    and finding.subject_ref in status_gesture_ids
-                )
-            )
-        ),
+        (finding for finding in findings if finding.severity == "error"),
         key=lambda finding: (
             finding.code,
             finding.subject_kind,
@@ -1325,7 +1294,7 @@ def _validate_staged_status_history(store: TruthStore) -> None:
             f"{finding.code}:{finding.subject_ref}" for finding in blockers
         )
         raise TruthImportError(
-            "imported status history violates truth invariants: " + details
+            "imported store violates truth invariants: " + details
         )
 
 
@@ -1343,7 +1312,7 @@ def _build_staged_store(
     for blob in bundle.blobs:
         atomic_write_bytes(paths.blobs / blob.content_sha256, blob.content)
     _insert_records(staged, bundle)
-    _validate_staged_status_history(staged)
+    _validate_staged_integrity(staged)
     expected = _serialize_bundle(bundle)
     result = export_store(staged)
     if result.path.read_bytes() != expected:
