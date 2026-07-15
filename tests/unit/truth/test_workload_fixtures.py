@@ -1,4 +1,4 @@
-"""K0 join tests for the three declarative truth workloads."""
+"""Truth-engine join tests for the three declarative workloads."""
 
 from __future__ import annotations
 
@@ -137,7 +137,7 @@ def _restore_checked_in_frozen_v1(
     FIXTURE_PATHS,
     ids=lambda path: path.stem,
 )
-def test_each_workload_runs_through_the_joined_k0_surface(
+def test_each_workload_runs_through_the_joined_truth_engine_surface(
     tmp_path: Path,
     fixture_path: Path,
 ) -> None:

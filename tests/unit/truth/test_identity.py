@@ -22,13 +22,13 @@ def test_new_id_is_uuid4_hex_shape() -> None:
 
 def test_claim_hash_normalizes_semantic_whitespace_and_json_order() -> None:
     first = claim_sha256(
-        proposition="  Kaden   led the project. ",
+        proposition="  Alex   led the project. ",
         claim_kind="fact",
         structured={"b": " two  words ", "a": 1},
         scope="store",
     )
     second = claim_sha256(
-        proposition="Kaden led the project.",
+        proposition="Alex led the project.",
         claim_kind="fact",
         structured=json.dumps({"a": 1, "b": "two words"}),
         scope="store",
