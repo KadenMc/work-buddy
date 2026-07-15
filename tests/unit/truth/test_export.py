@@ -26,6 +26,7 @@ from work_buddy.truth.export import (
     import_store,
 )
 from work_buddy.truth.identity import canonical_json, new_id, sha256_bytes
+from work_buddy.truth.lifecycle import TruthLifecycle
 from work_buddy.truth.store import GestureRecord, PostCommitHookError, TruthStore
 
 
@@ -292,6 +293,35 @@ def _v2_payload(objects: list[dict[str, Any]]) -> bytes:
     return prefix + _canonical_line(footer)
 
 
+def _confirmed_payload(root: Path) -> bytes:
+    store = _create_store(root)
+    claim = store.propose_claim(
+        proposition="A human-confirmed portable claim",
+        claim_kind="fact",
+        actor=HUMAN,
+        created_at=NOW,
+        status_at=NOW,
+    ).claim
+    lifecycle = TruthLifecycle(store)
+    gesture = lifecycle.mint_gesture(
+        subject_ref=claim.id,
+        actor=HUMAN,
+        surface="dashboard",
+        kind="confirm",
+        displayed_payload_sha256=claim.canonical_sha256,
+        at=LATER,
+    )
+    lifecycle.confirm_claim(
+        claim_id=claim.id,
+        gesture_id=gesture.id,
+        actor=HUMAN,
+        expected_context_sha256=None,
+        observed_at=LATER,
+        at=LATER,
+    )
+    return export_store(store).path.read_bytes()
+
+
 def _table_rows(store: TruthStore, table: str, order: str) -> list[dict[str, Any]]:
     conn = store.connect()
     try:
@@ -524,6 +554,76 @@ def test_import_preflight_rejects_corrupt_records_without_touching_target(
 
     with pytest.raises(TruthImportError, match=message):
         import_store(payload, target, registry=FakeRegistry())
+
+    assert list(target.iterdir()) == []
+
+
+def test_import_preserves_valid_human_gestured_confirmation(tmp_path: Path) -> None:
+    payload = _confirmed_payload(tmp_path / "source")
+    target = tmp_path / "target"
+    target.mkdir()
+
+    restored = import_store(payload, target, registry=FakeRegistry()).store
+
+    statuses = _table_rows(restored, "claim_status_events", "seq")
+    assert [row["status"] for row in statuses] == ["proposed", "confirmed"]
+    assert statuses[-1]["actor_kind"] == "human"
+    assert statuses[-1]["basis_kind"] == "gesture"
+
+
+@pytest.mark.parametrize(
+    ("mutation", "finding_code"),
+    [
+        ("rule_confirmation", "confirmation_without_human_gesture"),
+        ("agent_confirmation", "confirmation_without_human_gesture"),
+        ("actor_binding", "gesture_actor_mismatch"),
+        ("subject_binding", "gesture_subject_mismatch"),
+        ("payload_binding", "gesture_payload_mismatch"),
+        ("confirmation_kind", "invalid_confirmation_gesture_kind"),
+        ("unconsumed_gesture", "unconsumed_status_gesture"),
+        ("proposal_basis", "invalid_proposal_basis"),
+    ],
+)
+def test_import_rejects_tampered_status_authority_before_publication(
+    tmp_path: Path,
+    mutation: str,
+    finding_code: str,
+) -> None:
+    objects = _objects(_confirmed_payload(tmp_path / "source"))
+    status_records = [
+        item for item in objects if item["record_type"] == "claim_status_event"
+    ]
+    proposed = next(
+        item for item in status_records if item["record"]["status"] == "proposed"
+    )
+    confirmed = next(
+        item for item in status_records if item["record"]["status"] == "confirmed"
+    )
+    gesture = next(item for item in objects if item["record_type"] == "gesture")
+
+    if mutation == "rule_confirmation":
+        confirmed["record"]["basis_kind"] = "rule"
+        confirmed["record"]["basis_ref"] = confirmed["record"]["claim_id"]
+    elif mutation == "agent_confirmation":
+        confirmed["record"]["actor_kind"] = "agent_run"
+    elif mutation == "actor_binding":
+        confirmed["record"]["actor_ref"] = "another-human"
+    elif mutation == "subject_binding":
+        gesture["record"]["subject_ref"] = "ff" * 16
+    elif mutation == "payload_binding":
+        gesture["record"]["payload_sha256"] = "ff" * 32
+    elif mutation == "confirmation_kind":
+        gesture["record"]["kind"] = "redact"
+    elif mutation == "unconsumed_gesture":
+        gesture["record"]["consumed_at"] = None
+    else:
+        proposed["record"]["basis_ref"] = "ff" * 16
+
+    target = tmp_path / "target"
+    target.mkdir()
+
+    with pytest.raises(TruthImportError, match=finding_code):
+        import_store(_v2_payload(objects), target, registry=FakeRegistry())
 
     assert list(target.iterdir()) == []
 
