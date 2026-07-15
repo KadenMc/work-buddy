@@ -26,11 +26,11 @@ def test_mutable_link_fingerprints_change_with_target_content(link_type: str) ->
 def test_structured_target_fingerprint_is_canonical() -> None:
     first = compute_target_fingerprint(
         "about_entity",
-        {"description": "A  person", "aliases": ["K", "Kaden"]},
+        {"description": "A  person", "aliases": ["A", "Alex"]},
     )
     second = compute_target_fingerprint(
         "about_entity",
-        {"aliases": ["K", "Kaden"], "description": "A person"},
+        {"aliases": ["A", "Alex"], "description": "A person"},
     )
 
     assert first == second

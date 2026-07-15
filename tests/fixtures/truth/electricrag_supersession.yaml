@@ -51,9 +51,9 @@ steps:
   - op: capture
     id: source_eval_v1
     input:
-      locator: swh:1:cnt:d05d948f4294d0a144e0d342035bd01105c84d22;origin=https://github.com/kaden/electricrag;anchor=swh:1:rev:7a9e3c65ab0dadf94b7e32f7f1db98e84190f105;path=/docs/evaluation.md;lines=1
+      locator: swh:1:cnt:d05d948f4294d0a144e0d342035bd01105c84d22;origin=https://github.com/example/electricrag;anchor=swh:1:rev:7a9e3c65ab0dadf94b7e32f7f1db98e84190f105;path=/docs/evaluation.md;lines=1
       locator_meta:
-        permalink_template: https://github.com/kaden/electricrag/blob/{commit}/{path}#L{lines}
+        permalink_template: https://github.com/example/electricrag/blob/{commit}/{path}#L{lines}
       media_type: text/markdown
       content: ElectricRAG evaluation size is 120 queries.
     expect:
@@ -124,9 +124,9 @@ steps:
   - op: capture
     id: source_eval_v2
     input:
-      locator: swh:1:cnt:dc4e1c710d65b37472129bb02418610ca62e67c1;origin=https://github.com/kaden/electricrag;anchor=swh:1:rev:15d58195e98e496d53f6885b1fbe09e979ae8413;path=/docs/evaluation.md;lines=1
+      locator: swh:1:cnt:dc4e1c710d65b37472129bb02418610ca62e67c1;origin=https://github.com/example/electricrag;anchor=swh:1:rev:15d58195e98e496d53f6885b1fbe09e979ae8413;path=/docs/evaluation.md;lines=1
       locator_meta:
-        permalink_template: https://github.com/kaden/electricrag/blob/{commit}/{path}#L{lines}
+        permalink_template: https://github.com/example/electricrag/blob/{commit}/{path}#L{lines}
       media_type: text/markdown
       content: ElectricRAG evaluation size is now 144 queries.
     expect:

@@ -85,7 +85,7 @@ def _parse_timestamp(value: str) -> datetime:
 
 
 class WorkloadRunner:
-    """Interpret fixture steps through the joined K0 public surface."""
+    """Interpret fixture steps through the joined truth-engine surface."""
 
     def __init__(self, store: TruthStore, fixture: Mapping[str, Any]) -> None:
         self.store = store

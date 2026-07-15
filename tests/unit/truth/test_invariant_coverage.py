@@ -20,7 +20,7 @@ class ContractSpec:
     """One independently inventoried durable design commitment."""
 
     design_ref: str
-    stage: str
+    scope: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,70 +28,93 @@ class CoverageRow:
     """One parsed human-readable coverage-map row."""
 
     design_ref: str
-    stage: str
+    scope: str
     references: tuple[tuple[str, str], ...]
 
 
+ENGINE_CORE = "engine core"
+RESIDENT_RENDERING_SCOPE = "engine core; resident rendering outside engine scope"
+RETRIEVAL_INTEGRATION = "retrieval integration"
+
+
 DURABLE_CONTRACT_INVENTORY = {
-    "canonical-claim-hash": ContractSpec("tms-glue.md II.5 canonical claim hash", "K0"),
-    "append-only-triggers": ContractSpec("tms-glue.md II.5 append-only schema", "K0"),
-    "status-machine": ContractSpec("tms-glue.md II.5 status machine", "K0"),
-    "confirmation-gate": ContractSpec("tms-glue.md II.5 confirmation gate", "K0"),
-    "weakest-link": ContractSpec("tms-glue.md II.5 weakest-link confirmation", "K0"),
+    "canonical-claim-hash": ContractSpec(
+        "tms-glue.md II.5 canonical claim hash", ENGINE_CORE
+    ),
+    "append-only-triggers": ContractSpec(
+        "tms-glue.md II.5 append-only schema", ENGINE_CORE
+    ),
+    "status-machine": ContractSpec("tms-glue.md II.5 status machine", ENGINE_CORE),
+    "confirmation-gate": ContractSpec(
+        "tms-glue.md II.5 confirmation gate", ENGINE_CORE
+    ),
+    "weakest-link": ContractSpec(
+        "tms-glue.md II.5 weakest-link confirmation", ENGINE_CORE
+    ),
     "supersession-closure": ContractSpec(
-        "tms-glue.md II.5 supersession semantics", "K0"
+        "tms-glue.md II.5 supersession semantics", ENGINE_CORE
     ),
     "single-confirmed-successor": ContractSpec(
-        "tms-glue.md II.5 single-confirmed-successor", "K0"
+        "tms-glue.md II.5 single-confirmed-successor", ENGINE_CORE
     ),
     "dedup-by-canonical-hash": ContractSpec(
-        "tms-glue.md II.5 canonical-hash dedup", "K0"
+        "tms-glue.md II.5 canonical-hash dedup", ENGINE_CORE
     ),
-    "redaction-co-status": ContractSpec("tms-glue.md II.5 redaction co-status", "K0"),
-    "blob-refcounting": ContractSpec("tms-glue.md II.5 redaction blob lifecycle", "K0"),
-    "fingerprint-scope": ContractSpec("tms-glue.md II.5 fingerprint scope", "K0"),
-    "trust-class-laws": ContractSpec("tms-glue.md II.5 trust assignment laws", "K0"),
-    "producer-identity": ContractSpec("tms-glue.md II.5 producer identity", "K0"),
+    "redaction-co-status": ContractSpec(
+        "tms-glue.md II.5 redaction co-status", ENGINE_CORE
+    ),
+    "blob-refcounting": ContractSpec(
+        "tms-glue.md II.5 redaction blob lifecycle", ENGINE_CORE
+    ),
+    "fingerprint-scope": ContractSpec(
+        "tms-glue.md II.5 fingerprint scope", ENGINE_CORE
+    ),
+    "trust-class-laws": ContractSpec(
+        "tms-glue.md II.5 trust assignment laws", ENGINE_CORE
+    ),
+    "producer-identity": ContractSpec(
+        "tms-glue.md II.5 producer identity", ENGINE_CORE
+    ),
     "gesture-binding-use-freshness-context": ContractSpec(
-        "tms-glue.md II.5 gesture binding", "K0"
+        "tms-glue.md II.5 gesture binding", ENGINE_CORE
     ),
     "locator-verifiability": ContractSpec(
-        "tms-glue.md II.4 locator verifiability matrix", "K0"
+        "tms-glue.md II.4 locator verifiability matrix", ENGINE_CORE
     ),
     "reason-classed-rejection": ContractSpec(
-        "tms-glue.md II.5 reason-classed rejection", "K0"
+        "tms-glue.md II.5 reason-classed rejection", ENGINE_CORE
     ),
-    "three-clocks": ContractSpec("tms-glue.md II.5 three clocks", "K0"),
+    "three-clocks": ContractSpec("tms-glue.md II.5 three clocks", ENGINE_CORE),
     "claims-current-rebuild": ContractSpec(
-        "tms-glue.md II.5 rebuildable claims_current projection", "K0"
+        "tms-glue.md II.5 rebuildable claims_current projection", ENGINE_CORE
     ),
     "migration-versioning-open-refusal": ContractSpec(
-        "tms-glue.md II.5 migration contract 1", "K0"
+        "tms-glue.md II.5 migration contract 1", ENGINE_CORE
     ),
     "migration-pre-bump-snapshot": ContractSpec(
-        "tms-glue.md II.5 migration contract 2", "K0"
+        "tms-glue.md II.5 migration contract 2", ENGINE_CORE
     ),
     "migration-additive-history": ContractSpec(
-        "tms-glue.md II.5 migration contract 3", "K0"
+        "tms-glue.md II.5 migration contract 3", ENGINE_CORE
     ),
     "migration-frozen-released-stores": ContractSpec(
-        "tms-glue.md II.5 migration contract 4", "K0"
+        "tms-glue.md II.5 migration contract 4", ENGINE_CORE
     ),
     "migration-jsonl-escape": ContractSpec(
-        "tms-glue.md II.5 migration contract 5", "K0"
+        "tms-glue.md II.5 migration contract 5", ENGINE_CORE
     ),
     "migration-document-regeneration": ContractSpec(
         "tms-glue.md II.5 migration contract 6",
-        "K0 foundation; K2 remainder deferred",
+        RESIDENT_RENDERING_SCOPE,
     ),
     "migration-profile-history": ContractSpec(
-        "tms-glue.md II.5 migration contract 7", "K0"
+        "tms-glue.md II.5 migration contract 7", ENGINE_CORE
     ),
     "migration-permanent-identity": ContractSpec(
-        "tms-glue.md II.5 migration contract 8", "K0"
+        "tms-glue.md II.5 migration contract 8", ENGINE_CORE
     ),
     "refutation-reentry": ContractSpec(
-        "tms-glue.md II.10 refutation re-entry", "Deferred K3/K4"
+        "tms-glue.md II.10 refutation re-entry", RETRIEVAL_INTEGRATION
     ),
 }
 
@@ -111,7 +134,7 @@ def _coverage_rows() -> dict[str, CoverageRow]:
         assert key not in rows, f"duplicate invariant coverage key {key!r}"
         rows[key] = CoverageRow(
             design_ref=cells[1].strip("`"),
-            stage=cells[2],
+            scope=cells[2],
             references=references,
         )
     return rows
@@ -140,17 +163,19 @@ def test_map_matches_complete_durable_design_inventory() -> None:
     for key, specification in DURABLE_CONTRACT_INVENTORY.items():
         row = rows[key]
         assert row.design_ref == specification.design_ref
-        assert row.stage == specification.stage
+        assert row.scope == specification.scope
 
 
-def test_every_k0_contract_maps_to_existing_named_tests() -> None:
+def test_every_engine_contract_maps_to_existing_named_tests() -> None:
     rows = _coverage_rows()
     for key, specification in DURABLE_CONTRACT_INVENTORY.items():
         references = rows[key].references
-        if specification.stage == "Deferred K3/K4":
-            assert not references, f"deferred contract {key!r} claims K0 tests"
+        if specification.scope == RETRIEVAL_INTEGRATION:
+            assert not references, (
+                f"retrieval integration contract {key!r} claims engine tests"
+            )
             continue
-        assert references, f"K0 contract {key!r} has no named test"
+        assert references, f"engine contract {key!r} has no named test"
         for relative_path, test_name in references:
             path = REPO_ROOT / relative_path
             assert path.is_file(), f"coverage target does not exist: {relative_path}"
