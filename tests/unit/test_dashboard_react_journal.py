@@ -22,12 +22,23 @@ def client():
 def _today_payload(*, current_contexts: list[str] | None = None) -> dict:
     return {
         "status": "degraded",
+        "timezone": "America/Toronto",
         "now": {
             "iso": "2026-07-11T16:18:00+00:00",
             "local_hhmm": "12:18",
             "minutes_into_day": 738,
         },
         "work_hours": [9, 17],
+        "journal_day": {
+            "local_date": "2026-07-11",
+            "timezone": "America/Toronto",
+            "day_boundary_start": "05:00",
+            "window_start": "2026-07-11T05:00:00-04:00",
+            "window_end": "2026-07-12T05:00:00-04:00",
+            "boundary_setting_revision": "value:0",
+            "pending_day_boundary_start": None,
+            "boundary_effective_at": None,
+        },
         "current_contexts": list(current_contexts or []),
         "recommendations": [
             {"task_id": "t-1", "text": "Untimed recommendation", "state": "focused"}
@@ -66,12 +77,15 @@ def test_legacy_today_endpoint_exposes_only_read_projection_fields(
 
     assert response.status_code == 200
     assert body["status"] == "degraded"
+    assert body["timezone"] == "America/Toronto"
     assert body["now"] == {
         "iso": "2026-07-11T16:18:00+00:00",
         "local_hhmm": "12:18",
         "minutes_into_day": 738,
     }
     assert body["work_hours"] == [9, 17]
+    assert body["journal_day"]["day_boundary_start"] == "05:00"
+    assert body["journal_day"]["window_end"] == "2026-07-12T05:00:00-04:00"
     assert body["plan"][0] == {
         "time_start": "12:20",
         "time_end": "13:30",
@@ -85,8 +99,6 @@ def test_legacy_today_endpoint_exposes_only_read_projection_fields(
     # Aggregate Today data is not a native Journal model. The adapter must keep these
     # capabilities unavailable rather than fabricating them from nearby-looking fields.
     forbidden_native_fields = {
-        "journal_day",
-        "day_boundary_start",
         "capture",
         "capture_persistence",
         "running_notes",

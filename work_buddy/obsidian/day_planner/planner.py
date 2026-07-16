@@ -10,6 +10,7 @@ import re
 from datetime import datetime
 from typing import Any
 
+from work_buddy import config as wb_config
 from work_buddy.logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -193,8 +194,8 @@ def _clean_task_text(text: str) -> str:
 
 
 def _current_local_minutes() -> int:
-    """Current local time as minutes-since-midnight."""
-    now = datetime.now()
+    """Current time in the configured Work Buddy zone, in local minutes."""
+    now = datetime.now(wb_config.USER_TZ)
     return now.hour * 60 + now.minute
 
 

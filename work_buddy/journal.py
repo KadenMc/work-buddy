@@ -44,7 +44,7 @@ def journal_path_for_date(date_str: str | None = None, vault_root: Path | None =
     if vault_root is None:
         vault_root = Path(load_config()["vault_root"])
     if date_str is None:
-        date_str = user_now().strftime("%Y-%m-%d")
+        date_str = current_journal_date().isoformat()
     return vault_root / "journal" / f"{date_str}.md"
 
 
@@ -77,10 +77,10 @@ def ensure_journal_exists(
         impossible.
     """
     if date_str is None:
-        date_str = user_now().strftime("%Y-%m-%d")
+        date_str = current_journal_date().isoformat()
 
     journal_file = vault_root / "journal" / f"{date_str}.md"
-    today_str = user_now().strftime("%Y-%m-%d")
+    today_str = current_journal_date().isoformat()
 
     if journal_file.exists():
         return {
@@ -174,6 +174,42 @@ def user_now() -> datetime:
     return datetime.now(USER_TZ)
 
 
+def _aware_user_time(value: datetime | None = None) -> datetime:
+    """Normalize a time to the authoritative Work Buddy timezone.
+
+    Runtime callers are aware already.  Accepting naive injected test clocks
+    keeps the older Journal characterization suite useful while making the
+    production policy explicit.
+    """
+    from work_buddy.config import USER_TZ
+
+    result = value or user_now()
+    if result.tzinfo is None or result.utcoffset() is None:
+        result = result.replace(tzinfo=USER_TZ)
+    return result.astimezone(USER_TZ)
+
+
+def current_journal_boundary(observed_at: datetime | None = None) -> str:
+    """Return the currently effective App-owned Journal boundary."""
+    from work_buddy.settings import get_journal_day_boundary
+
+    boundary, _record, _event = get_journal_day_boundary(
+        observed_at=_aware_user_time(observed_at)
+    )
+    return boundary
+
+
+def current_journal_date(observed_at: datetime | None = None):
+    """Return the logical Journal-day identity that owns ``observed_at``."""
+    from datetime import date
+
+    from work_buddy.settings import get_journal_day_binding
+
+    now = _aware_user_time(observed_at)
+    binding, _event = get_journal_day_binding(now)
+    return date.fromisoformat(binding["local_date"])
+
+
 # ---------------------------------------------------------------------------
 # Target date resolution
 # ---------------------------------------------------------------------------
@@ -195,9 +231,9 @@ def resolve_target_date(target: str | None = None) -> TargetDateResult:
 
     Uses the user's configured timezone (config.yaml ``timezone`` key).
 
-    When ``target`` is None and the local time is between midnight and 4 AM,
-    the result is marked ``ambiguous=True`` with a hint — the caller MUST
-    ask the user before proceeding.
+    ``today`` means the configured logical Journal day, not the calendar date.
+    A non-midnight boundary therefore removes the old hard-coded early-morning
+    ambiguity: the App policy is authoritative about which day owns an instant.
 
     Args:
         target: "today" (default/None), "yesterday", or an explicit YYYY-MM-DD string.
@@ -205,25 +241,14 @@ def resolve_target_date(target: str | None = None) -> TargetDateResult:
     Returns:
         TargetDateResult with ``.date``, ``.ambiguous``, and ``.hint`` fields.
     """
-    now = user_now()
+    now = _aware_user_time()
+    logical_today = current_journal_date(now)
 
     if target is None or target == "today":
-        date_str = now.strftime("%Y-%m-%d")
-        # Ambiguity window: midnight to 4 AM
-        if 0 <= now.hour < 4:
-            yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
-            return TargetDateResult(
-                date=date_str,
-                ambiguous=True,
-                hint=(
-                    f"It's {now.strftime('%I:%M %p %Z')} — did you mean "
-                    f"today ({date_str}) or yesterday ({yesterday})?"
-                ),
-            )
-        return TargetDateResult(date=date_str)
+        return TargetDateResult(date=logical_today.isoformat())
 
     if target == "yesterday":
-        return TargetDateResult(date=(now - timedelta(days=1)).strftime("%Y-%m-%d"))
+        return TargetDateResult(date=(logical_today - timedelta(days=1)).isoformat())
 
     # Validate explicit date
     try:
@@ -249,7 +274,10 @@ _LOG_TIMESTAMP_RE = re.compile(
 
 
 def extract_last_log_timestamp(
-    journal_content: str, journal_date: str | None = None,
+    journal_content: str,
+    journal_date: str | None = None,
+    *,
+    day_window=None,
 ) -> datetime | None:
     """Extract the timestamp of the last Log entry from a journal file.
 
@@ -264,7 +292,7 @@ def extract_last_log_timestamp(
         datetime of the last log entry, or None if no timestamped entries found.
     """
     if journal_date is None:
-        journal_date = user_now().strftime("%Y-%m-%d")
+        journal_date = current_journal_date().isoformat()
 
     # Find the Log section
     log_match = re.search(r"^#\s+\*{0,2}Log\*{0,2}\s*$", journal_content, re.MULTILINE)
@@ -286,34 +314,80 @@ def extract_last_log_timestamp(
     last_time_str = matches[-1].group(1).strip()
 
     try:
+        from work_buddy.config import USER_TZ
+        from work_buddy.journal_day import resolve_local_datetime
+        from work_buddy.settings import get_journal_day_window
+
         time_obj = datetime.strptime(last_time_str, "%I:%M %p").time()
         date_obj = datetime.strptime(journal_date, "%Y-%m-%d").date()
-        return datetime.combine(date_obj, time_obj)
+        window = day_window or get_journal_day_window(date_obj)
+        try:
+            from zoneinfo import ZoneInfo
+
+            zone = ZoneInfo(window.timezone)
+        except Exception:
+            # Defensive fallback for custom tzinfo implementations in tests.
+            zone = USER_TZ
+        candidate = resolve_local_datetime(date_obj, time_obj, zone)
+        # A post-midnight entry in Journal day D is written using only HH:MM,
+        # so first try civil date D, then D+1 when the former falls before the
+        # immutable start of that logical day.  The exact policy window avoids
+        # reclassifying old entries after a settings transition.
+        if candidate.astimezone(timezone.utc) < window.start.astimezone(timezone.utc):
+            candidate = resolve_local_datetime(date_obj + timedelta(days=1), time_obj, zone)
+        return candidate
     except ValueError:
         return None
 
 
-def extract_frontmatter_time(journal_content: str) -> datetime | None:
+def extract_frontmatter_time(
+    journal_content: str,
+    *,
+    timezone_name: str | None = None,
+) -> datetime | None:
     """Extract time_started from the journal frontmatter as a fallback."""
     match = re.search(r"^time_started:\s*(.+)$", journal_content, re.MULTILINE)
     if not match:
         return None
     try:
-        return datetime.fromisoformat(match.group(1).strip())
+        parsed = datetime.fromisoformat(match.group(1).strip())
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            from work_buddy.config import USER_TZ
+            from work_buddy.journal_day import resolve_local_datetime
+
+            zone = USER_TZ
+            if timezone_name:
+                from zoneinfo import ZoneInfo
+
+                zone = ZoneInfo(timezone_name)
+            return resolve_local_datetime(parsed.date(), parsed.time(), zone)
+        return parsed
     except ValueError:
         return None
 
 
-def get_activity_window(journal_content: str, journal_date: str | None = None) -> datetime | None:
+def get_activity_window(
+    journal_content: str,
+    journal_date: str | None = None,
+    *,
+    day_window=None,
+) -> datetime | None:
     """Determine when the activity window starts (last log entry or time_started).
 
     Returns the latest timestamp found, or None if neither exists.
     """
-    log_ts = extract_last_log_timestamp(journal_content, journal_date)
+    log_ts = extract_last_log_timestamp(
+        journal_content,
+        journal_date,
+        day_window=day_window,
+    )
     if log_ts is not None:
         return log_ts
 
-    return extract_frontmatter_time(journal_content)
+    return extract_frontmatter_time(
+        journal_content,
+        timezone_name=day_window.timezone if day_window is not None else None,
+    )
 
 
 def collect_scoped_context(journal_state: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -431,12 +505,27 @@ def read_journal_state(
             "sign_in_section": None,
         }
 
-    # 3. Read journal and extract activity window
+    # 3. Resolve the immutable policy window before interpreting date-less log
+    # timestamps. Historical days must use the timezone/boundary that owned
+    # them, not whatever happens to be configured today.
+    from work_buddy.settings import get_journal_day_binding, get_journal_day_window
+
+    target_date_obj = datetime.strptime(resolved.date, "%Y-%m-%d").date()
+    now = _aware_user_time()
+    target_window = get_journal_day_window(target_date_obj, observed_at=now)
+    live_binding, _event = get_journal_day_binding(now)
+    today = datetime.strptime(live_binding["local_date"], "%Y-%m-%d").date()
+
+    # 4. Read journal and extract activity window.
     journal_path = vault_root / "journal" / f"{resolved.date}.md"
     content = journal_path.read_text(encoding="utf-8")
-    last_log_ts = get_activity_window(content, journal_date=resolved.date)
+    last_log_ts = get_activity_window(
+        content,
+        journal_date=resolved.date,
+        day_window=target_window,
+    )
 
-    # 4. Extract only the sections needed downstream (Log + Sign-In).
+    # 5. Extract only the sections needed downstream (Log + Sign-In).
     # The full journal can be huge due to carried-over Running Notes — returning
     # it all wastes context and is never used by synthesis (which uses the
     # activity digest from the collect step instead).
@@ -453,30 +542,25 @@ def read_journal_state(
         si_end = si_start + si_next.start() if si_next else len(content)
         sign_in_section = content[si_start:si_end].strip()
 
-    # 5. Calculate explicit time range for collection
+    # 6. Calculate explicit time range for collection
     #
-    # We want ALL activity on the target date, starting from either:
+    # We want ALL activity in the target Journal day, starting from either:
     #   a) The last log entry timestamp (if entries exist — only new activity)
-    #   b) Start of the target day (if no entries — full day)
+    #   b) Its configured boundary (if no entries — full logical day)
     #
     # The end boundary is:
-    #   a) 5 AM the next day (if targeting a past date) — the user's "day" ends
-    #      when they go to sleep, not at midnight. Activity before ~5 AM belongs
-    #      to the previous day's journal.
+    #   a) The next civil occurrence of the configured boundary for a past day.
+    #      This may be 23 or 25 elapsed hours away across DST.
     #   b) Now (if targeting today)
-    target_date_obj = datetime.strptime(resolved.date, "%Y-%m-%d").date()
-    today = user_now().date()
-
     if last_log_ts:
         collect_since = last_log_ts.isoformat()
     else:
-        collect_since = f"{resolved.date}T00:00:00"
+        collect_since = target_window.start.isoformat()
 
     if target_date_obj < today:
-        next_day = target_date_obj + timedelta(days=1)
-        collect_until = f"{next_day.isoformat()}T05:00:00"
+        collect_until = target_window.end.isoformat()
     else:
-        collect_until = user_now().strftime("%Y-%m-%dT%H:%M:%S")
+        collect_until = now.isoformat()
 
     # Anchor non-empty section text with the target date and weekday so the
     # content stays unambiguous when surfaced outside this dict (e.g. quoted
@@ -499,6 +583,10 @@ def read_journal_state(
         "created": ensure_result["created"],
         "collect_since": collect_since,
         "collect_until": collect_until,
+        "timezone": target_window.timezone,
+        "day_boundary_start": target_window.boundary,
+        "window_start": target_window.start.isoformat(),
+        "window_end": target_window.end.isoformat(),
         "last_log_ts": last_log_ts.isoformat() if last_log_ts else None,
         "log_section": log_section,
         "sign_in_section": sign_in_section,
@@ -520,20 +608,19 @@ def _parse_time_for_sort(time_str: str) -> float:
         return -1  # unparseable → sort to the top
 
 
-# Times between midnight and this cutoff are treated as post-midnight
-# continuation of the previous day and sort AFTER all same-day PM entries.
-_POST_MIDNIGHT_CUTOFF_MIN = 5 * 60
-
-
-def _effective_minutes(time_str: str) -> float:
+def _effective_minutes(time_str: str, boundary: str | None = None) -> float:
     """Like ``_parse_time_for_sort``, but shifts post-midnight times past the end
     of the day so same-day chronological sorts place them last.
 
     Example: ``12:08 AM`` → ``24*60 + 8`` = 1448, which sorts after ``10:29 PM``
     (22*60 + 29 = 1349) instead of before ``2:15 PM`` (855).
     """
+    from work_buddy.journal_day import parse_local_time
+
     minutes = _parse_time_for_sort(time_str)
-    if 0 <= minutes < _POST_MIDNIGHT_CUTOFF_MIN:
+    boundary_time = parse_local_time(boundary or current_journal_boundary())
+    cutoff_minutes = boundary_time.hour * 60 + boundary_time.minute
+    if 0 <= minutes < cutoff_minutes:
         return minutes + 24 * 60
     return minutes
 
@@ -554,7 +641,7 @@ def _get_log_section_bounds(content: str) -> tuple[int, int] | None:
 
 
 def _find_chronological_insertion_point(
-    content: str, new_time_str: str,
+    content: str, new_time_str: str, boundary: str | None = None,
 ) -> int | None:
     """Find the byte offset where a new log entry should be inserted chronologically.
 
@@ -573,7 +660,8 @@ def _find_chronological_insertion_point(
 
     log_start, log_end = bounds
     log_body = content[log_start:log_end]
-    new_minutes = _effective_minutes(new_time_str)
+    effective_boundary = boundary or current_journal_boundary()
+    new_minutes = _effective_minutes(new_time_str, effective_boundary)
 
     # Parse each line's position and timestamp
     lines = log_body.split("\n")
@@ -591,7 +679,7 @@ def _find_chronological_insertion_point(
         # Try to extract timestamp from this line
         ts_match = _LOG_TIMESTAMP_RE.match(stripped)
         if ts_match:
-            existing_minutes = _effective_minutes(ts_match.group(1))
+            existing_minutes = _effective_minutes(ts_match.group(1), effective_boundary)
             if new_minutes >= 0 and existing_minutes > new_minutes:
                 # This existing entry is later than our new one — insert before it
                 return line_abs_start
@@ -648,7 +736,7 @@ def append_to_journal(
         Dict with ``success``, ``file``, ``entries_written``, ``message`` keys.
     """
     if date_str is None:
-        date_str = user_now().strftime("%Y-%m-%d")
+        date_str = current_journal_date().isoformat()
 
     journal_file = vault_root / "journal" / f"{date_str}.md"
 
@@ -695,7 +783,12 @@ def _append_to_journal_locked(
     # Sort new entries by time so we insert earliest first. Use effective
     # minutes so post-midnight entries (e.g. 12:08 AM next-day) sort AFTER
     # same-day PM entries instead of before them.
-    sorted_entries = sorted(entries, key=lambda e: _effective_minutes(e[0]))
+    from work_buddy.settings import get_journal_day_window
+
+    boundary = get_journal_day_window(date_str).boundary
+    sorted_entries = sorted(
+        entries, key=lambda e: _effective_minutes(e[0], boundary)
+    )
 
     # Insert each entry chronologically — re-read content after each insert
     # because offsets shift. Two skip paths:
@@ -717,7 +810,9 @@ def _append_to_journal_locked(
         if formatted_line in file_content:
             already_present.append(time_str)
             continue
-        insertion_point = _find_chronological_insertion_point(file_content, time_str)
+        insertion_point = _find_chronological_insertion_point(
+            file_content, time_str, boundary
+        )
         if insertion_point is None:
             skipped.append(time_str)
             continue

@@ -75,6 +75,7 @@ VITAL_DBS: dict[str, str] = {
     "messages": "db/messages",  # on-disk: messages.db
     "threads":  "db/threads",   # on-disk: threads.db
     "entities": "db/entities",  # on-disk: entities.db
+    "settings": "db/settings",  # on-disk: settings.db
 }
 
 

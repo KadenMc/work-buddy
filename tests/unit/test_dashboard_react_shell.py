@@ -15,6 +15,8 @@ not a stack trace.
 from __future__ import annotations
 
 import re
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -28,6 +30,28 @@ def client():
 
 def _dist_built() -> bool:
     return (_react_dist_dir() / "index.html").is_file()
+
+
+def test_dashboard_context_uses_configured_timezone(client, monkeypatch):
+    """Shared React chrome gets an explicit Work Buddy zone, never a browser guess."""
+    from work_buddy import config as wb_config
+
+    configured = ZoneInfo("Pacific/Kiritimati")
+    monkeypatch.setattr(wb_config, "_USER_TZ_CACHE", configured)
+
+    response = client.get("/api/dashboard/context")
+    body = response.get_json()
+    instant = datetime.fromisoformat(body["now"])
+
+    assert response.status_code == 200
+    assert response.headers["Cache-Control"] == "no-store"
+    assert body == {
+        "schema_version": 1,
+        "revision": "timezone:Pacific/Kiritimati",
+        "timezone": "Pacific/Kiritimati",
+        "now": body["now"],
+    }
+    assert instant.tzinfo is not None
 
 
 requires_dist = pytest.mark.skipif(
@@ -71,10 +95,41 @@ def test_app_unknown_safe_view_reaches_client_shell(client):
     assert "text/html" in resp.headers.get("Content-Type", "")
 
 
+@requires_dist
+def test_app_settings_section_history_route_serves_shell_no_store(client):
+    resp = client.get("/app/settings/accessibility")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers.get("Content-Type", "")
+    assert "work-buddy dashboard" in resp.get_data(as_text=True)
+    assert "no-store" in resp.headers.get("Cache-Control", "")
+
+
+@requires_dist
+@pytest.mark.parametrize(
+    "path",
+    (
+        "/app/settings/system/accessibility",
+        "/app/settings/apps/journal",
+        "/app/settings/views/journal",
+        "/app/settings/setting/wb.journal.day-boundary",
+    ),
+)
+def test_app_nested_settings_history_routes_serve_shell_no_store(client, path):
+    resp = client.get(path)
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers.get("Content-Type", "")
+    assert "work-buddy dashboard" in resp.get_data(as_text=True)
+    assert "no-store" in resp.headers.get("Cache-Control", "")
+
+
 def test_app_history_fallback_rejects_asset_and_traversal_shapes(client):
     assert client.get("/app/index.html").status_code == 404
     assert client.get("/app/not.a-view").status_code == 404
     assert client.get("/app/%5Cindex").status_code == 404
+    assert client.get("/app/settings/not.a-section").status_code == 404
+    assert client.get("/app/settings/sections/accessibility").status_code == 404
+    assert client.get("/app/settings/views/not.a-page").status_code == 404
+    assert client.get("/app/settings/not.a-group/journal").status_code == 404
 
 
 @requires_dist

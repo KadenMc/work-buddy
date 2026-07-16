@@ -266,6 +266,188 @@ def api_state():
     return jsonify(get_system_state())
 
 
+@app.get("/api/dashboard/context")
+def api_dashboard_context():
+    """Return the host-owned temporal context for dashboard chrome.
+
+    The configured Work Buddy timezone is authoritative.  Browser/device
+    timezone discovery is deliberately absent: views may bind historical or
+    fixture-specific zones, but shared dashboard chrome must not silently
+    switch zones based on the machine displaying it.
+    """
+    from datetime import datetime, timezone
+
+    from work_buddy import config as wb_config
+
+    user_timezone = wb_config.USER_TZ
+    timezone_name = getattr(user_timezone, "key", str(user_timezone))
+    response = jsonify({
+        "schema_version": 1,
+        "revision": f"timezone:{timezone_name}",
+        "timezone": timezone_name,
+        "now": datetime.now(timezone.utc).isoformat(),
+    })
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+def _settings_api_error(exc):
+    """Translate a stable Settings broker failure into its HTTP contract."""
+    response = jsonify(exc.as_dict())
+    response.headers["Cache-Control"] = "no-store"
+    return response, exc.status_code
+
+
+def _settings_mutation_response(value: dict, event: dict | None):
+    from work_buddy import config as wb_config
+    from work_buddy.settings.registry import REGISTRY_REVISION, SCHEMA_VERSION
+
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "registry_revision": REGISTRY_REVISION,
+        "timezone": getattr(wb_config.USER_TZ, "key", str(wb_config.USER_TZ)),
+        "value": value,
+        "event": event,
+    }
+    response = jsonify(payload)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.get("/api/settings/registry")
+def api_settings_registry():
+    """Return definitions, pages, and placements as separate registries."""
+    from work_buddy.settings import get_registry
+
+    response = jsonify(get_registry())
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.get("/api/settings/values")
+def api_settings_values():
+    """Return authoritative effective values for an optional page context."""
+    from work_buddy.settings import SettingsError, get_values
+
+    context_id = (request.args.get("context_id") or "").strip() or None
+    try:
+        payload, _events = get_values(
+            context_id=context_id,
+            read_only=_is_read_only(),
+        )
+    except SettingsError as exc:
+        return _settings_api_error(exc)
+    response = jsonify(payload)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.patch("/api/settings/values/<path:setting_id>")
+def api_settings_update(setting_id: str):
+    """Validate and schedule one optimistic profile-scoped settings write."""
+    from work_buddy.settings import SettingsError, update_value
+    from work_buddy.settings.broker import publish_change
+
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return _settings_api_error(SettingsError(
+            "validation_error",
+            "Request body must be a JSON object.",
+            status_code=400,
+        ))
+    try:
+        value, event = update_value(
+            setting_id,
+            scope=body.get("scope"),
+            value=body.get("value"),
+            expected_revision=body.get("expected_revision"),
+            read_only=_is_read_only(),
+        )
+    except SettingsError as exc:
+        return _settings_api_error(exc)
+    publish_change(event)
+    return _settings_mutation_response(value, event)
+
+
+@app.post("/api/settings/values/<path:setting_id>/preview")
+def api_settings_preview(setting_id: str):
+    """Preview a proposed value without mutating Settings or publishing."""
+    from work_buddy.settings import SettingsError, preview_value
+
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return _settings_api_error(SettingsError(
+            "validation_error",
+            "Request body must be a JSON object.",
+            status_code=400,
+        ))
+    try:
+        payload = preview_value(
+            setting_id,
+            scope=body.get("scope"),
+            value=body.get("value"),
+            expected_revision=body.get("expected_revision"),
+            read_only=_is_read_only(),
+        )
+    except SettingsError as exc:
+        return _settings_api_error(exc)
+    response = jsonify(payload)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.delete("/api/settings/values/<path:setting_id>")
+def api_settings_reset_value(setting_id: str):
+    """Reset one override, preserving next-boundary change safety."""
+    from work_buddy.settings import SettingsError, reset_value
+    from work_buddy.settings.broker import publish_change
+
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return _settings_api_error(SettingsError(
+            "validation_error",
+            "Request body must be a JSON object.",
+            status_code=400,
+        ))
+    try:
+        value, event = reset_value(
+            setting_id,
+            scope=body.get("scope"),
+            expected_revision=body.get("expected_revision"),
+            read_only=_is_read_only(),
+        )
+    except SettingsError as exc:
+        return _settings_api_error(exc)
+    publish_change(event)
+    return _settings_mutation_response(value, event)
+
+
+@app.post("/api/settings/reset")
+def api_settings_reset_alias():
+    """Body-addressed reset alias for non-DELETE clients."""
+    from work_buddy.settings import SettingsError, reset_value
+    from work_buddy.settings.broker import publish_change
+
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return _settings_api_error(SettingsError(
+            "validation_error",
+            "Request body must be a JSON object.",
+            status_code=400,
+        ))
+    try:
+        value, event = reset_value(
+            body.get("setting_id"),
+            scope=body.get("scope"),
+            expected_revision=body.get("expected_revision"),
+            read_only=_is_read_only(),
+        )
+    except SettingsError as exc:
+        return _settings_api_error(exc)
+    publish_change(event)
+    return _settings_mutation_response(value, event)
+
+
 @app.get("/api/registry/list")
 def api_registry_list():
     """Return registered capabilities and workflows for the Add-job picker.
@@ -792,6 +974,10 @@ def api_control_graph():
         return jsonify({
             "nodes": {nid: n.to_dict() for nid, n in nodes.items()},
             "cache": cache_info(),
+            # This is part of the view-model contract: the graph remains
+            # inspectable in read-only mode, while clients must present its
+            # mutating repair/preference actions as unavailable up front.
+            "read_only": _is_read_only(),
         })
     except Exception as exc:
         logger.exception("Failed to build control graph")
@@ -1960,6 +2146,17 @@ def react_app():
 
 
 _REACT_VIEW_ROUTE_RE = re.compile(r"^[a-z0-9](?:[a-z0-9_-]{0,63})$", re.IGNORECASE)
+_REACT_SETTING_ID_RE = re.compile(
+    r"^[a-z0-9](?:[a-z0-9._-]{0,127})$", re.IGNORECASE
+)
+_REACT_SETTINGS_GROUPS = frozenset({
+    "system",
+    "apps",
+    "views",
+    "connections",
+    "components",
+    "setting",
+})
 
 
 @app.get("/app/<view_name>")
@@ -1972,6 +2169,42 @@ def react_app_view(view_name: str):
     Unknown but well-formed view slugs reach the client-side not-found view.
     """
     if _REACT_VIEW_ROUTE_RE.fullmatch(view_name) is None:
+        return "", 404
+    return _serve_react_app_index()
+
+
+@app.get("/app/settings/<section_name>")
+def react_app_settings_section(section_name: str):
+    """Serve a safe, refreshable React settings-section history route.
+
+    Settings intentionally use a two-segment URL so the stable ``settings``
+    surface can grow multiple sections without flattening them into dashboard
+    view names.  Keep the same conservative slug grammar as view routes; this
+    permits client-side not-found handling without turning the SPA fallback
+    into a catch-all for asset-looking or traversal-shaped requests.
+    """
+    if _REACT_VIEW_ROUTE_RE.fullmatch(section_name) is None:
+        return "", 404
+    return _serve_react_app_index()
+
+
+@app.get("/app/settings/<group_name>/<page_name>")
+def react_app_settings_context_page(group_name: str, page_name: str):
+    """Serve nested registry-driven Settings pages on direct refresh.
+
+    ``system/accessibility``, ``apps/journal``, and ``views/journal`` are
+    semantic navigation projections, not storage namespaces. A generic
+    ``sections`` bucket is deliberately absent because it would blur page
+    sections with App/view page kinds.
+    """
+    if group_name.lower() not in _REACT_SETTINGS_GROUPS:
+        return "", 404
+    page_pattern = (
+        _REACT_SETTING_ID_RE
+        if group_name.lower() == "setting"
+        else _REACT_VIEW_ROUTE_RE
+    )
+    if page_pattern.fullmatch(page_name) is None:
         return "", 404
     return _serve_react_app_index()
 
@@ -2172,6 +2405,7 @@ def _build_today_payload(*, current_contexts: list[str] | None = None) -> dict:
         top_recommendations,
     )
     from datetime import datetime, timezone
+    from work_buddy import config as wb_config
 
     context = load_context_for_task_me(user_current_contexts=current_contexts)
     plan = build_now_plan(context=context)
@@ -2183,20 +2417,28 @@ def _build_today_payload(*, current_contexts: list[str] | None = None) -> dict:
         cfg.get("morning", {}).get("day_planner", {}).get("work_hours", [9, 17])
     )
 
-    now_local = datetime.now()
+    user_timezone = wb_config.USER_TZ
+    now_local = datetime.now(user_timezone)
     now_minutes = now_local.hour * 60 + now_local.minute
+    # The backend resolves the Journal's logical day and exact DST-aware
+    # bounds.  React receives real instants and must not infer the boundary
+    # from work hours, browser timezone, or an opened-at lifecycle timestamp.
+    from work_buddy.settings import get_journal_day_binding
+    journal_day, _boundary_event = get_journal_day_binding(now_local)
 
     contracts = (context.get("contract_constraints") or {}).get("active") or []
     constraints = (context.get("contract_constraints") or {}).get("constraints") or []
 
     return {
         "status": context.get("status", "ok"),
+        "timezone": getattr(user_timezone, "key", str(user_timezone)),
         "now": {
             "iso": now_local.astimezone(timezone.utc).isoformat(),
             "local_hhmm": now_local.strftime("%H:%M"),
             "minutes_into_day": now_minutes,
         },
         "work_hours": work_hours,
+        "journal_day": journal_day,
         "current_contexts": list(current_contexts or []),
         "recommendations": recs,
         "plan": plan.get("plan") or [],

@@ -8,6 +8,8 @@ Smoke-test that the endpoint composes the engage view + the now-plan
 from __future__ import annotations
 
 import json
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -51,7 +53,7 @@ def test_today_payload_shape(client):
     # Status may degrade if calendar/contracts unavailable in the test env.
     assert body["status"] in {"ok", "degraded"}
     for key in (
-        "now", "work_hours", "current_contexts", "recommendations",
+        "timezone", "now", "work_hours", "journal_day", "current_contexts", "recommendations",
         "plan", "focused_count", "calendar_event_count",
         "active_contracts", "engage_count",
     ):
@@ -59,6 +61,26 @@ def test_today_payload_shape(client):
     # now block has the time fields
     assert "iso" in body["now"]
     assert "local_hhmm" in body["now"]
+    assert body["journal_day"]["timezone"] == body["timezone"]
+    assert body["journal_day"]["day_boundary_start"]
+    assert datetime.fromisoformat(body["journal_day"]["window_start"]).tzinfo is not None
+    assert datetime.fromisoformat(body["journal_day"]["window_end"]).tzinfo is not None
+
+
+def test_today_uses_configured_timezone_for_temporal_context(client, monkeypatch):
+    """The dashboard must not inherit the server OS timezone by accident."""
+    from work_buddy import config as wb_config
+
+    configured = ZoneInfo("Pacific/Kiritimati")
+    monkeypatch.setattr(wb_config, "_USER_TZ_CACHE", configured)
+
+    body = client.get("/api/automation/today").get_json()
+    instant = datetime.fromisoformat(body["now"]["iso"])
+    local = instant.astimezone(configured)
+
+    assert body["timezone"] == "Pacific/Kiritimati"
+    assert body["now"]["local_hhmm"] == local.strftime("%H:%M")
+    assert body["now"]["minutes_into_day"] == local.hour * 60 + local.minute
 
 
 def test_today_forwards_current_contexts(client):

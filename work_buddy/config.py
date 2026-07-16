@@ -98,6 +98,12 @@ DEFAULTS = {
         "read_only": False,  # disable mutating actions (investigate, palette execute, etc.)
         "external_url": "",  # Tailscale HTTPS URL (e.g. "https://machine.tailnet.ts.net")
     },
+    "journal": {
+        # A Journal day is a local civil-day window, not necessarily midnight
+        # to midnight.  Personal overrides are owned by the Settings broker;
+        # this value is the App-level default used when no override exists.
+        "day_boundary": "05:00",
+    },
     "tray": {
         # System-tray icon: its own login item beside the sidecar (needs the
         # `tray` extra). Toggled by `wbuddy tray enable|disable`, which also
