@@ -78,3 +78,4 @@ The `calendar_*` capabilities are gated by the provider-aware `calendar` tool pr
 ## Related
 
 - `obsidian/calendar` — the bridge-specific integration (plugin runtime API, write consent, JS snippets).
+- `services/dashboard/react/calendar-surface` — the React presentation contract. It consumes canonical temporal data and keeps the rendering library private; provider selection, credentials, synchronization, and write authority remain in this subsystem.

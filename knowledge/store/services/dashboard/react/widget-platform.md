@@ -55,4 +55,4 @@ Dashboard Core owns layout editing, constraint enforcement, collision feedback, 
 
 Desktop customization uses the grid. Mobile uses document flow and drag-reordering of a canonical sequence. Responsive changes may reflow or scroll content, but they must not silently remove primary controls or hide that a capability exists.
 
-See `services/dashboard/react` for contribution hosting and migration boundaries.
+See `services/dashboard/react` for contribution hosting and migration boundaries, and `services/dashboard/react/appearance` for the visual contract every widget must honor.
