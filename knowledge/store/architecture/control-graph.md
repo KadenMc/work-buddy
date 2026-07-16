@@ -107,6 +107,8 @@ Universal ``?`` button on every non-ok requirement (except those already offerin
 
 ## Settings tab
 
+The React projection lives at `/app/settings/status`. It renders the same control graph and repair actions but remains separate from registry-defined editable settings. Component health, dependency state, and guided repair are status data; they do not become setting definitions merely because they appear inside the Settings shell.
+
 The primary consumer lives at ``work_buddy/dashboard/frontend/scripts/tabs/settings.py`` + ``panel-settings`` in ``html.py``. Renders the graph as a hierarchy of domains; exposes preference toggles (3-state: Want / No thanks / Undecided), Configure / Walk me through action buttons per requirement, universal ``?`` help button, per-component ↻ reprobe button, and clickable bulk-state chips for drill-down into problem nodes.
 
 ## Relationship to other surfaces

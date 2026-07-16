@@ -46,7 +46,7 @@ Contributions use semantic tokens and supported primitives. Raw palette values, 
 
 ## Typography and density
 
-Typography uses named scale tiers instead of unconstrained per-widget pixel sizes. Density is separate from font scale so a compact layout cannot make text unreadable.
+Typography uses named scale tiers instead of unconstrained per-widget pixel sizes. The system-wide accessibility scale changes those tiers coherently. Density is separate from font scale so a compact layout cannot make text unreadable.
 
 ## Accessibility requirements
 
