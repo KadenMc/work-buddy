@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import type {
@@ -129,6 +129,32 @@ export default function WidgetLab() {
 
   const traceCases =
     traceCount === null ? null : buildSyntheticTraceCases(traceCount);
+
+  useEffect(() => {
+    if (
+      traceCount === null ||
+      typeof window.requestAnimationFrame !== "function"
+    ) {
+      return;
+    }
+
+    const markName = "wb:widget-lab-ready";
+    performance.clearMarks(markName);
+    let secondFrame: number | undefined;
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        performance.mark(markName);
+      });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      if (secondFrame !== undefined) {
+        window.cancelAnimationFrame(secondFrame);
+      }
+      performance.clearMarks(markName);
+    };
+  }, [traceCount]);
 
   return (
     <main className="wb-widget-lab">
