@@ -33,7 +33,7 @@ class CoverageRow:
 
 
 ENGINE_CORE = "engine core"
-RESIDENT_RENDERING_SCOPE = "engine core; resident rendering outside engine scope"
+RESIDENT_RENDERING_SCOPE = "engine core, resident rendering outside engine scope"
 RETRIEVAL_INTEGRATION = "retrieval integration"
 
 

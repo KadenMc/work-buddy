@@ -756,7 +756,7 @@ def test_import_round_trip_preserves_valid_confirmation_and_later_drift_warning(
         actor=HUMAN,
         created_at=LATER,
     )
-    # Premise and conclusion decisions share a timestamp; ledger order proves
+    # Premise and conclusion decisions share a timestamp. Ledger order proves
     # the premise was already authoritative for the conclusion confirmation.
     _confirm_claim(source, conclusion, at=LATER)
     lifecycle = TruthLifecycle(source)

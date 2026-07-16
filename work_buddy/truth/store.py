@@ -711,8 +711,8 @@ class TruthStore:
         """Own one write transaction, or compose inside a supplied one.
 
         Only the store-owned outer context can run post-commit export and
-        observer actions. A supplied connection leaves commit ownership—and
-        any required post-commit work—with its caller.
+        observer actions. A supplied connection leaves commit ownership, and
+        any required post-commit work, with its caller.
         """
         if conn is not None:
             self._validate_connection_target(conn)

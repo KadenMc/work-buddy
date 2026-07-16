@@ -605,7 +605,7 @@ class TruthLifecycle:
         Challenge writes may receive an explicit historical timestamp. Current
         support alone is therefore insufficient: a later support edge must not
         make a backdated challenge valid. Rows are already present before the
-        challenge event is appended, so equal timestamps are valid here; the
+        challenge event is appended, so equal timestamps are valid here. The
         ledger sequence disambiguates equal-time history during integrity reads.
         """
 
