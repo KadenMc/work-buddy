@@ -8,6 +8,7 @@ import { InMemoryPersonalizationRepository } from "../../../dashboard/personaliz
 import { FixtureViewProvider } from "../../../dashboard/providers/FixtureViewProvider";
 import { ViewHost } from "../../../dashboard/views/ViewHost";
 import { ThemeProvider } from "../../../theme/ThemeProvider";
+import { DashboardTestRuntime } from "../../../test/DashboardTestRuntime";
 import {
   JOURNAL_APP_ID,
   JOURNAL_VIEW_DEFINITION_ID,
@@ -73,12 +74,14 @@ async function renderFixture(fixture: JournalFixtureState) {
     <ThemeProvider initialPreference={{ scheme: "light", skinId: "wb.default" }}>
       <DashboardEventProvider>
         <DashboardAnnouncer>
-          <ViewHost
-            registry={dashboardRegistry}
-            definition={JOURNAL_VIEW_DEFINITION}
-            provider={provider}
-            personalizationRepository={new InMemoryPersonalizationRepository()}
-          />
+          <DashboardTestRuntime>
+            <ViewHost
+              registry={dashboardRegistry}
+              definition={JOURNAL_VIEW_DEFINITION}
+              provider={provider}
+              personalizationRepository={new InMemoryPersonalizationRepository()}
+            />
+          </DashboardTestRuntime>
         </DashboardAnnouncer>
       </DashboardEventProvider>
     </ThemeProvider>,

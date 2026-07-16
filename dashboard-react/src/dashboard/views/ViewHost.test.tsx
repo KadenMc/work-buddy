@@ -1,10 +1,13 @@
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { InMemoryJournalProvider } from "../../apps/journal/providers/InMemoryJournalProvider";
 import { JOURNAL_VIEW_DEFINITION } from "../../apps/journal/viewDefinition";
 import { dashboardRegistry } from "../../app/dashboardRegistry";
 import { ThemeProvider } from "../../theme/ThemeProvider";
+import { DashboardTestRuntime } from "../../test/DashboardTestRuntime";
 import { DashboardAnnouncer } from "../accessibility/DashboardAnnouncer";
 import { DashboardEventProvider } from "../events/DashboardEventProvider";
 import { InMemoryPersonalizationRepository } from "../personalization/repository";
@@ -33,18 +36,22 @@ describe("ViewHost", () => {
     const provider = new InMemoryJournalProvider();
 
     const rendered = render(
-      <ThemeProvider initialPreference={{ scheme: "light", skinId: "wb.default" }}>
-        <DashboardEventProvider>
-          <DashboardAnnouncer>
-            <ViewHost
-              registry={dashboardRegistry}
-              definition={JOURNAL_VIEW_DEFINITION}
-              provider={provider}
-              personalizationRepository={new InMemoryPersonalizationRepository()}
-            />
-          </DashboardAnnouncer>
-        </DashboardEventProvider>
-      </ThemeProvider>,
+      <MemoryRouter initialEntries={["/journal"]}>
+        <ThemeProvider initialPreference={{ scheme: "light", skinId: "wb.default" }}>
+          <DashboardEventProvider>
+            <DashboardAnnouncer>
+              <DashboardTestRuntime>
+                <ViewHost
+                  registry={dashboardRegistry}
+                  definition={JOURNAL_VIEW_DEFINITION}
+                  provider={provider}
+                  personalizationRepository={new InMemoryPersonalizationRepository()}
+                />
+              </DashboardTestRuntime>
+            </DashboardAnnouncer>
+          </DashboardEventProvider>
+        </ThemeProvider>
+      </MemoryRouter>,
     );
 
     await waitFor(() =>
@@ -57,15 +64,21 @@ describe("ViewHost", () => {
     expect(rendered.container.querySelector(".react-grid-layout")).toBeNull();
     expect(
       await screen.findByRole(
-        "list",
-        { name: "Day timeline items" },
+        "region",
+        { name: "Calendar surface for 2026-07-11" },
         { timeout: 15_000 },
       ),
     ).toBeVisible();
-    expect(screen.getByText("Mapped Journal data contracts")).toBeVisible();
-    expect(screen.queryByRole("button", { name: "Timeline" })).not.toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "Timeline" })).toBeChecked();
+    expect(screen.getByRole("radio", { name: "List" })).toBeVisible();
+    await userEvent.click(screen.getByRole("radio", { name: "List" }));
+    expect(
+      await screen.findByRole("button", { name: /Mapped Journal data contracts/ }),
+    ).toBeVisible();
     expect(rendered.container.querySelector(".wb-temporal-canvas")).toBeNull();
-    expect(rendered.container.querySelector(".wb-capture--compact")).not.toBeNull();
+    await waitFor(() =>
+      expect(rendered.container.querySelector(".wb-capture--compact")).not.toBeNull(),
+    );
     await waitFor(
       () =>
         expect(
@@ -80,18 +93,22 @@ describe("ViewHost", () => {
     vi.stubGlobal("matchMedia", vi.fn(() => media(false)));
 
     const rendered = render(
-      <ThemeProvider initialPreference={{ scheme: "light", skinId: "wb.default" }}>
-        <DashboardEventProvider>
-          <DashboardAnnouncer>
-            <ViewHost
-              registry={dashboardRegistry}
-              definition={JOURNAL_VIEW_DEFINITION}
-              provider={new InMemoryJournalProvider()}
-              personalizationRepository={new InMemoryPersonalizationRepository()}
-            />
-          </DashboardAnnouncer>
-        </DashboardEventProvider>
-      </ThemeProvider>,
+      <MemoryRouter initialEntries={["/journal"]}>
+        <ThemeProvider initialPreference={{ scheme: "light", skinId: "wb.default" }}>
+          <DashboardEventProvider>
+            <DashboardAnnouncer>
+              <DashboardTestRuntime>
+                <ViewHost
+                  registry={dashboardRegistry}
+                  definition={JOURNAL_VIEW_DEFINITION}
+                  provider={new InMemoryJournalProvider()}
+                  personalizationRepository={new InMemoryPersonalizationRepository()}
+                />
+              </DashboardTestRuntime>
+            </DashboardAnnouncer>
+          </DashboardEventProvider>
+        </ThemeProvider>
+      </MemoryRouter>,
     );
 
     expect(
@@ -117,5 +134,23 @@ describe("ViewHost", () => {
     expect(
       screen.queryByRole("list", { name: "Day timeline items" }),
     ).not.toBeInTheDocument();
+
+    const hoverHelp = screen.getByRole("button", { name: "Hover help" });
+    await userEvent.click(hoverHelp);
+    expect(hoverHelp).toHaveAttribute("aria-pressed", "true");
+
+    const capturePurpose = screen.getByLabelText("About Quick Capture in this view");
+    await userEvent.hover(capturePurpose);
+    expect(
+      await screen.findByText("Capture what is happening without leaving the Journal."),
+    ).toBeVisible();
+    expect(
+      screen.getByText(/required Journal slot preserves exact text/i),
+    ).toBeVisible();
+
+    await userEvent.unhover(capturePurpose);
+    await userEvent.click(screen.getByRole("button", { name: "Customize view" }));
+    expect(screen.queryByRole("button", { name: "Hover help" })).not.toBeInTheDocument();
+    expect(screen.getByText("Arranging layout")).toBeVisible();
   }, 20_000);
 });

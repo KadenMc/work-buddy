@@ -25,10 +25,12 @@ export const NOTES_APP_CONTRIBUTION = {
       roleId: RUNNING_NOTES_ROLE_ID,
       ownerAppId: NOTES_APP_ID,
       displayName: "Running Notes",
-      description: "Review and version-edit a longitudinal Markdown item collection.",
+      description:
+        "Review and version-edit a longitudinal Markdown collection; removals preserve history.",
       inputSchema: { schemaId: "wb.notes.running.input", version: 1 },
       outputIntentSchemas: [
         { schemaId: "wb.notes.edit-requested", version: 1 },
+        { schemaId: "wb.notes.delete-requested", version: 1 },
         { schemaId: "wb.notes.open-thread-requested", version: 1 },
       ],
     },
@@ -39,14 +41,45 @@ export const NOTES_APP_CONTRIBUTION = {
       definitionVersion: 1,
       publisherAppId: NOTES_APP_ID,
       displayName: "Running Notes",
-      description: "Review and edit a chronological collection of Markdown notes.",
+      description:
+        "Review, version-edit, and remove active items from a Markdown note collection.",
       libraryPath: ["Notes", "Running Notes"],
       providesRoles: [RUNNING_NOTES_ROLE_ID],
       settingsSchema: { schemaId: "wb.notes.running.settings", version: 1 },
       inputSchema: { schemaId: "wb.notes.running.input", version: 1 },
       outputIntentSchemas: [
         { schemaId: "wb.notes.edit-requested", version: 1 },
+        { schemaId: "wb.notes.delete-requested", version: 1 },
         { schemaId: "wb.notes.open-thread-requested", version: 1 },
+      ],
+      outputIntentEffects: [
+        {
+          schema: { schemaId: "wb.notes.edit-requested", version: 1 },
+          effect: "mutation",
+          preview: "simulate",
+        },
+        {
+          schema: { schemaId: "wb.notes.delete-requested", version: 1 },
+          effect: "mutation",
+          preview: "simulate",
+        },
+        {
+          schema: { schemaId: "wb.notes.open-thread-requested", version: 1 },
+          effect: "navigation",
+          preview: "block",
+        },
+      ],
+      drafts: [
+        {
+          draftName: "edit",
+          schema: { schemaId: "wb.notes.running.edit-draft", version: 1 },
+          persistence: "device",
+          sensitivity: "private",
+          retentionDays: 14,
+          maxBytes: 262_144,
+          clearPolicy: "confirm",
+          scope: { kind: "input-field", path: ["dayId"] },
+        },
       ],
       sizeContract: {
         default: { w: 8, h: 8 },

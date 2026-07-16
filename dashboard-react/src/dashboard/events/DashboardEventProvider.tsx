@@ -241,3 +241,7 @@ export function useDashboardEvents(): DashboardEventContextValue {
   }
   return context;
 }
+/** Optional consumer for host features that also support isolated test/demo mounts. */
+export function useOptionalDashboardEvents(): DashboardEventContextValue | undefined {
+  return useContext(DashboardEventContext);
+}

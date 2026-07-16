@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-wb-scheme="dark" data-wb-skin="wb.default" data-wb-density="comfortable">
+<html lang="en" data-wb-scheme="dark" data-wb-skin="wb.default" data-wb-density="comfortable" data-wb-type-scale="standard">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -16,6 +16,12 @@
           "wb.conformance-stress",
         ]);
         const densities = new Set(["compact", "comfortable", "spacious"]);
+        const typeScales = new Set([
+          "standard",
+          "large",
+          "extra-large",
+          "maximum",
+        ]);
         let preference = fallback;
 
         try {
@@ -44,10 +50,24 @@
 
         document.documentElement.dataset.wbScheme = resolvedScheme;
         document.documentElement.dataset.wbSkin = preference.skinId;
-        const storedDensity = localStorage.getItem("wb.appearance.density.v1");
+        let storedDensity = null;
+        let storedTypeScale = null;
+        try {
+          storedDensity = localStorage.getItem("wb.appearance.density.v1");
+          storedTypeScale = localStorage.getItem(
+            "wb.accessibility.type-scale.v1",
+          );
+        } catch {
+          // Storage can be unavailable in hardened/private contexts.
+        }
         document.documentElement.dataset.wbDensity = densities.has(storedDensity)
           ? storedDensity
           : "comfortable";
+        document.documentElement.dataset.wbTypeScale = typeScales.has(
+          storedTypeScale,
+        )
+          ? storedTypeScale
+          : "standard";
         document.documentElement.style.colorScheme = resolvedScheme;
         const canvasColors = {
           "wb.default": { light: "#f6f1e9", dark: "#15110f" },

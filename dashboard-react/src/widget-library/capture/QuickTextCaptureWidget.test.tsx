@@ -18,6 +18,7 @@ const presentation: WidgetPresentationContext = {
   width: 480,
   height: 320,
   sizeMode: "standard",
+  interactionMode: "operate",
   editing: false,
   theme: {
     contractVersion: 1,

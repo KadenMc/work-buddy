@@ -3,12 +3,12 @@
     --wb-font-sans: "Geist Variable", "Segoe UI Variable", "Segoe UI", sans-serif;
     --wb-font-mono: "Geist Mono Variable", "Cascadia Code", Consolas, monospace;
 
-    --wb-font-size-2xs: 0.6875rem;
-    --wb-font-size-xs: 0.75rem;
-    --wb-font-size-sm: 0.8125rem;
-    --wb-font-size-md: 0.875rem;
-    --wb-font-size-lg: 1rem;
-    --wb-font-size-xl: 1.25rem;
+    --wb-font-size-2xs: 0.75rem;
+    --wb-font-size-xs: 0.875rem;
+    --wb-font-size-sm: 0.9375rem;
+    --wb-font-size-md: 1rem;
+    --wb-font-size-lg: 1.125rem;
+    --wb-font-size-xl: 1.375rem;
     --wb-font-size-2xl: clamp(1.5rem, 2.2vw, 2rem);
     --wb-line-height-tight: 1.2;
     --wb-line-height-body: 1.5;
@@ -43,7 +43,9 @@
 
     --wb-view-gutter: clamp(1rem, 2.4vw, 2rem);
     --wb-view-max-width: 96rem;
+    --wb-dashboard-max-width: none;
     --wb-widget-padding: 1rem;
+    --wb-widget-inset-inline: var(--wb-widget-padding);
     --wb-widget-header-height: 3rem;
     --wb-widget-gap: 0.75rem;
     --wb-grid-row-height: 2rem;
@@ -53,6 +55,8 @@
     --wb-radius-surface: 0.875rem;
     --wb-radius-panel: 1.125rem;
     --wb-radius-round: 999px;
+    /* Semantic alias for controls that must remain pill-shaped across skins. */
+    --wb-radius-pill: var(--wb-radius-round);
 
     --wb-border-width: 1px;
     --wb-focus-width: 2px;
@@ -66,6 +70,41 @@
     --wb-motion-duration-slow: 280ms;
     --wb-motion-easing-standard: cubic-bezier(0.2, 0, 0, 1);
     --wb-motion-easing-enter: cubic-bezier(0, 0, 0, 1);
+  }
+
+  /*
+   * Accessibility tiers scale the complete semantic type system at its root.
+   * Widgets and contributed UI must consume --wb-font-size-* tokens; they do
+   * not get a private font-size preference or an arbitrary multiplier.
+   */
+  :root[data-wb-type-scale="large"] {
+    --wb-font-size-2xs: 0.84375rem;
+    --wb-font-size-xs: 0.984375rem;
+    --wb-font-size-sm: 1.0546875rem;
+    --wb-font-size-md: 1.125rem;
+    --wb-font-size-lg: 1.265625rem;
+    --wb-font-size-xl: 1.546875rem;
+    --wb-font-size-2xl: clamp(1.6875rem, 2.475vw, 2.25rem);
+  }
+
+  :root[data-wb-type-scale="extra-large"] {
+    --wb-font-size-2xs: 0.9375rem;
+    --wb-font-size-xs: 1.09375rem;
+    --wb-font-size-sm: 1.171875rem;
+    --wb-font-size-md: 1.25rem;
+    --wb-font-size-lg: 1.40625rem;
+    --wb-font-size-xl: 1.71875rem;
+    --wb-font-size-2xl: clamp(1.875rem, 2.75vw, 2.5rem);
+  }
+
+  :root[data-wb-type-scale="maximum"] {
+    --wb-font-size-2xs: 1.03125rem;
+    --wb-font-size-xs: 1.203125rem;
+    --wb-font-size-sm: 1.2890625rem;
+    --wb-font-size-md: 1.375rem;
+    --wb-font-size-lg: 1.546875rem;
+    --wb-font-size-xl: 1.890625rem;
+    --wb-font-size-2xl: clamp(2.0625rem, 3.025vw, 2.75rem);
   }
 
   :root[data-wb-density="compact"] {

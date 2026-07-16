@@ -61,7 +61,7 @@ function LabWidgetCase({
         width={dimensions.width}
         height={dimensions.height}
         sizeMode={labCase.sizeMode}
-        editing={false}
+        interactionMode="operate"
         emit={onIntent}
       />
     </article>

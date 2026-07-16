@@ -103,6 +103,7 @@ const buildRegistry = () => {
             requiredRole: roleId,
             defaultWidgetTypeId: currentType,
             presence: "required",
+            help: { summary: "Summarize the project.", details: "Provides this test view's required summary." },
             defaultSettings: { density: "compact" },
             defaultLayout: { x: 0, y: 0, w: 8, h: 4 },
             lockedReason: "Summary is required",

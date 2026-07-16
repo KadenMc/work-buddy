@@ -83,6 +83,7 @@ const presentation = (
   width: sizeMode === "compact" ? 320 : sizeMode === "standard" ? 560 : 880,
   height: sizeMode === "compact" ? 280 : sizeMode === "standard" ? 520 : 760,
   sizeMode,
+  interactionMode: "operate",
   editing: false,
   theme,
   getCanvasTheme: () => canvasTheme,
@@ -300,6 +301,7 @@ describe("Journal and the real widget library", () => {
 
     expect(input.day.localDate).toBe("2026-07-11");
     expect(input.day.now).toBe("2026-07-12T04:30:00-04:00");
+    fireEvent.click(screen.getByRole("radio", { name: "List" }));
     expect(
       screen.getByRole("button", { name: /Captured before the Journal day boundary/i }),
     ).toBeInTheDocument();

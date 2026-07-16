@@ -4,6 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { expectNoAccessibilityViolations } from "../../test/setup";
+import { DashboardTestRuntime } from "../../test/DashboardTestRuntime";
 import { ThemeProvider } from "../../theme/ThemeProvider";
 import WidgetLab from "./WidgetLab";
 import {
@@ -15,9 +16,11 @@ import {
 function renderLab(path = "/app/__widget-lab") {
   return render(
     <ThemeProvider initialPreference={{ scheme: "light", skinId: "wb.default" }}>
-      <MemoryRouter initialEntries={[path]}>
-        <WidgetLab />
-      </MemoryRouter>
+      <DashboardTestRuntime>
+        <MemoryRouter initialEntries={[path]}>
+          <WidgetLab />
+        </MemoryRouter>
+      </DashboardTestRuntime>
     </ThemeProvider>,
   );
 }

@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ThemeProvider } from "../../theme/ThemeProvider";
+import { DashboardTestRuntime } from "../../test/DashboardTestRuntime";
 import { DashboardAnnouncer } from "../accessibility/DashboardAnnouncer";
 import type {
   AppContribution,
@@ -105,6 +106,7 @@ const contribution: AppContribution = {
           requiredRole: roleId,
           defaultWidgetTypeId: defaultType,
           presence: "required",
+          help: { summary: "Provide test input.", details: "Keeps the test view usable." },
           defaultSettings: {},
           defaultLayout: { x: 0, y: 0, w: 8, h: 4 },
           lockedReason: "The test view requires one input to remain usable",
@@ -208,12 +210,14 @@ describe("ViewHost provider-bound catalog additions", () => {
       <ThemeProvider initialPreference={{ scheme: "light", skinId: "wb.default" }}>
         <DashboardEventProvider>
           <DashboardAnnouncer>
-            <ViewHost
-              registry={registry}
-              definition={contribution.views[0]!}
-              provider={provider}
-              personalizationRepository={new InMemoryPersonalizationRepository()}
-            />
+            <DashboardTestRuntime>
+              <ViewHost
+                registry={registry}
+                definition={contribution.views[0]!}
+                provider={provider}
+                personalizationRepository={new InMemoryPersonalizationRepository()}
+              />
+            </DashboardTestRuntime>
           </DashboardAnnouncer>
         </DashboardEventProvider>
       </ThemeProvider>,

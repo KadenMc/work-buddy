@@ -21,6 +21,12 @@ export interface WidgetLayoutItem extends DashboardLayoutItem {
 
 export type DashboardLayout = readonly WidgetLayoutItem[];
 export type LayoutInteractionKind = "move" | "resize";
+export type LayoutInteractionCancelReason =
+  | "pointer-release-lost"
+  | "pointer-cancelled"
+  | "window-blurred"
+  | "document-hidden"
+  | "edit-mode-ended";
 
 export type LayoutCommand =
   | {
@@ -64,6 +70,13 @@ export interface ReactGridLayoutAdapterProps {
   renderItem(item: WidgetLayoutItem): ReactNode;
   onDraftChange(items: DashboardLayout): void;
   onInteractionStart?(kind: LayoutInteractionKind, instanceId: WidgetInstanceId): void;
+  onKeyboardCommand?(command: LayoutCommand): void;
+  onInteractionRejected?(kind: LayoutInteractionKind, instanceId: WidgetInstanceId): void;
+  onInteractionCancel?(
+    kind: LayoutInteractionKind,
+    instanceId: WidgetInstanceId,
+    reason: LayoutInteractionCancelReason,
+  ): void;
   onInteractionEnd?(
     kind: LayoutInteractionKind,
     items: DashboardLayout,

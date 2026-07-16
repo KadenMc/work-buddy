@@ -1,5 +1,8 @@
 import type { ViewDefinition } from "../../dashboard/contributions/contracts";
 import {
+  asSettingsPageId,
+} from "../../dashboard/contributions/contracts";
+import {
   JOURNAL_APP_ID,
   JOURNAL_BINDING_KEYS,
   JOURNAL_INSTANCE_IDS,
@@ -22,6 +25,10 @@ export const JOURNAL_VIEW_DEFINITION = {
   },
   primaryJob:
     "Record the day as it changes and reconcile what happened with what remains intended.",
+  settings: {
+    pageId: asSettingsPageId("wb.settings.app.journal"),
+    label: "Journal settings",
+  },
   grid: { columns: 24 },
   defaultSlots: [
     {
@@ -30,11 +37,16 @@ export const JOURNAL_VIEW_DEFINITION = {
       requiredRole: JOURNAL_ROLE_IDS.capture,
       defaultWidgetTypeId: JOURNAL_WIDGET_TYPE_IDS.capture,
       presence: "required",
+      help: {
+        summary: "Capture what is happening without leaving the Journal.",
+        details:
+          "This required Journal slot preserves exact text as a record or running note for the active day. It keeps fleeting observations close to the timeline so the day can be recorded as it changes.",
+      },
       lockedReason:
         "Without a capture surface, Journal cannot record the day as it changes.",
       defaultSettings: {
-        defaultTarget: "running_notes",
-        defaultModes: { log: "smart", running_notes: "smart" },
+        defaultTarget: "auto",
+        defaultModes: { auto: "smart", log: "smart", running_notes: "smart" },
       },
       defaultBindings: {
         day: JOURNAL_BINDING_KEYS.day,
@@ -49,6 +61,11 @@ export const JOURNAL_VIEW_DEFINITION = {
       requiredRole: JOURNAL_ROLE_IDS.runningNotes,
       defaultWidgetTypeId: JOURNAL_WIDGET_TYPE_IDS.runningNotes,
       presence: "default_on",
+      help: {
+        summary: "Keep the day's evolving notes visible beside its timeline.",
+        details:
+          "This Journal placement surfaces the active day's running notes in chronological order. It helps connect captured context and follow-up work to what happened throughout the day.",
+      },
       defaultSettings: { displayMode: "chronological" },
       defaultBindings: {
         day: JOURNAL_BINDING_KEYS.day,
@@ -63,6 +80,11 @@ export const JOURNAL_VIEW_DEFINITION = {
       requiredRole: JOURNAL_ROLE_IDS.timeline,
       defaultWidgetTypeId: JOURNAL_WIDGET_TYPE_IDS.timeline,
       presence: "required",
+      help: {
+        summary: "Reconcile what happened today with what is still planned.",
+        details:
+          "This required Journal slot unifies observed records, intended plans, and calendar commitments on the active day's time axis. Their kind, provenance, status, and mutability remain explicit so the timeline does not blur history with intent.",
+      },
       lockedReason:
         "Without the day timeline, Journal cannot reconcile the day's record with its remaining intent.",
       defaultSettings: { renderMode: "timeline", density: "comfortable" },

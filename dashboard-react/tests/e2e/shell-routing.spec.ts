@@ -28,9 +28,37 @@ test("Quick Capture persists exact text and updates bound sibling input through 
   const capture = page.getByRole("region", { name: "Quick Capture", exact: true });
 
   await capture.getByRole("textbox", { name: "Capture text" }).fill("Meeting ran long");
-  await capture.getByRole("button", { name: /Destination/ }).click();
+  const destination = capture.getByRole("button", { name: /Destination/ });
+  await expect(destination).toHaveText("Auto");
+  await expect(capture.getByText(/Let Smart infer whether/i)).toHaveCount(0);
+  const smart = capture.getByRole("switch", { name: "Smart" });
+  const smartControl = capture.locator(".wb-capture__smart");
+  const captureButton = capture.getByRole("button", { name: "Capture", exact: true });
+  const [smartBox, destinationBox, captureBox] = await Promise.all([
+    smartControl.boundingBox(),
+    destination.boundingBox(),
+    captureButton.boundingBox(),
+  ]);
+  expect(smartBox).not.toBeNull();
+  expect(destinationBox).not.toBeNull();
+  expect(captureBox).not.toBeNull();
+  expect(smartBox!.x + smartBox!.width).toBeLessThan(destinationBox!.x);
+  expect(destinationBox!.x + destinationBox!.width).toBeLessThan(captureBox!.x);
+  expect(Math.abs(
+    destinationBox!.y + destinationBox!.height / 2 -
+      (captureBox!.y + captureBox!.height / 2),
+  )).toBeLessThanOrEqual(2);
+  await expect(smart).toBeChecked();
+  await smartControl.click();
+  await expect(captureButton).toBeDisabled();
+  await expect(capture.getByText("Turn on Smart to use Auto.")).toBeVisible();
+  await smartControl.click();
+  await destination.click();
+  await expect(page.getByRole("option", { name: /^Auto/ })).toContainText(
+    "Let Smart infer whether this belongs in Log or Running notes.",
+  );
   await page.getByRole("option", { name: /^Running notes/ }).click();
-  await capture.getByRole("button", { name: "Capture", exact: true }).click();
+  await captureButton.click();
 
   const submittedCapture = capture
     .getByRole("region", { name: "Recent captures" })

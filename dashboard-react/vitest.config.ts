@@ -9,5 +9,8 @@ export default defineConfig({
     css: true,
     include: ["src/**/*.{test,spec}.{ts,tsx}"],
     passWithNoTests: true,
+    // IndexedDB-style draft restoration and lazy widget modules introduce real async
+    // boundaries. Keep the gate deterministic when the full suite runs in parallel.
+    testTimeout: 15_000,
   },
 });

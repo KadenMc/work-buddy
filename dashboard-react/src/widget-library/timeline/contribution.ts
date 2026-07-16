@@ -52,6 +52,28 @@ export const TIMELINE_APP_CONTRIBUTION = {
         { schemaId: "wb.timeline.render-mode-changed", version: 1 },
         { schemaId: "wb.timeline.replan-requested", version: 1 },
       ],
+      outputIntentEffects: [
+        {
+          schema: { schemaId: "wb.timeline.open-item", version: 1 },
+          effect: "navigation",
+          preview: "block",
+        },
+        {
+          schema: { schemaId: "wb.timeline.item-action-requested", version: 1 },
+          effect: "mutation",
+          preview: "block",
+        },
+        {
+          schema: { schemaId: "wb.timeline.render-mode-changed", version: 1 },
+          effect: "mutation",
+          preview: "simulate",
+        },
+        {
+          schema: { schemaId: "wb.timeline.replan-requested", version: 1 },
+          effect: "external",
+          preview: "block",
+        },
+      ],
       sizeContract: {
         default: { w: 16, h: 16 },
         min: { w: 12, h: 8 },

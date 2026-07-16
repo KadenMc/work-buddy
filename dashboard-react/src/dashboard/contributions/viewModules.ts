@@ -9,12 +9,20 @@ export interface StandardViewRuntimeContext {
   readonly storage: Storage;
 }
 
+/** Host-owned controls which an App may place in its chrome without owning behavior. */
+export interface StandardViewChromeSlots {
+  readonly contextualActions?: ReactNode;
+}
+
 /** The only executable seams available to a standard, shareable widget view. */
 export interface StandardViewRuntimeConfiguration {
   readonly provider: ViewProvider;
   readonly personalizationRepository: PersonalizationRepository;
   readonly providerLabel?: string;
-  readonly renderChrome?: (snapshot: ViewSnapshot) => ReactNode;
+  readonly renderChrome?: (
+    snapshot: ViewSnapshot,
+    slots: StandardViewChromeSlots,
+  ) => ReactNode;
 }
 
 export interface LoadedStandardWidgetViewModule {

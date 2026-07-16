@@ -13,10 +13,8 @@ import { toCalendarSurfaceModel } from "./calendar-surface/fromDayTimeline";
 import type {
   DayTimelineInput,
   DayTimelineIntent,
-  DayTimelineItem,
   TimelineRenderMode,
 } from "./contracts";
-import { TemporalList } from "./TemporalCanvas";
 import "./styles.css";
 
 export default function DayTimelineWidget({
@@ -27,7 +25,7 @@ export default function DayTimelineWidget({
   const [renderMode, setRenderMode] = useState(input.renderMode);
   const [announcement, setAnnouncement] = useState("");
   const compact = presentation.sizeMode === "compact";
-  const effectiveMode = compact ? "list" : renderMode;
+  const density = compact ? "compact" : input.density;
   const readOnly = input.access?.mode === "read_only";
   const calendarModel = useMemo(
     () => toCalendarSurfaceModel({ ...input, renderMode }),
@@ -41,13 +39,6 @@ export default function DayTimelineWidget({
     emit(
       createWidgetIntent(presentation, "wb.timeline.render-mode-changed", {
         render_mode: next,
-      }) as DayTimelineIntent,
-    );
-  };
-  const openItem = (item: DayTimelineItem) => {
-    void emit(
-      createWidgetIntent(presentation, "wb.timeline.open-item", {
-        item_id: item.itemId,
       }) as DayTimelineIntent,
     );
   };
@@ -110,17 +101,15 @@ export default function DayTimelineWidget({
   return (
     <div className="wb-day-timeline">
       <div className="wb-day-timeline__toolbar">
-        {!compact && (
-          <SegmentedControl
-            label="Timeline display mode"
-            value={renderMode}
-            options={[
-              { value: "timeline", label: "Timeline" },
-              { value: "list", label: "List" },
-            ]}
-            onChange={setMode}
-          />
-        )}
+        <SegmentedControl
+          label="Timeline display mode"
+          value={renderMode}
+          options={[
+            { value: "timeline", label: "Timeline" },
+            { value: "list", label: "List" },
+          ]}
+          onChange={setMode}
+        />
         {presentation.sizeMode === "expanded" && (
           <Button size="small" disabled={readOnly} onClick={requestReplan}>
             <ArrowsClockwise aria-hidden="true" /> Request replan
@@ -130,15 +119,13 @@ export default function DayTimelineWidget({
       {readOnly && <InlineAlert tone="warning">{input.access?.reason}</InlineAlert>}
       {input.items.length === 0 ? (
         <p className="wb-day-timeline__empty">No temporal items for this day.</p>
-      ) : effectiveMode === "timeline" ? (
+      ) : (
         <CalendarSurface
           model={calendarModel}
-          density={input.density}
+          density={density}
           onIntent={handleCalendarIntent}
           onAnnouncement={(message) => setAnnouncement(message)}
         />
-      ) : (
-        <TemporalList day={input.day} items={input.items} onOpenItem={openItem} />
       )}
       <p className="wb-visually-hidden" role="status">
         {announcement}

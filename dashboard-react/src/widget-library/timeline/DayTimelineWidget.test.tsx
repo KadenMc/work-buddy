@@ -18,6 +18,7 @@ const presentation: WidgetPresentationContext = {
   width: 960,
   height: 720,
   sizeMode: "standard",
+  interactionMode: "operate",
   editing: false,
   theme: {
     contractVersion: 1,
@@ -81,7 +82,7 @@ const input: DayTimelineInput = {
 };
 
 describe("DayTimelineWidget", () => {
-  it("uses an accessible compact list and emits a generic open intent", async () => {
+  it("keeps the presentation control discoverable at compact size without changing the selected mode", async () => {
     const emit = vi.fn();
     const { container } = render(
       <DayTimelineWidget
@@ -91,8 +92,38 @@ describe("DayTimelineWidget", () => {
       />,
     );
 
-    const item = screen.getByRole("button", { name: /Captured decision/ });
-    await userEvent.click(item);
+    expect(screen.getByRole("radio", { name: "Timeline" })).toBeChecked();
+    expect(screen.getByRole("radio", { name: "List" })).toBeVisible();
+    expect(
+      screen.getByRole("region", { name: "Calendar surface for 2026-07-11" }),
+    ).toHaveAttribute("data-wb-calendar-view", "calendar:day");
+    expect(emit).not.toHaveBeenCalledWith(
+      expect.objectContaining({ intent_type: "wb.timeline.render-mode-changed" }),
+    );
+    await expectNoAccessibilityViolations(container);
+  });
+
+  it("opens the same typed inspector and action path from the list presentation", async () => {
+    const emit = vi.fn().mockResolvedValue({ status: "accepted", revision: "r1" });
+    render(
+      <DayTimelineWidget
+        input={{ ...input, renderMode: "list" }}
+        emit={emit}
+        presentation={{ ...presentation, sizeMode: "compact" }}
+      />,
+    );
+
+    expect(screen.getByRole("radio", { name: "List" })).toBeChecked();
+    expect(
+      screen.getByRole("region", { name: "Calendar surface for 2026-07-11" }),
+    ).toHaveAttribute("data-wb-calendar-view", "list:day");
+
+    await userEvent.click(screen.getByRole("button", { name: /Captured decision/ }));
+    const inspector = await screen.findByRole("dialog");
+    expect(inspector).toHaveTextContent("Captured decision");
+    expect(inspector).toHaveTextContent("past — protected");
+
+    await userEvent.click(screen.getByRole("button", { name: "Open record" }));
     expect(emit).toHaveBeenCalledWith(
       expect.objectContaining({
         intent_type: "wb.timeline.open-item",
@@ -101,9 +132,6 @@ describe("DayTimelineWidget", () => {
         payload: { item_id: "record-1" },
       }),
     );
-    expect(screen.getByText("past — protected")).toBeInTheDocument();
-    expect(screen.getByText("fixed commitment")).toBeInTheDocument();
-    await expectNoAccessibilityViolations(container);
   });
 
   it("emits display and replan intents without domain routing", async () => {
@@ -171,7 +199,7 @@ describe("DayTimelineWidget", () => {
       />,
     );
 
-    expect(screen.getByText("Heavy item 179")).toBeInTheDocument();
-    expect(container.querySelectorAll(".wb-temporal-list > li")).toHaveLength(180);
+    expect(screen.getAllByText("Heavy item 179").length).toBeGreaterThan(0);
+    expect(container.querySelectorAll("[data-wb-calendar-item-id]")).toHaveLength(180);
   });
 });

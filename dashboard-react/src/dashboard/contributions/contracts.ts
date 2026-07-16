@@ -3,6 +3,7 @@ import type {
   ResolvedThemeSummary,
   WidgetThemeDeclaration,
 } from "./themeContract";
+import type { HelpContent } from "../help/contracts";
 
 export type JsonPrimitive = boolean | number | string | null;
 export type JsonValue =
@@ -25,6 +26,8 @@ export type WidgetInstanceId = DashboardId<"widget-instance">;
 export type WidgetRoleId = DashboardId<"widget-role">;
 export type WidgetModuleId = DashboardId<"widget-module">;
 export type ViewModuleId = DashboardId<"view-module">;
+/** Stable identity resolved by the host-owned Settings registry, never a route. */
+export type SettingsPageId = DashboardId<"settings-page">;
 
 export const asAppId = (value: string): AppId => value as AppId;
 export const asViewId = (value: string): ViewId => value as ViewId;
@@ -35,6 +38,7 @@ export const asWidgetInstanceId = (value: string): WidgetInstanceId =>
 export const asWidgetRoleId = (value: string): WidgetRoleId => value as WidgetRoleId;
 export const asWidgetModuleId = (value: string): WidgetModuleId => value as WidgetModuleId;
 export const asViewModuleId = (value: string): ViewModuleId => value as ViewModuleId;
+export const asSettingsPageId = (value: string): SettingsPageId => value as SettingsPageId;
 
 export interface JsonSchemaReference {
   readonly schemaId: string;
@@ -71,6 +75,30 @@ export interface WidgetSizeContract {
   readonly modes: readonly WidgetSizeMode[];
 }
 
+export type WidgetDraftPersistence = "device" | "session" | "none";
+export type WidgetDraftSensitivity = "ordinary" | "private" | "secret";
+export type WidgetDraftClearPolicy = "confirm" | "undoable" | "widget-managed";
+
+export type WidgetDraftScope =
+  | { readonly kind: "view" }
+  | {
+      readonly kind: "input-field";
+      /** Path within the validated widget input, for example `["dayId"]`. */
+      readonly path: readonly string[];
+    };
+
+/** Host-owned recoverable working state, separate from settings and provider data. */
+export interface WidgetDraftDeclaration {
+  readonly draftName: string;
+  readonly schema: JsonSchemaReference;
+  readonly persistence: WidgetDraftPersistence;
+  readonly sensitivity: WidgetDraftSensitivity;
+  readonly retentionDays?: number;
+  readonly maxBytes: number;
+  readonly clearPolicy: WidgetDraftClearPolicy;
+  readonly scope: WidgetDraftScope;
+}
+
 export interface WidgetLayoutPlacement extends GridSize {
   readonly x: number;
   readonly y: number;
@@ -86,6 +114,15 @@ export interface DashboardGridDefinition {
 
 export type WidgetMultiplicity = "single_per_view" | "multiple_per_view";
 
+export type WidgetIntentEffect = "read" | "mutation" | "navigation" | "external";
+export type WidgetIntentPreviewPolicy = "simulate" | "block";
+
+export interface WidgetIntentEffectDeclaration {
+  readonly schema: JsonSchemaReference;
+  readonly effect: WidgetIntentEffect;
+  readonly preview: WidgetIntentPreviewPolicy;
+}
+
 /** A reusable library type. It never identifies a placement in a view. */
 export interface WidgetDefinition {
   readonly typeId: WidgetTypeId;
@@ -93,11 +130,16 @@ export interface WidgetDefinition {
   readonly publisherAppId: AppId;
   readonly displayName: string;
   readonly description: string;
+  /** Reusable type-level help; a view placement may override this with its specific job. */
+  readonly help?: HelpContent;
   readonly libraryPath: readonly string[];
   readonly providesRoles: readonly WidgetRoleId[];
   readonly settingsSchema: JsonSchemaReference;
   readonly inputSchema: JsonSchemaReference;
   readonly outputIntentSchemas: readonly JsonSchemaReference[];
+  /** Semantic effect policy for every outward intent; local UI actions do not belong here. */
+  readonly outputIntentEffects?: readonly WidgetIntentEffectDeclaration[];
+  readonly drafts?: readonly WidgetDraftDeclaration[];
   readonly sizeContract: WidgetSizeContract;
   readonly multiplicity: WidgetMultiplicity;
   readonly rendererModuleId: WidgetModuleId;
@@ -111,6 +153,8 @@ export interface DefaultWidgetSlot {
   readonly requiredRole: WidgetRoleId;
   readonly defaultWidgetTypeId: WidgetTypeId;
   readonly presence: "required" | "default_on" | "default_off";
+  /** The job this stable placement performs in this particular view. */
+  readonly help: HelpContent;
   readonly defaultSettings: JsonValue;
   readonly defaultBindings?: Readonly<Record<string, JsonValue>>;
   readonly defaultLayout: WidgetLayoutPlacement;
@@ -132,6 +176,14 @@ export interface ViewDefinition {
     readonly hidden?: boolean;
   };
   readonly primaryJob: string;
+  /**
+   * A discoverability reference only. Dashboard Core resolves the page ID and owns
+   * navigation; an App may provide the user-facing label but never a route or store.
+   */
+  readonly settings?: {
+    readonly pageId: SettingsPageId;
+    readonly label: string;
+  };
   readonly grid: DashboardGridDefinition;
   readonly defaultSlots: readonly DefaultWidgetSlot[];
   readonly readingOrder: readonly WidgetSlotId[];
@@ -277,6 +329,8 @@ export interface WidgetPresentationContext {
   readonly width: number;
   readonly height: number;
   readonly sizeMode: WidgetSizeMode;
+  readonly interactionMode: "operate" | "arrange" | "preview";
+  /** @deprecated Prefer interactionMode; retained during renderer migration. */
   readonly editing: boolean;
   readonly theme: ResolvedThemeSummary;
   getCanvasTheme(): CanvasThemeSnapshot;
