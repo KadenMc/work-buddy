@@ -149,9 +149,16 @@ test("mobile one-column Journal visual baseline", async ({ page }) => {
   // rendering viewport. Materialize virtualized list content so the golden
   // proves the compact renderers rather than their intrinsic-size placeholders.
   await materializeVisualContent(page);
-  await expect(page.getByRole("list", { name: "Day timeline items" })).toContainText(
-    "Mapped Journal data contracts",
-  );
+  await expect(page.getByRole("radiogroup", { name: "Timeline display mode" })).toBeVisible();
+  await page
+    .getByRole("radiogroup", { name: "Timeline display mode" })
+    .getByText("List", { exact: true })
+    .click();
+  const listProjection = page.getByRole("region", { name: /Calendar surface for/ });
+  await expect(listProjection.getByRole("table")).toBeVisible();
+  await expect(
+    listProjection.getByRole("button", { name: /Mapped Journal data contracts/ }),
+  ).toBeVisible();
   await expect(page.getByRole("region", { name: "Running Notes" })).toContainText(
     "Prototype mobile timeline edge case",
   );

@@ -71,7 +71,7 @@ test("the rendered Journal has no serious or critical axe violations", async ({ 
 test("Journal exposes textual timeline semantics and stable page landmarks", async ({ page }) => {
   await openJournal(page);
 
-  await expect(page.getByRole("navigation", { name: "Dashboard views" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Dashboard navigation" })).toBeVisible();
   await expect(page.getByRole("main")).toHaveCount(1);
   await expect(page.getByText("record", { exact: true }).first()).toBeVisible();
   await expect(page.getByText("calendar", { exact: true }).first()).toBeVisible();
