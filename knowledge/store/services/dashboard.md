@@ -56,7 +56,7 @@ The Settings panel also has **Embeddings** and **Inference** sub-views. Settings
 * **Remote access:** Published privately via ``tailscale serve --bg 5127`` — the ``tailscale`` component (registered in ``COMPONENT_CATALOG``) gates this with click-to-fix requirements; see ``architecture/health/components`` and ``status/tailscale-status-directions``. The browser only hits same-origin ``/api/...`` routes; all local service reads happen server-side.
 * **Read-only mode:** ``dashboard.read_only: true`` in ``config.yaml`` gates every mutating HTTP method (403) and hides or disables mutation controls in both frontends.
 
-The React dashboard's standardized widget runtime, appearance contract, and calendar presentation are documented under `services/dashboard/react`.
+The React dashboard's standardized widget runtime, appearance contract, and calendar presentation are documented under `services/dashboard/react`. Registry-driven configuration authority is documented at `settings`.
 
 ## Card registry (feature cards)
 
@@ -88,6 +88,16 @@ The dashboard updates in real time from server-pushed events delivered over ``GE
 * ``POST /api/reprobe/<component_id>`` — pre-existing; per-component reprobe, reused by Settings' ↻ button.
 
 All mutating control endpoints are gated by ``_reject_read_only()`` and auto-grant the relevant consent (the click IS the consent, same pattern as workflow-launch).
+
+## Settings broker endpoints
+
+* ``GET /api/settings/registry`` — definitions, pages, sections, and placements.
+* ``GET /api/settings/values[?context_id=...]`` — authoritative effective values for a page or view context.
+* ``POST /api/settings/values/<setting_id>/preview`` — validate and describe a proposed value without storing or publishing it.
+* ``PATCH /api/settings/values/<setting_id>`` — revision-checked update through the setting's declared authority.
+* ``DELETE /api/settings/values/<setting_id>`` — revision-checked reset; ``POST /api/settings/reset`` is the body-addressed compatibility form.
+
+Settings responses are no-store. Writes and resets honor dashboard read-only mode and publish ``settings.changed`` after success. See `settings` for registry identity, navigation placement, authority, and persistence.
 
 ## Form-bridge endpoints
 

@@ -34,6 +34,14 @@ def test_control_graph_endpoint_returns_200(client):
 
 
 @pytest.mark.unit
+def test_control_graph_endpoint_exposes_read_only_state(client):
+    with patch("work_buddy.dashboard.service._is_read_only", return_value=True):
+        resp = client.get("/api/control/graph")
+    assert resp.status_code == 200
+    assert resp.get_json()["read_only"] is True
+
+
+@pytest.mark.unit
 def test_control_graph_endpoint_contains_expected_domains(client):
     resp = client.get("/api/control/graph")
     data = resp.get_json()

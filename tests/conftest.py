@@ -26,20 +26,27 @@ def _set_session_env(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _reset_user_tz_cache():
-    """Reset the process-global USER_TZ cache around every test.
+    """Reset every materialized form of ``USER_TZ`` around every test.
 
     ``work_buddy.config.USER_TZ`` memoizes on first access (`_USER_TZ_CACHE`),
     a boot-time perf optimization. Under pytest that module global leaks across
     tests: whichever test first materializes USER_TZ under a patched or
     timezone-less config poisons the cache for every later test — so the
     timezone-sensitive collectors (`timefmt`, chat/chrome renderers) fail
-    order-dependently. Clearing the cache before and after each test makes
-    USER_TZ recompute from that test's own active config, restoring isolation.
+    order-dependently.
+
+    Some older tests patch the lazy ``USER_TZ`` attribute itself. Pytest then
+    restores the value obtained through the module's ``__getattr__`` hook as a
+    concrete module attribute, bypassing ``_USER_TZ_CACHE`` on later reads.
+    Remove that materialized attribute as well as clearing the backing cache so
+    every test resolves the timezone from its own active config.
     """
     import work_buddy.config as _config
 
+    _config.__dict__.pop("USER_TZ", None)
     _config._USER_TZ_CACHE = None
     yield
+    _config.__dict__.pop("USER_TZ", None)
     _config._USER_TZ_CACHE = None
 
 

@@ -153,6 +153,11 @@ def _current_known_max_schema_versions() -> dict[str, int]:
         out["entities"] = ENTITY_MIGRATIONS.target_version
     except Exception as exc:
         logger.warning("restore: cannot read ENTITY_MIGRATIONS: %s", exc)
+    try:
+        from work_buddy.settings.migrations import SETTINGS_MIGRATIONS
+        out["settings"] = SETTINGS_MIGRATIONS.target_version
+    except Exception as exc:
+        logger.warning("restore: cannot read SETTINGS_MIGRATIONS: %s", exc)
     return out
 
 
@@ -360,11 +365,8 @@ def _apply_migrations_inplace(db_name: str, db_path: Path) -> None:
     """Open ``db_path`` through the appropriate per-DB migration
     runner so any newer-in-code migrations roll forward.
 
-    Keyed off the LOGICAL name from VITAL_DBS (``tasks`` /
-    ``projects`` / ``messages`` / ``threads`` / ``entities``), NOT the
-    on-disk filename. ``tasks``, ``projects``, and ``entities`` have
-    migration ladders; ``messages`` / ``threads`` no-op until they
-    grow one.
+    Keyed off the logical name from VITAL_DBS, not the on-disk
+    filename. Databases without a migration ladder remain unchanged.
     """
     runner = None
     if db_name == "tasks":
@@ -376,6 +378,9 @@ def _apply_migrations_inplace(db_name: str, db_path: Path) -> None:
     elif db_name == "entities":
         from work_buddy.entities.migrations import ENTITY_MIGRATIONS
         runner = ENTITY_MIGRATIONS
+    elif db_name == "settings":
+        from work_buddy.settings.migrations import SETTINGS_MIGRATIONS
+        runner = SETTINGS_MIGRATIONS
     if runner is None:
         # No migration ladder for this DB — leave it as-is.
         return

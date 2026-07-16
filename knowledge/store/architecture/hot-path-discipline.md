@@ -67,7 +67,7 @@ Caching does not help the first (uncached) call, and an unbounded external depen
 ## Current applications
 
 - Config-parse memo (mtime-keyed): `config.load_config`, `paths._load_paths_section`.
-- Schema-ensure gates (per-path `_schema_ready` set): `get_connection` in `threads/store`, `conversation_observability/db`, `summarization/db`.
+- Schema-ensure gates (per-path `_schema_ready` set): `get_connection` in `threads/store`, `conversation_observability/db`, `summarization/db`, and the Settings store. Settings keys readiness by resolved database path so each database migrates once per process without coupling separate profile or test paths.
 - Connection-share / batch: `threads/render`, `projects/activity`, `obsidian/tasks/store.get_many`.
 - Stale-while-revalidate + prewarm: `dashboard/api.get_system_state`, `control/graph.build_graph`, the `dashboard/service` requirements snapshot and its startup pre-warm thread; `projects/activity` git cache.
 - Source-mtime cache: `llm/claude_code_usage/aggregator` (DB mtime), `collectors/chat_collector._load_cache` ((mtime, size)).

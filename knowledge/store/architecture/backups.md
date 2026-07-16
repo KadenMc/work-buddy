@@ -48,6 +48,7 @@ Vital DBs that get backed up (declared in `work_buddy/backups/local.py` as `VITA
 | `messages` | `.data/db/messages.db` | `messaging/` |
 | `threads` | `.data/db/threads.db` | `threads/` |
 | `entities` | `.data/db/entities.db` | `entities/` |
+| `settings` | `.data/db/settings/settings.db` | `settings` |
 
 The logical name is what appears in the manifest and the snapshot tag; the on-disk filename is preserved inside the tarball so restore can reconstruct the directory layout.
 
@@ -69,7 +70,7 @@ Keys:
 - `work_buddy_version`, `work_buddy_commit`, `work_buddy_branch`, `work_buddy_dirty` -- code provenance at snapshot time. `work_buddy_dirty=True` flags an uncommitted working tree as an audit signal; does not block restore.
 - `host` -- hostname of the snapshotting machine.
 - `schema_versions` -- map of logical DB name -> `PRAGMA user_version` at snapshot time. Restore uses this to refuse forward-time travel and to drive forward-migration.
-- `row_counts` -- map of table -> row count at snapshot time. Restore validates post-migration counts against this, with tolerance for migration-added rows.
+- `row_counts` -- map of table -> row count at snapshot time. Restore validates counts after schema upgrade against this, with tolerance for migration-added rows.
 - `manifest_version` -- integer; future-proofs the manifest format itself. Restore checks it and refuses unknown values.
 
 ## Retention (tiered, per-tier capped)
@@ -110,9 +111,9 @@ Fresh-repo gotcha: the first push to an empty repo errors with `Repository is em
 1. Download `<tag>.tar.gz` from GitHub Releases into a staging directory.
 2. Read `MANIFEST.json` and validate: `manifest_version` is recognized; for each DB, snapshot's `schema_versions[db]` <= code's max migration (forward-time-travel guard).
 3. Unpack into `.data/db.staging_<ts>/`.
-4. Open each staged DB through `MigrationRunner.run()` (see `architecture/migrations`) -- the ladder rolls the staged schema forward to current.
+4. Open each staged DB through its migration authority (see `architecture/migrations`) -- the ladder rolls the staged schema forward to current. The Settings database uses its own versioned ladder and the same forward-version guard.
 5. `PRAGMA integrity_check` + `PRAGMA foreign_key_check` per DB. Refuse on either failure.
-6. Verify post-migration row counts match the manifest, with tolerance for migration-added rows.
+6. Verify row counts after schema upgrade match the manifest, with tolerance for migration-added rows.
 7. Move current `.data/db/` to `.data/db.pre_restore_<ts>/` (auto-rollback safety net).
 8. Move staging into place.
 

@@ -146,6 +146,7 @@ This bus is the **lossy real-time UI** layer — drop-oldest, no durability, no 
 | ``user_job.created`` | ``{name, file_path}`` | ``api_user_job_create`` (after successful write) |
 | ``inference.call_logged`` | ``{call_id, description, kind, model, execution_mode, status}`` (thin ping) | ``llm.provenance.record_inference_call`` — Settings › Inference refetches the cached ``/api/inference-activity`` |
 | ``fleet.changed`` | ``{reason}`` | ``dashboard.api.start_fleet_poller`` (25 s) — the Settings › Inference **fleet** section refetches the cached ``/api/fleet`` and morphs the cards. Published only when a machine's reachability or loaded-model set changes (external LM Studio loads/unloads have no other internal event). |
+| ``settings.changed`` | ``{setting_id, scope_id, revision, effective_state}`` | Settings broker after a successful server/profile mutation or reset. React Settings and view contexts reconcile the affected definition/value. |
 
 ## Replay semantics
 

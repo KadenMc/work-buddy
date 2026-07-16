@@ -24,14 +24,14 @@ aliases:
 parents:
 - journal
 dev_notes: |-
-  The journal-update workflow's `collect` step runs `work_buddy.journal.collect_scoped_context`, which calls `collect_bundle`. The `git` source is multi-repo since the Phase-A migration — walks every repo at depth 1 under `cfg['repos_root']`, buckets commits under `#### <project>` headings in the rendered `git_summary.md`. Per-commit project attribution layers on top when t-3d733f68 (`repo_paths` on projects) lands.
+  The journal-update workflow's `collect` step runs `work_buddy.journal.collect_scoped_context`, which calls `collect_bundle`. The `git` source walks every repo at depth 1 under `cfg['repos_root']` and buckets commits under `#### <project>` headings in the rendered `git_summary.md`. Per-commit attribution uses registered project `repo_paths` when present.
 
   Tests: `tests/unit/test_git_source_multirepo.py` covers discovery, single-repo scoping, `dirty_only`, session annotation, `is_stale` HEAD detection, legacy cache-shape fallback, and drill-down cross-repo lookup.
 ---
 
 Start via mcp__work-buddy__wb_run("update-journal"). Advance with wb_advance after each step.
 
-Target date: Defaults to today. If past midnight (00:00-04:00) and no date specified, ask whether they mean today or yesterday.
+Target date: Defaults to the backend-resolved logical Journal day. Do not ask a civil-midnight today/yesterday question; the configured timezone and day-boundary policy is authoritative. Ask only when the user supplies an ambiguous explicit date reference that the policy cannot resolve.
 
 ## Synthesis instructions
 
@@ -90,7 +90,7 @@ The `entries` parameter is a JSON string containing a list of `[time, descriptio
 Example:
 ```
 mcp__work-buddy__wb_run("journal_write", {
-  "target": "2026-04-15",
+  "target": "YYYY-MM-DD",
   "entries": "[[\"6:08 PM\", \"#projects/work-buddy — Fixed consent nesting bug.\"], [\"7:52 PM\", \"#projects/ecg-inquiry — Added grader run for 32 ECG batch.\"]]"
 })
 ```

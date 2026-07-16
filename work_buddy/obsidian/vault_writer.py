@@ -17,13 +17,12 @@ or at EOF.
 from __future__ import annotations
 
 import re
-from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
 from work_buddy.config import load_config
 from work_buddy.obsidian.retry import bridge_retry
-from work_buddy.journal import user_now
+from work_buddy.journal import current_journal_date
 
 
 # ---------------------------------------------------------------------------
@@ -38,7 +37,7 @@ def _resolve_note_path(note: str, vault_root: Path) -> Path | None:
     if note == "latest_journal":
         return _resolve_latest_journal(vault_root)
     elif note == "today":
-        date_str = user_now().strftime("%Y-%m-%d")
+        date_str = current_journal_date().isoformat()
         return Path("journal") / f"{date_str}.md"
     else:
         # Explicit path — use as-is
@@ -48,8 +47,8 @@ def _resolve_note_path(note: str, vault_root: Path) -> Path | None:
 def _resolve_latest_journal(vault_root: Path) -> Path | None:
     """Find the most recent journal file.
 
-    Respects the day-boundary rule: before ~5 AM, the "latest" journal
-    is yesterday's (since the user hasn't started a new day yet).
+    Respects the App-owned Journal boundary rather than assuming midnight
+    or embedding a second 5 AM cutoff in this adapter.
     """
     journal_dir = vault_root / "journal"
     if not journal_dir.is_dir():
@@ -66,12 +65,9 @@ def _resolve_latest_journal(vault_root: Path) -> Path | None:
     if not journal_files:
         return None
 
-    # Day-boundary: before 5 AM, prefer yesterday's journal if it exists
-    now = user_now()
-    if 0 <= now.hour < 5 and len(journal_files) >= 2:
-        yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d") + ".md"
-        if journal_files[0] != yesterday and yesterday in journal_files:
-            return Path("journal") / yesterday
+    logical_today = current_journal_date().isoformat() + ".md"
+    if logical_today in journal_files:
+        return Path("journal") / logical_today
 
     return Path("journal") / journal_files[0]
 

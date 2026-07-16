@@ -148,6 +148,7 @@ Every scope below is browsable with `mcp__work-buddy__wb_run("agent_docs", {"sco
 | `notifications/` | Notify, request, consent, surfaces |
 | `events/` | Durable in-process delivery spine for event-shaped facts — CloudEvents-superset envelope, SQLite log (dedup + offsets + DLQ), one drain thread, consent gate; `event_publish` to emit, plus user-authored **pull sources** (poll → diff → CEL condition → notify) authored via `/wb-event-new` |
 | `services/` | Messaging, memory (Hindsight), dashboard, sidecar |
+| `settings/` | Registry-driven settings, Apps-based placement, authority, persistence, Journal policy |
 | `features/` | Preferences and feature opt-in |
 | `operations/` | Gateway, agent sessions |
 | `architecture/` | Repo structure, workflows, knowledge system, embedding service, retry queue, artifact system, summarization framework, llm-with-tools |
