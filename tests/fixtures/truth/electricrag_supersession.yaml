@@ -1,0 +1,202 @@
+fixture_version: wb-truth-fixture/v1
+name: electricrag-sourced-successor-sweep
+description: Sourced evaluation measurements survive successor creation and trigger a dependent sweep.
+profile:
+  store_id: a1000000000040008000000000000001
+  profile: project-canon
+  title: ElectricRAG project canon
+  allowed_claim_kinds:
+    - measurement
+    - decision_outcome
+  required_fields:
+    measurement:
+      - subject_entity
+      - metric.name
+      - value.amount
+      - value.unit
+    decision_outcome:
+      - decision
+      - outcome
+  gate:
+    rejected_content: redact
+    confirmation_surfaces:
+      - dashboard
+      - cli
+      - chat_consent
+    block_materialize_on_flags: true
+  projection: resident
+  export_committed: true
+  proposal_max_age: 14d
+  validators:
+    sourced_claim:
+      claim_kinds:
+        - measurement
+      requires:
+        - evidence_span
+        - source_locator
+  extensions:
+    workload: electricrag
+ids:
+  source_eval_v1: a1000000000040008000000000000011
+  span_eval_v1: a1000000000040008000000000000012
+  claim_eval_v1: a1000000000040008000000000000013
+  claim_threshold: a1000000000040008000000000000014
+  source_eval_v2: a1000000000040008000000000000015
+  span_eval_v2: a1000000000040008000000000000016
+  claim_eval_v2: a1000000000040008000000000000017
+  transition_eval: a1000000000040008000000000000018
+  sweep_eval: a1000000000040008000000000000019
+  sweep_finding_threshold: a100000000004000800000000000001a
+steps:
+  - op: capture
+    id: source_eval_v1
+    input:
+      locator: swh:1:cnt:d05d948f4294d0a144e0d342035bd01105c84d22;origin=https://github.com/example/electricrag;anchor=swh:1:rev:7a9e3c65ab0dadf94b7e32f7f1db98e84190f105;path=/docs/evaluation.md;lines=1
+      locator_meta:
+        permalink_template: https://github.com/example/electricrag/blob/{commit}/{path}#L{lines}
+      media_type: text/markdown
+      content: ElectricRAG evaluation size is 120 queries.
+    expect:
+      source_state: captured
+      digest_verified: true
+  - op: mark_span
+    id: span_eval_v1
+    input:
+      source_ref: source_eval_v1
+      selector:
+        type: text_quote
+        exact: ElectricRAG evaluation size is 120 queries.
+    expect:
+      anchor_state: exact
+  - op: propose
+    id: claim_eval_v1
+    input:
+      claim_kind: measurement
+      proposition: ElectricRAG evaluation size is 120 queries.
+      structured:
+        subject_entity: project:electricrag
+        metric:
+          name: evaluation_query_count
+        value:
+          amount: 120
+          unit: query
+      evidence_span_ref: span_eval_v1
+    expect:
+      status: proposed
+      evidence_count: 1
+  - op: confirm
+    id: claim_eval_v1
+    input:
+      claim_ref: claim_eval_v1
+      claim_kind: measurement
+      structured:
+        subject_entity: project:electricrag
+        metric:
+          name: evaluation_query_count
+        value:
+          amount: 120
+          unit: query
+      surface: dashboard
+    expect:
+      status: confirmed
+  - op: propose
+    id: claim_threshold
+    input:
+      claim_kind: decision_outcome
+      proposition: The release gate passes when all evaluation queries complete.
+      structured:
+        decision: release_gate
+        outcome: require_full_evaluation_completion
+      premise_ref: claim_eval_v1
+    expect:
+      status: proposed
+  - op: confirm
+    id: claim_threshold
+    input:
+      claim_ref: claim_threshold
+      claim_kind: decision_outcome
+      structured:
+        decision: release_gate
+        outcome: require_full_evaluation_completion
+      surface: cli
+    expect:
+      status: confirmed
+  - op: capture
+    id: source_eval_v2
+    input:
+      locator: swh:1:cnt:dc4e1c710d65b37472129bb02418610ca62e67c1;origin=https://github.com/example/electricrag;anchor=swh:1:rev:15d58195e98e496d53f6885b1fbe09e979ae8413;path=/docs/evaluation.md;lines=1
+      locator_meta:
+        permalink_template: https://github.com/example/electricrag/blob/{commit}/{path}#L{lines}
+      media_type: text/markdown
+      content: ElectricRAG evaluation size is now 144 queries.
+    expect:
+      source_state: captured
+      digest_verified: true
+  - op: mark_span
+    id: span_eval_v2
+    input:
+      source_ref: source_eval_v2
+      selector:
+        type: text_quote
+        exact: ElectricRAG evaluation size is now 144 queries.
+    expect:
+      anchor_state: exact
+  - op: propose
+    id: claim_eval_v2
+    input:
+      claim_kind: measurement
+      proposition: ElectricRAG evaluation size is 144 queries.
+      valid_from: "2026-07-14T00:00:00Z"
+      structured:
+        subject_entity: project:electricrag
+        metric:
+          name: evaluation_query_count
+        value:
+          amount: 144
+          unit: query
+      evidence_span_ref: span_eval_v2
+    expect:
+      status: proposed
+      evidence_count: 1
+  - op: supersede
+    id: transition_eval
+    input:
+      predecessor_ref: claim_eval_v1
+      successor_ref: claim_eval_v2
+      supersession_reason: updated
+      reason_note: Evaluation corpus expanded after the first accepted measurement.
+    expect:
+      predecessor_status: confirmed
+      successor_status: proposed
+      link_kind: supersedes
+  - op: confirm
+    id: claim_eval_v2
+    input:
+      claim_ref: claim_eval_v2
+      claim_kind: measurement
+      structured:
+        subject_entity: project:electricrag
+        metric:
+          name: evaluation_query_count
+        value:
+          amount: 144
+          unit: query
+      surface: dashboard
+    expect:
+      status: confirmed
+      predecessor_status: superseded
+  - op: sweep
+    id: sweep_eval
+    input:
+      changed_claim_ref: claim_eval_v1
+      dependent_claim_ref: claim_threshold
+    expect:
+      finding_ref: sweep_finding_threshold
+      finding_kind: superseded_premise
+      dependent_status: needs_review
+expected_outcomes:
+  current_measurement_ref: claim_eval_v2
+  current_measurement_amount: 144
+  predecessor_status: superseded
+  dependent_status_after_sweep: needs_review
+  sweep_finding_ref: sweep_finding_threshold

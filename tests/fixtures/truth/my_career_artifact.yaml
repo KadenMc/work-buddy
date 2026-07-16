@@ -1,0 +1,196 @@
+fixture_version: wb-truth-fixture/v1
+name: my-career-confirmed-facts-artifact
+description: Confirmed career facts support a derived resume bullet and a traceable artifact manifest.
+profile:
+  store_id: b2000000000040008000000000000001
+  profile: person-facts
+  title: My career facts
+  allowed_claim_kinds:
+    - employment
+    - achievement
+    - generated_statement
+  required_fields:
+    employment:
+      - subject_entity
+      - value.organization
+      - value.role
+    achievement:
+      - subject_entity
+      - value.result
+      - value.metric
+    generated_statement:
+      - statement.text
+      - statement.format
+  gate:
+    rejected_content: retain
+    confirmation_surfaces:
+      - dashboard
+      - cli
+      - chat_consent
+    block_materialize_on_flags: true
+  projection: resident
+  export_committed: true
+  proposal_max_age: 30d
+  validators:
+    person_subject:
+      claim_kinds:
+        - employment
+        - achievement
+      subject_prefix: "person:"
+  extensions:
+    workload: my-career
+ids:
+  source_resume: b2000000000040008000000000000011
+  span_role: b2000000000040008000000000000012
+  span_achievement: b2000000000040008000000000000013
+  claim_role: b2000000000040008000000000000014
+  claim_achievement: b2000000000040008000000000000015
+  claim_resume_bullet: b2000000000040008000000000000016
+  derivation_resume_bullet: b2000000000040008000000000000017
+  artifact_resume: b2000000000040008000000000000018
+steps:
+  - op: capture
+    id: source_resume
+    input:
+      locator: file:///career/source/resume-notes.md
+      media_type: text/markdown
+      content: Led agent infrastructure at Example Labs and reduced task handoff time by 35 percent.
+    expect:
+      source_state: captured
+      digest_verified: true
+  - op: mark_span
+    id: span_role
+    input:
+      source_ref: source_resume
+      selector:
+        type: text_quote
+        exact: Led agent infrastructure at Example Labs
+    expect:
+      anchor_state: exact
+  - op: mark_span
+    id: span_achievement
+    input:
+      source_ref: source_resume
+      selector:
+        type: text_quote
+        exact: reduced task handoff time by 35 percent
+    expect:
+      anchor_state: exact
+  - op: propose
+    id: claim_role
+    input:
+      claim_kind: employment
+      proposition: I led agent infrastructure at Example Labs.
+      structured:
+        subject_entity: person:self
+        value:
+          organization: Example Labs
+          role: Agent Infrastructure Lead
+      evidence_span_ref: span_role
+    expect:
+      status: proposed
+  - op: confirm
+    id: claim_role
+    input:
+      claim_ref: claim_role
+      claim_kind: employment
+      structured:
+        subject_entity: person:self
+        value:
+          organization: Example Labs
+          role: Agent Infrastructure Lead
+      surface: dashboard
+    expect:
+      status: confirmed
+  - op: propose
+    id: claim_achievement
+    input:
+      claim_kind: achievement
+      proposition: I reduced task handoff time by 35 percent.
+      structured:
+        subject_entity: person:self
+        value:
+          result: reduced_task_handoff_time
+          metric: 35_percent
+      evidence_span_ref: span_achievement
+    expect:
+      status: proposed
+  - op: confirm
+    id: claim_achievement
+    input:
+      claim_ref: claim_achievement
+      claim_kind: achievement
+      structured:
+        subject_entity: person:self
+        value:
+          result: reduced_task_handoff_time
+          metric: 35_percent
+      surface: chat_consent
+    expect:
+      status: confirmed
+  - op: propose
+    id: claim_resume_bullet
+    input:
+      claim_kind: generated_statement
+      proposition: Led agent infrastructure at Example Labs, reducing task handoff time by 35 percent.
+      structured:
+        statement:
+          text: Led agent infrastructure at Example Labs, reducing task handoff time by 35 percent.
+          format: resume_bullet
+      premise_refs:
+        - claim_role
+        - claim_achievement
+    expect:
+      status: proposed
+  - op: derive
+    id: derivation_resume_bullet
+    input:
+      conclusion_ref: claim_resume_bullet
+      premise_refs:
+        - claim_role
+        - claim_achievement
+      method: deterministic_template
+    expect:
+      derivation_state: valid
+      premise_count: 2
+  - op: confirm
+    id: claim_resume_bullet
+    input:
+      claim_ref: claim_resume_bullet
+      claim_kind: generated_statement
+      structured:
+        statement:
+          text: Led agent infrastructure at Example Labs, reducing task handoff time by 35 percent.
+          format: resume_bullet
+      surface: cli
+    expect:
+      status: confirmed
+  - op: materialize
+    id: artifact_resume
+    input:
+      path: artifacts/resume.md
+      format: text/markdown
+      manifest:
+        artifact_ref: artifact_resume
+        entries:
+          - line: 1
+            claim_ref: claim_resume_bullet
+            derivation_ref: derivation_resume_bullet
+          - line: 1
+            claim_ref: claim_role
+          - line: 1
+            claim_ref: claim_achievement
+    expect:
+      artifact_state: materialized
+      manifest_claim_count: 3
+      flagged_claim_count: 0
+expected_outcomes:
+  confirmed_fact_refs:
+    - claim_role
+    - claim_achievement
+  confirmed_derived_ref: claim_resume_bullet
+  artifact_ref: artifact_resume
+  artifact_manifest_claim_refs:
+    - claim_resume_bullet
+    - claim_role
+    - claim_achievement
