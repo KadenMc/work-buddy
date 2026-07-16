@@ -241,4 +241,3 @@ export function useDashboardEvents(): DashboardEventContextValue {
   }
   return context;
 }
-

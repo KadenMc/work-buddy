@@ -213,4 +213,3 @@ export function executeWidgetMigration(plan: WidgetMigrationPlan): WidgetMigrati
     warnings: plan.warnings,
   };
 }
-

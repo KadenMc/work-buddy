@@ -69,4 +69,3 @@ export function orderItemsForMobile<Item extends MobileOrderItem>(
     return item === undefined || item.visibility === "hidden" ? [] : [item];
   });
 }
-

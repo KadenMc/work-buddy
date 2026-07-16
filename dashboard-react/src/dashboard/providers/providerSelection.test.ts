@@ -46,4 +46,3 @@ describe("provider selection", () => {
     ).toThrow(ProviderSelectionError);
   });
 });
-

@@ -77,4 +77,3 @@ describe("ViewProvider", () => {
     ).toMatchObject({ changed: true, revision: 3 });
   });
 });
-

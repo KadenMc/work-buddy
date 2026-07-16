@@ -71,4 +71,3 @@ export const STANDARD_WIDGET_THEME_SUPPORT = [
   "forced-colors",
   "reduced-motion",
 ] as const satisfies readonly WidgetThemeSupport[];
-

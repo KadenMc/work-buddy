@@ -9,4 +9,3 @@ export type LiveState = DashboardConnectionState;
 export function useLiveStatus(): LiveState {
   return useDashboardEvents().connectionState;
 }
-

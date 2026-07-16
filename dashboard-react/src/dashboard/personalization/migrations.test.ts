@@ -106,4 +106,3 @@ describe("widget state migrations", () => {
     });
   });
 });
-

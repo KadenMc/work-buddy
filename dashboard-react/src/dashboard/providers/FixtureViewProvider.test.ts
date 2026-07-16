@@ -114,4 +114,3 @@ describe("FixtureViewProvider", () => {
     expect(reconcile).toHaveBeenCalledOnce();
   });
 });
-

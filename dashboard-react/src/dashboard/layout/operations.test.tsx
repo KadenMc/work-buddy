@@ -79,4 +79,3 @@ describe("layout operations", () => {
     expect(tidyDashboardLayout(opening).map(({ y }) => y)).toEqual([0, 0]);
   });
 });
-

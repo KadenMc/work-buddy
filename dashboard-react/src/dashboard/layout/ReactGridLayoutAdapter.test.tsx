@@ -71,4 +71,3 @@ describe("ReactGridLayoutAdapter", () => {
     expect(document.querySelectorAll(".wb-widget-drag-handle")).toHaveLength(0);
   });
 });
-

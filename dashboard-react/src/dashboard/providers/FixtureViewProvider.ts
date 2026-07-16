@@ -128,4 +128,3 @@ export class FixtureViewProvider implements ViewProvider {
       : { changed: false, revision: snapshot.revision };
   }
 }
-

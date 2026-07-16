@@ -73,4 +73,3 @@ export function selectViewProviderFromSearch(
     defaultId: options.defaultId,
   });
 }
-

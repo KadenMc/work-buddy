@@ -75,4 +75,3 @@ export interface ReactGridLayoutAdapterProps {
     placement: WidgetLayoutItem,
   ): void;
 }
-

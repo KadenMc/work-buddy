@@ -64,4 +64,3 @@ describe("dashboard contribution contracts", () => {
     expect(JSON.parse(JSON.stringify(intent))).toEqual(intent);
   });
 });
-
