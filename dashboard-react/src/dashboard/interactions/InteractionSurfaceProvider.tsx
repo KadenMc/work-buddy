@@ -8,13 +8,11 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import {
-  CheckCircle,
-  Info,
-  Warning,
-  WarningCircle,
-  X,
-} from "@phosphor-icons/react";
+import { CheckCircle } from "@phosphor-icons/react/CheckCircle";
+import { Info } from "@phosphor-icons/react/Info";
+import { Warning } from "@phosphor-icons/react/Warning";
+import { WarningCircle } from "@phosphor-icons/react/WarningCircle";
+import { X } from "@phosphor-icons/react/X";
 import {
   Dialog,
   Heading,

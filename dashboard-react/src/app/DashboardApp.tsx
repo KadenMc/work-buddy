@@ -9,9 +9,14 @@ import {
 
 import Header from "../components/Header";
 import TabBar from "../components/TabBar";
-import { SettingsPage } from "../settings/SettingsPage";
 import { SettingsRegistryProvider } from "../settings";
 import type { DashboardRouteDefinition } from "./routes";
+
+const SettingsPage = lazy(() =>
+  import("../settings/SettingsPage").then((module) => ({
+    default: module.SettingsPage,
+  })),
+);
 
 const WidgetLab = import.meta.env.DEV
   ? lazy(() => import("../dev/widget-lab/WidgetLab"))
@@ -135,7 +140,17 @@ function DashboardShell({ routes }: DashboardAppProps) {
         />
         <Route
           path="settings/*"
-          element={<SettingsPage defaultViewPath={defaultViewPath} />}
+          element={
+            <Suspense
+              fallback={
+                <main className="tab-panel" aria-busy="true">
+                  <div className="empty-state">Loading Settings…</div>
+                </main>
+              }
+            >
+              <SettingsPage defaultViewPath={defaultViewPath} />
+            </Suspense>
+          }
         />
         <Route
           path="*"
