@@ -46,7 +46,7 @@ steps:
   - op: capture
     id: source_conversation
     input:
-      locator: wb-session://cothink-slice-01/message-1
+      locator: wb-session://cothink-session-01/message-1
       media_type: application/json
       content: The source card should stay collapsed by default. We might also add a floating inspector. Keep my private employer search out of exports.
     expect:
