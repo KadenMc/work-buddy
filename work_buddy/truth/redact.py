@@ -1,7 +1,7 @@
 """Controlled content redaction for the append-only truth ledger.
 
 Redaction is the kernel's sole sanctioned mutation.  Identity, hashes, links,
-and the event history survive; only human-readable content is destroyed.
+and the event history survive. Only human-readable content is destroyed.
 """
 
 from __future__ import annotations
@@ -408,7 +408,7 @@ class TruthRedactor:
         at: str | None = None,
         conn: sqlite3.Connection | None = None,
     ) -> RedactionResult:
-        """Destroy content while retaining identity; evidence includes its quotes."""
+        """Destroy content while retaining identity. Evidence includes its quotes."""
 
         kind = str(subject_kind).strip().lower()
         if kind not in SUBJECT_KINDS:
@@ -431,7 +431,7 @@ class TruthRedactor:
 
         # A process can be interrupted after a prior redaction commits but
         # before its blob is unlinked.  Normal store opening already retries
-        # these durable intents; doing the same here also makes a same-process
+        # these durable intents. Doing the same here also makes a same-process
         # idempotent retry repair that window before inspecting the tombstone.
         if conn is None:
             self.store.recover_pending_redactions()
@@ -446,8 +446,8 @@ class TruthRedactor:
         ) as write_conn:
             # SQLite otherwise may leave the replaced quote/excerpt bytes in a
             # b-tree freeblock even though SQL readers see only tombstones.
-            # This overwrites retired payload bytes in the committed database;
-            # a reader that already owns an older WAL snapshot can retain that
+            # This overwrites retired payload bytes in the committed database.
+            # A reader that already owns an older WAL snapshot can retain that
             # pre-redaction view until it releases the snapshot.
             write_conn.execute("PRAGMA secure_delete = ON")
             subject = self._subject_locked(write_conn, kind, reference)

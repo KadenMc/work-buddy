@@ -534,7 +534,7 @@ def test_commit_boundary_crash_recovers_export_marker_and_blob_on_open(
     assert locator not in str(recovery)
     assert blob_intent.is_file()
     assert blob.is_file()
-    # The pre-redaction projection is destroyed before COMMIT; a hard crash
+    # The pre-redaction projection is destroyed before COMMIT. A hard crash
     # can leave it absent, never stale with readable content.
     assert not store.paths.claims_export.exists()
 

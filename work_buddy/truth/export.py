@@ -68,7 +68,7 @@ class StoreIdentityCollision(TruthImportError):
 
 
 class StoreRegistry(Protocol):
-    """Read seam that K1's machine-level truth registry will implement."""
+    """Read seam for the machine-level truth registry."""
 
     def paths_for_store_id(self, store_id: str) -> Iterable[str | Path]:
         """Return every registered path carrying ``store_id``."""
@@ -1270,8 +1270,8 @@ def _validate_staged_integrity(store: TruthStore) -> None:
     bind it to an ineligible gesture, break weakest-link derivation, or publish
     competing confirmed successors. The integrity engine is the canonical
     replay validator for those cross-record and temporal rules. Warnings remain
-    portable because they include intentionally unresolved external state;
-    errors may not be published as a live store.
+    portable because they include intentionally unresolved external state.
+    Errors may not be published as a live store.
     """
 
     from work_buddy.truth.queries import integrity_findings
