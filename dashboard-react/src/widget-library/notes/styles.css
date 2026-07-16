@@ -1,0 +1,82 @@
+@layer wb.widgets {
+  .wb-running-notes,
+  .wb-markdown-collection {
+    display: grid;
+    min-height: 0;
+    gap: 10px;
+  }
+
+  .wb-running-notes__empty {
+    color: var(--wb-color-text-muted);
+  }
+
+  .wb-markdown-collection {
+    max-height: 680px;
+    overflow-y: auto;
+  }
+
+  .wb-markdown-collection__group {
+    display: grid;
+    gap: 7px;
+  }
+
+  .wb-markdown-collection__group > h3 {
+    color: var(--wb-color-text-secondary);
+    font-size: 12px;
+    text-transform: none;
+  }
+
+  .wb-markdown-collection ol {
+    display: grid;
+    gap: 8px;
+    list-style: none;
+  }
+
+  .wb-markdown-item {
+    display: grid;
+    gap: 8px;
+    padding: 9px 10px;
+    border: 1px solid var(--wb-color-border-default);
+    border-radius: var(--wb-radius-control);
+    background: var(--wb-color-surface-inset);
+    content-visibility: auto;
+    contain-intrinsic-size: auto 120px;
+  }
+
+  .wb-markdown-item__content {
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+  }
+
+  .wb-markdown-item__editor,
+  .wb-markdown-item__editor label {
+    display: grid;
+    gap: 7px;
+  }
+
+  .wb-markdown-item__editor textarea {
+    width: 100%;
+    padding: 8px 9px;
+    border: 1px solid var(--wb-color-border-default);
+    border-radius: var(--wb-radius-control);
+    background: var(--wb-color-surface-raised);
+    color: var(--wb-color-text-primary);
+    line-height: 1.45;
+    resize: vertical;
+  }
+
+  .wb-markdown-item__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 7px;
+  }
+
+  .wb-markdown-item__actions .wb-button {
+    min-height: 30px;
+    padding: 3px 8px;
+  }
+
+  .wb-markdown-collection--compact .wb-markdown-item {
+    padding: 7px 8px;
+  }
+}

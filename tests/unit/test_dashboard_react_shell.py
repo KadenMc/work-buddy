@@ -5,10 +5,11 @@ build output (``dashboard-react/dist``) is gitignored and produced on demand
 with ``npm install && npm run build``. Content assertions skip with a clear
 message when the build output is absent, so CI without Node still passes.
 
-Pins: ``GET /app`` serves the built shell no-store and titled
-"work-buddy dashboard"; the hashed Vite assets serve from ``/app/assets/``
-with an immutable cache policy and a JavaScript MIME type; traversal is
-rejected; and the not-built state is a helpful 404, not a stack trace.
+Pins: ``GET /app`` and safe single-segment history routes serve the built
+shell no-store and titled "work-buddy dashboard"; the hashed Vite assets
+serve from ``/app/assets/`` with an immutable cache policy and a JavaScript
+MIME type; traversal is rejected; and the not-built state is a helpful 404,
+not a stack trace.
 """
 
 from __future__ import annotations
@@ -52,6 +53,28 @@ def test_app_route_serves_shell_no_store(client):
 @requires_dist
 def test_app_trailing_slash_also_serves(client):
     assert client.get("/app/").status_code == 200
+
+
+@requires_dist
+def test_app_journal_history_route_serves_shell_no_store(client):
+    resp = client.get("/app/journal")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers.get("Content-Type", "")
+    assert "work-buddy dashboard" in resp.get_data(as_text=True)
+    assert "no-store" in resp.headers.get("Cache-Control", "")
+
+
+@requires_dist
+def test_app_unknown_safe_view_reaches_client_shell(client):
+    resp = client.get("/app/not-registered-yet")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers.get("Content-Type", "")
+
+
+def test_app_history_fallback_rejects_asset_and_traversal_shapes(client):
+    assert client.get("/app/index.html").status_code == 404
+    assert client.get("/app/not.a-view").status_code == 404
+    assert client.get("/app/%5Cindex").status_code == 404
 
 
 @requires_dist
@@ -103,3 +126,6 @@ def test_app_route_absent_dist_is_helpful_404(client):
     resp = client.get("/app")
     assert resp.status_code == 404
     assert "npm run build" in resp.get_data(as_text=True)
+    history_resp = client.get("/app/journal")
+    assert history_resp.status_code == 404
+    assert "npm run build" in history_resp.get_data(as_text=True)

@@ -14,6 +14,12 @@ import react from "@vitejs/plugin-react";
 export default defineConfig({
   plugins: [react()],
   base: "/app/",
+  // react-draggable's CommonJS development build reads this Node-style flag
+  // when a pointer drag starts. Replace only that expression at compile time;
+  // a global browser `process` shim would hide other unsafe package assumptions.
+  define: {
+    "process.env.DRAGGABLE_DEBUG": "false",
+  },
   server: {
     // Honor an externally assigned port (preview harnesses set PORT);
     // fall back to Vite's default otherwise.
