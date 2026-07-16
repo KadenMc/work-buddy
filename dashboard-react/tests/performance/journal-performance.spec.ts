@@ -5,6 +5,10 @@ import { JOURNAL_BROWSER_BUDGET } from "../fixtures/performanceBudget";
 
 const WIDGET_LAB_50_BUDGET = {
   domContentLoadedMs: 10_000,
+  // Measure React's post-commit paint signal relative to DOM readiness. An
+  // absolute performance.now() sampled after Playwright assertions also times
+  // the test runner and cold Vite transforms rather than the dashboard.
+  widgetLabReadyAfterDomContentLoadedMs: 3_000,
   // Same development-server accounting as the Journal budget; the 50-host
   // trace should add DOM work without loading a second UI runtime.
   decodedScriptAndStyleBytes: 4_500_000,
@@ -34,9 +38,25 @@ async function collectBrowserMetrics(page: Page) {
       .filter((entry) => /\.(?:js|css)(?:\?|$)/.test(entry.name)) as PerformanceResourceTiming[];
     const longTasks =
       (window as typeof window & { __wbLongTasks?: number[] }).__wbLongTasks ?? [];
+    const widgetLabReadyEntries = performance.getEntriesByName(
+      "wb:widget-lab-ready",
+      "mark",
+    );
+    const widgetLabReady = widgetLabReadyEntries[widgetLabReadyEntries.length - 1];
     return {
       domContentLoadedMs: Math.round(navigation.domContentLoadedEventEnd),
       measuredAtMs: Math.round(performance.now()),
+      widgetLabReadyMs: widgetLabReady
+        ? Math.round(widgetLabReady.startTime)
+        : null,
+      widgetLabReadyAfterDomContentLoadedMs: widgetLabReady
+        ? Math.max(
+            0,
+            Math.round(
+              widgetLabReady.startTime - navigation.domContentLoadedEventEnd,
+            ),
+          )
+        : null,
       decodedScriptAndStyleBytes: resources.reduce(
         (total, resource) => total + resource.decodedBodySize,
         0,
@@ -89,6 +109,10 @@ test("mounts and budgets a synthetic trace of exactly 50 real widget hosts", asy
   await installLongTaskObserver(page);
 
   await page.goto("/app/__widget-lab?count=50");
+  await page.waitForFunction(
+    () =>
+      performance.getEntriesByName("wb:widget-lab-ready", "mark").length > 0,
+  );
   await expect(page.getByTestId("widget-lab-host")).toHaveCount(50);
   await expect(page.locator(".wb-widget-frame")).toHaveCount(50);
   await expect(page.locator(".wb-capture")).toHaveCount(17);
@@ -107,7 +131,9 @@ test("mounts and budgets a synthetic trace of exactly 50 real widget hosts", asy
   expect(metrics.domContentLoadedMs).toBeLessThan(
     WIDGET_LAB_50_BUDGET.domContentLoadedMs,
   );
-  expect(metrics.measuredAtMs).toBeLessThan(WIDGET_LAB_50_BUDGET.domContentLoadedMs);
+  expect(
+    metrics.widgetLabReadyAfterDomContentLoadedMs ?? Number.POSITIVE_INFINITY,
+  ).toBeLessThan(WIDGET_LAB_50_BUDGET.widgetLabReadyAfterDomContentLoadedMs);
   expect(metrics.decodedScriptAndStyleBytes).toBeLessThan(
     WIDGET_LAB_50_BUDGET.decodedScriptAndStyleBytes,
   );

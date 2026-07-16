@@ -244,19 +244,11 @@ export default function CalendarSpike() {
         margin={[12, 12]}
         onDraftChange={setLayout}
         renderItem={(item) => {
-          const responsiveView =
-            item.w <= NARROW_GRID_WIDTH
-              ? { ...model.view, presentation: "list" as const }
-              : model.view;
-          const responsiveModel =
-            responsiveView.presentation === model.view.presentation
-              ? model
-              : { ...model, view: responsiveView };
           return (
             <WidgetFrame title="Candidate calendar surface" className="wb-calendar-spike__frame">
               <div
                 className="wb-calendar-spike__surface-body"
-                data-wb-calendar-responsive-mode={responsiveView.presentation}
+                data-wb-calendar-responsive-mode={model.view.presentation}
               >
                 <div className="wb-calendar-spike__surface-toolbar">
                   <SegmentedControl<CalendarSurfaceRange>
@@ -281,7 +273,7 @@ export default function CalendarSpike() {
                   <span>{item.w} × {item.h} grid units</span>
                 </div>
                 <CalendarSurface
-                  model={responsiveModel}
+                  model={model}
                   density={item.w <= NARROW_GRID_WIDTH ? "compact" : "comfortable"}
                   onIntent={handleIntent}
                   onAnnouncement={(message) => setAnnouncement(message)}

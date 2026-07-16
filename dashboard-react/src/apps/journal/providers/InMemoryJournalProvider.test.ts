@@ -17,6 +17,7 @@ import {
 import {
   JOURNAL_WIDGET_INSTANCE_IDS,
   type JournalCaptureSubmitIntent,
+  type JournalRunningNoteDeleteIntent,
   type JournalTimelineItem,
 } from "../contracts";
 import {
@@ -231,6 +232,59 @@ describe("InMemoryJournalProvider", () => {
     expect(provider.advanceDemoProcessing()).toBe(false);
   });
 
+  it("routes Smart Auto capture through the App boundary and rejects dumb Auto", async () => {
+    const provider = new InMemoryJournalProvider();
+    const autoIntent = {
+      intent_type: "wb.capture.submit",
+      schema_version: 1,
+      intent_id: "intent:auto-route",
+      view_id: "wb.journal.main",
+      instance_id: JOURNAL_WIDGET_INSTANCE_IDS.capture,
+      client_mutation_id: "capture:auto-route",
+      payload: {
+        day_id: "journal-day:2026-07-11:America/New_York:05:00",
+        target_id: "auto",
+        mode: "smart",
+        exact_text: "Meeting ran long",
+      },
+    } as const satisfies JournalCaptureSubmitIntent;
+
+    const result = await provider.dispatch(toDashboardJournalIntent(autoIntent));
+    const snapshot = await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, {
+      reason: "refresh",
+    });
+    const submissions = snapshot.model.widgetInputs[
+      JOURNAL_WIDGET_INSTANCE_IDS.capture
+    ].recentSubmissions;
+    const notes = snapshot.model.widgetInputs[
+      JOURNAL_WIDGET_INSTANCE_IDS.runningNotes
+    ].items;
+
+    expect(result).toMatchObject({
+      status: "accepted",
+      message: "Smart routed exact text to Running notes",
+    });
+    expect(submissions[submissions.length - 1]).toMatchObject({
+      targetId: "running_notes",
+      mode: "smart",
+      exactText: "Meeting ran long",
+    });
+    expect(notes[notes.length - 1]?.markdown).toBe("Meeting ran long");
+
+    const rejected = await provider.dispatch(
+      toDashboardJournalIntent({
+        ...autoIntent,
+        intent_id: "intent:auto-route-dumb",
+        client_mutation_id: "capture:auto-route-dumb",
+        payload: { ...autoIntent.payload, mode: "dumb" },
+      }),
+    );
+    expect(rejected).toMatchObject({
+      status: "rejected",
+      message: "Auto capture requires Smart mode",
+    });
+  });
+
   it("turns arbitrary Log text into an exact point record and deduplicates retries", async () => {
     const provider = new InMemoryJournalProvider();
     const intent = {
@@ -282,6 +336,99 @@ describe("InMemoryJournalProvider", () => {
       persistenceStatus: "persisted",
       processingStatus: "not_requested",
     });
+  });
+
+  it("removes a Running note from the active collection while retaining a tombstone", async () => {
+    const provider = new InMemoryJournalProvider();
+    const before = await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, { reason: "mount" });
+    const note = before.model.widgetInputs[
+      JOURNAL_WIDGET_INSTANCE_IDS.runningNotes
+    ].items[0]!;
+    const intent = {
+      intent_type: "wb.notes.delete-requested",
+      schema_version: 1,
+      intent_id: "intent:delete-running-note",
+      view_id: "wb.journal.main",
+      instance_id: JOURNAL_WIDGET_INSTANCE_IDS.runningNotes,
+      client_mutation_id: "notes-delete:running-note-1",
+      payload: {
+        item_id: note.itemId,
+        expected_version: note.version,
+      },
+    } as const satisfies JournalRunningNoteDeleteIntent;
+
+    const result = await provider.dispatch(toDashboardJournalIntent(intent));
+    const duplicate = await provider.dispatch(toDashboardJournalIntent(intent));
+    const after = await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, {
+      reason: "refresh",
+    });
+    const tombstone = provider.getRunningNoteTombstone(note.itemId);
+
+    expect(result).toMatchObject({
+      status: "accepted",
+      message: "Running note deleted and tombstoned",
+    });
+    expect(duplicate).toEqual(result);
+    expect(
+      after.model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.runningNotes].items,
+    ).not.toContainEqual(expect.objectContaining({ itemId: note.itemId }));
+    expect(tombstone).toEqual({
+      item: note,
+      deletedAt: before.model.day.now,
+      deletedVersion: note.version + 1,
+      deletedBy: { source: "user", label: "you" },
+      reason: "user_deleted",
+    });
+  });
+
+  it("does not resurrect a tombstoned Running note when pending Smart work settles", async () => {
+    const provider = new InMemoryJournalProvider();
+    const captureIntent = {
+      intent_type: "wb.capture.submit",
+      schema_version: 1,
+      intent_id: "intent:pending-note",
+      view_id: "wb.journal.main",
+      instance_id: JOURNAL_WIDGET_INSTANCE_IDS.capture,
+      client_mutation_id: "capture:pending-note",
+      payload: {
+        day_id: "journal-day:2026-07-11:America/New_York:05:00",
+        target_id: "running_notes",
+        mode: "smart",
+        exact_text: "Pending note that I no longer need",
+      },
+    } as const satisfies JournalCaptureSubmitIntent;
+    expect(
+      (await provider.dispatch(toDashboardJournalIntent(captureIntent))).status,
+    ).toBe("accepted");
+    const pending = await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, {
+      reason: "refresh",
+    });
+    const note = pending.model.widgetInputs[
+      JOURNAL_WIDGET_INSTANCE_IDS.runningNotes
+    ].items.find((item) => item.itemId === "running-note:capture:pending-note")!;
+    const deleteIntent = {
+      intent_type: "wb.notes.delete-requested",
+      schema_version: 1,
+      intent_id: "intent:delete-pending-note",
+      view_id: "wb.journal.main",
+      instance_id: JOURNAL_WIDGET_INSTANCE_IDS.runningNotes,
+      client_mutation_id: "notes-delete:pending-note",
+      payload: { item_id: note.itemId, expected_version: note.version },
+    } as const satisfies JournalRunningNoteDeleteIntent;
+    expect(
+      (await provider.dispatch(toDashboardJournalIntent(deleteIntent))).status,
+    ).toBe("accepted");
+
+    expect(provider.advanceDemoProcessing()).toBe(true);
+    const settled = await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, {
+      reason: "reconcile",
+    });
+    expect(
+      settled.model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.runningNotes].items,
+    ).not.toContainEqual(expect.objectContaining({ itemId: note.itemId }));
+    expect(provider.getRunningNoteTombstone(note.itemId)?.item.markdown).toBe(
+      captureIntent.payload.exact_text,
+    );
   });
 
   it("rejects mutations while preserving a readable read-only snapshot", async () => {

@@ -1,9 +1,10 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ComponentType } from "react";
+import { useState, type ComponentType } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { expectNoAccessibilityViolations } from "../../test/setup";
+import { DashboardTestRuntime } from "../../test/DashboardTestRuntime";
 import { ThemeProvider } from "../../theme/ThemeProvider";
 import {
   asAppId,
@@ -50,6 +51,18 @@ const definition: WidgetDefinition = {
   },
 };
 
+const previewDefinition: WidgetDefinition = {
+  ...definition,
+  outputIntentSchemas: [{ schemaId: "wb.test.activated", version: 1 }],
+  outputIntentEffects: [
+    {
+      schema: { schemaId: "wb.test.activated", version: 1 },
+      effect: "mutation",
+      preview: "simulate",
+    },
+  ],
+};
+
 const intent = {
   intent_type: "wb.test.activated",
   schema_version: 1,
@@ -74,20 +87,22 @@ function renderHost(
   const emit = vi.fn();
   const result = render(
     <ThemeProvider initialPreference={{ scheme: "light", skinId: "wb.default" }}>
-      <WidgetHost
-        definition={definition}
-        module={module}
-        instanceId={instanceId}
-        viewId={viewId}
-        input={{ label: "Bound input" }}
-        status="ready"
-        width={480}
-        height={320}
-        sizeMode="standard"
-        editing={false}
-        emit={emit}
-        {...overrides}
-      />
+      <DashboardTestRuntime>
+        <WidgetHost
+          definition={definition}
+          module={module}
+          instanceId={instanceId}
+          viewId={viewId}
+          input={{ label: "Bound input" }}
+          status="ready"
+          width={480}
+          height={320}
+          sizeMode="standard"
+          interactionMode="operate"
+          emit={emit}
+          {...overrides}
+        />
+      </DashboardTestRuntime>
     </ThemeProvider>,
   );
   return { ...result, emit };
@@ -160,6 +175,8 @@ describe("WidgetHost", () => {
       status: "empty",
       presence: "required",
       lockedReason: "Capture is required to preserve the view's primary job.",
+      interactionMode: "arrange",
+      gridSize: { w: 4, h: 3 },
       onHide,
       onRemove,
     });
@@ -180,6 +197,59 @@ describe("WidgetHost", () => {
     ).toBeInTheDocument();
     expect(onHide).not.toHaveBeenCalled();
     expect(onRemove).not.toHaveBeenCalled();
+    expect(screen.getByText("4 × 3 grid units")).toBeInTheDocument();
+  });
+
+  it("keeps healthy read-mode frames free of customization chrome", async () => {
+    renderHost(createModule(() => <p>Ready</p>), { onRetry: vi.fn() });
+
+    expect(await screen.findByText("Ready")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Actions for Test summary" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/grid units/)).not.toBeInTheDocument();
+  });
+
+  it("keeps live widget content visibly inert while arranging", async () => {
+    const { container } = renderHost(createModule(() => <button>Local action</button>), {
+      interactionMode: "arrange",
+      gridSize: { w: 4, h: 3 },
+    });
+
+    expect(await screen.findByText("Local action")).toBeInTheDocument();
+    expect(container.querySelector(".wb-widget-frame__content")).toHaveAttribute("inert");
+    expect(screen.getByText("Interactions paused while arranging")).toBeVisible();
+    expect(screen.getByRole("region", { name: "Test summary" })).toHaveAttribute(
+      "data-widget-interaction-mode",
+      "arrange",
+    );
+  });
+
+  it("allows local preview interaction while simulating the declared outward intent", async () => {
+    const Renderer = ({ emit }: WidgetRendererProps) => {
+      const [result, setResult] = useState("idle");
+      return (
+        <button
+          type="button"
+          onClick={async () => {
+            setResult("local-change");
+            const dispatched = await emit(intent);
+            setResult(`local-change:${dispatched.status}`);
+          }}
+        >
+          {result}
+        </button>
+      );
+    };
+    const { emit } = renderHost(createModule(Renderer), {
+      definition: previewDefinition,
+      interactionMode: "preview",
+    });
+
+    await userEvent.click(await screen.findByRole("button", { name: "idle" }));
+    expect(await screen.findByRole("button", { name: "local-change:accepted" })).toBeVisible();
+    expect(emit).not.toHaveBeenCalled();
+    expect(screen.getByText(/previewed that action locally; nothing was saved/i)).toBeVisible();
   });
 
   it("isolates a throwing renderer without removing its frame", async () => {

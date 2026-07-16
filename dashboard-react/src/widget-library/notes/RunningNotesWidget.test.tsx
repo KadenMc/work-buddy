@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ComponentProps } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -8,7 +9,9 @@ import {
   type WidgetPresentationContext,
 } from "../../dashboard/contributions/contracts";
 import { expectNoAccessibilityViolations } from "../../test/setup";
+import { WidgetDraftTestScope } from "../../test/DashboardTestRuntime";
 import { fallbackCanvasTheme } from "../../theme/resolveTheme";
+import { NOTES_APP_CONTRIBUTION } from "./contribution";
 import type { MarkdownNoteItem, RunningNotesInput } from "./contracts";
 import RunningNotesWidget from "./RunningNotesWidget";
 
@@ -18,6 +21,7 @@ const presentation: WidgetPresentationContext = {
   width: 560,
   height: 600,
   sizeMode: "standard",
+  interactionMode: "operate",
   editing: false,
   theme: {
     contractVersion: 1,
@@ -57,14 +61,32 @@ const input: RunningNotesInput = {
   items: [item],
 };
 
+const renderNotes = (
+  widgetInput: RunningNotesInput,
+  emit: ReturnType<typeof vi.fn>,
+  hostPresentation: WidgetPresentationContext = presentation,
+) => (
+  <WidgetDraftTestScope
+    definition={NOTES_APP_CONTRIBUTION.widgetDefinitions[0]}
+    presentation={hostPresentation}
+    input={widgetInput}
+  >
+    <RunningNotesWidget
+      input={widgetInput}
+      emit={emit as ComponentProps<typeof RunningNotesWidget>["emit"]}
+      presentation={hostPresentation}
+    />
+  </WidgetDraftTestScope>
+);
+
 describe("RunningNotesWidget", () => {
   it("emits an exact versioned Markdown edit through the generic Notes intent", async () => {
     const emit = vi.fn();
     const { container } = render(
-      <RunningNotesWidget input={input} emit={emit} presentation={presentation} />,
+      renderNotes(input, emit),
     );
 
-    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Edit" }));
     const editor = screen.getByRole("textbox", { name: "Edit note" });
     await userEvent.clear(editor);
     await userEvent.type(editor, "  Revised **exactly**  ");
@@ -73,6 +95,7 @@ describe("RunningNotesWidget", () => {
     expect(emit).toHaveBeenCalledWith(
       expect.objectContaining({
         intent_type: "wb.notes.edit-requested",
+        client_mutation_id: expect.stringMatching(/^notes-edit:/),
         view_id: presentation.viewId,
         instance_id: presentation.instanceId,
         payload: {
@@ -86,19 +109,46 @@ describe("RunningNotesWidget", () => {
     await expectNoAccessibilityViolations(container);
   });
 
+  it("confirms deletion and emits a versioned, idempotent mutation intent", async () => {
+    const emit = vi.fn();
+    const { container } = render(renderNotes(input, emit));
+
+    await userEvent.click(await screen.findByRole("button", { name: "Delete" }));
+    const firstDialog = screen.getByRole("alertdialog", {
+      name: "Delete this running note?",
+    });
+    expect(firstDialog).toHaveTextContent(/keeps a tombstone/i);
+    await userEvent.click(screen.getByRole("button", { name: "Keep note" }));
+    expect(emit).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole("button", { name: "Delete" }));
+    await userEvent.click(screen.getByRole("button", { name: "Delete note" }));
+
+    expect(emit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        intent_type: "wb.notes.delete-requested",
+        client_mutation_id: expect.stringMatching(/^notes-delete:/),
+        view_id: presentation.viewId,
+        instance_id: presentation.instanceId,
+        payload: { item_id: "note-1", expected_version: 3 },
+      }),
+    );
+    expect(screen.getByRole("button", { name: "Deleting…" })).toBeDisabled();
+    await expectNoAccessibilityViolations(container);
+  });
+
   it("detects a snapshot version conflict while preserving the local draft", async () => {
     const { rerender } = render(
-      <RunningNotesWidget input={input} emit={vi.fn()} presentation={presentation} />,
+      renderNotes(input, vi.fn()),
     );
-    await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Edit" }));
     await userEvent.type(screen.getByRole("textbox", { name: "Edit note" }), " local");
 
     rerender(
-      <RunningNotesWidget
-        input={{ ...input, revision: "r2", items: [{ ...item, version: 4 }] }}
-        emit={vi.fn()}
-        presentation={presentation}
-      />,
+      renderNotes(
+        { ...input, revision: "r2", items: [{ ...item, version: 4 }] },
+        vi.fn(),
+      ),
     );
 
     expect(screen.getByText(/changed while you were editing/i)).toBeInTheDocument();
@@ -108,7 +158,7 @@ describe("RunningNotesWidget", () => {
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
   });
 
-  it("renders a heavy grouped collection without truncating records", () => {
+  it("renders a heavy grouped collection without truncating records", async () => {
     const items = Array.from({ length: 200 }, (_, index): MarkdownNoteItem => ({
       ...item,
       itemId: `note-${index}`,
@@ -116,31 +166,31 @@ describe("RunningNotesWidget", () => {
       groupId: index % 2 === 0 ? "Decisions" : "Questions",
     }));
     render(
-      <RunningNotesWidget
-        input={{ ...input, displayMode: "grouped", items }}
-        emit={vi.fn()}
-        presentation={{ ...presentation, sizeMode: "compact" }}
-      />,
+      renderNotes(
+        { ...input, displayMode: "grouped", items },
+        vi.fn(),
+        { ...presentation, sizeMode: "compact" },
+      ),
     );
 
-    expect(screen.getByRole("heading", { name: "Decisions" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Decisions" })).toBeInTheDocument();
     expect(screen.getByText("Stress note 199")).toBeInTheDocument();
     expect(screen.getAllByRole("listitem")).toHaveLength(200);
   });
 
-  it("keeps read-only notes legible while disabling edits", () => {
+  it("keeps read-only notes legible while disabling edits", async () => {
     render(
-      <RunningNotesWidget
-        input={{
+      renderNotes(
+        {
           ...input,
           access: { mode: "read_only", reason: "Archive is read-only." },
-        }}
-        emit={vi.fn()}
-        presentation={presentation}
-      />,
+        },
+        vi.fn(),
+      ),
     );
-    expect(screen.getByText("Meeting ran long")).toBeInTheDocument();
+    expect(await screen.findByText("Meeting ran long")).toBeInTheDocument();
     expect(screen.getByText("Archive is read-only.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Edit" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Delete" })).toBeDisabled();
   });
 });

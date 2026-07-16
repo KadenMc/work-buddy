@@ -63,6 +63,13 @@
       outline: 2px solid Highlight;
     }
 
+    .wb-help-target,
+    .wb-view-host.is-helping .wb-help-target {
+      outline: 2px dashed Highlight;
+      box-shadow: none;
+      animation: none;
+    }
+
     .status-dot {
       border: 1px solid CanvasText;
     }

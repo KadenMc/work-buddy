@@ -18,25 +18,13 @@
 
   .wb-capture__controls {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: end;
-    gap: var(--wb-space-5);
+    grid-template-columns: auto minmax(5rem, 1fr) auto;
+    align-items: center;
+    gap: var(--wb-space-4);
   }
 
   .wb-capture__target { min-width: 0; }
-
-  .wb-capture__controls .wb-segmented-field {
-    grid-column: 1 / -1;
-  }
-
-  .wb-capture__controls .wb-segmented-control {
-    width: 100%;
-  }
-
-  .wb-capture__controls .wb-segmented-control__item {
-    min-width: 0;
-    flex: 1;
-  }
+  .wb-capture__smart { min-width: 0; }
 
   .wb-capture__destination-note,
   .wb-capture__count {
@@ -88,13 +76,4 @@
 
   .wb-capture--compact { gap: var(--wb-space-5); }
   .wb-capture--compact .wb-capture__field .wb-textarea { min-height: 4.5rem; }
-  .wb-capture--compact .wb-capture__controls { grid-template-columns: minmax(0, 1fr) auto; }
-
-  @container (min-width: 34rem) {
-    .wb-capture__controls {
-      grid-template-columns: minmax(10rem, 1fr) minmax(14rem, 1.4fr) auto;
-    }
-
-    .wb-capture__controls .wb-segmented-field { grid-column: auto; }
-  }
 }

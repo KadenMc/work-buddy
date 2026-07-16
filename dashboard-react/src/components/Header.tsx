@@ -1,8 +1,10 @@
 import { Sparkle } from "@phosphor-icons/react/Sparkle";
 
+import { useDashboardTemporalContext } from "../dashboard/temporal/DashboardTemporalContext";
 import { useClock } from "../hooks/useClock";
 import { useLiveStatus } from "../hooks/useLiveStatus";
 import { useSidecarStatus } from "../hooks/useSidecarStatus";
+import { SettingsLauncher } from "../settings/SettingsNavigation";
 import { AppearanceControl } from "../theme/AppearanceControl";
 
 type DotKind = "healthy" | "unhealthy" | "stopped";
@@ -46,11 +48,24 @@ function LiveIndicator() {
 }
 
 function Clock() {
-  const time = useClock();
-  return <span className="clock">{time}</span>;
+  const temporal = useDashboardTemporalContext();
+  const time = useClock(temporal.context);
+  const title =
+    temporal.status === "ready"
+      ? `Work Buddy time · ${temporal.context.timezone}`
+      : "Work Buddy timezone unavailable";
+  return (
+    <span className="clock" title={title} aria-label={title}>
+      {time ?? "--:--"}
+    </span>
+  );
 }
 
-export default function Header() {
+export default function Header({
+  defaultViewPath = "/journal",
+}: {
+  readonly defaultViewPath?: string;
+}) {
   return (
     <header className="header">
       <div className="header__brand">
@@ -69,6 +84,7 @@ export default function Header() {
           <LiveIndicator />
         </div>
         <Clock />
+        <SettingsLauncher defaultViewPath={defaultViewPath} />
       </div>
     </header>
   );

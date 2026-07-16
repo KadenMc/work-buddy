@@ -87,6 +87,7 @@ const makeToyContribution = (): AppContribution => ({
           requiredRole: roleId,
           defaultWidgetTypeId: widgetTypeId,
           presence: "required",
+          help: { summary: "Summarize the weather.", details: "Explains this test view's weather." },
           defaultSettings: {},
           defaultLayout: { x: 0, y: 0, w: 12, h: 4 },
           lockedReason: "Without a summary the view cannot explain the weather.",

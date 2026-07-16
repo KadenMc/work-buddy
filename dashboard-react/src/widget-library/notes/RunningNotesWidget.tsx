@@ -1,6 +1,6 @@
 import type { WidgetRendererProps } from "../../dashboard/contributions/contracts";
 import { InlineAlert } from "../../ui";
-import { createWidgetIntent } from "../shared";
+import { createCorrelationId, createWidgetIntent } from "../shared";
 import type {
   MarkdownNoteItem,
   RunningNotesInput,
@@ -8,6 +8,7 @@ import type {
 } from "./contracts";
 import {
   MarkdownItemCollection,
+  type MarkdownDeleteRequest,
   type MarkdownEditRequest,
 } from "./MarkdownItemCollection";
 
@@ -18,12 +19,22 @@ export default function RunningNotesWidget({
 }: WidgetRendererProps<RunningNotesInput, RunningNotesIntent>) {
   const readOnly = input.access.mode === "read_only";
   const edit = (request: MarkdownEditRequest) => {
-    emit(
+    const clientMutationId = createCorrelationId("notes-edit");
+    return emit(
       createWidgetIntent(presentation, "wb.notes.edit-requested", {
         item_id: request.itemId,
         expected_version: request.expectedVersion,
         markdown: request.markdown,
-      }) as RunningNotesIntent,
+      }, { clientMutationId }) as RunningNotesIntent,
+    );
+  };
+  const deleteItem = (request: MarkdownDeleteRequest) => {
+    const clientMutationId = createCorrelationId("notes-delete");
+    return emit(
+      createWidgetIntent(presentation, "wb.notes.delete-requested", {
+        item_id: request.itemId,
+        expected_version: request.expectedVersion,
+      }, { clientMutationId }) as RunningNotesIntent,
     );
   };
   const openThread = (item: MarkdownNoteItem) => {
@@ -49,7 +60,9 @@ export default function RunningNotesWidget({
           timezone={input.timezone}
           density={presentation.sizeMode}
           onEdit={edit}
+          onDelete={deleteItem}
           onOpenThread={openThread}
+          simulateMutations={presentation.interactionMode === "preview"}
         />
       )}
     </div>

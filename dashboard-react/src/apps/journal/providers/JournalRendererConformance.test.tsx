@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import {
@@ -13,6 +13,7 @@ import type {
   WidgetInstanceId,
   WidgetPresentationContext,
 } from "../../../dashboard/contributions/contracts";
+import { WidgetDraftTestScope } from "../../../test/DashboardTestRuntime";
 import QuickTextCaptureWidget from "../../../widget-library/capture/QuickTextCaptureWidget";
 import {
   CAPTURE_APP_CONTRIBUTION,
@@ -83,6 +84,7 @@ const presentation = (
   width: sizeMode === "compact" ? 320 : sizeMode === "standard" ? 560 : 880,
   height: sizeMode === "compact" ? 280 : sizeMode === "standard" ? 520 : 760,
   sizeMode,
+  interactionMode: "operate",
   editing: false,
   theme,
   getCanvasTheme: () => canvasTheme,
@@ -123,20 +125,27 @@ describe("Journal and the real widget library", () => {
     const input = toQuickTextCaptureInput(
       before.model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.capture],
     );
+    const capturePresentation = presentation(JOURNAL_INSTANCE_IDS.capture);
     const view = render(
-      <QuickTextCaptureWidget
+      <WidgetDraftTestScope
+        definition={CAPTURE_APP_CONTRIBUTION.widgetDefinitions[0]}
+        presentation={capturePresentation}
         input={input}
-        emit={collectIntent(emitted)}
-        presentation={presentation(JOURNAL_INSTANCE_IDS.capture)}
-      />,
+      >
+        <QuickTextCaptureWidget
+          input={input}
+          emit={collectIntent(emitted)}
+          presentation={capturePresentation}
+        />
+      </WidgetDraftTestScope>,
     );
 
-    await user.click(screen.getByRole("button", { name: /Destination/ }));
+    await user.click(await screen.findByRole("button", { name: /Destination/ }));
     await user.click(await screen.findByRole("option", { name: /^Running notes/ }));
     await user.type(screen.getByRole("textbox", { name: "Capture text" }), "Meeting ran long");
     await user.click(screen.getByRole("button", { name: "Capture" }));
 
-    expect(emitted).toHaveLength(1);
+    await waitFor(() => expect(emitted).toHaveLength(1));
     expect(emitted[0]).toMatchObject({
       intent_type: "wb.capture.submit",
       view_id: JOURNAL_VIEW_DEFINITION_ID,
@@ -158,16 +167,25 @@ describe("Journal and the real widget library", () => {
     const pendingNotes = pending.model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.runningNotes].items;
     expect(pendingNotes[pendingNotes.length - 1]?.markdown).toBe("Meeting ran long");
 
-    view.rerender(
-      <QuickTextCaptureWidget
-        input={toQuickTextCaptureInput(
-          pending.model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.capture],
-        )}
-        emit={collectIntent(emitted)}
-        presentation={presentation(JOURNAL_INSTANCE_IDS.capture)}
-      />,
+    const pendingInput = toQuickTextCaptureInput(
+      pending.model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.capture],
     );
-    expect(screen.getByRole("textbox", { name: "Capture text" })).toHaveValue("");
+    view.rerender(
+      <WidgetDraftTestScope
+        definition={CAPTURE_APP_CONTRIBUTION.widgetDefinitions[0]}
+        presentation={capturePresentation}
+        input={pendingInput}
+      >
+        <QuickTextCaptureWidget
+          input={pendingInput}
+          emit={collectIntent(emitted)}
+          presentation={capturePresentation}
+        />
+      </WidgetDraftTestScope>,
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("textbox", { name: "Capture text" })).toHaveValue(""),
+    );
 
     expect(provider.advanceDemoProcessing()).toBe(true);
     const settled = await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, { reason: "reconcile" });
@@ -182,19 +200,33 @@ describe("Journal and the real widget library", () => {
     const provider = new InMemoryJournalProvider();
     const snapshot = await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, { reason: "mount" });
     const emitted: DashboardIntent[] = [];
+    const captureInput = toQuickTextCaptureInput(
+      snapshot.model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.capture],
+    );
+    const capturePresentation = presentation(JOURNAL_INSTANCE_IDS.capture);
     render(
-      <QuickTextCaptureWidget
-        input={toQuickTextCaptureInput(
-          snapshot.model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.capture],
-        )}
-        emit={collectIntent(emitted)}
-        presentation={presentation(JOURNAL_INSTANCE_IDS.capture)}
-      />,
+      <WidgetDraftTestScope
+        definition={CAPTURE_APP_CONTRIBUTION.widgetDefinitions[0]}
+        presentation={capturePresentation}
+        input={captureInput}
+      >
+        <QuickTextCaptureWidget
+          input={captureInput}
+          emit={collectIntent(emitted)}
+          presentation={capturePresentation}
+        />
+      </WidgetDraftTestScope>,
     );
 
-    await user.click(screen.getByRole("radio", { name: "Save only" }));
+    const smart = await screen.findByRole("switch", { name: "Smart" });
+    expect(smart).toBeChecked();
+    await user.click(smart);
+    expect(smart).not.toBeChecked();
+    await user.click(screen.getByRole("button", { name: /Destination/ }));
+    await user.click(screen.getByRole("option", { name: /^Log/ }));
     await user.type(screen.getByRole("textbox", { name: "Capture text" }), "Coffee refill");
     await user.click(screen.getByRole("button", { name: "Capture" }));
+    await waitFor(() => expect(emitted).toHaveLength(1));
     expect(await provider.dispatch(emitted[0]!)).toMatchObject({ status: "accepted" });
 
     const next = await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, { reason: "refresh" });
@@ -253,23 +285,32 @@ describe("Journal and the real widget library", () => {
     const before = await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, { reason: "mount" });
     const initialTimeline = before.model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.timeline].items;
     const emitted: DashboardIntent[] = [];
+    const notesInput = toRunningNotesInput(
+      before.model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.runningNotes],
+    );
+    const notesPresentation = presentation(JOURNAL_INSTANCE_IDS.runningNotes);
     render(
-      <RunningNotesWidget
-        input={toRunningNotesInput(
-          before.model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.runningNotes],
-        )}
-        emit={collectIntent(emitted)}
-        presentation={presentation(JOURNAL_INSTANCE_IDS.runningNotes)}
-      />,
+      <WidgetDraftTestScope
+        definition={NOTES_APP_CONTRIBUTION.widgetDefinitions[0]}
+        presentation={notesPresentation}
+        input={notesInput}
+      >
+        <RunningNotesWidget
+          input={notesInput}
+          emit={collectIntent(emitted)}
+          presentation={notesPresentation}
+        />
+      </WidgetDraftTestScope>,
     );
 
-    await user.click(screen.getByRole("button", { name: "Edit" }));
+    await user.click(await screen.findByRole("button", { name: "Edit" }));
     const exactMarkdown = "  Revised **Markdown** stays exact.  ";
     fireEvent.change(screen.getByRole("textbox", { name: "Edit note" }), {
       target: { value: exactMarkdown },
     });
     await user.click(screen.getByRole("button", { name: "Save" }));
 
+    await waitFor(() => expect(emitted).toHaveLength(1));
     expect(emitted[0]).toMatchObject({
       intent_type: "wb.notes.edit-requested",
       payload: { expected_version: 1, markdown: exactMarkdown },
@@ -284,7 +325,55 @@ describe("Journal and the real widget library", () => {
     );
   });
 
-  it("keeps the pre-05:00 instant bound to the prior Journal day in the Timeline renderer", () => {
+  it("routes a confirmed Notes deletion through the App boundary as a tombstone", async () => {
+    const user = userEvent.setup();
+    const provider = new InMemoryJournalProvider();
+    const before = await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, {
+      reason: "mount",
+    });
+    const note = before.model.widgetInputs[
+      JOURNAL_WIDGET_INSTANCE_IDS.runningNotes
+    ].items[0]!;
+    const emitted: DashboardIntent[] = [];
+    const notesInput = toRunningNotesInput(
+      before.model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.runningNotes],
+    );
+    const notesPresentation = presentation(JOURNAL_INSTANCE_IDS.runningNotes);
+    render(
+      <WidgetDraftTestScope
+        definition={NOTES_APP_CONTRIBUTION.widgetDefinitions[0]}
+        presentation={notesPresentation}
+        input={notesInput}
+      >
+        <RunningNotesWidget
+          input={notesInput}
+          emit={collectIntent(emitted)}
+          presentation={notesPresentation}
+        />
+      </WidgetDraftTestScope>,
+    );
+
+    await user.click(await screen.findByRole("button", { name: "Delete" }));
+    await user.click(screen.getByRole("button", { name: "Delete note" }));
+
+    await waitFor(() => expect(emitted).toHaveLength(1));
+    expect(emitted[0]).toMatchObject({
+      intent_type: "wb.notes.delete-requested",
+      client_mutation_id: expect.stringMatching(/^notes-delete:/),
+      payload: { item_id: note.itemId, expected_version: note.version },
+    });
+    expect((await provider.dispatch(emitted[0]!)).status).toBe("accepted");
+    const next = await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, {
+      reason: "refresh",
+    });
+    expect(
+      next.model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.runningNotes].items,
+    ).toHaveLength(0);
+    expect(provider.getRunningNoteTombstone(note.itemId)?.item).toEqual(note);
+  });
+
+  it("keeps the pre-05:00 instant bound to the prior Journal day in the Timeline renderer", async () => {
+    const user = userEvent.setup();
     const input = toDayTimelineInput(
       JOURNAL_PRE_0500_BOUNDARY_FIXTURE.model.widgetInputs[
         JOURNAL_WIDGET_INSTANCE_IDS.timeline
@@ -300,8 +389,16 @@ describe("Journal and the real widget library", () => {
 
     expect(input.day.localDate).toBe("2026-07-11");
     expect(input.day.now).toBe("2026-07-12T04:30:00-04:00");
+    await user.click(screen.getByRole("radio", { name: "List" }));
+    const preBoundaryItem = await screen.findByRole("button", {
+      name: /Captured before the Journal day boundary/i,
+    });
+    await user.click(preBoundaryItem);
     expect(
-      screen.getByRole("button", { name: /Captured before the Journal day boundary/i }),
+      await screen.findByRole("heading", {
+        name: "Captured before the Journal day boundary",
+      }),
     ).toBeInTheDocument();
+    expect(within(await screen.findByRole("dialog")).getByText("4:25 AM")).toBeInTheDocument();
   });
 });

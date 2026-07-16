@@ -28,6 +28,7 @@ import {
   type JournalCaptureSubmission,
   type JournalFixtureState,
   type JournalRunningNoteItem,
+  type JournalRunningNoteTombstone,
   type JournalTimelineItem,
   type JournalViewModel,
 } from "../contracts";
@@ -195,6 +196,7 @@ export class InMemoryJournalProvider implements ViewProvider {
 
   #current: PopulatedJournalFixtureState;
   #pendingSettlement: PopulatedJournalFixtureState | null = null;
+  #runningNoteTombstones = new Map<string, JournalRunningNoteTombstone>();
   #intentResults = new Map<string, IntentResult>();
   #revisionSequence = 0;
   #listeners = new Set<(invalidation: AppInvalidation) => void>();
@@ -424,6 +426,9 @@ export class InMemoryJournalProvider implements ViewProvider {
       typeof intent.payload.expected_version === "number" &&
       typeof intent.payload.markdown === "string"
     ) {
+      if (mutationId === undefined) {
+        return this.#result(intent, "rejected", "Running note edit requires client_mutation_id");
+      }
       const itemId = intent.payload.item_id;
       const expectedVersion = intent.payload.expected_version;
       const markdown = intent.payload.markdown;
@@ -457,7 +462,63 @@ export class InMemoryJournalProvider implements ViewProvider {
           },
         },
       }));
-      return this.#result(intent, "accepted", "Running note updated", revision);
+      return this.#remember(
+        intent,
+        this.#result(intent, "accepted", "Running note updated", revision),
+      );
+    }
+
+    if (
+      intent.intent_type === "wb.notes.delete-requested" &&
+      "instance_id" in intent &&
+      intent.instance_id === JOURNAL_INSTANCE_IDS.runningNotes &&
+      isRecord(intent.payload) &&
+      typeof intent.payload.item_id === "string" &&
+      typeof intent.payload.expected_version === "number"
+    ) {
+      if (mutationId === undefined) {
+        return this.#result(
+          intent,
+          "rejected",
+          "Running note deletion requires client_mutation_id",
+        );
+      }
+      const itemId = intent.payload.item_id;
+      const expectedVersion = intent.payload.expected_version;
+      const items = this.#current.model.widgetInputs[
+        JOURNAL_WIDGET_INSTANCE_IDS.runningNotes
+      ].items;
+      const existing = items.find((item) => item.itemId === itemId);
+      if (existing === undefined) {
+        return this.#result(intent, "rejected", "Running note is not present");
+      }
+      if (existing.version !== expectedVersion) {
+        return this.#result(intent, "conflict", "Running note version changed");
+      }
+      const deletedAt = this.#current.model.day.now;
+      const revision = this.#commit("notes-delete", (model) => ({
+        ...model,
+        widgetInputs: {
+          ...model.widgetInputs,
+          [JOURNAL_WIDGET_INSTANCE_IDS.runningNotes]: {
+            ...model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.runningNotes],
+            items: model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.runningNotes].items.filter(
+              (item) => item.itemId !== itemId,
+            ),
+          },
+        },
+      }));
+      this.#runningNoteTombstones.set(itemId, {
+        item: existing,
+        deletedAt,
+        deletedVersion: existing.version + 1,
+        deletedBy: { source: "user", label: "you" },
+        reason: "user_deleted",
+      });
+      return this.#remember(
+        intent,
+        this.#result(intent, "accepted", "Running note deleted and tombstoned", revision),
+      );
     }
 
     if (
@@ -556,6 +617,11 @@ export class InMemoryJournalProvider implements ViewProvider {
     return this.#current.model.revision;
   }
 
+  /** Demo-only observability: production persistence will own this ledger. */
+  getRunningNoteTombstone(itemId: string): JournalRunningNoteTombstone | undefined {
+    return this.#runningNoteTombstones.get(itemId);
+  }
+
   #capture(
     intent: DashboardIntent,
     payload: Readonly<Record<string, unknown>>,
@@ -570,11 +636,18 @@ export class InMemoryJournalProvider implements ViewProvider {
     if (payload.day_id !== captureInput.dayId) {
       return this.#result(intent, "conflict", "The selected Journal day changed");
     }
-    if (payload.target_id !== "log" && payload.target_id !== "running_notes") {
+    if (
+      payload.target_id !== "auto" &&
+      payload.target_id !== "log" &&
+      payload.target_id !== "running_notes"
+    ) {
       return this.#result(intent, "rejected", "Capture target is not supported");
     }
     if (payload.mode !== "dumb" && payload.mode !== "smart") {
       return this.#result(intent, "rejected", "Capture mode is not supported");
+    }
+    if (payload.target_id === "auto" && payload.mode !== "smart") {
+      return this.#result(intent, "rejected", "Auto capture requires Smart mode");
     }
     if (typeof payload.exact_text !== "string" || payload.exact_text.length === 0) {
       return this.#result(intent, "rejected", "Capture text is required");
@@ -586,7 +659,10 @@ export class InMemoryJournalProvider implements ViewProvider {
       return this.#result(intent, "rejected", "Capture timestamp is invalid");
     }
 
-    const targetId = payload.target_id;
+    const requestedTargetId = payload.target_id;
+    // The fixture provider stands in for the future App/System inference boundary.
+    // Its deterministic demo policy routes Auto captures into Running notes.
+    const targetId = requestedTargetId === "auto" ? "running_notes" : requestedTargetId;
     const mode = payload.mode;
     const exactText = payload.exact_text;
     const submittedAt =
@@ -684,7 +760,9 @@ export class InMemoryJournalProvider implements ViewProvider {
       this.#result(
         intent,
         "accepted",
-        targetId === "log"
+        requestedTargetId === "auto"
+          ? "Smart routed exact text to Running notes"
+          : targetId === "log"
           ? "Exact text persisted as a point record"
           : "Exact text persisted to Running notes",
         revision,
@@ -773,15 +851,27 @@ export class InMemoryJournalProvider implements ViewProvider {
     update: (model: JournalViewModel) => JournalViewModel,
   ): string {
     this.#revisionSequence += 1;
+    const sequence = this.#revisionSequence;
     const candidate = update(this.#current.model);
-    const revision = `${this.#current.model.revision}:${label}:${this.#revisionSequence}`;
+    const revision = `${this.#current.model.revision}:${label}:${sequence}`;
     const model = this.#withRevision(candidate, revision);
     this.#current = {
       ...this.#current,
-      fixtureId: `${this.#current.fixtureId}:${label}:${this.#revisionSequence}`,
+      fixtureId: `${this.#current.fixtureId}:${label}:${sequence}`,
       observedAt: model.day.now,
       model,
     };
+    if (this.#pendingSettlement !== null) {
+      const pendingCandidate = update(this.#pendingSettlement.model);
+      const pendingRevision = `${this.#pendingSettlement.model.revision}:${label}:${sequence}`;
+      const pendingModel = this.#withRevision(pendingCandidate, pendingRevision);
+      this.#pendingSettlement = {
+        ...this.#pendingSettlement,
+        fixtureId: `${this.#pendingSettlement.fixtureId}:${label}:${sequence}`,
+        observedAt: pendingModel.day.now,
+        model: pendingModel,
+      };
+    }
     return revision;
   }
 

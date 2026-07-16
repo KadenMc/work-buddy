@@ -89,6 +89,7 @@ export interface ViewEditSessionState {
 }
 
 export type ViewEditAction =
+  | { readonly type: "clear-failure" }
   | { readonly type: "begin-interaction" }
   | { readonly type: "preview-layout"; readonly layout: DashboardLayout }
   | { readonly type: "commit-interaction" }

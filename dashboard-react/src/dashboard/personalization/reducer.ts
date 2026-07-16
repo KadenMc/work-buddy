@@ -106,6 +106,10 @@ export function viewEditSessionReducer(
   if (state.status !== "editing") return state;
 
   switch (action.type) {
+    case "clear-failure":
+      return state.lastFailure === undefined
+        ? state
+        : { ...state, lastFailure: undefined };
     case "begin-interaction":
       return state.interactionOrigin === undefined
         ? { ...state, interactionOrigin: state.present, lastFailure: undefined }

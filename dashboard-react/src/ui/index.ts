@@ -27,6 +27,7 @@ export {
   type SelectFieldProps,
 } from "./SelectField";
 export { Surface } from "./Surface";
+export { SwitchField, type SwitchFieldProps } from "./SwitchField";
 export { TextAreaField, type TextAreaFieldProps } from "./TextAreaField";
 export { Inline, Stack, Text } from "./Typography";
 export { VisuallyHidden } from "./VisuallyHidden";

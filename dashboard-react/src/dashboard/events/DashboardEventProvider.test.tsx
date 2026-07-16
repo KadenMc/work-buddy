@@ -1,4 +1,5 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import Header from "../../components/Header";
@@ -80,15 +81,17 @@ afterEach(() => {
 describe("DashboardEventProvider", () => {
   it("owns one EventSource for Header and every other consumer", async () => {
     const rendered = render(
-      <ThemeProvider initialPreference={{ scheme: "dark", skinId: "wb.default" }}>
-        <DensityProvider initialDensity="comfortable">
-          <DashboardEventProvider>
-            <Header />
-            <EventProbe testId="first" />
-            <EventProbe testId="second" />
-          </DashboardEventProvider>
-        </DensityProvider>
-      </ThemeProvider>,
+      <MemoryRouter initialEntries={["/journal"]}>
+        <ThemeProvider initialPreference={{ scheme: "dark", skinId: "wb.default" }}>
+          <DensityProvider initialDensity="comfortable">
+            <DashboardEventProvider>
+              <Header />
+              <EventProbe testId="first" />
+              <EventProbe testId="second" />
+            </DashboardEventProvider>
+          </DensityProvider>
+        </ThemeProvider>
+      </MemoryRouter>,
     );
 
     await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));

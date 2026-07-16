@@ -103,6 +103,34 @@
     text-align: right;
   }
 
+  .wb-settings-trigger {
+    width: var(--wb-control-height-sm);
+    min-height: var(--wb-control-height-sm);
+    border-color: var(--wb-color-border-subtle);
+    background: transparent;
+    color: var(--wb-color-text-secondary);
+  }
+
+  .wb-settings-trigger .wb-icon-button__icon {
+    transition: transform var(--wb-motion-duration-slow) var(--wb-motion-easing-standard);
+  }
+
+  .wb-settings-trigger[data-hovered]:not([data-disabled]) {
+    border-color: var(--wb-color-border-default);
+    background: var(--wb-color-action-secondary-hover);
+    color: var(--wb-color-text-primary);
+  }
+
+  .wb-settings-trigger[data-hovered]:not([data-disabled]) .wb-icon-button__icon {
+    transform: rotate(30deg);
+  }
+
+  .wb-settings-trigger.is-active {
+    border-color: var(--wb-color-border-interactive);
+    background: var(--wb-color-accent-soft);
+    color: var(--wb-color-accent);
+  }
+
   .tab-bar-shell {
     border-bottom: var(--wb-border-width) solid var(--wb-color-border-subtle);
     background: var(--wb-color-surface-raised);
@@ -185,5 +213,15 @@
 
     .header-meta { gap: var(--wb-space-3); }
     .tab-bar { padding-inline: calc(var(--wb-view-gutter) - 0.5rem); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .wb-settings-trigger .wb-icon-button__icon {
+      transition: none;
+    }
+
+    .wb-settings-trigger[data-hovered]:not([data-disabled]) .wb-icon-button__icon {
+      transform: none;
+    }
   }
 }

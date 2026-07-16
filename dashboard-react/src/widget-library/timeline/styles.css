@@ -10,7 +10,8 @@
   .wb-day-timeline__toolbar {
     display: flex;
     flex: 0 0 auto;
-    align-items: end;
+    flex-wrap: wrap;
+    align-items: center;
     justify-content: space-between;
     gap: var(--wb-space-5);
   }

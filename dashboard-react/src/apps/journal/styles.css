@@ -107,10 +107,17 @@
   .journal-view-chrome__notice { max-width: 52rem; }
 
   @media (max-width: 47.99rem) {
-    .journal-view-chrome__main { align-items: flex-start; }
+    .journal-view-chrome__main {
+      align-items: flex-start;
+      flex-wrap: wrap;
+    }
     .journal-view-chrome__mark { width: 2.5rem; height: 2.5rem; }
     .journal-view-chrome__title-row h1 { font-size: 1.45rem; }
     .journal-view-chrome__metadata { display: grid; gap: var(--wb-space-2); }
-    .journal-view-chrome__actions { display: none; }
+    .journal-view-chrome__actions {
+      display: flex;
+      margin-left: auto;
+    }
+    .journal-view-chrome__source { display: none; }
   }
 }

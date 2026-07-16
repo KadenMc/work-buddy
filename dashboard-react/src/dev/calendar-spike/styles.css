@@ -119,12 +119,14 @@
   .wb-calendar-spike__surface-toolbar {
     display: flex;
     flex: 0 0 auto;
-    align-items: end;
-    justify-content: space-between;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-start;
     gap: var(--wb-space-5);
   }
 
   .wb-calendar-spike__surface-toolbar > span {
+    margin-inline-start: auto;
     color: var(--wb-color-text-muted);
     font-family: var(--wb-font-mono);
     font-size: var(--wb-font-size-2xs);

@@ -4,6 +4,7 @@ import { CaretRight } from "@phosphor-icons/react/CaretRight";
 import { Clock } from "@phosphor-icons/react/Clock";
 import { Database } from "@phosphor-icons/react/Database";
 import { SunHorizon } from "@phosphor-icons/react/SunHorizon";
+import type { ReactNode } from "react";
 
 import { Button, IconButton, InlineAlert } from "../../../ui";
 import type {
@@ -18,6 +19,8 @@ export interface JournalViewChromeProps {
   readonly access: JournalAccess;
   readonly quality: JournalDataQuality;
   readonly source: JournalDemoSource;
+  /** Placement slot for Dashboard-host-owned contextual controls. */
+  readonly hostActions?: ReactNode;
   readonly onNavigateDay?: (direction: "previous" | "next") => void;
   readonly onReturnToToday?: () => void;
 }
@@ -56,6 +59,7 @@ export function JournalViewChrome({
   access,
   quality,
   source,
+  hostActions,
   onNavigateDay,
   onReturnToToday,
 }: JournalViewChromeProps) {
@@ -118,6 +122,7 @@ export function JournalViewChrome({
               Today
             </Button>
           ) : null}
+          {hostActions}
         </div>
       </div>
 

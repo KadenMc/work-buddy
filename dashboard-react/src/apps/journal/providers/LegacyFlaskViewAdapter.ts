@@ -1,3 +1,5 @@
+import { DateTime } from "luxon";
+
 import type {
   AppInvalidation,
   DashboardIntent,
@@ -52,10 +54,23 @@ export interface LegacyTodayPlanItem {
   readonly checked: boolean;
 }
 
+export interface LegacyTodayJournalDay {
+  readonly local_date: string;
+  readonly timezone: string;
+  readonly day_boundary_start: string;
+  readonly window_start: string;
+  readonly window_end: string;
+  readonly boundary_setting_revision: string;
+  readonly pending_day_boundary_start: string | null;
+  readonly boundary_effective_at: string | null;
+}
+
 export interface LegacyTodayPayload {
   readonly status: LegacyTodaySourceStatus;
+  readonly timezone: string;
   readonly now: LegacyTodayNow;
   readonly work_hours: readonly [number, number];
+  readonly journal_day?: LegacyTodayJournalDay;
   readonly current_contexts: readonly string[];
   readonly recommendations: readonly unknown[];
   readonly plan: readonly LegacyTodayPlanItem[];
@@ -130,10 +145,22 @@ export interface LegacyFieldMapping {
 
 export const LEGACY_TODAY_FIELD_MAPPING = [
   {
+    source: "journal_day",
+    target: "Authoritative Journal day binding",
+    fidelity: "direct",
+    note: "When supplied, the backend-owned date, boundary, timezone, and exact window instants replace every compatibility reconstruction.",
+  },
+  {
+    source: "timezone",
+    target: "Journal day and calendar presentation timezone",
+    fidelity: "direct",
+    note: "The configured Work Buddy IANA zone is authoritative; browser timezone is never substituted.",
+  },
+  {
     source: "now",
     target: "Journal day/timeline now",
     fidelity: "direct",
-    note: "The endpoint timestamp is preserved; local minute metadata anchors same-day derivation.",
+    note: "The endpoint timestamp is preserved; its instant and explicit zone determine the local calendar date.",
   },
   {
     source: "work_hours",
@@ -179,7 +206,10 @@ export interface LegacyJournalMetadata {
   readonly contractConstraints: readonly unknown[];
   readonly engageCount: number;
   readonly errors: readonly string[];
-  readonly timelineWindowSource: "legacy_work_hours";
+  readonly timelineWindowSource: "journal_day" | "legacy_work_hours";
+  readonly boundarySettingRevision?: string;
+  readonly pendingDayBoundaryStart?: string;
+  readonly boundaryEffectiveAt?: string;
   readonly revisionSource: "adapter_projection_hash";
   readonly limitations: readonly LegacyAdapterLimitation[];
 }
@@ -244,6 +274,16 @@ function normalizeStatus(value: unknown): LegacyTodaySourceStatus {
   return "degraded";
 }
 
+function isSupportedTimezone(value: unknown): value is string {
+  if (typeof value !== "string" || value.length === 0) return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value }).format(0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function parsePlan(value: unknown): readonly LegacyTodayPlanItem[] {
   return asArray(value).flatMap((candidate) => {
     if (
@@ -265,6 +305,48 @@ function parsePlan(value: unknown): readonly LegacyTodayPlanItem[] {
   });
 }
 
+function isIsoInstant(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /(?:Z|[+-]\d{2}:\d{2})$/i.test(value) &&
+    Number.isFinite(Date.parse(value))
+  );
+}
+
+function isLocalTime(value: unknown): value is string {
+  return typeof value === "string" && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value);
+}
+
+function parseJournalDay(value: unknown): LegacyTodayJournalDay {
+  if (
+    !isRecord(value) ||
+    typeof value.local_date !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(value.local_date) ||
+    !isSupportedTimezone(value.timezone) ||
+    !isLocalTime(value.day_boundary_start) ||
+    !isIsoInstant(value.window_start) ||
+    !isIsoInstant(value.window_end) ||
+    Date.parse(value.window_end) <= Date.parse(value.window_start) ||
+    typeof value.boundary_setting_revision !== "string" ||
+    (value.pending_day_boundary_start !== null &&
+      !isLocalTime(value.pending_day_boundary_start)) ||
+    (value.boundary_effective_at !== null &&
+      !isIsoInstant(value.boundary_effective_at))
+  ) {
+    throw new Error("Legacy Today response has invalid journal_day metadata");
+  }
+  return {
+    local_date: value.local_date,
+    timezone: value.timezone,
+    day_boundary_start: value.day_boundary_start,
+    window_start: value.window_start,
+    window_end: value.window_end,
+    boundary_setting_revision: value.boundary_setting_revision,
+    pending_day_boundary_start: value.pending_day_boundary_start,
+    boundary_effective_at: value.boundary_effective_at,
+  };
+}
+
 function parsePayload(value: unknown): LegacyTodayPayload {
   if (!isRecord(value) || !isRecord(value.now)) {
     throw new Error("Legacy Today response is not an object with a now block");
@@ -273,6 +355,7 @@ function parsePayload(value: unknown): LegacyTodayPayload {
   const localHhmm = value.now.local_hhmm;
   const minutesIntoDay = value.now.minutes_into_day;
   if (
+    !isSupportedTimezone(value.timezone) ||
     typeof iso !== "string" ||
     !Number.isFinite(Date.parse(iso)) ||
     typeof localHhmm !== "string" ||
@@ -294,12 +377,16 @@ function parsePayload(value: unknown): LegacyTodayPayload {
 
   return {
     status: normalizeStatus(value.status),
+    timezone: value.timezone,
     now: {
       iso,
       local_hhmm: localHhmm,
       minutes_into_day: minutesIntoDay,
     },
     work_hours: [workHours[0], workHours[1]],
+    ...(value.journal_day === undefined
+      ? {}
+      : { journal_day: parseJournalDay(value.journal_day) }),
     current_contexts: asStringArray(value.current_contexts),
     recommendations: asArray(value.recommendations),
     plan: parsePlan(value.plan),
@@ -316,20 +403,13 @@ function parsePayload(value: unknown): LegacyTodayPayload {
 }
 
 function localDateFor(iso: string, timezone: string): string {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: timezone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(new Date(iso));
-  const part = (type: Intl.DateTimeFormatPartTypes) =>
-    parts.find((candidate) => candidate.type === type)?.value;
-  const year = part("year");
-  const month = part("month");
-  const day = part("day");
-  return year !== undefined && month !== undefined && day !== undefined
-    ? `${year}-${month}-${day}`
-    : iso.slice(0, 10);
+  const localDate = DateTime.fromISO(iso, { setZone: true })
+    .setZone(timezone)
+    .toISODate();
+  if (localDate === null) {
+    throw new Error("Legacy Today response has invalid temporal metadata");
+  }
+  return localDate;
 }
 
 function minutesFor(value: string): number | undefined {
@@ -342,9 +422,38 @@ function minutesFor(value: string): number | undefined {
     : undefined;
 }
 
-function instantAtLocalMinute(now: LegacyTodayNow, minute: number): string {
-  const timestamp = Date.parse(now.iso) + (minute - now.minutes_into_day) * 60_000;
-  return new Date(timestamp).toISOString();
+/**
+ * Reconstruct the legacy payload's HH:MM fields as named-zone civil time.
+ *
+ * `minute` may exceed 24 hours for an overnight row/window. Luxon's calendar-day
+ * addition is intentional: adding 24 elapsed hours would be wrong across DST.
+ * Ambiguous fall-back wall times use Luxon's deterministic compatible offset; the
+ * legacy contract cannot identify which occurrence was intended. The native App
+ * contract must continue to carry real start/end instants instead.
+ */
+function instantAtLocalMinute(
+  localDate: string,
+  timezone: string,
+  minute: number,
+): string {
+  const dayOffset = Math.floor(minute / (24 * 60));
+  const minuteOfDay = minute - dayOffset * 24 * 60;
+  const date = DateTime.fromISO(localDate, { zone: timezone }).plus({ days: dayOffset });
+  const local = DateTime.fromObject(
+    {
+      year: date.year,
+      month: date.month,
+      day: date.day,
+      hour: Math.floor(minuteOfDay / 60),
+      minute: minuteOfDay % 60,
+    },
+    { zone: timezone },
+  );
+  const instant = local.toUTC().toISO({ suppressMilliseconds: false });
+  if (!date.isValid || !local.isValid || instant === null) {
+    throw new Error(`Cannot reconstruct legacy local time in ${timezone}`);
+  }
+  return instant;
 }
 
 function projectionHash(payload: LegacyTodayPayload): string {
@@ -370,13 +479,15 @@ function timelineItem(
   item: LegacyTodayPlanItem,
   index: number,
   now: LegacyTodayNow,
+  localDate: string,
+  timezone: string,
 ): DayTimelineItem | undefined {
   const startMinute = minutesFor(item.time_start);
   const rawEndMinute = minutesFor(item.time_end);
   if (startMinute === undefined || rawEndMinute === undefined) return undefined;
   const endMinute = rawEndMinute <= startMinute ? rawEndMinute + 24 * 60 : rawEndMinute;
-  const startAt = instantAtLocalMinute(now, startMinute);
-  const endAt = instantAtLocalMinute(now, endMinute);
+  const startAt = instantAtLocalMinute(localDate, timezone, startMinute);
+  const endAt = instantAtLocalMinute(localDate, timezone, endMinute);
   return {
     itemId: itemId(item, index),
     kind: "plan",
@@ -393,6 +504,18 @@ function timelineItem(
 }
 
 function dayWindow(payload: LegacyTodayPayload, timezone: string): TimelineDayWindow {
+  if (payload.journal_day !== undefined) {
+    const day = payload.journal_day;
+    return {
+      dayId: `journal-day:${day.local_date}:${day.timezone}:${day.day_boundary_start}`,
+      localDate: day.local_date,
+      timezone: day.timezone,
+      dayBoundaryStart: day.day_boundary_start,
+      windowStart: day.window_start,
+      windowEnd: day.window_end,
+      now: payload.now.iso,
+    };
+  }
   const startMinute = payload.work_hours[0] * 60;
   const rawEndMinute = payload.work_hours[1] * 60;
   const endMinute = rawEndMinute <= startMinute ? rawEndMinute + 24 * 60 : rawEndMinute;
@@ -403,8 +526,8 @@ function dayWindow(payload: LegacyTodayPayload, timezone: string): TimelineDayWi
     timezone,
     // Work hours are not silently relabeled as the missing native Journal boundary.
     dayBoundaryStart: "unknown",
-    windowStart: instantAtLocalMinute(payload.now, startMinute),
-    windowEnd: instantAtLocalMinute(payload.now, endMinute),
+    windowStart: instantAtLocalMinute(localDate, timezone, startMinute),
+    windowEnd: instantAtLocalMinute(localDate, timezone, endMinute),
     now: payload.now.iso,
   };
 }
@@ -420,7 +543,7 @@ function createModel(payload: LegacyTodayPayload, timezone: string): LegacyJourn
     renderMode: "timeline",
     density: "comfortable",
     items: payload.plan.flatMap((item, index) => {
-      const mapped = timelineItem(item, index, payload.now);
+      const mapped = timelineItem(item, index, payload.now, day.localDate, day.timezone);
       return mapped === undefined ? [] : [mapped];
     }),
   };
@@ -468,9 +591,30 @@ function createModel(payload: LegacyTodayPayload, timezone: string): LegacyJourn
       contractConstraints: payload.contract_constraints,
       engageCount: payload.engage_count,
       errors: payload.errors,
-      timelineWindowSource: "legacy_work_hours",
+      timelineWindowSource:
+        payload.journal_day === undefined ? "legacy_work_hours" : "journal_day",
+      ...(payload.journal_day === undefined
+        ? {}
+        : {
+            boundarySettingRevision:
+              payload.journal_day.boundary_setting_revision,
+            ...(payload.journal_day.pending_day_boundary_start === null
+              ? {}
+              : {
+                  pendingDayBoundaryStart:
+                    payload.journal_day.pending_day_boundary_start,
+                }),
+            ...(payload.journal_day.boundary_effective_at === null
+              ? {}
+              : { boundaryEffectiveAt: payload.journal_day.boundary_effective_at }),
+          }),
       revisionSource: "adapter_projection_hash",
-      limitations: LEGACY_JOURNAL_UNSUPPORTED,
+      limitations:
+        payload.journal_day === undefined
+          ? LEGACY_JOURNAL_UNSUPPORTED
+          : LEGACY_JOURNAL_UNSUPPORTED.filter(
+              (item) => item.capability !== "native_day_container",
+            ),
     },
   };
 }
@@ -513,14 +657,13 @@ export class LegacyFlaskViewAdapter implements ViewProvider {
   readonly appId = JOURNAL_APP_ID;
 
   readonly #fetch: typeof fetch;
-  readonly #timezone: string;
+  readonly #timezoneOverride?: string;
   readonly #clock: () => string;
   #lastSnapshot: LegacyJournalViewSnapshot | undefined;
 
   constructor(options: LegacyFlaskViewAdapterOptions = {}) {
     this.#fetch = options.fetchImpl ?? fetch;
-    this.#timezone =
-      options.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC";
+    this.#timezoneOverride = options.timezone;
     this.#clock = options.clock ?? (() => new Date().toISOString());
   }
 
@@ -630,7 +773,8 @@ export class LegacyFlaskViewAdapter implements ViewProvider {
       if (!response.ok) {
         throw new Error(`Legacy Today endpoint returned HTTP ${response.status}`);
       }
-      const model = createModel(parsePayload(await response.json()), this.#timezone);
+      const payload = parsePayload(await response.json());
+      const model = createModel(payload, this.#timezoneOverride ?? payload.timezone);
       return toSnapshot(model);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

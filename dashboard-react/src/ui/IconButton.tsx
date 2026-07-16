@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { forwardRef, type ReactNode } from "react";
 
 import { Button, type ButtonProps } from "./Button";
 
@@ -7,10 +7,14 @@ export interface IconButtonProps extends Omit<ButtonProps, "children" | "aria-la
   readonly icon: ReactNode;
 }
 
-export function IconButton({ label, icon, className = "", ...props }: IconButtonProps) {
+export const IconButton = forwardRef<HTMLButtonElement, IconButtonProps>(function IconButton(
+  { label, icon, className = "", ...props },
+  ref,
+) {
   return (
     <Button
       {...props}
+      ref={ref}
       aria-label={label}
       title={props.title ?? label}
       className={`wb-icon-button ${className}`.trim()}
@@ -20,4 +24,4 @@ export function IconButton({ label, icon, className = "", ...props }: IconButton
       </span>
     </Button>
   );
-}
+});

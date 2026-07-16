@@ -1,0 +1,6 @@
+/*
+ * Establish the named cascade order before any component or widget stylesheet
+ * is evaluated. Vite may hoist CSS imported by the React module graph ahead of
+ * theme.css, so this file must remain the first application import in main.tsx.
+ */
+@layer wb.reset, wb.foundations, wb.tokens, wb.components, wb.widgets, wb.utilities;

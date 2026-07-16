@@ -9,8 +9,11 @@ import { ArrowCounterClockwise } from "@phosphor-icons/react/ArrowCounterClockwi
 import { ArrowUDownLeft } from "@phosphor-icons/react/ArrowUDownLeft";
 import { Check } from "@phosphor-icons/react/Check";
 import { DeviceMobile } from "@phosphor-icons/react/DeviceMobile";
+import { Eye } from "@phosphor-icons/react/Eye";
 import { GridFour } from "@phosphor-icons/react/GridFour";
+import { Info } from "@phosphor-icons/react/Info";
 import { Layout } from "@phosphor-icons/react/Layout";
+import { PencilSimple } from "@phosphor-icons/react/PencilSimple";
 import { SquaresFour } from "@phosphor-icons/react/SquaresFour";
 import { X } from "@phosphor-icons/react/X";
 
@@ -24,11 +27,15 @@ import type {
   WidgetIntent,
   WidgetSnapshot,
 } from "../contributions/contracts";
+import type { StandardViewChromeSlots } from "../contributions/viewModules";
 import { asWidgetInstanceId } from "../contributions/contracts";
 import type { ContributionRegistry } from "../contributions/registry";
 import type { RegisteredWidget } from "../contributions/registry";
 import { ReactGridLayoutAdapter } from "../layout/ReactGridLayoutAdapter";
+import { DashboardHelpProvider, HelpTarget } from "../help";
 import type { DashboardLayout, LayoutCommand } from "../layout/contracts";
+import { applyLayoutCommand } from "../layout/operations";
+import { useInteractionSurfaces } from "../interactions";
 import type { ViewProvider } from "../providers/ViewProvider";
 import { assertWidgetSnapshot } from "../providers/validateProviderBoundary";
 import type { PersonalizationRepository } from "../personalization/repository";
@@ -54,15 +61,36 @@ import {
 } from "../widgets/replaceWidget";
 import { MobileOrderEditor } from "./MobileOrderEditor";
 import { useViewSession } from "./useViewSession";
+import { ViewSettingsLauncher } from "./ViewSettingsLauncher";
 
 export interface ViewHostProps {
   readonly registry: ContributionRegistry;
   readonly definition: ViewDefinition;
   readonly provider: ViewProvider;
   readonly personalizationRepository: PersonalizationRepository;
-  readonly renderChrome?: (snapshot: ViewSnapshot) => ReactNode;
+  readonly renderChrome?: (
+    snapshot: ViewSnapshot,
+    slots: StandardViewChromeSlots,
+  ) => ReactNode;
   readonly providerLabel?: string;
 }
+
+const formatCustomizationFailure = (failure: string): string => {
+  const normalized = failure.toLowerCase();
+  if (normalized.includes("out-of-bounds")) {
+    return "That change would place a widget outside the 24-column canvas.";
+  }
+  if (normalized.includes("collision")) {
+    return "That change would overlap another widget. Empty space is allowed; overlap is not.";
+  }
+  if (normalized.includes("size-limit")) {
+    return "That change would exceed this widget's allowed size.";
+  }
+  if (normalized.includes("locked")) {
+    return "That part of this widget's layout is locked by the view.";
+  }
+  return failure;
+};
 
 const useMediaQuery = (query: string): boolean => {
   const read = () =>
@@ -109,6 +137,7 @@ export function ViewHost({
 }: ViewHostProps) {
   const session = useViewSession({ provider, viewId: definition.viewId });
   const { announce } = useDashboardAnnouncer();
+  const { notify, confirm } = useInteractionSurfaces();
   const isMobile = useMediaQuery("(max-width: 767px)");
   const definitions = useMemo(
     () =>
@@ -134,6 +163,8 @@ export function ViewHost({
     beginViewEditSession(defaults),
   );
   const [customizing, setCustomizing] = useState(false);
+  const [helpMode, setHelpMode] = useState(false);
+  const [customizeMode, setCustomizeMode] = useState<"arrange" | "preview">("arrange");
   const [catalogOpen, setCatalogOpen] = useState(false);
   const [mobileOrderOpen, setMobileOrderOpen] = useState(false);
   const [resetPatchRequested, setResetPatchRequested] = useState(false);
@@ -152,6 +183,14 @@ export function ViewHost({
         `${instance.instanceId}\u0000${instance.widgetTypeId}\u0000${JSON.stringify(instance.bindings)}`,
     )
     .join("\u0001");
+
+  const showDashboardNotice = useCallback((message: string) => {
+    notify({
+      message,
+      tone: "warning",
+      dedupeKey: "dashboard-layout-feedback",
+    });
+  }, [notify]);
 
   useEffect(() => {
     let active = true;
@@ -258,8 +297,16 @@ export function ViewHost({
     setEditState((current) => viewEditSessionReducer(current, action));
   }, []);
 
+  useEffect(() => {
+    if (!customizing || editState.lastFailure === undefined) return;
+    showDashboardNotice(formatCustomizationFailure(editState.lastFailure));
+    act({ type: "clear-failure" });
+  }, [act, customizing, editState.lastFailure, showDashboardNotice]);
+
   const beginCustomize = () => {
     setEditState(beginViewEditSession(resolved));
+    setHelpMode(false);
+    setCustomizeMode("arrange");
     setCustomizing(true);
     setResetPatchRequested(false);
     announce("Customize view mode started");
@@ -268,6 +315,7 @@ export function ViewHost({
   const cancelCustomize = () => {
     setEditState((current) => viewEditSessionReducer(current, { type: "cancel" }));
     setCustomizing(false);
+    setCustomizeMode("arrange");
     setCatalogOpen(false);
     setMobileOrderOpen(false);
     setResetPatchRequested(false);
@@ -292,6 +340,7 @@ export function ViewHost({
       }
       setEditState(beginViewEditSession(editState.present));
       setCustomizing(false);
+      setCustomizeMode("arrange");
       setCatalogOpen(false);
       setMobileOrderOpen(false);
       setResetPatchRequested(false);
@@ -392,10 +441,10 @@ export function ViewHost({
     announce(`${widget.displayName} added to the draft view`);
   };
 
-  const replaceWidget = (
+  const replaceWidget = async (
     instance: EffectiveWidgetInstance,
     target: RegisteredWidget,
-  ) => {
+  ): Promise<void> => {
     const request = (allowExplicitReset: boolean) =>
       planWidgetReplacement({
         registry,
@@ -407,14 +456,15 @@ export function ViewHost({
         allowExplicitReset,
       });
     let result = request(false);
-    if (
-      !result.ok &&
-      result.reason === "migration-failed" &&
-      window.confirm(
-        `${target.definition.displayName} cannot preserve all settings. Reset incompatible settings and continue?`,
-      )
-    ) {
-      result = request(true);
+    if (!result.ok && result.reason === "migration-failed") {
+      const accepted = await confirm({
+        title: "Reset incompatible widget settings?",
+        description: `${target.definition.displayName} cannot preserve all settings. The current widget's saved content and other widgets will not be affected.`,
+        confirmLabel: "Reset and replace",
+        cancelLabel: "Keep current widget",
+        tone: "danger",
+      });
+      if (accepted) result = request(true);
     }
     if (!result.ok) {
       announce(result.message, "assertive");
@@ -424,11 +474,15 @@ export function ViewHost({
     announce(`Replaced widget with ${target.definition.displayName}`);
   };
 
-  const issueLayoutCommand = (
-    instanceId: WidgetInstanceId,
-    command: Omit<LayoutCommand, "instanceId">,
-  ) => {
-    act({ type: "layout-command", command: { ...command, instanceId } as LayoutCommand });
+  const issueLayoutCommand = (command: LayoutCommand) => {
+    const result = applyLayoutCommand(layoutFor(editState), command);
+    if (!result.accepted) {
+      showDashboardNotice(
+        formatCustomizationFailure(result.reason ?? "Layout change rejected"),
+      );
+      return;
+    }
+    act({ type: "layout-command", command });
     announce(`Widget ${command.kind === "move" ? "moved" : "resized"}`);
   };
 
@@ -453,6 +507,12 @@ export function ViewHost({
   }
 
   const snapshot = session.snapshot;
+  const chromeSlots = {
+    contextualActions:
+      definition.settings === undefined ? undefined : (
+        <ViewSettingsLauncher definition={definition} />
+      ),
+  } satisfies StandardViewChromeSlots;
   const visibleInstances = editState.present.instances.filter(
     (instance) => instance.visibility === "shown",
   );
@@ -460,6 +520,27 @@ export function ViewHost({
   const orderedMobile = editState.present.mobileOrder
     .map((instanceId) => byId.get(instanceId))
     .filter((instance): instance is EffectiveWidgetInstance => instance !== undefined);
+
+  const layoutConstraintMessage = (
+    kind: "move" | "resize",
+    instanceId: WidgetInstanceId,
+  ): string => {
+    const instance = byId.get(instanceId);
+    const registered =
+      instance === undefined ? undefined : registry.getWidget(instance.widgetTypeId);
+    const label = registered?.definition.displayName ?? "This widget";
+    if (kind === "move") {
+      return `Placement unchanged for ${label}. Keep it inside the 24-column canvas without overlapping another widget. Empty space is allowed.`;
+    }
+
+    const layout = instance?.layout;
+    const minimum = `${layout?.minW ?? 1}×${layout?.minH ?? 1}`;
+    const maximum =
+      layout?.maxW === undefined || layout.maxH === undefined
+        ? "the canvas bounds"
+        : `${layout.maxW}×${layout.maxH}`;
+    return `Size unchanged for ${label}. Allowed size: ${minimum}–${maximum} grid units. Keep it inside the 24-column canvas without overlapping another widget. Empty space is allowed.`;
+  };
 
   const renderWidget = (instance: EffectiveWidgetInstance) => {
     const registered = registry.getWidget(instance.widgetTypeId);
@@ -495,7 +576,16 @@ export function ViewHost({
         width={instance.layout.w * 54}
         height={instance.layout.h * 32}
         sizeMode={isMobile ? "compact" : sizeModeFor(instance, defaultWidth)}
-        editing={customizing}
+        interactionMode={customizing ? customizeMode : "operate"}
+        help={
+          slot?.help ??
+          registered.definition.help ?? {
+            summary: registered.definition.description,
+            details:
+              "This personally added widget is not assigned to a standard view purpose yet. Its reusable type description is shown as a fallback.",
+          }
+        }
+        gridSize={{ w: instance.layout.w, h: instance.layout.h }}
         emit={(intent: WidgetIntent) =>
           session.dispatch(intent).catch((error: unknown) => {
             announce(`Widget action failed: ${String(error)}`, "assertive");
@@ -514,23 +604,24 @@ export function ViewHost({
         onRetry={() => void session.reload("refresh")}
         onHide={customizing ? () => act({ type: "hide", instanceId: instance.instanceId }) : undefined}
         onRemove={customizing ? () => act({ type: "remove", instanceId: instance.instanceId }) : undefined}
-        onMove={
-          customizing
-            ? (direction) => issueLayoutCommand(instance.instanceId, { kind: "move", direction })
-            : undefined
-        }
-        onResize={
-          customizing
-            ? (direction) => issueLayoutCommand(instance.instanceId, { kind: "resize", direction })
-            : undefined
-        }
       />
     );
   };
 
   return (
-    <main className={`wb-view-host${customizing ? " is-customizing" : ""}`}>
-      {renderChrome?.(snapshot)}
+    <DashboardHelpProvider enabled={helpMode}>
+    <main
+      className={`wb-view-host${customizing ? " is-customizing" : ""}${
+        customizing && customizeMode === "preview" ? " is-previewing-layout" : ""
+      }${helpMode ? " is-helping" : ""}`}
+    >
+      {renderChrome !== undefined ? (
+        renderChrome(snapshot, chromeSlots)
+      ) : chromeSlots.contextualActions !== undefined ? (
+        <div className="wb-view-context-actions">
+          {chromeSlots.contextualActions}
+        </div>
+      ) : null}
       <div className="wb-view-toolbar" aria-label="View controls">
         {providerLabel && renderChrome === undefined ? (
           <span className="wb-view-toolbar__provider">{providerLabel}</span>
@@ -539,22 +630,44 @@ export function ViewHost({
         {customizing ? (
           <>
             <span className="wb-view-toolbar__mode">
-              <Layout weight="duotone" aria-hidden="true" />
-              Editing layout
+              {customizeMode === "arrange" ? (
+                <Layout weight="duotone" aria-hidden="true" />
+              ) : (
+                <Eye weight="duotone" aria-hidden="true" />
+              )}
+              {customizeMode === "arrange" ? "Arranging layout" : "Previewing interactions"}
+              <span className="wb-view-toolbar__constraint">
+                {customizeMode === "arrange"
+                  ? "24 columns · gaps allowed · no overlap · resize from any edge"
+                  : "Widget actions are simulated or blocked · preview input is discarded"}
+              </span>
             </span>
-            <span className="wb-view-toolbar__group">
-              <Button size="small" onClick={() => setCatalogOpen(true)}>
-                <SquaresFour aria-hidden="true" /> Widgets
-              </Button>
-              <Button
-                size="small"
-                onClick={() => setMobileOrderOpen((open) => !open)}
-                aria-expanded={mobileOrderOpen}
-              >
-                <DeviceMobile aria-hidden="true" /> Mobile order
-              </Button>
-            </span>
-            <span className="wb-view-toolbar__group">
+            {customizeMode === "arrange" ? (
+              <>
+                <span className="wb-view-toolbar__group">
+                  <Button size="small" onClick={() => setCatalogOpen(true)}>
+                    <SquaresFour aria-hidden="true" /> Widgets
+                  </Button>
+                  <Button
+                    size="small"
+                    onClick={() => setMobileOrderOpen((open) => !open)}
+                    aria-expanded={mobileOrderOpen}
+                  >
+                    <DeviceMobile aria-hidden="true" /> Mobile order
+                  </Button>
+                  <Button
+                    size="small"
+                    onClick={() => {
+                      setCatalogOpen(false);
+                      setMobileOrderOpen(false);
+                      setCustomizeMode("preview");
+                      announce("Interaction preview started; widget actions will not be saved");
+                    }}
+                  >
+                    <Eye aria-hidden="true" /> Preview interactions
+                  </Button>
+                </span>
+                <span className="wb-view-toolbar__group">
               <Button
                 size="small"
                 variant="ghost"
@@ -574,20 +687,40 @@ export function ViewHost({
               >
                 <ArrowUDownLeft aria-hidden="true" /> Redo
               </Button>
-              <Button size="small" variant="ghost" onClick={() => act({ type: "tidy" })}>
-                <GridFour aria-hidden="true" /> Tidy
+              <Button
+                size="small"
+                variant="ghost"
+                title="Move widgets upward to remove vertical gaps without changing their columns or sizes"
+                onClick={() => act({ type: "tidy" })}
+              >
+                <GridFour aria-hidden="true" /> Tidy upward
               </Button>
               <Button
                 size="small"
                 variant="ghost"
+                title="Restore the App's recommended widgets, layout, settings, and mobile order"
                 onClick={() => {
                   act({ type: "reset", defaults });
                   setResetPatchRequested(true);
                 }}
               >
-                Reset
+                Restore view defaults
               </Button>
-            </span>
+                </span>
+              </>
+            ) : (
+              <span className="wb-view-toolbar__group">
+                <Button
+                  size="small"
+                  onClick={() => {
+                    setCustomizeMode("arrange");
+                    announce("Returned to arranging the view");
+                  }}
+                >
+                  <PencilSimple aria-hidden="true" /> Back to arranging
+                </Button>
+              </span>
+            )}
             <span className="wb-view-toolbar__group">
               <Button size="small" variant="ghost" onClick={cancelCustomize}>
                 <X aria-hidden="true" /> Cancel
@@ -603,9 +736,35 @@ export function ViewHost({
             </span>
           </>
         ) : (
-          <Button size="small" onClick={beginCustomize} disabled={isMobile}>
-            <Layout aria-hidden="true" /> Customize view
-          </Button>
+          <>
+            <Button
+              size="small"
+              variant={helpMode ? "primary" : "secondary"}
+              aria-pressed={helpMode}
+              onClick={() => {
+                setHelpMode((enabled) => {
+                  announce(enabled ? "Hover help turned off" : "Hover help turned on");
+                  return !enabled;
+                });
+              }}
+              disabled={isMobile}
+            >
+              <Info weight="duotone" aria-hidden="true" /> Hover help
+            </Button>
+            <HelpTarget
+              content={{
+                summary: "Rearrange and resize the widgets in this view.",
+                details:
+                  "Customize view opens a dedicated desktop layout editor. You can move, resize, add, hide, or remove eligible widgets, preview the result safely, and then save or cancel the entire layout change.",
+              }}
+              placement="bottom end"
+              reactAriaComposite
+            >
+              <Button size="small" onClick={beginCustomize} disabled={isMobile}>
+                <Layout aria-hidden="true" /> Customize view
+              </Button>
+            </HelpTarget>
+          </>
         )}
       </div>
       {customizing && mobileOrderOpen ? (
@@ -623,9 +782,6 @@ export function ViewHost({
       {personalizationError ? (
         <p className="wb-view-host__warning" role="alert">{personalizationError}</p>
       ) : null}
-      {editState.lastFailure ? (
-        <p className="wb-view-host__warning" role="status">{editState.lastFailure}</p>
-      ) : null}
       {isMobile ? (
         <div className="wb-dashboard-mobile-stack">
           {orderedMobile.map((instance) => (
@@ -635,9 +791,23 @@ export function ViewHost({
       ) : (
         <ReactGridLayoutAdapter
           items={layoutFor(editState)}
-          editMode={customizing}
-          onDraftChange={(layout) => customizing && act({ type: "preview-layout", layout })}
+          editMode={customizing && customizeMode === "arrange"}
+          onDraftChange={(layout) =>
+            customizing && customizeMode === "arrange" && act({ type: "preview-layout", layout })
+          }
           onInteractionStart={() => act({ type: "begin-interaction" })}
+          onKeyboardCommand={issueLayoutCommand}
+          onInteractionRejected={(kind, instanceId) =>
+            showDashboardNotice(layoutConstraintMessage(kind, instanceId))
+          }
+          onInteractionCancel={(kind, _instanceId, reason) => {
+            act({ type: "cancel-interaction" });
+            if (reason !== "edit-mode-ended") {
+              showDashboardNotice(
+                `${kind === "resize" ? "Resize" : "Move"} canceled because the pointer interaction ended outside the dashboard.`,
+              );
+            }
+          }}
           onInteractionEnd={() => act({ type: "commit-interaction" })}
           renderItem={(layoutItem) => {
             const instance = byId.get(layoutItem.instanceId);
@@ -675,6 +845,7 @@ export function ViewHost({
         />
       ) : null}
     </main>
+    </DashboardHelpProvider>
   );
 }
 

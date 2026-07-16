@@ -7,11 +7,14 @@ import {
   type TextAreaProps,
 } from "react-aria-components";
 
+import { HelpTarget, type HelpContent } from "../dashboard/help";
+
 export interface TextAreaFieldProps
   extends Omit<TextAreaProps, "className" | "value" | "onChange" | "disabled"> {
   readonly label: string;
   readonly value: string;
   readonly description?: ReactNode;
+  readonly help?: HelpContent;
   readonly className?: string;
   readonly disabled?: boolean;
   onChange(value: string): void;
@@ -23,6 +26,7 @@ export const TextAreaField = forwardRef<HTMLTextAreaElement, TextAreaFieldProps>
       label,
       value,
       description,
+      help,
       className = "",
       disabled,
       onChange,
@@ -38,7 +42,9 @@ export const TextAreaField = forwardRef<HTMLTextAreaElement, TextAreaFieldProps>
         onChange={onChange}
       >
         <Label className="wb-field__label">{label}</Label>
-        <TextArea {...props} ref={ref} className="wb-textarea" />
+        <HelpTarget content={help} placement="bottom start" reactAriaComposite>
+          <TextArea {...props} ref={ref} className="wb-textarea" />
+        </HelpTarget>
         {description ? (
           <Text slot="description" className="wb-field__description">
             {description}

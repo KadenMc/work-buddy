@@ -45,12 +45,16 @@ const STANDARD_PLUGINS = [
 ];
 const POINT_RENDER_DURATION = "00:20:00";
 const ONE_HOUR_SECONDS = 60 * 60;
+const LOGICAL_DAY_LIST_VIEW = "wbLogicalDayList";
+
+const usesLogicalDayList = (view: CalendarSurfaceView): boolean =>
+  view.presentation === "list" && view.range === "day";
 
 const engineView = (view: CalendarSurfaceView): string => {
   if (view.presentation === "list") {
     if (view.range === "week") return "listWeek";
     if (view.range === "month") return "listMonth";
-    return "listDay";
+    return LOGICAL_DAY_LIST_VIEW;
   }
   if (view.range === "week") return "timeGridWeek";
   if (view.range === "month") return "dayGridMonth";
@@ -118,6 +122,18 @@ export function calendarWindowOptions(model: CalendarSurfaceModel) {
     slotMaxTime: calendarDuration(slotMaxSeconds),
     scrollTime: calendarDuration(scrollSeconds),
   } as const;
+}
+
+export function calendarRangeRequestBounds(
+  model: CalendarSurfaceModel,
+  engineRange: Pick<DatesSetArg, "startStr" | "endStr">,
+) {
+  return usesLogicalDayList(model.view)
+    ? {
+        start: model.visibleRange.start,
+        endExclusive: model.visibleRange.endExclusive,
+      }
+    : { start: engineRange.startStr, endExclusive: engineRange.endStr };
 }
 
 const placementFromEvent = (
@@ -266,14 +282,19 @@ export function FullCalendarSurfaceAdapter({
   };
 
   const handleDatesSet = (range: DatesSetArg) => {
-    const key = `${model.view.presentation}:${model.view.range}:${range.startStr}:${range.endStr}:${model.timezone}`;
+    // FullCalendar's list view is civil-day based. Its custom visibleRange is
+    // deliberately widened to every civil date touched by a Work Buddy logical
+    // day, but that engine-only widening must never leak through our API.
+    const { start: requestedStart, endExclusive: requestedEnd } =
+      calendarRangeRequestBounds(model, range);
+    const key = `${model.view.presentation}:${model.view.range}:${requestedStart}:${requestedEnd}:${model.timezone}`;
     if (lastRangeRef.current === key) return;
     lastRangeRef.current = key;
     dispatchNonMutation({
       type: "calendar.range-requested",
       view: model.view,
-      start: range.startStr,
-      endExclusive: range.endStr,
+      start: requestedStart,
+      endExclusive: requestedEnd,
       timezone: model.timezone,
     });
   };
@@ -374,12 +395,28 @@ export function FullCalendarSurfaceAdapter({
       aria-label={`Calendar surface for ${model.selectedDate}`}
       data-wb-calendar-surface="fullcalendar"
       data-wb-calendar-view={`${model.view.presentation}:${model.view.range}`}
+      data-wb-calendar-logical-day-list={
+        usesLogicalDayList(model.view) ? "" : undefined
+      }
     >
       <FullCalendar
         ref={calendarRef}
         plugins={STANDARD_PLUGINS}
+        views={{
+          [LOGICAL_DAY_LIST_VIEW]: {
+            type: "list",
+          },
+        }}
         initialView={engineView(model.view)}
         initialDate={model.selectedDate}
+        visibleRange={
+          usesLogicalDayList(model.view)
+            ? {
+                start: model.visibleRange.start,
+                end: model.visibleRange.endExclusive,
+              }
+            : undefined
+        }
         timeZone={model.timezone}
         events={events}
         headerToolbar={false}

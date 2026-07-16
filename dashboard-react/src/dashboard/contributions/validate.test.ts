@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { AppContribution, WidgetModule } from "./contracts";
 import {
   asAppId,
+  asSettingsPageId,
   asViewId,
   asWidgetInstanceId,
   asWidgetModuleId,
@@ -81,6 +82,7 @@ const contribution = (): AppContribution => ({
           requiredRole: roleId,
           defaultWidgetTypeId: typeId,
           presence: "required",
+          help: { summary: "Show the focus item.", details: "Provides the purpose of this test view." },
           defaultSettings: {},
           defaultLayout: { x: 0, y: 0, w: 8, h: 4 },
           lockedReason: "The view has no purpose without its focus item.",
@@ -98,6 +100,119 @@ const validate = (value: AppContribution) =>
 describe("validateAppContribution", () => {
   it("accepts a valid JSON-compatible contribution", () => {
     expect(validate(contribution())).toEqual([]);
+  });
+
+  it("validates a view's stable settings-page reference without coupling it to a route", () => {
+    const value = contribution();
+    const withSettings: AppContribution = {
+      ...value,
+      views: [
+        {
+          ...value.views[0]!,
+          settings: {
+            pageId: asSettingsPageId("example.settings.view.focus"),
+            label: "Focus settings",
+          },
+        },
+      ],
+    };
+    expect(validate(withSettings)).toEqual([]);
+
+    const untrusted = structuredClone(withSettings) as unknown as {
+      views: Array<{ settings: { pageId: string; label: string } }>;
+    };
+    untrusted.views[0]!.settings.pageId = "/settings/views/focus";
+    untrusted.views[0]!.settings.label = "   ";
+    expect(validate(untrusted as unknown as AppContribution)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "invalid_namespaced_id",
+          path: "views[0].settings.pageId",
+        }),
+        expect.objectContaining({
+          code: "missing_view_settings_label",
+          path: "views[0].settings.label",
+        }),
+      ]),
+    );
+  });
+
+  it("requires one semantic effect policy for every outward widget intent", () => {
+    const value = contribution();
+    const widget = value.widgetDefinitions[0]!;
+    const missing: AppContribution = {
+      ...value,
+      widgetDefinitions: [
+        {
+          ...widget,
+          outputIntentSchemas: [{ schemaId: "example.focus.activate", version: 1 }],
+        },
+      ],
+    };
+    expect(validate(missing)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "missing_widget_intent_effect" }),
+      ]),
+    );
+
+    const declared: AppContribution = {
+      ...missing,
+      widgetDefinitions: [
+        {
+          ...missing.widgetDefinitions[0]!,
+          outputIntentEffects: [
+            {
+              schema: { schemaId: "example.focus.activate", version: 1 },
+              effect: "mutation",
+              preview: "block",
+            },
+          ],
+        },
+      ],
+    };
+    expect(validate(declared)).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "missing_widget_intent_effect" }),
+      ]),
+    );
+
+    const untrusted = structuredClone(declared) as unknown as {
+      widgetDefinitions: Array<{
+        outputIntentEffects: Array<{ effect: string; preview: string }>;
+      }>;
+    };
+    untrusted.widgetDefinitions[0]!.outputIntentEffects[0]!.effect = "network-write";
+    untrusted.widgetDefinitions[0]!.outputIntentEffects[0]!.preview = "allow";
+    expect(validate(untrusted as unknown as AppContribution)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "unknown_widget_intent_effect_kind" }),
+        expect.objectContaining({ code: "unknown_widget_intent_preview_policy" }),
+      ]),
+    );
+  });
+
+  it("requires meaningful contextual help for every default view slot", () => {
+    const value = contribution();
+    const view = value.views[0]!;
+    const slot = view.defaultSlots[0]!;
+    const invalid: AppContribution = {
+      ...value,
+      views: [
+        {
+          ...view,
+          defaultSlots: [
+            { ...slot, help: { summary: "   ", details: "" } },
+          ],
+        },
+      ],
+    };
+
+    expect(validate(invalid)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: "missing_help_summary" }),
+        expect.objectContaining({ code: "missing_help_details" }),
+      ]),
+    );
   });
 
   it("rejects layouts outside the grid and the widget size contract", () => {

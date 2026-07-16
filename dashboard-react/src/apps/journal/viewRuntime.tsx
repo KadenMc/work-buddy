@@ -41,12 +41,17 @@ export function createRuntime(
     personalizationRepository: new LocalStoragePersonalizationRepository(
       context.storage,
     ),
-    renderChrome: (snapshot: ViewSnapshot) => {
+    renderChrome: (snapshot: ViewSnapshot, slots) => {
       const model = snapshot.model as JournalViewModel | null;
       if (model === null) {
         return (
           <header className="journal-view-chrome" aria-labelledby="journal-view-title">
-            <h1 id="journal-view-title">Journal</h1>
+            <div className="journal-view-chrome__main">
+              <h1 id="journal-view-title">Journal</h1>
+              <div className="journal-view-chrome__actions">
+                {slots.contextualActions}
+              </div>
+            </div>
             <p className="journal-view-chrome__notice" role="status">
               {snapshot.quality.message ??
                 "The selected Journal provider is unavailable."}
@@ -60,6 +65,7 @@ export function createRuntime(
           access={model.access}
           quality={model.quality}
           source={model.source}
+          hostActions={slots.contextualActions}
         />
       );
     },

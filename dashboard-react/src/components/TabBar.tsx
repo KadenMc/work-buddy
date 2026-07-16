@@ -9,7 +9,7 @@ export interface DashboardTab {
 export default function TabBar({ tabs }: { tabs: readonly DashboardTab[] }) {
   return (
     <div className="tab-bar-shell">
-      <nav className="tab-bar" aria-label="Dashboard views">
+      <nav className="tab-bar" aria-label="Dashboard navigation">
         {tabs.map((tab) => (
           <NavLink
             key={tab.id}

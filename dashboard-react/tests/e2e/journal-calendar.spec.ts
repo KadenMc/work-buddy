@@ -22,6 +22,8 @@ test("Journal uses the calendar surface and Log capture creates a point record",
 
   const capture = widget(page, "Quick Capture");
   const exactText = "Shipped the point-record Journal integration";
+  await capture.getByRole("button", { name: /Destination/ }).click();
+  await page.getByRole("option", { name: /^Log/ }).click();
   await capture.getByRole("textbox", { name: "Capture text" }).fill(exactText);
   await capture.getByRole("button", { name: "Capture", exact: true }).click();
 

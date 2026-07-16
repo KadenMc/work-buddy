@@ -8,7 +8,10 @@ import {
   CALENDAR_SPIKE_MIXED_SOURCE,
   CALENDAR_SPIKE_READ_ONLY,
 } from "../../../../dev/calendar-spike/fixtures";
-import { calendarWindowOptions } from "./FullCalendarSurfaceAdapter";
+import {
+  calendarRangeRequestBounds,
+  calendarWindowOptions,
+} from "./FullCalendarSurfaceAdapter";
 import { toCalendarEngineEventInputs } from "./toFullCalendarEventInputs";
 
 describe("FullCalendar surface boundary", () => {
@@ -77,6 +80,23 @@ describe("FullCalendar surface boundary", () => {
       slotMinTime: "00:00:00",
       slotMaxTime: "24:00:00",
       scrollTime: "00:10:00",
+    });
+  });
+
+  it("keeps the exact logical-day range at the Work Buddy boundary when List spans civil dates", () => {
+    const logicalDayList = {
+      ...CALENDAR_SPIKE_JULY11,
+      view: { range: "day", presentation: "list" },
+    } as const;
+
+    expect(
+      calendarRangeRequestBounds(logicalDayList, {
+        startStr: "2026-07-11T00:00:00-04:00",
+        endStr: "2026-07-13T00:00:00-04:00",
+      }),
+    ).toEqual({
+      start: "2026-07-11T05:00:00-04:00",
+      endExclusive: "2026-07-12T05:00:00-04:00",
     });
   });
 });

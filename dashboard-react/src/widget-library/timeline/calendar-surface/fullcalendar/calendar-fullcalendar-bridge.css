@@ -70,6 +70,16 @@
   text-decoration: none;
 }
 
+/*
+ * A Work Buddy day can cross civil midnight (for example, 05:00 to 05:00).
+ * FullCalendar's private custom list view loads every civil date touched by the
+ * logical window; hiding its civil-day separators presents one honest, flat
+ * logical-day list instead of falsely splitting it into two dashboard days.
+ */
+.wb-calendar-surface[data-wb-calendar-logical-day-list] .fc .fc-list-day {
+  display: none;
+}
+
 .wb-calendar-surface .fc .fc-timegrid-slot {
   height: 1.75rem;
   border-top-style: solid;

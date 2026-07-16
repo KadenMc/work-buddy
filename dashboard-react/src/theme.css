@@ -1,5 +1,3 @@
-@layer wb.reset, wb.foundations, wb.tokens, wb.components, wb.widgets, wb.utilities;
-
 @import "./theme/foundations.css";
 @import "./theme/tokens.css";
 @import "./theme/components.css";

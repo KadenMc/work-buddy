@@ -32,7 +32,7 @@ The React dashboard is the incrementally migrated desktop surface served at `/ap
 
 ## Route and hosting contract
 
-Registered `/app/<view>` routes host standardized dashboard views. Explicit development routes host fixture laboratories. Unknown routes do not silently become convincing sample data.
+Registered `/app/<view>` routes host standardized dashboard views. `/app/settings/...` hosts the React Settings projection; controls whose server authority is not installed remain visibly unavailable rather than falling back to local pseudo-authority. Explicit development routes host fixture laboratories. Unknown routes do not silently become convincing sample data.
 
 Flask serves the production index, content-hashed assets, manifest, icons, and safe history fallbacks for registered routes. Optional PWA metadata changes presentation and install identity; it does not bootstrap Work Buddy services.
 

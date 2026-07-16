@@ -6,6 +6,8 @@ import type {
   ViewDefinition,
   ViewId,
   WidgetDefinition,
+  WidgetIntentEffect,
+  WidgetIntentPreviewPolicy,
   WidgetModule,
   WidgetModuleId,
   WidgetRoleContract,
@@ -18,6 +20,7 @@ import {
   type WidgetThemeDeclaration,
   type WidgetThemeSupport,
 } from "./themeContract";
+import type { HelpContent } from "../help/contracts";
 
 export const DASHBOARD_GRID_COLUMNS = 24;
 
@@ -60,6 +63,16 @@ const THEME_SUPPORT = new Set<WidgetThemeSupport>([
   "forced-colors",
   "reduced-motion",
 ]);
+const WIDGET_INTENT_EFFECTS = new Set<WidgetIntentEffect>([
+  "read",
+  "mutation",
+  "navigation",
+  "external",
+]);
+const WIDGET_INTENT_PREVIEW_POLICIES = new Set<WidgetIntentPreviewPolicy>([
+  "simulate",
+  "block",
+]);
 
 const addIssue = (
   issues: ValidationIssue[],
@@ -72,6 +85,29 @@ const addIssue = (
 
 const isPositiveInteger = (value: number): boolean =>
   Number.isInteger(value) && value > 0;
+
+const validateHelpContent = (
+  help: HelpContent,
+  path: string,
+  issues: ValidationIssue[],
+): void => {
+  if (help.summary.trim().length === 0) {
+    addIssue(
+      issues,
+      "missing_help_summary",
+      `${path}.summary`,
+      "must provide a concise user-facing summary",
+    );
+  }
+  if (help.details.trim().length === 0) {
+    addIssue(
+      issues,
+      "missing_help_details",
+      `${path}.details`,
+      "must explain the behavior, scope, or important exceptions",
+    );
+  }
+};
 
 export const isNamespacedDashboardId = (value: string): boolean =>
   NAMESPACED_ID.test(value);
@@ -350,6 +386,133 @@ const validateWidgetDefinition = (
       "must be a positive integer",
     );
   }
+  if (widget.help !== undefined) {
+    validateHelpContent(widget.help, `${path}.help`, issues);
+  }
+  const outputSchemaKeys = widget.outputIntentSchemas.map(
+    (schema) => `${schema.schemaId}@${schema.version}`,
+  );
+  if (findDuplicates(outputSchemaKeys).length > 0) {
+    addIssue(
+      issues,
+      "duplicate_widget_output_intent",
+      `${path}.outputIntentSchemas`,
+      "must not contain duplicate intent schemas",
+    );
+  }
+  const effectDeclarations = widget.outputIntentEffects ?? [];
+  effectDeclarations.forEach((declaration, declarationIndex) => {
+    if (!WIDGET_INTENT_EFFECTS.has(declaration.effect)) {
+      addIssue(
+        issues,
+        "unknown_widget_intent_effect_kind",
+        `${path}.outputIntentEffects[${declarationIndex}].effect`,
+        "must be read, mutation, navigation, or external",
+      );
+    }
+    if (!WIDGET_INTENT_PREVIEW_POLICIES.has(declaration.preview)) {
+      addIssue(
+        issues,
+        "unknown_widget_intent_preview_policy",
+        `${path}.outputIntentEffects[${declarationIndex}].preview`,
+        "must be simulate or block",
+      );
+    }
+  });
+  const effectSchemaKeys = effectDeclarations.map(
+    (declaration) => `${declaration.schema.schemaId}@${declaration.schema.version}`,
+  );
+  if (findDuplicates(effectSchemaKeys).length > 0) {
+    addIssue(
+      issues,
+      "duplicate_widget_intent_effect",
+      `${path}.outputIntentEffects`,
+      "must contain exactly one effect declaration per output intent",
+    );
+  }
+  outputSchemaKeys.forEach((schemaKey, schemaIndex) => {
+    if (!effectSchemaKeys.includes(schemaKey)) {
+      addIssue(
+        issues,
+        "missing_widget_intent_effect",
+        `${path}.outputIntentSchemas[${schemaIndex}]`,
+        "must have a matching semantic effect and preview policy",
+      );
+    }
+  });
+  effectSchemaKeys.forEach((schemaKey, declarationIndex) => {
+    if (!outputSchemaKeys.includes(schemaKey)) {
+      addIssue(
+        issues,
+        "unknown_widget_intent_effect",
+        `${path}.outputIntentEffects[${declarationIndex}]`,
+        "must reference an output intent schema declared by this widget",
+      );
+    }
+  });
+  const draftNames = widget.drafts?.map((draft) => draft.draftName) ?? [];
+  if (findDuplicates(draftNames).length > 0) {
+    addIssue(
+      issues,
+      "duplicate_widget_draft",
+      `${path}.drafts`,
+      "must not contain duplicate draft names",
+    );
+  }
+  widget.drafts?.forEach((draft, draftIndex) => {
+    const draftPath = `${path}.drafts[${draftIndex}]`;
+    if (!/^[a-z][a-z0-9_-]*$/.test(draft.draftName)) {
+      addIssue(
+        issues,
+        "invalid_widget_draft_name",
+        `${draftPath}.draftName`,
+        "must be a lowercase local identifier",
+      );
+    }
+    if (!isPositiveInteger(draft.schema.version)) {
+      addIssue(
+        issues,
+        "invalid_widget_draft_schema",
+        `${draftPath}.schema.version`,
+        "must be a positive integer",
+      );
+    }
+    if (!isPositiveInteger(draft.maxBytes)) {
+      addIssue(
+        issues,
+        "invalid_widget_draft_size",
+        `${draftPath}.maxBytes`,
+        "must be a positive integer",
+      );
+    }
+    if (
+      draft.retentionDays !== undefined &&
+      !isPositiveInteger(draft.retentionDays)
+    ) {
+      addIssue(
+        issues,
+        "invalid_widget_draft_retention",
+        `${draftPath}.retentionDays`,
+        "must be a positive integer when provided",
+      );
+    }
+    if (draft.sensitivity === "secret" && draft.persistence !== "none") {
+      addIssue(
+        issues,
+        "secret_widget_draft_persisted",
+        `${draftPath}.persistence`,
+        "secret drafts must use persistence none",
+      );
+    }
+    if (draft.scope.kind === "input-field" && draft.scope.path.length === 0) {
+      addIssue(
+        issues,
+        "invalid_widget_draft_scope",
+        `${draftPath}.scope.path`,
+        "input-field scope requires a non-empty path",
+      );
+    }
+  });
   if (widget.libraryPath.length === 0 || widget.libraryPath.some((part) => part.trim() === "")) {
     addIssue(
       issues,
@@ -525,6 +688,17 @@ const validateViewDefinition = (
       "the default dashboard view cannot be hidden from navigation",
     );
   }
+  if (view.settings !== undefined) {
+    validateNamespacedId(view.settings.pageId, `${path}.settings.pageId`, issues);
+    if (view.settings.label.trim() === "") {
+      addIssue(
+        issues,
+        "missing_view_settings_label",
+        `${path}.settings.label`,
+        "must provide a contextual accessible label such as Journal settings",
+      );
+    }
+  }
   if (view.grid.columns !== DASHBOARD_GRID_COLUMNS) {
     addIssue(
       issues,
@@ -558,6 +732,7 @@ const validateViewDefinition = (
         "must be a stable local purpose ID such as capture",
       );
     }
+    validateHelpContent(slot.help, `${slotPath}.help`, issues);
     if (!INSTANCE_ID.test(slot.defaultInstanceId)) {
       addIssue(
         issues,

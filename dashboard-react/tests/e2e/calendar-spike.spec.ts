@@ -193,7 +193,7 @@ test("uses semantic Work Buddy skins and passes the serious axe gate", async ({ 
   expect(violations).toEqual([]);
 });
 
-test("updates geometry during dashboard resize and switches to list mode", async ({
+test("keeps presentation discoverable at narrow size and opens list items through the shared inspector", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
@@ -202,9 +202,9 @@ test("updates geometry during dashboard resize and switches to list mode", async
   const surface = page.locator('[data-wb-calendar-surface="fullcalendar"]');
   const resizeHandle = page.locator(".react-resizable-handle-se");
   await resizeHandle.scrollIntoViewIfNeeded();
-  const beforeCount = Number(
-    (await surface.getAttribute("data-wb-calendar-resize-count")) ?? "0",
-  );
+  // Keep the southeast handle away from the viewport edge so the browser does
+  // not interpret the long diagonal pointer path as edge autoscroll.
+  await page.evaluate(() => window.scrollBy(0, 200));
   const handleBox = await resizeHandle.boundingBox();
   expect(handleBox).not.toBeNull();
   if (handleBox === null) return;
@@ -220,17 +220,33 @@ test("updates geometry during dashboard resize and switches to list mode", async
   ).toBe(true);
   await page.mouse.move(startX, startY);
   await page.mouse.down();
-  await page.mouse.move(Math.max(20, startX - 800), startY, { steps: 30 });
+  await page.mouse.move(startX - 560, startY, { steps: 30 });
   await page.mouse.up();
 
-  await expect(page.locator('[data-wb-calendar-responsive-mode="list"]')).toBeVisible();
-  await expect(surface).toHaveAttribute("data-wb-calendar-view", "list:day");
-  await expect
-    .poll(async () =>
-      Number((await surface.getAttribute("data-wb-calendar-resize-count")) ?? "0"),
-    )
-    .toBeGreaterThan(beforeCount);
+  const presentationControl = page.getByRole("radiogroup", {
+    name: "Calendar presentation",
+  });
+  await expect(presentationControl).toBeVisible();
+  await expect(presentationControl.getByRole("radio", { name: "Calendar" })).toBeChecked();
+  await expect(page.locator('[data-wb-calendar-responsive-mode="calendar"]')).toBeVisible();
+  await expect(surface).toHaveAttribute("data-wb-calendar-view", "calendar:day");
+  await expect(surface).toHaveClass(/wb-calendar-surface--compact/);
+  await expect(page.getByText("10 × 14 grid units", { exact: true })).toBeVisible();
   await expect(surface.locator("[data-wb-calendar-scroll-owner]")).toHaveCount(1);
+
+  await presentationControl.getByText("List", { exact: true }).click();
+  await expect(surface).toHaveAttribute("data-wb-calendar-view", "list:day");
+  const listRecord = page.locator(
+    '[data-wb-calendar-item-id="mobile-edge-capture"]',
+  );
+  await expect(listRecord).toBeVisible();
+  await listRecord.click();
+  const inspector = page.getByRole("dialog");
+  await expect(inspector).toContainText("Captured mobile timeline edge case");
+  await expect(inspector.getByRole("button", { name: "Open record" })).toBeVisible();
+  await expect(
+    inspector.getByRole("button", { name: "Go to record source" }),
+  ).toBeVisible();
 });
 
 test("reverts a rejected drag through the Work Buddy intent result", async ({ page }) => {

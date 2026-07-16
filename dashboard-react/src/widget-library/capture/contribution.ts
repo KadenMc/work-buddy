@@ -42,6 +42,25 @@ export const CAPTURE_APP_CONTRIBUTION = {
       settingsSchema: { schemaId: "wb.capture.quick-text.settings", version: 1 },
       inputSchema: { schemaId: "wb.capture.quick-text.input", version: 1 },
       outputIntentSchemas: [{ schemaId: "wb.capture.submit", version: 1 }],
+      outputIntentEffects: [
+        {
+          schema: { schemaId: "wb.capture.submit", version: 1 },
+          effect: "mutation",
+          preview: "block",
+        },
+      ],
+      drafts: [
+        {
+          draftName: "capture",
+          schema: { schemaId: "wb.capture.quick-text.draft", version: 1 },
+          persistence: "device",
+          sensitivity: "ordinary",
+          retentionDays: 30,
+          maxBytes: 65_536,
+          clearPolicy: "confirm",
+          scope: { kind: "input-field", path: ["dayId"] },
+        },
+      ],
       sizeContract: {
         default: { w: 8, h: 8 },
         min: { w: 6, h: 6 },
