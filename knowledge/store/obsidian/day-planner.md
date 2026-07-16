@@ -59,3 +59,5 @@ check_ready (returns settings), get_todays_plan, write_plan (consent-gated), tri
 - `time_start` (optional "HH:MM") — pin to that start; conflicts fall to unscheduled
 
 **clamp_to_now** config (default True) clamps the effective work start to current local time so unpinned tasks are never placed in the past. Pinned tasks (time_start) bypass the clamp — set deliberately for retrospective blocks.
+
+"Current local time" means the configured Work Buddy timezone, not the host process's incidental timezone. Journal-bound reads and writes use the shared logical-day authority from `journal/day-lifecycle`, including its boundary and DST resolution.

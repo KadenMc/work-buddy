@@ -129,7 +129,9 @@ The `data_restore` pipeline (see `architecture/backups`) opens each staged snaps
 
 ## Status across vital DBs
 
-The `tasks` DB (`task_metadata`, through migration 10) and the `projects` DB (through migration 7) both have built-out ladders. `messages` and `threads` currently sit at `user_version = 0` with no migration list; they pick up the framework by writing migration 1 = fresh-install schema once their schemas need to change. The `projects` ladder lives in `work_buddy/projects/migrations.py`.
+The `tasks` DB (`task_metadata`, through migration 10), `projects` DB (through migration 7), and Settings DB have built-out ladders. Settings adopts an unversioned database by validating and rebuilding it into the constrained current schema, then records Journal policy epochs without reinterpreting existing days. `messages` and `threads` sit at `user_version = 0` with no migration list; they pick up the framework by writing migration 1 = fresh-install schema once their schemas need to change. The `projects` ladder lives in `work_buddy/projects/migrations.py`; the Settings ladder lives in `work_buddy/settings/migrations.py`.
+
+Settings schema readiness is cached once per resolved database path. This preserves isolation across temporary paths while keeping migration and schema inspection off request hot paths.
 
 ## See also
 
