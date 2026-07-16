@@ -233,7 +233,7 @@ def test_validate_new_claim_rejects_missing_fields_kind_and_surface() -> None:
             },
         )
     with pytest.raises(ProfileError, match="not allowed"):
-        validate_new_claim(profile, claim_kind="legacy_fact")
+        validate_new_claim(profile, claim_kind="retired_fact")
     with pytest.raises(ProfileError, match="confirmation surface"):
         validate_new_claim(
             profile,
@@ -244,22 +244,22 @@ def test_validate_new_claim_rejects_missing_fields_kind_and_surface() -> None:
 
 def test_tightened_profile_does_not_revalidate_existing_history() -> None:
     original = _valid_profile()
-    original["allowed_claim_kinds"].append("legacy_fact")
-    original["required_fields"]["legacy_fact"] = ["value"]
+    original["allowed_claim_kinds"].append("retired_fact")
+    original["required_fields"]["retired_fact"] = ["value"]
     old_policy = validate_profile(original)
     validate_new_claim(
         old_policy,
-        claim_kind="legacy_fact",
+        claim_kind="retired_fact",
         structured={"value": "already stored"},
     )
 
     tightened = validate_profile(_valid_profile())
-    assert "legacy_fact" not in tightened.allowed_claim_kinds
+    assert "retired_fact" not in tightened.allowed_claim_kinds
 
     with pytest.raises(ProfileError, match="not allowed"):
         validate_new_claim(
             tightened,
-            claim_kind="legacy_fact",
+        claim_kind="retired_fact",
             structured={"value": "a new write"},
         )
 

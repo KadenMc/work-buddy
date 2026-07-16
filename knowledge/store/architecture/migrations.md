@@ -46,6 +46,12 @@ dev_notes: |-
   ## Audit-hash memoization
 
   `_hash_callable` memoizes its result, weak-keyed on the migration callable. `MigrationRunner.run()` runs on the hot path of every projects / entities / tasks store `get_connection`, and a callable's source-AST hash is invariant across a process lifetime, so re-deriving it (`inspect.getsource` + `ast.parse` + `ast.unparse` + SHA-256) on every open was wasted work. The weak key lets test-compiled throwaway callables be garbage-collected. See `architecture/hot-path-discipline`.
+
+  ## Truth-store specialization
+
+  `work_buddy/truth/migrations.py` subclasses `MigrationRunner` rather than using the shared runner unchanged. A scoped `.wb-truth/store.db` has dual version markers (`PRAGMA user_version` and `store_info.schema_version`), rejects unversioned partial schemas, and snapshots every existing version before its bump. The specialization preserves the shared transaction and downgrade guarantees while adding the permanent-identity and append-only-ledger contracts described in `architecture/truth`.
+
+  Released Truth schema fixtures are immutable. Add a new `tests/fixtures/truth/frozen_vN/` directory for a new release instead of regenerating an old fixture. Supported older recovery streams are upcast during staged import; durable ledger rows and record IDs are not rewritten in place to simulate a new format.
 ---
 
 Per-DB versioned migration framework built on `PRAGMA user_version` plus a `_migration_history` audit table. Lives in `work_buddy/storage/migrations.py`. Used by every vital DB store module and by the `data_restore` pipeline to forward-roll a staged snapshot to current schema.
@@ -133,9 +139,17 @@ The `tasks` DB (`task_metadata`, through migration 10), `projects` DB (through m
 
 Settings schema readiness is cached once per resolved database path. This preserves isolation across temporary paths while keeping migration and schema inspection off request hot paths.
 
+## Scoped Truth stores
+
+Truth stores use a specialization of this migration framework because each `.wb-truth/store.db` is a portable, independently versioned ledger rather than a shared data-root database. A store migrates on open, refuses a future schema before any mutation or snapshot, and creates a pre-version snapshot before each version bump. `PRAGMA user_version` and the store's own schema marker must agree.
+
+Schema evolution is additive with respect to durable history: ledger content, permanent store identity, record IDs, and `wb-truth:` references survive. Checked-in fixtures from every released schema provide the upgrade contract, while supported older JSONL recovery formats are upcast and rebuilt under the current engine in a staged store. See `architecture/truth` for the broader authority and portability contract.
+
 ## See also
 
 - `architecture/backups` -- uses this framework to forward-roll staged DBs during restore.
 - `work_buddy/storage/migrations.py` -- the `MigrationRunner` class.
 - `work_buddy/obsidian/tasks/migrations.py` -- the tasks ladder (canonical reference implementation).
 - `tests/unit/test_storage_migrations.py` -- the audit-behaviour contract tests.
+- `architecture/truth` -- scoped Truth-store identity, integrity, recovery, and migration guarantees.
+- `work_buddy/truth/migrations.py` -- the Truth-specific migration specialization.

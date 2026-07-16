@@ -350,8 +350,8 @@ def test_session_locator_rejects_missing_mismatched_or_unsafe_data(
             "file:///C:/Vault/Caf%C3%A9/Note.md",
         ),
         (
-            "file:///home/example/notes/naïve.md",
-            "file:///home/example/notes/na%C3%AFve.md",
+        "file:///var/tmp/example/notes/naïve.md",
+        "file:///var/tmp/example/notes/na%C3%AFve.md",
         ),
         (
             r"\\server\share\Truth\Note.md",

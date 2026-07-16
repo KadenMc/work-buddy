@@ -1,4 +1,4 @@
-"""Machine checks for the durable truth-layer design contract inventory."""
+"""Machine checks for the durable Truth design contract inventory."""
 
 from __future__ import annotations
 
