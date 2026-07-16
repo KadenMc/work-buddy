@@ -115,6 +115,7 @@ This bus is the **lossy real-time UI** layer — drop-oldest, no durability, no 
   * ``window.eventBus.{on, off, isConnected, lastHeartbeat}`` — per-event-type dispatcher.
   * ``window.<panel>Surface`` — per-panel handle (Review / Tasks / Settings / Costs / Jobs / Projects).
   * Connection-status dot at ``#event-bus-status`` in the dashboard header.
+  * The React dashboard owns one EventSource through its event provider. Consumers subscribe through that provider; individual widgets do not open their own SSE connections.
 
 ## Vendored dependency
 
@@ -153,6 +154,8 @@ The in-process bus does not replay events from before a subscriber registered. C
 ## Refresh patterns per surface
 
 Most surfaces use ``window._wbMorphReplace`` to merge fresh server-rendered HTML into the live container surgically — user state (focused inputs, scroll, drilled-in `<details>`) is preserved natively by morphdom. The ``projectsSurface`` currently uses a full refetch + re-render of the project list sidebar (the detail pane is untouched, so per-card inline edits are preserved). Upgrading projects to morphdom-merge is a planned follow-up.
+
+The React dashboard does not mutate root-dashboard DOM nodes. Its singleton event provider distributes typed events to React consumers, which reconcile only the affected domain state. The transport remains lossy: durable effects and retries never depend on an SSE message being observed.
 
 ## Operational notes
 
