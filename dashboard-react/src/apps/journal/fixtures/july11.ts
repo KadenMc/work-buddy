@@ -165,6 +165,14 @@ export const JULY11_FIXED_ITEM_IDS = [NORTHWIND_REVIEW.itemId] as const;
 
 export const JULY11_CAPTURE_TARGETS = [
   {
+    targetId: "auto",
+    label: "Auto",
+    description: "Let Smart infer whether this belongs in Log or Running notes.",
+    supportedModes: ["smart"],
+    defaultMode: "smart",
+    enabled: true,
+  },
+  {
     targetId: "log",
     label: "Log",
     description: "Record something that happened at a specific time.",

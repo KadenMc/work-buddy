@@ -4,14 +4,14 @@ import {
   useEffect,
   useMemo,
   useRef,
-  useState,
 } from "react";
 
+import { useWidgetDraft } from "../../dashboard/drafts";
 import {
   Button,
   InlineAlert,
-  SegmentedControl,
   SelectField,
+  SwitchField,
   TextAreaField,
 } from "../../ui";
 import { createCorrelationId, StatusBadge } from "../shared";
@@ -37,35 +37,48 @@ const statusTone = (status: string) => {
 
 export function CaptureComposer({ input, density, onSubmit }: CaptureComposerProps) {
   const firstTarget = input.targets.find((target) => target.enabled) ?? input.targets[0];
-  const [targetId, setTargetId] = useState(firstTarget?.targetId ?? "");
-  const [mode, setMode] = useState<CaptureSubmitMode>(
-    firstTarget?.defaultMode ?? "dumb",
+  const initialDraft = useMemo(
+    () => ({
+      text: "",
+      targetId: firstTarget?.targetId ?? "",
+      mode: (firstTarget?.defaultMode ?? "dumb") as CaptureSubmitMode,
+    }),
+    [firstTarget?.defaultMode, firstTarget?.targetId],
   );
-  const [draft, setDraft] = useState("");
-  const pendingRef = useRef<{ readonly id: string; readonly exactText: string } | null>(
-    null,
-  );
+  const draftState = useWidgetDraft("capture", initialDraft, {
+    isPristine: (value) => value.text.length === 0,
+  });
+  const setDraftValue = draftState.setValue;
+  const clearDraft = draftState.clear;
+  const flushDraft = draftState.flush;
+  const { text: draft, targetId, mode } = draftState.value;
+  const pendingRef = useRef<{
+    readonly id: string;
+    readonly exactText: string;
+    readonly draftRevision: number;
+  } | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const target = useMemo(
     () => input.targets.find((candidate) => candidate.targetId === targetId),
     [input.targets, targetId],
   );
   const readOnly = input.access.mode === "read_only";
+  const targetSupportsMode = target?.supportedModes.includes(mode) ?? false;
+  const smartAvailable = input.targets.some((candidate) =>
+    candidate.supportedModes.includes("smart"),
+  );
 
   useEffect(() => {
     if (target?.enabled) return;
     const replacement = input.targets.find((candidate) => candidate.enabled);
     if (replacement !== undefined) {
-      setTargetId(replacement.targetId);
-      setMode(replacement.defaultMode);
+      setDraftValue((current) => ({
+        ...current,
+        targetId: replacement.targetId,
+        mode: replacement.defaultMode,
+      }));
     }
-  }, [input.targets, target]);
-
-  useEffect(() => {
-    if (target !== undefined && !target.supportedModes.includes(mode)) {
-      setMode(target.defaultMode);
-    }
-  }, [mode, target]);
+  }, [input.targets, setDraftValue, target]);
 
   useEffect(() => {
     const pending = pendingRef.current;
@@ -74,32 +87,53 @@ export function CaptureComposer({ input, density, onSubmit }: CaptureComposerPro
       (submission) => submission.clientMutationId === pending.id,
     );
     if (result?.persistenceStatus === "persisted") {
-      setDraft((current) => (current === pending.exactText ? "" : current));
       pendingRef.current = null;
-      textareaRef.current?.focus({ preventScroll: true });
+      void clearDraft({ ifRevision: pending.draftRevision }).then((cleared) => {
+        if (cleared) textareaRef.current?.focus({ preventScroll: true });
+      });
     }
-  }, [input.recentSubmissions]);
+  }, [clearDraft, input.recentSubmissions]);
 
   const selectTarget = (nextTargetId: string) => {
-    setTargetId(nextTargetId);
     const nextTarget = input.targets.find(
       (candidate) => candidate.targetId === nextTargetId,
     );
-    if (nextTarget !== undefined) setMode(nextTarget.defaultMode);
+    setDraftValue((current) => ({
+      ...current,
+      targetId: nextTargetId,
+      mode:
+        nextTarget?.supportedModes.includes(current.mode) === true
+          ? current.mode
+          : (nextTarget?.defaultMode ?? current.mode),
+    }));
   };
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    if (draft.length === 0 || target === undefined || !target.enabled || readOnly) return;
+    if (
+      draft.length === 0 ||
+      target === undefined ||
+      !target.enabled ||
+      !targetSupportsMode ||
+      readOnly
+    ) return;
     const clientMutationId = createCorrelationId("capture");
-    pendingRef.current = { id: clientMutationId, exactText: draft };
-    onSubmit({
-      clientMutationId,
-      dayId: input.dayId,
-      targetId: target.targetId,
-      mode,
-      exactText: draft,
-    });
+    const draftRevision = draftState.revision;
+    void flushDraft()
+      .then(() => {
+        pendingRef.current = { id: clientMutationId, exactText: draft, draftRevision };
+        onSubmit({
+          clientMutationId,
+          dayId: input.dayId,
+          targetId: target.targetId,
+          mode,
+          exactText: draft,
+        });
+      })
+      .catch(() => {
+        // The hook exposes a persistent inline error; do not dispatch an intent whose
+        // exact source material was not safely written first.
+      });
   };
 
   const handleShortcut = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -113,9 +147,16 @@ export function CaptureComposer({ input, density, onSubmit }: CaptureComposerPro
   const recent =
     recentLimit === 0 ? [] : input.recentSubmissions.slice(-recentLimit).reverse();
 
+  if (!draftState.ready) {
+    return <p className="wb-capture__draft-loading" aria-busy="true">Restoring draft…</p>;
+  }
+
   return (
     <form className={`wb-capture wb-capture--${density}`} onSubmit={submit}>
       {readOnly && <InlineAlert tone="warning">{input.access.reason}</InlineAlert>}
+      {draftState.error ? (
+        <InlineAlert tone="danger">{draftState.error} Your current text remains open.</InlineAlert>
+      ) : null}
       <TextAreaField
         ref={textareaRef}
         className="wb-capture__field"
@@ -124,43 +165,62 @@ export function CaptureComposer({ input, density, onSubmit }: CaptureComposerPro
         rows={density === "compact" ? 2 : 3}
         disabled={readOnly}
         placeholder="Write exactly what you want to preserve…"
-        description="Press Ctrl + Enter to capture"
-        onChange={setDraft}
+        help={{
+          summary: "Write the exact text you want Work Buddy to preserve.",
+          details:
+            "This is recoverable draft text until you capture it. Press Ctrl + Enter to capture from the keyboard; changing the destination or Smart setting does not alter the text itself.",
+        }}
+        onChange={(text) => setDraftValue((current) => ({ ...current, text }))}
         onKeyDown={handleShortcut}
       />
 
       <div className="wb-capture__controls">
+        {smartAvailable && (
+          <SwitchField
+            className="wb-capture__smart"
+            label="Smart"
+            help={{
+              summary: "Run a smart follow-up after capturing.",
+              details:
+                "After preserving your exact text, Smart asks the owning App to interpret its context and run the configured follow-up processing. That may classify or enrich the capture and propose further actions; governed operations still follow Work Buddy's permission and confirmation rules.",
+            }}
+            selected={mode === "smart"}
+            disabled={readOnly}
+            onChange={(selected) =>
+              setDraftValue((current) => ({
+                ...current,
+                mode: selected ? "smart" : "dumb",
+              }))
+            }
+          />
+        )}
+
         <SelectField
           className="wb-capture__target"
           label="Destination"
+          hideLabel
           value={targetId}
           disabled={readOnly || input.targets.length === 0}
+          help={{
+            summary: "Choose what kind of saved item this capture should become.",
+            details:
+              "The destination controls where and how the exact text is preserved. Each available choice explains its own result in the menu; changing it does not submit or rewrite your draft.",
+          }}
           options={input.targets.map((option) => ({
             value: option.targetId,
             label: option.label,
             description: option.description,
-            disabled: !option.enabled,
+            disabled: !option.enabled || !option.supportedModes.includes(mode),
           }))}
           onChange={selectTarget}
         />
 
-        {target !== undefined && target.supportedModes.length > 1 && (
-          <SegmentedControl<CaptureSubmitMode>
-            label="After capture"
-            value={mode}
-            disabled={readOnly}
-            options={target.supportedModes.map((option) => ({
-              value: option,
-              label: option === "dumb" ? "Save only" : "Save + smart follow-up",
-            }))}
-            onChange={setMode}
-          />
-        )}
-
         <Button
           variant="primary"
           type="submit"
-          disabled={readOnly || draft.length === 0 || !target?.enabled}
+          disabled={
+            readOnly || draft.length === 0 || !target?.enabled || !targetSupportsMode
+          }
         >
           Capture
         </Button>
@@ -169,6 +229,14 @@ export function CaptureComposer({ input, density, onSubmit }: CaptureComposerPro
       {target !== undefined && !target.enabled ? (
         <InlineAlert tone="warning">
           <strong>{target.label}:</strong> {target.unavailableReason}
+        </InlineAlert>
+      ) : null}
+
+      {target !== undefined && target.enabled && !targetSupportsMode ? (
+        <InlineAlert tone="warning">
+          {target.supportedModes.includes("smart")
+            ? `Turn on Smart to use ${target.label}.`
+            : `${target.label} is not available while Smart is on.`}
         </InlineAlert>
       ) : null}
 

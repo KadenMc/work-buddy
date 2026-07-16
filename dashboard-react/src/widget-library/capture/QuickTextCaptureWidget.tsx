@@ -27,7 +27,7 @@ export default function QuickTextCaptureWidget({
         clientMutationId: request.clientMutationId,
       },
     ) as CaptureSubmitIntent;
-    emit(intent);
+    return emit(intent);
   };
 
   return (

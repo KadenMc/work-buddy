@@ -48,6 +48,40 @@ test("default light desktop Journal visual baseline", async ({ page }) => {
   });
 });
 
+test("default light Accessibility settings visual baseline", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await installThemePreference(page, "light");
+  await page.goto("/app/settings/accessibility", { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("heading", { name: "Accessibility" })).toBeVisible();
+
+  await expect(page).toHaveScreenshot("settings-accessibility-light-desktop.png", {
+    animations: "disabled",
+    fullPage: true,
+    mask: [page.locator(".clock")],
+    maskColor: "#808080",
+  });
+});
+
+test("maximum-text dark Accessibility settings visual baseline", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await installThemePreference(page, "dark");
+  await page.addInitScript(() => {
+    localStorage.setItem("wb.accessibility.type-scale.v1", "maximum");
+  });
+  await page.goto("/app/settings/accessibility", { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("slider", { name: "Text size" })).toHaveAttribute(
+    "aria-valuetext",
+    "Maximum, 137.5%",
+  );
+
+  await expect(page).toHaveScreenshot("settings-accessibility-maximum-dark-desktop.png", {
+    animations: "disabled",
+    fullPage: true,
+    mask: [page.locator(".clock")],
+    maskColor: "#808080",
+  });
+});
+
 test("Calm Workshop dark desktop Journal visual baseline", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await installThemePreference(page, "dark", "wb.calm-workshop");

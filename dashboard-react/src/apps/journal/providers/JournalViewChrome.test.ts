@@ -49,6 +49,27 @@ describe("JournalViewChrome", () => {
     expect(onReturnToToday).toHaveBeenCalledOnce();
   });
 
+  it("places a host-owned contextual action without owning its behavior", async () => {
+    const user = userEvent.setup();
+    const onOpenSettings = vi.fn();
+    render(
+      createElement(JournalViewChrome, {
+        day: JULY11_INITIAL_MODEL.day,
+        access: JULY11_INITIAL_MODEL.access,
+        quality: JULY11_INITIAL_MODEL.quality,
+        source: JULY11_INITIAL_MODEL.source,
+        hostActions: createElement(
+          "button",
+          { type: "button", onClick: onOpenSettings },
+          "Journal settings",
+        ),
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Journal settings" }));
+    expect(onOpenSettings).toHaveBeenCalledOnce();
+  });
+
   it("renders read-only and offline truthfulness as separate notices", () => {
     const readOnly = JOURNAL_READ_ONLY_FIXTURE.model;
     const offline = JOURNAL_OFFLINE_FIXTURE.model;

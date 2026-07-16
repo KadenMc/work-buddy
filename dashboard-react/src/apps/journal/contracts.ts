@@ -122,7 +122,7 @@ export interface JournalTimelineInput {
   readonly items: readonly JournalTimelineItem[];
 }
 
-export type JournalCaptureTargetId = "log" | "running_notes";
+export type JournalCaptureTargetId = "auto" | "log" | "running_notes";
 export type JournalCaptureMode = "dumb" | "smart";
 
 export interface JournalCaptureTarget {
@@ -194,6 +194,19 @@ export interface JournalRunningNoteItem {
   readonly groupId?: string;
   readonly threadId?: string;
   readonly version: number;
+}
+
+/**
+ * Provider/App-owned deletion record. Tombstones never need to be sent to the widget
+ * renderer, but the Journal store must retain them so history and diff context remain
+ * honest after an item disappears from the active collection.
+ */
+export interface JournalRunningNoteTombstone {
+  readonly item: JournalRunningNoteItem;
+  readonly deletedAt: IsoDateTime;
+  readonly deletedVersion: number;
+  readonly deletedBy: TimelineProvenance;
+  readonly reason: "user_deleted";
 }
 
 export type RunningNotesDisplayMode = "chronological" | "grouped";
@@ -289,10 +302,23 @@ export interface JournalRunningNoteEditIntent
     "wb.notes.edit-requested",
     typeof JOURNAL_WIDGET_INSTANCE_IDS.runningNotes
   > {
+  readonly client_mutation_id: string;
   readonly payload: {
     readonly item_id: string;
     readonly expected_version: number;
     readonly markdown: string;
+  };
+}
+
+export interface JournalRunningNoteDeleteIntent
+  extends JournalIntentEnvelope<
+    "wb.notes.delete-requested",
+    typeof JOURNAL_WIDGET_INSTANCE_IDS.runningNotes
+  > {
+  readonly client_mutation_id: string;
+  readonly payload: {
+    readonly item_id: string;
+    readonly expected_version: number;
   };
 }
 
@@ -311,6 +337,7 @@ export type JournalIntent =
   | JournalTimelineRequestReplanIntent
   | JournalTimelineSetRenderModeIntent
   | JournalRunningNoteEditIntent
+  | JournalRunningNoteDeleteIntent
   | JournalRunningNoteOpenThreadIntent;
 
 export type JournalFixtureLoadStatus = "loading" | "ready" | "stale" | "offline" | "error";
@@ -343,7 +370,8 @@ export type JournalTransitionInvariant =
   | "cross_widget_change_by_revision"
   | "past_items_unchanged"
   | "fixed_items_unchanged"
-  | "smart_annotations_do_not_rewrite";
+  | "smart_annotations_do_not_rewrite"
+  | "deleted_items_tombstoned";
 
 export interface JournalExpectedTransitionPhase {
   readonly phase: "accepted" | "settled";

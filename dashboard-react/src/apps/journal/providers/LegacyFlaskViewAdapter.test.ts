@@ -19,6 +19,7 @@ import {
 
 const READY_PAYLOAD = {
   status: "ok",
+  timezone: "America/Toronto",
   now: {
     iso: "2026-07-11T16:18:00.000Z",
     local_hhmm: "12:18",
@@ -71,6 +72,149 @@ function modelOrThrow(model: LegacyJournalViewModel | null): LegacyJournalViewMo
 }
 
 describe("LegacyFlaskViewAdapter", () => {
+  it("uses the Work Buddy timezone carried by the live payload", async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse(READY_PAYLOAD));
+    const provider = new LegacyFlaskViewAdapter({ fetchImpl });
+
+    const snapshot = await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, {
+      reason: "mount",
+    });
+    const model = modelOrThrow(snapshot.model);
+
+    expect(model.day.timezone).toBe("America/Toronto");
+    expect(model.day.localDate).toBe("2026-07-11");
+  });
+
+  it("uses the backend-owned Journal boundary and exact window without reconstructing it", async () => {
+    const payload = {
+      ...READY_PAYLOAD,
+      timezone: "Pacific/Kiritimati",
+      work_hours: [9, 17] as const,
+      journal_day: {
+        local_date: "2026-07-10",
+        timezone: "America/Toronto",
+        day_boundary_start: "03:30",
+        window_start: "2026-07-10T07:30:00.000Z",
+        window_end: "2026-07-11T07:30:00.000Z",
+        boundary_setting_revision: "value:7",
+        pending_day_boundary_start: "05:00",
+        boundary_effective_at: "2026-07-11T07:30:00.000Z",
+      },
+    };
+    const provider = new LegacyFlaskViewAdapter({
+      fetchImpl: vi.fn(async () => jsonResponse(payload)),
+      // This compatibility-only option must not override an authoritative day block.
+      timezone: "UTC",
+    });
+
+    const snapshot = await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, {
+      reason: "mount",
+    });
+    const model = modelOrThrow(snapshot.model);
+
+    expect(model.day).toMatchObject({
+      dayId: "journal-day:2026-07-10:America/Toronto:03:30",
+      localDate: "2026-07-10",
+      timezone: "America/Toronto",
+      dayBoundaryStart: "03:30",
+      windowStart: "2026-07-10T07:30:00.000Z",
+      windowEnd: "2026-07-11T07:30:00.000Z",
+    });
+    expect(model.legacy).toMatchObject({
+      timelineWindowSource: "journal_day",
+      boundarySettingRevision: "value:7",
+      pendingDayBoundaryStart: "05:00",
+      boundaryEffectiveAt: "2026-07-11T07:30:00.000Z",
+    });
+    expect(model.legacy.limitations).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ capability: "native_day_container" }),
+      ]),
+    );
+  });
+
+  it("reconstructs local plan times across spring-forward with named-zone DST", async () => {
+    const payload = {
+      ...READY_PAYLOAD,
+      timezone: "America/New_York",
+      now: {
+        iso: "2026-03-08T16:00:00.000Z",
+        local_hhmm: "12:00",
+        minutes_into_day: 12 * 60,
+      },
+      work_hours: [1, 4] as const,
+      plan: [
+        {
+          time_start: "01:30",
+          time_end: "03:30",
+          text: "Cross the DST gap",
+          checked: false,
+        },
+      ],
+    };
+    const provider = new LegacyFlaskViewAdapter({
+      fetchImpl: vi.fn(async () => jsonResponse(payload)),
+    });
+
+    const snapshot = await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, {
+      reason: "mount",
+    });
+    const timeline = snapshot.widgetInputs[JOURNAL_INSTANCE_IDS.timeline];
+
+    expect(modelOrThrow(snapshot.model).day).toMatchObject({
+      localDate: "2026-03-08",
+      windowStart: "2026-03-08T06:00:00.000Z",
+      windowEnd: "2026-03-08T08:00:00.000Z",
+    });
+    expect(timeline?.items[0]).toMatchObject({
+      startAt: "2026-03-08T06:30:00.000Z",
+      endAt: "2026-03-08T07:30:00.000Z",
+    });
+    const item = timeline?.items[0];
+    if (item?.shape !== "span") throw new Error("Expected a span plan item");
+    expect(Date.parse(item.endAt) - Date.parse(item.startAt)).toBe(60 * 60 * 1_000);
+  });
+
+  it("advances overnight work windows by a civil day rather than 24 elapsed hours", async () => {
+    const payload = {
+      ...READY_PAYLOAD,
+      timezone: "America/New_York",
+      now: {
+        iso: "2026-03-07T17:00:00.000Z",
+        local_hhmm: "12:00",
+        minutes_into_day: 12 * 60,
+      },
+      work_hours: [22, 6] as const,
+      plan: [
+        {
+          time_start: "23:30",
+          time_end: "05:30",
+          text: "Overnight plan",
+          checked: false,
+        },
+      ],
+    };
+    const provider = new LegacyFlaskViewAdapter({
+      fetchImpl: vi.fn(async () => jsonResponse(payload)),
+    });
+
+    const snapshot = await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, {
+      reason: "mount",
+    });
+    const model = modelOrThrow(snapshot.model);
+    const item = snapshot.widgetInputs[JOURNAL_INSTANCE_IDS.timeline]?.items[0];
+
+    expect(model.day).toMatchObject({
+      localDate: "2026-03-07",
+      windowStart: "2026-03-08T03:00:00.000Z",
+      windowEnd: "2026-03-08T10:00:00.000Z",
+    });
+    expect(item).toMatchObject({
+      startAt: "2026-03-08T04:30:00.000Z",
+      endAt: "2026-03-08T09:30:00.000Z",
+    });
+  });
+
   it("projects only genuine Today time and plan fields into the generic Timeline", async () => {
     const fetchImpl = vi.fn(async () => jsonResponse(READY_PAYLOAD));
     const provider = new LegacyFlaskViewAdapter({

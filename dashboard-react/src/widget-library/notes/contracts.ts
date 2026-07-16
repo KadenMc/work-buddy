@@ -47,6 +47,16 @@ export interface NoteEditRequestedIntent
     readonly markdown: string;
   }> {
   readonly intent_type: "wb.notes.edit-requested";
+  readonly client_mutation_id: string;
+}
+
+export interface NoteDeleteRequestedIntent
+  extends WidgetIntent<{
+    readonly item_id: string;
+    readonly expected_version: number;
+  }> {
+  readonly intent_type: "wb.notes.delete-requested";
+  readonly client_mutation_id: string;
 }
 
 export interface NoteOpenThreadRequestedIntent
@@ -59,4 +69,5 @@ export interface NoteOpenThreadRequestedIntent
 
 export type RunningNotesIntent =
   | NoteEditRequestedIntent
+  | NoteDeleteRequestedIntent
   | NoteOpenThreadRequestedIntent;
