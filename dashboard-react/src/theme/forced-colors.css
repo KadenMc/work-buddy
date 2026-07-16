@@ -1,21 +1,41 @@
 @media (forced-colors: active) {
+  .wb-view-host.is-customizing .react-grid-item.react-grid-placeholder {
+    border-color: Highlight;
+    background: Canvas !important;
+    box-shadow: none;
+    opacity: 1 !important;
+  }
   @layer wb.tokens {
     :root[data-wb-skin][data-wb-scheme] {
       --wb-color-surface-canvas: Canvas;
+      --wb-color-surface-workspace: Canvas;
       --wb-color-surface-raised: Canvas;
       --wb-color-surface-overlay: Canvas;
       --wb-color-surface-inset: Canvas;
+      --wb-color-surface-sunken: Canvas;
+      --wb-color-surface-selected: Highlight;
+      --wb-color-text-strong: CanvasText;
       --wb-color-text-primary: CanvasText;
       --wb-color-text-secondary: CanvasText;
       --wb-color-text-muted: GrayText;
+      --wb-color-text-disabled: GrayText;
+      --wb-color-text-inverse: HighlightText;
       --wb-color-text-on-accent: HighlightText;
       --wb-color-text-link: LinkText;
+      --wb-color-border-subtle: CanvasText;
       --wb-color-border-default: CanvasText;
       --wb-color-border-strong: CanvasText;
+      --wb-color-border-interactive: Highlight;
+      --wb-color-accent: LinkText;
+      --wb-color-accent-hover: LinkText;
+      --wb-color-accent-soft: Canvas;
       --wb-color-focus-ring: Highlight;
       --wb-color-action-primary: Highlight;
       --wb-color-action-primary-hover: Highlight;
+      --wb-color-action-primary-pressed: Highlight;
       --wb-color-action-secondary: ButtonFace;
+      --wb-color-action-secondary-hover: ButtonFace;
+      --wb-color-action-secondary-pressed: ButtonFace;
       --wb-color-selection: Highlight;
       --wb-color-status-success: CanvasText;
       --wb-color-status-success-surface: Canvas;

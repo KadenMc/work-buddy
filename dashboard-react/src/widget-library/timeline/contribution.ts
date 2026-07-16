@@ -29,6 +29,7 @@ export const TIMELINE_APP_CONTRIBUTION = {
       inputSchema: { schemaId: "wb.timeline.day.input", version: 1 },
       outputIntentSchemas: [
         { schemaId: "wb.timeline.open-item", version: 1 },
+        { schemaId: "wb.timeline.item-action-requested", version: 1 },
         { schemaId: "wb.timeline.render-mode-changed", version: 1 },
         { schemaId: "wb.timeline.replan-requested", version: 1 },
       ],
@@ -47,6 +48,7 @@ export const TIMELINE_APP_CONTRIBUTION = {
       inputSchema: { schemaId: "wb.timeline.day.input", version: 1 },
       outputIntentSchemas: [
         { schemaId: "wb.timeline.open-item", version: 1 },
+        { schemaId: "wb.timeline.item-action-requested", version: 1 },
         { schemaId: "wb.timeline.render-mode-changed", version: 1 },
         { schemaId: "wb.timeline.replan-requested", version: 1 },
       ],

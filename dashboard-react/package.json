@@ -14,7 +14,19 @@
     "test:e2e:ui": "playwright test --ui"
   },
   "dependencies": {
+    "@fontsource-variable/geist": "5.2.9",
+    "@fontsource-variable/geist-mono": "5.2.8",
+    "@fullcalendar/core": "6.1.21",
+    "@fullcalendar/daygrid": "6.1.21",
+    "@fullcalendar/interaction": "6.1.21",
+    "@fullcalendar/list": "6.1.21",
+    "@fullcalendar/luxon3": "6.1.21",
+    "@fullcalendar/react": "6.1.21",
+    "@fullcalendar/timegrid": "6.1.21",
+    "@phosphor-icons/react": "2.1.10",
+    "luxon": "3.7.2",
     "react": "^19.2.0",
+    "react-aria-components": "1.19.0",
     "react-dom": "^19.2.0",
     "react-grid-layout": "2.2.3",
     "react-router-dom": "^7.18.1"

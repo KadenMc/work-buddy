@@ -1,120 +1,100 @@
 @layer wb.widgets {
   .wb-capture {
-    display: grid;
-    gap: 12px;
+    display: flex;
+    min-height: 0;
+    height: 100%;
+    flex-direction: column;
+    gap: var(--wb-widget-gap);
+    overflow: visible;
   }
 
-  .wb-capture__field,
-  .wb-capture__controls > label {
-    display: grid;
-    gap: 5px;
-    color: var(--wb-color-text-secondary);
-    font-size: 12px;
-    font-weight: 600;
-  }
+  .wb-capture__field { flex: 0 0 auto; }
 
-  .wb-capture textarea,
-  .wb-capture select {
-    width: 100%;
-    border: 1px solid var(--wb-color-border-default);
-    border-radius: var(--wb-radius-control);
-    background: var(--wb-color-surface-inset);
-    color: var(--wb-color-text-primary);
-  }
-
-  .wb-capture textarea {
-    min-height: 68px;
-    padding: 9px 10px;
-    line-height: 1.45;
-    resize: vertical;
-  }
-
-  .wb-capture select {
-    min-height: 36px;
-    padding: 5px 8px;
+  .wb-capture__field .wb-textarea {
+    min-height: 6rem;
+    background: var(--wb-color-surface-raised);
+    font-size: var(--wb-font-size-sm);
   }
 
   .wb-capture__controls {
-    display: flex;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
     align-items: end;
-    gap: 10px;
+    gap: var(--wb-space-5);
   }
 
-  .wb-capture__controls > label {
-    min-width: 140px;
+  .wb-capture__target { min-width: 0; }
+
+  .wb-capture__controls .wb-segmented-field {
+    grid-column: 1 / -1;
+  }
+
+  .wb-capture__controls .wb-segmented-control {
+    width: 100%;
+  }
+
+  .wb-capture__controls .wb-segmented-control__item {
+    min-width: 0;
     flex: 1;
-  }
-
-  .wb-capture__modes {
-    display: flex;
-    min-width: 220px;
-    flex: 2;
-    flex-wrap: wrap;
-    gap: 5px 12px;
-    padding: 5px 8px;
-    border: 1px solid var(--wb-color-border-default);
-    border-radius: var(--wb-radius-control);
-  }
-
-  .wb-capture__modes legend {
-    padding: 0 3px;
-    color: var(--wb-color-text-secondary);
-    font-size: 11px;
-    font-weight: 600;
-  }
-
-  .wb-capture__modes label {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    font-size: 12px;
   }
 
   .wb-capture__destination-note,
   .wb-capture__count {
     color: var(--wb-color-text-muted);
-    font-size: 12px;
+    font-size: var(--wb-font-size-xs);
+  }
+
+  .wb-capture__count {
+    margin-top: auto;
+    padding-top: var(--wb-space-3);
+    border-top: var(--wb-border-width) solid var(--wb-color-border-subtle);
+    font-family: var(--wb-font-mono);
+    font-size: var(--wb-font-size-2xs);
+    font-variant-numeric: tabular-nums;
   }
 
   .wb-capture__recent {
     display: grid;
-    gap: 6px;
+    gap: var(--wb-space-4);
   }
 
   .wb-capture__recent h3 {
-    font-size: 12px;
+    color: var(--wb-color-text-secondary);
+    font-size: var(--wb-font-size-xs);
+    font-weight: var(--wb-font-weight-semibold);
   }
 
   .wb-capture__recent ul {
     display: grid;
-    gap: 6px;
+    gap: var(--wb-space-4);
     list-style: none;
   }
 
   .wb-capture__recent li {
     display: grid;
-    gap: 5px;
-    padding: 7px 9px;
-    border-left: 3px solid var(--wb-color-border-strong);
+    gap: var(--wb-space-3);
+    padding: var(--wb-space-4) var(--wb-space-5);
+    border-left: 2px solid var(--wb-color-accent);
+    border-radius: 0 var(--wb-radius-control) var(--wb-radius-control) 0;
     background: var(--wb-color-surface-inset);
   }
 
   .wb-capture__exact-text {
     overflow-wrap: anywhere;
+    color: var(--wb-color-text-primary);
+    font-size: var(--wb-font-size-xs);
     white-space: pre-wrap;
   }
 
-  .wb-capture--compact {
-    gap: 8px;
-  }
+  .wb-capture--compact { gap: var(--wb-space-5); }
+  .wb-capture--compact .wb-capture__field .wb-textarea { min-height: 4.5rem; }
+  .wb-capture--compact .wb-capture__controls { grid-template-columns: minmax(0, 1fr) auto; }
 
-  .wb-capture--compact .wb-capture__controls {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
+  @container (min-width: 34rem) {
+    .wb-capture__controls {
+      grid-template-columns: minmax(10rem, 1fr) minmax(14rem, 1.4fr) auto;
+    }
 
-  .wb-capture--compact .wb-capture__modes {
-    grid-column: 1 / -1;
+    .wb-capture__controls .wb-segmented-field { grid-column: auto; }
   }
 }

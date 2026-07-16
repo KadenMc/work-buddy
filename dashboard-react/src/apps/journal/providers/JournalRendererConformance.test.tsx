@@ -47,11 +47,16 @@ import { JOURNAL_APP_CONTRIBUTION } from "../contribution";
 import { JOURNAL_VIEW_DEFINITION } from "../viewDefinition";
 import { InMemoryJournalProvider } from "./InMemoryJournalProvider";
 
+const collectIntent = (emitted: DashboardIntent[]) => async (intent: DashboardIntent) => {
+  emitted.push(intent);
+  return { intent_id: intent.intent_id, status: "accepted" as const };
+};
+
 const theme: ResolvedThemeSummary = {
   contractVersion: 1,
   preference: { scheme: "dark", skinId: "wb.default" },
   resolvedScheme: "dark",
-  skin: { id: "wb.default", version: 1, publisherAppId: "wb.core" },
+  skin: { id: "wb.default", version: 2, publisherAppId: "wb.core" },
   accessibility: {
     forcedColors: false,
     reducedMotion: false,
@@ -121,12 +126,13 @@ describe("Journal and the real widget library", () => {
     const view = render(
       <QuickTextCaptureWidget
         input={input}
-        emit={(intent) => emitted.push(intent)}
+        emit={collectIntent(emitted)}
         presentation={presentation(JOURNAL_INSTANCE_IDS.capture)}
       />,
     );
 
-    await user.selectOptions(screen.getByRole("combobox", { name: "Destination" }), "running_notes");
+    await user.click(screen.getByRole("button", { name: /Destination/ }));
+    await user.click(await screen.findByRole("option", { name: /^Running notes/ }));
     await user.type(screen.getByRole("textbox", { name: "Capture text" }), "Meeting ran long");
     await user.click(screen.getByRole("button", { name: "Capture" }));
 
@@ -157,7 +163,7 @@ describe("Journal and the real widget library", () => {
         input={toQuickTextCaptureInput(
           pending.model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.capture],
         )}
-        emit={(intent) => emitted.push(intent)}
+        emit={collectIntent(emitted)}
         presentation={presentation(JOURNAL_INSTANCE_IDS.capture)}
       />,
     );
@@ -181,7 +187,7 @@ describe("Journal and the real widget library", () => {
         input={toQuickTextCaptureInput(
           snapshot.model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.capture],
         )}
-        emit={(intent) => emitted.push(intent)}
+        emit={collectIntent(emitted)}
         presentation={presentation(JOURNAL_INSTANCE_IDS.capture)}
       />,
     );
@@ -214,12 +220,12 @@ describe("Journal and the real widget library", () => {
         input={toDayTimelineInput(
           before.model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.timeline],
         )}
-        emit={(intent) => emitted.push(intent)}
+        emit={collectIntent(emitted)}
         presentation={presentation(JOURNAL_INSTANCE_IDS.timeline, "expanded")}
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "List" }));
+    await user.click(screen.getByRole("radio", { name: "List" }));
     await user.click(screen.getByRole("button", { name: "Request replan" }));
     expect(emitted.map((intent) => intent.intent_type)).toEqual([
       "wb.timeline.render-mode-changed",
@@ -252,7 +258,7 @@ describe("Journal and the real widget library", () => {
         input={toRunningNotesInput(
           before.model.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.runningNotes],
         )}
-        emit={(intent) => emitted.push(intent)}
+        emit={collectIntent(emitted)}
         presentation={presentation(JOURNAL_INSTANCE_IDS.runningNotes)}
       />,
     );
@@ -287,7 +293,7 @@ describe("Journal and the real widget library", () => {
     render(
       <DayTimelineWidget
         input={input}
-        emit={() => undefined}
+        emit={async (intent) => ({ intent_id: intent.intent_id, status: "accepted" })}
         presentation={presentation(JOURNAL_INSTANCE_IDS.timeline, "compact")}
       />,
     );

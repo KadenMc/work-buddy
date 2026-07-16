@@ -5,7 +5,9 @@ import { JOURNAL_BROWSER_BUDGET } from "../fixtures/performanceBudget";
 
 const WIDGET_LAB_50_BUDGET = {
   domContentLoadedMs: 10_000,
-  decodedScriptAndStyleBytes: 3_000_000,
+  // Same development-server accounting as the Journal budget; the 50-host
+  // trace should add DOM work without loading a second UI runtime.
+  decodedScriptAndStyleBytes: 4_500_000,
   longTaskCount: 40,
   longestTaskMs: 750,
 } as const;

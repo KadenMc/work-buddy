@@ -1,7 +1,9 @@
+import { Sparkle } from "@phosphor-icons/react/Sparkle";
+
 import { useClock } from "../hooks/useClock";
 import { useLiveStatus } from "../hooks/useLiveStatus";
 import { useSidecarStatus } from "../hooks/useSidecarStatus";
-import { ThemeSchemeControl } from "../theme/ThemeSchemeControl";
+import { AppearanceControl } from "../theme/AppearanceControl";
 
 type DotKind = "healthy" | "unhealthy" | "stopped";
 
@@ -20,8 +22,9 @@ function SidecarIndicator() {
   const dot: DotKind = state === "running" ? "healthy" : "stopped";
   const label = state === "unknown" ? "sidecar unknown" : `sidecar ${state}`;
   return (
-    <span title="Sidecar service status (/api/state)">
-      <StatusDot kind={dot} /> {label}
+    <span className="header-status" title="Sidecar service status (/api/state)">
+      <StatusDot kind={dot} />
+      <span>{label}</span>
       {readOnly && <span className="read-only-tag"> (read-only)</span>}
     </span>
   );
@@ -35,8 +38,9 @@ function LiveIndicator() {
     live === "live" ? "healthy" : live === "reconnecting" ? "unhealthy" : "stopped";
   const label = live === "connecting" ? "live" : live;
   return (
-    <span className={`bus-status ${live}`} title="Real-time event stream (/api/events)">
-      <StatusDot kind={dot} /> {label}
+    <span className={`header-status bus-status ${live}`} title="Real-time event stream (/api/events)">
+      <StatusDot kind={dot} />
+      <span>{label}</span>
     </span>
   );
 }
@@ -49,13 +53,21 @@ function Clock() {
 export default function Header() {
   return (
     <header className="header">
-      <h1>
-        <span>work-buddy</span> dashboard
-      </h1>
+      <div className="header__brand">
+        <span className="header__brand-mark" aria-hidden="true">
+          <Sparkle weight="duotone" />
+        </span>
+        <h1>
+          <span>work-buddy</span>
+          <span className="header__descriptor">dashboard</span>
+        </h1>
+      </div>
       <div className="header-meta">
-        <ThemeSchemeControl />
-        <SidecarIndicator />
-        <LiveIndicator />
+        <AppearanceControl />
+        <div className="header-statuses">
+          <SidecarIndicator />
+          <LiveIndicator />
+        </div>
         <Clock />
       </div>
     </header>

@@ -28,7 +28,8 @@ test("Quick Capture persists exact text and updates bound sibling input through 
   const capture = page.getByRole("region", { name: "Quick Capture", exact: true });
 
   await capture.getByRole("textbox", { name: "Capture text" }).fill("Meeting ran long");
-  await capture.getByRole("combobox", { name: "Destination" }).selectOption("running_notes");
+  await capture.getByRole("button", { name: /Destination/ }).click();
+  await page.getByRole("option", { name: /^Running notes/ }).click();
   await capture.getByRole("button", { name: "Capture", exact: true }).click();
 
   const submittedCapture = capture

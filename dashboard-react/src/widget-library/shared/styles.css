@@ -1,41 +1,45 @@
 @layer wb.widgets {
-  .wb-library-badge {
+  .wb-library-status,
+  .wb-library-provenance {
     display: inline-flex;
-    min-height: 22px;
+    min-width: 0;
     align-items: center;
-    padding: 2px 7px;
-    border: 1px solid var(--wb-color-border-default);
-    border-radius: 999px;
-    background: var(--wb-color-surface-inset);
-    color: var(--wb-color-text-secondary);
-    font-size: 11px;
-    line-height: 1.2;
+    gap: var(--wb-space-2);
+    color: var(--wb-color-text-muted);
+    font-size: var(--wb-font-size-2xs);
+    line-height: 1.25;
+    white-space: nowrap;
   }
 
-  .wb-library-badge--info {
-    border-color: var(--wb-color-status-info);
-    background: var(--wb-color-status-info-surface);
+  .wb-library-status__dot {
+    width: 0.375rem;
+    height: 0.375rem;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background: currentColor;
   }
 
-  .wb-library-badge--success {
-    border-color: var(--wb-color-status-success);
-    background: var(--wb-color-status-success-surface);
-  }
+  .wb-library-status--info { color: var(--wb-color-status-info); }
+  .wb-library-status--success { color: var(--wb-color-status-success); }
+  .wb-library-status--warning { color: var(--wb-color-status-warning); }
+  .wb-library-status--danger { color: var(--wb-color-status-danger); }
 
-  .wb-library-badge--warning {
-    border-color: var(--wb-color-status-warning);
-    background: var(--wb-color-status-warning-surface);
-  }
-
-  .wb-library-badge--danger {
-    border-color: var(--wb-color-status-danger);
-    background: var(--wb-color-status-danger-surface);
+  .wb-library-provenance svg {
+    width: 0.875rem;
+    height: 0.875rem;
+    flex: 0 0 auto;
+    color: var(--wb-color-accent);
   }
 
   .wb-library-meta-row {
     display: flex;
+    min-width: 0;
     flex-wrap: wrap;
     align-items: center;
-    gap: 6px;
+    gap: var(--wb-space-3) var(--wb-space-5);
+    color: var(--wb-color-text-muted);
+    font-family: var(--wb-font-mono);
+    font-size: var(--wb-font-size-2xs);
+    font-variant-numeric: tabular-nums;
   }
 }

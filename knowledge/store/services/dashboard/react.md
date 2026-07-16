@@ -23,7 +23,7 @@ entry_points:
 dev_notes: |-
   The package root is `dashboard-react/`. `DashboardApp` owns shell routing and registry/provider assembly; standard view modules contribute definitions rather than mounting unrelated application roots. Development fixture routes are explicitly registered and are not production fallback behavior.
 
-  The production build is emitted to `dashboard-react/dist` and served by Flask. Tests inject fixture providers so component behavior does not require a live Work Buddy process. Keep grid-library objects and other dependency-specific state behind Work Buddy adapters.
+  The production build is emitted to `dashboard-react/dist` and served by Flask. Tests inject fixture providers so component behavior does not require a live Work Buddy process. Keep grid, calendar, and other dependency-specific objects behind Work Buddy adapters.
 
   This `services/dashboard/react` subtree is an explicit migration namespace. After the Python-generated root dashboard at `/` is fully retired, collapse these units into `services/dashboard/*` so React stops being an architectural qualifier: merge this parent into `services/dashboard`, move children such as `services/dashboard/react/widget-platform` up one level, and repair cross-references in the same documentation change.
 ---
@@ -52,4 +52,4 @@ Browser code uses same-origin `/api/...` routes only. It never calls sibling loc
 
 The root dashboard remains in service while React coverage grows. Moving one view does not imply that all root tabs, mutations, or integrations have moved. Compatibility providers state whether they are read-only or write-capable, and a failed live source remains visibly failed instead of falling back to demo fixtures.
 
-See `services/dashboard/react/widget-platform` for widget composition and `services/dashboard/frontend` for the Python-generated root frontend.
+See `services/dashboard/react/widget-platform` for widget composition, `services/dashboard/react/appearance` for visual compatibility, `services/dashboard/react/calendar-surface` for the temporal presentation adapter, and `services/dashboard/frontend` for the Python-generated root frontend.

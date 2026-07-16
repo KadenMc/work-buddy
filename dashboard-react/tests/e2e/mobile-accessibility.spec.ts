@@ -11,7 +11,7 @@ test("mobile uses canonical one-column DOM and visual order without mounting RGL
   await expect(page.locator(".wb-dashboard-mobile-stack")).toBeVisible();
   await expect(page.locator(".react-grid-layout")).toHaveCount(0);
   await expect(page.locator(".wb-widget-drag-handle")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Customize view" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Customize view" })).toHaveCount(0);
 
   const titles = await page
     .locator(
@@ -76,8 +76,8 @@ test("Journal exposes textual timeline semantics and stable page landmarks", asy
   await expect(page.getByText("record", { exact: true }).first()).toBeVisible();
   await expect(page.getByText("calendar", { exact: true }).first()).toBeVisible();
   await expect(page.getByText("plan", { exact: true }).first()).toBeVisible();
-  await expect(page.getByText("fixed commitment", { exact: true })).toBeVisible();
-  await expect(page.getByText("past — protected", { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: /fixed commitment/ }).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: /past — protected/ }).first()).toBeVisible();
 });
 
 test("the integrated page avoids uncaught runtime and layout-loop errors", async ({ page }) => {

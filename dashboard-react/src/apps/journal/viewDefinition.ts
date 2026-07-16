@@ -40,7 +40,7 @@ export const JOURNAL_VIEW_DEFINITION = {
         day: JOURNAL_BINDING_KEYS.day,
         access: JOURNAL_BINDING_KEYS.access,
       },
-      defaultLayout: { x: 0, y: 0, w: 8, h: 8 },
+      defaultLayout: { x: 0, y: 0, w: 8, h: 14 },
       allowedSubstitution: { minimumDefinitionVersion: 1 },
     },
     {
@@ -54,7 +54,7 @@ export const JOURNAL_VIEW_DEFINITION = {
         day: JOURNAL_BINDING_KEYS.day,
         access: JOURNAL_BINDING_KEYS.access,
       },
-      defaultLayout: { x: 0, y: 8, w: 8, h: 8 },
+      defaultLayout: { x: 0, y: 14, w: 8, h: 6 },
       allowedSubstitution: { minimumDefinitionVersion: 1 },
     },
     {

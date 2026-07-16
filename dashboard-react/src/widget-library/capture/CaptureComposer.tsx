@@ -7,7 +7,13 @@ import {
   useState,
 } from "react";
 
-import { Button, InlineAlert } from "../../ui";
+import {
+  Button,
+  InlineAlert,
+  SegmentedControl,
+  SelectField,
+  TextAreaField,
+} from "../../ui";
 import { createCorrelationId, StatusBadge } from "../shared";
 import type {
   CaptureDraftRequest,
@@ -104,61 +110,51 @@ export function CaptureComposer({ input, density, onSubmit }: CaptureComposerPro
   };
 
   const recentLimit = density === "expanded" ? 5 : density === "standard" ? 2 : 0;
-  const recent = input.recentSubmissions.slice(-recentLimit).reverse();
+  const recent =
+    recentLimit === 0 ? [] : input.recentSubmissions.slice(-recentLimit).reverse();
 
   return (
     <form className={`wb-capture wb-capture--${density}`} onSubmit={submit}>
       {readOnly && <InlineAlert tone="warning">{input.access.reason}</InlineAlert>}
-      <label className="wb-capture__field">
-        <span>Capture text</span>
-        <textarea
-          ref={textareaRef}
-          value={draft}
-          rows={density === "compact" ? 2 : 3}
-          disabled={readOnly}
-          placeholder="Write exactly what you want to preserve…"
-          onChange={(event) => setDraft(event.currentTarget.value)}
-          onKeyDown={handleShortcut}
-        />
-      </label>
+      <TextAreaField
+        ref={textareaRef}
+        className="wb-capture__field"
+        label="Capture text"
+        value={draft}
+        rows={density === "compact" ? 2 : 3}
+        disabled={readOnly}
+        placeholder="Write exactly what you want to preserve…"
+        description="Press Ctrl + Enter to capture"
+        onChange={setDraft}
+        onKeyDown={handleShortcut}
+      />
 
       <div className="wb-capture__controls">
-        <label>
-          <span>Destination</span>
-          <select
-            value={targetId}
-            disabled={readOnly || input.targets.length === 0}
-            onChange={(event) => selectTarget(event.currentTarget.value)}
-          >
-            {input.targets.map((option) => (
-              <option
-                key={option.targetId}
-                value={option.targetId}
-                disabled={!option.enabled}
-              >
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        <SelectField
+          className="wb-capture__target"
+          label="Destination"
+          value={targetId}
+          disabled={readOnly || input.targets.length === 0}
+          options={input.targets.map((option) => ({
+            value: option.targetId,
+            label: option.label,
+            description: option.description,
+            disabled: !option.enabled,
+          }))}
+          onChange={selectTarget}
+        />
 
         {target !== undefined && target.supportedModes.length > 1 && (
-          <fieldset className="wb-capture__modes">
-            <legend>After capture</legend>
-            {target.supportedModes.map((option) => (
-              <label key={option}>
-                <input
-                  type="radio"
-                  name={`capture-mode-${input.instanceId}`}
-                  value={option}
-                  checked={mode === option}
-                  disabled={readOnly}
-                  onChange={() => setMode(option)}
-                />
-                {option === "dumb" ? "Save only" : "Save + smart follow-up"}
-              </label>
-            ))}
-          </fieldset>
+          <SegmentedControl<CaptureSubmitMode>
+            label="After capture"
+            value={mode}
+            disabled={readOnly}
+            options={target.supportedModes.map((option) => ({
+              value: option,
+              label: option === "dumb" ? "Save only" : "Save + smart follow-up",
+            }))}
+            onChange={setMode}
+          />
         )}
 
         <Button
@@ -170,12 +166,11 @@ export function CaptureComposer({ input, density, onSubmit }: CaptureComposerPro
         </Button>
       </div>
 
-      {target !== undefined && (
-        <p className="wb-capture__destination-note">
-          <strong>{target.label}:</strong>{" "}
-          {target.enabled ? target.description : target.unavailableReason}
-        </p>
-      )}
+      {target !== undefined && !target.enabled ? (
+        <InlineAlert tone="warning">
+          <strong>{target.label}:</strong> {target.unavailableReason}
+        </InlineAlert>
+      ) : null}
 
       {recent.length > 0 && (
         <section className="wb-capture__recent" aria-label="Recent captures">

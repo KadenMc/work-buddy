@@ -1,14 +1,15 @@
 import { useCallback, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
-import type { WidgetIntent } from "../../dashboard/contributions/contracts";
+import type {
+  IntentResult,
+  WidgetIntent,
+} from "../../dashboard/contributions/contracts";
 import { WidgetHost } from "../../dashboard/widgets/WidgetHost";
 import type { ThemeSchemePreference } from "../../theme/contracts";
 import { useTheme } from "../../theme/ThemeProvider";
-import {
-  CONFORMANCE_STRESS_SKIN_ID,
-  DEFAULT_SKIN_ID,
-} from "../../theme/packs/registry";
+import { listThemeSkins } from "../../theme/packs/registry";
+import { SelectField } from "../../ui";
 import {
   buildModeCases,
   buildStateCases,
@@ -33,7 +34,7 @@ function LabWidgetCase({
   onIntent,
 }: {
   readonly labCase: WidgetLabCase;
-  readonly onIntent: (intent: WidgetIntent) => void;
+  readonly onIntent: (intent: WidgetIntent) => Promise<IntentResult>;
 }) {
   const dimensions = WIDGET_LAB_DIMENSIONS[labCase.sizeMode];
   return (
@@ -71,33 +72,26 @@ function LabControls({ traceCount }: { readonly traceCount: number | null }) {
   const { theme, setPreference } = useTheme();
   return (
     <section className="wb-widget-lab__controls" aria-label="Widget Lab controls">
-      <label>
-        Scheme
-        <select
-          aria-label="Widget Lab scheme"
-          value={theme.preference.scheme}
-          onChange={(event) =>
-            setPreference({
-              scheme: event.currentTarget.value as ThemeSchemePreference,
-            })
-          }
-        >
-          <option value="system">System</option>
-          <option value="light">Light</option>
-          <option value="dark">Dark</option>
-        </select>
-      </label>
-      <label>
-        Skin
-        <select
-          aria-label="Widget Lab skin"
-          value={theme.preference.skinId}
-          onChange={(event) => setPreference({ skinId: event.currentTarget.value })}
-        >
-          <option value={DEFAULT_SKIN_ID}>Default</option>
-          <option value={CONFORMANCE_STRESS_SKIN_ID}>Adversarial conformance</option>
-        </select>
-      </label>
+      <SelectField<ThemeSchemePreference>
+        label="Widget Lab scheme"
+        value={theme.preference.scheme}
+        options={[
+          { value: "system", label: "System" },
+          { value: "light", label: "Light" },
+          { value: "dark", label: "Dark" },
+        ]}
+        onChange={(scheme) => setPreference({ scheme })}
+      />
+      <SelectField
+        label="Widget Lab skin"
+        value={theme.preference.skinId}
+        options={listThemeSkins().map((skin) => ({
+          value: skin.identity.id,
+          label: skin.label,
+          description: skin.description,
+        }))}
+        onChange={(skinId) => setPreference({ skinId })}
+      />
       <dl className="wb-widget-lab__environment">
         <div>
           <dt>Forced colors</dt>
@@ -126,7 +120,10 @@ export default function WidgetLab() {
   const traceCount = parseSyntheticCount(searchParams.get("count"));
   const [lastIntent, setLastIntent] = useState("No intent emitted");
   const recordIntent = useCallback(
-    (intent: WidgetIntent) => setLastIntent(intent.intent_type),
+    async (intent: WidgetIntent): Promise<IntentResult> => {
+      setLastIntent(intent.intent_type);
+      return { intent_id: intent.intent_id, status: "accepted" };
+    },
     [],
   );
 

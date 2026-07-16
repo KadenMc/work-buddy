@@ -85,6 +85,11 @@ async function renderFixture(fixture: JournalFixtureState) {
   );
 }
 
+async function findTimelineTitle(title: string) {
+  const matches = await screen.findAllByText(title, {}, { timeout: 15_000 });
+  return matches[0];
+}
+
 beforeEach(() => {
   vi.stubGlobal("matchMedia", vi.fn(() => media(false)));
 });
@@ -106,8 +111,8 @@ describe("FixtureViewProvider Journal renderer conformance", () => {
     expect(screen.getByRole("region", { name: "Day Timeline" })).toBeVisible();
     expect(screen.getByRole("region", { name: "Running Notes" })).toBeVisible();
     expect(
-      await screen.findByText("Mapped Journal data contracts", {}, { timeout: 15_000 }),
-    ).toBeVisible();
+      await findTimelineTitle("Mapped Journal data contracts"),
+    ).toBeInTheDocument();
     expect(
       await within(screen.getByRole("region", { name: "Running Notes" })).findByText(
         "Prototype mobile timeline edge case",
@@ -115,7 +120,7 @@ describe("FixtureViewProvider Journal renderer conformance", () => {
         { timeout: 15_000 },
       ),
     ).toBeVisible();
-    expect(rendered.container.querySelector(".wb-temporal-canvas")).not.toBeNull();
+    expect(rendered.container.querySelector(".wb-calendar-surface")).not.toBeNull();
   }, 20_000);
 
   it("keeps all three real renderers visible beneath stale status banners", async () => {
@@ -133,8 +138,13 @@ describe("FixtureViewProvider Journal renderer conformance", () => {
       { timeout: 15_000 },
     );
     expect(
-      await screen.findByText("Mapped Journal data contracts", {}, { timeout: 15_000 }),
-    ).toBeVisible();
+      await findTimelineTitle("Mapped Journal data contracts"),
+    ).toBeInTheDocument();
+    expect(
+      screen
+        .getByRole("region", { name: "Day Timeline" })
+        .querySelector(".wb-calendar-surface"),
+    ).toBeInTheDocument();
     expect(
       await within(screen.getByRole("region", { name: "Running Notes" })).findByText(
         "Prototype mobile timeline edge case",
@@ -163,8 +173,13 @@ describe("FixtureViewProvider Journal renderer conformance", () => {
       expect(edit).toBeDisabled();
     }
     expect(
-      await screen.findByText("Mapped Journal data contracts", {}, { timeout: 15_000 }),
-    ).toBeVisible();
+      await findTimelineTitle("Mapped Journal data contracts"),
+    ).toBeInTheDocument();
+    expect(
+      screen
+        .getByRole("region", { name: "Day Timeline" })
+        .querySelector(".wb-calendar-surface"),
+    ).toBeInTheDocument();
     expect(
       await within(screen.getByRole("region", { name: "Running Notes" })).findByText(
         "Prototype mobile timeline edge case",

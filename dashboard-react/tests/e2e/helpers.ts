@@ -33,17 +33,14 @@ export async function openWidgetMenu(
   keyboard = false,
 ): Promise<Locator> {
   const frame = widget(page, name);
-  const details = frame.locator("details.wb-widget-menu");
-  const summary = frame.locator("summary").filter({ hasText: `Actions for ${name}` });
-  if ((await details.getAttribute("open")) === null) {
-    if (keyboard) {
-      await summary.focus();
-      await summary.press("Enter");
-    } else {
-      await summary.click();
-    }
+  const trigger = frame.getByRole("button", { name: `Actions for ${name}` });
+  if (keyboard) {
+    await trigger.focus();
+    await trigger.press("Enter");
+  } else {
+    await trigger.click();
   }
-  const popover = frame.locator(".wb-widget-menu__popover");
+  const popover = page.getByRole("menu", { name: `Actions for ${name}` });
   await expect(popover).toBeVisible();
   return popover;
 }

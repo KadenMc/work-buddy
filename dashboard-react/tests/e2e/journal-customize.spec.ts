@@ -15,14 +15,16 @@ test("required widget menus protect view purpose while optional widgets remain h
   await beginCustomize(page);
 
   const captureMenu = await openWidgetMenu(page, "Quick Capture");
-  await expect(captureMenu.getByRole("button", { name: "Hide" })).toBeDisabled();
-  await expect(captureMenu.getByRole("button", { name: "Remove" })).toBeDisabled();
-  await expect(captureMenu).toContainText(/required|cannot record/i);
+  await expect(captureMenu.getByRole("menuitem", { name: "Hide" })).toHaveAttribute("aria-disabled", "true");
+  await expect(captureMenu.getByRole("menuitem", { name: "Remove" })).toHaveAttribute("aria-disabled", "true");
+  await expect(page.getByText(/required|cannot record/i)).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(captureMenu).toBeHidden();
 
   const notesMenu = await openWidgetMenu(page, "Running Notes");
-  await expect(notesMenu.getByRole("button", { name: "Hide" })).toBeEnabled();
-  await expect(notesMenu.getByRole("button", { name: "Remove" })).toBeEnabled();
-  await notesMenu.getByRole("button", { name: "Hide" }).click();
+  await expect(notesMenu.getByRole("menuitem", { name: "Hide" })).not.toHaveAttribute("aria-disabled", "true");
+  await expect(notesMenu.getByRole("menuitem", { name: "Remove" })).not.toHaveAttribute("aria-disabled", "true");
+  await notesMenu.getByRole("menuitem", { name: "Hide" }).click();
   await expect(widget(page, "Running Notes")).toHaveCount(0);
 
   await page.getByRole("button", { name: "Cancel" }).click();
@@ -36,16 +38,17 @@ test("keyboard-opened menus provide move and resize alternatives and reject coll
   await openJournal(page);
   await beginCustomize(page);
 
-  const timelineMenu = await openWidgetMenu(page, "Day Timeline", true);
-  await timelineMenu.getByRole("button", { name: "down", exact: true }).click();
+  let timelineMenu = await openWidgetMenu(page, "Day Timeline", true);
+  await timelineMenu.getByRole("menuitem", { name: "down", exact: true }).click();
   await expect(page.getByRole("button", { name: "Done" })).toBeEnabled();
   await expect(page.locator("[aria-live='polite']")).toContainText("Widget moved");
 
-  await timelineMenu.getByRole("button", { name: "Taller" }).click();
+  timelineMenu = await openWidgetMenu(page, "Day Timeline", true);
+  await timelineMenu.getByRole("menuitem", { name: "Taller" }).click();
   await expect(page.locator("[aria-live='polite']")).toContainText("Widget resized");
 
   const captureMenu = await openWidgetMenu(page, "Quick Capture");
-  await captureMenu.getByRole("button", { name: "Taller" }).click();
+  await captureMenu.getByRole("menuitem", { name: "Taller" }).click();
   await expect(page.getByRole("status").filter({ hasText: "collision" })).toBeVisible();
 
   await page.getByRole("button", { name: "Cancel" }).click();
@@ -74,19 +77,33 @@ test("pointer drag and resize preserve unrelated widget geometry", async ({ page
   if (beforeNotes === null || beforeTimeline === null || handle === null || gridBox === null) return;
   expect(
     await page.evaluate(
-      ({ x, y }) => document.elementFromPoint(x, y)?.className ?? "",
+      ({ x, y }) =>
+        document.elementFromPoint(x, y)?.closest(".wb-widget-drag-handle") !== null,
       { x: handle.x + handle.width / 2, y: handle.y + handle.height / 2 },
     ),
-  ).toContain("wb-widget-drag-handle");
+  ).toBe(true);
 
   const dragX = handle.x + handle.width / 2;
   const dragY = handle.y + handle.height / 2;
   await page.mouse.move(dragX, dragY);
   await page.mouse.down();
-  // Move the 8-row Notes widget completely below the 16-row Timeline
+  // Move Notes completely below the 16-row Timeline
   // before widening it; otherwise collision rejection may correctly veto
   // the resize depending on which grid row the drag snaps to.
   await page.mouse.move(dragX, dragY + 396, { steps: 24 });
+  const placeholder = page.locator(".react-grid-placeholder");
+  await expect(placeholder).toBeVisible();
+  const placeholderStyle = await placeholder.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      backgroundColor: style.backgroundColor,
+      borderRadius: style.borderRadius,
+      borderStyle: style.borderStyle,
+    };
+  });
+  expect(placeholderStyle.backgroundColor).not.toBe("rgb(255, 0, 0)");
+  expect(placeholderStyle.borderRadius).not.toBe("0px");
+  expect(placeholderStyle.borderStyle).toBe("dashed");
   await page.mouse.up();
 
   const movedNotes = await notes.boundingBox();
@@ -132,17 +149,18 @@ test("undo, cancel, done, reload, and reset preserve the personal-patch lifecycl
   await beginCustomize(page);
 
   let timelineMenu = await openWidgetMenu(page, "Day Timeline");
-  await timelineMenu.getByRole("button", { name: "down", exact: true }).click();
+  await timelineMenu.getByRole("menuitem", { name: "down", exact: true }).click();
   await page.getByRole("button", { name: "Undo" }).click();
   await expect(page.getByRole("button", { name: "Done" })).toBeDisabled();
 
-  await timelineMenu.getByRole("button", { name: "down", exact: true }).click();
+  timelineMenu = await openWidgetMenu(page, "Day Timeline");
+  await timelineMenu.getByRole("menuitem", { name: "down", exact: true }).click();
   await page.getByRole("button", { name: "Cancel" }).click();
   expect(await readPersonalization(page)).toBeNull();
 
   await beginCustomize(page);
   timelineMenu = await openWidgetMenu(page, "Day Timeline");
-  await timelineMenu.getByRole("button", { name: "down", exact: true }).click();
+  await timelineMenu.getByRole("menuitem", { name: "down", exact: true }).click();
   await page.getByRole("button", { name: "Done" }).click();
 
   let patch = await readPersonalization(page);
@@ -165,13 +183,20 @@ test("undo, cancel, done, reload, and reset preserve the personal-patch lifecycl
   expect(patch).toBeNull();
 });
 
-test("desktop mobile-order controls persist canonical mobile DOM order", async ({ page }) => {
+test("desktop drag-and-drop persists canonical mobile DOM order", async ({ page }) => {
   await openJournal(page);
   await beginCustomize(page);
   await page.getByRole("button", { name: "Mobile order" }).click();
-  await page
-    .getByRole("button", { name: "Move Day Timeline earlier on mobile" })
-    .click();
+  await expect(page.getByText("Earlier")).toHaveCount(0);
+  await expect(page.getByText("Later")).toHaveCount(0);
+  const timelineRow = page.getByRole("row", { name: "Day Timeline" });
+  const captureRow = page.getByRole("row", { name: "Quick Capture" });
+  const captureBox = await captureRow.boundingBox();
+  expect(captureBox).not.toBeNull();
+  if (captureBox === null) return;
+  await timelineRow.dragTo(captureRow, {
+    targetPosition: { x: captureBox.width / 2, y: 2 },
+  });
   await page.getByRole("button", { name: "Done" }).click();
 
   const patch = await readPersonalization(page);
@@ -189,4 +214,97 @@ test("desktop mobile-order controls persist canonical mobile DOM order", async (
     "Quick Capture",
     "Running Notes",
   ]);
+});
+
+test("resizing Quick Capture cannot remove its shared scroll boundary", async ({ page }) => {
+  await openJournal(page);
+  await beginCustomize(page);
+
+  for (let index = 0; index < 8; index += 1) {
+    const captureMenu = await openWidgetMenu(page, "Quick Capture");
+    const shorter = captureMenu.getByRole("menuitem", { name: "Shorter" });
+    if ((await shorter.getAttribute("aria-disabled")) === "true") {
+      await page.keyboard.press("Escape");
+      break;
+    }
+    await shorter.click();
+  }
+
+  const content = widget(page, "Quick Capture").locator(".wb-widget-frame__content");
+  const metrics = await content.evaluate((element) => {
+    const style = getComputedStyle(element);
+    element.scrollTop = element.scrollHeight;
+    return {
+      overflowY: style.overflowY,
+      clientHeight: element.clientHeight,
+      scrollHeight: element.scrollHeight,
+      scrollTop: element.scrollTop,
+    };
+  });
+  expect(metrics.overflowY).toBe("auto");
+  expect(metrics.scrollHeight).toBeGreaterThan(metrics.clientHeight);
+  expect(metrics.scrollTop).toBeGreaterThan(0);
+  await page.getByRole("button", { name: "Cancel" }).click();
+});
+
+test("wheel gestures over a fitting widget continue scrolling the page", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 500 });
+  await openJournal(page);
+
+  const widgetContents = page.locator(".wb-dashboard-grid-item .wb-widget-frame__content");
+  const fittingWidgetIndex = await widgetContents.evaluateAll((elements) =>
+    elements.findIndex((element) => element.scrollHeight <= element.clientHeight + 1),
+  );
+  expect(fittingWidgetIndex).toBeGreaterThanOrEqual(0);
+
+  const fittingWidget = widgetContents.nth(fittingWidgetIndex);
+  await fittingWidget.scrollIntoViewIfNeeded();
+  await fittingWidget.hover();
+  const before = await page.evaluate(() => window.scrollY);
+  await page.mouse.wheel(0, 400);
+
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(before);
+});
+
+test("a scrollable widget owns available movement and exposes the native boundary policy", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 500 });
+  await openJournal(page);
+  await beginCustomize(page);
+
+  for (let index = 0; index < 8; index += 1) {
+    const captureMenu = await openWidgetMenu(page, "Quick Capture");
+    const shorter = captureMenu.getByRole("menuitem", { name: "Shorter" });
+    if ((await shorter.getAttribute("aria-disabled")) === "true") {
+      await page.keyboard.press("Escape");
+      break;
+    }
+    await shorter.click();
+  }
+
+  const content = widget(page, "Quick Capture").locator(".wb-widget-frame__content");
+  await content.scrollIntoViewIfNeeded();
+  await content.evaluate((element) => {
+    element.scrollTop = 0;
+  });
+  await content.hover();
+
+  const pageBeforeInternalScroll = await page.evaluate(() => window.scrollY);
+  await page.mouse.wheel(0, 80);
+  await expect.poll(() => content.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  expect(await page.evaluate(() => window.scrollY)).toBe(pageBeforeInternalScroll);
+
+  const boundary = await content.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+    return {
+      scrollTop: element.scrollTop,
+      maximumScrollTop: element.scrollHeight - element.clientHeight,
+      overscrollBehaviorY: getComputedStyle(element).overscrollBehaviorY,
+      policy: element.getAttribute("data-scroll-boundary-policy"),
+    };
+  });
+  expect(boundary.scrollTop).toBe(boundary.maximumScrollTop);
+  expect(boundary.overscrollBehaviorY).toBe("auto");
+  expect(boundary.policy).toBe("native");
 });

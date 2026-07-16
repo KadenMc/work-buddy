@@ -56,6 +56,8 @@ The Settings panel also has **Embeddings** and **Inference** sub-views. Settings
 * **Remote access:** Published privately via ``tailscale serve --bg 5127`` — the ``tailscale`` component (registered in ``COMPONENT_CATALOG``) gates this with click-to-fix requirements; see ``architecture/health/components`` and ``status/tailscale-status-directions``. The browser only hits same-origin ``/api/...`` routes; all local service reads happen server-side.
 * **Read-only mode:** ``dashboard.read_only: true`` in ``config.yaml`` gates every mutating HTTP method (403) and hides or disables mutation controls in both frontends.
 
+The React dashboard's standardized widget runtime, appearance contract, and calendar presentation are documented under `services/dashboard/react`.
+
 ## Card registry (feature cards)
 
 The Settings → Activity sub-view is **registry-driven**: its widgets (Obsidian bridge sparkline, sidecar event log, recent-notifications log) are ``DashboardCard``s, not hand-coded render blocks. ``loadActivity()`` calls ``window.wbMountCards('activity', ...)``, which fetches the active card list and renders each registered renderer. A card may carry a *gate* — a boolean expression over component-active state — so a card whose component is opted out simply does not mount (no placeholder). The bridge card is gated on the ``obsidian`` component; opting Obsidian out also stops the backend bridge probe in ``get_system_state()``. See ``architecture/feature-cards`` for the full pattern — gate AST, registry, endpoint, and how to add a card (including from a plugin).

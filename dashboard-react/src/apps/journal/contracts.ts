@@ -255,6 +255,19 @@ export interface JournalTimelineOpenItemIntent
   readonly payload: { readonly item_id: string };
 }
 
+export interface JournalTimelineItemActionIntent
+  extends JournalIntentEnvelope<
+    "wb.timeline.item-action-requested",
+    typeof JOURNAL_WIDGET_INSTANCE_IDS.timeline
+  > {
+  readonly client_mutation_id: string;
+  readonly payload: {
+    readonly item_id: string;
+    readonly action_id: string;
+    readonly expected_revision: JournalRevision;
+  };
+}
+
 export interface JournalTimelineRequestReplanIntent
   extends JournalIntentEnvelope<
     "wb.timeline.replan-requested",
@@ -294,6 +307,7 @@ export interface JournalRunningNoteOpenThreadIntent
 export type JournalIntent =
   | JournalCaptureSubmitIntent
   | JournalTimelineOpenItemIntent
+  | JournalTimelineItemActionIntent
   | JournalTimelineRequestReplanIntent
   | JournalTimelineSetRenderModeIntent
   | JournalRunningNoteEditIntent

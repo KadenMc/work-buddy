@@ -1,7 +1,10 @@
-@layer wb.reset, wb.tokens, wb.components, wb.widgets, wb.utilities;
+@layer wb.reset, wb.foundations, wb.tokens, wb.components, wb.widgets, wb.utilities;
 
+@import "./theme/foundations.css";
 @import "./theme/tokens.css";
 @import "./theme/components.css";
+@import "./shell.css";
+@import "./dashboard/styles.css";
 @import "./theme/forced-colors.css";
 @import "./theme/reduced-motion.css";
 
@@ -20,15 +23,18 @@
   html {
     min-height: 100%;
     background: var(--wb-color-surface-canvas);
+    scrollbar-color: var(--wb-color-border-strong) var(--wb-color-surface-inset);
   }
 
   body {
     min-height: 100vh;
-    font-family:
-      -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    font-family: var(--wb-font-sans);
+    font-size: var(--wb-font-size-md);
+    font-weight: var(--wb-font-weight-regular);
     background: var(--wb-color-surface-canvas);
     color: var(--wb-color-text-primary);
-    line-height: 1.5;
+    line-height: var(--wb-line-height-body);
+    text-rendering: optimizeLegibility;
   }
 
   button,
@@ -38,332 +44,18 @@
     font: inherit;
   }
 
+  button,
+  a {
+    -webkit-tap-highlight-color: transparent;
+  }
+
   :focus-visible {
-    outline: 2px solid var(--wb-color-focus-ring);
+    outline: var(--wb-focus-width) solid var(--wb-color-focus-ring);
     outline-offset: 2px;
   }
-}
 
-@layer wb.components {
-  .header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 12px 24px;
-    border-bottom: 1px solid var(--wb-color-border-default);
-    background: var(--wb-color-surface-raised);
-  }
-
-  .header h1 {
+  ::selection {
+    background: var(--wb-color-selection);
     color: var(--wb-color-text-primary);
-    font-size: 16px;
-    font-weight: 600;
-  }
-
-  .header h1 span {
-    color: var(--wb-color-action-primary);
-  }
-
-  .header-meta {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    color: var(--wb-color-text-secondary);
-    font-size: 12px;
-  }
-
-  .wb-theme-scheme-control select {
-    min-height: 30px;
-    padding: 3px 24px 3px 8px;
-    border: 1px solid var(--wb-color-border-default);
-    border-radius: var(--wb-radius-control);
-    background: var(--wb-color-surface-inset);
-    color: var(--wb-color-text-primary);
-    font-size: 12px;
-  }
-
-  .status-dot {
-    display: inline-block;
-    width: 8px;
-    height: 8px;
-    margin-right: 4px;
-    border-radius: 50%;
-    vertical-align: middle;
-  }
-
-  .status-dot.healthy {
-    background: var(--wb-color-status-success);
-  }
-
-  .status-dot.unhealthy {
-    background: var(--wb-color-status-warning);
-  }
-
-  .status-dot.stopped {
-    background: var(--wb-color-text-muted);
-  }
-
-  .read-only-tag {
-    color: var(--wb-color-status-warning);
-    font-size: 0.85em;
-  }
-
-  .tab-bar {
-    display: flex;
-    overflow-x: auto;
-    padding: 0 24px;
-    border-bottom: 1px solid var(--wb-color-border-default);
-    background: var(--wb-color-surface-raised);
-  }
-
-  .tab-btn {
-    padding: 10px 16px;
-    border: 0;
-    border-bottom: 2px solid transparent;
-    background: transparent;
-    color: var(--wb-color-text-secondary);
-    font-size: 13px;
-    font-weight: 500;
-    text-decoration: none;
-    white-space: nowrap;
-    cursor: pointer;
-    transition:
-      color var(--wb-motion-duration-fast) var(--wb-motion-easing-standard),
-      border-color var(--wb-motion-duration-fast) var(--wb-motion-easing-standard);
-  }
-
-  .tab-btn:hover {
-    color: var(--wb-color-text-primary);
-  }
-
-  .tab-btn.active {
-    border-bottom-color: var(--wb-color-action-primary);
-    color: var(--wb-color-action-primary);
-  }
-
-  .tab-panel {
-    max-width: 1200px;
-    margin: 0 auto;
-    padding: 24px;
-  }
-
-  .empty-state {
-    margin-top: 96px;
-    color: var(--wb-color-text-muted);
-    text-align: center;
-  }
-
-  .empty-state-title {
-    margin-bottom: 6px;
-    color: var(--wb-color-text-secondary);
-    font-size: 15px;
-    font-weight: 600;
-  }
-
-  .empty-state-hint {
-    font-size: 13px;
-  }
-
-  .wb-view-host {
-    max-width: 1440px;
-    margin: 0 auto;
-    padding: 20px 24px 40px;
-  }
-
-  .wb-view-host.is-customizing {
-    background-image:
-      linear-gradient(var(--wb-color-border-default) 1px, transparent 1px),
-      linear-gradient(90deg, var(--wb-color-border-default) 1px, transparent 1px);
-    background-size: 24px 24px;
-  }
-
-  .wb-view-toolbar {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 8px;
-    margin: 12px 0;
-  }
-
-  .wb-view-toolbar button {
-    min-height: 34px;
-    padding: 5px 10px;
-    border: 1px solid var(--wb-color-border-default);
-    border-radius: var(--wb-radius-control);
-    background: var(--wb-color-surface-raised);
-    color: var(--wb-color-text-primary);
-    cursor: pointer;
-  }
-
-  .wb-view-toolbar button:disabled {
-    cursor: not-allowed;
-    opacity: 0.55;
-  }
-
-  .wb-view-toolbar .wb-view-toolbar__primary {
-    border-color: var(--wb-color-action-primary);
-    background: var(--wb-color-action-primary);
-    color: var(--wb-color-text-on-accent);
-  }
-
-  .wb-view-toolbar__provider {
-    margin-right: auto;
-    color: var(--wb-color-text-muted);
-    font-size: 12px;
-  }
-
-  .wb-view-host__warning {
-    margin: 8px 0;
-    padding: 8px 10px;
-    border: 1px solid var(--wb-color-status-warning);
-    border-radius: var(--wb-radius-control);
-    background: var(--wb-color-status-warning-surface);
-    color: var(--wb-color-text-primary);
-  }
-
-  .wb-dashboard-grid-container {
-    min-width: 0;
-  }
-
-  .wb-dashboard-grid-item {
-    min-width: 0;
-  }
-
-  .wb-dashboard-grid-item > .wb-widget-frame {
-    height: 100%;
-  }
-
-  .wb-dashboard-grid-item .wb-widget-frame__content {
-    overflow: auto;
-  }
-
-  .wb-widget-drag-handle {
-    position: absolute;
-    z-index: 2;
-    top: 9px;
-    left: 10px;
-    width: 14px;
-    height: 14px;
-    border-radius: 3px;
-    background: radial-gradient(circle, var(--wb-color-text-muted) 1px, transparent 2px) 0 0 / 5px 5px;
-    cursor: grab;
-  }
-
-  .wb-dashboard-mobile-stack {
-    display: grid;
-    gap: 12px;
-  }
-
-  .wb-widget-menu__group {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 4px;
-    padding: 6px;
-    border: 0;
-  }
-
-  .wb-widget-menu__group legend {
-    grid-column: 1 / -1;
-    color: var(--wb-color-text-muted);
-    font-size: 11px;
-  }
-
-  .wb-widget-catalog {
-    position: fixed;
-    z-index: 100;
-    inset: 24px 24px 24px auto;
-    width: min(620px, calc(100vw - 48px));
-    overflow: auto;
-    padding: 18px;
-    border: 1px solid var(--wb-color-border-strong);
-    border-radius: var(--wb-radius-surface);
-    background: var(--wb-color-surface-overlay);
-    box-shadow: var(--wb-shadow-overlay);
-  }
-
-  .wb-widget-catalog > header {
-    display: flex;
-    position: sticky;
-    z-index: 1;
-    top: -18px;
-    align-items: center;
-    justify-content: space-between;
-    padding: 12px 0;
-    background: var(--wb-color-surface-overlay);
-  }
-
-  .wb-widget-catalog > section {
-    margin-top: 18px;
-  }
-
-  .wb-widget-catalog__list {
-    display: grid;
-    gap: 10px;
-    margin-top: 8px;
-    list-style: none;
-  }
-
-  .wb-widget-catalog__card {
-    padding: 12px;
-    border: 1px solid var(--wb-color-border-default);
-    border-radius: var(--wb-radius-control);
-    background: var(--wb-color-surface-raised);
-  }
-
-  .wb-widget-catalog__provenance {
-    color: var(--wb-color-text-muted);
-    font-size: 12px;
-  }
-
-  .wb-widget-catalog__actions {
-    display: flex;
-    gap: 6px;
-    margin-top: 8px;
-  }
-
-  .wb-mobile-order-editor {
-    display: grid;
-    gap: 12px;
-    padding: 14px;
-    border: 1px solid var(--wb-color-border-strong);
-    border-radius: var(--wb-radius-surface);
-    background: var(--wb-color-surface-raised);
-  }
-
-  .wb-mobile-order-editor > header,
-  .wb-mobile-order-editor li,
-  .wb-mobile-order-editor__actions {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-  }
-
-  .wb-mobile-order-editor header p {
-    color: var(--wb-color-text-muted);
-    font-size: 12px;
-  }
-
-  .wb-mobile-order-editor ol {
-    display: grid;
-    gap: 8px;
-    list-style-position: inside;
-  }
-
-  .wb-mobile-order-editor li {
-    padding: 8px 10px;
-    border: 1px solid var(--wb-color-border-default);
-    border-radius: var(--wb-radius-control);
-    background: var(--wb-color-surface-inset);
-  }
-
-  @media (max-width: 767px) {
-    .wb-view-host {
-      padding: 12px;
-    }
-
-    .wb-view-toolbar {
-      flex-wrap: wrap;
-    }
   }
 }

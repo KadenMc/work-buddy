@@ -1,4 +1,10 @@
 import { useEffect, useRef, type SyntheticEvent } from "react";
+import { CaretDown } from "@phosphor-icons/react/CaretDown";
+import {
+  Button as AriaButton,
+  Disclosure,
+  DisclosurePanel,
+} from "react-aria-components";
 
 import { Button } from "../../ui";
 import type {
@@ -120,68 +126,148 @@ function InstanceCard({
   const title = registered?.definition.displayName ?? instance.widgetTypeId;
   return (
     <li className="wb-widget-catalog__card" data-instance-id={instance.instanceId}>
-      <h4>{title}</h4>
-      {registered === undefined ? (
-        <p>Publisher unavailable · {instance.widgetTypeId}</p>
-      ) : (
-        <>
-          <p>{registered.definition.libraryPath.join(" / ")}</p>
-          <PublisherLine widget={registered} presentation={publisher(registered)} />
-        </>
-      )}
-      {instance.slotId !== undefined ? <p>View slot: {instance.slotId}</p> : <p>Personal widget</p>}
-      {unavailable ? (
-        <p role="status">{instance.unavailableReason ?? "This widget type is unavailable."}</p>
-      ) : null}
-
-      <div className="wb-widget-catalog__actions">
-        {unavailable ? (
-          <Button onClick={onRecover} disabled={onRecover === undefined}>
-            Find replacement
-          </Button>
-        ) : instance.visibility === "shown" ? (
-          <Button
-            onClick={() => onAction({ type: "hide", instanceId: instance.instanceId })}
-            disabled={required}
-          >
-            Hide
-          </Button>
-        ) : (
-          <Button onClick={() => onAction({ type: "show", instanceId: instance.instanceId })}>
-            Show
-          </Button>
-        )}
-        <Button
-          variant="danger"
-          onClick={() => onAction({ type: "remove", instanceId: instance.instanceId })}
-          disabled={required}
-        >
-          Remove
-        </Button>
-      </div>
-
-      {required ? <p>This slot is required for the view's primary purpose.</p> : null}
-      {replacements.length > 0 ? (
-        <details>
-          <summary>Replace widget</summary>
-          <ul>
-            {replacements.map((candidate) => {
-              const provenance = publisher(candidate);
-              return (
-                <li key={candidate.definition.typeId}>
+      <Disclosure>
+        {({ isExpanded }) => (
+          <>
+            <div className="wb-widget-catalog__summary">
+              <AriaButton
+                slot="trigger"
+                className="wb-widget-catalog__trigger"
+                aria-label={`${isExpanded ? "Hide" : "Show"} details for ${title}`}
+              >
+                <span className="wb-widget-catalog__identity">
+                  <strong>{title}</strong>
                   <span>
-                    {candidate.definition.displayName} · {candidate.definition.libraryPath.join(" / ")} ·{" "}
-                    {provenance.label} · {provenance.trust}
-                  </span>{" "}
-                  <Button onClick={() => onReplace(candidate)}>
-                    Replace with {candidate.definition.displayName}
+                    {registered?.definition.libraryPath.slice(0, -1).join(" / ") ||
+                      "Publisher unavailable"}
+                    {" · "}
+                    {instance.slotId !== undefined ? "View widget" : "Personal widget"}
+                  </span>
+                </span>
+                <CaretDown aria-hidden="true" />
+              </AriaButton>
+              <div className="wb-widget-catalog__actions">
+                {unavailable ? (
+                  <Button
+                    size="small"
+                    aria-label={`Find replacement for ${title}`}
+                    onClick={onRecover}
+                    disabled={onRecover === undefined}
+                  >
+                    Replace
                   </Button>
-                </li>
-              );
-            })}
-          </ul>
-        </details>
-      ) : null}
+                ) : instance.visibility === "shown" ? (
+                  <Button
+                    size="small"
+                    variant="ghost"
+                    onClick={() => onAction({ type: "hide", instanceId: instance.instanceId })}
+                    disabled={required}
+                  >
+                    Hide
+                  </Button>
+                ) : (
+                  <Button
+                    size="small"
+                    variant="ghost"
+                    onClick={() => onAction({ type: "show", instanceId: instance.instanceId })}
+                  >
+                    Show
+                  </Button>
+                )}
+                <Button
+                  size="small"
+                  variant="danger"
+                  onClick={() => onAction({ type: "remove", instanceId: instance.instanceId })}
+                  disabled={required}
+                >
+                  Remove
+                </Button>
+              </div>
+            </div>
+            <DisclosurePanel className="wb-widget-catalog__details">
+              {registered === undefined ? (
+                <p>Widget type: {instance.widgetTypeId}</p>
+              ) : (
+                <>
+                  <p>{registered.definition.description}</p>
+                  <p>Library: {registered.definition.libraryPath.join(" / ")}</p>
+                  <PublisherLine widget={registered} presentation={publisher(registered)} />
+                </>
+              )}
+              <p>{instance.slotId !== undefined ? `View slot: ${instance.slotId}` : "Personal widget"}</p>
+              {unavailable ? (
+                <p role="status">
+                  {instance.unavailableReason ?? "This widget type is unavailable."}
+                </p>
+              ) : null}
+              {required ? <p>This slot is required for the view's primary purpose.</p> : null}
+              {replacements.length > 0 ? (
+                <div className="wb-widget-catalog__replacements">
+                  <h5>Compatible replacements</h5>
+                  <ul>
+                    {replacements.map((candidate) => {
+                      const provenance = publisher(candidate);
+                      return (
+                        <li key={candidate.definition.typeId}>
+                          <span>
+                            {candidate.definition.displayName} · {provenance.label} · {provenance.trust}
+                          </span>
+                          <Button size="small" onClick={() => onReplace(candidate)}>
+                            Replace with {candidate.definition.displayName}
+                          </Button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              ) : null}
+            </DisclosurePanel>
+          </>
+        )}
+      </Disclosure>
+    </li>
+  );
+}
+
+function AvailableWidgetCard({
+  widget,
+  presentation,
+  onAdd,
+}: {
+  readonly widget: RegisteredWidget;
+  readonly presentation: WidgetPublisherPresentation;
+  onAdd(): void;
+}) {
+  const title = widget.definition.displayName;
+  return (
+    <li className="wb-widget-catalog__card">
+      <Disclosure>
+        {({ isExpanded }) => (
+          <>
+            <div className="wb-widget-catalog__summary">
+              <AriaButton
+                slot="trigger"
+                className="wb-widget-catalog__trigger"
+                aria-label={`${isExpanded ? "Hide" : "Show"} details for ${title}`}
+              >
+                <span className="wb-widget-catalog__identity">
+                  <strong>{title}</strong>
+                  <span>{widget.definition.libraryPath.slice(0, -1).join(" / ") || "Other"}</span>
+                </span>
+                <CaretDown aria-hidden="true" />
+              </AriaButton>
+              <div className="wb-widget-catalog__actions">
+                <Button size="small" aria-label={`Add ${title}`} onClick={onAdd}>Add</Button>
+              </div>
+            </div>
+            <DisclosurePanel className="wb-widget-catalog__details">
+              <p>{widget.definition.description}</p>
+              <p>Library: {widget.definition.libraryPath.join(" / ")}</p>
+              <PublisherLine widget={widget} presentation={presentation} />
+            </DisclosurePanel>
+          </>
+        )}
+      </Disclosure>
     </li>
   );
 }
@@ -323,15 +409,12 @@ export function WidgetCatalogDrawer({
                 {group.widgets.map((widget) => {
                   const provenance = publisher(widget);
                   return (
-                    <li key={widget.definition.typeId} className="wb-widget-catalog__card">
-                      <h5>{widget.definition.displayName}</h5>
-                      <p>{widget.definition.description}</p>
-                      <p>{widget.definition.libraryPath.join(" / ")}</p>
-                      <PublisherLine widget={widget} presentation={provenance} />
-                      <Button onClick={() => onAddRequested(widget.definition)}>
-                        Add {widget.definition.displayName}
-                      </Button>
-                    </li>
+                    <AvailableWidgetCard
+                      key={widget.definition.typeId}
+                      widget={widget}
+                      presentation={provenance}
+                      onAdd={() => onAddRequested(widget.definition)}
+                    />
                   );
                 })}
               </ul>

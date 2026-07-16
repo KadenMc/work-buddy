@@ -6,6 +6,7 @@ import {
   type Layout as RglLayout,
   type LayoutItem as RglLayoutItem,
 } from "react-grid-layout";
+import { DotsSixVertical } from "@phosphor-icons/react/DotsSixVertical";
 import "react-grid-layout/css/styles.css";
 import "react-resizable/css/styles.css";
 
@@ -168,7 +169,9 @@ export function ReactGridLayoutAdapter({
             data-widget-instance-id={item.instanceId}
           >
             {editMode ? (
-              <span className="wb-widget-drag-handle" aria-hidden="true" />
+              <span className="wb-widget-drag-handle" aria-hidden="true">
+                <DotsSixVertical weight="bold" />
+              </span>
             ) : null}
             {renderItem(item)}
           </div>

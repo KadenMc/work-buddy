@@ -17,7 +17,7 @@ test("the inline bootstrap resolves an explicit light scheme before React execut
   await expect(page.locator("html")).toHaveAttribute("data-wb-skin", "wb.default");
   await expect(page.locator('meta[name="theme-color"]')).toHaveAttribute(
     "content",
-    "#f6f8fa",
+    "#f6f1e9",
   );
   await expect(page.locator("#root")).toBeEmpty();
 });
@@ -44,6 +44,34 @@ test("system and explicit preferences persist across page reloads", async ({ pag
   ).toMatchObject({ scheme: "light" });
   await expect(page.locator("html")).toHaveAttribute("data-wb-scheme", "light");
   await expect(page.getByRole("region", { name: "Quick Capture", exact: true })).toBeVisible();
+});
+
+test("the Appearance control persists scheme, product skin, and density", async ({ page }) => {
+  await openJournal(page);
+
+  await page.getByRole("button", { name: "Appearance" }).click();
+  await expect(page.getByRole("heading", { name: "Appearance" })).toBeVisible();
+
+  await page.getByRole("button", { name: /Color scheme/ }).click();
+  await expect(page.getByRole("option", { name: "System" })).toBeVisible();
+  await expect(page.getByRole("option", { name: /Follow this device/ })).toHaveCount(0);
+  await page.getByRole("option", { name: "Dark" }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-wb-scheme", "dark");
+
+  await page.getByRole("button", { name: /Skin/ }).click();
+  await expect(page.getByRole("option", { name: /Default/ })).toBeVisible();
+  await expect(page.getByRole("option", { name: /Calm Workshop/ })).toBeVisible();
+  await page.getByRole("option", { name: /Studio Slate/ }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-wb-skin", "wb.studio");
+
+  await page.getByRole("button", { name: /Density/ }).click();
+  await page.getByRole("option", { name: /Compact/ }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-wb-density", "compact");
+
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(page.locator("html")).toHaveAttribute("data-wb-scheme", "dark");
+  await expect(page.locator("html")).toHaveAttribute("data-wb-skin", "wb.studio");
+  await expect(page.locator("html")).toHaveAttribute("data-wb-density", "compact");
 });
 
 test("the adversarial validated skin supplies real semantic values in both schemes", async ({

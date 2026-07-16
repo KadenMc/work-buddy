@@ -48,21 +48,8 @@
     box-shadow: var(--wb-shadow-raised);
   }
 
-  .wb-widget-lab__controls label {
-    display: grid;
-    gap: 4px;
-    color: var(--wb-color-text-secondary);
-    font-size: 12px;
-    font-weight: 600;
-  }
-
-  .wb-widget-lab__controls select {
-    min-height: 36px;
-    padding: 5px 30px 5px 9px;
-    border: 1px solid var(--wb-color-border-strong);
-    border-radius: var(--wb-radius-control);
-    background: var(--wb-color-surface-inset);
-    color: var(--wb-color-text-primary);
+  .wb-widget-lab__controls > .wb-field {
+    min-width: 12rem;
   }
 
   .wb-widget-lab__environment {

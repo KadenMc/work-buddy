@@ -287,6 +287,11 @@ export interface WidgetRendererProps<
   OutputIntent extends WidgetIntent = WidgetIntent,
 > {
   readonly input: Input;
-  emit(intent: OutputIntent): void;
+  /**
+   * Dispatch an intent through the owning App provider and receive its authoritative
+   * result. Renderers may ignore the Promise for fire-and-reconcile interactions, but
+   * optimistic surfaces such as calendars must await it before committing a mutation.
+   */
+  emit(intent: OutputIntent): Promise<IntentResult>;
   readonly presentation: WidgetPresentationContext;
 }

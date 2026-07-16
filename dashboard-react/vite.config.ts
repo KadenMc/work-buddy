@@ -20,6 +20,39 @@ export default defineConfig({
   define: {
     "process.env.DRAGGABLE_DEBUG": "false",
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes("node_modules")) return undefined;
+          if (
+            id.includes("react-aria-components") ||
+            id.includes("@react-aria") ||
+            id.includes("@react-stately") ||
+            id.includes("@internationalized")
+          ) {
+            return "vendor-react-aria";
+          }
+          if (
+            id.includes("/react/") ||
+            id.includes("/react-dom/") ||
+            id.includes("/react-router")
+          ) {
+            return "vendor-react";
+          }
+          if (
+            id.includes("react-grid-layout") ||
+            id.includes("react-draggable") ||
+            id.includes("react-resizable")
+          ) {
+            return "vendor-grid";
+          }
+          if (id.includes("@phosphor-icons")) return "vendor-icons";
+          return undefined;
+        },
+      },
+    },
+  },
   server: {
     // Honor an externally assigned port (preview harnesses set PORT);
     // fall back to Vite's default otherwise.
