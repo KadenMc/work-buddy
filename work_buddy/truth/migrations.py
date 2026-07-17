@@ -19,7 +19,7 @@ from work_buddy.storage.migrations import (
 
 logger = get_logger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # Redacted spans retain their immutable identity/hash but not their quote or
 # quote context.  Keep the selector valid JSON (and valid for the existing
@@ -461,6 +461,282 @@ def _m001_initial_schema(conn: sqlite3.Connection) -> None:
         )
 
 
+def _m002_document_surface(conn: sqlite3.Connection) -> None:
+    """Create the co-work document surface schema (PRD sections 5 and 6).
+
+    Additive over v1: six new base tables, their per-table append-only guards,
+    the documents latest-pointer carve-out, the proposals redaction carve-out,
+    and one recreation of the gestures update trigger so a proposal subject can
+    carry a redacted excerpt exactly like a claim or evidence subject already
+    can.
+    """
+    statements = (
+        """
+        CREATE TABLE IF NOT EXISTS documents (
+            id                    TEXT PRIMARY KEY,
+            path                  TEXT NOT NULL,
+            title                 TEXT,
+            document_class        TEXT NOT NULL,
+            content_sha256        TEXT NOT NULL,
+            ydoc_snapshot_sha256  TEXT,
+            created_at            TEXT NOT NULL,
+            created_by_kind       TEXT NOT NULL,
+            created_by_ref        TEXT,
+            meta_json             TEXT
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS document_spans (
+            id               TEXT PRIMARY KEY,
+            document_id      TEXT NOT NULL REFERENCES documents(id),
+            selector_json    TEXT NOT NULL,
+            quote_exact      TEXT,
+            span_sha256      TEXT NOT NULL,
+            author_kind      TEXT,
+            author_ref       TEXT,
+            created_at       TEXT NOT NULL,
+            created_by_kind  TEXT NOT NULL,
+            created_by_ref   TEXT
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS expressions (
+            id                    TEXT PRIMARY KEY,
+            document_span_id      TEXT NOT NULL REFERENCES document_spans(id),
+            claim_ref_kind        TEXT NOT NULL,
+            claim_ref             TEXT NOT NULL,
+            role                  TEXT NOT NULL,
+            claim_canonical_sha256 TEXT NOT NULL,
+            span_sha256           TEXT NOT NULL,
+            created_at            TEXT NOT NULL,
+            created_by_kind       TEXT NOT NULL,
+            created_by_ref        TEXT,
+            meta_json             TEXT
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS proposals (
+            id                  TEXT PRIMARY KEY,
+            document_id         TEXT NOT NULL REFERENCES documents(id),
+            base_content_sha256 TEXT NOT NULL,
+            selector_json       TEXT NOT NULL,
+            -- Nullable so the frozen redaction carve-out (which requires
+            -- NEW.quote_exact IS NULL) is reachable, mirroring the shipped
+            -- evidence_spans.quote_exact precedent. Live-proposal quote
+            -- presence is enforced at the engine and export layers, not by a
+            -- NOT NULL column. The frozen DDL annotated this NOT NULL, which
+            -- contradicts its own redaction trigger and prose ("content fields
+            -- null out"). Deviation flagged to the orchestrator.
+            quote_exact         TEXT,
+            span_sha256         TEXT NOT NULL,
+            replacement         TEXT,
+            rationale           TEXT,
+            tldr                TEXT,
+            claim_refs_json     TEXT,
+            canonical_sha256    TEXT NOT NULL,
+            dedup_key           TEXT NOT NULL,
+            expires_at          TEXT,
+            created_at          TEXT NOT NULL,
+            created_by_kind     TEXT NOT NULL,
+            created_by_ref      TEXT,
+            meta_json           TEXT,
+            redacted_at         TEXT
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS proposal_status_events (
+            seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+            id           TEXT NOT NULL UNIQUE,
+            proposal_id  TEXT NOT NULL REFERENCES proposals(id),
+            status       TEXT NOT NULL,
+            decision     TEXT,
+            at           TEXT NOT NULL,
+            actor_kind   TEXT NOT NULL,
+            actor_ref    TEXT,
+            basis_kind   TEXT NOT NULL,
+            basis_ref    TEXT,
+            note         TEXT
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS doc_events (
+            id                    TEXT PRIMARY KEY,
+            document_id           TEXT NOT NULL REFERENCES documents(id),
+            kind                  TEXT NOT NULL,
+            at                    TEXT NOT NULL,
+            actor_kind            TEXT NOT NULL,
+            actor_ref             TEXT,
+            content_sha256        TEXT,
+            ydoc_snapshot_sha256  TEXT,
+            detail                TEXT
+        )
+        """,
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_documents_path ON documents(path)",
+        "CREATE INDEX IF NOT EXISTS idx_documents_ydoc_snapshot "
+        "ON documents(ydoc_snapshot_sha256)",
+        "CREATE INDEX IF NOT EXISTS idx_document_spans_document "
+        "ON document_spans(document_id)",
+        "CREATE INDEX IF NOT EXISTS idx_expressions_document_span "
+        "ON expressions(document_span_id)",
+        "CREATE INDEX IF NOT EXISTS idx_expressions_claim_ref "
+        "ON expressions(claim_ref)",
+        "CREATE INDEX IF NOT EXISTS idx_proposals_document ON proposals(document_id)",
+        "CREATE INDEX IF NOT EXISTS idx_proposals_dedup "
+        "ON proposals(document_id, dedup_key)",
+        "CREATE INDEX IF NOT EXISTS idx_proposals_canonical "
+        "ON proposals(canonical_sha256)",
+        "CREATE INDEX IF NOT EXISTS idx_proposal_status_proposal_seq "
+        "ON proposal_status_events(proposal_id, seq DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_doc_events_document "
+        "ON doc_events(document_id)",
+        """
+        CREATE TRIGGER IF NOT EXISTS documents_append_only_update
+        BEFORE UPDATE ON documents
+        WHEN NOT (
+            NEW.id IS OLD.id
+            AND NEW.path IS OLD.path
+            AND NEW.title IS OLD.title
+            AND NEW.document_class IS OLD.document_class
+            AND NEW.created_at IS OLD.created_at
+            AND NEW.created_by_kind IS OLD.created_by_kind
+            AND NEW.created_by_ref IS OLD.created_by_ref
+            AND NEW.meta_json IS OLD.meta_json
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'append-only');
+        END
+        """,
+        f"""
+        CREATE TRIGGER IF NOT EXISTS proposals_append_only_update
+        BEFORE UPDATE ON proposals
+        WHEN NOT (
+            OLD.redacted_at IS NULL
+            AND NEW.redacted_at IS NOT NULL
+            AND NEW.quote_exact IS NULL
+            AND NEW.replacement IS NULL
+            AND NEW.rationale IS NULL
+            AND NEW.tldr IS NULL
+            AND NEW.claim_refs_json IS NULL
+            AND NEW.selector_json = '{REDACTED_SELECTOR_JSON}'
+            AND NEW.id IS OLD.id
+            AND NEW.document_id IS OLD.document_id
+            AND NEW.base_content_sha256 IS OLD.base_content_sha256
+            AND NEW.span_sha256 IS OLD.span_sha256
+            AND NEW.canonical_sha256 IS OLD.canonical_sha256
+            AND NEW.dedup_key IS OLD.dedup_key
+            AND NEW.expires_at IS OLD.expires_at
+            AND NEW.created_at IS OLD.created_at
+            AND NEW.created_by_kind IS OLD.created_by_kind
+            AND NEW.created_by_ref IS OLD.created_by_ref
+            AND NEW.meta_json IS OLD.meta_json
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'append-only');
+        END
+        """,
+    )
+    for statement in statements:
+        conn.execute(statement)
+
+    append_only_update_tables = (
+        "document_spans",
+        "expressions",
+        "proposal_status_events",
+        "doc_events",
+    )
+    for table in append_only_update_tables:
+        conn.execute(
+            f"""
+            CREATE TRIGGER IF NOT EXISTS {table}_append_only_update
+            BEFORE UPDATE ON {table}
+            BEGIN
+                SELECT RAISE(ABORT, 'append-only');
+            END
+            """
+        )
+
+    protected_delete_tables = (
+        "documents",
+        "document_spans",
+        "expressions",
+        "proposals",
+        "proposal_status_events",
+        "doc_events",
+    )
+    for table in protected_delete_tables:
+        conn.execute(
+            f"""
+            CREATE TRIGGER IF NOT EXISTS {table}_append_only_delete
+            BEFORE DELETE ON {table}
+            BEGIN
+                SELECT RAISE(ABORT, 'append-only');
+            END
+            """
+        )
+
+    # Proposals are now gesture subjects and are redactable, so the shipped
+    # gestures update trigger must admit a redacted proposal-subject excerpt.
+    # Drop with IF EXISTS so a missing prior trigger is not a migration error
+    # and CREATE cannot silently keep the old definition, then recreate the
+    # trigger verbatim with a fourth EXISTS branch over proposals. The only
+    # delta from the v1 trigger is that final proposals branch.
+    conn.execute("DROP TRIGGER IF EXISTS gestures_append_only_update")
+    conn.execute(
+        """
+        CREATE TRIGGER IF NOT EXISTS gestures_append_only_update
+        BEFORE UPDATE ON gestures
+        WHEN NOT (
+            NEW.id IS OLD.id
+            AND NEW.at IS OLD.at
+            AND NEW.surface IS OLD.surface
+            AND NEW.actor_ref IS OLD.actor_ref
+            AND NEW.kind IS OLD.kind
+            AND NEW.subject_ref IS OLD.subject_ref
+            AND NEW.payload_sha256 IS OLD.payload_sha256
+            AND NEW.context_sha256 IS OLD.context_sha256
+            AND NEW.expires_at IS OLD.expires_at
+            AND (
+                (
+                    OLD.consumed_at IS NULL
+                    AND NEW.consumed_at IS NOT NULL
+                    AND NEW.payload_excerpt IS OLD.payload_excerpt
+                )
+                OR (
+                    NEW.consumed_at IS OLD.consumed_at
+                    AND OLD.payload_excerpt <> '[redacted]'
+                    AND NEW.payload_excerpt = '[redacted]'
+                    AND (
+                        EXISTS (
+                            SELECT 1 FROM claims
+                            WHERE id = OLD.subject_ref
+                            AND redacted_at IS NOT NULL
+                        )
+                        OR EXISTS (
+                            SELECT 1 FROM evidence
+                            WHERE id = OLD.subject_ref
+                            AND redacted_at IS NOT NULL
+                        )
+                        OR EXISTS (
+                            SELECT 1 FROM evidence_spans
+                            WHERE id = OLD.subject_ref
+                            AND redacted_at IS NOT NULL
+                        )
+                        OR EXISTS (
+                            SELECT 1 FROM proposals
+                            WHERE id = OLD.subject_ref
+                            AND redacted_at IS NOT NULL
+                        )
+                    )
+                )
+            )
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'append-only');
+        END
+        """
+    )
+
+
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     row = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
@@ -546,6 +822,7 @@ TRUTH_MIGRATIONS = _TruthMigrationRunner(
     "truth",
     migrations=[
         Migration(1, "initial truth ledger schema", _m001_initial_schema),
+        Migration(2, "co-work document surface schema", _m002_document_surface),
     ],
 )
 

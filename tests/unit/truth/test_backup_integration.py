@@ -8,9 +8,12 @@ import sqlite3
 import tarfile
 from pathlib import Path
 
-from work_buddy.truth.identity import new_id
+from work_buddy.truth.identity import new_id, sha256_bytes
 from work_buddy.truth.registry import TruthStoreRegistry
 from work_buddy.truth.store import TruthStore
+
+
+NOW = "2026-07-17T16:00:00.000+00:00"
 
 
 def _profile(
@@ -124,6 +127,57 @@ def test_backup_stages_portable_payload_and_reports_unreachable_store(
     assert json.loads(export_bytes.splitlines()[0])["store_info"]["store_id"] == (
         included.store_id
     )
+
+
+def _seed_document_with_snapshot(store: TruthStore) -> str:
+    """Register a throwaway document carrying a content-addressed ydoc snapshot."""
+    snapshot = b"opaque-ydoc-snapshot-for-backup"
+    digest = sha256_bytes(snapshot)
+    (store.paths.blobs / digest).write_bytes(snapshot)
+    document_id = new_id()
+    with store.write_transaction() as conn:
+        conn.execute(
+            "INSERT INTO documents "
+            "(id, path, title, document_class, content_sha256, "
+            "ydoc_snapshot_sha256, created_at, created_by_kind, created_by_ref, "
+            "meta_json) VALUES (?, 'docs/backup.md', 'Backup doc', "
+            "'co_authored', ?, ?, ?, 'human', 'user-1', NULL)",
+            (document_id, sha256_bytes(b"materialized body"), digest, NOW),
+        )
+        store._insert_ledger_record_locked(conn, "document", document_id)
+    return digest
+
+
+def test_backup_export_embeds_the_ydoc_snapshot_blob(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from work_buddy.backups import local
+
+    registry_path = tmp_path / "live" / "truth_registry.db"
+    registry = TruthStoreRegistry(registry_path)
+    store = _store(tmp_path / "cowork")
+    snapshot_digest = _seed_document_with_snapshot(store)
+    registry.register(store)
+
+    monkeypatch.setattr(
+        local,
+        "_resolve_vital_dbs",
+        lambda: {"truth_registry": registry_path},
+    )
+    monkeypatch.setattr(local, "data_dir", lambda name="": tmp_path / name)
+
+    result = local.run_backup(manual=True)
+    export_member = f"truth_stores/{store.store_id}/claims.jsonl"
+    with tarfile.open(result["tarball_path"], "r:gz") as archive:
+        export_bytes = archive.extractfile(export_member).read()
+
+    blob_digests = [
+        json.loads(line)["content_sha256"]
+        for line in export_bytes.splitlines()
+        if json.loads(line).get("record_type") == "blob"
+    ]
+    assert snapshot_digest in blob_digests
 
 
 def test_backup_generates_private_ephemeral_export_without_raw_store_db(
