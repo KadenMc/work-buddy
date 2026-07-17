@@ -325,3 +325,80 @@ def test_declarative_workload_fixture_set_is_complete_and_executable() -> None:
 
         assert isinstance(fixture["expected_outcomes"], dict)
         assert fixture["expected_outcomes"]
+
+
+# --- document_surface first-class block (WP-A2) -----------------------------
+
+
+def _surface_profile(document_surface: Any) -> dict[str, Any]:
+    profile = _valid_profile()
+    profile.pop("future_profile_key", None)
+    profile["document_surface"] = document_surface
+    return profile
+
+
+def test_document_surface_defaults_to_disabled_when_absent() -> None:
+    profile = validate_profile(_valid_profile())
+    assert profile.document_surface.enabled is False
+    assert profile.document_surface.allowed_document_classes == ()
+    assert profile.document_surface.feedback_capture is False
+    # A profile that never declared the block does not gain one on round-trip.
+    assert "document_surface" not in profile.to_dict()
+
+
+def test_document_surface_parses_the_three_frozen_keys() -> None:
+    profile = validate_profile(
+        _surface_profile(
+            {
+                "enabled": True,
+                "allowed_document_classes": ["co_authored", "generated"],
+                "feedback_capture": True,
+            }
+        )
+    )
+    surface = profile.document_surface
+    assert surface.enabled is True
+    assert surface.allowed_document_classes == ("co_authored", "generated")
+    assert surface.feedback_capture is True
+
+
+def test_document_surface_round_trips_through_dump_and_load(tmp_path: Path) -> None:
+    profile = validate_profile(
+        _surface_profile(
+            {
+                "enabled": True,
+                "allowed_document_classes": ["co_authored"],
+                "feedback_capture": False,
+            }
+        )
+    )
+    emitted = profile.to_dict()
+    assert emitted["document_surface"] == {
+        "enabled": True,
+        "allowed_document_classes": ["co_authored"],
+        "feedback_capture": False,
+    }
+    path = dump_profile(profile, tmp_path)
+    reloaded = load_profile(path)
+    assert reloaded.document_surface == profile.document_surface
+
+
+def test_document_surface_rejects_unknown_document_classes() -> None:
+    with pytest.raises(ProfileError, match="allowed_document_classes"):
+        validate_profile(
+            _surface_profile(
+                {"enabled": True, "allowed_document_classes": ["novel_kind"]}
+            )
+        )
+
+
+def test_document_surface_rejects_unknown_keys() -> None:
+    with pytest.raises(ProfileError, match="unknown keys"):
+        validate_profile(
+            _surface_profile({"enabled": True, "redaction": "aggressive"})
+        )
+
+
+def test_document_surface_rejects_non_boolean_enabled() -> None:
+    with pytest.raises(ProfileError, match="document_surface.enabled"):
+        validate_profile(_surface_profile({"enabled": "yes"}))

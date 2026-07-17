@@ -4,7 +4,23 @@ from types import SimpleNamespace
 
 import pytest
 
-from work_buddy.truth.events import emit_truth_event
+from work_buddy.truth.events import TRUTH_EVENT_TYPES, emit_truth_event
+
+
+TWELVE_DOC_EVENT_TYPES = (
+    "truth.doc_registered",
+    "truth.doc_imported",
+    "truth.doc_materialized",
+    "truth.doc_drift_detected",
+    "truth.doc_reimported",
+    "truth.doc_retired",
+    "truth.doc_proposed",
+    "truth.doc_proposal_decided",
+    "truth.doc_proposal_applied",
+    "truth.doc_proposal_expired",
+    "truth.doc_expression_marked",
+    "truth.doc_feedback_captured",
+)
 
 
 def test_truth_event_is_durable_scoped_and_subject_bound(monkeypatch) -> None:
@@ -82,3 +98,37 @@ def test_truth_event_rejects_unknown_type_and_partial_subject() -> None:
             store_id="a" * 32,
             subject_kind="claim",
         )
+
+
+def test_frozenset_carries_exactly_the_twelve_doc_event_names() -> None:
+    # The frozenset is the SINGLE SOURCE OF TRUTH for truth.doc_* names.
+    doc_names = {name for name in TRUTH_EVENT_TYPES if name.startswith("truth.doc_")}
+    assert doc_names == set(TWELVE_DOC_EVENT_TYPES)
+    assert len(TWELVE_DOC_EVENT_TYPES) == 12
+
+
+@pytest.mark.parametrize("event_type", TWELVE_DOC_EVENT_TYPES)
+def test_each_doc_event_publishes_with_a_doc_subject_uri(
+    monkeypatch, event_type: str
+) -> None:
+    captured = []
+
+    def fake_new_event(source, name, data, **kwargs):
+        captured.append((name, kwargs))
+        return SimpleNamespace(id="evt-doc")
+
+    monkeypatch.setattr("work_buddy.events.envelope.new_event", fake_new_event)
+    monkeypatch.setattr("work_buddy.events.dispatcher.publish", lambda event: None)
+
+    result = emit_truth_event(
+        event_type,
+        store_id="a" * 32,
+        subject_kind="document",
+        subject_id="b" * 32,
+    )
+
+    assert result.published is True
+    name, kwargs = captured[0]
+    assert name == event_type
+    assert kwargs["subject"] == f"wb-truth://{'a' * 32}/document/{'b' * 32}"
+    assert kwargs["durable"] is True

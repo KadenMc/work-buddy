@@ -13,7 +13,20 @@ from urllib.parse import urlparse
 
 
 _UUID4_HEX = re.compile(r"^[0-9a-f]{32}$")
-TRUTH_RECORD_KINDS = frozenset({"claim", "evidence", "span", "derivation"})
+# proposal_status_event and doc_event are deliberately excluded: they are
+# internal audit rows, never cross-store-referenced.
+TRUTH_RECORD_KINDS = frozenset(
+    {
+        "claim",
+        "evidence",
+        "span",
+        "derivation",
+        "document",
+        "document_span",
+        "expression",
+        "proposal",
+    }
+)
 
 
 def new_id() -> str:

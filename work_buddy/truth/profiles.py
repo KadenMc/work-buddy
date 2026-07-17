@@ -35,6 +35,7 @@ _DURATION_MULTIPLIERS = {
 }
 _PROJECTION_MODES = frozenset({"resident", "on_demand", "none"})
 _REJECTED_CONTENT_POLICIES = frozenset({"redact", "retain"})
+_DOCUMENT_CLASSES = frozenset({"co_authored", "generated"})
 
 _TOP_LEVEL_KEYS = frozenset(
     {
@@ -45,6 +46,7 @@ _TOP_LEVEL_KEYS = frozenset(
         "allowed_claim_kinds",
         "required_fields",
         "gate",
+        "document_surface",
         "projection",
         "export_committed",
         "proposal_max_age",
@@ -57,6 +59,13 @@ _GATE_KEYS = frozenset(
         "rejected_content",
         "confirmation_surfaces",
         "block_materialize_on_flags",
+    }
+)
+_DOCUMENT_SURFACE_KEYS = frozenset(
+    {
+        "enabled",
+        "allowed_document_classes",
+        "feedback_capture",
     }
 )
 
@@ -165,6 +174,30 @@ class GatePolicy:
 
 
 @dataclass(frozen=True, slots=True)
+class DocumentSurfacePolicy:
+    """Typed op-gating for co-work document operations.
+
+    A store that never enables this block rejects every document operation
+    with zero migration. The three keys mirror the gate block's proven parse
+    shape: a boolean master switch, an allow-list of document classes, and a
+    feedback-capture toggle. Content redaction and proposal expiry reuse the
+    shipped gate.rejected_content policy and top-level proposal_max_age, so no
+    new content-policy surface is introduced here.
+    """
+
+    enabled: bool = False
+    allowed_document_classes: tuple[str, ...] = ()
+    feedback_capture: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "allowed_document_classes": list(self.allowed_document_classes),
+            "feedback_capture": self.feedback_capture,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class StoreProfile:
     """Validated declarative policy for one targeted truth store."""
 
@@ -177,6 +210,9 @@ class StoreProfile:
     projection: str
     export_committed: bool
     proposal_max_age: int | str | None = None
+    document_surface: DocumentSurfacePolicy = field(
+        default_factory=DocumentSurfacePolicy
+    )
     validators: Mapping[str, Any] = field(default_factory=dict)
     extensions: Mapping[str, Any] = field(default_factory=dict)
     extra: Mapping[str, Any] = field(default_factory=dict)
@@ -201,6 +237,11 @@ class StoreProfile:
             "export_committed": self.export_committed,
             "proposal_max_age": self.proposal_max_age,
         }
+        # Emit the block only when it departs from the disabled default, so a
+        # profile that never declared it round-trips as absent rather than
+        # gaining an implicit block.
+        if self.document_surface != DocumentSurfacePolicy():
+            data["document_surface"] = self.document_surface.to_dict()
         if self.validators:
             data["validators"] = _plain_copy(dict(self.validators))
         if self.extensions:
@@ -231,6 +272,44 @@ def _parse_gate(value: Any) -> GatePolicy:
         confirmation_surfaces=confirmation_surfaces,
         block_materialize_on_flags=block_materialize,
         extensions=extras,
+    )
+
+
+def _parse_document_surface(value: Any) -> DocumentSurfacePolicy:
+    """Parse the optional document_surface block, mirroring _parse_gate.
+
+    Absence yields the disabled default. When present, the three keys are
+    validated exactly and any unknown key is rejected, so a typo cannot
+    silently widen document op-gating.
+    """
+    if value is None:
+        return DocumentSurfacePolicy()
+    raw = _require_mapping(value, "document_surface")
+    unknown = [key for key in raw if key not in _DOCUMENT_SURFACE_KEYS]
+    if unknown:
+        raise ProfileError(
+            f"document_surface has unknown keys: {sorted(unknown)}"
+        )
+    enabled = _require_bool(raw.get("enabled", False), "document_surface.enabled")
+    classes = _unique_strings(
+        raw.get("allowed_document_classes", []),
+        "document_surface.allowed_document_classes",
+        nonempty=False,
+    )
+    invalid = [item for item in classes if item not in _DOCUMENT_CLASSES]
+    if invalid:
+        raise ProfileError(
+            "document_surface.allowed_document_classes must be a subset of "
+            f"{sorted(_DOCUMENT_CLASSES)}, got {invalid}"
+        )
+    feedback_capture = _require_bool(
+        raw.get("feedback_capture", False),
+        "document_surface.feedback_capture",
+    )
+    return DocumentSurfacePolicy(
+        enabled=enabled,
+        allowed_document_classes=classes,
+        feedback_capture=feedback_capture,
     )
 
 
@@ -298,6 +377,7 @@ def validate_profile(value: StoreProfile | Mapping[str, Any]) -> StoreProfile:
         raw.get("required_fields", {}), allowed_claim_kinds
     )
     gate = _parse_gate(raw.get("gate"))
+    document_surface = _parse_document_surface(raw.get("document_surface"))
 
     projection = _require_nonempty_string(raw.get("projection"), "projection")
     if projection not in _PROJECTION_MODES:
@@ -320,6 +400,7 @@ def validate_profile(value: StoreProfile | Mapping[str, Any]) -> StoreProfile:
         allowed_claim_kinds=allowed_claim_kinds,
         required_fields=required_fields,
         gate=gate,
+        document_surface=document_surface,
         projection=projection,
         export_committed=_require_bool(raw.get("export_committed"), "export_committed"),
         proposal_max_age=_normalize_proposal_max_age(raw.get("proposal_max_age")),
@@ -442,6 +523,7 @@ def validate_new_claim(
 
 
 __all__ = [
+    "DocumentSurfacePolicy",
     "GatePolicy",
     "StoreProfile",
     "dump_profile",
