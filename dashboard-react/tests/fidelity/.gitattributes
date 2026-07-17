@@ -1,0 +1,5 @@
+# The corpus is a byte-fidelity fixture. Store and check out its files verbatim so
+# git never rewrites line endings and the expected_sha256 values stay stable across
+# platforms. The manifest is data, likewise pinned to LF.
+corpus/** -text
+manifest.json text eol=lf

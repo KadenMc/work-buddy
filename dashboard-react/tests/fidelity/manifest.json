@@ -1,0 +1,201 @@
+{
+  "schema_version": "wb-fidelity-corpus/v1",
+  "entries": [
+    {
+      "path": "dashboard-react/tests/fidelity/corpus/real/README.md",
+      "expected_sha256": "06fcbb512515f8955ad0e08195e48aee12f35ff9e7bc8f44e18e44680299b53e",
+      "required_extensions": [
+        "table"
+      ]
+    },
+    {
+      "path": "dashboard-react/tests/fidelity/corpus/real/design__truth-layer__implementation-dag.md",
+      "expected_sha256": "3d4aba28b8163361044b300187df0e1f6c714ae6adfcb86c92bb7aa854cbee45",
+      "required_extensions": [
+        "table"
+      ]
+    },
+    {
+      "path": "dashboard-react/tests/fidelity/corpus/real/design__truth-layer__surface__PRD.md",
+      "expected_sha256": "4c6e3f784d0252e76e2a497cfe0a256db6b4dedeef816a1c2b821be450fe65f4",
+      "required_extensions": [
+        "table"
+      ]
+    },
+    {
+      "path": "dashboard-react/tests/fidelity/corpus/real/design__truth-layer__surface__architecture.md",
+      "expected_sha256": "f3cdf02e9b222180350506f05e4c9e0afdc074262c31396595b2f82c8aeb3bae",
+      "required_extensions": [
+        "table"
+      ]
+    },
+    {
+      "path": "dashboard-react/tests/fidelity/corpus/real/design__truth-layer__surface__k2-execution-dag.md",
+      "expected_sha256": "aaebf1d8be2f13d7c3ad9f5f2e1e85fc306dc38702cc29895fee1650348e57c0",
+      "required_extensions": [
+        "table"
+      ]
+    },
+    {
+      "path": "dashboard-react/tests/fidelity/corpus/real/design__truth-layer__surface__tiptap-docs-audit.md",
+      "expected_sha256": "6d5b9bc596e998cd6cffe39abcca380642bab3fc99ec259d1c95855034e6f1b9",
+      "required_extensions": [
+        "table"
+      ]
+    },
+    {
+      "path": "dashboard-react/tests/fidelity/corpus/real/design__truth-layer__tms-glue.md",
+      "expected_sha256": "b86f976ef09eac727e9a2de4a42e5c96aae3aaaa12f5d0b84502cc4a81b0d6fa",
+      "required_extensions": [
+        "table"
+      ]
+    },
+    {
+      "path": "dashboard-react/tests/fidelity/corpus/real/docs__architecture.md",
+      "expected_sha256": "cb13eba238d5696b1fc0fbab31c21d488cce0777472c698f66cbab23dba292c5",
+      "required_extensions": []
+    },
+    {
+      "path": "dashboard-react/tests/fidelity/corpus/real/docs__index.md",
+      "expected_sha256": "0fadb370528b6db7381c57dd00e5f8172cc1cd730835f5cb48a4ccacaccda6d1",
+      "required_extensions": [
+        "table"
+      ]
+    },
+    {
+      "path": "dashboard-react/tests/fidelity/corpus/real/knowledge__store__architecture__artifact-system.md",
+      "expected_sha256": "1e0663537921856318d4e8a06e552dcee90cd7c62d380396d0edba3eaedaff38",
+      "required_extensions": [
+        "table"
+      ]
+    },
+    {
+      "path": "dashboard-react/tests/fidelity/corpus/real/knowledge__store__architecture__event-bus.md",
+      "expected_sha256": "b47a253d6e58e44a4ac4b3b280b6259f99c2b3a2465987e098c093490e9b09df",
+      "required_extensions": [
+        "table"
+      ]
+    },
+    {
+      "path": "dashboard-react/tests/fidelity/corpus/real/knowledge__store__architecture__health.md",
+      "expected_sha256": "6b06d44225d59a6a2dbe156cbd55aa90b848a3ceda0834cc6870eb25419ff7cc",
+      "required_extensions": [
+        "table"
+      ]
+    },
+    {
+      "path": "dashboard-react/tests/fidelity/corpus/real/knowledge__store__architecture__knowledge-system.md",
+      "expected_sha256": "6eb9366dedceec047c62b2c70368a7c17fde9610bd015057a0713cb3ab03104c",
+      "required_extensions": []
+    },
+    {
+      "path": "dashboard-react/tests/fidelity/corpus/real/knowledge__store__architecture__summarization-framework.md",
+      "expected_sha256": "e6ac68b412d9ac2fe9737a1626b31e0f76d231a293c5b9d9e7f4c9e979cea024",
+      "required_extensions": [
+        "table"
+      ]
+    },
+    {
+      "path": "dashboard-react/tests/fidelity/corpus/real/knowledge__store__architecture__workflows.md",
+      "expected_sha256": "839e4802f01051129ddd57d00bcbb1d1f69868c5278dbe3f5eef181568dd7e6f",
+      "required_extensions": [
+        "table"
+      ]
+    },
+    {
+      "path": "dashboard-react/tests/fidelity/corpus/real/knowledge__store__calendar.md",
+      "expected_sha256": "3fa93a064fc778d47f169955149ac056cdf5e742c176e912bf10b60f2a612e01",
+      "required_extensions": []
+    },
+    {
+      "path": "dashboard-react/tests/fidelity/corpus/real/knowledge__store__contracts.md",
+      "expected_sha256": "3d332bebb9cb43f7e04d59808c67bd1d6d80735a75a4672def4af356ef1a6cb8",
+      "required_extensions": []
+    },
+    {
+      "path": "dashboard-react/tests/fidelity/corpus/real/knowledge__store__disclosure.md",
+      "expected_sha256": "0ad9a120004327ef9d36ad3144f0a73f075a71359e527b68805ee7939f390c33",
+      "required_extensions": [
+        "table"
+      ]
+    },
+    {
+      "path": "dashboard-react/tests/fidelity/corpus/real/knowledge__store__email.md",
+      "expected_sha256": "78315b53a06f11b9b7caccbc5d88812d2205d792437e664a61d70d2dbc1c40e0",
+      "required_extensions": [
+        "table"
+      ]
+    },
+    {
+      "path": "dashboard-react/tests/fidelity/corpus/real/knowledge__store__events.md",
+      "expected_sha256": "8634d0ca3908dd1447a265fbb4bf7be4e620b07a88df1c360efb88d499fdacb4",
+      "required_extensions": []
+    },
+    {
+      "path": "dashboard-react/tests/fidelity/corpus/real/knowledge__store__notifications.md",
+      "expected_sha256": "a805d358e17fd1894c1f6a2e40e2aa9529d405df55bcd075d5b272dc1e234bc6",
+      "required_extensions": [
+        "table"
+      ]
+    },
+    {
+      "path": "dashboard-react/tests/fidelity/corpus/real/knowledge__store__summarization.md",
+      "expected_sha256": "4d161fe407c744e096c951b2d66056ace923ab4b4d34cb99e09edc2e6267cf4c",
+      "required_extensions": []
+    },
+    {
+      "path": "dashboard-react/tests/fidelity/corpus/real/knowledge__store__threads.md",
+      "expected_sha256": "e13f69f9b0b7d0c5f1374b7dfbaf7283b37af3dbc695e3530011bda78fd9981b",
+      "required_extensions": []
+    },
+    {
+      "path": "dashboard-react/tests/fidelity/corpus/real/knowledge__store__truth.md",
+      "expected_sha256": "4e7e23e424f0246a7f0439e6f0652ce90a9651475f0d073495e1af43f5580c9c",
+      "required_extensions": []
+    },
+    {
+      "path": "dashboard-react/tests/fidelity/corpus/real/knowledge__store__websearch.md",
+      "expected_sha256": "8403d41d554562cd3554cc5021c1ac2dc7a7362b34766712d8dcd0894ab6aa72",
+      "required_extensions": []
+    },
+    {
+      "path": "dashboard-react/tests/fidelity/corpus/synthetic/empty-paragraph-runs.md",
+      "expected_sha256": "714f52979852e54460285436bc7ea94ab6854ff4f9be00374f949a059ad0bfbb",
+      "required_extensions": []
+    },
+    {
+      "path": "dashboard-react/tests/fidelity/corpus/synthetic/frontmatter-variants.md",
+      "expected_sha256": "c77fd5501108afeaba59b8afbc9e865c7c7010300d6889b741f7cf41f0e78f63",
+      "required_extensions": []
+    },
+    {
+      "path": "dashboard-react/tests/fidelity/corpus/synthetic/inline-and-escaping.md",
+      "expected_sha256": "6a745548f3dff81fd211bbd7ec8a38557704b7543bef9444cc336ff15a4f6247",
+      "required_extensions": []
+    },
+    {
+      "path": "dashboard-react/tests/fidelity/corpus/synthetic/mixed-fences.md",
+      "expected_sha256": "8a11a383eea8881d20ae1019b561e274637e5a6075f6c8b9f04002ddd867ffc9",
+      "required_extensions": []
+    },
+    {
+      "path": "dashboard-react/tests/fidelity/corpus/synthetic/setext-and-lazy-lists.md",
+      "expected_sha256": "0e9d859b0918a740af84460801bed53046e73db1fee11e785d70bcf9affe43da",
+      "required_extensions": []
+    },
+    {
+      "path": "dashboard-react/tests/fidelity/corpus/synthetic/tables-and-tasklists.md",
+      "expected_sha256": "67f3037f779acb7b0bd7aad1599c0a708bc523809dd7c39249b0e3ad84c7a283",
+      "required_extensions": [
+        "image",
+        "table",
+        "taskList"
+      ]
+    },
+    {
+      "path": "dashboard-react/tests/fidelity/corpus/synthetic/wikilinks-callouts.md",
+      "expected_sha256": "fad83cfcd27e5144a3aeb7678b38c92ebac93517a62a1f36d7ce1780f3002a3a",
+      "required_extensions": []
+    }
+  ]
+}
