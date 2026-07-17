@@ -1754,3 +1754,131 @@ def test_supplied_connections_fail_closed_across_stores(
         conn.execute("ROLLBACK")
         conn.close()
     assert lifecycle.latest_status(claim.id).status == "proposed"
+
+
+# --- Co-work proposal subject resolution and allowed-kind sets (WP-A2) -------
+#
+# These tests exercise the shipped-module extensions against the frozen v2 DDL
+# applied by the wave-1 scaffolding helper (_wave1_frozen_ddl). WP-A1's real
+# _m002 migration and store durable-insert seam replace that helper at the
+# join. Proposal DECISION flows themselves live in WP-A3's proposals.py.
+
+from work_buddy.truth.lifecycle import (  # noqa: E402
+    GESTURE_KINDS,
+    PROPOSAL_ACCEPT_KINDS,
+    PROPOSAL_REJECT_KINDS,
+    PROPOSAL_ROUTING_KINDS,
+    REJECTION_CLASSES,
+)
+
+from ._wave1_frozen_ddl import (  # noqa: E402
+    create_document_store,
+    seed_document,
+    seed_proposal,
+)
+
+
+def test_gesture_kinds_grow_redirect_and_endorse() -> None:
+    assert "redirect" in GESTURE_KINDS
+    assert "endorse" in GESTURE_KINDS
+
+
+def test_proposal_allowed_kind_sets_match_the_frozen_contract() -> None:
+    assert PROPOSAL_ACCEPT_KINDS == frozenset({"confirm", "edit_confirm"})
+    assert PROPOSAL_REJECT_KINDS == REJECTION_CLASSES
+    assert PROPOSAL_ROUTING_KINDS == frozenset({"redirect", "defer", "endorse"})
+
+
+def test_mint_gesture_resolves_a_proposal_edit_subject(truth_root: Path) -> None:
+    store = create_document_store(truth_root)
+    lifecycle = TruthLifecycle(store)
+    document_id = seed_document(store, path="docs/design.md")
+    proposal_id = seed_proposal(
+        store,
+        document_id=document_id,
+        quote_exact="old wording",
+        replacement="new wording",
+    )
+    conn = store.connect()
+    try:
+        proposal = store._get_proposal_locked(conn, proposal_id)
+    finally:
+        conn.close()
+
+    gesture = lifecycle.mint_gesture(
+        subject_ref=proposal_id,
+        actor=HUMAN,
+        surface="dashboard",
+        kind="confirm",
+        displayed_payload_sha256=proposal.canonical_sha256,
+        at=NOW,
+    )
+    assert gesture.payload_sha256 == proposal.canonical_sha256
+    assert gesture.payload_excerpt == "old wording -> new wording"
+
+
+def test_mint_gesture_resolves_a_proposal_flag_subject(truth_root: Path) -> None:
+    store = create_document_store(truth_root)
+    lifecycle = TruthLifecycle(store)
+    document_id = seed_document(store, path="docs/design.md")
+    proposal_id = seed_proposal(
+        store,
+        document_id=document_id,
+        quote_exact="unsourced claim",
+        replacement=None,
+        rationale="no citation",
+    )
+    conn = store.connect()
+    try:
+        proposal = store._get_proposal_locked(conn, proposal_id)
+    finally:
+        conn.close()
+
+    gesture = lifecycle.mint_gesture(
+        subject_ref=proposal_id,
+        actor=HUMAN,
+        surface="dashboard",
+        kind="endorse",
+        displayed_payload_sha256=proposal.canonical_sha256,
+        at=NOW,
+    )
+    assert gesture.kind == "endorse"
+    assert gesture.payload_excerpt == "unsourced claim -> [flag] no citation"
+
+
+def test_mint_gesture_rejects_a_stale_proposal_payload_hash(truth_root: Path) -> None:
+    store = create_document_store(truth_root)
+    lifecycle = TruthLifecycle(store)
+    document_id = seed_document(store, path="docs/design.md")
+    proposal_id = seed_proposal(store, document_id=document_id)
+
+    with pytest.raises(GestureError, match="does not match the durable subject"):
+        lifecycle.mint_gesture(
+            subject_ref=proposal_id,
+            actor=HUMAN,
+            surface="dashboard",
+            kind="confirm",
+            displayed_payload_sha256="f" * 64,
+            at=NOW,
+        )
+
+
+def test_proposal_id_colliding_with_a_claim_is_ambiguous(truth_root: Path) -> None:
+    # The Bucket 2 global subject-id uniqueness contract: one subject id must
+    # resolve to exactly one durable record, across all four kinds.
+    store = create_document_store(truth_root)
+    lifecycle = TruthLifecycle(store)
+    claim = store.propose_claim(
+        proposition="a shared-id claim",
+        claim_kind="fact",
+        actor=HUMAN,
+    ).claim
+    document_id = seed_document(store, path="docs/design.md")
+    seed_proposal(store, document_id=document_id, proposal_id=claim.id)
+
+    conn = store.connect()
+    try:
+        with pytest.raises(InvariantViolation, match="ambiguous"):
+            lifecycle._subject_payload_locked(conn, claim.id)
+    finally:
+        conn.close()
