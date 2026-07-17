@@ -54,12 +54,20 @@ GESTURE_KINDS = frozenset(
         "redact",
         "defer",
         "scope",
+        "redirect",
+        "endorse",
     }
 )
 CONFIRM_GESTURE_KINDS = frozenset({"confirm", "reaffirm", "edit_confirm"})
 REJECTION_CLASSES = frozenset(
     {"reject_plain", "reject_as_false", "reject_as_preference"}
 )
+# Proposal-op allowed-kind sets (PRD §6 verb table). Accept and amend reuse the
+# shipped confirm/edit_confirm kinds on a proposal subject, so no new accept
+# kinds are minted. Reject reuses the shipped rejection classes.
+PROPOSAL_ACCEPT_KINDS = frozenset({"confirm", "edit_confirm"})
+PROPOSAL_REJECT_KINDS = REJECTION_CLASSES
+PROPOSAL_ROUTING_KINDS = frozenset({"redirect", "defer", "endorse"})
 REJECTION_BINDING_FIELDS = (
     "rejection_class",
     "source_canonical_sha256",
@@ -295,6 +303,24 @@ class TruthLifecycle:
         span = self.store._get_span_locked(conn, identifier)
         if span is not None:
             matches.append((span.span_sha256, span.quote_exact or span.selector_json))
+        # WAVE-1 ACCOMMODATION (WP-A2): the frozen contract calls
+        # self.store._get_proposal_locked(conn, identifier) directly. That
+        # durable-insert seam is WP-A1's store.py addition and is absent while
+        # the six builders run in parallel, so this getattr guard skips the
+        # branch until it lands. At the join the orchestrator collapses this to
+        # the direct call. The one-match-or-ambiguous rule below is unchanged
+        # and now enforces global subject-id uniqueness across four kinds.
+        get_proposal = getattr(self.store, "_get_proposal_locked", None)
+        proposal = (
+            get_proposal(conn, identifier) if get_proposal is not None else None
+        )
+        if proposal is not None:
+            if proposal.replacement is not None:
+                reviewable = proposal.replacement
+            else:
+                reviewable = "[flag] " + (proposal.rationale or "")
+            excerpt = (proposal.quote_exact or "") + " -> " + reviewable
+            matches.append((proposal.canonical_sha256, excerpt))
         if not matches:
             raise InvariantViolation(f"gesture subject does not exist: {identifier}")
         if len(matches) != 1:
@@ -1614,6 +1640,9 @@ class TruthLifecycle:
 __all__ = [
     "CONFIRM_GESTURE_KINDS",
     "GESTURE_KINDS",
+    "PROPOSAL_ACCEPT_KINDS",
+    "PROPOSAL_REJECT_KINDS",
+    "PROPOSAL_ROUTING_KINDS",
     "REJECTION_BINDING_FIELDS",
     "REJECTION_BINDING_HASH_FIELD",
     "REJECTION_CLASSES",

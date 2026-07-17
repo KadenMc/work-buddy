@@ -11,6 +11,10 @@ from work_buddy.truth.identity import truth_uri
 
 logger = logging.getLogger(__name__)
 
+# This frozenset is the SINGLE SOURCE OF TRUTH for every truth.doc_* event
+# name (C1). The surface SSE table mirrors these names verbatim and coins none
+# of its own, because emit_truth_event raises ValueError for any name absent
+# here, so a surface listener on an unpublished name is silently dead.
 TRUTH_EVENT_TYPES = frozenset(
     {
         "truth.store_created",
@@ -23,6 +27,18 @@ TRUTH_EVENT_TYPES = frozenset(
         "truth.claim_superseded",
         "truth.claim_redacted",
         "truth.sweep_completed",
+        "truth.doc_registered",
+        "truth.doc_imported",
+        "truth.doc_materialized",
+        "truth.doc_drift_detected",
+        "truth.doc_reimported",
+        "truth.doc_retired",
+        "truth.doc_proposed",
+        "truth.doc_proposal_decided",
+        "truth.doc_proposal_applied",
+        "truth.doc_proposal_expired",
+        "truth.doc_expression_marked",
+        "truth.doc_feedback_captured",
     }
 )
 

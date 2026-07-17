@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from work_buddy.truth.store import StatusEventRecord
 
 
-SUBJECT_KINDS = frozenset({"claim", "evidence", "span"})
+SUBJECT_KINDS = frozenset({"claim", "evidence", "span", "proposal"})
 REDACTION_REASONS = frozenset(
     {"rejected_content", "expired_content", "privacy", "source_takedown"}
 )
@@ -163,6 +163,21 @@ class TruthRedactor:
                 redacted_at=row.redacted_at,
                 content_path=row.content_path,
             )
+        if subject_kind == "proposal":
+            proposal = conn.execute(
+                "SELECT id, canonical_sha256, created_at, redacted_at "
+                "FROM proposals WHERE id = ?",
+                (subject_ref,),
+            ).fetchone()
+            if proposal is None:
+                raise InvariantViolation(f"proposal does not exist: {subject_ref}")
+            return _Subject(
+                kind="proposal",
+                ref=proposal["id"],
+                payload_sha256=proposal["canonical_sha256"],
+                created_at=proposal["created_at"],
+                redacted_at=proposal["redacted_at"],
+            )
         row = self.store._get_span_locked(conn, subject_ref)
         if row is None:
             raise InvariantViolation(f"evidence span does not exist: {subject_ref}")
@@ -200,6 +215,12 @@ class TruthRedactor:
                 "WHERE claim_id = ? AND status = 'confirmed' LIMIT 1",
                 (subject_ref,),
             ).fetchone()
+        elif subject_kind == "proposal":
+            row = conn.execute(
+                "SELECT 1 FROM proposal_status_events "
+                "WHERE proposal_id = ? AND status = 'applied' LIMIT 1",
+                (subject_ref,),
+            ).fetchone()
         elif subject_kind == "span":
             row = conn.execute(
                 "SELECT 1 FROM claim_links AS link "
@@ -222,6 +243,57 @@ class TruthRedactor:
             ).fetchone()
         return row is not None
 
+    @staticmethod
+    def _latest_proposal_status_locked(
+        conn: sqlite3.Connection,
+        proposal_ref: str,
+    ) -> str | None:
+        row = conn.execute(
+            "SELECT status FROM proposal_status_events "
+            "WHERE proposal_id = ? ORDER BY seq DESC LIMIT 1",
+            (proposal_ref,),
+        ).fetchone()
+        return None if row is None else row["status"]
+
+    def _validate_proposal_policy_locked(
+        self,
+        conn: sqlite3.Connection,
+        subject: _Subject,
+        *,
+        basis_ref: str,
+        reason: str,
+    ) -> None:
+        # An ever-applied proposal is the ever-confirmed analogue: destroying
+        # the content the human acted on by standing policy is disallowed, so
+        # an applied proposal requires an explicit human redaction gesture.
+        if self._ever_confirmed_locked(conn, "proposal", subject.ref):
+            raise InvariantViolation(
+                "a proposal that was ever applied requires a human redaction gesture"
+            )
+        expected = policy_basis_ref(self.store, reason)
+        if basis_ref != expected:
+            raise InvariantViolation(
+                f"redaction policy basis must be exactly {expected!r}"
+            )
+        latest_status = self._latest_proposal_status_locked(conn, subject.ref)
+        if latest_status is None:
+            raise InvariantViolation("proposal has no status history")
+        expected_status = {
+            "rejected_content": "closed",
+            "expired_content": "expired",
+        }[reason]
+        if latest_status != expected_status:
+            raise InvariantViolation(
+                f"{reason} policy requires proposal status {expected_status!r}"
+            )
+        if reason == "rejected_content":
+            if self.store.profile.gate.rejected_content != "redact":
+                raise InvariantViolation("profile retains rejected proposal content")
+        elif self.store.profile.proposal_max_age_seconds is None:
+            raise InvariantViolation(
+                "profile does not declare a proposal expiry horizon"
+            )
+
     def _validate_policy_locked(
         self,
         conn: sqlite3.Connection,
@@ -230,9 +302,17 @@ class TruthRedactor:
         basis_ref: str,
         reason: str,
     ) -> None:
+        if subject.kind == "proposal":
+            self._validate_proposal_policy_locked(
+                conn,
+                subject,
+                basis_ref=basis_ref,
+                reason=reason,
+            )
+            return
         if subject.kind != "claim":
             raise InvariantViolation(
-                "standing profile policy can redact claim content only"
+                "standing profile policy can redact claim or proposal content only"
             )
         if self._ever_confirmed_locked(conn, subject.kind, subject.ref):
             raise InvariantViolation(
@@ -330,6 +410,16 @@ class TruthRedactor:
                 "UPDATE evidence SET content = NULL, content_path = NULL, "
                 "redacted_at = ? WHERE id = ?",
                 (at, subject.ref),
+            )
+        elif subject.kind == "proposal":
+            # Exactly the shape the proposals redaction carve-out trigger
+            # sanctions: content nulls out, selector becomes the redacted
+            # marker, identity and every hash and dedup_key survive.
+            conn.execute(
+                "UPDATE proposals SET quote_exact = NULL, replacement = NULL, "
+                "rationale = NULL, tldr = NULL, claim_refs_json = NULL, "
+                "selector_json = ?, redacted_at = ? WHERE id = ?",
+                (REDACTED_SELECTOR_JSON, at, subject.ref),
             )
         else:
             conn.execute(
