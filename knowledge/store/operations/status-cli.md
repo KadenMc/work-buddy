@@ -2,8 +2,8 @@
 name: Status CLI (shell-pollable consent/operation status)
 kind: directions
 description: Read-only shell command for polling consent-request and operation status from tooling that cannot speak MCP (the Monitor tool, bash loops, cron)
-summary: '`bash /tmp/wb/status consent wait <request_id>` blocks until a timed-out consent prompt is approved/denied, then exits with a branchable code (0 granted, 1 denied, 2 timeout, 3 not found). Backed by python -m work_buddy.statusctl; read-only; generated per session by a SessionStart hook.'
-trigger: an agent or shell watcher needs to wait for a consent grant (after a gateway consent timeout) or poll operation completion without calling MCP
+summary: '`bash /tmp/wb/status consent wait <request_id>` observes an ordinary timed-out consent request until approval/denial, then exits with a branchable code (0 granted, 1 denied, 2 timeout, 3 not found). Per-invocation exact-review timeouts require a fresh capability invocation instead of retry. Backed by python -m work_buddy.statusctl; read-only; generated per session by a SessionStart hook.'
+trigger: an agent or shell watcher needs to wait for ordinary cacheable consent or poll operation completion without calling MCP
 tags:
 - consent
 - cli
@@ -31,13 +31,19 @@ loops, cron scripts, one-off diagnostics.
 
 ## Why this exists
 
-When a `wb_run` call trips a consent gate, the gateway sends one bundled
+When a `wb_run` call trips an ordinary cacheable consent gate, the gateway sends one bundled
 notification, polls ~90s, then **times out and hands back** a result like
 `{"status":"timeout","request_id":"req_…","operation_id":"op_…"}`. The user
 can still approve on any surface afterward. The agent wants to *wait* for
 that approval and then retry — but a shell watcher has no sanctioned way to
 ask "is this consent granted yet?" without grovelling session-scoped consent
 SQLite directly. This command is that sanctioned poll target.
+
+Per-invocation exact-review consent is deliberately different. Once its
+gateway call times out, a later approval cannot authorize the old operation,
+an operation replay, or any future execution. This command may still observe
+the durable request decision for audit, but the caller must invoke the
+capability again to receive a fresh exact-review prompt.
 
 ## Commands
 
@@ -79,13 +85,17 @@ The verb may be omitted — `consent <id>` is shorthand for
 | 4 | internal error (e.g. no work-buddy interpreter found) |
 | 130 | interrupted (SIGINT) |
 
-## The wait-for-consent pattern
+## The wait-for-consent pattern (ordinary cacheable consent)
 
 The loop the gateway timeout hands off to:
 
 1. A `wb_run` call returns `{"status":"timeout","request_id":…,"operation_id":…}`.
 2. First do anything else you can safely do now — then arm `Monitor` (or a bash loop) on `bash /tmp/wb/status consent wait <request_id> --timeout -1`.
 3. On exit 0 (granted), complete the sanctioned retry — `wb_run("retry", {"operation_id": …})` (or `obsidian_retry` for bridge ops). On exit 1 (denied) abort; on 2 (expired) re-prompt or escalate.
+
+Do not use this retry pattern for `grant_policy="per_invocation"`. A timeout
+has already destroyed that invocation's opportunity to receive ephemeral
+authority; start a fresh capability call instead.
 
 ```bash
 bash /tmp/wb/status consent wait "$REQUEST_ID" --timeout -1
@@ -111,10 +121,15 @@ Waiting is **free** and **self-bounding**, so prefer a generous (or indefinite) 
 
 - **Strictly read-only.** It observes consent/operation state; it never
   mints, caches, or consumes a grant. A `granted` verdict only means the
-  user approved — the actual retry goes back through the gateway, whose
-  `@requires_consent` gate re-checks the grant against the live principal.
-  If the grant has since expired, the gate re-prompts. This preserves the
-  invariant that grants do not time-travel through the retry queue.
+  user approved. For ordinary cacheable consent, the actual retry goes back
+  through the gateway, whose `@requires_consent` gate re-checks the grant
+  against the live principal. If the grant has since expired, the gate
+  re-prompts. This preserves the invariant that grants do not time-travel
+  through the retry queue.
+- **Exact-review decisions are observational only after timeout.** A reported
+  approval for a timed-out per-invocation request writes no reusable grant and
+  cannot authorize replay. Only a fresh prompt on a fresh capability
+  invocation can create the matching ephemeral authority.
 - **Session-scoped grant reads.** Consent grants live in a per-session
   `consent.db`; the command resolves against the baked-in session id, so it
   reads the agent's own grants, not another session's. Out-of-band grants

@@ -46,11 +46,11 @@ Surface rendering:
 - Obsidian: "Open Dashboard" toast (except consent, which uses native modals)
 - Telegram: inline keyboard buttons or text prompts
 
-Requests get a 4-digit short ID (e.g., #4920) for Telegram /reply <short_id> <answer>.
+Requests get a 4-digit short ID (e.g., 4920) for Telegram /reply <short_id> <answer>.
 
 ## Consent — handled automatically by the gateway
 
-When a capability you invoke via `wb_run` hits a `@requires_consent` gate, the gateway transparently creates the notification, delivers to surfaces, polls, and writes the grant on approval. Your `wb_run` call returns the operation's normal result on approval, or `{status: "denied"}` / `{status: "timeout"}` otherwise. No agent-facing capability needs to be called manually. See <<wb:notifications/consent>>.
+When a capability you invoke via `wb_run` hits a `@requires_consent` gate, the gateway transparently creates the notification, delivers it to surfaces, and polls for a response. Ordinary cacheable approval writes a session-scoped grant. Per-invocation exact-review approval writes no grant; it creates one fingerprint-bound ephemeral authorization for the matching immediate execution. Your `wb_run` call returns the operation's normal result on approval, or `{status: "denied"}` / `{status: "timeout"}` otherwise. An exact-review timeout is terminal: later approval or operation replay cannot authorize it, so the caller must invoke the capability again for a fresh prompt. No agent-facing capability needs to be called manually. See <<wb:notifications/consent>>.
 
 ## Handling responses
 

@@ -23,15 +23,13 @@ from work_buddy.consent import (
 
 
 @pytest.fixture(autouse=True)
-def _clear_consent_cache():
-    """Each test starts with no granted consents."""
-    _cache._grants.clear() if hasattr(_cache, "_grants") else None
-    # Defensive — try a few possible internal-state shapes.
-    for attr in ("_grants", "_cache", "_data"):
-        store = getattr(_cache, attr, None)
-        if isinstance(store, dict):
-            store.clear()
+def _isolate_consent_cache(tmp_agents_dir):
+    """Each test uses a fresh session-scoped SQLite consent cache."""
+    _cache._db_path = None
+    _cache._initialized = False
     yield
+    _cache._db_path = None
+    _cache._initialized = False
 
 
 # ---------------------------------------------------------------------------

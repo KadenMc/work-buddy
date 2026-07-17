@@ -17,16 +17,16 @@ The notification system (`work_buddy/notifications/`) enables **real-time human-
 
 - **Notify** the user of events (journal updated, task synced, build complete) — fire-and-forget (`response_type: "none"`)
 - **Request a decision** (yes/no, pick from choices, freeform text input) — blocks or polls for response
-- **Request consent** for protected operations — specialized request with grant/deny/temporary options
+- **Request consent** for protected operations — cacheable requests offer grant durations; exact-review requests offer only allow-once or deny
 - **Reach the user on their phone** via Telegram when they're away from the computer
 
 ## Model
 
 - **Notification** — a message that may not need a response (`response_type: "none"`)
 - **Request** — expects a response: `boolean`, `choice`, `freeform`, `range`, or `custom`
-- **Consent Request** — specialized choice request with `always` / `temporary` / `once` / `deny` options
+- **Consent Request** — specialized choice request. Ordinary requests offer `always` / `temporary` / `once` / `deny`; per-invocation exact-review requests offer only `once` / `deny`
 
-Each notification gets a unique ID (`req_XXXXXXXX`). Requests also get a 4-digit **short ID** (e.g., `#4920`) for easy reference on Telegram via `/reply 4920 yes`.
+Each notification gets a unique ID (`req_XXXXXXXX`). Requests also get a 4-digit **short ID** (e.g., `4920`) for easy reference on Telegram via `/reply 4920 yes`.
 
 ## Surfaces and first-response-wins
 
@@ -56,7 +56,7 @@ mcp__work-buddy__wb_run("request_send", {
 })
 ```
 
-**Consent for `wb_run` operations is handled by the gateway automatically** — when a `@requires_consent` gate fires inside a capability you invoke, the gateway delivers the notification, polls for the user's response, and writes the grant on approval. You receive `{status: "granted"}`, `{status: "denied"}`, or `{status: "timeout"}` from your original `wb_run` call. No manual orchestration. See <<wb:notifications/consent>>.
+**Consent for `wb_run` operations is handled by the gateway automatically** — when a `@requires_consent` gate fires inside a capability you invoke, the gateway delivers the notification and polls for the user's response. Ordinary approval writes a session-scoped grant. Per-invocation exact-review approval writes no grant; it creates a single ephemeral authorization bound to the matching immediate execution. You receive `{status: "granted"}`, `{status: "denied"}`, or `{status: "timeout"}` from your original `wb_run` call. No manual orchestration. See <<wb:notifications/consent>>.
 
 ## TTL and expiry
 
@@ -89,7 +89,7 @@ For `wb_run` operations, consent is handled transparently by the gateway — see
 
 1. `consent_request({operation, reason, risk, timeout_seconds: 90})` — one call.
 2. Obsidian modal + Telegram message + Dashboard toast appear with consent choices.
-3. User responds on any surface → grant auto-written, other surfaces dismissed, result returned.
+3. User responds on any surface → ordinary grant auto-written, other surfaces dismissed, result returned.
 4. If timeout → `{status: "timeout", request_id: "..."}` returned; request stays pending.
    - Agent can `request_poll` later, then `consent_request_resolve`.
    - Or user responds after timeout → callback dispatched via messaging.

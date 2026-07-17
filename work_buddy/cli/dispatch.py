@@ -2,14 +2,15 @@
 
 ``wbuddy`` is the shell entrypoint that takes a fresh user from "installed" to
 "the sidecar is running and Claude Code is wired", and manages the sidecar
-lifecycle afterward. It is deliberately NOT an operations surface: anything
-that acts on work-buddy state goes through the ``wb_*`` MCP gateway. ``wbuddy``
-owns only setup, sidecar lifecycle, diagnostics, and emitting the MCP config.
+lifecycle afterward. Most operations that act on work-buddy state go through
+the ``wb_*`` MCP gateway. The scoped ``truth`` consumer surface is the deliberate
+exception. It opens a local truth store through the engine library directly.
 
     wbuddy start [--foreground]  wbuddy stop    wbuddy restart
     wbuddy status [--json]       wbuddy doctor [<component>] [--json]
     wbuddy setup                 wbuddy mcp print   wbuddy dashboard [--open]
     wbuddy launch
+    wbuddy truth {capture,propose,query,confirm,migrate}
     wbuddy harness {list,enable,disable,primary,sync,doctor}
     wbuddy provision [...]       wbuddy autostart {enable,disable,status}
     wbuddy uninstall             wbuddy tray {enable,disable,status,run}
@@ -33,6 +34,19 @@ def _build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument(
         "--json", action="store_true", default=argparse.SUPPRESS,
+        help="emit machine-readable JSON on stdout",
+    )
+
+    truth_common = argparse.ArgumentParser(add_help=False)
+    truth_common.add_argument(
+        "--store",
+        default=argparse.SUPPRESS,
+        help="scope root or .wb-truth directory (default: discover from cwd)",
+    )
+    truth_common.add_argument(
+        "--json",
+        action="store_true",
+        default=argparse.SUPPRESS,
         help="emit machine-readable JSON on stdout",
     )
 
@@ -69,6 +83,105 @@ def _build_parser() -> argparse.ArgumentParser:
         "launch",
         help="start work-buddy if needed and open the React dashboard app",
     )
+
+    p_truth = sub.add_parser(
+        "truth",
+        parents=[truth_common],
+        help="access the nearest scoped truth store directly",
+    )
+    truth_sub = p_truth.add_subparsers(dest="truth_command", required=True)
+
+    p_capture = truth_sub.add_parser(
+        "capture",
+        parents=[truth_common],
+        help="capture immutable evidence",
+    )
+    p_capture.add_argument(
+        "--kind",
+        required=True,
+        choices=("document", "web", "chat", "utterance", "artifact", "import"),
+    )
+    p_capture.add_argument("--source-locator", required=True)
+    p_capture.add_argument(
+        "--acquisition-method",
+        required=True,
+        choices=("fetch", "paste", "import", "said_in_chat", "file_read"),
+    )
+    capture_content = p_capture.add_mutually_exclusive_group()
+    capture_content.add_argument("--content")
+    capture_content.add_argument(
+        "--content-file",
+        help="read content bytes from a path, or from stdin with -",
+    )
+    p_capture.add_argument("--content-sha256")
+    p_capture.add_argument("--media-type")
+    p_capture.add_argument("--acquired-at")
+    p_capture.add_argument(
+        "--origin",
+        choices=(
+            "user_input",
+            "human_curated",
+            "agent_generated",
+            "mixed_transcript",
+            "preexisting",
+            "external",
+        ),
+    )
+    p_capture.add_argument("--external-reviewed", action="store_true")
+    p_capture.add_argument("--derived-from-store")
+    p_capture.add_argument("--meta-json")
+    p_capture.add_argument("--quote")
+    p_capture.add_argument("--prefix")
+    p_capture.add_argument("--suffix")
+    p_capture.add_argument("--start", type=int)
+    p_capture.add_argument("--end", type=int)
+
+    p_propose = truth_sub.add_parser(
+        "propose",
+        parents=[truth_common],
+        help="propose one profile-valid claim",
+    )
+    p_propose.add_argument("--proposition", required=True)
+    p_propose.add_argument("--kind", required=True)
+    p_propose.add_argument("--structured-json")
+    p_propose.add_argument("--scope", default="store")
+    p_propose.add_argument("--valid-from")
+    p_propose.add_argument("--valid-to")
+    p_propose.add_argument("--confidence", type=float)
+    p_propose.add_argument("--support-span", action="append", default=None)
+    p_propose.add_argument("--meta-json")
+
+    p_query = truth_sub.add_parser(
+        "query",
+        parents=[truth_common],
+        help="query current, historical, review, or conflict state",
+    )
+    p_query.add_argument(
+        "--view",
+        choices=("current", "as-of", "needs-review", "conflicts"),
+        default="current",
+    )
+    p_query.add_argument("--belief-at")
+    p_query.add_argument("--valid-at")
+    p_query.add_argument("--scope")
+    p_query.add_argument("--claim-kind")
+    p_query.add_argument("--claim-id")
+    p_query.add_argument("--include-needs-review", action="store_true")
+
+    p_confirm = truth_sub.add_parser(
+        "confirm",
+        parents=[truth_common],
+        help="confirm through an interactive TTY or an existing gesture",
+    )
+    p_confirm.add_argument("claim_id")
+    p_confirm.add_argument("--gesture")
+
+    p_migrate = truth_sub.add_parser(
+        "migrate",
+        parents=[truth_common],
+        help="open and migrate one store or all registered stores",
+    )
+    p_migrate.add_argument("--all", action="store_true", dest="all_stores")
 
     p_mcp = sub.add_parser("mcp", help="MCP config helpers")
     mcp_sub = p_mcp.add_subparsers(dest="mcp_command", required=True)
@@ -211,6 +324,10 @@ def main(argv: list[str] | None = None) -> int:
             return commands.cmd_autostart(args)
         if args.command == "tray":
             return commands.cmd_tray(args)
+        if args.command == "truth":
+            from work_buddy.cli.truth import cmd_truth
+
+            return cmd_truth(args)
         handler = _HANDLERS.get(args.command)
         if handler is None:
             parser.error(f"unknown command: {args.command}")
