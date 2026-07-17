@@ -154,11 +154,25 @@ def _seed_all_tables(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _v1_runner() -> truth_migrations._TruthMigrationRunner:
+    """A runner pinned to the v1 schema, for exercising migration machinery."""
+    return truth_migrations._TruthMigrationRunner(
+        "truth",
+        migrations=[
+            Migration(
+                1,
+                "initial truth ledger schema",
+                truth_migrations._m001_initial_schema,
+            ),
+        ],
+    )
+
+
 @pytest.fixture
 def migrated_db(tmp_path: Path):
     path = tmp_path / "store.db"
     conn = _connect(path)
-    assert truth_migrations.migrate(conn, path) == 1
+    assert truth_migrations.migrate(conn, path) == 2
     _seed_all_tables(conn)
     try:
         yield conn, path
@@ -321,10 +335,91 @@ EXPECTED_COLUMNS = {
         "health_reason",
         "rebuilt_at",
     },
+    "documents": {
+        "id",
+        "path",
+        "title",
+        "document_class",
+        "content_sha256",
+        "ydoc_snapshot_sha256",
+        "created_at",
+        "created_by_kind",
+        "created_by_ref",
+        "meta_json",
+    },
+    "document_spans": {
+        "id",
+        "document_id",
+        "selector_json",
+        "quote_exact",
+        "span_sha256",
+        "author_kind",
+        "author_ref",
+        "created_at",
+        "created_by_kind",
+        "created_by_ref",
+    },
+    "expressions": {
+        "id",
+        "document_span_id",
+        "claim_ref_kind",
+        "claim_ref",
+        "role",
+        "claim_canonical_sha256",
+        "span_sha256",
+        "created_at",
+        "created_by_kind",
+        "created_by_ref",
+        "meta_json",
+    },
+    "proposals": {
+        "id",
+        "document_id",
+        "base_content_sha256",
+        "selector_json",
+        "quote_exact",
+        "span_sha256",
+        "replacement",
+        "rationale",
+        "tldr",
+        "claim_refs_json",
+        "canonical_sha256",
+        "dedup_key",
+        "expires_at",
+        "created_at",
+        "created_by_kind",
+        "created_by_ref",
+        "meta_json",
+        "redacted_at",
+    },
+    "proposal_status_events": {
+        "seq",
+        "id",
+        "proposal_id",
+        "status",
+        "decision",
+        "at",
+        "actor_kind",
+        "actor_ref",
+        "basis_kind",
+        "basis_ref",
+        "note",
+    },
+    "doc_events": {
+        "id",
+        "document_id",
+        "kind",
+        "at",
+        "actor_kind",
+        "actor_ref",
+        "content_sha256",
+        "ydoc_snapshot_sha256",
+        "detail",
+    },
 }
 
 
-def test_schema_v1_has_all_committed_tables_columns_indexes_and_triggers(
+def test_schema_v2_has_all_committed_tables_columns_indexes_and_triggers(
     migrated_db,
 ):
     conn, _ = migrated_db
@@ -356,6 +451,16 @@ def test_schema_v1_has_all_committed_tables_columns_indexes_and_triggers(
         "idx_evidence_content_sha256",
         "idx_evidence_spans_evidence",
         "idx_sweep_findings_sweep",
+        "uq_documents_path",
+        "idx_documents_ydoc_snapshot",
+        "idx_document_spans_document",
+        "idx_expressions_document_span",
+        "idx_expressions_claim_ref",
+        "idx_proposals_document",
+        "idx_proposals_dedup",
+        "idx_proposals_canonical",
+        "idx_proposal_status_proposal_seq",
+        "idx_doc_events_document",
     } <= set(indexes)
     assert "WHERE status = 'confirmed'" in indexes["uq_claim_status_confirm_gesture"]
 
@@ -363,7 +468,7 @@ def test_schema_v1_has_all_committed_tables_columns_indexes_and_triggers(
         row["name"]
         for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'")
     }
-    assert len(triggers) == 29
+    assert len(triggers) == 41
     assert not any(name.startswith("projections_") for name in triggers)
     assert not any(name.startswith("claims_current_") for name in triggers)
     assert truth_migrations.current_version(conn) == truth_migrations.SCHEMA_VERSION
@@ -373,13 +478,13 @@ def test_reopening_is_idempotent(tmp_path: Path):
     path = tmp_path / "store.db"
     conn = _connect(path)
     for _ in range(6):
-        assert truth_migrations.migrate(conn, path) == 1
-    assert conn.execute("SELECT COUNT(*) FROM _migration_history").fetchone()[0] == 1
+        assert truth_migrations.migrate(conn, path) == 2
+    assert conn.execute("SELECT COUNT(*) FROM _migration_history").fetchone()[0] == 2
     assert (
         conn.execute(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger'"
         ).fetchone()[0]
-        == 29
+        == 41
     )
     conn.close()
 
@@ -684,6 +789,7 @@ def test_failed_migration_rolls_back_schema_and_both_versions(
 ):
     path = tmp_path / "store.db"
     conn = _connect(path)
+    monkeypatch.setattr(truth_migrations, "TRUTH_MIGRATIONS", _v1_runner())
     assert truth_migrations.migrate(conn, path) == 1
     _insert_store_info(conn)
     conn.commit()
@@ -712,6 +818,7 @@ def test_failed_migration_rolls_back_schema_and_both_versions(
 def test_snapshot_precedes_synthetic_v2_migration(tmp_path: Path, monkeypatch):
     path = tmp_path / "store.db"
     conn = _connect(path)
+    monkeypatch.setattr(truth_migrations, "TRUTH_MIGRATIONS", _v1_runner())
     assert truth_migrations.migrate(conn, path) == 1
     _insert_store_info(conn)
     conn.commit()
@@ -750,6 +857,7 @@ def test_snapshot_precedes_synthetic_v2_migration(tmp_path: Path, monkeypatch):
 def test_each_version_bump_gets_its_own_snapshot(tmp_path: Path, monkeypatch):
     path = tmp_path / "store.db"
     conn = _connect(path)
+    monkeypatch.setattr(truth_migrations, "TRUTH_MIGRATIONS", _v1_runner())
     assert truth_migrations.migrate(conn, path) == 1
     _insert_store_info(conn)
     conn.commit()
@@ -792,11 +900,11 @@ def test_each_version_bump_gets_its_own_snapshot(tmp_path: Path, monkeypatch):
 def test_newer_store_version_is_refused_before_snapshot(tmp_path: Path):
     path = tmp_path / "store.db"
     conn = _connect(path)
-    conn.execute("PRAGMA user_version = 2")
+    conn.execute("PRAGMA user_version = 3")
     conn.commit()
-    with pytest.raises(SchemaVersionTooNew, match="only knows up to v1"):
+    with pytest.raises(SchemaVersionTooNew, match="only knows up to v2"):
         truth_migrations.migrate(conn, path)
-    assert not (tmp_path / "store.pre-v2.db").exists()
+    assert not (tmp_path / "store.pre-v3.db").exists()
     conn.close()
 
 
@@ -817,9 +925,13 @@ def test_partial_v0_schema_is_refused_not_stamped(tmp_path: Path):
     conn.close()
 
 
-def test_store_info_and_pragma_version_mismatch_is_refused(tmp_path: Path):
+def test_store_info_and_pragma_version_mismatch_is_refused(
+    tmp_path: Path,
+    monkeypatch,
+):
     path = tmp_path / "store.db"
     conn = _connect(path)
+    monkeypatch.setattr(truth_migrations, "TRUTH_MIGRATIONS", _v1_runner())
     assert truth_migrations.migrate(conn, path) == 1
     _insert_store_info(conn)
     conn.commit()
