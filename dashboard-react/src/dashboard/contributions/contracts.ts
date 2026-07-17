@@ -5,6 +5,16 @@ import type {
 } from "./themeContract";
 import type { HelpContent } from "../help/contracts";
 
+/**
+ * How a view composes its regions. `standard-grid` (the default when the field is
+ * absent) is the 24-column React-Grid-Layout dashboard of independently hydrated
+ * widgets. `single-surface` mounts one App-owned renderer that composes its regions
+ * itself, for surfaces that must share sub-frame local state and talk to their own
+ * routes directly. Grid-composition invariants are relaxed for `single-surface`, but
+ * every identity, trust, route, and theme safety invariant is retained.
+ */
+export type ViewLayoutKind = "standard-grid" | "single-surface";
+
 export type JsonPrimitive = boolean | number | string | null;
 export type JsonValue =
   | JsonPrimitive
@@ -162,6 +172,31 @@ export interface DefaultWidgetSlot {
   readonly lockedReason?: string;
 }
 
+/**
+ * One App-composed region of a `single-surface` view. It is the stable identity,
+ * ownership, and theme unit that a standard-grid slot is, but the App renderer places
+ * it inside one shared React tree rather than the registry placing it on the grid, so
+ * it carries a role, help, and a theme declaration but no grid layout or widget-type
+ * binding. Presence is always required: a single-surface region is structural, not
+ * user-removable.
+ */
+export interface SurfaceRegionDefinition {
+  readonly regionId: string;
+  readonly role: WidgetRoleId;
+  readonly help: HelpContent;
+  readonly theme: WidgetThemeDeclaration;
+  readonly presence: "required";
+}
+
+/**
+ * The composition of a `single-surface` view. The App renderer owns the arrangement
+ * of these regions inside one live React tree, and the registry validates their
+ * identity and theme obligations without placing them on a grid.
+ */
+export interface SingleSurfaceComposition {
+  readonly regions: readonly SurfaceRegionDefinition[];
+}
+
 export interface ViewDefinition {
   readonly viewId: ViewId;
   readonly definitionVersion: number;
@@ -184,10 +219,22 @@ export interface ViewDefinition {
     readonly pageId: SettingsPageId;
     readonly label: string;
   };
+  /**
+   * How this view composes. Absent or `standard-grid` is the default widget grid.
+   * `single-surface` relaxes only the grid-composition invariants and requires the
+   * `surface` composition below instead of grid slots.
+   */
+  readonly layoutKind?: ViewLayoutKind;
   readonly grid: DashboardGridDefinition;
   readonly defaultSlots: readonly DefaultWidgetSlot[];
   readonly readingOrder: readonly WidgetSlotId[];
   readonly mobileOrder: readonly WidgetSlotId[];
+  /**
+   * Present if and only if `layoutKind` is `single-surface`. A standard-grid view
+   * must leave this absent, and a single-surface view must leave `defaultSlots`,
+   * `readingOrder`, and `mobileOrder` empty.
+   */
+  readonly surface?: SingleSurfaceComposition;
 }
 
 /** Pure contribution data; executable widget/view modules are registered separately. */

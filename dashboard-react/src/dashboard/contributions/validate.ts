@@ -3,8 +3,10 @@ import type {
   AppId,
   DefaultWidgetSlot,
   JsonSchemaReference,
+  SurfaceRegionDefinition,
   ViewDefinition,
   ViewId,
+  ViewLayoutKind,
   WidgetDefinition,
   WidgetIntentEffect,
   WidgetIntentPreviewPolicy,
@@ -56,7 +58,9 @@ export class ContributionValidationError extends Error {
 const NAMESPACED_ID = /^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)+$/;
 const ROLE_ID = /^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)+@[1-9]\d*$/;
 const SLOT_ID = /^[a-z][a-z0-9-]*$/;
+const REGION_ID = /^[a-z][a-z0-9-]*$/;
 const INSTANCE_ID = /^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$/;
+const LAYOUT_KINDS = new Set<ViewLayoutKind>(["standard-grid", "single-surface"]);
 const THEME_SUPPORT = new Set<WidgetThemeSupport>([
   "light",
   "dark",
@@ -631,6 +635,111 @@ const validateOrder = (
   }
 };
 
+const validateSurfaceRegion = (
+  region: SurfaceRegionDefinition,
+  path: string,
+  roles: ReadonlyMap<WidgetRoleId, WidgetRoleContract>,
+  issues: ValidationIssue[],
+): void => {
+  if (!REGION_ID.test(region.regionId)) {
+    addIssue(
+      issues,
+      "invalid_region_id",
+      `${path}.regionId`,
+      "must be a stable local purpose ID such as editor",
+    );
+  }
+  validateRoleId(region.role, `${path}.role`, issues);
+  if (!roles.has(region.role)) {
+    addIssue(
+      issues,
+      "unknown_region_role",
+      `${path}.role`,
+      `references unregistered role ${region.role}`,
+    );
+  }
+  if (region.presence !== "required") {
+    addIssue(
+      issues,
+      "invalid_region_presence",
+      `${path}.presence`,
+      "a single-surface region is structural and must declare presence required",
+    );
+  }
+  validateHelpContent(region.help, `${path}.help`, issues);
+  issues.push(...validateWidgetThemeDeclaration(region.theme, `${path}.theme`));
+};
+
+/**
+ * A single-surface view keeps every identity, trust, route, and theme invariant but
+ * has no grid. It must carry a non-empty surface composition of versioned, themed
+ * regions and must leave the grid slot and order fields empty.
+ */
+const validateSingleSurfaceView = (
+  view: ViewDefinition,
+  path: string,
+  roles: ReadonlyMap<WidgetRoleId, WidgetRoleContract>,
+  issues: ValidationIssue[],
+): void => {
+  if (view.defaultSlots.length > 0) {
+    addIssue(
+      issues,
+      "single_surface_has_grid_slots",
+      `${path}.defaultSlots`,
+      "a single-surface view composes regions itself and must not declare grid slots",
+    );
+  }
+  if (view.readingOrder.length > 0 || view.mobileOrder.length > 0) {
+    addIssue(
+      issues,
+      "single_surface_has_grid_order",
+      `${path}.readingOrder`,
+      "a single-surface view has no grid reading or mobile order",
+    );
+  }
+
+  const surface = view.surface;
+  if (surface === undefined) {
+    addIssue(
+      issues,
+      "missing_surface_composition",
+      `${path}.surface`,
+      "a single-surface view must declare its surface region composition",
+    );
+    return;
+  }
+
+  if (surface.regions.length === 0) {
+    addIssue(
+      issues,
+      "empty_surface_composition",
+      `${path}.surface.regions`,
+      "must declare at least one surface region",
+    );
+  }
+  const regionIds = surface.regions.map((region) => region.regionId);
+  if (findDuplicates(regionIds).length > 0) {
+    addIssue(
+      issues,
+      "duplicate_region_id",
+      `${path}.surface.regions`,
+      "region IDs must be unique per view",
+    );
+  }
+  const roleIds = surface.regions.map((region) => region.role);
+  if (findDuplicates(roleIds).length > 0) {
+    addIssue(
+      issues,
+      "duplicate_region_role",
+      `${path}.surface.regions`,
+      "each surface region must fill a distinct role",
+    );
+  }
+  surface.regions.forEach((region, index) => {
+    validateSurfaceRegion(region, `${path}.surface.regions[${index}]`, roles, issues);
+  });
+};
+
 const validateViewDefinition = (
   view: ViewDefinition,
   app: AppContribution,
@@ -699,6 +808,33 @@ const validateViewDefinition = (
       );
     }
   }
+  const layoutKind: ViewLayoutKind = view.layoutKind ?? "standard-grid";
+  if (view.layoutKind !== undefined && !LAYOUT_KINDS.has(view.layoutKind)) {
+    addIssue(
+      issues,
+      "invalid_layout_kind",
+      `${path}.layoutKind`,
+      "must be standard-grid or single-surface",
+    );
+  }
+
+  // The single-surface kind relaxes ONLY the grid-composition invariants (RGL columns,
+  // slot placement, overlap, reading and mobile order). Every identity, trust, route,
+  // and theme safety invariant above and in the region validation below is retained.
+  if (layoutKind === "single-surface") {
+    validateSingleSurfaceView(view, path, roles, issues);
+    return;
+  }
+
+  if (view.surface !== undefined) {
+    addIssue(
+      issues,
+      "surface_on_standard_grid",
+      `${path}.surface`,
+      "only a single-surface view may declare a surface composition",
+    );
+  }
+
   if (view.grid.columns !== DASHBOARD_GRID_COLUMNS) {
     addIssue(
       issues,

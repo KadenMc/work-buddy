@@ -2,7 +2,7 @@ import type { ComponentType, ReactNode } from "react";
 
 import type { PersonalizationRepository } from "../personalization/repository";
 import type { ViewProvider } from "../providers/ViewProvider";
-import type { ViewId, ViewModuleId, ViewSnapshot } from "./contracts";
+import type { ViewDefinition, ViewId, ViewModuleId, ViewSnapshot } from "./contracts";
 
 export interface StandardViewRuntimeContext {
   readonly search: string;
@@ -25,11 +25,34 @@ export interface StandardViewRuntimeConfiguration {
   ) => ReactNode;
 }
 
+/**
+ * Props Dashboard Core passes to a single-surface view's App-owned renderer. The
+ * renderer receives the same coarse ViewProvider a standard view does (which document
+ * is open, its content-meta, drift, and SSE-driven invalidations) and owns everything
+ * below the coarse session itself: its live local state and any direct route calls.
+ * It is not a hydrated widget, so the Widget Renderer Contract's URL/SSE/direct-call
+ * exclusions do not apply to it.
+ */
+export interface SingleSurfaceRuntimeProps {
+  readonly definition: ViewDefinition;
+  readonly provider: ViewProvider;
+  readonly providerLabel?: string;
+}
+
+/** The App-owned renderer a single-surface view mounts through ViewHost. */
+export type SingleSurfaceComponent = ComponentType<SingleSurfaceRuntimeProps>;
+
 export interface LoadedStandardWidgetViewModule {
   readonly hostContractVersion: 1;
   createRuntime(
     context: StandardViewRuntimeContext,
   ): StandardViewRuntimeConfiguration;
+  /**
+   * Present only when the bound view declares `layoutKind: "single-surface"`. ViewHost
+   * mounts this App-owned renderer instead of the widget grid. Absent for standard
+   * grid views, whose module contributes only runtime configuration.
+   */
+  readonly surface?: SingleSurfaceComponent;
 }
 
 /**
