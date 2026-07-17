@@ -158,6 +158,14 @@ def _current_known_max_schema_versions() -> dict[str, int]:
         out["settings"] = SETTINGS_MIGRATIONS.target_version
     except Exception as exc:
         logger.warning("restore: cannot read SETTINGS_MIGRATIONS: %s", exc)
+    try:
+        from work_buddy.truth.registry_migrations import TRUTH_REGISTRY_MIGRATIONS
+        out["truth_registry"] = TRUTH_REGISTRY_MIGRATIONS.target_version
+    except Exception as exc:
+        logger.warning(
+            "restore: cannot read TRUTH_REGISTRY_MIGRATIONS: %s",
+            exc,
+        )
     return out
 
 
@@ -309,6 +317,11 @@ def restore(
     staging_dir.mkdir(parents=True)
     with tarfile.open(tarball, "r:gz") as tf:
         tf.extractall(staging_dir)
+    # Scoped truth payloads require an explicit Truth import/recovery flow.
+    # Keep them in the snapshot tarball and out of the host database swap.
+    truth_payloads = staging_dir / "truth_stores"
+    if truth_payloads.exists():
+        shutil.rmtree(truth_payloads)
 
     # 4. Migrate each DB in staging forward.
     #    The on-disk file's basename (e.g. "task_metadata.db") is the
@@ -381,6 +394,9 @@ def _apply_migrations_inplace(db_name: str, db_path: Path) -> None:
     elif db_name == "settings":
         from work_buddy.settings.migrations import SETTINGS_MIGRATIONS
         runner = SETTINGS_MIGRATIONS
+    elif db_name == "truth_registry":
+        from work_buddy.truth.registry_migrations import TRUTH_REGISTRY_MIGRATIONS
+        runner = TRUTH_REGISTRY_MIGRATIONS
     if runner is None:
         # No migration ladder for this DB — leave it as-is.
         return

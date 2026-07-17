@@ -52,10 +52,11 @@ import functools
 import logging
 import sqlite3
 import threading
+from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator, Mapping
 
 from work_buddy.agent_session import (
     get_session_consent_db_path,
@@ -383,6 +384,80 @@ class Risk(str, Enum):
     HIGH = "high"
 
 
+@dataclass(frozen=True, slots=True)
+class ConsentPrompt:
+    """Server-composed content for one consent decision."""
+
+    body: str
+    fingerprint: str
+    context: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.body, str) or not self.body.strip():
+            raise ValueError("consent prompt body must be a nonempty string")
+        if not isinstance(self.fingerprint, str) or not self.fingerprint.strip():
+            raise ValueError("consent prompt fingerprint must be a nonempty string")
+        if not isinstance(self.context, Mapping):
+            raise TypeError("consent prompt context must be a mapping")
+        object.__setattr__(self, "context", dict(self.context))
+
+
+@dataclass(slots=True)
+class PerInvocationAuthorization:
+    """One ephemeral approval available to one matching operation call."""
+
+    operation: str
+    fingerprint: str
+    request_id: str
+    response_surface: str
+    context: Mapping[str, Any] = field(default_factory=dict)
+    consumed: bool = False
+
+
+class _PerInvocationContext(threading.local):
+    def __init__(self) -> None:
+        super().__init__()
+        self.authorization: PerInvocationAuthorization | None = None
+
+
+_per_invocation_ctx = _PerInvocationContext()
+
+
+@contextmanager
+def per_invocation_authorization(
+    operation: str,
+    fingerprint: str,
+    *,
+    request_id: str,
+    response_surface: str,
+    context: Mapping[str, Any] | None = None,
+) -> Iterator[PerInvocationAuthorization]:
+    """Bind one ephemeral approval around the immediate gateway retry."""
+
+    values = (operation, fingerprint, request_id, response_surface)
+    if any(not isinstance(value, str) or not value.strip() for value in values):
+        raise ValueError("per-invocation authorization fields must be nonempty strings")
+    authorization = PerInvocationAuthorization(
+        operation=operation.strip(),
+        fingerprint=fingerprint.strip(),
+        request_id=request_id.strip(),
+        response_surface=response_surface.strip(),
+        context=dict(context or {}),
+    )
+    previous = _per_invocation_ctx.authorization
+    _per_invocation_ctx.authorization = authorization
+    try:
+        yield authorization
+    finally:
+        _per_invocation_ctx.authorization = previous
+
+
+def current_per_invocation_authorization() -> PerInvocationAuthorization | None:
+    """Return the ephemeral approval bound to the current execution thread."""
+
+    return _per_invocation_ctx.authorization
+
+
 class ConsentRequired(Exception):
     """Raised when a function requires user consent to proceed.
 
@@ -399,11 +474,20 @@ class ConsentRequired(Exception):
         reason: str,
         risk: str,
         default_ttl: int,
+        *,
+        body: str | None = None,
+        fingerprint: str | None = None,
+        context: Mapping[str, Any] | None = None,
+        grant_policy: str = "cacheable",
     ):
         self.operation = operation
         self.reason = reason
         self.risk = risk
         self.default_ttl = default_ttl
+        self.body = body if body is not None else reason
+        self.fingerprint = fingerprint
+        self.context = dict(context or {})
+        self.grant_policy = grant_policy
         # The message does NOT prefix itself with ``ConsentRequired:`` —
         # the exception class name is always available via ``type(exc)``
         # for any caller that wants it.  Self-prefixing creates a redundant
@@ -963,6 +1047,8 @@ def requires_consent(
     default_ttl: int = 5,
     body_extras: Callable[[], str] | None = None,
     consent_weight: str | None = None,
+    grant_policy: str = "cacheable",
+    request_factory: Callable[..., ConsentPrompt] | None = None,
 ):
     """Decorator that gates a function on user consent.
 
@@ -1003,7 +1089,23 @@ def requires_consent(
             existing call sites that did not specify a weight retain the
             sensible behavior: high-risk operations get high-weight
             treatment, moderate-risk get moderate-weight, etc.
+        grant_policy: ``"cacheable"`` uses the existing grant cache.
+            ``"per_invocation"`` requires a matching ephemeral approval
+            for every execution.
+        request_factory: Callable that receives the function's actual
+            arguments and returns a ``ConsentPrompt``. Required when
+            ``grant_policy`` is ``"per_invocation"``.
     """
+    if grant_policy not in ("cacheable", "per_invocation"):
+        raise ValueError(
+            f"Invalid grant_policy value: {grant_policy!r}. "
+            "Must be one of: cacheable, per_invocation"
+        )
+    if grant_policy == "per_invocation" and request_factory is None:
+        raise ValueError(
+            "request_factory is required for per_invocation consent"
+        )
+
     # Default consent_weight to mirror risk when not explicitly set.
     # This keeps existing call sites — which never passed consent_weight
     # — calibrated to their declared risk.
@@ -1016,6 +1118,8 @@ def requires_consent(
         "default_ttl": default_ttl,
         "body_extras": body_extras,
         "consent_weight": effective_weight,
+        "grant_policy": grant_policy,
+        "request_factory": request_factory,
     }
 
     # Validate risk at decoration time (fail-fast on typos)
@@ -1033,6 +1137,43 @@ def requires_consent(
     def decorator(fn: Callable) -> Callable:
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
+            if grant_policy == "per_invocation":
+                prompt = request_factory(*args, **kwargs)  # type: ignore[misc]
+                if not isinstance(prompt, ConsentPrompt):
+                    raise TypeError(
+                        "per_invocation request_factory must return ConsentPrompt"
+                    )
+                authorization = current_per_invocation_authorization()
+                if (
+                    authorization is not None
+                    and not authorization.consumed
+                    and authorization.operation == operation
+                    and authorization.fingerprint == prompt.fingerprint
+                ):
+                    authorization.consumed = True
+                    _audit_log(
+                        "PER_INVOCATION_EXECUTED",
+                        operation,
+                        f"request_id={authorization.request_id}",
+                    )
+                    return fn(*args, **kwargs)
+
+                _audit_log(
+                    "BLOCKED",
+                    operation,
+                    "no_matching_per_invocation_authorization",
+                )
+                raise ConsentRequired(
+                    operation=operation,
+                    reason=reason,
+                    risk=risk,
+                    default_ttl=default_ttl,
+                    body=prompt.body,
+                    fingerprint=prompt.fingerprint,
+                    context=prompt.context,
+                    grant_policy=grant_policy,
+                )
+
             # ── Nested call: pass through if inside a consent context ──
             if _consent_ctx.depth > 0:
                 _consent_ctx.covered_operations.append(operation)
@@ -1626,6 +1767,8 @@ def create_consent_request(
     callback: dict | None = None,
     callback_session_id: str | None = None,
     surfaces: list[str] | None = None,
+    grant_policy: str = "cacheable",
+    fingerprint: str | None = None,
 ) -> dict:
     """Create a pending consent request for out-of-conversation approval.
 
@@ -1651,6 +1794,18 @@ def create_consent_request(
     )
     from work_buddy.notifications.store import create_notification
 
+    if grant_policy not in ("cacheable", "per_invocation"):
+        raise ValueError(
+            f"Invalid grant_policy value: {grant_policy!r}. "
+            "Must be one of: cacheable, per_invocation"
+        )
+    if grant_policy == "per_invocation" and (
+        not isinstance(fingerprint, str) or not fingerprint.strip()
+    ):
+        raise ValueError(
+            "fingerprint is required for per_invocation consent"
+        )
+
     # Determine source type from requester string
     source_type = (
         SourceType.AGENT.value
@@ -1666,12 +1821,27 @@ def create_consent_request(
         source_type=source_type,
         tags=["consent", f"risk:{risk}", f"op:{operation}"],
         response_type=ResponseType.CHOICE.value,
-        choices=[
-            {"key": "always", "label": "Allow always (this session, 24h)", "description": "Session-scoped, expires after 24 hours"},
-            {"key": "temporary", "label": f"Allow for {default_ttl} min", "description": f"Expires after {default_ttl} minutes"},
-            {"key": "once", "label": "Allow once", "description": "Auto-revoked after one execution"},
-            {"key": "deny", "label": "Deny", "description": "Do not proceed"},
-        ],
+        choices=(
+            [
+                {
+                    "key": "once",
+                    "label": "Allow once",
+                    "description": "Authorizes only this exact execution",
+                },
+                {
+                    "key": "deny",
+                    "label": "Deny",
+                    "description": "Do not proceed",
+                },
+            ]
+            if grant_policy == "per_invocation"
+            else [
+                {"key": "always", "label": "Allow always (this session, 24h)", "description": "Session-scoped, expires after 24 hours"},
+                {"key": "temporary", "label": f"Allow for {default_ttl} min", "description": f"Expires after {default_ttl} minutes"},
+                {"key": "once", "label": "Allow once", "description": "Auto-revoked after one execution"},
+                {"key": "deny", "label": "Deny", "description": "Do not proceed"},
+            ]
+        ),
         callback=callback,
         callback_session_id=callback_session_id,
         surfaces=surfaces,
@@ -1684,6 +1854,8 @@ def create_consent_request(
             "risk": risk,
             "default_ttl": default_ttl,
             "context": context,
+            "grant_policy": grant_policy,
+            "fingerprint": fingerprint,
         },
     }
 
@@ -1734,16 +1906,16 @@ def finalize_consent_response(request_id: str) -> dict:
     # Response may be a StandardResponse or a dict (in-store form).
     if hasattr(response, "value"):
         choice = response.value
+        response_surface = getattr(response, "surface", None)
     elif isinstance(response, dict):
         choice = response.get("value", "deny")
+        response_surface = response.get("surface")
     else:
         choice = str(response)
+        response_surface = None
     # Unwrap dashboard's ``{"phase": "generic", "value": "..."}`` shape.
     if isinstance(choice, dict) and "value" in choice:
         choice = choice["value"]
-
-    approved = choice != "deny"
-    mode = choice if approved else None
 
     consent_meta = (notification.custom_template or {}).get(
         "consent_meta", {},
@@ -1752,7 +1924,15 @@ def finalize_consent_response(request_id: str) -> dict:
         "operation", notification.title.removeprefix("Consent: "),
     )
     default_ttl = consent_meta.get("default_ttl", 5)
+    grant_policy = consent_meta.get("grant_policy", "cacheable")
+    fingerprint = consent_meta.get("fingerprint")
     target_session = notification.callback_session_id
+
+    if grant_policy == "per_invocation":
+        approved = choice == "once"
+    else:
+        approved = choice != "deny"
+    mode = choice if approved else None
 
     if not approved:
         _audit_log("REQUEST_DENIED", operation, f"request_id={request_id}")
@@ -1760,6 +1940,22 @@ def finalize_consent_response(request_id: str) -> dict:
             "status": "denied",
             "request_id": request_id,
             "operation": operation,
+        }
+
+    if grant_policy == "per_invocation":
+        _audit_log(
+            "REQUEST_APPROVED",
+            operation,
+            f"request_id={request_id} | mode=once | grant_policy=per_invocation",
+        )
+        return {
+            "status": "approved",
+            "request_id": request_id,
+            "mode": "once",
+            "operation": operation,
+            "fingerprint": fingerprint,
+            "response_surface": response_surface or "unknown",
+            "grant_written": False,
         }
 
     # Approved: write grants.
@@ -1843,9 +2039,16 @@ def resolve_consent_request(
     if notification.status not in ("pending", "delivered"):
         raise ValueError(f"Request {request_id} is already {notification.status}")
 
+    consent_meta = (notification.custom_template or {}).get(
+        "consent_meta", {},
+    )
+    grant_policy = consent_meta.get("grant_policy", "cacheable")
+
     # Map approved/mode to a choice key
     if approved:
-        choice_key = mode  # "always", "temporary", or "once"
+        choice_key = (
+            "once" if grant_policy == "per_invocation" else mode
+        )
     else:
         choice_key = "deny"
 

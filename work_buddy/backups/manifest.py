@@ -65,6 +65,10 @@ class Manifest:
     # ^ {"task_metadata": {"task_metadata": 144, "task_action_items": 7, ...}, ...}
     #   Outer key is DB name; inner dict is per-table row counts within that DB.
 
+    truth_stores: list[dict[str, Any]] = field(default_factory=list)
+    # Each row reports one registered store and whether its portable recovery
+    # payload was included under ``truth_stores/<store_id>/``.
+
     manifest_version: int = MANIFEST_VERSION
 
     def to_json(self) -> str:
@@ -87,6 +91,9 @@ class Manifest:
                 db: dict(tables)
                 for db, tables in data.get("row_counts", {}).items()
             },
+            truth_stores       = [
+                dict(item) for item in data.get("truth_stores", [])
+            ],
             manifest_version   = int(data.get("manifest_version", 1)),
         )
 
@@ -98,6 +105,7 @@ def build_manifest(
     snapshot_ts: str,
     db_paths: dict[str, Path],
     repo_root: Path | None = None,
+    truth_stores: list[dict[str, Any]] | None = None,
 ) -> Manifest:
     """Probe the given DBs + the git repo state to assemble a Manifest.
 
@@ -128,6 +136,7 @@ def build_manifest(
         host               = socket.gethostname(),
         schema_versions    = schema_versions,
         row_counts         = row_counts,
+        truth_stores       = [dict(item) for item in (truth_stores or [])],
     )
 
 

@@ -76,6 +76,7 @@ VITAL_DBS: dict[str, str] = {
     "threads":  "db/threads",   # on-disk: threads.db
     "entities": "db/entities",  # on-disk: entities.db
     "settings": "db/settings",  # on-disk: settings.db
+    "truth_registry": "db/truth-registry",  # on-disk: truth_registry.db
 }
 
 
@@ -141,6 +142,8 @@ def run_backup(*, manual: bool = False) -> dict[str, Any]:
         prefix="work-buddy-backup-staging-",
     ) as staging_str:
         staging = Path(staging_str)
+        registry = _truth_registry_for_backup(db_paths)
+        truth_stores = _stage_truth_stores(staging, registry)
         for name, src in db_paths.items():
             dst = staging / src.name  # e.g. "task_metadata.db" for the "tasks" entry
             _hot_backup(src, dst)
@@ -149,7 +152,11 @@ def run_backup(*, manual: bool = False) -> dict[str, Any]:
         #    staging copies) — they're identical in content but the
         #    live ones are where the canonical user_version + row
         #    counts come from. The probe is read-only.
-        manifest = build_manifest(snapshot_ts=ts, db_paths=db_paths)
+        manifest = build_manifest(
+            snapshot_ts=ts,
+            db_paths=db_paths,
+            truth_stores=truth_stores,
+        )
         write_manifest(manifest, staging)
 
         # 3. Tar+gzip the staging dir into the snapshot dir.
@@ -172,6 +179,17 @@ def run_backup(*, manual: bool = False) -> dict[str, Any]:
         "tarball_path": str(tarball),
         "size_bytes":   size_bytes,
         "manifest":     manifest.to_json(),
+        "truth_stores": manifest.truth_stores,
+        "unreachable_truth_stores": [
+            item
+            for item in manifest.truth_stores
+            if item.get("backup_status") == "unreachable"
+        ],
+        "truth_store_errors": [
+            item
+            for item in manifest.truth_stores
+            if item.get("backup_status") == "error"
+        ],
         "manual":       manual,
         "pruned":       pruned,
     }
@@ -241,6 +259,72 @@ def _resolve_vital_dbs() -> dict[str, Path]:
                 name, resource_id, exc,
             )
     return out
+
+
+def _truth_registry_for_backup(db_paths: dict[str, Path]):
+    """Open the registry when its vital database path is available."""
+    path = db_paths.get("truth_registry")
+    if path is None:
+        return None
+    from work_buddy.truth.registry import TruthStoreRegistry
+
+    return TruthStoreRegistry(path)
+
+
+def _stage_truth_stores(staging: Path, registry) -> list[dict[str, Any]]:
+    """Stage portable recovery exports for every registered truth store."""
+    if registry is None:
+        return []
+
+    from work_buddy.truth.export import export_store
+
+    results: list[dict[str, Any]] = []
+    for row in registry.list_stores(refresh=True):
+        item: dict[str, Any] = {
+            "path": str(row.path),
+            "store_id": row.store_id,
+            "profile": row.profile,
+            "title": row.title,
+            "last_seen": row.last_seen,
+            "reachable": row.reachable,
+        }
+        if not row.reachable:
+            item.update(
+                {
+                    "backup_status": "unreachable",
+                    "error": "registered store could not be validated",
+                }
+            )
+            results.append(item)
+            continue
+
+        store_dir = staging / "truth_stores" / row.store_id
+        profile_target = store_dir / "store.yaml"
+        export_target = store_dir / "claims.jsonl"
+        try:
+            store = registry.open_store(row.store_id)
+            store_dir.mkdir(parents=True, exist_ok=False)
+            shutil.copy2(store.paths.config, profile_target)
+            exported = export_store(store, destination=export_target)
+            item.update(
+                {
+                    "backup_status": "included",
+                    "profile_member": profile_target.relative_to(staging).as_posix(),
+                    "export_member": export_target.relative_to(staging).as_posix(),
+                    "export_sha256": exported.sha256,
+                }
+            )
+        except Exception as exc:
+            if store_dir.exists():
+                shutil.rmtree(store_dir)
+            item.update(
+                {
+                    "backup_status": "error",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+        results.append(item)
+    return results
 
 
 def _hot_backup(src: Path, dst: Path) -> None:

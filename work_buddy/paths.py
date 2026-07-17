@@ -71,6 +71,7 @@ RESOURCES: dict[str, str] = {
     "db/tasks":                  "db/task_metadata.db",
     "db/projects":               "db/projects.db",
     "db/entities":               "db/entities.db",
+    "db/truth-registry":         "db/truth_registry.db",
     "db/threads":                "db/threads.db",  # Thread + thread_events
     "db/llm_queue":              "db/llm_call_queue.db",  # LLM-call priority queue
     "db/work_item_events":       "db/work_item_events.db",  # WorkItem audit/provenance log

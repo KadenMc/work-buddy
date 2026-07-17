@@ -32,6 +32,8 @@ The pre-flight prompt is **skipped** when (a) the workflow's `workflow_class` gr
 
 Behavior the model deliberately does NOT allow: workflow grants do **not** time-travel through the sidecar retry queue. A queued op replayed days later only sees its individual grant (if any) — the workflow grant active at queue-time has long since been scoped out.
 
+Per-invocation exact-review operations are stricter than ordinary or workflow consent. They offer only **Allow once** or **Deny**, bind approval to the server-composed operation fingerprint, consume it before the matching execution, and write no reusable grant. Existing grants and `user_initiated()` cannot bypass this boundary. If the prompt times out, later approval cannot authorize the old call or a retry; invoke the capability again for a fresh review.
+
 ### Session init (mandatory)
 
 `WORK_BUDDY_SESSION_ID` is set automatically by a SessionStart hook. Read it from your conversation context (or the environment), then:
@@ -147,6 +149,7 @@ Every scope below is browsable with `mcp__work-buddy__wb_run("agent_docs", {"sco
 | `threads/` | Multi-turn agent-user threads |
 | `notifications/` | Notify, request, consent, surfaces |
 | `events/` | Durable in-process delivery spine for event-shaped facts — CloudEvents-superset envelope, SQLite log (dedup + offsets + DLQ), one drain thread, consent gate; `event_publish` to emit, plus user-authored **pull sources** (poll → diff → CEL condition → notify) authored via `/wb-event-new` |
+| `truth/` | Scoped evidence, claims, human confirmation, provenance, revision, registry, and integrity sweeps |
 | `services/` | Messaging, memory (Hindsight), dashboard, sidecar |
 | `settings/` | Registry-driven settings, Apps-based placement, authority, persistence, Journal policy |
 | `features/` | Preferences and feature opt-in |
@@ -197,6 +200,7 @@ work_buddy/                            # Python package
   email/                               # Email provider abstraction + Thunderbird bridge client
   calendar/                            # Calendar provider abstraction + Obsidian-bridge adapter
   notifications/                       # Human-in-the-loop surfaces
+  truth/                               # Scoped provenance-aware claim ledger and invariant engine
   messaging/ memory/ telegram/         # Sidecar services
   dashboard/                           # Flask dashboard (localhost:5127)
   sidecar/                             # Service manager + retry queue

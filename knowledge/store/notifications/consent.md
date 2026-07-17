@@ -2,7 +2,7 @@
 name: Consent System
 kind: directions
 description: How consent-gated operations work — auto-request in gateway, pre-flight bundling, session scope, risk levels
-summary: Gateway handles consent transparently for wb_run ops. Pre-flight, context-nesting, and retry-on-timeout all automatic. All grants session-scoped in consent.db.
+summary: Gateway handles consent transparently for wb_run ops. Ordinary consent uses session-scoped grants; exact-review operations use single-use per-invocation authority with no reusable grant.
 trigger: agent calls a capability that touches @requires_consent functions (handled transparently by the gateway)
 capabilities:
 - consent_list
@@ -72,9 +72,9 @@ dev_notes: |-
   | Telegram `/reply` command | `work_buddy/telegram/handlers.py:on_reply` | same shape as on_button |
   | Obsidian modal (out-of-band) | sidecar `MessagePoller._handle_consent_grant_message` | routes through `consent.resolve_consent_request` which calls `finalize_consent_response` internally |
   | Dashboard "Approve" endpoint | `work_buddy/dashboard/service.py` | calls `resolve_consent_request` directly |
-  | Gateway in-window poll | `_auto_consent_request` / `_auto_workflow_consent_request` | writes grants inline via `grant_consent_batch` / `grant_workflow_class` (skips `finalize_consent_response` because the poll has fresher state in hand) |
+  | Gateway in-window poll | `_auto_consent_request` / `_auto_workflow_consent_request` | records the polled response, reloads the durable first-response winner, then either writes ordinary grants or returns an ephemeral per-invocation authorization |
 
-  The grant-writing logic — bundle unbundle, `workflow_class:<name>` mint for `context.kind == "workflow_consent"`, individual op grants, audit emission — lives in exactly one place (`finalize_consent_response`). Any surface that doesn't go through `resolve_consent_request` (Telegram is the notable one) must call `finalize_consent_response` directly. Tests covering each path live in `tests/unit/test_consent_composable.py`.
+  `finalize_consent_response` is the canonical out-of-band translator. It writes ordinary grants, including bundle members and `workflow_class:<name>` when applicable. For `grant_policy == "per_invocation"`, it records approval metadata but deliberately returns `grant_written: false`; only the gateway's still-active invocation can bind that response to its immediate retry. Any surface that doesn't go through `resolve_consent_request` (Telegram is the notable one) must call `finalize_consent_response` directly. Tests covering ordinary paths live in `tests/unit/test_consent_composable.py`; exact-review and response-race coverage lives in `tests/unit/test_consent_per_invocation.py`.
 
   ## Agent-session routing for callback_session_id
 
@@ -120,6 +120,16 @@ The cross-process subtlety: if a writer calls `grant_consent` without `session_i
 ## Grant scope and lifetime
 
 Grants are stored session-scoped in a SQLite database at `data/agents/<session>/consent.db`. New sessions start with a clean slate — no grants carry over between user sessions. "Always" means "always within this session" (max 24h TTL).
+
+### Ordinary versus per-invocation consent
+
+Ordinary, cacheable consent keeps the four standard choices: **Allow once**, **Allow for N min**, **Allow always (this session, 24h)**, and **Deny**. An approval writes the corresponding session-scoped grant to `consent.db`; a timed-out ordinary request stays pending so a later approval can write that grant and authorize a retry.
+
+Operations declared with `grant_policy="per_invocation"` use a stricter exact-review boundary. Their server-composed prompt is bound to an operation and canonical fingerprint, and offers only **Allow once** or **Deny**. Existing individual, workflow-run, workflow-class, legacy, time-window, or `user_initiated()` authority cannot satisfy the gate. Approval writes no entry to `consent.db`. Instead, while the original gateway call is still waiting, it creates one ephemeral authorization for the matching immediate retry. The decorator checks the operation and fingerprint, consumes that authorization before the guarded function begins, and cannot reuse it if the function fails or another call follows.
+
+The notification record is the durable **first-response-wins** authority for both ordinary and per-invocation prompts. After polling, the gateway reloads the stored response and follows that winner even if another surface returned a conflicting answer or the poll returned no answer. A later response cannot replace the recorded winner.
+
+Per-invocation timeout is fail-closed in an additional way: once the gateway returns `status: timeout`, a later approval may be recorded for audit but cannot authorize the timed-out execution, a retry of its operation record, or any future execution, and still writes no reusable grant. The caller must invoke the capability again to obtain a fresh exact-review prompt. This restriction does not change the ordinary pending-request behavior described above.
 
 When the sidecar's retry sweep replays a previously-consented operation, the consent check ALSO consults the originating user-session's grants (looked up by reference to the op record's `originating_session_id`). This means a consented operation that hits PWU and gets queued for retry will not fail with `ConsentRequired` on replay. Revocation in the originating session immediately disables future replays.
 

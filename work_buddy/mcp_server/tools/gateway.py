@@ -14,6 +14,7 @@ See ``embedding/client.py`` for the HTTP client functions.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -391,7 +392,23 @@ _AUTO_CONSENT_TIMEOUT = 90  # seconds to wait for user response
 _MAX_CONSENT_RETRIES = 2   # max sequential ConsentRequired retries per wb_run
 
 
-def _invoke_with_session(callable_, session_id, /, *, _wb_replay=False, **kwargs):
+def _consent_response_surface(response: Any) -> str:
+    """Return the surface recorded on a persisted consent response."""
+
+    if isinstance(response, dict):
+        return str(response.get("surface") or "")
+    return str(getattr(response, "surface", "") or "")
+
+
+def _invoke_with_session(
+    callable_,
+    session_id,
+    /,
+    *,
+    _wb_replay=False,
+    _wb_per_invocation_authorization: dict[str, Any] | None = None,
+    **kwargs,
+):
     """Invoke ``callable_`` bound to the agent's consent principal.
 
     The MCP server process runs under its own ``WORK_BUDDY_SESSION_ID``
@@ -410,8 +427,70 @@ def _invoke_with_session(callable_, session_id, /, *, _wb_replay=False, **kwargs
     time-travel). ``_originating_session`` is still set for non-consent
     session attribution (llm cost, task ``created_by``, etc.).
     """
+    from contextlib import ExitStack
+
+    call_kwargs = dict(kwargs)
+    if session_id and "agent_session_id" not in call_kwargs:
+        try:
+            parameter = inspect.signature(callable_).parameters.get(
+                "agent_session_id"
+            )
+        except (TypeError, ValueError):
+            parameter = None
+        if parameter is not None and parameter.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ):
+            call_kwargs["agent_session_id"] = session_id
+
+    authorization_contexts: list[tuple[Any, Any | None]] = []
+    if _wb_per_invocation_authorization is not None:
+        from work_buddy.consent import per_invocation_authorization
+        authorization_factories = [per_invocation_authorization]
+        callable_globals = getattr(callable_, "__globals__", {})
+        stale_factory = callable_globals.get(
+            "per_invocation_authorization"
+        )
+        if callable(stale_factory) and stale_factory is not (
+            per_invocation_authorization
+        ):
+            authorization_factories.append(stale_factory)
+        for factory in authorization_factories:
+            factory_function = getattr(factory, "__wrapped__", factory)
+            factory_globals = getattr(factory_function, "__globals__", {})
+            authorization_contexts.append(
+                (
+                    factory(
+                        _wb_per_invocation_authorization["operation"],
+                        _wb_per_invocation_authorization["fingerprint"],
+                        request_id=_wb_per_invocation_authorization["request_id"],
+                        response_surface=_wb_per_invocation_authorization[
+                            "response_surface"
+                        ],
+                        context=_wb_per_invocation_authorization.get("context"),
+                    ),
+                    factory_globals.get("_per_invocation_ctx"),
+                )
+            )
+
+    def _enter_authorizations(stack: ExitStack) -> None:
+        """Bind one shared consumed state across reloaded consent modules."""
+
+        shared_authorization = None
+        authorization_slots = []
+        for authorization_ctx, authorization_slot in authorization_contexts:
+            entered = stack.enter_context(authorization_ctx)
+            if shared_authorization is None:
+                shared_authorization = entered
+            if authorization_slot is not None:
+                authorization_slots.append(authorization_slot)
+        for authorization_slot in authorization_slots:
+            authorization_slot.authorization = shared_authorization
+
     if not session_id:
-        return callable_(**kwargs)
+        with ExitStack() as authorization_stack:
+            _enter_authorizations(authorization_stack)
+            return callable_(**call_kwargs)
     from work_buddy.agent_session import (
         set_originating_session, reset_originating_session,
     )
@@ -421,8 +500,9 @@ def _invoke_with_session(callable_, session_id, /, *, _wb_replay=False, **kwargs
     principal = replay_of(session_id) if _wb_replay else human_agent(session_id)
     token = set_originating_session(session_id)
     try:
-        with consent_principal(principal):
-            return callable_(**kwargs)
+        with consent_principal(principal), ExitStack() as authorization_stack:
+            _enter_authorizations(authorization_stack)
+            return callable_(**call_kwargs)
     finally:
         reset_originating_session(token)
 
@@ -463,6 +543,8 @@ def _check_missing_consent(
         missing: list[str] = []
         for op in operations:
             meta = get_consent_metadata(op) or {}
+            if meta.get("grant_policy") == "per_invocation":
+                continue
             weight = meta.get("consent_weight", "low")
             if not _cache.is_granted(op, consent_weight=weight):
                 missing.append(op)
@@ -508,6 +590,7 @@ def _auto_consent_request(
     op_id: str,
     timeout: int = _AUTO_CONSENT_TIMEOUT,
     session_id: str | None = None,
+    consent_error: BaseException | None = None,
 ) -> dict[str, Any]:
     """Send a bundled consent request and poll for user response.
 
@@ -527,6 +610,19 @@ def _auto_consent_request(
         mark_delivered as _mark_delivered,
     )
     from work_buddy.notifications.dispatcher import SurfaceDispatcher
+
+    grant_policy = getattr(
+        consent_error, "grant_policy", "cacheable"
+    )
+    per_invocation = grant_policy == "per_invocation"
+    fingerprint = getattr(consent_error, "fingerprint", None)
+    prompt_context = dict(getattr(consent_error, "context", {}) or {})
+    if per_invocation and (
+        not isinstance(fingerprint, str) or not fingerprint.strip()
+    ):
+        raise ValueError(
+            "per_invocation ConsentRequired must carry a fingerprint"
+        )
 
     # Build rich body from consent metadata registry
     lines = ["This operation requires approval for:"]
@@ -563,6 +659,30 @@ def _auto_consent_request(
             lines.append(f"- **{op}**")
 
     body = "\n".join(lines)
+    request_operation = (
+        getattr(consent_error, "operation", operations[0])
+        if per_invocation
+        else (
+            operations[0]
+            if len(operations) == 1
+            else f"bundle:{capability_name}"
+        )
+    )
+    request_context = (
+        prompt_context
+        if per_invocation
+        else {
+            "capability": capability_name,
+            "operations": operations,
+            "operation_id": op_id,
+        }
+    )
+    if per_invocation:
+        body = getattr(consent_error, "body", None) or getattr(
+            consent_error, "reason", body
+        )
+        max_risk = getattr(consent_error, "risk", max_risk)
+        max_ttl = getattr(consent_error, "default_ttl", max_ttl)
 
     # Route to the agent's session DB. When ``session_id`` is None
     # (legacy callers that haven't been updated to pass it), fall back
@@ -581,18 +701,21 @@ def _auto_consent_request(
 
     # Create the consent request (uses notification substrate)
     record = create_consent_request(
-        operation=operations[0] if len(operations) == 1 else f"bundle:{capability_name}",
+        operation=request_operation,
         reason=body,
         risk=max_risk,
         default_ttl=max_ttl,
         requester=f"gateway:{capability_name}",
-        context={"capability": capability_name, "operations": operations, "operation_id": op_id},
+        context=request_context,
         callback_session_id=callback_session_id,
+        grant_policy=grant_policy,
+        fingerprint=fingerprint,
     )
     nid = record["notification_id"]
 
     # Deliver to all surfaces via dispatcher
     notif = _get_notif(nid)
+    dispatcher = None
     if notif:
         try:
             dispatcher = SurfaceDispatcher.from_config()
@@ -619,21 +742,40 @@ def _auto_consent_request(
             except ValueError:
                 # Already responded by a surface handler — that's fine.
                 pass
-            # First-response-wins: dismiss on other surfaces
-            notif_fresh = _get_notif(nid)
-            if notif_fresh and notif_fresh.delivered_surfaces:
-                try:
-                    dispatcher.dismiss_others(
-                        nid,
-                        responding_surface=response.surface,
-                        delivered_surfaces=notif_fresh.delivered_surfaces,
-                    )
-                except Exception:
-                    pass
-    else:
-        response = None
+    # The notification store is the first-response-wins authority. A surface
+    # handler may have persisted a different response before our polled value,
+    # or may have answered while polling returned None. Always reload and use
+    # only that durable winner. A missing stored response fails closed below.
+    notif_fresh = _get_notif(nid)
+    response = None if notif_fresh is None else notif_fresh.response
+    if (
+        response is not None
+        and notif_fresh is not None
+        and notif_fresh.delivered_surfaces
+        and dispatcher is not None
+    ):
+        try:
+            dispatcher.dismiss_others(
+                nid,
+                responding_surface=_consent_response_surface(response),
+                delivered_surfaces=notif_fresh.delivered_surfaces,
+            )
+        except Exception:
+            pass
 
     if response is None:
+        if per_invocation:
+            return {
+                "status": "timeout",
+                "request_id": nid,
+                "operation_id": op_id,
+                "message": (
+                    "Per-invocation consent timed out. A later approval "
+                    "cannot authorize this or any future execution. Retry "
+                    "the capability to create a fresh request."
+                ),
+            }
+
         # Pick the right retry capability based on whether the underlying
         # operation depends on the Obsidian bridge.  obsidian_retry is
         # bridge-aware (probes health, waits, retries), so it recovers
@@ -694,7 +836,7 @@ def _auto_consent_request(
     if isinstance(choice, dict) and "value" in choice:
         choice = choice["value"]
 
-    if choice == "deny":
+    if choice == "deny" or (per_invocation and choice != "once"):
         try:
             resolve_consent_request(nid, approved=False)
         except ValueError:
@@ -703,6 +845,28 @@ def _auto_consent_request(
             "status": "denied",
             "operation_id": op_id,
             "message": f"User denied consent for {capability_name}.",
+        }
+
+    if per_invocation:
+        try:
+            resolve_consent_request(nid, approved=True, mode="once")
+        except ValueError:
+            pass
+        response_surface = getattr(response, "surface", None)
+        if response_surface is None and isinstance(response, dict):
+            response_surface = response.get("surface")
+        return {
+            "status": "granted",
+            "mode": "once",
+            "operations": operations,
+            "operation_id": op_id,
+            "authorization": {
+                "operation": request_operation,
+                "fingerprint": fingerprint,
+                "request_id": nid,
+                "response_surface": response_surface or "unknown",
+                "context": prompt_context,
+            },
         }
 
     # Approved — grant all operations with the chosen mode
@@ -978,16 +1142,26 @@ def _auto_workflow_consent_request(
                 respond_to_notification(nid, response)
             except ValueError:
                 pass
-            notif_fresh = _get_notif(nid)
-            if notif_fresh and notif_fresh.delivered_surfaces and dispatcher:
-                try:
-                    dispatcher.dismiss_others(
-                        nid,
-                        responding_surface=response.surface,
-                        delivered_surfaces=notif_fresh.delivered_surfaces,
-                    )
-                except Exception:
-                    pass
+
+    # As with per-operation consent, the durable notification response is the
+    # authority when surfaces race. This also catches a response persisted by
+    # a surface handler while the dispatcher itself returned no response.
+    notif_fresh = _get_notif(nid)
+    response = None if notif_fresh is None else notif_fresh.response
+    if (
+        response is not None
+        and notif_fresh is not None
+        and notif_fresh.delivered_surfaces
+        and dispatcher is not None
+    ):
+        try:
+            dispatcher.dismiss_others(
+                nid,
+                responding_surface=_consent_response_surface(response),
+                delivered_surfaces=notif_fresh.delivered_surfaces,
+            )
+        except Exception:
+            pass
 
     if response is None:
         retry_hint = (
@@ -1775,18 +1949,6 @@ def register_tools(mcp: FastMCP) -> None:
                     "operation_id": op_id,
                 })
 
-        # Inject caller's session ID for capabilities that need it.
-        # ``consent_list`` reads grants out of a session-scoped SQLite
-        # DB; without the injection it returns rows from whichever
-        # session the cache instance was first connected against
-        # (typically the MCP server's bootstrap session), not the
-        # agent's view.
-        if capability in (
-            "session_activity", "session_summary", "session_wb_activity",
-            "artifact_save", "consent_list", "mode_toggle",
-        ) and _agent_sid:
-            parsed_params.setdefault("agent_session_id", _agent_sid)
-
         # Auto-inject dev=True for knowledge capabilities when the agent's
         # session has dev mode active (toggled via mode_toggle).
         _KNOWLEDGE_CAPS = {
@@ -1839,8 +2001,13 @@ def register_tools(mcp: FastMCP) -> None:
         # auto-consent flow land) rather than the MCP server process's
         # bootstrap session.
         _consent_retries = 0
+        _pending_per_invocation_authorization: dict[str, Any] | None = None
         while True:
             try:
+                _invocation_authorization = (
+                    _pending_per_invocation_authorization
+                )
+                _pending_per_invocation_authorization = None
                 # The capability dispatch runs through the resilience seam so
                 # the gateway emits dispatch-timing telemetry under the
                 # ``wb_run:<capability>`` operation key and enforces an
@@ -1857,6 +2024,9 @@ def register_tools(mcp: FastMCP) -> None:
                     f"wb_run:{capability}",
                     lambda: asyncio.to_thread(
                         _invoke_with_session, entry.callable, _agent_sid,
+                        _wb_per_invocation_authorization=(
+                            _invocation_authorization
+                        ),
                         **parsed_params,
                     ),
                     deadline=build_dispatch_deadline(_budget),
@@ -1972,7 +2142,7 @@ def register_tools(mcp: FastMCP) -> None:
                 # Auto-request consent for this unanticipated gate
                 consent_result = await asyncio.to_thread(
                     _auto_consent_request, [exc.operation], capability, op_id,
-                    _AUTO_CONSENT_TIMEOUT, _agent_sid,
+                    _AUTO_CONSENT_TIMEOUT, _agent_sid, exc,
                 )
                 if consent_result["status"] != "granted":
                     _complete_operation(
@@ -1986,6 +2156,9 @@ def register_tools(mcp: FastMCP) -> None:
                     )
                     consent_result["operation_id"] = op_id
                     return _prepare(consent_result)
+                _pending_per_invocation_authorization = consent_result.get(
+                    "authorization"
+                )
                 # Consent granted — retry the callable
                 continue
             except ToolUnavailable as exc:
@@ -2038,7 +2211,7 @@ def register_tools(mcp: FastMCP) -> None:
                         })
                     consent_result = await asyncio.to_thread(
                         _auto_consent_request, [operation], capability, op_id,
-                        _AUTO_CONSENT_TIMEOUT, _agent_sid,
+                        _AUTO_CONSENT_TIMEOUT, _agent_sid, exc,
                     )
                     if consent_result["status"] != "granted":
                         _complete_operation(
@@ -2053,6 +2226,9 @@ def register_tools(mcp: FastMCP) -> None:
                         )
                         consent_result["operation_id"] = op_id
                         return _prepare(consent_result)
+                    _pending_per_invocation_authorization = (
+                        consent_result.get("authorization")
+                    )
                     continue
 
                 # CP5: post-write-verify recovery. ObsidianPostWriteUncertain
@@ -2774,8 +2950,11 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
                 return consent_result
 
     consent_retries = 0
+    pending_per_invocation_authorization: dict[str, Any] | None = None
     while True:
         try:
+            invocation_authorization = pending_per_invocation_authorization
+            pending_per_invocation_authorization = None
             if record["type"] == "workflow":
                 result = _conductor().start_workflow(
                     record["name"],
@@ -2800,6 +2979,9 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
                 result = _invoke_with_session(
                     entry.callable, _retry_session_id,
                     _wb_replay=True,
+                    _wb_per_invocation_authorization=(
+                        invocation_authorization
+                    ),
                     **record["params"],
                 )
             break
@@ -2814,6 +2996,7 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
             consent_result = _auto_consent_request(
                 [exc.operation], cap_name, operation_id,
                 session_id=_retry_session_id,
+                consent_error=exc,
             )
             if consent_result["status"] != "granted":
                 _complete_operation(
@@ -2822,6 +3005,9 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
                 )
                 consent_result["operation_id"] = operation_id
                 return consent_result
+            pending_per_invocation_authorization = consent_result.get(
+                "authorization"
+            )
             continue
         except ToolUnavailable as exc:
             _complete_operation(operation_id, error=f"ToolUnavailable: {exc.tool_id}")
@@ -2833,6 +3019,43 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
                 "operation_id": operation_id,
             }
         except Exception as exc:
+            if type(exc).__name__ == "ConsentRequired":
+                operation = getattr(exc, "operation", None) or str(exc)
+                consent_retries += 1
+                if consent_retries > _MAX_CONSENT_RETRIES:
+                    _complete_operation(
+                        operation_id,
+                        error=f"ConsentRequired: {operation} (max retries)",
+                    )
+                    return {
+                        "error": (
+                            f"Too many consent gates for {cap_name}. "
+                            f"Last: {operation}"
+                        ),
+                        "operation_id": operation_id,
+                    }
+                consent_result = _auto_consent_request(
+                    [operation],
+                    cap_name,
+                    operation_id,
+                    session_id=_retry_session_id,
+                    consent_error=exc,
+                )
+                if consent_result["status"] != "granted":
+                    _complete_operation(
+                        operation_id,
+                        error=(
+                            f"Consent {consent_result['status']}: "
+                            f"{operation}"
+                        ),
+                    )
+                    consent_result["operation_id"] = operation_id
+                    return consent_result
+                pending_per_invocation_authorization = consent_result.get(
+                    "authorization"
+                )
+                continue
+
             # CP5: post-write-verify on retried writes too. If a retried
             # write capability raises ObsidianPostWriteUncertain, the
             # filesystem may show the second-attempt write actually

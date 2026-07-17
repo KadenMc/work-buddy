@@ -29,7 +29,13 @@ def cache(tmp_agents_dir, monkeypatch):
 
     from work_buddy import consent as cmod
     cmod._LEGACY_BLANKET_LOGGED.clear()
-    return _cache
+    yield _cache
+
+    # ``ConsentCache`` retains its resolved SQLite path process-wide.  Do not
+    # leave it pinned to this test's temporary agents directory (or to the
+    # workflow grant written there) after ``tmp_agents_dir`` is torn down.
+    _cache._db_path = None
+    _cache._initialized = False
 
 
 @pytest.fixture
