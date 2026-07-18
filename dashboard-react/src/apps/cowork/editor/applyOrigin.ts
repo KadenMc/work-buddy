@@ -1,5 +1,6 @@
 import * as Y from "yjs";
 import { isChangeOrigin } from "@tiptap/extension-collaboration";
+import { ySyncPluginKey } from "@tiptap/y-tiptap";
 import type { Transaction } from "@tiptap/pm/state";
 
 /**
@@ -39,12 +40,15 @@ export const applyWithOrigin = (doc: Y.Doc, mutate: () => void): void => {
 };
 
 /**
- * True when a Yjs update event originated from a live human keystroke rather than from
- * an apply-origin mutation. The persistence layer pushes ONLY these updates through R4
- * (human direct edits only, section 1.4), never ledger-derived or pulled content.
+ * True when a Yjs update event originated from a live human keystroke. The y-tiptap
+ * Collaboration binding syncs ProseMirror edits into the Y.Doc under the ySyncPluginKey
+ * origin (its `_prosemirrorChanged` transaction), so that origin is the positive signal.
+ * This is an allowlist rather than an exclusion: the apply-origin tag, a pulled foreign
+ * update, and any bare `doc.transact(fn)` that omits an origin all read as non-human, so
+ * only genuine human edits are pushed through R4 (human direct edits only, section 1.4).
  */
 export const isLocalHumanOrigin = (origin: unknown): boolean =>
-  origin !== COWORK_APPLY_ORIGIN;
+  origin === ySyncPluginKey;
 
 /**
  * Re-export of the Collaboration change-origin predicate, so consumers depend on this
