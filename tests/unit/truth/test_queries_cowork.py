@@ -1,10 +1,9 @@
-"""Co-work document-surface integrity checks (WP-A2).
+"""Co-work document-surface integrity checks.
 
-The frozen v2 DDL is applied by the wave-1 scaffolding helper. WP-A1's real
-``_m002`` migration and store durable-insert seam replace it at the join. The
-document-side checks run only when the six co-work tables exist (a pre-v2 store
-skips them), which is why the existing v1-store integrity tests are unaffected.
-Proposal DECISION flows themselves live in WP-A3's proposals.py.
+Stores come from the document-store factory, which builds a real v2 store
+through the engine. The document-side checks run only when the six co-work
+tables exist (a pre-v2 store skips them), which is why the existing v1-store
+integrity tests are unaffected. Proposal decision flows live in proposals.py.
 """
 
 from __future__ import annotations
@@ -14,9 +13,12 @@ from pathlib import Path
 from work_buddy.truth.contracts import Actor
 from work_buddy.truth.identity import new_id, sha256_text, truth_uri
 from work_buddy.truth.lifecycle import TruthLifecycle
-from work_buddy.truth.queries import integrity_findings
+from work_buddy.truth.queries import (
+    _recompute_proposal_canonical,
+    integrity_findings,
+)
 
-from ._wave1_frozen_ddl import (
+from ._document_rows import (
     create_document_store,
     seed_doc_event,
     seed_document,
@@ -28,6 +30,17 @@ from ._wave1_frozen_ddl import (
 
 
 _HUMAN = Actor("human", "user-1")
+_AGENT = Actor(
+    "agent_run",
+    "cowork-agent-run",
+    {
+        "model": "test-model",
+        "harness": "pytest",
+        "surface": "cowork",
+        "session_id": "session-1",
+        "call_id": "call-1",
+    },
+)
 _NOW = "2026-07-14T10:00:00.000+00:00"
 _LATER = "2026-07-14T11:00:00.000+00:00"
 _DOC_CODES = frozenset(
@@ -440,12 +453,17 @@ def test_proposal_canonical_mismatch_uses_the_engine_hash(
 
 
 def test_unrecomputable_proposal_is_not_a_false_mismatch(truth_root: Path) -> None:
-    # In this worktree proposals.py is absent, so _recompute_proposal_canonical
-    # returns None and never manufactures a false blocking error.
+    # A proposal the recompute cannot reconstruct (here a malformed selector_json)
+    # makes _recompute_proposal_canonical return None, so no false blocking
+    # mismatch is ever manufactured.
     store = create_document_store(truth_root)
     document_id = seed_document(store, content_sha256=sha256_text("h"))
     seed_proposal(
-        store, document_id=document_id, base_content_sha256=sha256_text("h")
+        store,
+        document_id=document_id,
+        base_content_sha256=sha256_text("h"),
+        selector_json="{not valid json",
+        canonical_sha256=sha256_text("stored-canonical"),
     )
     findings = integrity_findings(store)
     assert not [f for f in findings if f.code == "proposal-canonical-mismatch"]
@@ -460,3 +478,57 @@ def test_document_rows_without_ledger_records_are_flagged(truth_root: Path) -> N
         and finding.subject_ref == document_id
         for finding in findings
     )
+
+
+def test_canonical_recompute_matches_a_real_engine_proposal(truth_root: Path) -> None:
+    """The proposal-canonical-mismatch check runs live against the engine hash.
+
+    A proposal composed through the engine recomputes to exactly its stored
+    canonical_sha256, so the sweep reports no canonical mismatch. This proves
+    the check is live rather than inert.
+    """
+    from work_buddy.truth import documents, proposals
+
+    store = create_document_store(truth_root)
+    content_hash = sha256_text("design body v0")
+    document = documents.register_document(
+        store,
+        path="docs/live-proof.md",
+        title="Live proof document",
+        document_class="co_authored",
+        content_sha256=content_hash,
+        actor=_HUMAN,
+        at=_NOW,
+    )
+    proposal = proposals.propose_edit(
+        store,
+        document_id=document.id,
+        base_content_sha256=content_hash,
+        selector=[
+            {"type": "TextQuoteSelector", "exact": "old", "prefix": "", "suffix": ""}
+        ],
+        quote_exact="old",
+        replacement="new",
+        actor=_AGENT,
+        at=_NOW,
+    )
+
+    conn = store.connect()
+    try:
+        row = conn.execute(
+            "SELECT * FROM proposals WHERE id = ?", (proposal.id,)
+        ).fetchone()
+    finally:
+        conn.close()
+
+    recomputed = _recompute_proposal_canonical(row)
+    assert recomputed is not None
+    assert recomputed == row["canonical_sha256"]
+    assert recomputed == proposal.canonical_sha256
+
+    findings = integrity_findings(store)
+    assert not [
+        finding
+        for finding in findings
+        if finding.code == "proposal-canonical-mismatch"
+    ]

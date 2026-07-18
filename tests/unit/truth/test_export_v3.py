@@ -19,6 +19,7 @@ from work_buddy.truth.export import (
 )
 from work_buddy.truth.identity import new_id, sha256_bytes, sha256_text
 from work_buddy.truth.migrations import REDACTED_SELECTOR_JSON
+from work_buddy.truth.proposals import proposal_canonical_sha256
 from work_buddy.truth.store import TruthStore
 
 
@@ -40,7 +41,18 @@ CONTENT_SHA = sha256_text("materialized markdown body")
 CLAIM_CANON = sha256_text("claim canonical")
 SPAN_SHA = sha256_text("span fingerprint")
 PROP_SPAN_SHA = sha256_text("proposal span")
-PROP_CANON = sha256_text("proposal canonical")
+# The stored canonical is the engine hash of the seeded proposal fields, so the
+# import round-trip passes the live proposal-canonical-mismatch integrity check.
+PROP_CANON = proposal_canonical_sha256(
+    document_id=DOC_ID,
+    base_content_sha256=CONTENT_SHA,
+    selector={"exact": "old text"},
+    quote_exact="old text",
+    replacement="new text",
+    rationale="reason",
+    tldr="tldr",
+    claim_refs=[{"claim": CLAIM_REF, "role": "instantiation"}],
+)
 PROP_DEDUP = sha256_text("proposal dedup")
 
 
@@ -193,27 +205,9 @@ DOC_TABLES = {
 }
 
 
-def _stub_document_integrity(monkeypatch) -> None:
-    """Bypass the WP-A2-owned integrity gate for the transport round-trip.
-
-    The shipped integrity engine (queries.py::integrity_findings) does not yet
-    recognize the six document ledger record types, so it rejects them as an
-    unknown_ledger_record_type error at import. WP-A2 extends that sweep to
-    admit and check document rows. Stubbing it here isolates the WP-A1
-    transport round-trip (serialize, parse, validate, stage, re-export). See
-    the dependency request in the WP-A1 report.
-    """
-    monkeypatch.setattr(
-        "work_buddy.truth.export._validate_staged_integrity",
-        lambda store: None,
-    )
-
-
 def test_document_surface_round_trips_lossless_including_ydoc_blob(
     tmp_path: Path,
-    monkeypatch,
 ) -> None:
-    _stub_document_integrity(monkeypatch)
     source = _create_store(tmp_path / "source", store_id="b0" * 16)
     _write_blob(source, SNAPSHOT_SHA, SNAPSHOT_BYTES)
     _insert_document(source)
@@ -255,11 +249,20 @@ def test_document_surface_round_trips_lossless_including_ydoc_blob(
     assert reexport.path.read_bytes() == exported.path.read_bytes()
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Blocked on a queries.py integrity_findings gap: the redaction-event "
+        "validator redactable map (around line 3915) and the policy-redaction "
+        "guard do not recognize proposal subjects, so a staged import of a "
+        "redacted proposal raises invalid_redaction_subject_kind and "
+        "dangling_redaction_subject. Remove this marker once the production "
+        "sweep gains a proposal branch."
+    ),
+)
 def test_redacted_proposal_round_trips_with_hashes_retained(
     tmp_path: Path,
-    monkeypatch,
 ) -> None:
-    _stub_document_integrity(monkeypatch)
     source = _create_store(tmp_path / "source", store_id="b1" * 16)
     _write_blob(source, SNAPSHOT_SHA, SNAPSHOT_BYTES)
     _insert_document(source)
@@ -311,9 +314,7 @@ def test_export_refuses_a_missing_ydoc_snapshot_blob(tmp_path: Path) -> None:
 
 def test_ydoc_and_evidence_blob_share_one_content_address(
     tmp_path: Path,
-    monkeypatch,
 ) -> None:
-    _stub_document_integrity(monkeypatch)
     source = _create_store(tmp_path / "source", store_id="b3" * 16)
     # An evidence blob and a ydoc snapshot with identical bytes dedup to one
     # content-addressed blob carrying two references.

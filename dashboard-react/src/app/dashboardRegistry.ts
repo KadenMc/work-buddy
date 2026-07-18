@@ -1,3 +1,5 @@
+import { COWORK_APP_CONTRIBUTION } from "../apps/cowork/contribution";
+import { COWORK_VIEW_MODULE } from "../apps/cowork/viewModule";
 import { JOURNAL_APP_CONTRIBUTION } from "../apps/journal/contribution";
 import { JOURNAL_VIEW_MODULE } from "../apps/journal/viewModule";
 import { createContributionRegistry } from "../dashboard/contributions/registry";
@@ -23,5 +25,14 @@ dashboardRegistry.registerApp(
   JOURNAL_APP_CONTRIBUTION,
   [],
   [JOURNAL_VIEW_MODULE],
+  { trust: "native" },
+);
+
+// Co-work owns a single-surface ViewDefinition and its lazy view module. Routing
+// /app/cowork auto-projects through this registration with no routes.tsx change.
+dashboardRegistry.registerApp(
+  COWORK_APP_CONTRIBUTION,
+  [],
+  [COWORK_VIEW_MODULE],
   { trust: "native" },
 );
