@@ -133,6 +133,31 @@
     max-height: 520px;
   }
 
+  .wb-cowork-lab__grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
+    gap: 18px;
+    align-items: start;
+    margin-top: 12px;
+  }
+
+  .wb-cowork-lab__panel {
+    display: grid;
+    gap: 10px;
+    min-width: 0;
+    padding: 12px;
+    border: 1px dashed var(--wb-color-border-default);
+    border-radius: var(--wb-radius-surface);
+    background: var(--wb-color-surface-canvas);
+  }
+
+  .wb-cowork-lab__panel-head {
+    margin: 0;
+    color: var(--wb-color-text-muted);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
   @media (max-width: 760px) {
     .wb-widget-lab {
       padding: 14px;
