@@ -1593,14 +1593,14 @@ def test_redaction_is_idempotent_without_consuming_a_second_gesture(
         )
 
 
-# --- Proposal anti-anchoring redaction (WP-A2) ------------------------------
+# --- Proposal anti-anchoring redaction --------------------------------------
 #
-# The frozen v2 DDL is applied by the wave-1 scaffolding helper. WP-A1's real
-# _m002 migration and store durable-insert seam replace it at the join.
+# These tests exercise proposal redaction against a real v2 store built by the
+# document-store factory.
 
 from work_buddy.truth.lifecycle import TruthLifecycle as _RealLifecycle  # noqa: E402
 
-from ._wave1_frozen_ddl import (  # noqa: E402
+from ._document_rows import (  # noqa: E402
     create_document_store,
     seed_document,
     seed_proposal,

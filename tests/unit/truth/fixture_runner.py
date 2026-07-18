@@ -1033,9 +1033,28 @@ class CoworkWorkloadRunner:
         raise AssertionError("stale-view mark was not rejected")
 
     def _assert_export_v3_round_trips_lossless_including_ydoc_blob(self) -> str:
-        # Export v3 is WP-A1's (format_version bump + document record columns +
-        # ydoc snapshot blob collection). Skip until the join lands it.
-        return "skipped_until_join"
+        result = export_store(self.store)
+        # The workload registered a document with a Y.Doc snapshot, so the export
+        # carries at least one content-addressed snapshot blob.
+        blob_digests = {path.name for path in self.store.paths.blobs.iterdir()}
+        assert blob_digests, "no ydoc snapshot blob was exported"
+
+        restored_root = self.store.paths.root.parent / (
+            self.store.paths.root.name + "-cowork-restored"
+        )
+        restored_root.mkdir()
+        imported = import_store(
+            result.path, restored_root, registry=EmptyRegistry()
+        )
+        assert imported.source_format_version == 3
+        restored_export = export_store(
+            imported.store, restored_root / "restored-claims.jsonl"
+        )
+        assert restored_export.path.read_bytes() == result.path.read_bytes()
+        # The snapshot blobs survive the round trip byte for byte.
+        restored_digests = {path.name for path in imported.store.paths.blobs.iterdir()}
+        assert restored_digests == blob_digests
+        return "passed"
 
 
 def _timestamp_offset(at: str) -> str:
