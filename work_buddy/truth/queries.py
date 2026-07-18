@@ -1666,7 +1666,9 @@ def _recompute_proposal_canonical(row: sqlite3.Row) -> str | None:
     except ImportError:
         return None
     try:
-        selector = parse_selector(row["selector_json"])
+        # Mirror the insert-time payload exactly: proposals.py hashes the
+        # selector as the parsed JSON value, never a CompositeSelector object.
+        selector = json.loads(row["selector_json"])
         raw_refs = row["claim_refs_json"]
         claim_refs = json.loads(raw_refs) if raw_refs else None
         return proposal_canonical_sha256(

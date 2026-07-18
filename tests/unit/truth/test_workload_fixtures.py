@@ -9,9 +9,7 @@ from pathlib import Path
 
 import pytest
 
-import work_buddy.truth.export as truth_export
 import work_buddy.truth.migrations as truth_migrations
-from work_buddy.storage.migrations import Migration
 from work_buddy.truth.contracts import Actor
 from work_buddy.truth.identity import truth_uri
 from work_buddy.truth.profiles import dump_profile
@@ -31,25 +29,16 @@ FROZEN_CONFIRMED_EVENT_ID = "f1000000000040008000000000000014"
 HUMAN = Actor("human", "fixture-human")
 
 
-def _synthetic_v2(conn: sqlite3.Connection) -> None:
-    conn.execute(
-        "CREATE TABLE migration_v2_marker "
-        "(id TEXT PRIMARY KEY, note TEXT NOT NULL DEFAULT 'synthetic')"
-    )
-
-
-def _v2_runner() -> truth_migrations._TruthMigrationRunner:
-    return truth_migrations._TruthMigrationRunner(
-        "truth",
-        migrations=[
-            Migration(
-                1,
-                "initial truth ledger schema",
-                truth_migrations._m001_initial_schema,
-            ),
-            Migration(2, "synthetic fixture v2", _synthetic_v2),
-        ],
-    )
+DOCUMENT_SURFACE_TABLES = frozenset(
+    {
+        "documents",
+        "document_spans",
+        "expressions",
+        "proposals",
+        "proposal_status_events",
+        "doc_events",
+    }
+)
 
 
 def _database_version(path: Path) -> int:
@@ -207,8 +196,6 @@ def test_checked_in_frozen_v1_store_migrates_with_history_and_workload_intact(
             raise AssertionError("checked-in v1 fixture invoked the current v1 DDL")
         return apply_migration(self, conn, migration)
 
-    monkeypatch.setattr(truth_migrations, "TRUTH_MIGRATIONS", _v2_runner())
-    monkeypatch.setattr(truth_export, "SCHEMA_VERSION", 2)
     monkeypatch.setattr(
         migration_runner_type,
         "_apply_one_locked",
@@ -239,11 +226,11 @@ def test_checked_in_frozen_v1_store_migrates_with_history_and_workload_intact(
     assert upgraded.get_claim(FROZEN_CLAIM_ID) is not None
     assert b'"schema_version":2' in upgraded.paths.claims_export.read_bytes()
     with upgraded.connect() as conn:
-        marker = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
-            "AND name = 'migration_v2_marker'"
-        ).fetchone()
-    assert marker is not None
+        names = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+    assert DOCUMENT_SURFACE_TABLES <= names
 
     # Profiles constrain new writes only. Exercise each declarative workload
     # against this same released-store artifact by adopting that workload's
