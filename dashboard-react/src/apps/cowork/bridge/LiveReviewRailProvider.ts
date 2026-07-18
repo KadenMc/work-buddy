@@ -24,6 +24,7 @@ import type {
 } from "../rail/provider";
 import type { CoworkSittingTransport } from "../suggestions/sitting";
 import type { ProposalInput } from "../suggestions/types";
+import type { RoutingDeliveryInput } from "../chat";
 import type { CoworkDocClient } from "./HttpCoworkDocClient";
 import { mapR2ToReview } from "./reviewMapping";
 import { submitCoworkSitting, type DecisionApplier } from "./sittingSubmit";
@@ -43,6 +44,8 @@ export interface LiveReviewRailProviderOptions {
   readonly getAdapter: () => DecisionApplier | null;
   /** Render the post-apply document to Markdown for the materialize block. */
   readonly renderMaterialized: () => Promise<string>;
+  /** Notified per routed item after a submit, so the Chat tab annotates the routing note. */
+  readonly onRoutingDelivery?: (delivery: RoutingDeliveryInput) => void;
 }
 
 export class LiveReviewRailProvider implements ReviewRailProvider {
@@ -91,6 +94,9 @@ export class LiveReviewRailProvider implements ReviewRailProvider {
       adapter,
       transport: this.#options.sittingTransport,
       renderMaterialized: this.#options.renderMaterialized,
+      ...(this.#options.onRoutingDelivery === undefined
+        ? {}
+        : { onRoutingDelivery: this.#options.onRoutingDelivery }),
     });
   }
 

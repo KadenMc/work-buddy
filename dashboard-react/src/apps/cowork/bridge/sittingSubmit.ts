@@ -35,6 +35,7 @@ import type {
 } from "../rail/contracts";
 import type { SittingSubmission } from "../rail/provider";
 import type { StagedDecision } from "../rail/contracts";
+import type { RoutingDeliveryInput } from "../chat";
 
 /**
  * The commit-time application the submit path needs from the adapter: applying one accepted
@@ -86,6 +87,42 @@ export const toRailSittingResult = (
   results: response.results.map(toRailItemResult),
 });
 
+/**
+ * Derive the routing-note deliveries the Chat tab annotates from an R5 response. Only a
+ * redirect or an endorse routes guidance into the document conversation, so those are the
+ * two verbs mapped. A kept_open_redirected or kept_open_endorsed result is a delivery, any
+ * other outcome on those verbs is a failed delivery carrying the item error as the reason.
+ * The redirect note comes from the staged decision the human composed, the route echoes no
+ * note back.
+ */
+export const routingDeliveriesFrom = (
+  submitted: readonly StagedDecision[],
+  response: SittingResponse,
+): RoutingDeliveryInput[] => {
+  const noteByProposal = new Map(
+    submitted.map((decision) => [decision.proposalId, decision.redirectNote]),
+  );
+  const deliveries: RoutingDeliveryInput[] = [];
+  for (const result of response.results) {
+    if (result.verb !== "redirect" && result.verb !== "endorse") continue;
+    const delivered =
+      result.verb === "redirect"
+        ? result.result === "kept_open_redirected"
+        : result.result === "kept_open_endorsed";
+    const note = result.verb === "redirect" ? noteByProposal.get(result.proposal_id) : undefined;
+    deliveries.push({
+      verb: result.verb,
+      proposalId: result.proposal_id,
+      state: delivered ? "delivered" : "failed",
+      ...(note === undefined || note === null ? {} : { note }),
+      ...(delivered || result.error === null || result.error === undefined
+        ? {}
+        : { reason: result.error }),
+    });
+  }
+  return deliveries;
+};
+
 export interface SubmitCoworkSittingParams {
   readonly documentId: string;
   readonly storeId: string;
@@ -99,6 +136,12 @@ export interface SubmitCoworkSittingParams {
    * the sitting contains an accept verb, after the accepts have been applied to the editor.
    */
   readonly renderMaterialized: () => Promise<string>;
+  /**
+   * Notified once per routed item (redirect or endorse) with its delivery outcome, so the
+   * Chat tab can annotate the routing note. Optional, so a submit without a chat surface
+   * skips it.
+   */
+  readonly onRoutingDelivery?: (delivery: RoutingDeliveryInput) => void;
 }
 
 /**
@@ -131,5 +174,16 @@ export const submitCoworkSitting = async (
     items,
     materialize,
   });
+
+  const onRoutingDelivery = params.onRoutingDelivery;
+  if (onRoutingDelivery !== undefined) {
+    for (const delivery of routingDeliveriesFrom(
+      params.submission.proposalDecisions,
+      response,
+    )) {
+      onRoutingDelivery(delivery);
+    }
+  }
+
   return toRailSittingResult(response);
 };

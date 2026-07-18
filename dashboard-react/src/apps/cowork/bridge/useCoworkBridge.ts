@@ -26,7 +26,9 @@ import {
   type CoworkSittingTransport,
 } from "../suggestions/sitting";
 import { createWbTrackedChangesAdapter } from "../suggestions/adapter";
+import { resolveQuoteAnchor } from "../suggestions/anchor";
 import type { ChatConversationProvider } from "../../../widget-library/chat";
+import type { RoutingDeliveryInput, ScrollAnchorTarget } from "../chat";
 import type { RailDriftHealth, ReviewRailData } from "../rail/contracts";
 import type { AnchorRectSource } from "../rail/provider";
 import { DomAnchorRectSource } from "./DomAnchorRectSource";
@@ -69,6 +71,8 @@ export interface UseCoworkBridgeOptions {
   readonly ydocTransport?: CoworkYdocTransport;
   /** Injectable sitting transport, else the same-origin HTTP transport. */
   readonly sittingTransport?: CoworkSittingTransport;
+  /** Notified per routed item after a submit, so the Chat tab annotates the routing note. */
+  readonly onRoutingDelivery?: (delivery: RoutingDeliveryInput) => void;
 }
 
 export interface CoworkBridgeEditorMountProps {
@@ -89,6 +93,14 @@ export interface CoworkBridge {
   readonly railRef: (element: HTMLElement | null) => void;
   /** Latest live health, or null before the first pull resolves. */
   readonly health: CoworkLiveHealth | null;
+  /**
+   * Bring a feedback span's passage into view. The Chat tab's scroll-to affordance is
+   * span-keyed, so it carries the span's quote anchor, which resolves to an editor position
+   * the same way a proposal does. A target with no anchor (span id only) degrades to a no-op,
+   * because mapping a bare span id to a position needs the expression payload the doc-open
+   * pull does not deliver in v1.
+   */
+  readonly scrollToSpanAnchor: (target: ScrollAnchorTarget) => void;
 }
 
 /** Find the aligned card-list inside the rail region, the anchor-rect coordinate root. */
@@ -113,6 +125,7 @@ export const useCoworkBridge = (
     docClient,
     ydocTransport,
     sittingTransport,
+    onRoutingDelivery,
   } = options;
 
   const editorRef = useRef<Editor | null>(null);
@@ -120,6 +133,11 @@ export const useCoworkBridge = (
   const railRegionRef = useRef<HTMLElement | null>(null);
   const editorReadyRef = useRef(false);
   const [health, setHealth] = useState<CoworkLiveHealth | null>(null);
+
+  // Kept in a ref so the review provider stays stable per (documentId, storeId) while always
+  // routing a delivery through the surface's latest callback.
+  const onRoutingDeliveryRef = useRef(onRoutingDelivery);
+  onRoutingDeliveryRef.current = onRoutingDelivery;
 
   const core = useMemo(() => {
     const doc = new Y.Doc();
@@ -144,6 +162,7 @@ export const useCoworkBridge = (
       sittingTransport: resolvedSittingTransport,
       getAdapter: () => (editorReadyRef.current ? adapter : null),
       renderMaterialized,
+      onRoutingDelivery: (delivery) => onRoutingDeliveryRef.current?.(delivery),
     });
 
     const anchorRects = new DomAnchorRectSource({
@@ -214,6 +233,23 @@ export const useCoworkBridge = (
     [],
   );
 
+  const scrollToSpanAnchor = useMemo(
+    () =>
+      (target: ScrollAnchorTarget): void => {
+        const editor = editorRef.current;
+        const anchor = target.anchor;
+        if (editor === null || anchor === undefined) return;
+        const range = resolveQuoteAnchor(editor.state.doc, {
+          exact: anchor.exact,
+          prefix: anchor.prefix ?? "",
+          suffix: anchor.suffix ?? "",
+        });
+        if (range === null) return;
+        editor.chain().setTextSelection(range).scrollIntoView().run();
+      },
+    [],
+  );
+
   return {
     reviewProvider: core.reviewProvider,
     chatProvider,
@@ -221,5 +257,6 @@ export const useCoworkBridge = (
     editorProps,
     railRef,
     health,
+    scrollToSpanAnchor,
   };
 };
