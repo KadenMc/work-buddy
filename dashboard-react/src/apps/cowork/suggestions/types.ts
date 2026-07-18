@@ -66,6 +66,10 @@ export interface DecisionItem {
   redirect_note?: string;
   /** reject_as_false only, when the proposal carries no claim_refs (S3). */
   negation_text?: string;
+  /** reject_as_preference only, the human's verbatim preferred phrasing (FA-1). */
+  preference_text?: string;
+  /** reject_as_preference only, an existing preference claim to record instead (FA-1). */
+  result_claim_id?: string;
 }
 
 /** Events the Review rail subscribes to (the rail never touches ProseMirror directly). */

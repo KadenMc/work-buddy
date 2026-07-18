@@ -141,6 +141,27 @@ describe("MarkBar edit verbs", () => {
     });
   });
 
+  it("collects a verbatim preferred phrasing for reject_as_preference", async () => {
+    const cbs = handlers();
+    render(
+      <MarkBar target={{ kind: "proposal", proposal: proposal() }} {...cbs} />,
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Reject as preference" }),
+    );
+    await userEvent.type(
+      screen.getByLabelText(/recorded as a preference/),
+      "Keep the original wording.",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Stage" }));
+    expect(cbs.onStageProposal).toHaveBeenCalledWith({
+      proposalId: "p1",
+      verb: "reject_as_preference",
+      canonicalSha256: "canon-p1",
+      preferenceText: "Keep the original wording.",
+    });
+  });
+
   it("stages reject_as_false immediately when a claim ref is present", async () => {
     const cbs = handlers();
     render(

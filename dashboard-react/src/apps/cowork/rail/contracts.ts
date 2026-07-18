@@ -203,6 +203,8 @@ export interface StagedDecision {
   readonly redirectNote?: string;
   /** reject_as_false only, verbatim negation when the proposal carries no claim_refs. */
   readonly negationText?: string;
+  /** reject_as_preference only, the human's verbatim preferred phrasing (FA-1). */
+  readonly preferenceText?: string;
 }
 
 /** One staged claim decision, carried on the same sitting submission. */

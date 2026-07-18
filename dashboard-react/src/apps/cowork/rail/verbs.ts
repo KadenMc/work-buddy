@@ -17,7 +17,12 @@ import type {
 export type VerbTone = "primary" | "neutral" | "danger";
 
 /** The extra input a verb needs before it can be staged (section 1.5). */
-export type VerbInput = "none" | "amend" | "redirect_note" | "negation_text";
+export type VerbInput =
+  | "none"
+  | "amend"
+  | "redirect_note"
+  | "negation_text"
+  | "preference_text";
 
 /** One selectable verb on the mark bar. */
 export interface VerbOption<Verb extends string> {
@@ -52,7 +57,7 @@ export const EDIT_VERBS: readonly VerbOption<ProposalVerbKind>[] = [
     label: "Reject as preference",
     verb: "reject_as_preference",
     tone: "danger",
-    input: "none",
+    input: "preference_text",
   },
   { label: "Redirect", verb: "redirect", tone: "neutral", input: "redirect_note" },
   { label: "Defer", verb: "defer", tone: "neutral", hotkey: ".", input: "none" },

@@ -48,6 +48,7 @@ const INPUT_LABEL: Partial<Record<ProposalVerbKind, string>> = {
   edit_confirm: "Your replacement",
   redirect: "Guidance for the agent",
   reject_as_false: "The correct statement, recorded as a negation",
+  reject_as_preference: "Your preferred phrasing, recorded as a preference",
 };
 
 function toneClass(tone: VerbTone): string {
@@ -103,6 +104,7 @@ export function MarkBar(props: MarkBarProps) {
     const needsRedirect = verb === "redirect";
     const needsNegation =
       verb === "reject_as_false" && rejectAsFalseNeedsNegation(proposal);
+    const needsPreference = verb === "reject_as_preference";
 
     if (needsAmend) {
       openInput(verb, proposal.replacement ?? "");
@@ -113,6 +115,10 @@ export function MarkBar(props: MarkBarProps) {
       return;
     }
     if (needsNegation) {
+      openInput(verb, "");
+      return;
+    }
+    if (needsPreference) {
       openInput(verb, "");
       return;
     }
@@ -140,6 +146,7 @@ export function MarkBar(props: MarkBarProps) {
       ...(inputVerb === "edit_confirm" ? { amendContent: inputValue } : {}),
       ...(inputVerb === "redirect" ? { redirectNote: trimmed } : {}),
       ...(inputVerb === "reject_as_false" ? { negationText: trimmed } : {}),
+      ...(inputVerb === "reject_as_preference" ? { preferenceText: trimmed } : {}),
     };
     props.onStageProposal(decision);
     cancelInput();
