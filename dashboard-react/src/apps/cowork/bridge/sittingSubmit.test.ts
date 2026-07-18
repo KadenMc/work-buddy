@@ -7,6 +7,7 @@ import type { DecisionItem } from "../suggestions/types";
 import { editProposal, makeSuggestionEditor } from "../suggestions/__tests__/support";
 import type { SittingSubmission } from "../rail/provider";
 import type { StagedDecision } from "../rail/contracts";
+import type { RoutingDeliveryInput } from "../chat";
 import {
   submitCoworkSitting,
   toDecisionItem,
@@ -162,5 +163,56 @@ describe("submitCoworkSitting", () => {
     // The accepted edit is applied and the tracked mark resolved.
     expect(adapter.listOpen()).toEqual([]);
     expect(editor.getText()).toContain("the cache key and the vault hash");
+  });
+});
+
+describe("routing deliveries", () => {
+  it("annotates a delivered redirect with its note and a delivered endorse", async () => {
+    const { applier } = recordingApplier();
+    const transport = new InMemoryCoworkSittingTransport();
+    const deliveries: RoutingDeliveryInput[] = [];
+
+    await submitCoworkSitting({
+      documentId: "doc-1",
+      storeId: "store-1",
+      submission: submission([
+        staged({ proposalId: "s1", verb: "redirect", redirectNote: "tighten the scope" }),
+        staged({ proposalId: "s2", verb: "endorse" }),
+        staged({ proposalId: "s3", verb: "reject_plain" }),
+      ]),
+      adapter: applier,
+      transport,
+      renderMaterialized: async () => "",
+      onRoutingDelivery: (delivery) => deliveries.push(delivery),
+    });
+
+    // Only the redirect and endorse route into the conversation, and the redirect carries the
+    // human's verbatim note.
+    expect(deliveries).toEqual([
+      { verb: "redirect", proposalId: "s1", state: "delivered", note: "tighten the scope" },
+      { verb: "endorse", proposalId: "s2", state: "delivered" },
+    ]);
+  });
+
+  it("marks a redirect that did not route as a failed delivery with a reason", async () => {
+    const { applier } = recordingApplier();
+    const transport = new InMemoryCoworkSittingTransport(["s1"]);
+    const deliveries: RoutingDeliveryInput[] = [];
+
+    await submitCoworkSitting({
+      documentId: "doc-1",
+      storeId: "store-1",
+      submission: submission([
+        staged({ proposalId: "s1", verb: "redirect", redirectNote: "tighten" }),
+      ]),
+      adapter: applier,
+      transport,
+      renderMaterialized: async () => "",
+      onRoutingDelivery: (delivery) => deliveries.push(delivery),
+    });
+
+    expect(deliveries).toEqual([
+      { verb: "redirect", proposalId: "s1", state: "failed", note: "tighten", reason: "stale_view" },
+    ]);
   });
 });
