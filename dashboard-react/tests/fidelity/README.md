@@ -37,7 +37,7 @@ npm test
 ## Reference implementation
 
 `src/materializer.ts` is a pure function library and the executable specification
-of block-splice materialization. Wave-2 production code adopts this design: strip
+of block-splice materialization. The production materializer adopts this design: strip
 frontmatter at the boundary, lex the body into top-level blocks keyed to exact
 source ranges, copy unedited blocks byte-verbatim, re-serialize only edited blocks,
 and flag edited blocks that hold a non-first-class Obsidian construct.

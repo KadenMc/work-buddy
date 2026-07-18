@@ -46,8 +46,8 @@ function CoworkHealthStrip({ model }: { model: CoworkViewModel | null }) {
 
 /**
  * Placeholder Review rail content. The real variant-A-hybrid rail (aligned-stream cards,
- * filter lens, queue mode, mark bar) is wave-2 territory and lives under
- * `apps/cowork/suggestions/`.
+ * filter lens, queue mode, mark bar) mounts here when the review rail package under
+ * `apps/cowork/suggestions/` is wired in.
  */
 function ReviewRailStub({ hidden }: { hidden: boolean }) {
   return (
@@ -94,7 +94,7 @@ function ChatRailStub({ hidden }: { hidden: boolean }) {
  * session: the header health strip on top, the editor pane center-left, and the
  * Review / Chat tabbed rail on the right. The coarse session flows through the
  * ViewProvider snapshot, and the live Y.Doc and the sitting take the direct route and are
- * owned by the editor pane and the wave-2 rail.
+ * owned by the editor pane and the review rail.
  */
 export function CoworkWorkspaceSurface({
   definition,

@@ -1,5 +1,5 @@
 // Block-splice materializer: the REFERENCE IMPLEMENTATION of Co-work projection
-// fidelity. Wave-2 production code adopts this design (the harness is its
+// fidelity. The production materializer adopts this design (the harness is its
 // executable spec, C1 surface contract section 7.2, SP-3 case 4 design sketch).
 //
 // The thesis, proven in SP-3 and re-verified across this corpus: @tiptap/markdown
