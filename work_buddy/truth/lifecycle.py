@@ -303,17 +303,9 @@ class TruthLifecycle:
         span = self.store._get_span_locked(conn, identifier)
         if span is not None:
             matches.append((span.span_sha256, span.quote_exact or span.selector_json))
-        # WAVE-1 ACCOMMODATION (WP-A2): the frozen contract calls
-        # self.store._get_proposal_locked(conn, identifier) directly. That
-        # durable-insert seam is WP-A1's store.py addition and is absent while
-        # the six builders run in parallel, so this getattr guard skips the
-        # branch until it lands. At the join the orchestrator collapses this to
-        # the direct call. The one-match-or-ambiguous rule below is unchanged
-        # and now enforces global subject-id uniqueness across four kinds.
-        get_proposal = getattr(self.store, "_get_proposal_locked", None)
-        proposal = (
-            get_proposal(conn, identifier) if get_proposal is not None else None
-        )
+        # The one-match-or-ambiguous rule below enforces global subject-id
+        # uniqueness across all four gesture-subject kinds.
+        proposal = self.store._get_proposal_locked(conn, identifier)
         if proposal is not None:
             if proposal.replacement is not None:
                 reviewable = proposal.replacement
