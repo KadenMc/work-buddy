@@ -5363,6 +5363,13 @@ def _prewarm_costs() -> None:
     get_claude_code_usage_summary()
 
 
+# Co-work (K2) document surface. The routes live in their own package and mount
+# through a one-line join, so this module stays free of the route bodies.
+from work_buddy.cowork import register_routes as _register_cowork_routes
+
+_register_cowork_routes(app)
+
+
 def main():
     import sys
 
