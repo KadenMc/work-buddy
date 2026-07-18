@@ -1,7 +1,7 @@
 /**
- * A demo chat provider for the Co-work Chat tab. In-memory for now, a live
+ * A demo chat provider for the Co-work Chat tab. In-memory: a live
  * conversation transport (the house conversation_* seam) implements the same
- * interface. The agent replies in plain language, mirroring the feedback loop
+ * interface when wired. The agent replies in plain language, mirroring the feedback loop
  * the PRD describes.
  */
 
