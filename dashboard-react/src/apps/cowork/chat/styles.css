@@ -1,0 +1,41 @@
+@layer wb.widgets {
+  /* --- Feedback span-link affordance (on the anchored chat item) ----------- */
+
+  .wb-cowork-chat-msg__anchor {
+    display: flex;
+    margin-top: var(--wb-space-3);
+  }
+
+  .wb-cowork-chat-anchor-button.wb-button {
+    min-width: 0;
+  }
+
+  /* --- Routing-note delivery notices --------------------------------------- */
+
+  .wb-cowork-chat-routing {
+    display: flex;
+    flex-direction: column;
+    gap: var(--wb-space-3);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .wb-cowork-chat-routing__item {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--wb-space-3);
+  }
+
+  .wb-cowork-chat-routing__alert {
+    flex: 1 1 auto;
+  }
+
+  .wb-cowork-chat-routing__reason {
+    color: var(--wb-color-text-muted);
+  }
+
+  .wb-cowork-chat-routing__dismiss.wb-button {
+    flex: 0 0 auto;
+  }
+}
