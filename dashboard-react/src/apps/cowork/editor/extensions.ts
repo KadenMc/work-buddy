@@ -10,6 +10,12 @@ import { yUndoPluginKey } from "@tiptap/y-tiptap";
 import type * as Y from "yjs";
 
 import { WbExpressionMark, WbProvenanceTint } from "./marks";
+import {
+  CoworkCodeBlock,
+  CoworkHorizontalRule,
+  CoworkImage,
+  buildSuggestionExtensions,
+} from "../suggestions";
 
 /**
  * The Collaboration fragment field is fixed to `default` in the document-surface
@@ -76,19 +82,38 @@ export const buildSchemaExtensions = (): AnyExtension[] => [
 ];
 
 /**
- * The full editor extension set. Adds, on top of the shared schema, the single
- * Collaboration binding (bound to the passed local Y.Doc on the `default` fragment,
- * replacing history), the Markdown storage extension (the one Markdown parse/serialize
- * integration point, contentType threaded at the ingest boundary), and UniqueID with
- * the block allowlist and `filterTransaction: (tr) => !isChangeOrigin(tr)` so it never
- * re-mints ids on an applied (apply-origin or foreign) transaction (SP-2 point 3).
+ * The full editor extension set. Unlike the DOM-free MarkdownManager schema, the editor
+ * admits the tracked-change layer, so it swaps StarterKit's code_block and horizontal_rule
+ * for the cowork variants that carry suggestion marks and atom-suggestion attrs
+ * (CoworkCodeBlock, CoworkHorizontalRule, CoworkImage, SP-1 fork deltas 4 and 5), and
+ * spreads the three suggestion marks plus the decoration plugin (buildSuggestionExtensions).
+ * The suggestion layer is display-only and never serialized, so it is added here and never
+ * to the MarkdownManager (surface build note). On top it binds the single Collaboration
+ * binding to the passed local Y.Doc on the `default` fragment (replacing history), the
+ * Markdown storage extension (the one Markdown parse/serialize integration point), and
+ * UniqueID with the block allowlist and `filterTransaction: (tr) => !isChangeOrigin(tr)` so
+ * it never re-mints ids on an applied (apply-origin or foreign) transaction (SP-2 point 3).
  *
  * `updateDocument` is left at its default because the Co-work editor is read-write. The
  * `updateDocument: false` rule in the load-order contract applies to read-only surfaces
  * only.
  */
 export const buildEditorExtensions = (document: Y.Doc): AnyExtension[] => [
-  ...buildSchemaExtensions(),
+  StarterKit.configure({
+    undoRedo: false,
+    link: COWORK_LINK_OPTIONS,
+    codeBlock: false,
+    horizontalRule: false,
+  }),
+  TableKit,
+  TaskList,
+  TaskItem,
+  CoworkCodeBlock,
+  CoworkHorizontalRule,
+  CoworkImage,
+  WbProvenanceTint,
+  WbExpressionMark,
+  ...buildSuggestionExtensions(),
   Markdown,
   Collaboration.configure({
     document,
