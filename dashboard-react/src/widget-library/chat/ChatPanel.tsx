@@ -19,8 +19,11 @@ export interface ChatPanelProps {
   /** Header slot. Overrides the default title bar when provided. */
   readonly header?: ReactNode;
   readonly agentActivity?: ChatAgentActivity;
-  /** Send intent for freeform messages and inline question answers. */
-  onSend?(value: string): void | Promise<void>;
+  /**
+   * Send intent for freeform messages and inline question answers. Inline
+   * answers pass the answered question's message id as inReplyTo.
+   */
+  onSend?(value: string, inReplyTo?: string): void | Promise<void>;
   readonly sending?: boolean;
   readonly sendErrorMessage?: string;
   readonly composerDisabled?: boolean;
@@ -99,8 +102,11 @@ export function ChatPanel({
       onRespond={
         onSend === undefined
           ? undefined
-          : (value) => {
-              void onSend(value);
+          : (value, inReplyTo) => {
+              // A failed inline answer surfaces through sendErrorMessage from
+              // the container (the hook records it before rethrowing). The
+              // catch prevents an unhandled rejection on this path.
+              void Promise.resolve(onSend(value, inReplyTo)).catch(() => {});
             }
       }
       initialUnreadFromMessageId={initialUnreadFromMessageId}
@@ -163,7 +169,7 @@ export function ChatPanel({
           <ChatComposer
             onSend={onSend}
             sending={sending}
-            disabled={composerDisabled}
+            disabled={composerDisabled === true || agentActivity === "stopped"}
             placeholder={composerPlaceholder}
             errorMessage={sendErrorMessage}
           />

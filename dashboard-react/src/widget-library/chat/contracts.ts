@@ -1,8 +1,8 @@
 // Typed chat primitives for the Co-work Chat tab and future conversational
 // surfaces. These types mirror the house conversation_* semantics (the legacy
 // dashboard chat-sidebar seam) in a JSON-compatible, transport-agnostic shape.
-// No HTTP wiring lives here. The provider seam is the contract a live transport
-// (join or wave-2 work) implements later.
+// No HTTP wiring lives here. The provider seam is the contract a live
+// transport implements.
 
 /**
  * Canonical author of a rendered message. The house backend labels an agent
@@ -132,6 +132,9 @@ export interface RawChatChoice {
 }
 
 export interface RawChatMessage {
+  /** The endpoint's message identity field (ConversationMessage.to_dict). */
+  readonly message_id?: string;
+  /** Fixture-side fallback identity. The live endpoint never emits this. */
   readonly id?: string | number;
   readonly role?: string;
   readonly content?: string;
