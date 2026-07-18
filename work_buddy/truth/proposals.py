@@ -716,6 +716,9 @@ def decide_reject_as_false(
 
         referenced: ClaimRecord | None = None
         if refs:
+            # First-only by the singular freeze wording: a reject_as_false
+            # negates the proposal's primary claim ref. A multi-claim proposal
+            # negates refs[0] alone, leaving the remaining refs un-negated.
             referenced = _resolve_local_claim(store, conn, str(refs[0]["claim"]))
             if referenced is None:
                 raise InvariantViolation(

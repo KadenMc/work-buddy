@@ -69,6 +69,10 @@ def register_document(
     Returns the existing row on repeat. On a fresh registration appends BOTH a
     'registered' and an 'imported' doc_event in the same transaction (N6, so the
     R10 imported flag reflects the import leg), on a repeat appends neither.
+
+    Registration is terminal with respect to retirement: a repeat on a retired
+    path returns the retired row unchanged and does NOT revive it. Revival is a
+    distinct path (reimport_document -> a 'reimported' event -> active).
     """
     relative_path = _require_text(path, "path")
     doc_class = _require_text(document_class, "document_class")

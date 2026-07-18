@@ -1458,11 +1458,13 @@ class TruthStore:
             written = path.read_bytes()
         except OSError as exc:
             path.unlink(missing_ok=True)
-            raise InvariantViolation(f"could not write evidence blob {path}") from exc
+            raise InvariantViolation(
+                f"could not write content-addressed blob {path}"
+            ) from exc
         if sha256_bytes(written) != expected:
             path.unlink(missing_ok=True)
             raise InvariantViolation(
-                f"written evidence blob failed verification: {path}"
+                f"written content-addressed blob failed verification: {path}"
             )
         return relative, True
 
@@ -2703,6 +2705,9 @@ class TruthStore:
         if current is None:
             raise InvariantViolation(f"proposal does not exist: {proposal_id}")
         if current.redacted_at is not None:
+            # Already redacted, but still scrub any surviving receipt so an
+            # idempotent retry (or a repaired store) preserves anti-anchoring.
+            self._redact_proposal_gesture_excerpts_locked(conn, proposal_id)
             return current
         redacted_at = _timestamp(at, "proposal redacted_at")
         conn.execute(
@@ -2711,9 +2716,34 @@ class TruthStore:
             "claim_refs_json = NULL, selector_json = ? WHERE id = ?",
             (redacted_at, REDACTED_SELECTOR_JSON, proposal_id),
         )
+        # The decision-path scrub must destroy the consumed gesture's readable
+        # receipt too (I10 anti-anchoring). The proposals row is now redacted, so
+        # the gestures redaction carve-out admits tombstoning payload_excerpt to
+        # the same '[redacted]' sentinel the claim/evidence/span paths use. This
+        # runs in the SAME transaction as the content null-out so a rejected
+        # quote-and-replacement never survives in a gesture receipt or export.
+        self._redact_proposal_gesture_excerpts_locked(conn, proposal_id)
         refreshed = self._get_proposal_locked(conn, proposal_id)
         assert refreshed is not None
         return refreshed
+
+    @staticmethod
+    def _redact_proposal_gesture_excerpts_locked(
+        conn: sqlite3.Connection,
+        proposal_id: str,
+    ) -> None:
+        """Tombstone readable receipts bound to a now-redacted proposal.
+
+        Mirrors TruthRedactor._redact_gesture_excerpts_locked so both redaction
+        routes (decision-path policy scrub and explicit TruthRedactor) leave the
+        same admitted shape: consumed_at untouched, payload_excerpt moved to the
+        '[redacted]' sentinel the gestures carve-out trigger sanctions.
+        """
+        conn.execute(
+            "UPDATE gestures SET payload_excerpt = '[redacted]' "
+            "WHERE subject_ref = ? AND payload_excerpt <> '[redacted]'",
+            (proposal_id,),
+        )
 
     def _insert_proposal_status_event_locked(
         self,
