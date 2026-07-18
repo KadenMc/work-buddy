@@ -1985,6 +1985,23 @@ def integrity_findings(
             "SELECT * FROM evidence ORDER BY id"
         ).fetchall()
         evidence_by_id = {row["id"]: row for row in evidence_rows}
+        # Proposals participate in the same gesture-subject and redaction-event
+        # surfaces as claims/evidence/spans. Load them (and their status history)
+        # so the resolvers below recognize proposal subjects. Guarded because a
+        # pre-v2 store has no co-work tables.
+        proposals_by_id: dict[str, sqlite3.Row] = {}
+        proposal_status_by_proposal: dict[str, list[sqlite3.Row]] = defaultdict(list)
+        if _document_surface_tables_present(read_conn):
+            proposals_by_id = {
+                row["id"]: row
+                for row in read_conn.execute(
+                    "SELECT * FROM proposals ORDER BY id"
+                ).fetchall()
+            }
+            for row in read_conn.execute(
+                "SELECT * FROM proposal_status_events ORDER BY proposal_id, seq"
+            ).fetchall():
+                proposal_status_by_proposal[row["proposal_id"]].append(row)
         retraction_rows = read_conn.execute(
             "SELECT * FROM link_retractions ORDER BY link_id"
         ).fetchall()
@@ -2360,6 +2377,46 @@ def integrity_findings(
                     source_event["id"],
                     "preference rejection result must be a preference claim",
                 )
+        # The proposal decide_reject_as_false path (S3) binds ONE proposal-subject
+        # gesture to both the proposal closure and the confirmed negation claim it
+        # mints. That negation confirm's basis gesture is bound to the proposal
+        # (subject_ref plus canonical hash), not to the negation claim, so
+        # recognize the closure -> negation shape here and exempt the negation
+        # confirm from the claim-subject gesture checks in the loop below. This is
+        # the proposal-minted analogue of reasoned_rejection above.
+        proposal_reasoned_result_events: set[str] = set()
+        _negation_note_prefix = "reject_as_false:negation_claim="
+        for proposal_id, proposal_events in proposal_status_by_proposal.items():
+            proposal_row = proposals_by_id.get(proposal_id)
+            if proposal_row is None:
+                continue
+            for closure in proposal_events:
+                if (
+                    closure["decision"] != "reject_as_false"
+                    or closure["basis_kind"] != "gesture"
+                ):
+                    continue
+                closure_gesture_id = closure["basis_ref"]
+                closure_gesture = (
+                    gestures.get(closure_gesture_id) if closure_gesture_id else None
+                )
+                closure_note = closure["note"] or ""
+                if (
+                    closure_gesture is None
+                    or closure_gesture["kind"] != "reject_as_false"
+                    or closure_gesture["subject_ref"] != proposal_id
+                    or closure_gesture["payload_sha256"]
+                    != proposal_row["canonical_sha256"]
+                    or not closure_note.startswith(_negation_note_prefix)
+                ):
+                    continue
+                negation_id = closure_note[len(_negation_note_prefix):]
+                for claim_event in events_by_gesture.get(closure_gesture_id, []):
+                    if (
+                        claim_event["status"] == "confirmed"
+                        and claim_event["claim_id"] == negation_id
+                    ):
+                        proposal_reasoned_result_events.add(claim_event["id"])
         previous_status: dict[str, str | None] = defaultdict(lambda: None)
         active_review_overlay: dict[str, bool] = defaultdict(bool)
         previous_event_time: dict[str, datetime] = {}
@@ -2569,7 +2626,14 @@ def integrity_findings(
                 is_reasoned_result = (
                     status == "confirmed" and gesture_id in reasoned_rejection_gestures
                 )
-                if gesture["subject_ref"] != claim_id and not is_reasoned_source:
+                is_proposal_reasoned_result = (
+                    event_id in proposal_reasoned_result_events
+                )
+                if (
+                    gesture["subject_ref"] != claim_id
+                    and not is_reasoned_source
+                    and not is_proposal_reasoned_result
+                ):
                     add(
                         "gesture_subject_mismatch",
                         "status_event",
@@ -2586,6 +2650,7 @@ def integrity_findings(
                 if (
                     status == "confirmed"
                     and not is_reasoned_result
+                    and not is_proposal_reasoned_result
                     and gesture["kind"]
                     not in CONFIRM_GESTURE_KINDS | {"confirm_quarantined_support"}
                 ):
@@ -2691,6 +2756,7 @@ def integrity_findings(
                     claim is not None
                     and gesture["payload_sha256"] != claim.canonical_sha256
                     and not is_reasoned_source
+                    and not is_proposal_reasoned_result
                 ):
                     add(
                         "gesture_payload_mismatch",
@@ -2776,6 +2842,18 @@ def integrity_findings(
             if span_subject is not None:
                 subject_matches.append(
                     ("span", span_subject["span_sha256"], span_subject["redacted_at"])
+                )
+            proposal_subject = proposals_by_id.get(subject_ref)
+            if proposal_subject is not None:
+                # A decision gesture binds to the proposal's canonical hash, so a
+                # proposal subject matches on canonical_sha256, the same way a
+                # claim subject matches on its canonical hash.
+                subject_matches.append(
+                    (
+                        "proposal",
+                        proposal_subject["canonical_sha256"],
+                        proposal_subject["redacted_at"],
+                    )
                 )
             if not subject_matches:
                 add(
@@ -3916,6 +3994,7 @@ def integrity_findings(
             "claim": claims_by_id,
             "evidence": evidence_by_id,
             "span": spans_by_id,
+            "proposal": proposals_by_id,
         }
         evidence_cascade_redactions = {
             (
@@ -4130,6 +4209,59 @@ def integrity_findings(
                             )
                     if gesture_matches and not cascade_match:
                         redaction_gesture_uses[row["basis_ref"]].append(row["id"])
+            elif row["basis_kind"] == "policy" and subject_kind == "proposal":
+                # A standing policy may scrub a rejected (closed) or expired
+                # proposal, mirroring the claim policy shape against the proposal
+                # status ledger. Kept in lockstep with
+                # TruthRedactor._validate_proposal_policy_locked so an
+                # engine-produced store round-trips.
+                proposal_expected_status = {
+                    "rejected_content": "closed",
+                    "expired_content": "expired",
+                }.get(row["reason"])
+                if proposal_expected_status is None:
+                    add(
+                        "invalid_policy_redaction_reason",
+                        "redaction_event",
+                        row["id"],
+                        "standing policy supports rejected_content or expired_content only",
+                    )
+                else:
+                    try:
+                        expected_basis = policy_basis_ref(store, row["reason"])
+                    except InvariantViolation:
+                        expected_basis = None
+                    if row["basis_ref"] != expected_basis:
+                        add(
+                            "invalid_policy_redaction_basis_ref",
+                            "redaction_event",
+                            row["id"],
+                            f"policy basis must be exactly {expected_basis!r}",
+                        )
+                    proposal_events = proposal_status_by_proposal.get(
+                        row["subject_ref"], []
+                    )
+                    latest_proposal_status = (
+                        proposal_events[-1]["status"] if proposal_events else None
+                    )
+                    if latest_proposal_status != proposal_expected_status:
+                        add(
+                            "invalid_policy_redaction_status",
+                            "redaction_event",
+                            row["id"],
+                            f"{row['reason']} policy requires proposal status "
+                            f"{proposal_expected_status!r}, found "
+                            f"{latest_proposal_status!r}",
+                        )
+                    if any(
+                        event["status"] == "applied" for event in proposal_events
+                    ):
+                        add(
+                            "policy_redaction_of_confirmed",
+                            "redaction_event",
+                            row["id"],
+                            "a proposal that was ever applied requires a human gesture",
+                        )
             elif row["basis_kind"] == "policy":
                 if subject_kind != "claim":
                     add(
@@ -4329,6 +4461,14 @@ def integrity_findings(
                     f"redaction has {len(co_statuses)} retraction events",
                 )
         for kind, subject_rows in redactable.items():
+            if kind == "proposal":
+                # A proposal's content is often scrubbed by the decision-path
+                # policy redaction (reject/dismiss under gate.rejected_content ==
+                # redact), which records the scrub via redacted_at plus the
+                # rejection status event rather than a standalone redaction
+                # event. A redacted proposal therefore is not required to carry
+                # one. Any event that does exist is still validated above.
+                continue
             for subject_ref, subject in subject_rows.items():
                 redacted_at = (
                     subject.redacted_at

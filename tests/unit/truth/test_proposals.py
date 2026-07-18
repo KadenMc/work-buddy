@@ -513,18 +513,6 @@ def test_gesture_is_single_use(
         )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Blocked on a queries.py integrity_findings gap: the gesture-subject "
-        "resolver (around line 2749) and the redaction-event validator (around "
-        "line 3915) do not recognize proposal subjects, so the staged-import "
-        "integrity gate rejects the workload's proposal-decision gestures and "
-        "proposal redactions with dangling_gesture_subject and "
-        "dangling_redaction_subject. Remove this marker once the production "
-        "sweep gains proposal branches."
-    ),
-)
 def test_cowork_doc_workload_walkthrough(document_store):
     """Walk every decision verb end to end via the frozen document workload."""
     from .fixture_runner import CoworkWorkloadRunner, load_cowork_workload
@@ -551,6 +539,132 @@ def test_cowork_doc_workload_walkthrough(document_store):
     assert result.assertions[
         "export_v3_round_trips_lossless_including_ydoc_blob"
     ] == "passed"
+
+
+def test_import_accepts_accepted_rejected_and_reject_as_false_history(
+    tmp_path, document_store, register_document, mint_proposal_gesture
+):
+    """C1 regression: proposal-decision gestures survive an export round trip.
+
+    An accepted proposal, a rejected-and-redacted proposal, and a reject_as_false
+    proposal (whose one proposal-bound gesture also confirms the minted negation)
+    each leave gestures whose subject is a proposal. The proposal-aware integrity
+    gate must accept the store, so integrity_findings is error-clean and
+    import_store re-imports the bundle byte for byte.
+    """
+    from work_buddy.truth.export import export_store, import_store
+    from work_buddy.truth.queries import integrity_findings
+
+    from .fixture_runner import EmptyRegistry
+
+    store, _ = document_store
+    document_id, base, _ = register_document(store)
+
+    accepted = _propose(
+        store, document_id, base, quote="120 queries", replacement="144 queries"
+    )
+    g_accept = mint_proposal_gesture(store, accepted, kind="confirm")
+    proposals.accept_proposal(
+        store,
+        proposal_id=accepted.id,
+        gesture_id=g_accept.id,
+        actor=HUMAN,
+        observed_at=LATER,
+        at=LATER,
+    )
+
+    rejected = _propose(
+        store,
+        document_id,
+        base,
+        quote="baseline model",
+        replacement="reference baseline model",
+    )
+    g_reject = mint_proposal_gesture(store, rejected, kind="reject_plain")
+    proposals.reject_proposal(
+        store,
+        proposal_id=rejected.id,
+        gesture_id=g_reject.id,
+        actor=HUMAN,
+        reason_class="reject_plain",
+        observed_at=LATER,
+        at=LATER,
+    )
+
+    claim = _claim(store)
+    false_prop = _propose(
+        store,
+        document_id,
+        base,
+        quote="public sources",
+        replacement="licensed public sources",
+        claim_refs=[{"claim": claim.id, "role": "instantiation"}],
+    )
+    g_false = mint_proposal_gesture(store, false_prop, kind="reject_as_false")
+    proposals.decide_reject_as_false(
+        store,
+        proposal_id=false_prop.id,
+        gesture_id=g_false.id,
+        actor=HUMAN,
+        observed_at=LATER,
+        at=LATER,
+    )
+
+    errors = [f for f in integrity_findings(store) if f.severity == "error"]
+    assert errors == [], f"decision-gesture store is not clean: {errors!r}"
+
+    exported = export_store(store)
+    target = tmp_path / "import-target"
+    target.mkdir()
+    restored = import_store(exported.path, target, registry=EmptyRegistry()).store
+    reexport = export_store(restored, tmp_path / "reexport.jsonl")
+    assert reexport.path.read_bytes() == exported.path.read_bytes()
+
+
+def test_redacting_decision_scrubs_the_gesture_excerpt(
+    document_store, register_document, mint_proposal_gesture
+):
+    """C2 regression: a redacting decision tombstones the consumed gesture receipt.
+
+    Under gate.rejected_content == redact the proposal content nulls out, and the
+    consumed gesture's readable payload_excerpt must be scrubbed to the same
+    '[redacted]' sentinel in the same transaction so a rejected quote and
+    replacement never survive in a receipt (I10 anti-anchoring).
+    """
+    store, _ = document_store
+    document_id, base, _ = register_document(store)
+    proposal = _propose(
+        store,
+        document_id,
+        base,
+        quote="Original sentence",
+        replacement="DEFAMATORY-REPLACEMENT-TEXT",
+    )
+    gesture = mint_proposal_gesture(store, proposal, kind="reject_plain")
+    # Before the decision the receipt carries the quote-and-replacement verbatim.
+    assert "DEFAMATORY-REPLACEMENT-TEXT" in gesture.payload_excerpt
+    assert "Original sentence" in gesture.payload_excerpt
+
+    proposals.reject_proposal(
+        store,
+        proposal_id=proposal.id,
+        gesture_id=gesture.id,
+        actor=HUMAN,
+        reason_class="reject_plain",
+        observed_at=LATER,
+        at=LATER,
+    )
+
+    conn = store.connect()
+    try:
+        excerpt = conn.execute(
+            "SELECT payload_excerpt FROM gestures WHERE id = ?", (gesture.id,)
+        ).fetchone()["payload_excerpt"]
+    finally:
+        conn.close()
+    assert excerpt == "[redacted]"
+    assert "DEFAMATORY-REPLACEMENT-TEXT" not in excerpt
+    assert "Original sentence" not in excerpt
 
 
 def test_canonical_and_dedup_helpers_are_pure():
