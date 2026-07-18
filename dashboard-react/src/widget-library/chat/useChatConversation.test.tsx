@@ -8,6 +8,23 @@ import type {
 import { InMemoryChatProvider } from "./InMemoryChatProvider";
 import { useChatConversation } from "./useChatConversation";
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (cause: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+const emptySnapshot = (conversationId: string): ChatConversationSnapshot => ({
+  conversationId,
+  status: "open",
+  agentLiveness: "unknown",
+  messages: [],
+});
+
 describe("useChatConversation", () => {
   it("loads the initial snapshot and reaches the ready state", async () => {
     const provider = new InMemoryChatProvider({
@@ -101,5 +118,75 @@ describe("useChatConversation", () => {
 
     await waitFor(() => expect(result.current.status).toBe("ready"));
     expect(result.current.error).toBeNull();
+  });
+
+  it("drops a stale send result that resolves after a rebind to another conversation", async () => {
+    const pendingSend = deferred<ChatConversationSnapshot>();
+    const provider: ChatConversationProvider = {
+      loadConversation: async (conversationId) => emptySnapshot(conversationId),
+      sendMessage: () => pendingSend.promise,
+      subscribe: () => () => {},
+    };
+    const { result, rerender } = renderHook(
+      ({ conversationId }) => useChatConversation(provider, conversationId),
+      { initialProps: { conversationId: "conv-a" } },
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    let sendPromise!: Promise<void>;
+    act(() => {
+      sendPromise = result.current.send("late reply");
+    });
+
+    rerender({ conversationId: "conv-b" });
+    await waitFor(() =>
+      expect(result.current.snapshot?.conversationId).toBe("conv-b"),
+    );
+
+    await act(async () => {
+      pendingSend.resolve({
+        ...emptySnapshot("conv-a"),
+        messages: [{ id: "stale-1", author: "user", content: "late reply" }],
+      });
+      await sendPromise;
+    });
+
+    // The stale result is dropped, conv-b's transcript is untouched.
+    expect(result.current.snapshot?.conversationId).toBe("conv-b");
+    expect(result.current.snapshot?.messages).toHaveLength(0);
+  });
+
+  it("does not surface a stale send failure under the new binding", async () => {
+    const pendingSend = deferred<ChatConversationSnapshot>();
+    const provider: ChatConversationProvider = {
+      loadConversation: async (conversationId) => emptySnapshot(conversationId),
+      sendMessage: () => pendingSend.promise,
+      subscribe: () => () => {},
+    };
+    const { result, rerender } = renderHook(
+      ({ conversationId }) => useChatConversation(provider, conversationId),
+      { initialProps: { conversationId: "conv-a" } },
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    let sendPromise!: Promise<void>;
+    act(() => {
+      sendPromise = result.current.send("doomed reply");
+    });
+
+    rerender({ conversationId: "conv-b" });
+    await waitFor(() =>
+      expect(result.current.snapshot?.conversationId).toBe("conv-b"),
+    );
+
+    await act(async () => {
+      pendingSend.reject(new Error("network blip"));
+      await expect(sendPromise).rejects.toThrow(/network blip/);
+    });
+
+    // The stale failure belongs to conv-a's binding and must not paint an
+    // error over conv-b.
+    expect(result.current.sendError).toBeNull();
+    expect(result.current.snapshot?.conversationId).toBe("conv-b");
   });
 });

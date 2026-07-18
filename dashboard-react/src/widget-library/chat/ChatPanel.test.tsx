@@ -96,4 +96,85 @@ describe("ChatPanel", () => {
     );
     await expectNoAccessibilityViolations(container);
   });
+
+  it("disables the composer while the agent is stopped even without composerDisabled", () => {
+    render(
+      <ChatPanel
+        title="Doc chat"
+        messages={messages}
+        onSend={vi.fn()}
+        agentActivity="stopped"
+      />,
+    );
+    expect(screen.getByText(/Agent stopped responding/)).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Message" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+  });
+
+  it("passes the question message id as the inline answer's second argument", async () => {
+    const onSend = vi.fn().mockResolvedValue(undefined);
+    render(
+      <ChatPanel
+        title="Doc chat"
+        messages={[
+          {
+            id: "q1",
+            author: "assistant",
+            content: "Proceed?",
+            pending: true,
+            question: { responseType: "boolean" },
+          },
+        ]}
+        onSend={onSend}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Yes" }));
+    expect(onSend).toHaveBeenCalledWith("true", "q1");
+  });
+
+  it("handles a rejected inline answer without an unhandled rejection", async () => {
+    // No @types/node in this package, so the process listener is reached
+    // through a narrow structural cast.
+    const proc = (
+      globalThis as {
+        process?: {
+          on(
+            event: "unhandledRejection",
+            listener: (reason: unknown) => void,
+          ): void;
+          off(
+            event: "unhandledRejection",
+            listener: (reason: unknown) => void,
+          ): void;
+        };
+      }
+    ).process;
+    expect(proc).toBeDefined();
+    const onUnhandled = vi.fn();
+    proc?.on("unhandledRejection", onUnhandled);
+    try {
+      const onSend = vi.fn().mockRejectedValue(new Error("send failed"));
+      render(
+        <ChatPanel
+          title="Doc chat"
+          messages={[
+            {
+              id: "q1",
+              author: "assistant",
+              content: "Proceed?",
+              pending: true,
+              question: { responseType: "boolean" },
+            },
+          ]}
+          onSend={onSend}
+        />,
+      );
+      await userEvent.click(screen.getByRole("button", { name: "No" }));
+      expect(onSend).toHaveBeenCalledWith("false", "q1");
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(onUnhandled).not.toHaveBeenCalled();
+    } finally {
+      proc?.off("unhandledRejection", onUnhandled);
+    }
+  });
 });
