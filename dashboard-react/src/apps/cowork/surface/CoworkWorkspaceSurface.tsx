@@ -1,15 +1,24 @@
-import { useEffect, useMemo, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import type { SingleSurfaceRuntimeProps } from "../../../dashboard/contributions/viewModules";
 import { useOptionalDashboardEvents } from "../../../dashboard/events/DashboardEventProvider";
 import { useViewSession } from "../../../dashboard/views/useViewSession";
 import type { CoworkDriftState, CoworkViewModel } from "../contracts";
 import { CoworkBridgeEditor, useCoworkBridge } from "../bridge";
+import { CoworkChatAnnotations } from "../chat";
 import { CoworkEditorPane } from "../editor/CoworkEditorPane";
+import {
+  isChatDraftDirty,
+  loadChatDraft,
+  useUnsavedWorkGuard,
+} from "../guards";
+import { useCoworkNavBinding } from "../keyboard";
 import {
   CoworkRail,
   InMemoryReviewProvider,
+  RailStore,
   createDemoChatProvider,
+  isDirty,
 } from "../rail";
 import "./styles.css";
 
@@ -146,7 +155,32 @@ function CoworkLiveWorkspace({
   readonly fallbackHealth: CoworkHealthView | null;
 }) {
   const conversationId = `cowork-doc-${documentId}`;
-  const bridge = useCoworkBridge({ documentId, storeId, conversationId });
+
+  // One document conversation linkage store per document. The submit path annotates a routing
+  // note delivery here, and the feedback entry point annotates a captured span when R9 lands.
+  const annotations = useMemo(() => new CoworkChatAnnotations(), [documentId]);
+  const bridge = useCoworkBridge({
+    documentId,
+    storeId,
+    conversationId,
+    onRoutingDelivery: (delivery) => annotations.annotateRoutingDelivery(delivery),
+  });
+
+  // The rail store is owned here so the route-change guard reads the same staged sitting the
+  // rail mutates, and the review keyboard binding comes from the settings registry.
+  const [railStore] = useState(() => new RailStore({ tab: "review" }));
+  const navBinding = useCoworkNavBinding();
+
+  // The union route-change guard (guards/routeGuard): a staged-but-unsubmitted sitting or an
+  // unsent chat draft warns before a browser-level navigation. Read at event time, so it sees
+  // the live sitting and the retained draft.
+  const guardDirty = useCallback(
+    () =>
+      isDirty(railStore.getState()) ||
+      isChatDraftDirty(loadChatDraft(window.localStorage, conversationId) ?? ""),
+    [railStore, conversationId],
+  );
+  useUnsavedWorkGuard(guardDirty);
 
   // The SSE nudge (section 1.11): a truth.doc_* event reloads the review layer, which
   // re-pulls R2 and reconciles the cards, the marks, and the health strip.
@@ -183,6 +217,10 @@ function CoworkLiveWorkspace({
           chatProvider={bridge.chatProvider}
           conversationId={conversationId}
           anchorRects={bridge.anchorRects}
+          store={railStore}
+          queueBindings={navBinding}
+          chatAnnotations={annotations}
+          onScrollToChatAnchor={bridge.scrollToSpanAnchor}
         />
       }
     />
