@@ -9,8 +9,13 @@
  *
  * The split is intentionally conservative: it recognizes frontmatter only when the file
  * opens with a `---` fence AND a matching closing `---` line exists, so a leading
- * thematic break is never mistaken for frontmatter.
+ * thematic break is never mistaken for frontmatter. A leading UTF-8 BOM is split off
+ * before the fence test (the BOM code point would otherwise defeat the `^---` anchor and
+ * route the whole `---` block through the serializer) and carried verbatim on the
+ * frontmatter side, so the split stays lossless.
  */
+
+const BOM = "\uFEFF";
 
 const FRONTMATTER_BOUNDARY =
   /^(---[ \t]*\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n)?)([\s\S]*)$/;
@@ -25,15 +30,18 @@ export interface FrontmatterSplit {
 /**
  * Split a Markdown source into its verbatim frontmatter block and its body. The
  * invariant `(frontmatter ?? "") + body === source` always holds, so the split is
- * lossless and reversible.
+ * lossless and reversible. A leading BOM is preserved on the frontmatter side when
+ * frontmatter is present, otherwise it stays at the head of the body.
  */
 export const splitFrontmatter = (source: string): FrontmatterSplit => {
-  const match = FRONTMATTER_BOUNDARY.exec(source);
+  const leadingBom = source.startsWith(BOM) ? BOM : "";
+  const rest = leadingBom.length > 0 ? source.slice(leadingBom.length) : source;
+  const match = FRONTMATTER_BOUNDARY.exec(rest);
   if (match === null) {
     return { frontmatter: null, body: source };
   }
   const [, frontmatter, body] = match;
-  return { frontmatter: frontmatter ?? null, body: body ?? "" };
+  return { frontmatter: leadingBom + (frontmatter ?? ""), body: body ?? "" };
 };
 
 /**

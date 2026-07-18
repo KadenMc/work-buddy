@@ -1,9 +1,16 @@
 import { describe, expect, it } from "vitest";
+import { ySyncPluginKey } from "@tiptap/y-tiptap";
 import * as Y from "yjs";
 
 import { applyWithOrigin } from "../editor/applyOrigin";
 import { CoworkYdocPersistence } from "./CoworkYdocPersistence";
 import { InMemoryCoworkYdocTransport } from "./InMemoryCoworkYdocTransport";
+
+// A live human keystroke reaches the Y.Doc through the y-tiptap Collaboration binding
+// under the ySyncPluginKey origin. With no editor mounted, a unit test reproduces that
+// origin by transacting under it, so the persistence layer classifies the edit as human.
+const humanEdit = (doc: Y.Doc, mutate: () => void): void =>
+  doc.transact(mutate, ySyncPluginKey);
 
 const seedTransport = async (
   transport: InMemoryCoworkYdocTransport,
@@ -37,7 +44,7 @@ describe("CoworkYdocPersistence", () => {
     await persistence.hydrate();
     persistence.start();
 
-    clientDoc.getText("t").insert(5, " world");
+    humanEdit(clientDoc, () => clientDoc.getText("t").insert(5, " world"));
     await persistence.flush();
 
     const otherDoc = new Y.Doc();
@@ -76,7 +83,7 @@ describe("CoworkYdocPersistence", () => {
     const writer = new CoworkYdocPersistence(writerDoc, transport);
     await writer.hydrate();
     writer.start();
-    writerDoc.getText("t").insert(4, "!");
+    humanEdit(writerDoc, () => writerDoc.getText("t").insert(4, "!"));
     await writer.flush();
 
     await reader.pullSince();

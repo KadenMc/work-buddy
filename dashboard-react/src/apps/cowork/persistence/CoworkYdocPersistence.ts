@@ -94,8 +94,17 @@ export class CoworkYdocPersistence {
    * Client-driven compaction: encode the whole doc state as one snapshot blob and push
    * it as a compaction rider, so the server content-addresses it and truncates the
    * superseded update log (section 1.4). The client owns all Yjs computation (C3).
+   *
+   * Compaction runs ON the same serialization chain as the human-edit pushes, so it can
+   * never interleave with a queued push and leave `#docSha256` and `#offset` in a torn
+   * state (S3). The returned promise settles when this compaction has run.
    */
-  async compact(): Promise<void> {
+  compact(): Promise<void> {
+    this.#chain = this.#chain.then(() => this.#compactOnce());
+    return this.#chain;
+  }
+
+  async #compactOnce(): Promise<void> {
     const snapshot = Y.encodeStateAsUpdate(this.#doc);
     const snapshotSha256 = await sha256Hex(snapshot);
     const result = await this.#transport.push({

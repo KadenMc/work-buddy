@@ -28,6 +28,21 @@ describe("splitFrontmatter", () => {
     const source = "---\n\nA paragraph after a horizontal rule.\n";
     expect(splitFrontmatter(source)).toEqual({ frontmatter: null, body: source });
   });
+
+  it("splits frontmatter behind a leading BOM and keeps the BOM verbatim", () => {
+    const source = "\uFEFF---\ntitle: Demo\n---\n# Body\n\nText.\n";
+    const { frontmatter, body } = splitFrontmatter(source);
+    // The BOM would otherwise defeat the `^---` anchor and route the block through the
+    // serializer (the SP-3 escape-growth hazard). It rides on the frontmatter side.
+    expect(frontmatter).toBe("\uFEFF---\ntitle: Demo\n---\n");
+    expect(body).toBe("# Body\n\nText.\n");
+    expect((frontmatter ?? "") + body).toBe(source);
+  });
+
+  it("keeps a BOM at the head of the body when there is no frontmatter", () => {
+    const source = "\uFEFF# Just a heading\n\nNo frontmatter here.\n";
+    expect(splitFrontmatter(source)).toEqual({ frontmatter: null, body: source });
+  });
 });
 
 describe("reattachFrontmatter", () => {
