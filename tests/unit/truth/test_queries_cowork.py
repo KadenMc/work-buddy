@@ -314,7 +314,11 @@ def test_applied_proposal_with_a_consumed_gesture_is_clean(truth_root: Path) -> 
         basis_ref=gesture.id,
     )
     findings = integrity_findings(store)
-    assert not [f for f in findings if f.code == "proposal-status-basis"]
+    # A clean applied proposal (consumed confirm gesture bound to the proposal)
+    # must leave NO error-severity finding, not merely no proposal-status-basis
+    # one. The proposal-aware gesture-subject resolver makes this hold.
+    errors = [f for f in findings if f.severity == "error"]
+    assert errors == [], f"applied proposal store is not clean: {errors!r}"
 
 
 def test_proposal_stale_base_is_a_warning(truth_root: Path) -> None:

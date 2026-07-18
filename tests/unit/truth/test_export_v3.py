@@ -20,6 +20,7 @@ from work_buddy.truth.export import (
 from work_buddy.truth.identity import new_id, sha256_bytes, sha256_text
 from work_buddy.truth.migrations import REDACTED_SELECTOR_JSON
 from work_buddy.truth.proposals import proposal_canonical_sha256
+from work_buddy.truth.redact import policy_basis_ref
 from work_buddy.truth.store import TruthStore
 
 
@@ -249,25 +250,30 @@ def test_document_surface_round_trips_lossless_including_ydoc_blob(
     assert reexport.path.read_bytes() == exported.path.read_bytes()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Blocked on a queries.py integrity_findings gap: the redaction-event "
-        "validator redactable map (around line 3915) and the policy-redaction "
-        "guard do not recognize proposal subjects, so a staged import of a "
-        "redacted proposal raises invalid_redaction_subject_kind and "
-        "dangling_redaction_subject. Remove this marker once the production "
-        "sweep gains a proposal branch."
-    ),
-)
 def test_redacted_proposal_round_trips_with_hashes_retained(
     tmp_path: Path,
 ) -> None:
     source = _create_store(tmp_path / "source", store_id="b1" * 16)
     _write_blob(source, SNAPSHOT_SHA, SNAPSHOT_BYTES)
     _insert_document(source)
+    # A standing policy scrubs an expired proposal's content (the anti-anchoring
+    # shape) and appends the audit companion. This is the engine's policy-basis
+    # proposal redaction: reason expired_content, basis the exact standing-policy
+    # key, prior proposal status expired. The staged-import integrity gate must
+    # validate it cleanly (redactable map plus the proposal policy branch).
+    expired_pse_id = "c0" * 16
     redaction_id = "c1" * 16
     with source.write_transaction() as conn:
+        conn.execute(
+            "INSERT INTO proposal_status_events "
+            "(id, proposal_id, status, decision, at, actor_kind, actor_ref, "
+            "basis_kind, basis_ref, note) VALUES (?, ?, 'expired', NULL, ?, "
+            "'system', NULL, 'rule', 'proposal_max_age:7200', NULL)",
+            (expired_pse_id, PROP_ID, NOW),
+        )
+        source._insert_ledger_record_locked(
+            conn, "proposal_status_event", expired_pse_id
+        )
         conn.execute(
             "UPDATE proposals SET quote_exact = NULL, replacement = NULL, "
             "rationale = NULL, tldr = NULL, claim_refs_json = NULL, "
@@ -278,8 +284,13 @@ def test_redacted_proposal_round_trips_with_hashes_retained(
             "INSERT INTO redaction_events "
             "(id, subject_kind, subject_ref, at, actor_ref, basis_kind, "
             "basis_ref, reason) VALUES (?, 'proposal', ?, ?, 'user-1', "
-            "'policy', 'gate.rejected_content', 'anti-anchoring')",
-            (redaction_id, PROP_ID, NOW),
+            "'policy', ?, 'expired_content')",
+            (
+                redaction_id,
+                PROP_ID,
+                NOW,
+                policy_basis_ref(source, "expired_content"),
+            ),
         )
         source._insert_ledger_record_locked(conn, "redaction_event", redaction_id)
 
