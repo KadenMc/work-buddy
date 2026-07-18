@@ -11,6 +11,11 @@ import {
 } from "../editor/extensions";
 import { importCoworkMarkdown } from "../editor/markdownImport";
 import type { WbTrackedChangesAdapter } from "../suggestions/types";
+import type { FeedbackCapture } from "../chat";
+import {
+  CoworkFeedbackAffordance,
+  type CoworkFeedbackTransport,
+} from "../feedback";
 import "./styles.css";
 
 /** What the host reports up once the editor is mounted and the adapter attached. */
@@ -33,6 +38,18 @@ export interface CoworkBridgeEditorProps {
   readonly onReady?: (context: CoworkEditorReadyContext) => void;
   /** Fired when the editor is about to unmount, so the bridge can drop its editor refs. */
   readonly onTeardown?: () => void;
+  /** The cowork doc id, for the R9 feedback affordance. */
+  readonly documentId?: string;
+  /** The scope store id the R9 feedback route takes. */
+  readonly storeId?: string;
+  /**
+   * When supplied, the selection-triggered Give-feedback affordance mounts over
+   * the editor and reports a successful R9 capture here. Omitted (demo, tests)
+   * keeps the affordance off entirely.
+   */
+  readonly onFeedbackCaptured?: (capture: FeedbackCapture) => void;
+  /** Injectable R9 transport for the affordance, else the same-origin HTTP one. */
+  readonly feedbackTransport?: CoworkFeedbackTransport;
 }
 
 interface MountedProps extends CoworkBridgeEditorProps {
@@ -56,6 +73,10 @@ function MountedBridgeEditor({
   seedWhenEmpty,
   onReady,
   onTeardown,
+  documentId,
+  storeId,
+  onFeedbackCaptured,
+  feedbackTransport,
 }: MountedProps) {
   const extensions = useMemo(() => buildEditorExtensions(document), [document]);
   const seedContent = useMemo(
@@ -102,7 +123,20 @@ function MountedBridgeEditor({
     };
   }, [adapter, onTeardown]);
 
-  return <EditorContent editor={editor} className="wb-cowork-editor__content" />;
+  return (
+    <>
+      <EditorContent editor={editor} className="wb-cowork-editor__content" />
+      {editor !== null && onFeedbackCaptured !== undefined && documentId !== undefined ? (
+        <CoworkFeedbackAffordance
+          editor={editor}
+          documentId={documentId}
+          storeId={storeId}
+          onCaptured={onFeedbackCaptured}
+          transport={feedbackTransport}
+        />
+      ) : null}
+    </>
+  );
 }
 
 /**

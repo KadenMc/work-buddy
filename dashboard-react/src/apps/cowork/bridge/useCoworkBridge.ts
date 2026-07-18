@@ -28,7 +28,12 @@ import {
 import { createWbTrackedChangesAdapter } from "../suggestions/adapter";
 import { resolveQuoteAnchor } from "../suggestions/anchor";
 import type { ChatConversationProvider } from "../../../widget-library/chat";
-import type { RoutingDeliveryInput, ScrollAnchorTarget } from "../chat";
+import type {
+  FeedbackCapture,
+  RoutingDeliveryInput,
+  ScrollAnchorTarget,
+} from "../chat";
+import type { CoworkFeedbackTransport } from "../feedback";
 import type { RailDriftHealth, ReviewRailData } from "../rail/contracts";
 import type { AnchorRectSource } from "../rail/provider";
 import { DomAnchorRectSource } from "./DomAnchorRectSource";
@@ -73,6 +78,13 @@ export interface UseCoworkBridgeOptions {
   readonly sittingTransport?: CoworkSittingTransport;
   /** Notified per routed item after a submit, so the Chat tab annotates the routing note. */
   readonly onRoutingDelivery?: (delivery: RoutingDeliveryInput) => void;
+  /**
+   * Notified after a successful R9 feedback capture, so the surface annotates the
+   * span-linked message on the Chat tab and switches the rail to Chat.
+   */
+  readonly onFeedbackCaptured?: (capture: FeedbackCapture) => void;
+  /** Injectable R9 feedback transport, else the same-origin HTTP transport. */
+  readonly feedbackTransport?: CoworkFeedbackTransport;
 }
 
 export interface CoworkBridgeEditorMountProps {
@@ -82,6 +94,14 @@ export interface CoworkBridgeEditorMountProps {
   readonly seedMarkdown: string;
   readonly onReady: (context: CoworkEditorReadyContext) => void;
   readonly onTeardown: () => void;
+  /** The cowork doc id, for the R9 feedback affordance mounted in the editor host. */
+  readonly documentId: string;
+  /** The scope store id the R9 feedback route takes. */
+  readonly storeId: string;
+  /** Notified with the R9 capture, wired by the surface to the Chat tab. */
+  readonly onFeedbackCaptured?: (capture: FeedbackCapture) => void;
+  /** Injectable R9 feedback transport, else the same-origin HTTP transport. */
+  readonly feedbackTransport?: CoworkFeedbackTransport;
 }
 
 export interface CoworkBridge {
@@ -126,6 +146,8 @@ export const useCoworkBridge = (
     ydocTransport,
     sittingTransport,
     onRoutingDelivery,
+    onFeedbackCaptured,
+    feedbackTransport,
   } = options;
 
   const editorRef = useRef<Editor | null>(null);
@@ -138,6 +160,11 @@ export const useCoworkBridge = (
   // routing a delivery through the surface's latest callback.
   const onRoutingDeliveryRef = useRef(onRoutingDelivery);
   onRoutingDeliveryRef.current = onRoutingDelivery;
+
+  // Same treatment for the feedback callback: a stable editorProps that always
+  // routes a capture through the surface's latest callback.
+  const onFeedbackCapturedRef = useRef(onFeedbackCaptured);
+  onFeedbackCapturedRef.current = onFeedbackCaptured;
 
   const core = useMemo(() => {
     const doc = new Y.Doc();
@@ -222,8 +249,13 @@ export const useCoworkBridge = (
         editorDomRef.current = null;
         core.ingestor.detach();
       },
+      documentId,
+      storeId,
+      feedbackTransport,
+      onFeedbackCaptured: (capture: FeedbackCapture) =>
+        onFeedbackCapturedRef.current?.(capture),
     }),
-    [core, seedMarkdown],
+    [core, seedMarkdown, documentId, storeId, feedbackTransport],
   );
 
   const railRef = useMemo(

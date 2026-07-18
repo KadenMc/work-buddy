@@ -1,0 +1,139 @@
+/*
+ * Co-work feedback affordance styles. Theme Contract v1 semantic tokens only (no
+ * private palette, no getComputedStyle discovery), so the floating trigger and
+ * the compact input read correctly in light, dark, and forced-colors. The layout
+ * mirrors the rail's mark-bar idioms (raised surface, control radius, the verb
+ * button tones) so the affordance feels native beside the cards.
+ */
+
+.wb-cowork-feedback {
+  position: absolute;
+  inset-block-start: var(--wb-space-4);
+  inset-inline-end: var(--wb-space-4);
+  z-index: 5;
+  max-inline-size: 22rem;
+}
+
+/* ---------- trigger ---------- */
+.wb-cowork-feedback__trigger {
+  padding: var(--wb-space-2) var(--wb-space-4);
+  border: 1px solid var(--wb-color-border-default);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-surface-raised);
+  color: var(--wb-color-text-primary);
+  font: inherit;
+  font-size: var(--wb-font-size-xs);
+  font-weight: var(--wb-font-weight-medium);
+  box-shadow: var(--wb-shadow-raised, 0 1px 2px rgba(0, 0, 0, 0.15));
+  cursor: pointer;
+}
+
+.wb-cowork-feedback__trigger:hover:not(:disabled) {
+  background: var(--wb-color-surface-overlay);
+}
+
+.wb-cowork-feedback__trigger:focus-visible {
+  outline: none;
+  box-shadow: var(--wb-shadow-focus);
+}
+
+.wb-cowork-feedback__trigger:disabled {
+  color: var(--wb-color-text-muted);
+  cursor: not-allowed;
+}
+
+/* ---------- compact input ---------- */
+.wb-cowork-feedback__form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-3);
+  padding: var(--wb-space-4);
+  border: 1px solid var(--wb-color-border-default);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-surface-overlay);
+  box-shadow: var(--wb-shadow-overlay, 0 4px 12px rgba(0, 0, 0, 0.2));
+}
+
+.wb-cowork-feedback__label {
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-2xs);
+  font-weight: var(--wb-font-weight-medium);
+}
+
+.wb-cowork-feedback__quote {
+  margin: 0;
+  padding-inline-start: var(--wb-space-3);
+  border-inline-start: 2px solid var(--wb-color-border-default);
+  color: var(--wb-color-text-muted);
+  font-size: var(--wb-font-size-2xs);
+  font-style: italic;
+  /* Keep a long selection from ballooning the popover. */
+  max-block-size: 3.2rem;
+  overflow: hidden;
+}
+
+.wb-cowork-feedback__input {
+  inline-size: 100%;
+  padding: var(--wb-space-3);
+  border: 1px solid var(--wb-color-border-default);
+  border-radius: var(--wb-radius-xs);
+  background: var(--wb-color-surface-inset);
+  color: var(--wb-color-text-primary);
+  font: inherit;
+  font-size: var(--wb-font-size-xs);
+  resize: vertical;
+}
+
+.wb-cowork-feedback__input:focus-visible {
+  outline: none;
+  box-shadow: var(--wb-shadow-focus);
+}
+
+.wb-cowork-feedback__error {
+  margin: 0;
+  color: var(--wb-color-text-danger, var(--wb-color-status-danger));
+  font-size: var(--wb-font-size-2xs);
+}
+
+.wb-cowork-feedback__actions {
+  display: flex;
+  gap: var(--wb-space-2);
+}
+
+.wb-cowork-feedback__send {
+  padding: var(--wb-space-2) var(--wb-space-4);
+  border: 1px solid var(--wb-color-action-primary);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-action-primary);
+  color: var(--wb-color-text-on-accent);
+  font: inherit;
+  font-size: var(--wb-font-size-xs);
+  font-weight: var(--wb-font-weight-semibold);
+  cursor: pointer;
+}
+
+.wb-cowork-feedback__send:hover:not(:disabled) {
+  background: var(--wb-color-action-primary-hover);
+}
+
+.wb-cowork-feedback__send:disabled {
+  opacity: 0.7;
+  cursor: progress;
+}
+
+.wb-cowork-feedback__cancel {
+  padding: var(--wb-space-2) var(--wb-space-4);
+  border: 1px solid var(--wb-color-border-default);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-surface-raised);
+  color: var(--wb-color-text-primary);
+  font: inherit;
+  font-size: var(--wb-font-size-xs);
+  cursor: pointer;
+}
+
+.wb-cowork-feedback__send:focus-visible,
+.wb-cowork-feedback__cancel:focus-visible {
+  outline: none;
+  box-shadow: var(--wb-shadow-focus);
+}

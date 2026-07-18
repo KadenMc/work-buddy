@@ -157,19 +157,26 @@ function CoworkLiveWorkspace({
   const conversationId = `cowork-doc-${documentId}`;
 
   // One document conversation linkage store per document. The submit path annotates a routing
-  // note delivery here, and the feedback entry point annotates a captured span when R9 lands.
+  // note delivery here, and the feedback entry point annotates the captured span when R9 lands.
   const annotations = useMemo(() => new CoworkChatAnnotations(), [documentId]);
-  const bridge = useCoworkBridge({
-    documentId,
-    storeId,
-    conversationId,
-    onRoutingDelivery: (delivery) => annotations.annotateRoutingDelivery(delivery),
-  });
 
   // The rail store is owned here so the route-change guard reads the same staged sitting the
   // rail mutates, and the review keyboard binding comes from the settings registry.
   const [railStore] = useState(() => new RailStore({ tab: "review" }));
   const navBinding = useCoworkNavBinding();
+
+  const bridge = useCoworkBridge({
+    documentId,
+    storeId,
+    conversationId,
+    onRoutingDelivery: (delivery) => annotations.annotateRoutingDelivery(delivery),
+    // The last link of the feedback loop: R9 landed, so record the span-linked message on
+    // the Chat tab and switch the rail to Chat so the human sees the feedback land.
+    onFeedbackCaptured: (capture) => {
+      annotations.annotateFeedback(capture);
+      railStore.setTab("chat");
+    },
+  });
 
   // The union route-change guard (guards/routeGuard): a staged-but-unsubmitted sitting or an
   // unsent chat draft warns before a browser-level navigation. Read at event time, so it sees
