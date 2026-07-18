@@ -7,6 +7,7 @@ import {
   asSettingPlacementId,
   type SettingsContribution,
 } from "./contracts";
+import { coworkKeyboardSettingsContribution } from "../apps/cowork/keyboard";
 import { SettingsRegistry } from "./registry";
 
 export const ACCESSIBILITY_SETTINGS_PAGE_ID = asSettingsPageId(
@@ -194,6 +195,7 @@ export const nativeSettingsContribution: SettingsContribution = {
 
 export const nativeSettingsRegistry = new SettingsRegistry([
   nativeSettingsContribution,
+  coworkKeyboardSettingsContribution,
 ]);
 
 export function resolveSettingsPageRoute(
