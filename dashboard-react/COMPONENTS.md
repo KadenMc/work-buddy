@@ -19,7 +19,7 @@ Reusable conversational surface for any view that mounts a house conversation. K
 |---|---|---|
 | ChatPanel | `src/widget-library/chat/ChatPanel.tsx` | Message log plus composer with header slot and the standard host states (ready, loading, empty, error, read-only). Composer self-disables while the agent is stopped |
 | ChatMessageList | `src/widget-library/chat/ChatMessageList.tsx` | Author-attributed transcript with unread boundary, scroll lock, jump-to-latest, inline choice and boolean answers, typing and agent-stopped indicators |
-| ChatComposer | `src/widget-library/chat/ChatComposer.tsx` | Enter submits, Shift plus Enter newline, IME-safe, draft retained on send failure |
+| ChatComposer | `src/widget-library/chat/ChatComposer.tsx` | Enter submits, Shift plus Enter newline, IME-safe, draft retained on send failure, optional `initialValue`/`onDraftChange` draft-observation seam for host-side persistence and unsaved-work guards |
 | useChatConversation | `src/widget-library/chat/useChatConversation.ts` | Binds a ChatConversationProvider to load, silent-refresh, and send lifecycles. Provider must be referentially stable |
 | ChatConversationProvider | `src/widget-library/chat/contracts.ts` | The transport seam: loadConversation, sendMessage, subscribe. `InMemoryChatProvider` is the test and development fixture |
 | normalizeConversationPayload, deriveAgentActivity | `src/widget-library/chat/mapping.ts` | Raw `GET /api/conversations/<id>` payload to canonical types, message identity via `message_id`, legacy typing and stopped derivation |
