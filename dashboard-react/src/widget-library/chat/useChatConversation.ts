@@ -2,6 +2,10 @@
 // React state: an initial load, a silent refresh on every provider
 // invalidation, and a send path that surfaces failures without discarding the
 // human draft. It holds no transport knowledge, only the seam.
+//
+// The provider argument must be referentially stable (module constant, memo,
+// or context value). A consumer that constructs a fresh provider each render
+// re-subscribes and reloads on every render.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -91,16 +95,22 @@ export function useChatConversation(
 
   const send = useCallback(
     async (value: string, inReplyTo?: string) => {
+      // Capture the binding this send belongs to. A send resolving after the
+      // hook has rebound to another provider or conversation must not write
+      // its snapshot or error over the current binding's state.
+      const boundTo = activeRef.current;
       setSending(true);
       setSendError(null);
       const input: ChatSendInput = { value, inReplyTo };
       try {
         const next = await provider.sendMessage(conversationId, input);
-        if (activeRef.current !== null) {
+        if (activeRef.current === boundTo) {
           setSnapshot(next);
         }
       } catch (cause) {
-        setSendError(messageOf(cause));
+        if (activeRef.current === boundTo) {
+          setSendError(messageOf(cause));
+        }
         throw cause;
       } finally {
         setSending(false);
