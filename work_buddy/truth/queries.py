@@ -1642,8 +1642,7 @@ def _document_surface_tables_present(conn: sqlite3.Connection) -> bool:
 
     In the integrated engine the _m002 migration creates these tables in every
     store, so this is always true there and the guard is a no-op. It only lets
-    the sweep run unchanged against a pre-v2 store (and, during the wave-1
-    parallel build, a store whose migration has not yet landed).
+    the sweep run unchanged against a pre-v2 store.
     """
     rows = conn.execute(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN "
@@ -1656,9 +1655,9 @@ def _document_surface_tables_present(conn: sqlite3.Connection) -> bool:
 def _recompute_proposal_canonical(row: sqlite3.Row) -> str | None:
     """Recompute a proposal canonical hash via the proposals engine module.
 
-    Returns None when the proposals module is unavailable (wave-1 parallel
-    build) or when the stored row cannot be reconstructed, so an unrecomputable
-    proposal never yields a false canonical-mismatch error. The single source
+    Returns None when the proposals module is unavailable or when the stored
+    row cannot be reconstructed, so an unrecomputable proposal never yields a
+    false canonical-mismatch error. The single source
     of the hash is proposals.proposal_canonical_sha256, never duplicated here.
     """
     try:

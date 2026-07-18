@@ -11,7 +11,7 @@ import type {
 const EMPTY = new Uint8Array(0);
 
 /**
- * An in-memory stand-in for the opaque-blob server (section 1.4), for wave-1 tests. It
+ * An in-memory stand-in for the opaque-blob server (section 1.4), for persistence tests. It
  * models exactly the behavior a JS-less Flask handler can build: it stores a compacted
  * snapshot blob plus an append log of opaque update batches, slices the log by an
  * offset, content-addresses a compaction blob and verifies it re-hashes to the declared
