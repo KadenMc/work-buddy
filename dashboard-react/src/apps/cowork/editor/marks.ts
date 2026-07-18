@@ -12,7 +12,7 @@ import { Mark, mergeAttributes } from "@tiptap/core";
  *
  * The three tracked-change suggestion marks (insertion / deletion / modification) are
  * NOT authored here: they come from the vendored suggestion engine (section 3), which
- * is wave-2 territory.
+ * owns them end to end.
  */
 
 /**
@@ -66,9 +66,9 @@ export const WbProvenanceTint = Mark.create({
 /**
  * The claim-chip read-path scaffolding (section 6 item 3): a violet dashed-underline
  * span linking a passage to an existing claim, attrs { expression_id, claim_ref,
- * claim_status }. The frozen contract frames this as a read-only DECORATION the wave-2
+ * claim_status }. The frozen contract frames this as a read-only DECORATION the
  * review rail drives from ledger expression rows, never a user-authored stored mark.
- * This wave provides the attr shape and the same `parseHTML: () => []` forgery defense,
+ * This module provides the attr shape and the same `parseHTML: () => []` forgery defense,
  * so the wire attributes and the hardened parse posture are in place for the rail to
  * consume. The mark carries no input rules or commands, keeping it off the authoring
  * path in v1.
