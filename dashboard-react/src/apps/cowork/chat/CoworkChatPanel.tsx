@@ -36,6 +36,10 @@ export interface CoworkChatPanelProps {
   readonly title?: string;
   readonly composerPlaceholder?: string;
   readonly noMessagesLabel?: string;
+  /** Seed the composer once, e.g. from a retained unsent draft (route guard). */
+  readonly composerInitialValue?: string;
+  /** Observe the live composer draft, empty after a successful send. */
+  readonly onComposerDraftChange?: (value: string) => void;
 }
 
 export function CoworkChatPanel({
@@ -46,6 +50,8 @@ export function CoworkChatPanel({
   title = "Document conversation",
   composerPlaceholder,
   noMessagesLabel = "No messages yet. Ask the document agent anything.",
+  composerInitialValue,
+  onComposerDraftChange,
 }: CoworkChatPanelProps) {
   const chat = useChatConversation(provider, conversationId);
   const store = useMemo(
@@ -122,6 +128,8 @@ export function CoworkChatPanel({
             disabled={agentActivity === "stopped"}
             placeholder={composerPlaceholder}
             errorMessage={chat.sendError ?? undefined}
+            initialValue={composerInitialValue}
+            onDraftChange={onComposerDraftChange}
           />
         )}
       </>

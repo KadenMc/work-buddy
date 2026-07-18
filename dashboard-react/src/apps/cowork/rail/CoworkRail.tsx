@@ -20,6 +20,7 @@ import {
   type CoworkChatAnnotations,
   type ScrollAnchorTarget,
 } from "../chat";
+import { loadChatDraft, saveChatDraft } from "../guards";
 import { ReviewPanel } from "./ReviewPanel";
 import type { QueueBindings } from "./QueueView";
 import type { AnchorRectSource, ReviewRailProvider } from "./provider";
@@ -146,6 +147,19 @@ export function CoworkRail(props: CoworkRailProps) {
             conversationId={props.conversationId}
             annotations={props.chatAnnotations}
             onScrollToAnchor={props.onScrollToChatAnchor}
+            composerInitialValue={
+              loadChatDraft(
+                props.storage ?? window.localStorage,
+                props.conversationId,
+              ) ?? undefined
+            }
+            onComposerDraftChange={(text) =>
+              saveChatDraft(
+                props.storage ?? window.localStorage,
+                props.conversationId,
+                text,
+              )
+            }
           />
         ) : (
           <ChatPanel

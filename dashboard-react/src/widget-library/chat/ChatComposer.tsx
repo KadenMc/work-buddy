@@ -27,6 +27,14 @@ export interface ChatComposerProps {
   readonly label?: string;
   /** Inline error from the most recent failed send. */
   readonly errorMessage?: string;
+  /** Seed the draft once on mount, e.g. from a retained unsent draft. */
+  readonly initialValue?: string;
+  /**
+   * Observe the live draft: fired on every edit and with an empty string after
+   * a successful send. A host uses this to retain the unsent draft and to arm
+   * an unsaved-work guard. The composer still owns the text state.
+   */
+  onDraftChange?(value: string): void;
 }
 
 export function ChatComposer({
@@ -36,8 +44,10 @@ export function ChatComposer({
   placeholder = "Type a message…",
   label = "Message",
   errorMessage,
+  initialValue = "",
+  onDraftChange,
 }: ChatComposerProps) {
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useState(initialValue);
   const [busy, setBusy] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const isSending = sending || busy;
@@ -57,6 +67,7 @@ export function ChatComposer({
     try {
       await onSend(value);
       setDraft("");
+      onDraftChange?.("");
       if (inputRef.current !== null) {
         inputRef.current.style.height = "";
         inputRef.current.focus();
@@ -99,6 +110,7 @@ export function ChatComposer({
           isDisabled={disabled}
           onChange={(value) => {
             setDraft(value);
+            onDraftChange?.(value);
             grow(inputRef.current);
           }}
         >
