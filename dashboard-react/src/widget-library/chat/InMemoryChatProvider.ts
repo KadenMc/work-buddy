@@ -1,7 +1,7 @@
 // In-memory fixture implementation of the ChatConversationProvider seam. Used by
 // component and hook tests and available to a development harness. It performs
 // no I/O and holds one conversation of scripted state. It is deliberately NOT a
-// live transport, the join or wave-2 work supplies that behind the same seam.
+// live transport, which is supplied separately behind the same seam.
 
 import type {
   ChatAgentLiveness,

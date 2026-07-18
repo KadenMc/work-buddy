@@ -1,7 +1,7 @@
 // Pure, transport-free helpers that translate the raw house-conversation
 // payload into the canonical chat types and derive display signals. A live
-// transport (join or wave-2 work) reuses normalizeConversationPayload so the
-// mirroring of conversation_* semantics lives in one tested place.
+// transport reuses normalizeConversationPayload so the mirroring of
+// conversation_* semantics lives in one tested place.
 
 import type {
   ChatAgentActivity,
@@ -61,8 +61,12 @@ function toMessage(raw: RawChatMessage, index: number): ChatMessage {
           : undefined,
     };
   }
+  // The live endpoint serializes the identity field as message_id
+  // (ConversationMessage.to_dict). A bare id is accepted as a fixture-side
+  // fallback only, and the positional id is the last resort.
+  const rawId = raw.message_id ?? raw.id;
   return {
-    id: raw.id !== undefined ? String(raw.id) : `msg-${index}`,
+    id: rawId !== undefined ? String(rawId) : `msg-${index}`,
     author: toAuthorRole(raw.role),
     content: raw.content ?? "",
     createdAt: raw.created_at,

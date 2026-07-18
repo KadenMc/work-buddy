@@ -78,13 +78,16 @@ export function ChatMessageList({
 
   const messageCount = messages.length;
   const unreadCount = Math.max(0, messageCount - readCount);
+  // A boundary at index 0 is legitimate: a seeded id matching the first
+  // message means the whole transcript is unread, and the separator renders
+  // above it.
   const boundaryIndex =
-    unreadCount > 0 && readCount > 0 && readCount < messageCount
-      ? readCount
-      : -1;
+    unreadCount > 0 && readCount < messageCount ? readCount : -1;
 
   // Autoscroll while pinned. When the reader has scrolled up (scroll lock) the
-  // view holds position and the arriving messages accumulate as unread.
+  // view holds position and the arriving messages accumulate as unread. Keyed
+  // on the message COUNT: the house store appends discrete messages, so a
+  // last message whose content grows in place will not re-stick the view.
   useLayoutEffect(() => {
     if (!pinnedRef.current) return;
     const element = scrollRef.current;

@@ -41,13 +41,13 @@ describe("normalizeConversationPayload", () => {
       },
       messages: [
         {
-          id: 1,
+          message_id: "m-1",
           role: "user",
           content: "Hi",
           created_at: "2026-07-17T12:00:00-04:00",
         },
         {
-          id: 2,
+          message_id: "m-2",
           role: "agent",
           content: "Pick one",
           message_type: "question",
@@ -71,12 +71,12 @@ describe("normalizeConversationPayload", () => {
     });
     expect(snapshot.messages).toHaveLength(2);
     expect(snapshot.messages[0]).toMatchObject({
-      id: "1",
+      id: "m-1",
       author: "user",
       content: "Hi",
     });
     expect(snapshot.messages[1]).toMatchObject({
-      id: "2",
+      id: "m-2",
       author: "assistant",
       pending: true,
       question: {
@@ -98,7 +98,25 @@ describe("normalizeConversationPayload", () => {
     expect(snapshot.messages).toEqual([]);
   });
 
-  it("synthesizes a stable id when the backend omits one", () => {
+  it("falls back to a bare id when only a fixture-shaped id is present", () => {
+    const snapshot = normalizeConversationPayload({
+      conversation: { conversation_id: "c3" },
+      messages: [{ id: 7, role: "user", content: "fixture shape" }],
+    });
+    expect(snapshot.messages[0]?.id).toBe("7");
+  });
+
+  it("prefers message_id over a bare id when both are present", () => {
+    const snapshot = normalizeConversationPayload({
+      conversation: { conversation_id: "c3" },
+      messages: [
+        { message_id: "m-9", id: 9, role: "user", content: "both fields" },
+      ],
+    });
+    expect(snapshot.messages[0]?.id).toBe("m-9");
+  });
+
+  it("synthesizes a positional id when no identity field is present", () => {
     const snapshot = normalizeConversationPayload({
       conversation: { conversation_id: "c3" },
       messages: [{ role: "agent", content: "no id here" }],
