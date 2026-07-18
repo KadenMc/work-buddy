@@ -58,7 +58,7 @@ describe("CoworkWorkspaceSurface", () => {
       "true",
     );
     // The Chat tab now mounts the house chat panel seeded with the document agent's
-    // opening message, not the wave-1 placeholder.
+    // opening message, not the rail placeholder stub.
     await waitFor(
       () =>
         expect(
