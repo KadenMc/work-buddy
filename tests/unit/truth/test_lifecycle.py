@@ -1756,12 +1756,11 @@ def test_supplied_connections_fail_closed_across_stores(
     assert lifecycle.latest_status(claim.id).status == "proposed"
 
 
-# --- Co-work proposal subject resolution and allowed-kind sets (WP-A2) -------
+# --- Co-work proposal subject resolution and allowed-kind sets --------------
 #
-# These tests exercise the shipped-module extensions against the frozen v2 DDL
-# applied by the wave-1 scaffolding helper (_wave1_frozen_ddl). WP-A1's real
-# _m002 migration and store durable-insert seam replace that helper at the
-# join. Proposal DECISION flows themselves live in WP-A3's proposals.py.
+# These tests exercise the shipped-module extensions against a real v2 store
+# built by the document-store factory. Proposal decision flows live in
+# proposals.py.
 
 from work_buddy.truth.lifecycle import (  # noqa: E402
     GESTURE_KINDS,
@@ -1771,7 +1770,7 @@ from work_buddy.truth.lifecycle import (  # noqa: E402
     REJECTION_CLASSES,
 )
 
-from ._wave1_frozen_ddl import (  # noqa: E402
+from ._document_rows import (  # noqa: E402
     create_document_store,
     seed_document,
     seed_proposal,

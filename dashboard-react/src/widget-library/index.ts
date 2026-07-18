@@ -1,4 +1,5 @@
 export * from "./capture";
+export * from "./chat";
 export {
   WIDGET_LIBRARY_CONTRIBUTIONS,
   WIDGET_LIBRARY_MODULES,
