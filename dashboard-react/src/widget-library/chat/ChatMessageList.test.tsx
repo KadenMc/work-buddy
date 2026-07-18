@@ -125,6 +125,35 @@ describe("ChatMessageList", () => {
     ).toBeInTheDocument();
   });
 
+  it("opens at the top with the separator above the first message when the whole transcript is unread", () => {
+    const scrollIntoView = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
+    try {
+      render(
+        <ChatMessageList
+          messages={[
+            msg("m1", "unread one", "assistant"),
+            msg("m2", "unread two", "assistant"),
+          ]}
+          initialUnreadFromMessageId="m1"
+        />,
+      );
+      const separator = screen.getByRole("separator", { name: /unread/i });
+      const log = screen.getByRole("log");
+      // Boundary at index 0 renders above the first message.
+      expect(log.firstElementChild).toBe(separator);
+      // The mount position is the boundary, which sits at the top.
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: "start" });
+      expect(scrollIntoView.mock.contexts[0]).toBe(separator);
+      expect(
+        screen.getByRole("button", { name: /2 new messages/ }),
+      ).toBeInTheDocument();
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
   it("answers a pending choice question inline", async () => {
     const onRespond = vi.fn();
     render(
