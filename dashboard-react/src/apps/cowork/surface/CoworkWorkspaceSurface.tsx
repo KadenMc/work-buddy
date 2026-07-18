@@ -1,12 +1,15 @@
-import { useState } from "react";
+import { useMemo } from "react";
 
 import type { SingleSurfaceRuntimeProps } from "../../../dashboard/contributions/viewModules";
 import { useViewSession } from "../../../dashboard/views/useViewSession";
 import type { CoworkViewModel } from "../contracts";
 import { CoworkEditorPane } from "../editor/CoworkEditorPane";
+import {
+  CoworkRail,
+  InMemoryReviewProvider,
+  createDemoChatProvider,
+} from "../rail";
 import "./styles.css";
-
-type RailTab = "review" | "chat";
 
 const DRIFT_LABEL: Record<string, string> = {
   clean: "In sync",
@@ -45,64 +48,28 @@ function CoworkHealthStrip({ model }: { model: CoworkViewModel | null }) {
 }
 
 /**
- * Placeholder Review rail content. The real variant-A-hybrid rail (aligned-stream cards,
- * filter lens, queue mode, mark bar) is wave-2 territory and lives under
- * `apps/cowork/suggestions/`.
- */
-function ReviewRailStub({ hidden }: { hidden: boolean }) {
-  return (
-    <div
-      className="wb-cowork__rail-body"
-      role="tabpanel"
-      id="wb-cowork-rail-review"
-      aria-labelledby="wb-cowork-tab-review"
-      hidden={hidden}
-    >
-      <p className="wb-cowork__rail-placeholder">
-        Aligned proposal review appears here. The review rail is delivered in a later
-        wave.
-      </p>
-    </div>
-  );
-}
-
-/**
- * Placeholder Chat rail content. In a later wave this mounts the house
- * `conversation_chat` renderer in pane mode (one conversation per document), rather than
- * a fourth widget or the floating chat sidebar.
- */
-function ChatRailStub({ hidden }: { hidden: boolean }) {
-  return (
-    <div
-      className="wb-cowork__rail-body"
-      role="tabpanel"
-      id="wb-cowork-rail-chat"
-      aria-labelledby="wb-cowork-tab-chat"
-      hidden={hidden}
-    >
-      <p className="wb-cowork__rail-placeholder">
-        The document conversation appears here. Chat reuses the house conversation
-        machinery in a later wave.
-      </p>
-    </div>
-  );
-}
-
-/**
- * The App-owned Co-work surface renderer (section 5, variant-A-hybrid skeleton). It
- * composes the three regions inside ONE React tree that shares the coarse document
- * session: the header health strip on top, the editor pane center-left, and the
- * Review / Chat tabbed rail on the right. The coarse session flows through the
- * ViewProvider snapshot, and the live Y.Doc and the sitting take the direct route and are
- * owned by the editor pane and the wave-2 rail.
+ * The App-owned Co-work surface renderer (section 5, variant-A-hybrid). It composes the
+ * three regions inside ONE React tree that shares the coarse document session: the header
+ * health strip on top, the editor pane center-left, and the Review / Chat tabbed rail on
+ * the right. The coarse session flows through the ViewProvider snapshot, and the live
+ * Y.Doc and the sitting take the direct route and are owned by the editor pane and the
+ * rail. The rail is fed the in-memory review and demo chat providers until the live R2 and
+ * conversation transports are wired behind those same seams.
  */
 export function CoworkWorkspaceSurface({
   definition,
   provider,
 }: SingleSurfaceRuntimeProps) {
   const session = useViewSession({ provider, viewId: definition.viewId });
-  const [tab, setTab] = useState<RailTab>("review");
   const model = (session.snapshot?.model as CoworkViewModel | undefined) ?? null;
+  const documentId = model?.document?.documentId ?? "demo-doc";
+  const conversationId = `cowork-doc-${documentId}`;
+
+  const reviewProvider = useMemo(() => new InMemoryReviewProvider(), []);
+  const chatProvider = useMemo(
+    () => createDemoChatProvider(conversationId),
+    [conversationId],
+  );
 
   return (
     <main className="wb-cowork" aria-label={definition.displayName}>
@@ -112,32 +79,12 @@ export function CoworkWorkspaceSurface({
           <CoworkEditorPane />
         </div>
         <aside className="wb-cowork__rail" aria-label="Review and chat">
-          <div className="wb-cowork__rail-tabs" role="tablist" aria-label="Rail">
-            <button
-              type="button"
-              role="tab"
-              id="wb-cowork-tab-review"
-              aria-selected={tab === "review"}
-              aria-controls="wb-cowork-rail-review"
-              className="wb-cowork__rail-tab"
-              onClick={() => setTab("review")}
-            >
-              Review
-            </button>
-            <button
-              type="button"
-              role="tab"
-              id="wb-cowork-tab-chat"
-              aria-selected={tab === "chat"}
-              aria-controls="wb-cowork-rail-chat"
-              className="wb-cowork__rail-tab"
-              onClick={() => setTab("chat")}
-            >
-              Chat
-            </button>
-          </div>
-          <ReviewRailStub hidden={tab !== "review"} />
-          <ChatRailStub hidden={tab !== "chat"} />
+          <CoworkRail
+            documentId={documentId}
+            reviewProvider={reviewProvider}
+            chatProvider={chatProvider}
+            conversationId={conversationId}
+          />
         </aside>
       </div>
     </main>
