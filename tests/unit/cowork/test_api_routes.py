@@ -163,6 +163,43 @@ def test_marks_confirm_writes_file_and_threads_identity(client, seeded, make_pro
     assert ref != "work-buddy-user"
 
 
+def test_marks_redirect_routes_guidance_into_the_conversation(
+    client, seeded, make_proposal
+):
+    proposal = make_proposal()
+    resp = client.post(
+        _url(f"/api/truth/doc/{seeded['document'].id}/marks", seeded["store_id"]),
+        json={
+            "items": [
+                {
+                    "proposal_id": proposal.id,
+                    "verb": "redirect",
+                    "canonical_sha256": proposal.canonical_sha256,
+                    "redirect_note": "Cite the 2024 guideline before rewriting.",
+                }
+            ]
+        },
+    )
+    assert resp.status_code == 200
+    result = resp.get_json()["results"][0]
+    assert result["result"] == "kept_open_redirected"
+    # The redirect note reaches the proposing agent as a message in the
+    # document's single conversation.
+    from work_buddy.cowork import conversations
+    from work_buddy.conversations.store import get_conversation_with_messages
+
+    binding = conversations.ensure_document_conversation(
+        document_id=seeded["document"].id,
+        store_id=seeded["store_id"],
+    )
+    conversation = get_conversation_with_messages(binding.conversation_id)
+    assert conversation is not None
+    assert any(
+        "Cite the 2024 guideline before rewriting." in message["content"]
+        for message in conversation["messages"]
+    )
+
+
 def test_marks_partial_failure_is_flagged(client, seeded, make_proposal):
     good = make_proposal(quote="Original sentence for co-work tests.", replacement="Good.")
     stale = make_proposal(quote="Second target phrase.", replacement="Stale.")
@@ -305,13 +342,14 @@ def test_feedback_captures_user_authored_utterance(client, seeded):
         json={
             "span": {"exact": DOC_QUOTE, "prefix": "", "suffix": ""},
             "text": "This sentence needs a citation.",
-            "conversation_id": "conv-123",
         },
     )
     assert resp.status_code == 200
     payload = resp.get_json()
     assert payload["ok"] is True
-    assert payload["conversation_id"] == "conv-123"
+    # The conversation is resolved server-side (one per document), not echoed
+    # from the request, and the verbatim feedback is posted into it.
+    assert payload["conversation_id"]
     assert payload["span_id"]
     with seeded["store"].connect() as conn:
         row = conn.execute(
@@ -321,6 +359,14 @@ def test_feedback_captures_user_authored_utterance(client, seeded):
     assert row["kind"] == "utterance"
     assert row["trust_class"] == "user_authored"
     assert row["content"] == "This sentence needs a citation."
+    from work_buddy.conversations.store import get_conversation_with_messages
+
+    conversation = get_conversation_with_messages(payload["conversation_id"])
+    assert conversation is not None
+    assert any(
+        message["content"] == "This sentence needs a citation."
+        for message in conversation["messages"]
+    )
 
 
 def test_feedback_requires_document_surface_capture(client, store_ctx, tmp_path):

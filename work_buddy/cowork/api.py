@@ -25,7 +25,7 @@ import logging
 
 from flask import Blueprint, Response, jsonify, request
 
-from work_buddy.cowork import sittings, transport
+from work_buddy.cowork import conversations, feedback, sittings, transport
 from work_buddy.truth import documents, expressions, proposals
 from work_buddy.truth.anchors import CompositeSelector
 from work_buddy.truth.contracts import Actor, InvariantViolation
@@ -421,6 +421,18 @@ def api_doc_marks(document_id: str):
     if materialize is not None and not isinstance(materialize, dict):
         return _fail("materialize must be an object or null", 400)
     actor = _actor_for_request()
+
+    def _deliver_routing(verb: str, proposal_id: str, note: str | None):
+        # A redirect or endorse keeps the proposal open and routes the human's
+        # guidance into the document conversation for the proposing agent.
+        return conversations.deliver_decision(
+            document_id=document.id,
+            store_id=store.store_id,
+            verb=verb,
+            proposal_id=proposal_id,
+            note=note,
+        )
+
     try:
         from work_buddy.consent import user_initiated
 
@@ -431,6 +443,7 @@ def api_doc_marks(document_id: str):
                 actor,
                 items=items,
                 materialize=materialize,
+                deliver_routing=_deliver_routing,
             )
     except sittings.MaterializeHashMismatch:
         return jsonify({"ok": False, "error": "hash_mismatch"}), 409
@@ -620,64 +633,41 @@ def api_doc_feedback(document_id: str):
         return _fail("span.exact is required", 400)
     if not isinstance(text, str) or not text.strip():
         return _fail("text is required", 400)
-    conversation_id = body.get("conversation_id")
     actor = _actor_for_request()
-    try:
-        selector = CompositeSelector(
-            exact=span["exact"],
-            prefix=span.get("prefix") or "",
-            suffix=span.get("suffix") or "",
-        )
-    except Exception as exc:  # noqa: BLE001 - a bad selector is a 400
-        return _fail(f"invalid span: {exc}", 400)
-    span_sha256 = sha256_text(selector.exact)
-    locator = (
-        f"wb-cowork://{store.store_id}/documents/{document.id}/spans/{span_sha256}"
-    )
-    if conversation_id:
-        locator = f"{locator}/conversations/{conversation_id}"
+    feedback_span = {
+        "exact": span["exact"],
+        "prefix": span.get("prefix") or "",
+        "suffix": span.get("suffix") or "",
+        "node_id_hint": span.get("node_id_hint"),
+    }
     try:
         from work_buddy.consent import user_initiated
 
-        # Feedback is human-AUTHORED content, not a gesture, so it lands as citable
-        # kernel evidence (utterance, user_authored) plus a document-span anchor.
+        # Feedback is human-AUTHORED content, not a gesture. capture_feedback saves
+        # it VERBATIM as user_authored kernel evidence plus a document-span anchor,
+        # and the feedback_poster hook posts it into the document's single
+        # conversation, returning the conversation and message it landed in.
         with user_initiated("dashboard.cowork.feedback"):
-            evidence = store.capture_evidence(
-                kind="utterance",
-                source_locator=locator,
-                actor=actor,
-                acquisition_method="said_in_chat",
-                content=text,
-                meta={
-                    "document_id": document.id,
-                    "node_id_hint": span.get("node_id_hint"),
-                    "conversation_id": conversation_id,
-                },
+            poster = conversations.feedback_poster(
+                document_id=document.id,
+                store_id=store.store_id,
             )
-            document_span = ensure_document_span(
+            capture = feedback.capture_feedback(
                 store,
                 document_id=document.id,
-                selector=selector,
-                quote_exact=selector.exact,
+                span=feedback_span,
+                verbatim_text=text,
                 actor=actor,
+                post_message=poster,
             )
     except InvariantViolation as exc:
         return _fail(str(exc), 400)
-    _emit(
-        "truth.doc_feedback_captured",
-        store.store_id,
-        {
-            "document_id": document.id,
-            "evidence_id": evidence.id,
-            "conversation_id": conversation_id,
-        },
-    )
     return jsonify(
         {
             "ok": True,
-            "evidence_id": evidence.id,
-            "span_id": document_span.id,
-            "conversation_id": conversation_id,
+            "evidence_id": capture.evidence_id,
+            "span_id": capture.document_span_id,
+            "conversation_id": capture.conversation_id,
         }
     )
 

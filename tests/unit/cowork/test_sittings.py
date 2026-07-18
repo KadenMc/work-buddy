@@ -270,7 +270,73 @@ def test_endorse_keeps_flag_open(seeded, make_proposal):
     assert proposals.latest_proposal_status(store, flag.id).status == "open"
 
 
-def test_reject_as_preference_is_reported_blocked(seeded, make_proposal):
+def test_reject_as_preference_mints_a_preference_claim_from_text(seeded, make_proposal):
+    store = seeded["store"]
+    document = seeded["document"]
+    proposal = make_proposal()
+    response, _ = sittings.apply_sitting(
+        store,
+        document,
+        HUMAN,
+        items=[
+            {
+                "proposal_id": proposal.id,
+                "verb": "reject_as_preference",
+                "canonical_sha256": proposal.canonical_sha256,
+                "preference_text": "Keep the original wording, it reads better.",
+            }
+        ],
+        at=NOW,
+    )
+    result = response["results"][0]
+    assert result["result"] == "closed"
+    assert result["gesture_id"]
+    preference_claim_id = result["preference_claim_id"]
+    assert preference_claim_id
+    with store.connect() as conn:
+        row = conn.execute(
+            "SELECT proposition, claim_kind, created_by_kind FROM claims WHERE id = ?",
+            (preference_claim_id,),
+        ).fetchone()
+    assert row["proposition"] == "Keep the original wording, it reads better."
+    assert row["claim_kind"] == "preference"
+    assert row["created_by_kind"] == "human"
+    assert proposals.latest_proposal_status(store, proposal.id).status == "closed"
+    assert gesture_count(store) == 1
+
+
+def test_reject_as_preference_uses_a_supplied_result_claim(seeded, make_proposal):
+    store = seeded["store"]
+    document = seeded["document"]
+    existing = store.propose_claim(
+        proposition="The user prefers the terser phrasing.",
+        claim_kind="preference",
+        actor=HUMAN,
+        created_at=NOW,
+        status_at=NOW,
+    ).claim
+    proposal = make_proposal()
+    response, _ = sittings.apply_sitting(
+        store,
+        document,
+        HUMAN,
+        items=[
+            {
+                "proposal_id": proposal.id,
+                "verb": "reject_as_preference",
+                "canonical_sha256": proposal.canonical_sha256,
+                "result_claim_id": existing.id,
+            }
+        ],
+        at=NOW,
+    )
+    result = response["results"][0]
+    assert result["result"] == "closed"
+    assert result["preference_claim_id"] == existing.id
+    assert proposals.latest_proposal_status(store, proposal.id).status == "closed"
+
+
+def test_reject_as_preference_without_input_mints_nothing(seeded, make_proposal):
     store = seeded["store"]
     document = seeded["document"]
     proposal = make_proposal()
@@ -289,7 +355,8 @@ def test_reject_as_preference_is_reported_blocked(seeded, make_proposal):
     )
     result = response["results"][0]
     assert result["result"] == "error"
-    assert "preference-claim channel" in result["error"]
+    assert "result_claim_id or a preference_text" in result["error"]
+    assert result["preference_claim_id"] is None
     assert gesture_count(store) == 0
 
 

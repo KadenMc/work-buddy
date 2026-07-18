@@ -65,11 +65,24 @@ def _profile(store_id: str | None = None) -> dict[str, Any]:
 
 @pytest.fixture
 def store_ctx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    """A registered real v2 document store with the routes' registry redirected."""
+    """A registered real v2 document store with the routes' registry redirected.
+
+    The house conversations store is redirected to a throwaway database too, so
+    the feedback route and the redirect/endorse routing land in an isolated
+    conversation log rather than the real one (live-test data rule).
+    """
     from work_buddy.cowork import api
+    from work_buddy.conversations import store as conversations_store
 
     registry = TruthStoreRegistry(tmp_path / "truth-registry.db")
     monkeypatch.setattr(api, "_registry", lambda: registry)
+    conversations_db = tmp_path / "throwaway-conversations.db"
+    monkeypatch.setattr(conversations_store, "_DB_PATH", conversations_db)
+    conversations_conn = conversations_store.get_connection()
+    try:
+        conversations_store._ensure_schema(conversations_conn)
+    finally:
+        conversations_conn.close()
     root = tmp_path / "scope"
     root.mkdir()
     store = TruthStore.create(root, _profile())
