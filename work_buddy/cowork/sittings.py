@@ -14,6 +14,8 @@ user_initiated boundary and threads a real dashboard-user actor through.
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -28,6 +30,15 @@ from work_buddy.truth.contracts import (
 from work_buddy.truth.identity import sha256_text
 from work_buddy.truth.lifecycle import TruthLifecycle
 from work_buddy.truth.store import DocumentRecord, TruthStore
+
+logger = logging.getLogger(__name__)
+
+# A routing hook is called with (verb, proposal_id, note) for a decision that
+# keeps the proposal open and must reach the proposing agent (redirect, endorse).
+RoutingDeliver = Callable[[str, str, str | None], object]
+
+# The results whose decision routes into the document conversation for the agent.
+_ROUTED_RESULTS = frozenset({"kept_open_redirected", "kept_open_endorsed"})
 
 # The dashboard surface gestures are minted on. accept_proposal requires this
 # surface to sit in the store profile's confirmation_surfaces.
@@ -154,6 +165,17 @@ def _dispatch(
             negation_text=item.get("negation_text"),
             at=at,
         )
+    if verb == "reject_as_preference":
+        result_claim_id = _resolve_preference_claim(store, actor, item, at=at)
+        return proposals.reject_proposal(
+            store,
+            proposal_id=proposal_id,
+            gesture_id=gesture_id,
+            actor=actor,
+            reason_class="reject_as_preference",
+            result_claim_id=result_claim_id,
+            at=at,
+        )
     if verb == "redirect":
         return proposals.redirect_proposal(
             store,
@@ -176,6 +198,41 @@ def _dispatch(
             store, proposal_id=proposal_id, gesture_id=gesture_id, actor=actor, at=at
         )
     raise InvariantViolation(f"unhandled verb: {verb!r}")
+
+
+# The claim kind minted for a human-authored preferred phrasing (FA-1). A
+# reject_as_preference records the human's own wording, so it lands as a
+# preference claim authored by the same dashboard user who made the gesture.
+_PREFERENCE_CLAIM_KIND = "preference"
+
+
+def _resolve_preference_claim(
+    store: TruthStore,
+    actor: Actor,
+    item: dict[str, Any],
+    *,
+    at: str | None,
+) -> str:
+    """Return the result claim id for a reject_as_preference decision (FA-1).
+
+    An explicit result_claim_id names an existing claim and is used as is. Else
+    the human-authored preference_text is minted as a new preference claim by
+    the same dashboard user, and its id becomes the result claim. The caller
+    prechecks that at least one of the two is present, so this never mints from
+    empty text.
+    """
+    supplied = str(item.get("result_claim_id") or "").strip()
+    if supplied:
+        return supplied
+    preference_text = str(item.get("preference_text") or "").strip()
+    minted = store.propose_claim(
+        proposition=preference_text,
+        claim_kind=_PREFERENCE_CLAIM_KIND,
+        actor=actor,
+        created_at=at,
+        status_at=at,
+    )
+    return minted.claim.id
 
 
 def _precheck_inputs(proposal: Any, verb: str) -> str | None:
@@ -225,19 +282,6 @@ def decide_one(
     if latest.status != "open":
         return _error(proposal_id, verb, base_ok, f"proposal is {latest.status}, not open")
 
-    # reject_as_preference records the human's preferred phrasing via an existing
-    # preference claim (proposals.reject_proposal hard-requires result_claim_id),
-    # but the frozen R5 request schema carries no field to supply it. Rather than
-    # improvise schema, the mark returns error and mints nothing. See report.
-    if verb == "reject_as_preference":
-        return _error(
-            proposal_id,
-            verb,
-            base_ok,
-            "reject_as_preference is not decidable through R5: the frozen request "
-            "schema carries no preference-claim channel",
-        )
-
     if verb in _BASE_REQUIRED_VERBS and not base_ok:
         return _error(proposal_id, verb, base_ok, "stale_base")
 
@@ -258,6 +302,18 @@ def decide_one(
             "reject_as_false requires the proposal to carry claim_refs or a "
             "negation_text (nothing to negate)",
         )
+    if (
+        verb == "reject_as_preference"
+        and not str(item.get("result_claim_id") or "").strip()
+        and not str(item.get("preference_text") or "").strip()
+    ):
+        return _error(
+            proposal_id,
+            verb,
+            base_ok,
+            "reject_as_preference requires a result_claim_id or a "
+            "preference_text (nothing to record as the preferred phrasing)",
+        )
 
     gesture = TruthLifecycle(store).mint_gesture(
         subject_ref=proposal_id,
@@ -277,6 +333,8 @@ def decide_one(
     entry["gesture_id"] = decision.gesture.id if decision.gesture else gesture.id
     if decision.negation_claim is not None:
         entry["negation_claim_id"] = decision.negation_claim.id
+    if verb == "reject_as_preference" and decision.result_claim_id is not None:
+        entry["preference_claim_id"] = decision.result_claim_id
     events: list[tuple[str, dict[str, Any]]] = [
         (
             "truth.doc_proposal_decided",
@@ -337,12 +395,20 @@ def apply_sitting(
     items: list[dict[str, Any]],
     materialize: dict[str, Any] | None = None,
     at: str | None = None,
+    deliver_routing: RoutingDeliver | None = None,
 ) -> tuple[dict[str, Any], list[tuple[str, dict[str, Any]]]]:
     """Run one sitting: decide every mark, then materialize accepted edits.
 
     Returns the R5 response body plus the ordered post-commit events to emit.
     Raises MaterializeHashMismatch when a supplied materialize block is not
     self-consistent, so nothing commits and the route can answer 409.
+
+    A redirect or endorse keeps the proposal open and must reach the proposing
+    agent. When ``deliver_routing`` is supplied it is called with
+    ``(verb, proposal_id, note)`` for each such committed decision, so the route
+    can post the guidance into the document conversation. Delivery is a
+    best-effort side effect: the decision is already durable in the ledger, so a
+    delivery failure is logged and never rolls back the sitting.
     """
     # A self-inconsistent materialize block is a client integrity failure, not a
     # per-item staleness, so it is rejected before any decision commits.
@@ -357,6 +423,24 @@ def apply_sitting(
     events: list[tuple[str, dict[str, Any]]] = []
     for outcome in outcomes:
         events.extend(outcome.events)
+
+    if deliver_routing is not None:
+        for item, outcome in zip(items, outcomes):
+            if outcome.result["result"] not in _ROUTED_RESULTS:
+                continue
+            try:
+                deliver_routing(
+                    outcome.result["verb"],
+                    outcome.result["proposal_id"],
+                    item.get("redirect_note"),
+                )
+            except Exception:  # noqa: BLE001 - delivery is best-effort post-commit
+                logger.warning(
+                    "routing delivery failed for %s on document %s",
+                    outcome.result["verb"],
+                    document.id,
+                    exc_info=True,
+                )
 
     materialize_block: dict[str, Any] | None = None
     applied_ids = [
