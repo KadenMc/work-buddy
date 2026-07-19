@@ -1,0 +1,37 @@
+/*
+ * Bridge-owned styling for the scroll-to-and-highlight affordance (the aligned-stream
+ * degrade path). scrollToAnchor adds this class to a suggestion mark to flash it into
+ * notice. It consumes Theme Contract v1 semantic tokens only (section 5.4), carries a
+ * non-color encoding under forced-colors, and honors reduced-motion (SP-6 G3, PRD section 7).
+ */
+
+.wb-cowork-suggestion--flash {
+  animation: wb-cowork-anchor-flash 1200ms ease-out;
+  border-radius: var(--wb-radius-sm, 3px);
+}
+
+@keyframes wb-cowork-anchor-flash {
+  from {
+    background-color: var(--wb-color-accent-soft);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+
+/* Reduced motion: hold a brief static outline instead of the fading animation. */
+@media (prefers-reduced-motion: reduce) {
+  .wb-cowork-suggestion--flash {
+    animation: none;
+    outline: 2px solid var(--wb-color-focus-ring);
+    outline-offset: 1px;
+  }
+}
+
+/* Forced colors: the animation is invisible, so keep a system-color outline. */
+@media (forced-colors: active) {
+  .wb-cowork-suggestion--flash {
+    outline: 2px solid Highlight;
+    outline-offset: 1px;
+  }
+}

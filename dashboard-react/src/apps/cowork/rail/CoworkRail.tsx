@@ -15,6 +15,12 @@ import {
   type ChatConversationProvider,
   type ChatPanelStatus,
 } from "../../../widget-library/chat";
+import {
+  CoworkChatPanel,
+  type CoworkChatAnnotations,
+  type ScrollAnchorTarget,
+} from "../chat";
+import { loadChatDraft, saveChatDraft } from "../guards";
 import { ReviewPanel } from "./ReviewPanel";
 import type { QueueBindings } from "./QueueView";
 import type { AnchorRectSource, ReviewRailProvider } from "./provider";
@@ -34,6 +40,14 @@ export interface CoworkRailProps {
   readonly queueBindings?: QueueBindings;
   readonly narrow?: boolean;
   readonly initialTab?: RailTab;
+  /**
+   * The document linkage store for the Chat tab. When supplied the tab renders the richer
+   * Co-work chat panel (feedback span links and routing-note delivery status) instead of the
+   * plain house chat panel, so the demo and test paths keep the plain panel by omitting it.
+   */
+  readonly chatAnnotations?: CoworkChatAnnotations;
+  /** The scroll-to-passage seam for a feedback span link, wired by the surface. */
+  readonly onScrollToChatAnchor?: (target: ScrollAnchorTarget) => void;
 }
 
 export function CoworkRail(props: CoworkRailProps) {
@@ -127,17 +141,39 @@ export function CoworkRail(props: CoworkRailProps) {
         className="wb-cowork-rail__tabpanel"
         hidden={tab !== "chat"}
       >
-        <ChatPanel
-          title="Document conversation"
-          status={chatStatus}
-          messages={messages}
-          agentActivity={agentActivity}
-          onSend={(value) => chat.send(value)}
-          sending={chat.sending}
-          sendErrorMessage={chat.sendError ?? undefined}
-          onRetry={chat.retry}
-          noMessagesLabel="No messages yet. Ask the document agent anything."
-        />
+        {props.chatAnnotations !== undefined ? (
+          <CoworkChatPanel
+            provider={props.chatProvider}
+            conversationId={props.conversationId}
+            annotations={props.chatAnnotations}
+            onScrollToAnchor={props.onScrollToChatAnchor}
+            composerInitialValue={
+              loadChatDraft(
+                props.storage ?? window.localStorage,
+                props.conversationId,
+              ) ?? undefined
+            }
+            onComposerDraftChange={(text) =>
+              saveChatDraft(
+                props.storage ?? window.localStorage,
+                props.conversationId,
+                text,
+              )
+            }
+          />
+        ) : (
+          <ChatPanel
+            title="Document conversation"
+            status={chatStatus}
+            messages={messages}
+            agentActivity={agentActivity}
+            onSend={(value) => chat.send(value)}
+            sending={chat.sending}
+            sendErrorMessage={chat.sendError ?? undefined}
+            onRetry={chat.retry}
+            noMessagesLabel="No messages yet. Ask the document agent anything."
+          />
+        )}
       </div>
     </div>
   );

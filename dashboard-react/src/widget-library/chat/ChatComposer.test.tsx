@@ -47,6 +47,26 @@ describe("ChatComposer", () => {
     expect(input).toHaveValue("keep me");
   });
 
+  it("seeds from initialValue and reports the live draft, empty after send", async () => {
+    const onSend = vi.fn().mockResolvedValue(undefined);
+    const onDraftChange = vi.fn();
+    render(
+      <ChatComposer
+        onSend={onSend}
+        initialValue="kept from before"
+        onDraftChange={onDraftChange}
+      />,
+    );
+    const input = screen.getByRole("textbox", { name: "Message" });
+    expect(input).toHaveValue("kept from before");
+
+    await userEvent.type(input, "!");
+    expect(onDraftChange).toHaveBeenLastCalledWith("kept from before!");
+
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onDraftChange).toHaveBeenLastCalledWith(""));
+  });
+
   it("disables input and Send when the composer is disabled", () => {
     render(<ChatComposer onSend={vi.fn()} disabled />);
     expect(screen.getByRole("textbox", { name: "Message" })).toBeDisabled();

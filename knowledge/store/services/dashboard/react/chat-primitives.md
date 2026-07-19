@@ -29,7 +29,7 @@ Reusable React chat components for conversational surfaces in the React dashboar
 
 - **ChatPanel**: message log plus composer with a header slot and the standard host states, including a read-only banner.
 - **ChatMessageList**: author attribution, timestamps, unread boundary with scroll lock and jump-to-latest, inline choice and boolean answers, typing indicator and agent-stopped notice.
-- **ChatComposer**: Enter submits, Shift plus Enter inserts a newline, the draft is retained on send failure.
+- **ChatComposer**: Enter submits, Shift plus Enter inserts a newline, the draft is retained on send failure. Optional draft-observation seam: `initialValue` seeds the draft once on mount and `onDraftChange` fires on every edit (empty string after a successful send), so a host can persist the unsent draft and arm an unsaved-work guard while the composer keeps owning the text state.
 
 ## State and mapping
 

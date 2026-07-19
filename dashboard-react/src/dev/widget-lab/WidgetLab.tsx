@@ -10,6 +10,7 @@ import type { ThemeSchemePreference } from "../../theme/contracts";
 import { useTheme } from "../../theme/ThemeProvider";
 import { listThemeSkins } from "../../theme/packs/registry";
 import { SelectField } from "../../ui";
+import { CoworkLabSection } from "./coworkLabCases";
 import {
   buildModeCases,
   buildStateCases,
@@ -205,6 +206,8 @@ export default function WidgetLab() {
               ))}
             </div>
           </section>
+
+          <CoworkLabSection />
         </>
       ) : (
         <section aria-labelledby="widget-lab-trace">

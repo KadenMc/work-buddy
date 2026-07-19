@@ -1,0 +1,83 @@
+/*
+ * Slash menu popup styles. Theme Contract v1 semantic tokens only (no private palette, no
+ * getComputedStyle discovery). The popup mounts into document.body through the suggestion
+ * plugin's managed floating-ui mount, so these selectors are global by necessity but stay
+ * namespaced under .wb-cowork-slash. The active item carries a left rule as well as a
+ * surface tint, so the highlight survives forced-colors.
+ */
+
+.wb-cowork-slash {
+  min-inline-size: 15rem;
+  max-inline-size: 20rem;
+  max-block-size: 20rem;
+  overflow-y: auto;
+  padding: var(--wb-space-1);
+  background: var(--wb-color-surface-overlay);
+  color: var(--wb-color-text-primary);
+  border: 1px solid var(--wb-color-border-default);
+  border-radius: var(--wb-radius-panel);
+  box-shadow: var(--wb-shadow-overlay);
+  font-family: var(--wb-font-sans);
+  font-size: var(--wb-font-size-sm);
+}
+
+.wb-cowork-slash__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-1);
+}
+
+.wb-cowork-slash__group [cmdk-group-heading] {
+  padding: var(--wb-space-1) var(--wb-space-2);
+  color: var(--wb-color-text-muted);
+  font-size: var(--wb-font-size-2xs);
+  font-weight: var(--wb-font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.wb-cowork-slash__item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--wb-space-2);
+  border-inline-start: 2px solid transparent;
+  border-radius: var(--wb-radius-control);
+  cursor: pointer;
+}
+
+.wb-cowork-slash__item[data-selected="true"] {
+  background: var(--wb-color-surface-selected);
+  border-inline-start-color: var(--wb-color-accent);
+}
+
+.wb-cowork-slash__item[data-disabled="true"] {
+  color: var(--wb-color-text-disabled);
+  cursor: default;
+}
+
+.wb-cowork-slash__item-title {
+  color: var(--wb-color-text-primary);
+  font-weight: var(--wb-font-weight-medium);
+}
+
+.wb-cowork-slash__item-hint {
+  color: var(--wb-color-text-muted);
+  font-size: var(--wb-font-size-2xs);
+}
+
+.wb-cowork-slash__empty {
+  padding: var(--wb-space-2);
+  color: var(--wb-color-text-muted);
+}
+
+@media (forced-colors: active) {
+  .wb-cowork-slash {
+    border-color: CanvasText;
+  }
+
+  .wb-cowork-slash__item[data-selected="true"] {
+    border-inline-start-color: Highlight;
+    outline: 1px solid Highlight;
+  }
+}

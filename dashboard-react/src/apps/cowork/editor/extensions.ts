@@ -16,6 +16,7 @@ import {
   CoworkImage,
   buildSuggestionExtensions,
 } from "../suggestions";
+import { CoworkSlashMenu } from "../menus";
 
 /**
  * The Collaboration fragment field is fixed to `default` in the document-surface
@@ -93,6 +94,9 @@ export const buildSchemaExtensions = (): AnyExtension[] => [
  * Markdown storage extension (the one Markdown parse/serialize integration point), and
  * UniqueID with the block allowlist and `filterTransaction: (tr) => !isChangeOrigin(tr)` so
  * it never re-mints ids on an applied (apply-origin or foreign) transaction (SP-2 point 3).
+ * The slash menu (CoworkSlashMenu) is an editor-runtime affordance over the block types, so
+ * like the suggestion decoration plugin it is added to the editor set only and never to the
+ * DOM-free MarkdownManager.
  *
  * `updateDocument` is left at its default because the Co-work editor is read-write. The
  * `updateDocument: false` rule in the load-order contract applies to read-only surfaces
@@ -123,6 +127,7 @@ export const buildEditorExtensions = (document: Y.Doc): AnyExtension[] => [
     types: [...COWORK_UNIQUE_ID_TYPES],
     filterTransaction: (transaction) => !isChangeOrigin(transaction),
   }),
+  CoworkSlashMenu,
 ];
 
 /**

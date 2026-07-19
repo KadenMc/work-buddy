@@ -135,6 +135,7 @@
 }
 
 .wb-cowork-editor {
+  position: relative;
   block-size: 100%;
 }
 
