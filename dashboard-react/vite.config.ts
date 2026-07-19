@@ -25,18 +25,23 @@ export default defineConfig({
       output: {
         manualChunks(id) {
           if (!id.includes("node_modules")) return undefined;
-          if (
-            id.includes("react-aria-components") ||
-            id.includes("@react-aria") ||
-            id.includes("@react-stately") ||
-            id.includes("@internationalized")
-          ) {
-            return "vendor-react-aria";
-          }
+          // The whole React ecosystem lives in ONE chunk. react-aria and
+          // react-aria-components import react/react-dom and cross-reference
+          // @react-aria / @react-stately, so isolating them in a separate
+          // chunk makes Rollup emit two chunks that import each other at module
+          // top level. ES module init order then trips a temporal dead zone at
+          // runtime ("Cannot access '$' before initialization"). A single chunk
+          // is larger but correct, which is the right trade for a same-origin
+          // local dashboard. Keep leaf packages (grid, icons) split for caching.
           if (
             id.includes("/react/") ||
             id.includes("/react-dom/") ||
-            id.includes("/react-router")
+            id.includes("/react-router") ||
+            id.includes("react-aria") ||
+            id.includes("@react-aria") ||
+            id.includes("react-stately") ||
+            id.includes("@react-stately") ||
+            id.includes("@internationalized")
           ) {
             return "vendor-react";
           }
