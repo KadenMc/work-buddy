@@ -62,69 +62,80 @@
   border-color: var(--wb-color-status-danger);
 }
 
+/*
+ * The panel Group (react-resizable-panels) owns display, flex-direction, and overflow. It
+ * fills the space under the health strip so its two panels split the full body height.
+ */
 .wb-cowork__body {
-  display: flex;
   flex: 1 1 auto;
   min-block-size: 0;
+}
+
+/*
+ * The library applies a Panel's className to a nested div, so these wrappers fill their panel
+ * and let their content scroll without fighting the panel's own flex sizing.
+ */
+.wb-cowork__editor-panel,
+.wb-cowork__rail-panel {
+  display: flex;
+  min-inline-size: 0;
+  min-block-size: 0;
+  block-size: 100%;
 }
 
 .wb-cowork__editor-region {
   flex: 1 1 auto;
   min-inline-size: 0;
+  block-size: 100%;
   overflow: auto;
   padding: var(--wb-space-5);
   background: var(--wb-color-surface-canvas);
 }
 
 .wb-cowork__rail {
-  flex: 0 0 auto;
-  inline-size: 20rem;
+  flex: 1 1 auto;
+  inline-size: 100%;
+  min-block-size: 0;
   display: flex;
   flex-direction: column;
-  min-block-size: 0;
   background: var(--wb-color-surface-raised);
 }
 
 /*
- * The grab strip between the editor and the rail. It is the divider (a 1px line
- * that matches the old rail border at rest) and the resize handle, driven by
- * useResizableRail through role="separator".
+ * The separator between the editor and the rail. The library renders it as
+ * `<div data-separator role="separator">` with the arrow-key and double-click behavior and the
+ * WAI-ARIA value props. This styles it as a divider (a 1px line that matches the rail border at
+ * rest) inside a comfortable grab strip, and thickens the line on hover, focus, and drag.
  */
-.wb-cowork__rail-resizer {
-  flex: 0 0 auto;
-  inline-size: 7px;
-  align-self: stretch;
-  border: none;
-  padding: 0;
-  background: transparent;
-  cursor: col-resize;
+.wb-cowork__rail-separator {
   position: relative;
-  touch-action: none;
+  inline-size: 11px;
+  align-self: stretch;
+  cursor: col-resize;
 }
 
-.wb-cowork__rail-resizer::before {
+.wb-cowork__rail-separator::before {
   content: "";
   position: absolute;
   inset-block: 0;
-  inset-inline-start: 3px;
+  inset-inline-start: 50%;
+  transform: translateX(-50%);
   inline-size: 1px;
   background: var(--wb-color-border-default);
-  transition: inline-size 120ms ease;
+  transition: inline-size var(--wb-motion-duration-fast) var(--wb-motion-easing-standard),
+    background-color var(--wb-motion-duration-fast) var(--wb-motion-easing-standard);
 }
 
-.wb-cowork__rail-resizer:hover::before,
-.wb-cowork__rail-resizer:focus-visible::before {
-  inline-size: 2px;
+.wb-cowork__rail-separator:hover::before,
+.wb-cowork__rail-separator:active::before,
+.wb-cowork__rail-separator:focus-visible::before {
+  inline-size: 3px;
+  background: var(--wb-color-border-interactive);
 }
 
-.wb-cowork__rail-resizer:focus-visible {
+.wb-cowork__rail-separator:focus-visible {
   outline: none;
   box-shadow: var(--wb-shadow-focus);
-}
-
-body.wb-cowork-resizing {
-  cursor: col-resize;
-  user-select: none;
 }
 
 .wb-cowork__rail-tabs {
@@ -272,7 +283,7 @@ body.wb-cowork-resizing {
 
 @media (prefers-reduced-motion: reduce) {
   .wb-cowork__rail-tab,
-  .wb-cowork__rail-resizer::before {
+  .wb-cowork__rail-separator::before {
     transition: none;
   }
 }
@@ -281,8 +292,13 @@ body.wb-cowork-resizing {
   .wb-cowork__drift {
     border: 1px solid CanvasText;
   }
-  .wb-cowork__rail-resizer::before {
+  .wb-cowork__rail-separator::before {
     background: CanvasText;
+  }
+  .wb-cowork__rail-separator:hover::before,
+  .wb-cowork__rail-separator:active::before,
+  .wb-cowork__rail-separator:focus-visible::before {
+    background: Highlight;
   }
   .wb-cowork__rail-tab[aria-selected="true"] {
     border-color: Highlight;

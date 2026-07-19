@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { Group, Panel, Separator } from "react-resizable-panels";
 
 import type { SingleSurfaceRuntimeProps } from "../../../dashboard/contributions/viewModules";
 import { useOptionalDashboardEvents } from "../../../dashboard/events/DashboardEventProvider";
@@ -27,7 +28,16 @@ import {
   isDirty,
   type ReviewRailData,
 } from "../rail";
-import { useResizableRail } from "./useResizableRail";
+import {
+  EDITOR_DEFAULT_SIZE,
+  EDITOR_MIN_SIZE,
+  EDITOR_PANEL_ID,
+  RAIL_DEFAULT_SIZE,
+  RAIL_MAX_SIZE,
+  RAIL_MIN_SIZE,
+  RAIL_PANEL_ID,
+  useResizableRail,
+} from "./useResizableRail";
 import "./styles.css";
 
 const DRIFT_LABEL: Record<string, string> = {
@@ -124,7 +134,13 @@ function CoworkHealthStrip({ health }: { health: CoworkHealthView | null }) {
   );
 }
 
-/** The shared three-region shell, so demo and live compose the same layout (section 5). */
+/**
+ * The shared three-region shell, so demo and live compose the same layout (section 5). The
+ * editor and the review rail are two resizable panels: react-resizable-panels sizes them as
+ * percentages of the body, so the rail drags across a wide range in both directions and holds
+ * its proportion when the window changes. The separator carries `role="separator"` with arrow
+ * keys and double-click-to-reset from the library, and `useResizableRail` persists the split.
+ */
 function CoworkWorkspaceLayout({
   label,
   health,
@@ -139,24 +155,42 @@ function CoworkWorkspaceLayout({
   readonly railRef?: (element: HTMLElement | null) => void;
 }) {
   const helping = useDashboardHelpEnabled();
-  const { width, bodyRef, separatorProps } = useResizableRail();
+  const { defaultLayout, onLayoutChanged } = useResizableRail();
   return (
     <main className={`wb-cowork${helping ? " is-helping" : ""}`} aria-label={label}>
       <CoworkHealthStrip health={health} />
-      <div className="wb-cowork__body" ref={bodyRef}>
-        <HelpTarget content={COWORK_EDITOR_HELP} placement="top">
-          <div className="wb-cowork__editor-region">{editor}</div>
-        </HelpTarget>
-        <div className="wb-cowork__rail-resizer" {...separatorProps} />
-        <aside
-          className="wb-cowork__rail"
-          aria-label="Review and chat"
-          ref={railRef}
-          style={{ inlineSize: `${width}px` }}
+      <Group
+        className="wb-cowork__body"
+        orientation="horizontal"
+        defaultLayout={defaultLayout}
+        onLayoutChanged={onLayoutChanged}
+      >
+        <Panel
+          id={EDITOR_PANEL_ID}
+          className="wb-cowork__editor-panel"
+          defaultSize={EDITOR_DEFAULT_SIZE}
+          minSize={EDITOR_MIN_SIZE}
         >
-          {rail}
-        </aside>
-      </div>
+          <HelpTarget content={COWORK_EDITOR_HELP} placement="top">
+            <div className="wb-cowork__editor-region">{editor}</div>
+          </HelpTarget>
+        </Panel>
+        <Separator
+          className="wb-cowork__rail-separator"
+          aria-label="Resize the review panel"
+        />
+        <Panel
+          id={RAIL_PANEL_ID}
+          className="wb-cowork__rail-panel"
+          defaultSize={RAIL_DEFAULT_SIZE}
+          minSize={RAIL_MIN_SIZE}
+          maxSize={RAIL_MAX_SIZE}
+        >
+          <aside className="wb-cowork__rail" aria-label="Review and chat" ref={railRef}>
+            {rail}
+          </aside>
+        </Panel>
+      </Group>
     </main>
   );
 }

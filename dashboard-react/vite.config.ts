@@ -45,9 +45,15 @@ export default defineConfig({
           ) {
             return "vendor-react";
           }
+          // The drag/resize leaf family. react-resizable-panels (the Co-work split) only
+          // imports react/react-dom, so it rides here with a single one-directional edge to
+          // vendor-react and never forms a chunk cycle. It is named explicitly so trimming a
+          // sibling term cannot silently relocate it. Its name also contains "react-resizable",
+          // so the term below would catch it regardless. The explicit clause is documentation.
           if (
             id.includes("react-grid-layout") ||
             id.includes("react-draggable") ||
+            id.includes("react-resizable-panels") ||
             id.includes("react-resizable")
           ) {
             return "vendor-grid";

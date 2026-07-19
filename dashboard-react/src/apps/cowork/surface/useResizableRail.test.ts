@@ -1,83 +1,102 @@
-import { act, renderHook } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { renderHook } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { useResizableRail } from "./useResizableRail";
+import {
+  EDITOR_DEFAULT_SIZE,
+  EDITOR_MIN_SIZE,
+  LAYOUT_STORAGE_ID,
+  RAIL_DEFAULT_SIZE,
+  RAIL_MAX_SIZE,
+  RAIL_MIN_SIZE,
+  resolveLayoutStorage,
+  useResizableRail,
+} from "./useResizableRail";
 
-const STORAGE_KEY = "wb.cowork.rail-width";
-const MIN_WIDTH = 256;
-const MAX_WIDTH = 720;
+// react-resizable-panels owns the drag, keyboard, and DOM measurement, which jsdom cannot run
+// (getBoundingClientRect returns zeros, no ResizeObserver). The real resize behavior is proven
+// against the built app in a browser. Here we mock the library's persistence hook so we can
+// assert our own wiring deterministically without rendering a Group. vitest hoists vi.mock and
+// vi.hoisted above the imports, so the mock is in place before the hook module loads.
+const { useDefaultLayout } = vi.hoisted(() => ({ useDefaultLayout: vi.fn() }));
+vi.mock("react-resizable-panels", () => ({ useDefaultLayout }));
 
-const keyDown = (
-  props: ReturnType<typeof useResizableRail>["separatorProps"],
-  key: string,
-): void => {
-  act(() => {
-    props.onKeyDown({
-      key,
-      preventDefault: () => {},
-    } as unknown as React.KeyboardEvent<HTMLDivElement>);
-  });
+const percent = (value: string): number => {
+  expect(value).toMatch(/^\d+(\.\d+)?%$/);
+  return Number.parseFloat(value);
 };
 
 afterEach(() => {
+  useDefaultLayout.mockReset();
   window.localStorage.clear();
 });
 
-describe("useResizableRail", () => {
-  it("defaults to the prior fixed width when nothing is stored", () => {
-    const { result } = renderHook(() => useResizableRail());
-    expect(result.current.width).toBe(320);
-    expect(result.current.separatorProps.role).toBe("separator");
-    expect(result.current.separatorProps["aria-orientation"]).toBe("vertical");
-    expect(result.current.separatorProps["aria-valuenow"]).toBe(320);
+describe("Co-work split size policy", () => {
+  it("expresses every size as a percentage, never a fixed pixel width", () => {
+    for (const size of [
+      EDITOR_DEFAULT_SIZE,
+      EDITOR_MIN_SIZE,
+      RAIL_DEFAULT_SIZE,
+      RAIL_MIN_SIZE,
+      RAIL_MAX_SIZE,
+    ]) {
+      expect(size).toMatch(/%$/);
+    }
   });
 
-  it("reads and clamps a stored width", () => {
-    window.localStorage.setItem(STORAGE_KEY, "5000");
-    const { result } = renderHook(() => useResizableRail());
-    expect(result.current.width).toBe(MAX_WIDTH);
+  it("gives the rail real travel: narrow floor, wide ceiling, a wider default in between", () => {
+    const min = percent(RAIL_MIN_SIZE);
+    const def = percent(RAIL_DEFAULT_SIZE);
+    const max = percent(RAIL_MAX_SIZE);
+
+    expect(min).toBeLessThan(def);
+    expect(def).toBeLessThan(max);
+    // Genuinely narrow at the floor, a clear majority at the ceiling.
+    expect(min).toBeLessThanOrEqual(20);
+    expect(max).toBeGreaterThanOrEqual(60);
+    // A default noticeably wider than the old fixed 320px rail (~19% of a 1680px body).
+    expect(def).toBeGreaterThan(25);
   });
 
-  it("clamps a too-small stored width up to the minimum", () => {
-    window.localStorage.setItem(STORAGE_KEY, "40");
-    const { result } = renderHook(() => useResizableRail());
-    expect(result.current.width).toBe(MIN_WIDTH);
+  it("keeps the editor and rail constraints jointly satisfiable", () => {
+    // The rail ceiling is the editor floor, and the two defaults tile the whole body.
+    expect(percent(EDITOR_MIN_SIZE) + percent(RAIL_MAX_SIZE)).toBe(100);
+    expect(percent(EDITOR_DEFAULT_SIZE) + percent(RAIL_DEFAULT_SIZE)).toBe(100);
+  });
+});
+
+describe("layout persistence wiring", () => {
+  it("resolves window.localStorage as the layout store when a window exists", () => {
+    expect(resolveLayoutStorage()).toBe(window.localStorage);
   });
 
-  it("grows on ArrowLeft, shrinks on ArrowRight, and persists", () => {
-    const { result } = renderHook(() => useResizableRail());
-    keyDown(result.current.separatorProps, "ArrowLeft");
-    expect(result.current.width).toBe(344);
-    expect(window.localStorage.getItem(STORAGE_KEY)).toBe("344");
-    keyDown(result.current.separatorProps, "ArrowRight");
-    expect(result.current.width).toBe(320);
-  });
-
-  it("clamps at the bounds with End and Home", () => {
-    const { result } = renderHook(() => useResizableRail());
-    keyDown(result.current.separatorProps, "End");
-    expect(result.current.width).toBe(MIN_WIDTH);
-    keyDown(result.current.separatorProps, "Home");
-    expect(result.current.width).toBe(MAX_WIDTH);
-  });
-
-  it("grows while dragging the separator toward the editor and persists on release", () => {
-    const { result } = renderHook(() => useResizableRail());
-    act(() => {
-      result.current.separatorProps.onPointerDown({
-        button: 0,
-        clientX: 500,
-        preventDefault: () => {},
-      } as unknown as React.PointerEvent<HTMLDivElement>);
+  it("persists to localStorage under a stable id and only for user-driven resizes", () => {
+    useDefaultLayout.mockReturnValue({
+      defaultLayout: undefined,
+      onLayoutChange: () => {},
+      onLayoutChanged: () => {},
     });
-    act(() => {
-      window.dispatchEvent(new MouseEvent("pointermove", { clientX: 400 }));
+
+    renderHook(() => useResizableRail());
+
+    expect(useDefaultLayout).toHaveBeenCalledWith({
+      id: LAYOUT_STORAGE_ID,
+      storage: window.localStorage,
+      onlySaveAfterUserInteractions: true,
     });
-    // The rail is on the inline-end, so a smaller clientX widens it: 320 + 100.
-    expect(result.current.width).toBe(420);
-    act(() => {
-      window.dispatchEvent(new MouseEvent("pointerup", {}));
+  });
+
+  it("returns the restored layout and the settled-change callback for the Group", () => {
+    const restored = { editor: 60, rail: 40 };
+    const onLayoutChanged = vi.fn();
+    useDefaultLayout.mockReturnValue({
+      defaultLayout: restored,
+      onLayoutChange: () => {},
+      onLayoutChanged,
     });
-    expect(window.localStorage.getItem(STORAGE_KEY)).toBe("420");
+
+    const { result } = renderHook(() => useResizableRail());
+
+    expect(result.current.defaultLayout).toBe(restored);
+    expect(result.current.onLayoutChanged).toBe(onLayoutChanged);
   });
 });
