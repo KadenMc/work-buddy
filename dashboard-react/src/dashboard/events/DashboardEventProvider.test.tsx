@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import Header from "../../components/Header";
 import { ThemeProvider } from "../../theme/ThemeProvider";
 import { DensityProvider } from "../../theme/DensityProvider";
+import { DashboardAnnouncer } from "../accessibility/DashboardAnnouncer";
 import {
   DashboardEventProvider,
   normalizeDashboardEvent,
@@ -85,9 +86,11 @@ describe("DashboardEventProvider", () => {
         <ThemeProvider initialPreference={{ scheme: "dark", skinId: "wb.default" }}>
           <DensityProvider initialDensity="comfortable">
             <DashboardEventProvider>
-              <Header />
-              <EventProbe testId="first" />
-              <EventProbe testId="second" />
+              <DashboardAnnouncer>
+                <Header />
+                <EventProbe testId="first" />
+                <EventProbe testId="second" />
+              </DashboardAnnouncer>
             </DashboardEventProvider>
           </DensityProvider>
         </ThemeProvider>
