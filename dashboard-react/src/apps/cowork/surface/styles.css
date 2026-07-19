@@ -211,8 +211,6 @@
 .wb-cowork-editor__surface {
   box-sizing: border-box;
   inline-size: 100%;
-  max-inline-size: 46rem;
-  margin-inline: auto;
   min-block-size: 100%;
   padding: var(--wb-space-6) var(--wb-space-7);
   border: 1px solid var(--wb-color-border-default);
