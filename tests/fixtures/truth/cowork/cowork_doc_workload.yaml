@@ -1,0 +1,118 @@
+name: cowork-doc-review-walkthrough
+description: >-
+  End-to-end co-work document review: register, materialize, propose eight edits
+  and two flags, walk every one of the nine decision verbs, drift, and expire.
+  Concrete stand-in content lets every hash and gesture binding be computed by
+  the engine. Placeholder hashes in the frozen schematic are materialized from
+  the bodies and quotes below.
+store:
+  profile: cothink-doc
+  document_surface:
+    enabled: true
+document:
+  alias: design
+  path: docs/design.md
+  document_class: co_authored
+  body: |
+    # Design
+
+    The evaluation size is 120 queries.
+    The baseline model is trained from scratch.
+    The corpus is scraped from public sources.
+    The latency budget is 200 milliseconds.
+    The reviewers are drawn from the core team.
+    The rollout is staged over four weeks.
+    The metric is exact match at rank one.
+    The eighth item is parked for later review.
+    The abstract claims a novel contribution.
+    The related work omits two recent papers.
+steps:
+  - register: { document: design }
+  - materialize: { document: design }
+  - claim:
+      alias: claim_size
+      proposition: The evaluation size is 120 queries
+      kind: fact
+  - claim:
+      alias: pref_phrasing
+      proposition: Prefer the term evaluation set over evaluation size
+      kind: preference
+  - propose:
+      alias: p1
+      document: design
+      quote: 120 queries
+      replacement: 144 queries
+      claim_refs:
+        - { claim: claim_size, role: instantiation }
+  - propose:
+      alias: p2
+      document: design
+      quote: baseline model
+      replacement: reference baseline model
+  - propose:
+      alias: p3
+      document: design
+      quote: public sources
+      replacement: licensed public sources
+  - propose:
+      alias: p4
+      document: design
+      quote: 200 milliseconds
+      replacement: 150 milliseconds
+  - propose:
+      alias: p5
+      document: design
+      quote: evaluation size
+      replacement: evaluation footprint
+  - propose:
+      alias: p6
+      document: design
+      quote: staged over four weeks
+      replacement: staged over six weeks
+  - propose:
+      alias: p7
+      document: design
+      quote: exact match at rank one
+      replacement: exact match at rank three
+  - propose:
+      alias: p8
+      document: design
+      quote: parked for later review
+      replacement: scheduled for next milestone
+  - propose_flag:
+      alias: f1
+      document: design
+      quote: a novel contribution
+      rationale: unsourced novelty claim
+  - propose_flag:
+      alias: f2
+      document: design
+      quote: omits two recent papers
+      rationale: unsupported completeness claim
+  - decide: { proposal: p1, verb: confirm, surface: dashboard }
+  - decide:
+      proposal: p2
+      verb: edit_confirm
+      replacement: reference model architecture
+  - decide: { proposal: p3, verb: reject_plain }
+  - decide:
+      proposal: p4
+      verb: reject_as_false
+      negation_text: The latency budget is not 150 milliseconds
+  - decide: { proposal: p5, verb: reject_as_preference, result_claim: pref_phrasing }
+  - decide: { proposal: f1, verb: endorse }
+  - decide: { proposal: f2, verb: dismiss }
+  - decide: { proposal: p6, verb: redirect, note: cite the 2024 paper }
+  - decide: { proposal: p7, verb: defer }
+  - drift:
+      document: design
+      file_body: |
+        # Design (edited out of band)
+
+        The evaluation size is 96 queries.
+  - expire: { proposal: p8, basis: rule }
+assert:
+  - one_gesture_per_marked_item_with_distinct_hashes
+  - stale_view_mark_rejected
+  - agent_self_decide_rejected
+  - export_v3_round_trips_lossless_including_ydoc_blob

@@ -43,7 +43,11 @@ from work_buddy.truth.identity import (
     sha256_text,
     utc_now,
 )
-from work_buddy.truth.migrations import current_version, migrate
+from work_buddy.truth.migrations import (
+    REDACTED_SELECTOR_JSON,
+    current_version,
+    migrate,
+)
 from work_buddy.truth.profiles import (
     StoreProfile,
     dump_profile,
@@ -89,6 +93,38 @@ SUPERSESSION_REASONS = frozenset(
 RESERVED_PRODUCER_KEYS = frozenset(
     {"model", "harness", "surface", "session_id", "call_id"}
 )
+# Co-work document surface (K2). Proposal lifecycle statuses and the decision
+# verb vocabulary recorded in proposal_status_events.decision. The decision set
+# is the SHIPPED gesture-kind names plus dismiss (the UI verb that consumes a
+# reject_plain gesture on a flag), matching the export v3 decision enum.
+PROPOSAL_STATUSES = frozenset({"open", "applied", "closed", "expired"})
+PROPOSAL_DECISIONS = frozenset(
+    {
+        "confirm",
+        "edit_confirm",
+        "reject_plain",
+        "reject_as_false",
+        "reject_as_preference",
+        "redirect",
+        "defer",
+        "endorse",
+        "dismiss",
+    }
+)
+DOC_EVENT_KINDS = frozenset(
+    {
+        "registered",
+        "imported",
+        "materialized",
+        "drift_detected",
+        "reimported",
+        "retired",
+        "session_opened",
+        "session_closed",
+    }
+)
+DOCUMENT_CLASSES = frozenset({"co_authored", "generated"})
+EXPRESSION_ROLES = frozenset({"quote", "paraphrase", "summary", "instantiation"})
 LINK_TARGETS: Mapping[str, frozenset[str]] = {
     "supports_span": frozenset({"evidence_span"}),
     "about_entity": frozenset({"entity"}),
@@ -263,6 +299,99 @@ class GestureRecord:
 class ClaimWriteResult:
     claim: ClaimRecord
     created: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentRecord:
+    id: str
+    path: str
+    title: str | None
+    document_class: str
+    content_sha256: str
+    ydoc_snapshot_sha256: str | None
+    created_at: str
+    created_by_kind: str
+    created_by_ref: str | None
+    meta_json: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentSpanRecord:
+    id: str
+    document_id: str
+    selector_json: str
+    quote_exact: str | None
+    span_sha256: str
+    author_kind: str | None
+    author_ref: str | None
+    created_at: str
+    created_by_kind: str
+    created_by_ref: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ExpressionRecord:
+    id: str
+    document_span_id: str
+    claim_ref_kind: str
+    claim_ref: str
+    role: str
+    claim_canonical_sha256: str
+    span_sha256: str
+    created_at: str
+    created_by_kind: str
+    created_by_ref: str | None
+    meta_json: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ProposalRecord:
+    id: str
+    document_id: str
+    base_content_sha256: str
+    selector_json: str
+    quote_exact: str | None
+    span_sha256: str
+    replacement: str | None
+    rationale: str | None
+    tldr: str | None
+    claim_refs_json: str | None
+    canonical_sha256: str
+    dedup_key: str
+    expires_at: str | None
+    created_at: str
+    created_by_kind: str
+    created_by_ref: str | None
+    meta_json: str | None
+    redacted_at: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ProposalStatusEventRecord:
+    seq: int
+    id: str
+    proposal_id: str
+    status: str
+    decision: str | None
+    at: str
+    actor_kind: str
+    actor_ref: str | None
+    basis_kind: str
+    basis_ref: str | None
+    note: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class DocEventRecord:
+    id: str
+    document_id: str
+    kind: str
+    at: str
+    actor_kind: str
+    actor_ref: str | None
+    content_sha256: str | None
+    ydoc_snapshot_sha256: str | None
+    detail: str | None
 
 
 def _require_text(value: str, label: str) -> str:
@@ -1329,11 +1458,13 @@ class TruthStore:
             written = path.read_bytes()
         except OSError as exc:
             path.unlink(missing_ok=True)
-            raise InvariantViolation(f"could not write evidence blob {path}") from exc
+            raise InvariantViolation(
+                f"could not write content-addressed blob {path}"
+            ) from exc
         if sha256_bytes(written) != expected:
             path.unlink(missing_ok=True)
             raise InvariantViolation(
-                f"written evidence blob failed verification: {path}"
+                f"written content-addressed blob failed verification: {path}"
             )
         return relative, True
 
@@ -2325,3 +2456,404 @@ class TruthStore:
                 premises=tuple(normalized),
             )
             return self._insert_derivation_locked(write_conn, record)
+
+    # ------------------------------------------------------------------
+    # Co-work document surface durable seam (K2, additive).
+    #
+    # These helpers mirror the generic _insert_*_locked + ledger-record
+    # pattern above. The document engine modules (documents.py, proposals.py,
+    # expressions.py, ydoc_store.py) own policy and compose these inside a
+    # store.write_transaction(conn). Every base-table insert appends one
+    # ledger record so the export walk over ledger_records finds the row.
+    # ------------------------------------------------------------------
+
+    def _insert_document_locked(
+        self,
+        conn: sqlite3.Connection,
+        record: DocumentRecord,
+    ) -> DocumentRecord:
+        self._require_transaction(conn)
+        conn.execute(
+            "INSERT INTO documents "
+            "(id, path, title, document_class, content_sha256, "
+            "ydoc_snapshot_sha256, created_at, created_by_kind, created_by_ref, "
+            "meta_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                record.id,
+                record.path,
+                record.title,
+                record.document_class,
+                record.content_sha256,
+                record.ydoc_snapshot_sha256,
+                record.created_at,
+                record.created_by_kind,
+                record.created_by_ref,
+                record.meta_json,
+            ),
+        )
+        self._insert_ledger_record_locked(conn, "document", record.id)
+        return record
+
+    def _get_document_locked(
+        self,
+        conn: sqlite3.Connection,
+        document_id: str,
+    ) -> DocumentRecord | None:
+        return _row(
+            DocumentRecord,
+            conn.execute(
+                "SELECT * FROM documents WHERE id = ?", (document_id,)
+            ).fetchone(),
+        )
+
+    def _get_document_by_path_locked(
+        self,
+        conn: sqlite3.Connection,
+        path: str,
+    ) -> DocumentRecord | None:
+        return _row(
+            DocumentRecord,
+            conn.execute(
+                "SELECT * FROM documents WHERE path = ?", (path,)
+            ).fetchone(),
+        )
+
+    def _advance_document_pointers_locked(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        document_id: str,
+        content_sha256: str | None = None,
+        ydoc_snapshot_sha256: str | None = None,
+    ) -> DocumentRecord:
+        """Advance the latest content/snapshot pointers (narrow carve-out UPDATE).
+
+        Every advance is separately audited by an appended doc_event, so the
+        pointer UPDATE is a cache rather than a new ledger record (the
+        store_info monotonic-bump precedent).
+        """
+        self._require_transaction(conn)
+        current = self._get_document_locked(conn, document_id)
+        if current is None:
+            raise InvariantViolation(f"document does not exist: {document_id}")
+        new_content = current.content_sha256 if content_sha256 is None else (
+            _valid_digest(content_sha256, "content_sha256")
+        )
+        new_snapshot = (
+            current.ydoc_snapshot_sha256
+            if ydoc_snapshot_sha256 is None
+            else _valid_digest(ydoc_snapshot_sha256, "ydoc_snapshot_sha256")
+        )
+        conn.execute(
+            "UPDATE documents SET content_sha256 = ?, ydoc_snapshot_sha256 = ? "
+            "WHERE id = ?",
+            (new_content, new_snapshot, document_id),
+        )
+        refreshed = self._get_document_locked(conn, document_id)
+        assert refreshed is not None
+        return refreshed
+
+    def _insert_document_span_locked(
+        self,
+        conn: sqlite3.Connection,
+        record: DocumentSpanRecord,
+    ) -> DocumentSpanRecord:
+        self._require_transaction(conn)
+        conn.execute(
+            "INSERT INTO document_spans "
+            "(id, document_id, selector_json, quote_exact, span_sha256, "
+            "author_kind, author_ref, created_at, created_by_kind, "
+            "created_by_ref) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                record.id,
+                record.document_id,
+                record.selector_json,
+                record.quote_exact,
+                record.span_sha256,
+                record.author_kind,
+                record.author_ref,
+                record.created_at,
+                record.created_by_kind,
+                record.created_by_ref,
+            ),
+        )
+        self._insert_ledger_record_locked(conn, "document_span", record.id)
+        return record
+
+    def _get_document_span_locked(
+        self,
+        conn: sqlite3.Connection,
+        span_id: str,
+    ) -> DocumentSpanRecord | None:
+        return _row(
+            DocumentSpanRecord,
+            conn.execute(
+                "SELECT * FROM document_spans WHERE id = ?", (span_id,)
+            ).fetchone(),
+        )
+
+    def _find_document_span_locked(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        document_id: str,
+        span_sha256: str,
+    ) -> DocumentSpanRecord | None:
+        return _row(
+            DocumentSpanRecord,
+            conn.execute(
+                "SELECT * FROM document_spans WHERE document_id = ? "
+                "AND span_sha256 = ? ORDER BY created_at, id LIMIT 1",
+                (document_id, span_sha256),
+            ).fetchone(),
+        )
+
+    def _insert_expression_locked(
+        self,
+        conn: sqlite3.Connection,
+        record: ExpressionRecord,
+    ) -> ExpressionRecord:
+        self._require_transaction(conn)
+        conn.execute(
+            "INSERT INTO expressions "
+            "(id, document_span_id, claim_ref_kind, claim_ref, role, "
+            "claim_canonical_sha256, span_sha256, created_at, created_by_kind, "
+            "created_by_ref, meta_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                record.id,
+                record.document_span_id,
+                record.claim_ref_kind,
+                record.claim_ref,
+                record.role,
+                record.claim_canonical_sha256,
+                record.span_sha256,
+                record.created_at,
+                record.created_by_kind,
+                record.created_by_ref,
+                record.meta_json,
+            ),
+        )
+        self._insert_ledger_record_locked(conn, "expression", record.id)
+        return record
+
+    def _insert_proposal_locked(
+        self,
+        conn: sqlite3.Connection,
+        record: ProposalRecord,
+    ) -> ProposalRecord:
+        self._require_transaction(conn)
+        conn.execute(
+            "INSERT INTO proposals "
+            "(id, document_id, base_content_sha256, selector_json, quote_exact, "
+            "span_sha256, replacement, rationale, tldr, claim_refs_json, "
+            "canonical_sha256, dedup_key, expires_at, created_at, "
+            "created_by_kind, created_by_ref, meta_json, redacted_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                record.id,
+                record.document_id,
+                record.base_content_sha256,
+                record.selector_json,
+                record.quote_exact,
+                record.span_sha256,
+                record.replacement,
+                record.rationale,
+                record.tldr,
+                record.claim_refs_json,
+                record.canonical_sha256,
+                record.dedup_key,
+                record.expires_at,
+                record.created_at,
+                record.created_by_kind,
+                record.created_by_ref,
+                record.meta_json,
+                record.redacted_at,
+            ),
+        )
+        self._insert_ledger_record_locked(conn, "proposal", record.id)
+        return record
+
+    def _get_proposal_locked(
+        self,
+        conn: sqlite3.Connection,
+        proposal_id: str,
+    ) -> ProposalRecord | None:
+        return _row(
+            ProposalRecord,
+            conn.execute(
+                "SELECT * FROM proposals WHERE id = ?", (proposal_id,)
+            ).fetchone(),
+        )
+
+    def _redact_proposal_content_locked(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        proposal_id: str,
+        at: str,
+    ) -> ProposalRecord:
+        """Null out proposal content while retaining ids/hashes/dedup_key.
+
+        This is the proposals redaction carve-out UPDATE (the claim-redaction
+        shape). It satisfies the proposals_append_only_update carve-out trigger:
+        content fields null out, selector_json becomes the REDACTED marker, and
+        every id/hash/dedup_key/meta_json is preserved so gesture bindings and
+        suppression memory survive (I10).
+        """
+        self._require_transaction(conn)
+        current = self._get_proposal_locked(conn, proposal_id)
+        if current is None:
+            raise InvariantViolation(f"proposal does not exist: {proposal_id}")
+        if current.redacted_at is not None:
+            # Already redacted, but still scrub any surviving receipt so an
+            # idempotent retry (or a repaired store) preserves anti-anchoring.
+            self._redact_proposal_gesture_excerpts_locked(conn, proposal_id)
+            return current
+        redacted_at = _timestamp(at, "proposal redacted_at")
+        conn.execute(
+            "UPDATE proposals SET redacted_at = ?, quote_exact = NULL, "
+            "replacement = NULL, rationale = NULL, tldr = NULL, "
+            "claim_refs_json = NULL, selector_json = ? WHERE id = ?",
+            (redacted_at, REDACTED_SELECTOR_JSON, proposal_id),
+        )
+        # The decision-path scrub must destroy the consumed gesture's readable
+        # receipt too (I10 anti-anchoring). The proposals row is now redacted, so
+        # the gestures redaction carve-out admits tombstoning payload_excerpt to
+        # the same '[redacted]' sentinel the claim/evidence/span paths use. This
+        # runs in the SAME transaction as the content null-out so a rejected
+        # quote-and-replacement never survives in a gesture receipt or export.
+        self._redact_proposal_gesture_excerpts_locked(conn, proposal_id)
+        refreshed = self._get_proposal_locked(conn, proposal_id)
+        assert refreshed is not None
+        return refreshed
+
+    @staticmethod
+    def _redact_proposal_gesture_excerpts_locked(
+        conn: sqlite3.Connection,
+        proposal_id: str,
+    ) -> None:
+        """Tombstone readable receipts bound to a now-redacted proposal.
+
+        Mirrors TruthRedactor._redact_gesture_excerpts_locked so both redaction
+        routes (decision-path policy scrub and explicit TruthRedactor) leave the
+        same admitted shape: consumed_at untouched, payload_excerpt moved to the
+        '[redacted]' sentinel the gestures carve-out trigger sanctions.
+        """
+        conn.execute(
+            "UPDATE gestures SET payload_excerpt = '[redacted]' "
+            "WHERE subject_ref = ? AND payload_excerpt <> '[redacted]'",
+            (proposal_id,),
+        )
+
+    def _insert_proposal_status_event_locked(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        proposal_id: str,
+        status: str,
+        decision: str | None,
+        actor: Actor,
+        basis_kind: str,
+        basis_ref: str | None = None,
+        note: str | None = None,
+        event_id: str | None = None,
+        at: str | None = None,
+    ) -> ProposalStatusEventRecord:
+        self._require_transaction(conn)
+        if status not in PROPOSAL_STATUSES:
+            raise InvariantViolation(f"invalid proposal status {status!r}")
+        if decision is not None and decision not in PROPOSAL_DECISIONS:
+            raise InvariantViolation(f"invalid proposal decision {decision!r}")
+        if self._get_proposal_locked(conn, proposal_id) is None:
+            raise InvariantViolation(f"proposal does not exist: {proposal_id}")
+        identifier = _record_id(event_id, "proposal status event id")
+        timestamp = _timestamp(at, "proposal status event at")
+        basis = _require_text(basis_kind, "basis_kind")
+        cursor = conn.execute(
+            "INSERT INTO proposal_status_events "
+            "(id, proposal_id, status, decision, at, actor_kind, actor_ref, "
+            "basis_kind, basis_ref, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                identifier,
+                proposal_id,
+                status,
+                decision,
+                timestamp,
+                actor.kind,
+                actor.ref,
+                basis,
+                basis_ref,
+                note,
+            ),
+        )
+        self._insert_ledger_record_locked(
+            conn,
+            "proposal_status_event",
+            identifier,
+        )
+        return ProposalStatusEventRecord(
+            seq=int(cursor.lastrowid),
+            id=identifier,
+            proposal_id=proposal_id,
+            status=status,
+            decision=decision,
+            at=timestamp,
+            actor_kind=actor.kind,
+            actor_ref=actor.ref,
+            basis_kind=basis,
+            basis_ref=basis_ref,
+            note=note,
+        )
+
+    def _latest_proposal_status_locked(
+        self,
+        conn: sqlite3.Connection,
+        proposal_id: str,
+    ) -> ProposalStatusEventRecord | None:
+        return _row(
+            ProposalStatusEventRecord,
+            conn.execute(
+                "SELECT * FROM proposal_status_events WHERE proposal_id = ? "
+                "ORDER BY seq DESC LIMIT 1",
+                (proposal_id,),
+            ).fetchone(),
+        )
+
+    def _insert_doc_event_locked(
+        self,
+        conn: sqlite3.Connection,
+        record: DocEventRecord,
+    ) -> DocEventRecord:
+        self._require_transaction(conn)
+        conn.execute(
+            "INSERT INTO doc_events "
+            "(id, document_id, kind, at, actor_kind, actor_ref, content_sha256, "
+            "ydoc_snapshot_sha256, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                record.id,
+                record.document_id,
+                record.kind,
+                record.at,
+                record.actor_kind,
+                record.actor_ref,
+                record.content_sha256,
+                record.ydoc_snapshot_sha256,
+                record.detail,
+            ),
+        )
+        self._insert_ledger_record_locked(conn, "doc_event", record.id)
+        return record
+
+    def _document_events_locked(
+        self,
+        conn: sqlite3.Connection,
+        document_id: str,
+    ) -> tuple[DocEventRecord, ...]:
+        """Return every doc_event for one document in rowid insertion order."""
+        return tuple(
+            DocEventRecord(**dict(row))
+            for row in conn.execute(
+                "SELECT * FROM doc_events WHERE document_id = ? ORDER BY rowid",
+                (document_id,),
+            )
+        )

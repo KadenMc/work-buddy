@@ -1,0 +1,24 @@
+{
+  "name": "@work-buddy/cowork-fidelity",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Co-work projection-fidelity gate (K2 WP-B5): block-splice materializer reference implementation and the five fail-hard rules over a real-plus-synthetic corpus.",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build:manifest": "node scripts/build-manifest.mjs"
+  },
+  "devDependencies": {
+    "@tiptap/core": "3.28.0",
+    "@tiptap/extension-image": "3.28.0",
+    "@tiptap/extension-list": "3.28.0",
+    "@tiptap/extension-table": "3.28.0",
+    "@tiptap/markdown": "3.28.0",
+    "@tiptap/pm": "3.28.0",
+    "@tiptap/starter-kit": "3.28.0",
+    "@types/node": "24.13.3",
+    "typescript": "5.9.3",
+    "vitest": "4.1.10"
+  }
+}

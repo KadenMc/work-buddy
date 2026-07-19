@@ -1,0 +1,202 @@
+/*
+ * Co-work surface skeleton styles. Theme Contract v1 semantic tokens only (no private
+ * palette, no getComputedStyle discovery). Every trust and drift signal carries a
+ * redundant non-color encoding (text label, left rule, dashed underline, stamp) so
+ * meaning survives forced-colors (section 5.4, SP-6 G3).
+ */
+
+.wb-cowork {
+  display: flex;
+  flex-direction: column;
+  block-size: 100%;
+  min-block-size: 0;
+  background: var(--wb-color-surface-canvas);
+  color: var(--wb-color-text-primary);
+  font-family: var(--wb-font-sans);
+}
+
+.wb-cowork__health {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--wb-space-4);
+  padding: var(--wb-space-3) var(--wb-space-5);
+  border-block-end: 1px solid var(--wb-color-border-default);
+  background: var(--wb-color-surface-raised);
+}
+
+.wb-cowork__health-title {
+  font-weight: var(--wb-font-weight-semibold);
+  color: var(--wb-color-text-strong);
+}
+
+.wb-cowork__health-facts {
+  display: flex;
+  align-items: center;
+  gap: var(--wb-space-3);
+  font-size: var(--wb-font-size-sm);
+  color: var(--wb-color-text-secondary);
+}
+
+.wb-cowork__drift {
+  padding: var(--wb-space-1) var(--wb-space-2);
+  border-radius: var(--wb-radius-pill);
+  border: 1px solid var(--wb-color-border-default);
+}
+
+.wb-cowork__drift[data-drift="clean"] {
+  color: var(--wb-color-status-success);
+  background: var(--wb-color-status-success-surface);
+  border-color: var(--wb-color-status-success);
+}
+
+.wb-cowork__drift[data-drift="drifted"] {
+  color: var(--wb-color-status-warning);
+  background: var(--wb-color-status-warning-surface);
+  border-color: var(--wb-color-status-warning);
+}
+
+.wb-cowork__drift[data-drift="missing"] {
+  color: var(--wb-color-status-danger);
+  background: var(--wb-color-status-danger-surface);
+  border-color: var(--wb-color-status-danger);
+}
+
+.wb-cowork__body {
+  display: flex;
+  flex: 1 1 auto;
+  min-block-size: 0;
+}
+
+.wb-cowork__editor-region {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+  overflow: auto;
+}
+
+.wb-cowork__rail {
+  flex: 0 0 20rem;
+  display: flex;
+  flex-direction: column;
+  min-block-size: 0;
+  border-inline-start: 1px solid var(--wb-color-border-default);
+  background: var(--wb-color-surface-raised);
+}
+
+.wb-cowork__rail-tabs {
+  display: flex;
+  gap: var(--wb-space-1);
+  padding: var(--wb-space-2);
+  border-block-end: 1px solid var(--wb-color-border-subtle);
+}
+
+.wb-cowork__rail-tab {
+  flex: 1 1 auto;
+  padding: var(--wb-space-2) var(--wb-space-3);
+  border: 1px solid transparent;
+  border-radius: var(--wb-radius-control);
+  background: transparent;
+  color: var(--wb-color-text-secondary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.wb-cowork__rail-tab[aria-selected="true"] {
+  background: var(--wb-color-surface-selected);
+  color: var(--wb-color-text-primary);
+  border-color: var(--wb-color-border-default);
+  font-weight: var(--wb-font-weight-medium);
+}
+
+.wb-cowork__rail-tab:focus-visible {
+  outline: none;
+  box-shadow: var(--wb-shadow-focus);
+}
+
+.wb-cowork__rail-body {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: var(--wb-space-4);
+}
+
+.wb-cowork__rail-placeholder {
+  margin: 0;
+  color: var(--wb-color-text-muted);
+  font-size: var(--wb-font-size-sm);
+}
+
+.wb-cowork__editor {
+  block-size: 100%;
+}
+
+.wb-cowork__editor-loading {
+  padding: var(--wb-space-4);
+  color: var(--wb-color-text-muted);
+}
+
+.wb-cowork-editor {
+  block-size: 100%;
+}
+
+.wb-cowork-editor__loading {
+  padding: var(--wb-space-4);
+  color: var(--wb-color-text-muted);
+}
+
+.wb-cowork-editor__content {
+  block-size: 100%;
+}
+
+.wb-cowork-editor__surface {
+  padding: var(--wb-space-5) var(--wb-space-6);
+  min-block-size: 12rem;
+  outline: none;
+  color: var(--wb-color-text-primary);
+}
+
+.wb-cowork-editor__surface:focus-visible {
+  box-shadow: var(--wb-shadow-focus);
+}
+
+/*
+ * State 2 provenance tint: an AI-written, human-confirmed span. Accent token plus a
+ * left rule and a stamp, so the signal is not carried by color alone.
+ */
+.wb-cowork-provenance-tint {
+  background: var(--wb-color-accent-soft);
+  border-inline-start: 2px solid var(--wb-color-accent);
+  padding-inline-start: var(--wb-space-1);
+}
+
+.wb-cowork-provenance-tint::after {
+  content: "\00a0\2713";
+  font-size: var(--wb-font-size-2xs);
+  color: var(--wb-color-accent);
+}
+
+/* Expression claim-chip: a violet dashed underline, read-path only. */
+.wb-cowork-expression-mark {
+  text-decoration: underline dashed var(--wb-color-data-4);
+  text-underline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wb-cowork__rail-tab {
+    transition: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .wb-cowork__drift {
+    border: 1px solid CanvasText;
+  }
+  .wb-cowork__rail-tab[aria-selected="true"] {
+    border-color: Highlight;
+  }
+  .wb-cowork-provenance-tint {
+    border-inline-start: 2px solid CanvasText;
+  }
+  .wb-cowork-expression-mark {
+    text-decoration: underline dashed CanvasText;
+  }
+}

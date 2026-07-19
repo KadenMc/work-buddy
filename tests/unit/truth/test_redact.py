@@ -1591,3 +1591,184 @@ def test_redaction_is_idempotent_without_consuming_a_second_gesture(
             store._get_gesture_locked(conn, second_gesture.id).payload_excerpt
             == "[redacted]"
         )
+
+
+# --- Proposal anti-anchoring redaction --------------------------------------
+#
+# These tests exercise proposal redaction against a real v2 store built by the
+# document-store factory.
+
+from work_buddy.truth.lifecycle import TruthLifecycle as _RealLifecycle  # noqa: E402
+
+from ._document_rows import (  # noqa: E402
+    create_document_store,
+    seed_document,
+    seed_proposal,
+    seed_proposal_status_event,
+)
+
+
+_EARLY = "2026-07-14T09:00:00.000+00:00"
+_AT_NOW = "2026-07-14T10:00:00.000+00:00"
+_AT_LATER = "2026-07-14T11:00:00.000+00:00"
+
+
+def _read_proposal(store, proposal_id):
+    conn = store.connect()
+    try:
+        return conn.execute(
+            "SELECT * FROM proposals WHERE id = ?", (proposal_id,)
+        ).fetchone()
+    finally:
+        conn.close()
+
+
+def test_human_gesture_redacts_proposal_content_but_keeps_identity(
+    truth_root: Path,
+) -> None:
+    store = create_document_store(truth_root)
+    lifecycle = _RealLifecycle(store)
+    redactor = TruthRedactor(store, lifecycle=lifecycle)
+    document_id = seed_document(store)
+    proposal_id = seed_proposal(
+        store,
+        document_id=document_id,
+        quote_exact="private wording",
+        replacement="private wording v2",
+        rationale="tighten",
+        claim_refs_json='[{"claim": "abc", "role": "instantiation"}]',
+        at=_EARLY,
+    )
+    before = _read_proposal(store, proposal_id)
+
+    gesture = lifecycle.mint_gesture(
+        subject_ref=proposal_id,
+        actor=HUMAN,
+        surface="dashboard",
+        kind="redact",
+        displayed_payload_sha256=before["canonical_sha256"],
+        at=_AT_NOW,
+    )
+    result = redactor.redact(
+        subject_kind="proposal",
+        subject_ref=proposal_id,
+        actor=HUMAN,
+        reason="privacy",
+        basis_kind="gesture",
+        basis_ref=gesture.id,
+        at=_AT_LATER,
+    )
+
+    assert result.event.subject_kind == "proposal"
+    after = _read_proposal(store, proposal_id)
+    assert after["redacted_at"] is not None
+    for column in ("quote_exact", "replacement", "rationale", "tldr", "claim_refs_json"):
+        assert after[column] is None
+    assert after["selector_json"] == REDACTED_SELECTOR_JSON
+    # Identity, hashes, and dedup memory survive the redaction.
+    assert after["id"] == before["id"]
+    assert after["canonical_sha256"] == before["canonical_sha256"]
+    assert after["dedup_key"] == before["dedup_key"]
+    assert after["base_content_sha256"] == before["base_content_sha256"]
+    assert after["span_sha256"] == before["span_sha256"]
+    # The readable gesture receipt is scrubbed too.
+    consumed = store._get_gesture_locked(store.connect(), gesture.id)
+    assert consumed.payload_excerpt == "[redacted]"
+
+
+def test_standing_policy_redacts_a_closed_proposal(truth_root: Path) -> None:
+    store = create_document_store(truth_root)
+    redactor = TruthRedactor(store)
+    document_id = seed_document(store)
+    proposal_id = seed_proposal(store, document_id=document_id, at=_EARLY)
+    seed_proposal_status_event(
+        store,
+        proposal_id=proposal_id,
+        status="closed",
+        decision="reject_plain",
+        basis_kind="gesture",
+        basis_ref=None,
+        at=_AT_NOW,
+    )
+
+    result = redactor.redact(
+        subject_kind="proposal",
+        subject_ref=proposal_id,
+        actor=SYSTEM,
+        reason="rejected_content",
+        basis_kind="policy",
+        basis_ref=policy_basis_ref(store, "rejected_content"),
+        at=_AT_LATER,
+    )
+
+    assert result.event.reason == "rejected_content"
+    after = _read_proposal(store, proposal_id)
+    assert after["redacted_at"] is not None
+    assert after["quote_exact"] is None
+    assert after["replacement"] is None
+
+
+def test_standing_policy_refuses_an_ever_applied_proposal(truth_root: Path) -> None:
+    store = create_document_store(truth_root)
+    redactor = TruthRedactor(store)
+    document_id = seed_document(store)
+    proposal_id = seed_proposal(store, document_id=document_id, at=_EARLY)
+    seed_proposal_status_event(
+        store,
+        proposal_id=proposal_id,
+        status="applied",
+        decision="confirm",
+        basis_kind="gesture",
+        basis_ref=None,
+        at=_AT_NOW,
+    )
+
+    with pytest.raises(InvariantViolation, match="ever applied requires a human"):
+        redactor.redact(
+            subject_kind="proposal",
+            subject_ref=proposal_id,
+            actor=SYSTEM,
+            reason="rejected_content",
+            basis_kind="policy",
+            basis_ref=policy_basis_ref(store, "rejected_content"),
+            at=_AT_LATER,
+        )
+
+
+def test_redacting_an_already_redacted_proposal_is_idempotent(
+    truth_root: Path,
+) -> None:
+    store = create_document_store(truth_root)
+    redactor = TruthRedactor(store)
+    document_id = seed_document(store)
+    proposal_id = seed_proposal(store, document_id=document_id, at=_EARLY)
+    seed_proposal_status_event(
+        store,
+        proposal_id=proposal_id,
+        status="expired",
+        basis_kind="rule",
+        basis_ref="proposal_max_age:7200",
+        at=_AT_NOW,
+    )
+
+    first = redactor.redact(
+        subject_kind="proposal",
+        subject_ref=proposal_id,
+        actor=SYSTEM,
+        reason="expired_content",
+        basis_kind="policy",
+        basis_ref=policy_basis_ref(store, "expired_content"),
+        at=_AT_LATER,
+    )
+    second = redactor.redact(
+        subject_kind="proposal",
+        subject_ref=proposal_id,
+        actor=SYSTEM,
+        reason="expired_content",
+        basis_kind="policy",
+        basis_ref=policy_basis_ref(store, "expired_content"),
+        at=_AT_LATER,
+    )
+    assert first.created is True
+    assert second.created is False
+    assert second.event.id == first.event.id

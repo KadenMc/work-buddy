@@ -37,7 +37,11 @@ from work_buddy.truth.identity import (
     parse_truth_uri,
     sha256_bytes,
 )
-from work_buddy.truth.migrations import SCHEMA_VERSION, migrate
+from work_buddy.truth.migrations import (
+    REDACTED_SELECTOR_JSON,
+    SCHEMA_VERSION,
+    migrate,
+)
 from work_buddy.truth.profiles import (
     StoreProfile,
     dump_profile,
@@ -48,7 +52,7 @@ from work_buddy.truth.store import TruthStore
 
 
 FORMAT_NAME = "work-buddy.truth-ledger"
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 OLDEST_FORMAT_VERSION = 1
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -268,6 +272,105 @@ _RECORD_COLUMNS: Mapping[str, tuple[str, tuple[str, ...]]] = {
             "resolved_by_ref",
         ),
     ),
+    "document": (
+        "documents",
+        (
+            "id",
+            "path",
+            "title",
+            "document_class",
+            "content_sha256",
+            "ydoc_snapshot_sha256",
+            "created_at",
+            "created_by_kind",
+            "created_by_ref",
+            "meta_json",
+        ),
+    ),
+    "document_span": (
+        "document_spans",
+        (
+            "id",
+            "document_id",
+            "selector_json",
+            "quote_exact",
+            "span_sha256",
+            "author_kind",
+            "author_ref",
+            "created_at",
+            "created_by_kind",
+            "created_by_ref",
+        ),
+    ),
+    "expression": (
+        "expressions",
+        (
+            "id",
+            "document_span_id",
+            "claim_ref_kind",
+            "claim_ref",
+            "role",
+            "claim_canonical_sha256",
+            "span_sha256",
+            "created_at",
+            "created_by_kind",
+            "created_by_ref",
+            "meta_json",
+        ),
+    ),
+    "proposal": (
+        "proposals",
+        (
+            "id",
+            "document_id",
+            "base_content_sha256",
+            "selector_json",
+            "quote_exact",
+            "span_sha256",
+            "replacement",
+            "rationale",
+            "tldr",
+            "claim_refs_json",
+            "canonical_sha256",
+            "dedup_key",
+            "expires_at",
+            "created_at",
+            "created_by_kind",
+            "created_by_ref",
+            "meta_json",
+            "redacted_at",
+        ),
+    ),
+    "proposal_status_event": (
+        "proposal_status_events",
+        (
+            "seq",
+            "id",
+            "proposal_id",
+            "status",
+            "decision",
+            "at",
+            "actor_kind",
+            "actor_ref",
+            "basis_kind",
+            "basis_ref",
+            "note",
+        ),
+    ),
+    "doc_event": (
+        "doc_events",
+        (
+            "id",
+            "document_id",
+            "kind",
+            "at",
+            "actor_kind",
+            "actor_ref",
+            "content_sha256",
+            "ydoc_snapshot_sha256",
+            "detail",
+        ),
+    ),
 }
 
 _ID_KEY_TYPES = frozenset(
@@ -282,6 +385,43 @@ _ID_KEY_TYPES = frozenset(
         "redaction_event",
         "sweep",
         "sweep_finding",
+        "document",
+        "document_span",
+        "expression",
+        "proposal",
+        "proposal_status_event",
+        "doc_event",
+    }
+)
+
+_DOC_EVENT_KINDS = frozenset(
+    {
+        "registered",
+        "imported",
+        "materialized",
+        "drift_detected",
+        "reimported",
+        "retired",
+        "session_opened",
+        "session_closed",
+    }
+)
+
+_EXPRESSION_ROLES = frozenset({"quote", "paraphrase", "summary", "instantiation"})
+
+_PROPOSAL_STATUSES = frozenset({"open", "applied", "closed", "expired"})
+
+_PROPOSAL_DECISIONS = frozenset(
+    {
+        "confirm",
+        "edit_confirm",
+        "reject_plain",
+        "reject_as_false",
+        "reject_as_preference",
+        "redirect",
+        "defer",
+        "endorse",
+        "dismiss",
     }
 )
 
@@ -453,6 +593,20 @@ def _validate_header(bundle: _Bundle) -> StoreProfile:
     return profile
 
 
+def _validate_claim_refs(value: Any, label: str) -> None:
+    """Validate the one frozen claim_refs shape: a list of {claim, role}."""
+    if not isinstance(value, list):
+        raise TruthImportError(f"{label} must be a list of claim references")
+    for entry in value:
+        if not isinstance(entry, Mapping):
+            raise TruthImportError(f"{label} entries must be objects")
+        if set(entry) != {"claim", "role"}:
+            raise TruthImportError(f"{label} entries must carry only claim and role")
+        _nonempty_text(entry["claim"], f"{label} claim")
+        if entry["role"] not in _EXPRESSION_ROLES:
+            raise TruthImportError(f"{label} role is invalid")
+
+
 def _validate_record_values(item: _DataRecord) -> None:
     row = item.record
     record_type = item.record_type
@@ -597,7 +751,7 @@ def _validate_record_values(item: _DataRecord) -> None:
         return
 
     if record_type == "redaction_event":
-        if row["subject_kind"] not in {"claim", "evidence", "span"}:
+        if row["subject_kind"] not in {"claim", "evidence", "span", "proposal"}:
             raise TruthImportError("redaction subject kind is invalid")
         if row["basis_kind"] not in {"gesture", "policy"}:
             raise TruthImportError("redaction basis kind is invalid")
@@ -612,6 +766,91 @@ def _validate_record_values(item: _DataRecord) -> None:
     if record_type == "sweep_finding":
         if row["resolved_at"] is not None:
             _timestamp(row["resolved_at"], "sweep_finding.resolved_at")
+        return
+
+    if record_type == "document":
+        _digest(row["content_sha256"], "document.content_sha256")
+        _nonempty_text(row["path"], "document.path")
+        if row["ydoc_snapshot_sha256"] is not None:
+            _digest(row["ydoc_snapshot_sha256"], "document.ydoc_snapshot_sha256")
+        _json_value(row["meta_json"], "document.meta_json", mapping=True)
+        _timestamp(row["created_at"], "document.created_at")
+        return
+
+    if record_type == "expression":
+        if row["role"] not in _EXPRESSION_ROLES:
+            raise TruthImportError("expression role is invalid")
+        if row["claim_ref_kind"] not in {"local", "uri"}:
+            raise TruthImportError("expression claim_ref_kind must be local or uri")
+        if row["claim_ref_kind"] == "uri":
+            try:
+                parsed = parse_truth_uri(row["claim_ref"])
+            except ValueError as exc:
+                raise TruthImportError("expression claim_ref URI is malformed") from exc
+            if parsed.kind != "claim":
+                raise TruthImportError("expression URI refs must target claims")
+        else:
+            _nonempty_text(row["claim_ref"], "expression.claim_ref")
+        _digest(row["claim_canonical_sha256"], "expression.claim_canonical_sha256")
+        _digest(row["span_sha256"], "expression.span_sha256")
+        _json_value(row["meta_json"], "expression.meta_json", mapping=True)
+        _timestamp(row["created_at"], "expression.created_at")
+        return
+
+    if record_type == "proposal":
+        _digest(row["canonical_sha256"], "proposal.canonical_sha256")
+        _digest(row["dedup_key"], "proposal.dedup_key")
+        _digest(row["base_content_sha256"], "proposal.base_content_sha256")
+        _digest(row["span_sha256"], "proposal.span_sha256")
+        claim_refs = _json_value(row["claim_refs_json"], "proposal.claim_refs_json")
+        if claim_refs is not None:
+            _validate_claim_refs(claim_refs, "proposal.claim_refs_json")
+        _json_value(row["meta_json"], "proposal.meta_json", mapping=True)
+        if row["redacted_at"] is not None:
+            if (
+                row["quote_exact"] is not None
+                or row["replacement"] is not None
+                or row["rationale"] is not None
+                or row["tldr"] is not None
+                or row["claim_refs_json"] is not None
+            ):
+                raise TruthImportError("redacted proposal has retained content")
+            if row["selector_json"] != REDACTED_SELECTOR_JSON:
+                raise TruthImportError(
+                    "redacted proposal must carry the redacted selector"
+                )
+            _timestamp(row["redacted_at"], "proposal.redacted_at")
+        else:
+            _nonempty_text(row["quote_exact"], "proposal.quote_exact")
+            _json_value(row["selector_json"], "proposal.selector_json")
+        if row["expires_at"] is not None:
+            _timestamp(row["expires_at"], "proposal.expires_at")
+        _timestamp(row["created_at"], "proposal.created_at")
+        return
+
+    if record_type == "proposal_status_event":
+        _positive_int(row["seq"], "proposal_status_event.seq")
+        if row["status"] not in _PROPOSAL_STATUSES:
+            raise TruthImportError("proposal status event has an invalid status")
+        if row["decision"] is not None and row["decision"] not in _PROPOSAL_DECISIONS:
+            raise TruthImportError("proposal status event has an invalid decision")
+        if row["actor_kind"] not in VALID_ACTOR_KINDS:
+            raise TruthImportError("proposal status event has an invalid actor kind")
+        if row["basis_kind"] not in {"gesture", "rule", "sweep"}:
+            raise TruthImportError("proposal status event has an invalid basis kind")
+        _timestamp(row["at"], "proposal_status_event.at")
+        return
+
+    if record_type == "doc_event":
+        if row["kind"] not in _DOC_EVENT_KINDS:
+            raise TruthImportError("doc event has an invalid kind")
+        if row["actor_kind"] not in VALID_ACTOR_KINDS:
+            raise TruthImportError("doc event has an invalid actor kind")
+        if row["content_sha256"] is not None:
+            _digest(row["content_sha256"], "doc_event.content_sha256")
+        if row["ydoc_snapshot_sha256"] is not None:
+            _digest(row["ydoc_snapshot_sha256"], "doc_event.ydoc_snapshot_sha256")
+        _timestamp(row["at"], "doc_event.at")
         return
 
 
@@ -677,6 +916,7 @@ def _validate_foreign_refs(records: tuple[_DataRecord, ...]) -> None:
                 "claim": "claim",
                 "evidence": "evidence",
                 "span": "evidence_span",
+                "proposal": "proposal",
             }[row["subject_kind"]]
             require_prior(
                 subject_type, row["subject_ref"], item.seq, "redaction subject"
@@ -685,6 +925,32 @@ def _validate_foreign_refs(records: tuple[_DataRecord, ...]) -> None:
                 require_prior("gesture", row["basis_ref"], item.seq, "redaction basis")
         elif item.record_type == "sweep_finding":
             require_prior("sweep", row["sweep_id"], item.seq, "sweep_finding.sweep_id")
+        elif item.record_type == "document_span":
+            require_prior(
+                "document", row["document_id"], item.seq, "document_span.document_id"
+            )
+        elif item.record_type == "expression":
+            require_prior(
+                "document_span",
+                row["document_span_id"],
+                item.seq,
+                "expression.document_span_id",
+            )
+        elif item.record_type == "proposal":
+            require_prior(
+                "document", row["document_id"], item.seq, "proposal.document_id"
+            )
+        elif item.record_type == "proposal_status_event":
+            require_prior(
+                "proposal",
+                row["proposal_id"],
+                item.seq,
+                "proposal_status_event.proposal_id",
+            )
+        elif item.record_type == "doc_event":
+            require_prior(
+                "document", row["document_id"], item.seq, "doc_event.document_id"
+            )
 
 
 def _validate_bundle(bundle: _Bundle) -> StoreProfile:
@@ -725,11 +991,13 @@ def _validate_bundle(bundle: _Bundle) -> StoreProfile:
 
     referenced_blobs: set[str] = set()
     for item in bundle.records:
-        if item.record_type != "evidence":
-            continue
         row = item.record
-        if row["redacted_at"] is None and row["content_path"] is not None:
-            referenced_blobs.add(row["content_sha256"])
+        if item.record_type == "evidence":
+            if row["redacted_at"] is None and row["content_path"] is not None:
+                referenced_blobs.add(row["content_sha256"])
+        elif item.record_type == "document":
+            if row["ydoc_snapshot_sha256"] is not None:
+                referenced_blobs.add(row["ydoc_snapshot_sha256"])
     if referenced_blobs != set(blob_map):
         missing = sorted(referenced_blobs - set(blob_map))
         extra = sorted(set(blob_map) - referenced_blobs)
@@ -785,7 +1053,17 @@ def _assert_all_rows_are_ordered(
     conn: sqlite3.Connection,
     ordered_keys: set[tuple[str, str]],
 ) -> None:
+    existing_tables = {
+        str(row[0])
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
     for record_type, (table, columns) in _RECORD_COLUMNS.items():
+        if table not in existing_tables:
+            # A store older than the schema that introduced this table simply
+            # has no such rows to order. Real exports run on current-schema
+            # stores where every base table is present, so this only relaxes
+            # the check for a store still carrying an earlier schema.
+            continue
         selected = ", ".join(columns)
         for raw in conn.execute(f"SELECT {selected} FROM {table}"):
             row = dict(raw)
@@ -849,24 +1127,43 @@ def _collect_export_bundle(
 
         blobs: dict[str, bytes] = {}
         for item in records:
-            if item.record_type != "evidence":
-                continue
-            row = item.record
-            if row["redacted_at"] is not None or row["content_path"] is None:
-                continue
-            digest = str(row["content_sha256"])
-            path = store.resolve_blob_path(str(row["content_path"]))
-            try:
-                content = path.read_bytes()
-            except OSError as exc:
-                raise TruthExportError(
-                    f"live evidence blob is unavailable: {path}"
-                ) from exc
-            if sha256_bytes(content) != digest:
-                raise TruthExportError(
-                    "live evidence blob does not match content_sha256"
-                )
-            blobs[digest] = content
+            if item.record_type == "evidence":
+                row = item.record
+                if row["redacted_at"] is not None or row["content_path"] is None:
+                    continue
+                digest = str(row["content_sha256"])
+                path = store.resolve_blob_path(str(row["content_path"]))
+                try:
+                    content = path.read_bytes()
+                except OSError as exc:
+                    raise TruthExportError(
+                        f"live evidence blob is unavailable: {path}"
+                    ) from exc
+                if sha256_bytes(content) != digest:
+                    raise TruthExportError(
+                        "live evidence blob does not match content_sha256"
+                    )
+                blobs[digest] = content
+            elif item.record_type == "document":
+                snapshot_digest = item.record["ydoc_snapshot_sha256"]
+                if snapshot_digest is None:
+                    continue
+                digest = str(snapshot_digest)
+                # Content-addressed Y.Doc snapshots live in blobs/ and export
+                # exactly like evidence blobs, deduped by content address. The
+                # runtime/ update log is never serialized (PRD section 5).
+                path = store.resolve_blob_path("blobs/" + digest)
+                try:
+                    content = path.read_bytes()
+                except OSError as exc:
+                    raise TruthExportError(
+                        f"live ydoc snapshot blob is unavailable: {path}"
+                    ) from exc
+                if sha256_bytes(content) != digest:
+                    raise TruthExportError(
+                        "live ydoc snapshot blob does not match ydoc_snapshot_sha256"
+                    )
+                blobs[digest] = content
         if owns_transaction:
             export_conn.execute("COMMIT")
     except Exception:
@@ -1086,7 +1383,11 @@ def _parse_v1(objects: list[dict[str, Any]]) -> _Bundle:
     return bundle
 
 
-def _parse_v2(objects: list[dict[str, Any]]) -> _Bundle:
+def _parse_v2_or_v3(objects: list[dict[str, Any]], version: int) -> _Bundle:
+    # v3 framing is byte-identical to v2 (header line, per-record lines ordered
+    # by seq, blob section sorted by digest, hashed end footer). Only the record
+    # registries grow, so one parser serves both. The stream is tagged with its
+    # source format_version so an import reports the format it upcast from.
     header = objects[0]
     footer = objects[-1]
     _require_exact_keys(
@@ -1158,7 +1459,7 @@ def _parse_v2(objects: list[dict[str, Any]]) -> _Bundle:
     if last_seq != observed_last:
         raise TruthImportError("end record last_seq does not match the stream")
     bundle = _Bundle(
-        source_format_version=2,
+        source_format_version=version,
         store_info=_require_mapping(header["store_info"], "store_info"),
         profile=_require_mapping(header["profile"], "profile"),
         records=tuple(records),
@@ -1171,7 +1472,11 @@ def _parse_v2(objects: list[dict[str, Any]]) -> _Bundle:
 def _parse_bundle(source: str | Path | bytes | bytearray | memoryview) -> _Bundle:
     objects = _read_objects(source)
     version = _parse_header(objects)
-    bundle = _parse_v1(objects) if version == 1 else _parse_v2(objects)
+    bundle = (
+        _parse_v1(objects)
+        if version == 1
+        else _parse_v2_or_v3(objects, version)
+    )
     source_schema = int(bundle.store_info["schema_version"])
     if source_schema == SCHEMA_VERSION:
         return bundle

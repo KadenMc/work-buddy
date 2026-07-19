@@ -27,7 +27,10 @@ import type {
   WidgetIntent,
   WidgetSnapshot,
 } from "../contributions/contracts";
-import type { StandardViewChromeSlots } from "../contributions/viewModules";
+import type {
+  SingleSurfaceComponent,
+  StandardViewChromeSlots,
+} from "../contributions/viewModules";
 import { asWidgetInstanceId } from "../contributions/contracts";
 import type { ContributionRegistry } from "../contributions/registry";
 import type { RegisteredWidget } from "../contributions/registry";
@@ -127,7 +130,7 @@ const sizeModeFor = (
   return "standard";
 };
 
-export function ViewHost({
+function StandardGridViewHost({
   registry,
   definition,
   provider,
@@ -847,6 +850,99 @@ export function ViewHost({
     </main>
     </DashboardHelpProvider>
   );
+}
+
+interface SingleSurfaceViewHostProps {
+  readonly registry: ContributionRegistry;
+  readonly definition: ViewDefinition;
+  readonly provider: ViewProvider;
+  readonly providerLabel?: string;
+}
+
+/**
+ * Mounts a single-surface view's App-owned renderer. Dashboard Core stays generic: it
+ * resolves the surface component from the view's own module by View ID, hands it the
+ * coarse ViewProvider, and renders it directly. None of the grid, personalization, or
+ * widget-hydration machinery participates, because a single-surface view is one
+ * cohesive root rather than a grid of independently hydrated widgets.
+ */
+function SingleSurfaceViewHost({
+  registry,
+  definition,
+  provider,
+  providerLabel,
+}: SingleSurfaceViewHostProps) {
+  const [surface, setSurface] = useState<{ readonly Component: SingleSurfaceComponent }>();
+  const [error, setError] = useState<string>();
+
+  useEffect(() => {
+    let active = true;
+    setSurface(undefined);
+    setError(undefined);
+    void registry
+      .loadViewModule(definition.viewId)
+      .then((loaded) => {
+        if (!active) return;
+        if (loaded.surface === undefined) {
+          setError(
+            `View ${definition.viewId} declares a single-surface layout but its module exports no surface renderer.`,
+          );
+          return;
+        }
+        setSurface({ Component: loaded.surface });
+      })
+      .catch((loadError: unknown) => {
+        if (!active) return;
+        setError(loadError instanceof Error ? loadError.message : String(loadError));
+      });
+    return () => {
+      active = false;
+    };
+  }, [registry, definition.viewId]);
+
+  if (error !== undefined) {
+    return (
+      <main className="wb-view-host" aria-label={definition.displayName}>
+        <WidgetState state="error" message={error} />
+      </main>
+    );
+  }
+
+  if (surface === undefined) {
+    return (
+      <main className="wb-view-host" aria-label={definition.displayName}>
+        <WidgetState state="loading" message="Loading this surface." />
+      </main>
+    );
+  }
+
+  const Surface = surface.Component;
+  return (
+    <Surface
+      definition={definition}
+      provider={provider}
+      {...(providerLabel === undefined ? {} : { providerLabel })}
+    />
+  );
+}
+
+/**
+ * Dashboard Core view host. Standard-grid views (the default) mount the widget grid,
+ * single-surface views mount one App-owned renderer. The branch keeps every standard
+ * grid path byte-for-byte unchanged.
+ */
+export function ViewHost(props: ViewHostProps) {
+  if (props.definition.layoutKind === "single-surface") {
+    return (
+      <SingleSurfaceViewHost
+        registry={props.registry}
+        definition={props.definition}
+        provider={props.provider}
+        {...(props.providerLabel === undefined ? {} : { providerLabel: props.providerLabel })}
+      />
+    );
+  }
+  return <StandardGridViewHost {...props} />;
 }
 
 export default ViewHost;

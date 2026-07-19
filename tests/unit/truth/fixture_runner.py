@@ -7,7 +7,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import yaml
 
@@ -615,8 +615,449 @@ class WorkloadRunner:
 
 
 __all__ = [
+    "CoworkWorkloadResult",
+    "CoworkWorkloadRunner",
     "EmptyRegistry",
     "WorkloadResult",
     "WorkloadRunner",
+    "load_cowork_workload",
     "load_workload",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Co-work document-surface workload runner (K2, WP-A3 additive extension).
+#
+# Interprets the declarative cowork_doc_workload.yaml shape (a store header, an
+# ordered steps list of verb-keyed maps, and a named assert list) through the
+# document engine API. Kept separate from WorkloadRunner, which is specialized
+# to the three shipped claim-ledger fixtures.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class CoworkWorkloadResult:
+    """Outcome of one cowork document-surface workload run."""
+
+    name: str
+    store: TruthStore
+    proposal_ids: Mapping[str, str]
+    gesture_hashes: tuple[str, ...]
+    assertions: Mapping[str, str]
+
+
+def load_cowork_workload(path: str | Path) -> dict[str, Any]:
+    """Load one cowork document-surface workload."""
+    source = Path(path)
+    value = yaml.safe_load(source.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise AssertionError(f"cowork workload must be a mapping: {source}")
+    return value
+
+
+class CoworkWorkloadRunner:
+    """Interpret cowork document-surface fixture steps through the engine API."""
+
+    _GESTURE_KIND_FOR_VERB = {
+        "confirm": "confirm",
+        "edit_confirm": "edit_confirm",
+        "reject_plain": "reject_plain",
+        "reject_as_false": "reject_as_false",
+        "reject_as_preference": "reject_as_preference",
+        "redirect": "redirect",
+        "defer": "defer",
+        "endorse": "endorse",
+        "dismiss": "reject_plain",  # dismiss consumes a reject_plain gesture
+    }
+
+    def __init__(self, store: TruthStore, workload: Mapping[str, Any]) -> None:
+        from work_buddy.truth import documents
+
+        self.store = store
+        self.workload = dict(workload)
+        self.documents = documents
+        self.lifecycle = TruthLifecycle(store)
+        self.doc_ids: dict[str, str] = {}
+        self.doc_bodies: dict[str, str] = {}
+        self.claims: dict[str, Any] = {}
+        self.proposals: dict[str, Any] = {}
+        self.gestures: list[Any] = []
+        self.decided: list[str] = []
+
+    # -- helpers -----------------------------------------------------------
+
+    @staticmethod
+    def _selector(quote: str) -> list[dict[str, Any]]:
+        return [
+            {"type": "TextQuoteSelector", "exact": quote, "prefix": "", "suffix": ""}
+        ]
+
+    def _mint_gesture(self, proposal: Any, kind: str, at: str) -> Any:
+        from work_buddy.truth.identity import new_id
+        from work_buddy.truth.store import GestureRecord
+
+        excerpt = (proposal.quote_exact or "") + " -> " + (
+            proposal.replacement or "[flag] " + (proposal.rationale or "")
+        )
+        record = GestureRecord(
+            id=new_id(),
+            at=at,
+            surface="dashboard",
+            actor_ref=HUMAN.ref,
+            kind=kind,
+            subject_ref=proposal.id,
+            payload_sha256=proposal.canonical_sha256,
+            payload_excerpt=" ".join(excerpt.split())[:240],
+            context_sha256=None,
+            expires_at=None,
+            consumed_at=None,
+        )
+        with self.store.write_transaction() as conn:
+            gesture = self.store._insert_gesture_locked(conn, record)
+        self.gestures.append(gesture)
+        return gesture
+
+    def _document_content(self, alias: str) -> str:
+        return self.documents.get_document(self.store, self.doc_ids[alias]).content_sha256
+
+    # -- run ---------------------------------------------------------------
+
+    def run(self) -> CoworkWorkloadResult:
+        document = dict(self.workload["document"])
+        alias = str(document["alias"])
+        body = str(document["body"])
+        self.doc_bodies[alias] = body
+
+        for index, step_value in enumerate(self.workload["steps"]):
+            step = dict(step_value)
+            assert len(step) == 1, f"a cowork step is one verb-keyed map: {step}"
+            (verb, payload), = step.items()
+            handler = getattr(self, f"_run_{verb}", None)
+            if handler is None:
+                raise AssertionError(f"unsupported cowork workload verb {verb!r}")
+            handler(dict(payload), _timestamp(index))
+
+        assertions = self._run_assertions()
+        return CoworkWorkloadResult(
+            name=str(self.workload["name"]),
+            store=self.store,
+            proposal_ids={a: p.id for a, p in self.proposals.items()},
+            gesture_hashes=tuple(g.payload_sha256 for g in self.gestures),
+            assertions=assertions,
+        )
+
+    # -- step handlers -----------------------------------------------------
+
+    def _run_register(self, payload: Mapping[str, Any], at: str) -> None:
+        alias = str(payload["document"])
+        body = self.doc_bodies[alias]
+        content_sha256 = sha256_text(body)
+        snapshot = b"YDOC-WORKLOAD-SNAPSHOT:" + content_sha256.encode("ascii")
+        from work_buddy.truth import ydoc_store
+
+        snapshot_sha256 = ydoc_store.write_snapshot(self.store, snapshot=snapshot)
+        record = self.documents.register_document(
+            self.store,
+            path=str(dict(self.workload["document"])["path"]),
+            title="Cowork workload document",
+            document_class=str(dict(self.workload["document"])["document_class"]),
+            content_sha256=content_sha256,
+            ydoc_snapshot_sha256=snapshot_sha256,
+            actor=HUMAN,
+            at=at,
+        )
+        self.doc_ids[alias] = record.id
+
+    def _run_materialize(self, payload: Mapping[str, Any], at: str) -> None:
+        alias = str(payload["document"])
+        content_sha256 = payload.get("content_sha256") or sha256_text(
+            self.doc_bodies[alias]
+        )
+        self.documents.record_materialization(
+            self.store,
+            document_id=self.doc_ids[alias],
+            content_sha256=content_sha256,
+            actor=HUMAN,
+            at=at,
+        )
+
+    def _run_claim(self, payload: Mapping[str, Any], at: str) -> None:
+        result = self.store.propose_claim(
+            proposition=str(payload["proposition"]),
+            claim_kind=str(payload.get("kind", "fact")),
+            actor=AGENT,
+            created_at=at,
+            status_at=at,
+        )
+        self.claims[str(payload["alias"])] = result.claim
+
+    def _resolve_claim_refs(
+        self, refs: Sequence[Mapping[str, Any]] | None
+    ) -> list[dict[str, str]]:
+        resolved: list[dict[str, str]] = []
+        for ref in refs or ():
+            claim = self.claims[str(ref["claim"])]
+            resolved.append(
+                {"claim": claim.id, "role": str(ref.get("role", "instantiation"))}
+            )
+        return resolved
+
+    def _run_propose(self, payload: Mapping[str, Any], at: str) -> None:
+        from work_buddy.truth import proposals
+
+        alias = str(payload["document"])
+        quote = str(payload["quote"])
+        proposal = proposals.propose_edit(
+            self.store,
+            document_id=self.doc_ids[alias],
+            base_content_sha256=payload.get("base") or self._document_content(alias),
+            selector=self._selector(quote),
+            quote_exact=quote,
+            replacement=payload.get("replacement"),
+            rationale=payload.get("rationale"),
+            claim_refs=self._resolve_claim_refs(payload.get("claim_refs")),
+            actor=AGENT,
+            at=at,
+        )
+        self.proposals[str(payload["alias"])] = proposal
+
+    def _run_propose_flag(self, payload: Mapping[str, Any], at: str) -> None:
+        from work_buddy.truth import proposals
+
+        alias = str(payload["document"])
+        quote = str(payload["quote"])
+        proposal = proposals.propose_edit(
+            self.store,
+            document_id=self.doc_ids[alias],
+            base_content_sha256=self._document_content(alias),
+            selector=self._selector(quote),
+            quote_exact=quote,
+            replacement=None,
+            rationale=str(payload["rationale"]),
+            actor=AGENT,
+            at=at,
+        )
+        self.proposals[str(payload["alias"])] = proposal
+
+    def _run_decide(self, payload: Mapping[str, Any], at: str) -> None:
+        from work_buddy.truth import proposals
+
+        alias = str(payload["proposal"])
+        verb = str(payload["verb"])
+        proposal = self.proposals[alias]
+        gesture = self._mint_gesture(proposal, self._GESTURE_KIND_FOR_VERB[verb], at)
+        decide_at = _timestamp_offset(at)
+        if verb == "confirm":
+            proposals.accept_proposal(
+                self.store,
+                proposal_id=proposal.id,
+                gesture_id=gesture.id,
+                actor=HUMAN,
+                observed_at=decide_at,
+                at=decide_at,
+            )
+        elif verb == "edit_confirm":
+            proposals.accept_proposal(
+                self.store,
+                proposal_id=proposal.id,
+                gesture_id=gesture.id,
+                actor=HUMAN,
+                amended_replacement=str(payload["replacement"]),
+                observed_at=decide_at,
+                at=decide_at,
+            )
+        elif verb == "reject_plain":
+            proposals.reject_proposal(
+                self.store,
+                proposal_id=proposal.id,
+                gesture_id=gesture.id,
+                actor=HUMAN,
+                reason_class="reject_plain",
+                observed_at=decide_at,
+                at=decide_at,
+            )
+        elif verb == "reject_as_false":
+            proposals.decide_reject_as_false(
+                self.store,
+                proposal_id=proposal.id,
+                gesture_id=gesture.id,
+                actor=HUMAN,
+                negation_text=payload.get("negation_text"),
+                observed_at=decide_at,
+                at=decide_at,
+            )
+        elif verb == "reject_as_preference":
+            proposals.reject_proposal(
+                self.store,
+                proposal_id=proposal.id,
+                gesture_id=gesture.id,
+                actor=HUMAN,
+                reason_class="reject_as_preference",
+                result_claim_id=self.claims[str(payload["result_claim"])].id,
+                observed_at=decide_at,
+                at=decide_at,
+            )
+        elif verb == "redirect":
+            proposals.redirect_proposal(
+                self.store,
+                proposal_id=proposal.id,
+                gesture_id=gesture.id,
+                actor=HUMAN,
+                note=str(payload["note"]),
+                observed_at=decide_at,
+                at=decide_at,
+            )
+        elif verb == "defer":
+            proposals.defer_proposal(
+                self.store,
+                proposal_id=proposal.id,
+                gesture_id=gesture.id,
+                actor=HUMAN,
+                observed_at=decide_at,
+                at=decide_at,
+            )
+        elif verb == "endorse":
+            proposals.endorse_flag(
+                self.store,
+                proposal_id=proposal.id,
+                gesture_id=gesture.id,
+                actor=HUMAN,
+                observed_at=decide_at,
+                at=decide_at,
+            )
+        elif verb == "dismiss":
+            proposals.dismiss_flag(
+                self.store,
+                proposal_id=proposal.id,
+                gesture_id=gesture.id,
+                actor=HUMAN,
+                observed_at=decide_at,
+                at=decide_at,
+            )
+        else:
+            raise AssertionError(f"unsupported decide verb {verb!r}")
+        self.decided.append(alias)
+
+    def _run_drift(self, payload: Mapping[str, Any], at: str) -> None:
+        alias = str(payload["document"])
+        file_sha256 = payload.get("file_sha256") or sha256_text(
+            str(payload["file_body"])
+        )
+        event = self.documents.detect_drift(
+            self.store,
+            document_id=self.doc_ids[alias],
+            current_file_sha256=file_sha256,
+            actor=SYSTEM,
+            at=at,
+        )
+        assert event is not None and event.kind == "drift_detected"
+
+    def _run_expire(self, payload: Mapping[str, Any], at: str) -> None:
+        from work_buddy.truth import proposals
+
+        proposal = self.proposals[str(payload["proposal"])]
+        result = proposals.expire_proposal(
+            self.store,
+            proposal_id=proposal.id,
+            basis_kind=str(payload["basis"]),
+            actor=SYSTEM,
+            at=at,
+        )
+        assert result.status_event.status == "expired"
+
+    # -- assertions --------------------------------------------------------
+
+    def _run_assertions(self) -> dict[str, str]:
+        outcomes: dict[str, str] = {}
+        for name in self.workload["assert"]:
+            method = getattr(self, f"_assert_{name}", None)
+            if method is None:
+                raise AssertionError(f"unsupported cowork assertion {name!r}")
+            outcomes[str(name)] = method()
+        return outcomes
+
+    def _assert_one_gesture_per_marked_item_with_distinct_hashes(self) -> str:
+        # Exactly one gesture minted per decided item, all hashes distinct.
+        assert len(self.gestures) == len(self.decided)
+        hashes = [g.payload_sha256 for g in self.gestures]
+        assert len(set(hashes)) == len(hashes)
+        return "passed"
+
+    def _assert_agent_self_decide_rejected(self) -> str:
+        from work_buddy.truth import proposals
+        from work_buddy.truth.contracts import GestureError
+
+        # p6 stays open after redirect. defer carries no stale-base gate, so the
+        # rejection here is exactly the human-actor check, order-independent of
+        # the stale-view assertion that advances the document content.
+        proposal = self.proposals["p6"]
+        gesture = self._mint_gesture(proposal, "defer", _timestamp(90))
+        self.gestures.pop()  # this probe gesture is not one of the marked items
+        try:
+            proposals.defer_proposal(
+                self.store,
+                proposal_id=proposal.id,
+                gesture_id=gesture.id,
+                actor=AGENT,
+                observed_at=_timestamp(91),
+            )
+        except GestureError:
+            return "passed"
+        raise AssertionError("agent self-decide was not rejected")
+
+    def _assert_stale_view_mark_rejected(self) -> str:
+        from work_buddy.truth import proposals
+        from work_buddy.truth.contracts import TransitionError
+
+        proposal = self.proposals["p7"]  # still open after defer
+        # The document advances past the base the proposal was composed against.
+        self.documents.record_materialization(
+            self.store,
+            document_id=proposal.document_id,
+            content_sha256=sha256_text("stale-view-advance"),
+            actor=HUMAN,
+            at=_timestamp(95),
+        )
+        gesture = self._mint_gesture(proposal, "confirm", _timestamp(96))
+        self.gestures.pop()  # probe gesture, not one of the marked items
+        try:
+            proposals.accept_proposal(
+                self.store,
+                proposal_id=proposal.id,
+                gesture_id=gesture.id,
+                actor=HUMAN,
+                observed_at=_timestamp(97),
+            )
+        except TransitionError:
+            return "passed"
+        raise AssertionError("stale-view mark was not rejected")
+
+    def _assert_export_v3_round_trips_lossless_including_ydoc_blob(self) -> str:
+        result = export_store(self.store)
+        # The workload registered a document with a Y.Doc snapshot, so the export
+        # carries at least one content-addressed snapshot blob.
+        blob_digests = {path.name for path in self.store.paths.blobs.iterdir()}
+        assert blob_digests, "no ydoc snapshot blob was exported"
+
+        restored_root = self.store.paths.root.parent / (
+            self.store.paths.root.name + "-cowork-restored"
+        )
+        restored_root.mkdir()
+        imported = import_store(
+            result.path, restored_root, registry=EmptyRegistry()
+        )
+        assert imported.source_format_version == 3
+        restored_export = export_store(
+            imported.store, restored_root / "restored-claims.jsonl"
+        )
+        assert restored_export.path.read_bytes() == result.path.read_bytes()
+        # The snapshot blobs survive the round trip byte for byte.
+        restored_digests = {path.name for path in imported.store.paths.blobs.iterdir()}
+        assert restored_digests == blob_digests
+        return "passed"
+
+
+def _timestamp_offset(at: str) -> str:
+    return (_parse_timestamp(at) + timedelta(seconds=30)).isoformat(
+        timespec="seconds"
+    ).replace("+00:00", "Z")

@@ -18,6 +18,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from work_buddy.truth.anchors import parse_selector
+from work_buddy.truth.migrations import REDACTED_SELECTOR_JSON
 from work_buddy.truth.contracts import (
     InvariantViolation,
     TERMINAL_STATUSES,
@@ -1626,6 +1627,308 @@ def _coerce_premise_resolution(value: Any) -> PremiseResolution:
     raise TypeError("premise resolver returned an unsupported result")
 
 
+_DOCUMENT_SURFACE_TABLES = (
+    "documents",
+    "document_spans",
+    "expressions",
+    "proposals",
+    "proposal_status_events",
+    "doc_events",
+)
+
+
+def _document_surface_tables_present(conn: sqlite3.Connection) -> bool:
+    """Return whether every v2 co-work table exists in this store.
+
+    In the integrated engine the _m002 migration creates these tables in every
+    store, so this is always true there and the guard is a no-op. It only lets
+    the sweep run unchanged against a pre-v2 store.
+    """
+    rows = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN "
+        "(?, ?, ?, ?, ?, ?)",
+        _DOCUMENT_SURFACE_TABLES,
+    ).fetchall()
+    return len({row[0] for row in rows}) == len(_DOCUMENT_SURFACE_TABLES)
+
+
+def _recompute_proposal_canonical(row: sqlite3.Row) -> str | None:
+    """Recompute a proposal canonical hash via the proposals engine module.
+
+    Returns None when the proposals module is unavailable or when the stored
+    row cannot be reconstructed, so an unrecomputable proposal never yields a
+    false canonical-mismatch error. The single source
+    of the hash is proposals.proposal_canonical_sha256, never duplicated here.
+    """
+    try:
+        from work_buddy.truth.proposals import proposal_canonical_sha256
+    except ImportError:
+        return None
+    try:
+        # Mirror the insert-time payload exactly: proposals.py hashes the
+        # selector as the parsed JSON value, never a CompositeSelector object.
+        selector = json.loads(row["selector_json"])
+        raw_refs = row["claim_refs_json"]
+        claim_refs = json.loads(raw_refs) if raw_refs else None
+        return proposal_canonical_sha256(
+            document_id=row["document_id"],
+            base_content_sha256=row["base_content_sha256"],
+            selector=selector,
+            quote_exact=row["quote_exact"],
+            replacement=row["replacement"],
+            rationale=row["rationale"],
+            tldr=row["tldr"],
+            claim_refs=claim_refs,
+        )
+    except Exception:  # noqa: BLE001 - any reconstruction failure means skip
+        return None
+
+
+def _document_integrity_findings(
+    conn: sqlite3.Connection,
+    store: TruthStore,
+    add: Callable[..., None],
+    *,
+    claims_by_id: Mapping[str, ClaimRecord],
+    evidence_by_id: Mapping[str, sqlite3.Row],
+    spans_by_id: Mapping[str, sqlite3.Row],
+    gestures: Mapping[str, sqlite3.Row],
+) -> dict[str, set[str]]:
+    """Inspect the co-work document ledger in the one integrity surface.
+
+    Errors block import through _validate_staged_integrity. Warnings are
+    portable and do not block. Returns the document-side expected ledger keys
+    so the caller can fold them into the store-wide completeness check.
+    """
+    documents = {
+        row["id"]: row
+        for row in conn.execute("SELECT * FROM documents").fetchall()
+    }
+    document_spans = {
+        row["id"]: row
+        for row in conn.execute("SELECT * FROM document_spans").fetchall()
+    }
+    expressions = conn.execute("SELECT * FROM expressions").fetchall()
+    proposals = conn.execute("SELECT * FROM proposals").fetchall()
+    status_rows = conn.execute(
+        "SELECT * FROM proposal_status_events ORDER BY proposal_id, seq"
+    ).fetchall()
+    doc_events = conn.execute("SELECT * FROM doc_events").fetchall()
+
+    latest_status: dict[str, sqlite3.Row] = {}
+    for row in status_rows:
+        latest_status[row["proposal_id"]] = row
+
+    # Dangling document-graph refs (errors). Each kind is checked against its
+    # actual parent ref: spans/proposals/doc_events hang off document_id, an
+    # expression hangs off its document_span_id.
+    for span_id, span in document_spans.items():
+        if span["document_id"] not in documents:
+            add(
+                "document-dangling-ref",
+                "document_span",
+                span_id,
+                f"document_id {span['document_id']} has no document row",
+            )
+    for prop in proposals:
+        if prop["document_id"] not in documents:
+            add(
+                "document-dangling-ref",
+                "proposal",
+                prop["id"],
+                f"document_id {prop['document_id']} has no document row",
+            )
+    for event in doc_events:
+        if event["document_id"] not in documents:
+            add(
+                "document-dangling-ref",
+                "doc_event",
+                event["id"],
+                f"document_id {event['document_id']} has no document row",
+            )
+    for expr in expressions:
+        if expr["document_span_id"] not in document_spans:
+            add(
+                "document-dangling-ref",
+                "expression",
+                expr["id"],
+                f"document_span_id {expr['document_span_id']} has no span row",
+            )
+
+    # Snapshot blob liveness (error), the evidence-blob liveness analogue.
+    for doc_id, doc in documents.items():
+        digest = doc["ydoc_snapshot_sha256"]
+        if digest:
+            path = store.resolve_blob_path(f"blobs/{digest}")
+            if not path.exists():
+                add(
+                    "ydoc-snapshot-blob-missing",
+                    "document",
+                    doc_id,
+                    f"ydoc snapshot blob {digest} is absent",
+                )
+
+    for prop in proposals:
+        proposal_id = prop["id"]
+
+        # Global subject-id uniqueness (error), Bucket 2 contract: a proposal
+        # id must not also resolve as a claim, evidence, or span id.
+        if (
+            proposal_id in claims_by_id
+            or proposal_id in evidence_by_id
+            or proposal_id in spans_by_id
+        ):
+            add(
+                "proposal-subject-collision",
+                "proposal",
+                proposal_id,
+                "proposal id also resolves as a claim, evidence, or span id",
+            )
+
+        # Redaction anti-anchoring shape (error).
+        if prop["redacted_at"] is not None:
+            retained = [
+                column
+                for column in (
+                    "quote_exact",
+                    "replacement",
+                    "rationale",
+                    "tldr",
+                    "claim_refs_json",
+                )
+                if prop[column] is not None
+            ]
+            if prop["selector_json"] != REDACTED_SELECTOR_JSON:
+                retained.append("selector_json")
+            if retained:
+                add(
+                    "proposal-redacted-content-retained",
+                    "proposal",
+                    proposal_id,
+                    f"redacted proposal retained content: {sorted(retained)}",
+                )
+        else:
+            # Canonical binding (error), recomputed only when the engine hash
+            # is available, and stale-base (warning) against the live document.
+            recomputed = _recompute_proposal_canonical(prop)
+            if recomputed is not None and recomputed != prop["canonical_sha256"]:
+                add(
+                    "proposal-canonical-mismatch",
+                    "proposal",
+                    proposal_id,
+                    "recomputed canonical_sha256 does not match the stored value",
+                )
+            document = documents.get(prop["document_id"])
+            if (
+                document is not None
+                and prop["base_content_sha256"] != document["content_sha256"]
+            ):
+                add(
+                    "proposal-stale-base",
+                    "proposal",
+                    proposal_id,
+                    "base_content_sha256 differs from the document latest hash",
+                    severity="warning",
+                )
+            # Dangling local claim refs (warning), the intra-store analogue of
+            # the omitted cross-store FK. Cross-store URIs are not checked.
+            raw_refs = prop["claim_refs_json"]
+            if raw_refs:
+                try:
+                    parsed_refs = json.loads(raw_refs)
+                except (TypeError, json.JSONDecodeError):
+                    parsed_refs = None
+                if isinstance(parsed_refs, list):
+                    for ref in parsed_refs:
+                        if not isinstance(ref, Mapping):
+                            continue
+                        claim_value = ref.get("claim")
+                        if not isinstance(claim_value, str):
+                            continue
+                        try:
+                            parse_truth_uri(claim_value)
+                            continue
+                        except ValueError:
+                            pass
+                        if claim_value not in claims_by_id:
+                            add(
+                                "document-dangling-claim-ref",
+                                "proposal",
+                                proposal_id,
+                                f"local claim ref {claim_value} resolves to no claim",
+                                severity="warning",
+                            )
+
+        # Status-basis discipline (error): applied/closed require a bound and
+        # consumed gesture, expired requires a rule or sweep basis.
+        latest = latest_status.get(proposal_id)
+        if latest is not None:
+            status = latest["status"]
+            basis_kind = latest["basis_kind"]
+            basis_ref = latest["basis_ref"]
+            if status in {"applied", "closed"}:
+                gesture = gestures.get(basis_ref) if basis_ref is not None else None
+                if not (
+                    basis_kind == "gesture"
+                    and gesture is not None
+                    and gesture["consumed_at"] is not None
+                ):
+                    add(
+                        "proposal-status-basis",
+                        "proposal",
+                        proposal_id,
+                        f"{status} proposal requires a bound consumed gesture",
+                    )
+            elif status == "expired":
+                if basis_kind not in {"rule", "sweep"}:
+                    add(
+                        "proposal-status-basis",
+                        "proposal",
+                        proposal_id,
+                        "expired proposal requires a rule or sweep basis",
+                    )
+
+    # Expression fingerprint staleness (warnings) and dangling local claim
+    # refs (warning).
+    for expr in expressions:
+        span = document_spans.get(expr["document_span_id"])
+        if span is not None and expr["span_sha256"] != span["span_sha256"]:
+            add(
+                "expression-span-side-stale",
+                "expression",
+                expr["id"],
+                "span-side fingerprint drifted from the current document span",
+                severity="warning",
+            )
+        if expr["claim_ref_kind"] == "local":
+            claim = claims_by_id.get(expr["claim_ref"])
+            if claim is None:
+                add(
+                    "document-dangling-claim-ref",
+                    "expression",
+                    expr["id"],
+                    f"local claim_ref {expr['claim_ref']} resolves to no claim",
+                    severity="warning",
+                )
+            elif expr["claim_canonical_sha256"] != claim.canonical_sha256:
+                add(
+                    "expression-claim-side-stale",
+                    "expression",
+                    expr["id"],
+                    "claim-side fingerprint drifted from the current claim",
+                    severity="warning",
+                )
+
+    return {
+        "document": set(documents),
+        "document_span": set(document_spans),
+        "expression": {row["id"] for row in expressions},
+        "proposal": {row["id"] for row in proposals},
+        "proposal_status_event": {row["id"] for row in status_rows},
+        "doc_event": {row["id"] for row in doc_events},
+    }
+
+
 def integrity_findings(
     store: TruthStore,
     *,
@@ -1681,6 +1984,23 @@ def integrity_findings(
             "SELECT * FROM evidence ORDER BY id"
         ).fetchall()
         evidence_by_id = {row["id"]: row for row in evidence_rows}
+        # Proposals participate in the same gesture-subject and redaction-event
+        # surfaces as claims/evidence/spans. Load them (and their status history)
+        # so the resolvers below recognize proposal subjects. Guarded because a
+        # pre-v2 store has no co-work tables.
+        proposals_by_id: dict[str, sqlite3.Row] = {}
+        proposal_status_by_proposal: dict[str, list[sqlite3.Row]] = defaultdict(list)
+        if _document_surface_tables_present(read_conn):
+            proposals_by_id = {
+                row["id"]: row
+                for row in read_conn.execute(
+                    "SELECT * FROM proposals ORDER BY id"
+                ).fetchall()
+            }
+            for row in read_conn.execute(
+                "SELECT * FROM proposal_status_events ORDER BY proposal_id, seq"
+            ).fetchall():
+                proposal_status_by_proposal[row["proposal_id"]].append(row)
         retraction_rows = read_conn.execute(
             "SELECT * FROM link_retractions ORDER BY link_id"
         ).fetchall()
@@ -2056,6 +2376,46 @@ def integrity_findings(
                     source_event["id"],
                     "preference rejection result must be a preference claim",
                 )
+        # The proposal decide_reject_as_false path (S3) binds ONE proposal-subject
+        # gesture to both the proposal closure and the confirmed negation claim it
+        # mints. That negation confirm's basis gesture is bound to the proposal
+        # (subject_ref plus canonical hash), not to the negation claim, so
+        # recognize the closure -> negation shape here and exempt the negation
+        # confirm from the claim-subject gesture checks in the loop below. This is
+        # the proposal-minted analogue of reasoned_rejection above.
+        proposal_reasoned_result_events: set[str] = set()
+        _negation_note_prefix = "reject_as_false:negation_claim="
+        for proposal_id, proposal_events in proposal_status_by_proposal.items():
+            proposal_row = proposals_by_id.get(proposal_id)
+            if proposal_row is None:
+                continue
+            for closure in proposal_events:
+                if (
+                    closure["decision"] != "reject_as_false"
+                    or closure["basis_kind"] != "gesture"
+                ):
+                    continue
+                closure_gesture_id = closure["basis_ref"]
+                closure_gesture = (
+                    gestures.get(closure_gesture_id) if closure_gesture_id else None
+                )
+                closure_note = closure["note"] or ""
+                if (
+                    closure_gesture is None
+                    or closure_gesture["kind"] != "reject_as_false"
+                    or closure_gesture["subject_ref"] != proposal_id
+                    or closure_gesture["payload_sha256"]
+                    != proposal_row["canonical_sha256"]
+                    or not closure_note.startswith(_negation_note_prefix)
+                ):
+                    continue
+                negation_id = closure_note[len(_negation_note_prefix):]
+                for claim_event in events_by_gesture.get(closure_gesture_id, []):
+                    if (
+                        claim_event["status"] == "confirmed"
+                        and claim_event["claim_id"] == negation_id
+                    ):
+                        proposal_reasoned_result_events.add(claim_event["id"])
         previous_status: dict[str, str | None] = defaultdict(lambda: None)
         active_review_overlay: dict[str, bool] = defaultdict(bool)
         previous_event_time: dict[str, datetime] = {}
@@ -2265,7 +2625,14 @@ def integrity_findings(
                 is_reasoned_result = (
                     status == "confirmed" and gesture_id in reasoned_rejection_gestures
                 )
-                if gesture["subject_ref"] != claim_id and not is_reasoned_source:
+                is_proposal_reasoned_result = (
+                    event_id in proposal_reasoned_result_events
+                )
+                if (
+                    gesture["subject_ref"] != claim_id
+                    and not is_reasoned_source
+                    and not is_proposal_reasoned_result
+                ):
                     add(
                         "gesture_subject_mismatch",
                         "status_event",
@@ -2282,6 +2649,7 @@ def integrity_findings(
                 if (
                     status == "confirmed"
                     and not is_reasoned_result
+                    and not is_proposal_reasoned_result
                     and gesture["kind"]
                     not in CONFIRM_GESTURE_KINDS | {"confirm_quarantined_support"}
                 ):
@@ -2387,6 +2755,7 @@ def integrity_findings(
                     claim is not None
                     and gesture["payload_sha256"] != claim.canonical_sha256
                     and not is_reasoned_source
+                    and not is_proposal_reasoned_result
                 ):
                     add(
                         "gesture_payload_mismatch",
@@ -2472,6 +2841,18 @@ def integrity_findings(
             if span_subject is not None:
                 subject_matches.append(
                     ("span", span_subject["span_sha256"], span_subject["redacted_at"])
+                )
+            proposal_subject = proposals_by_id.get(subject_ref)
+            if proposal_subject is not None:
+                # A decision gesture binds to the proposal's canonical hash, so a
+                # proposal subject matches on canonical_sha256, the same way a
+                # claim subject matches on its canonical hash.
+                subject_matches.append(
+                    (
+                        "proposal",
+                        proposal_subject["canonical_sha256"],
+                        proposal_subject["redacted_at"],
+                    )
                 )
             if not subject_matches:
                 add(
@@ -3612,6 +3993,7 @@ def integrity_findings(
             "claim": claims_by_id,
             "evidence": evidence_by_id,
             "span": spans_by_id,
+            "proposal": proposals_by_id,
         }
         evidence_cascade_redactions = {
             (
@@ -3826,6 +4208,59 @@ def integrity_findings(
                             )
                     if gesture_matches and not cascade_match:
                         redaction_gesture_uses[row["basis_ref"]].append(row["id"])
+            elif row["basis_kind"] == "policy" and subject_kind == "proposal":
+                # A standing policy may scrub a rejected (closed) or expired
+                # proposal, mirroring the claim policy shape against the proposal
+                # status ledger. Kept in lockstep with
+                # TruthRedactor._validate_proposal_policy_locked so an
+                # engine-produced store round-trips.
+                proposal_expected_status = {
+                    "rejected_content": "closed",
+                    "expired_content": "expired",
+                }.get(row["reason"])
+                if proposal_expected_status is None:
+                    add(
+                        "invalid_policy_redaction_reason",
+                        "redaction_event",
+                        row["id"],
+                        "standing policy supports rejected_content or expired_content only",
+                    )
+                else:
+                    try:
+                        expected_basis = policy_basis_ref(store, row["reason"])
+                    except InvariantViolation:
+                        expected_basis = None
+                    if row["basis_ref"] != expected_basis:
+                        add(
+                            "invalid_policy_redaction_basis_ref",
+                            "redaction_event",
+                            row["id"],
+                            f"policy basis must be exactly {expected_basis!r}",
+                        )
+                    proposal_events = proposal_status_by_proposal.get(
+                        row["subject_ref"], []
+                    )
+                    latest_proposal_status = (
+                        proposal_events[-1]["status"] if proposal_events else None
+                    )
+                    if latest_proposal_status != proposal_expected_status:
+                        add(
+                            "invalid_policy_redaction_status",
+                            "redaction_event",
+                            row["id"],
+                            f"{row['reason']} policy requires proposal status "
+                            f"{proposal_expected_status!r}, found "
+                            f"{latest_proposal_status!r}",
+                        )
+                    if any(
+                        event["status"] == "applied" for event in proposal_events
+                    ):
+                        add(
+                            "policy_redaction_of_confirmed",
+                            "redaction_event",
+                            row["id"],
+                            "a proposal that was ever applied requires a human gesture",
+                        )
             elif row["basis_kind"] == "policy":
                 if subject_kind != "claim":
                     add(
@@ -4025,6 +4460,14 @@ def integrity_findings(
                     f"redaction has {len(co_statuses)} retraction events",
                 )
         for kind, subject_rows in redactable.items():
+            if kind == "proposal":
+                # A proposal's content is often scrubbed by the decision-path
+                # policy redaction (reject/dismiss under gate.rejected_content ==
+                # redact), which records the scrub via redacted_at plus the
+                # rejection status event rather than a standalone redaction
+                # event. A redacted proposal therefore is not required to carry
+                # one. Any event that does exist is still validated above.
+                continue
             for subject_ref, subject in subject_rows.items():
                 redacted_at = (
                     subject.redacted_at
@@ -4135,6 +4578,18 @@ def integrity_findings(
                         severity="warning",
                     )
 
+        document_ledger: dict[str, set[str]] = {}
+        if _document_surface_tables_present(read_conn):
+            document_ledger = _document_integrity_findings(
+                read_conn,
+                store,
+                add,
+                claims_by_id=claims_by_id,
+                evidence_by_id=evidence_by_id,
+                spans_by_id=spans_by_id,
+                gestures=gestures,
+            )
+
         expected_ledger: dict[str, set[str]] = {
             "evidence": set(evidence_by_id),
             "evidence_span": set(spans_by_id),
@@ -4157,6 +4612,9 @@ def integrity_findings(
                 for row in premise_rows
             },
         }
+        # Fold in the six co-work ledger types so the store-wide completeness
+        # check does not flag document rows as unknown record types.
+        expected_ledger.update(document_ledger)
         actual_ledger: dict[str, set[str]] = defaultdict(set)
         for row in ledger_rows:
             actual_ledger[row["record_type"]].add(row["record_key"])
