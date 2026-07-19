@@ -4,6 +4,16 @@ import { cleanup } from "@testing-library/react";
 import axe from "axe-core";
 import { afterEach, expect } from "vitest";
 
+// jsdom ships no ResizeObserver, which react-resizable-panels (the Co-work split) and cmdk
+// construct on mount. Install a no-op default so any component that observes an element renders
+// without throwing. Tests that exercise ResizeObserver behavior still override it locally with
+// vi.stubGlobal and restore it with vi.unstubAllGlobals, so this only fills the unset case.
+globalThis.ResizeObserver ??= class {
+  observe(): void {}
+  unobserve(): void {}
+  disconnect(): void {}
+};
+
 afterEach(() => {
   cleanup();
 });

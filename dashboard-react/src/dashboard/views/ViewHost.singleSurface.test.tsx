@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 
@@ -36,13 +36,20 @@ describe("ViewHost single-surface mounting", () => {
     );
 
     // The App-owned surface renders its regions. The surface loads through a dynamic
-    // module import, so allow for that resolution under full-suite parallel load.
+    // module import, so allow for that resolution under full-suite parallel load. With no
+    // fixture flag it opens in the honest empty state, so the health strip reads
+    // "No document open".
     await waitFor(
       () => expect(screen.getByRole("tab", { name: "Review" })).toBeVisible(),
       { timeout: 10_000 },
     );
     await waitFor(
-      () => expect(screen.getByText("Co-work demo document")).toBeVisible(),
+      () =>
+        expect(
+          within(screen.getByLabelText("Document health")).getByText(
+            "No document open",
+          ),
+        ).toBeVisible(),
       { timeout: 10_000 },
     );
 

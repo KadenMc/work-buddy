@@ -1,8 +1,15 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { Group, Panel, Separator } from "react-resizable-panels";
 
 import type { SingleSurfaceRuntimeProps } from "../../../dashboard/contributions/viewModules";
 import { useOptionalDashboardEvents } from "../../../dashboard/events/DashboardEventProvider";
+import {
+  HelpTarget,
+  useDashboardHelpEnabled,
+  type HelpContent,
+} from "../../../dashboard/help";
 import { useViewSession } from "../../../dashboard/views/useViewSession";
+import { InMemoryChatProvider } from "../../../widget-library/chat";
 import type { CoworkDriftState, CoworkViewModel } from "../contracts";
 import { CoworkBridgeEditor, useCoworkBridge } from "../bridge";
 import { CoworkChatAnnotations } from "../chat";
@@ -19,13 +26,75 @@ import {
   RailStore,
   createDemoChatProvider,
   isDirty,
+  type ReviewRailData,
 } from "../rail";
+import {
+  EDITOR_DEFAULT_SIZE,
+  EDITOR_MIN_SIZE,
+  EDITOR_PANEL_ID,
+  RAIL_DEFAULT_SIZE,
+  RAIL_MAX_SIZE,
+  RAIL_MIN_SIZE,
+  RAIL_PANEL_ID,
+  useResizableRail,
+} from "./useResizableRail";
 import "./styles.css";
 
 const DRIFT_LABEL: Record<string, string> = {
   clean: "In sync",
   drifted: "Drifted from file",
   missing: "File missing",
+};
+
+/**
+ * Hover-help for the three Co-work regions, surfaced when app-shell help mode is on. The
+ * editor copy is the pane's own description, kept here as help rather than seeded into the
+ * document where it would read as fabricated content.
+ */
+const COWORK_EDITOR_HELP: HelpContent = {
+  summary: "This is the editor pane.",
+  details:
+    "It binds a Tiptap editor to a local Y.Doc through the eight-point load-order contract, projects AI proposals as an ephemeral review layer, and materializes edits block by block.",
+};
+
+const COWORK_HEALTH_HELP: HelpContent = {
+  summary: "Document health at a glance.",
+  details:
+    "Names the open document, whether the editor has drifted from the file on disk, and how many proposals are still open for review.",
+};
+
+/**
+ * The demo document behind ?cowork_fixture=demo. Its prose carries the exact phrases the
+ * in-memory review fixture anchors its proposals and claim to, so the gated demo scene reads
+ * as one coherent document beside its review rail.
+ */
+const DEMO_DOCUMENT_MARKDOWN = [
+  "# Context bundle cache",
+  "",
+  "The cache keys on the active collector set, so a bundle is reused across invocations that share it. Keys on a digest of every collector output.",
+  "",
+  "We always rebuild the bundle when a reported change lands. Benchmarks on the reference machine show cold-start latency dropped from 1.8 s to 1.1 s after prewarming.",
+  "",
+].join("\n");
+
+const EMPTY_DOCUMENT_ID = "cowork-empty";
+const EMPTY_CONVERSATION_ID = "cowork-doc-none";
+
+/** The honest empty review layer: a titled-but-empty document with no proposals or claims. */
+const EMPTY_REVIEW_DATA: ReviewRailData = {
+  documentId: EMPTY_DOCUMENT_ID,
+  title: "No document open",
+  drift: {
+    state: "clean",
+    openProposalCount: 0,
+    openFlagCount: 0,
+    lastMaterializedSha256: null,
+    currentFileSha256: null,
+  },
+  proposals: [],
+  expressions: [],
+  provenanceSpans: [],
+  claims: [],
 };
 
 /** The unified health view both modes feed the strip, so it renders identically. */
@@ -44,26 +113,34 @@ interface CoworkHealthView {
  */
 function CoworkHealthStrip({ health }: { health: CoworkHealthView | null }) {
   return (
-    <header className="wb-cowork__health" aria-label="Document health">
-      <span className="wb-cowork__health-title">
-        {health?.title ?? "No document open"}
-      </span>
-      {health !== null ? (
-        <span className="wb-cowork__health-facts">
-          <span className="wb-cowork__drift" data-drift={health.driftState}>
-            {DRIFT_LABEL[health.driftState] ?? health.driftState}
-          </span>
-          <span className="wb-cowork__count">
-            {health.openProposalCount} open proposal
-            {health.openProposalCount === 1 ? "" : "s"}
-          </span>
+    <HelpTarget content={COWORK_HEALTH_HELP} placement="bottom start">
+      <header className="wb-cowork__health" aria-label="Document health">
+        <span className="wb-cowork__health-title">
+          {health?.title ?? "No document open"}
         </span>
-      ) : null}
-    </header>
+        {health !== null ? (
+          <span className="wb-cowork__health-facts">
+            <span className="wb-cowork__drift" data-drift={health.driftState}>
+              {DRIFT_LABEL[health.driftState] ?? health.driftState}
+            </span>
+            <span className="wb-cowork__count">
+              {health.openProposalCount} open proposal
+              {health.openProposalCount === 1 ? "" : "s"}
+            </span>
+          </span>
+        ) : null}
+      </header>
+    </HelpTarget>
   );
 }
 
-/** The shared three-region shell, so demo and live compose the same layout (section 5). */
+/**
+ * The shared three-region shell, so demo and live compose the same layout (section 5). The
+ * editor and the review rail are two resizable panels: react-resizable-panels sizes them as
+ * percentages of the body, so the rail drags across a wide range in both directions and holds
+ * its proportion when the window changes. The separator carries `role="separator"` with arrow
+ * keys and double-click-to-reset from the library, and `useResizableRail` persists the split.
+ */
 function CoworkWorkspaceLayout({
   label,
   health,
@@ -77,15 +154,43 @@ function CoworkWorkspaceLayout({
   readonly rail: ReactNode;
   readonly railRef?: (element: HTMLElement | null) => void;
 }) {
+  const helping = useDashboardHelpEnabled();
+  const { defaultLayout, onLayoutChanged } = useResizableRail();
   return (
-    <main className="wb-cowork" aria-label={label}>
+    <main className={`wb-cowork${helping ? " is-helping" : ""}`} aria-label={label}>
       <CoworkHealthStrip health={health} />
-      <div className="wb-cowork__body">
-        <div className="wb-cowork__editor-region">{editor}</div>
-        <aside className="wb-cowork__rail" aria-label="Review and chat" ref={railRef}>
-          {rail}
-        </aside>
-      </div>
+      <Group
+        className="wb-cowork__body"
+        orientation="horizontal"
+        defaultLayout={defaultLayout}
+        onLayoutChanged={onLayoutChanged}
+      >
+        <Panel
+          id={EDITOR_PANEL_ID}
+          className="wb-cowork__editor-panel"
+          defaultSize={EDITOR_DEFAULT_SIZE}
+          minSize={EDITOR_MIN_SIZE}
+        >
+          <HelpTarget content={COWORK_EDITOR_HELP} placement="top">
+            <div className="wb-cowork__editor-region">{editor}</div>
+          </HelpTarget>
+        </Panel>
+        <Separator
+          className="wb-cowork__rail-separator"
+          aria-label="Resize the review panel"
+        />
+        <Panel
+          id={RAIL_PANEL_ID}
+          className="wb-cowork__rail-panel"
+          defaultSize={RAIL_DEFAULT_SIZE}
+          minSize={RAIL_MIN_SIZE}
+          maxSize={RAIL_MAX_SIZE}
+        >
+          <aside className="wb-cowork__rail" aria-label="Review and chat" ref={railRef}>
+            {rail}
+          </aside>
+        </Panel>
+      </Group>
     </main>
   );
 }
@@ -124,13 +229,53 @@ function CoworkDemoWorkspace({
     <CoworkWorkspaceLayout
       label={label}
       health={healthFromModel(model)}
-      editor={<CoworkEditorPane />}
+      editor={<CoworkEditorPane seedMarkdown={DEMO_DOCUMENT_MARKDOWN} />}
       rail={
         <CoworkRail
           documentId={documentId}
           reviewProvider={reviewProvider}
           chatProvider={chatProvider}
           conversationId={conversationId}
+        />
+      }
+    />
+  );
+}
+
+/**
+ * Empty mode (the honest default). No document is open, so the health strip shows its
+ * "No document open" state, the editor opens on an empty editable surface, and the rail
+ * carries no fabricated proposals and no scripted agent turn: an empty review layer and an
+ * empty document conversation with a real composer.
+ */
+function CoworkEmptyWorkspace({ label }: { readonly label: string }) {
+  const reviewProvider = useMemo(
+    () => new InMemoryReviewProvider({ data: EMPTY_REVIEW_DATA }),
+    [],
+  );
+  const chatProvider = useMemo(
+    () =>
+      new InMemoryChatProvider({
+        conversationId: EMPTY_CONVERSATION_ID,
+        title: "Document conversation",
+        status: "open",
+        agentLiveness: "unknown",
+        messages: [],
+      }),
+    [],
+  );
+
+  return (
+    <CoworkWorkspaceLayout
+      label={label}
+      health={null}
+      editor={<CoworkEditorPane />}
+      rail={
+        <CoworkRail
+          documentId={EMPTY_DOCUMENT_ID}
+          reviewProvider={reviewProvider}
+          chatProvider={chatProvider}
+          conversationId={EMPTY_CONVERSATION_ID}
         />
       }
     />
@@ -234,13 +379,15 @@ function CoworkLiveWorkspace({
   );
 }
 
-type CoworkFixtureMode = "demo" | "live";
+type CoworkFixtureMode = "demo" | "live" | "empty";
 
 /**
- * Decide demo vs live. An explicit `?cowork_fixture=` query wins (widget-lab and manual
- * testing), else a demo-quality coarse snapshot is demo, else a live scope with a resolvable
- * store id and document id is live. Live needs the store id, supplied on navigation as the
- * same `store_id` the routes take, so a live scope with no store id degrades safely to demo.
+ * Decide empty vs demo vs live. The honest default is empty (no document, honest empty
+ * states). An explicit `?cowork_fixture=demo` query opts into the fabricated demo scene
+ * (widget-lab and manual testing). A live scope with a resolvable store id and document id
+ * is live. Live needs the store id, supplied on navigation as the same `store_id` the routes
+ * take, so a live scope with no store id, and any scope with no explicit demo flag, falls
+ * back to the honest empty state rather than fabricated content.
  */
 function resolveFixtureMode(
   quality: string | undefined,
@@ -251,7 +398,7 @@ function resolveFixtureMode(
   if (override === "demo") return "demo";
   const wantLive = override === "live" || quality !== "demo";
   if (wantLive && documentId !== undefined && storeId !== undefined) return "live";
-  return "demo";
+  return "empty";
 }
 
 /**
@@ -297,7 +444,11 @@ export function CoworkWorkspaceSurface({
     );
   }
 
-  return <CoworkDemoWorkspace label={definition.displayName} model={model} />;
+  if (mode === "demo") {
+    return <CoworkDemoWorkspace label={definition.displayName} model={model} />;
+  }
+
+  return <CoworkEmptyWorkspace label={definition.displayName} />;
 }
 
 export default CoworkWorkspaceSurface;

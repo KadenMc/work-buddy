@@ -10,6 +10,7 @@ import { ThemeProvider } from "../../theme/ThemeProvider";
 import { DashboardTestRuntime } from "../../test/DashboardTestRuntime";
 import { DashboardAnnouncer } from "../accessibility/DashboardAnnouncer";
 import { DashboardEventProvider } from "../events/DashboardEventProvider";
+import { DashboardHelpProvider } from "../help";
 import { InMemoryPersonalizationRepository } from "../personalization/repository";
 import { ViewHost } from "./ViewHost";
 
@@ -98,12 +99,14 @@ describe("ViewHost", () => {
           <DashboardEventProvider>
             <DashboardAnnouncer>
               <DashboardTestRuntime>
-                <ViewHost
-                  registry={dashboardRegistry}
-                  definition={JOURNAL_VIEW_DEFINITION}
-                  provider={new InMemoryJournalProvider()}
-                  personalizationRepository={new InMemoryPersonalizationRepository()}
-                />
+                <DashboardHelpProvider enabled>
+                  <ViewHost
+                    registry={dashboardRegistry}
+                    definition={JOURNAL_VIEW_DEFINITION}
+                    provider={new InMemoryJournalProvider()}
+                    personalizationRepository={new InMemoryPersonalizationRepository()}
+                  />
+                </DashboardHelpProvider>
               </DashboardTestRuntime>
             </DashboardAnnouncer>
           </DashboardEventProvider>
@@ -135,10 +138,9 @@ describe("ViewHost", () => {
       screen.queryByRole("list", { name: "Day timeline items" }),
     ).not.toBeInTheDocument();
 
-    const hoverHelp = screen.getByRole("button", { name: "Hover help" });
-    await userEvent.click(hoverHelp);
-    expect(hoverHelp).toHaveAttribute("aria-pressed", "true");
-
+    // Hover help is driven by the app-shell provider here (the toggle now lives in the
+    // navbar, outside this host). The Journal HelpTargets must still reveal on hover from
+    // that shared context, proving no regression after the lift-out.
     const capturePurpose = screen.getByLabelText("About Quick Capture in this view");
     await userEvent.hover(capturePurpose);
     expect(
@@ -150,7 +152,6 @@ describe("ViewHost", () => {
 
     await userEvent.unhover(capturePurpose);
     await userEvent.click(screen.getByRole("button", { name: "Customize view" }));
-    expect(screen.queryByRole("button", { name: "Hover help" })).not.toBeInTheDocument();
     expect(screen.getByText("Arranging layout")).toBeVisible();
   }, 20_000);
 });

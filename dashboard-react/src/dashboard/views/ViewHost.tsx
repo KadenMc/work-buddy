@@ -11,7 +11,6 @@ import { Check } from "@phosphor-icons/react/Check";
 import { DeviceMobile } from "@phosphor-icons/react/DeviceMobile";
 import { Eye } from "@phosphor-icons/react/Eye";
 import { GridFour } from "@phosphor-icons/react/GridFour";
-import { Info } from "@phosphor-icons/react/Info";
 import { Layout } from "@phosphor-icons/react/Layout";
 import { PencilSimple } from "@phosphor-icons/react/PencilSimple";
 import { SquaresFour } from "@phosphor-icons/react/SquaresFour";
@@ -34,8 +33,9 @@ import type {
 import { asWidgetInstanceId } from "../contributions/contracts";
 import type { ContributionRegistry } from "../contributions/registry";
 import type { RegisteredWidget } from "../contributions/registry";
+import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { ReactGridLayoutAdapter } from "../layout/ReactGridLayoutAdapter";
-import { DashboardHelpProvider, HelpTarget } from "../help";
+import { HelpTarget, useDashboardHelpEnabled, useHelpMode } from "../help";
 import type { DashboardLayout, LayoutCommand } from "../layout/contracts";
 import { applyLayoutCommand } from "../layout/operations";
 import { useInteractionSurfaces } from "../interactions";
@@ -95,21 +95,6 @@ const formatCustomizationFailure = (failure: string): string => {
   return failure;
 };
 
-const useMediaQuery = (query: string): boolean => {
-  const read = () =>
-    typeof window.matchMedia === "function" && window.matchMedia(query).matches;
-  const [matches, setMatches] = useState(read);
-  useEffect(() => {
-    if (typeof window.matchMedia !== "function") return;
-    const media = window.matchMedia(query);
-    const update = () => setMatches(media.matches);
-    update();
-    media.addEventListener("change", update);
-    return () => media.removeEventListener("change", update);
-  }, [query]);
-  return matches;
-};
-
 const layoutFor = (state: ViewEditSessionState): DashboardLayout =>
   state.present.instances
     .filter((instance) => instance.visibility === "shown")
@@ -166,7 +151,11 @@ function StandardGridViewHost({
     beginViewEditSession(defaults),
   );
   const [customizing, setCustomizing] = useState(false);
-  const [helpMode, setHelpMode] = useState(false);
+  // Hover help is app-shell state now (the navbar toggle owns it), so it persists across
+  // views. This host only reads the resolved flag for its styling hook and drops it when
+  // the layout editor opens.
+  const helpEnabled = useDashboardHelpEnabled();
+  const { setEnabled: setHelpEnabled } = useHelpMode();
   const [customizeMode, setCustomizeMode] = useState<"arrange" | "preview">("arrange");
   const [catalogOpen, setCatalogOpen] = useState(false);
   const [mobileOrderOpen, setMobileOrderOpen] = useState(false);
@@ -308,7 +297,7 @@ function StandardGridViewHost({
 
   const beginCustomize = () => {
     setEditState(beginViewEditSession(resolved));
-    setHelpMode(false);
+    setHelpEnabled(false);
     setCustomizeMode("arrange");
     setCustomizing(true);
     setResetPatchRequested(false);
@@ -612,11 +601,10 @@ function StandardGridViewHost({
   };
 
   return (
-    <DashboardHelpProvider enabled={helpMode}>
     <main
       className={`wb-view-host${customizing ? " is-customizing" : ""}${
         customizing && customizeMode === "preview" ? " is-previewing-layout" : ""
-      }${helpMode ? " is-helping" : ""}`}
+      }${helpEnabled ? " is-helping" : ""}`}
     >
       {renderChrome !== undefined ? (
         renderChrome(snapshot, chromeSlots)
@@ -740,20 +728,6 @@ function StandardGridViewHost({
           </>
         ) : (
           <>
-            <Button
-              size="small"
-              variant={helpMode ? "primary" : "secondary"}
-              aria-pressed={helpMode}
-              onClick={() => {
-                setHelpMode((enabled) => {
-                  announce(enabled ? "Hover help turned off" : "Hover help turned on");
-                  return !enabled;
-                });
-              }}
-              disabled={isMobile}
-            >
-              <Info weight="duotone" aria-hidden="true" /> Hover help
-            </Button>
             <HelpTarget
               content={{
                 summary: "Rearrange and resize the widgets in this view.",
@@ -848,7 +822,6 @@ function StandardGridViewHost({
         />
       ) : null}
     </main>
-    </DashboardHelpProvider>
   );
 }
 

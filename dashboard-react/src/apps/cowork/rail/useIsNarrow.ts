@@ -20,7 +20,12 @@ export function useIsNarrow(threshold = 360): [boolean, NarrowRef] {
       observerRef.current = null;
       if (element === null || typeof ResizeObserver !== "function") return;
       const measure = () => {
-        setNarrow(element.getBoundingClientRect().width < threshold);
+        const width = element.getBoundingClientRect().width;
+        // A width of 0 means the element is not laid out yet (pre-paint, an
+        // unmeasured jsdom node, or display:none). Only a real, positive
+        // sub-threshold width is narrow, so the grouped fallback never flashes
+        // before the first true measurement.
+        setNarrow(width > 0 && width < threshold);
       };
       measure();
       const observer = new ResizeObserver(measure);

@@ -8,14 +8,10 @@ import type { CoworkYdocTransport } from "../persistence/transport";
 import { buildEditorExtensions, stopCapturingLoadTimeIds } from "./extensions";
 import { importCoworkMarkdown } from "./markdownImport";
 
-const DEFAULT_SEED_MARKDOWN = [
-  "# Co-work document",
-  "",
-  "This is the editor pane. It binds a Tiptap editor to a local Y.Doc through the",
-  "eight-point load-order contract, projects AI proposals as an ephemeral review layer,",
-  "and materializes edits block by block.",
-  "",
-].join("\n");
+// A brand-new document opens empty and honest. What the pane IS (its load-order contract,
+// its review layer, its block-splice materialize) is documented as hover help on the editor
+// region, not seeded as document content. Modes that want seeded prose pass it explicitly.
+const DEFAULT_SEED_MARKDOWN = "";
 
 export interface CoworkEditorPaneProps {
   /** Markdown seeded into a brand-new document exactly once, on an empty fragment. */
@@ -50,8 +46,11 @@ function MountedCoworkEditor({
   seedWhenEmpty,
 }: MountedCoworkEditorProps) {
   const extensions = useMemo(() => buildEditorExtensions(document), [document]);
+  // An empty seed means a genuinely empty document, so nothing is parsed or set and the
+  // editor opens on its own empty state rather than fabricated placeholder prose.
   const seedContent = useMemo(
-    () => importCoworkMarkdown(seedMarkdown).doc,
+    () =>
+      seedMarkdown.trim().length > 0 ? importCoworkMarkdown(seedMarkdown).doc : null,
     [seedMarkdown],
   );
   const boundRef = useRef(false);
@@ -80,7 +79,7 @@ function MountedCoworkEditor({
     // start() (rather than before) means a second client hydrating from the server
     // sees the seed instead of orphaned updates that reference an unpushed base (S2).
     persistence.start();
-    if (seedWhenEmpty) {
+    if (seedWhenEmpty && seedContent !== null) {
       editor.commands.setContent(seedContent);
     }
     stopCapturingLoadTimeIds(editor);

@@ -8,6 +8,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 
+import { HelpTarget, type HelpContent } from "../../../dashboard/help";
 import {
   ChatPanel,
   deriveAgentActivity,
@@ -27,6 +28,20 @@ import type { AnchorRectSource, ReviewRailProvider } from "./provider";
 import { RailStore, type RailTab } from "./store";
 import { useRailState } from "./useRailState";
 import "./styles.css";
+
+/** Hover-help for the Review tab, surfaced when app-shell help mode is on. */
+const REVIEW_TAB_HELP: HelpContent = {
+  summary: "Review the agent's proposed changes.",
+  details:
+    "Lists the tracked edits, flags, and claims the agent raised on this document. Decide on each one, then submit them together as a single sitting.",
+};
+
+/** Hover-help for the Chat tab, surfaced when app-shell help mode is on. */
+const CHAT_TAB_HELP: HelpContent = {
+  summary: "Talk to the agent about this document.",
+  details:
+    "The document conversation. Ask a question, leave feedback on a highlighted passage, and read the agent's replies without leaving the review.",
+};
 
 export interface CoworkRailProps {
   readonly documentId: string;
@@ -87,33 +102,37 @@ export function CoworkRail(props: CoworkRailProps) {
         role="tablist"
         aria-label="Review and chat"
       >
-        <button
-          type="button"
-          role="tab"
-          id="wb-cowork-rail-tab-review"
-          className="wb-cowork-rail__tab"
-          aria-selected={tab === "review"}
-          aria-controls="wb-cowork-rail-panel-review"
-          onClick={() => store.setTab("review")}
-        >
-          Review
-        </button>
-        <button
-          type="button"
-          role="tab"
-          id="wb-cowork-rail-tab-chat"
-          className="wb-cowork-rail__tab"
-          aria-selected={tab === "chat"}
-          aria-controls="wb-cowork-rail-panel-chat"
-          onClick={() => store.setTab("chat")}
-        >
-          Chat
-          {unread ? (
-            <span className="wb-cowork-rail__unread">
-              <span className="wb-visually-hidden">unread reply</span>
-            </span>
-          ) : null}
-        </button>
+        <HelpTarget content={REVIEW_TAB_HELP} placement="bottom start">
+          <button
+            type="button"
+            role="tab"
+            id="wb-cowork-rail-tab-review"
+            className="wb-cowork-rail__tab"
+            aria-selected={tab === "review"}
+            aria-controls="wb-cowork-rail-panel-review"
+            onClick={() => store.setTab("review")}
+          >
+            Review
+          </button>
+        </HelpTarget>
+        <HelpTarget content={CHAT_TAB_HELP} placement="bottom">
+          <button
+            type="button"
+            role="tab"
+            id="wb-cowork-rail-tab-chat"
+            className="wb-cowork-rail__tab"
+            aria-selected={tab === "chat"}
+            aria-controls="wb-cowork-rail-panel-chat"
+            onClick={() => store.setTab("chat")}
+          >
+            Chat
+            {unread ? (
+              <span className="wb-cowork-rail__unread">
+                <span className="wb-visually-hidden">unread reply</span>
+              </span>
+            ) : null}
+          </button>
+        </HelpTarget>
       </div>
 
       <div

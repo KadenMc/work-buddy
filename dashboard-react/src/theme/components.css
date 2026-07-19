@@ -458,7 +458,8 @@
     cursor: help;
   }
 
-  .wb-view-host.is-helping .wb-help-target {
+  .wb-view-host.is-helping .wb-help-target,
+  .wb-cowork.is-helping .wb-help-target {
     animation: wb-help-target-reveal 900ms var(--wb-motion-easing-enter) 1 both;
   }
 
