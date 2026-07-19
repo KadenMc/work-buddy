@@ -75,11 +75,15 @@ function MountedCoworkEditor({
   useEffect(() => {
     if (editor === null || boundRef.current) return;
     boundRef.current = true;
+    // Attach the push observer BEFORE seeding, so a brand-new document's initial
+    // content is pushed through R4 as its first human-origin update. Seeding after
+    // start() (rather than before) means a second client hydrating from the server
+    // sees the seed instead of orphaned updates that reference an unpushed base (S2).
+    persistence.start();
     if (seedWhenEmpty) {
       editor.commands.setContent(seedContent);
     }
     stopCapturingLoadTimeIds(editor);
-    persistence.start();
   }, [editor, persistence, seedContent, seedWhenEmpty]);
 
   return <EditorContent editor={editor} className="wb-cowork-editor__content" />;

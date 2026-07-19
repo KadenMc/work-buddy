@@ -35,7 +35,7 @@ describe("CoworkWorkspaceSurface", () => {
       "aria-selected",
       "true",
     );
-    expect(screen.getByRole("tab", { name: "Chat" })).toBeVisible();
+    expect(screen.getByRole("tab", { name: /Chat/ })).toBeVisible();
 
     // Editor pane mounts a live ProseMirror editor with its seeded content.
     await waitFor(
@@ -52,14 +52,20 @@ describe("CoworkWorkspaceSurface", () => {
       { timeout: 10_000 },
     );
 
-    await userEvent.click(screen.getByRole("tab", { name: "Chat" }));
-    expect(screen.getByRole("tab", { name: "Chat" })).toHaveAttribute(
+    await userEvent.click(screen.getByRole("tab", { name: /Chat/ }));
+    expect(screen.getByRole("tab", { name: /Chat/ })).toHaveAttribute(
       "aria-selected",
       "true",
     );
-    expect(
-      screen.getByText(/The document conversation appears here/),
-    ).toBeVisible();
+    // The Chat tab now mounts the house chat panel seeded with the document agent's
+    // opening message, not the rail placeholder stub.
+    await waitFor(
+      () =>
+        expect(
+          screen.getByText(/I proposed a few tracked edits/),
+        ).toBeVisible(),
+      { timeout: 10_000 },
+    );
   }, 15_000);
 
   it("has no accessibility violations in its resting state", async () => {

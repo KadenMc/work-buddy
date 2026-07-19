@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { ySyncPluginKey } from "@tiptap/y-tiptap";
 import * as Y from "yjs";
 
 import {
@@ -37,10 +38,13 @@ describe("apply-origin discipline", () => {
     expect(origins).toEqual([COWORK_APPLY_ORIGIN]);
   });
 
-  it("distinguishes a live human origin from the apply-origin tag", () => {
-    // A live local edit carries a null origin, and only apply-origin mutations are excluded.
-    expect(isLocalHumanOrigin(null)).toBe(true);
-    expect(isLocalHumanOrigin(undefined)).toBe(true);
+  it("classifies only the ySync binding origin as a live human edit", () => {
+    // Human keystrokes sync to the Y.Doc under ySyncPluginKey. Every other origin,
+    // including a bare null transaction, an undefined origin, and the apply-origin
+    // tag, is excluded from R4, so a future bare doc.transact never leaks.
+    expect(isLocalHumanOrigin(ySyncPluginKey)).toBe(true);
+    expect(isLocalHumanOrigin(null)).toBe(false);
+    expect(isLocalHumanOrigin(undefined)).toBe(false);
     expect(isLocalHumanOrigin(COWORK_APPLY_ORIGIN)).toBe(false);
   });
 
