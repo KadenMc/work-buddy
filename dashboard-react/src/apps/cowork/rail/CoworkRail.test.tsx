@@ -2,6 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 
+import { DashboardHelpProvider } from "../../../dashboard/help";
 import { expectNoAccessibilityViolations } from "../../../test/setup";
 import { CoworkRail } from "./CoworkRail";
 import { InMemoryReviewProvider } from "./InMemoryReviewProvider";
@@ -52,6 +53,29 @@ describe("CoworkRail", () => {
     );
     expect(screen.getByRole("tab", { name: /Chat/ })).toBeVisible();
     await waitFor(() => expect(screen.getByText(S1_TLDR)).toBeVisible());
+  });
+
+  it("gives the Review and Chat tabs their own hover help in help mode", () => {
+    render(
+      <DashboardHelpProvider enabled>
+        <CoworkRail
+          documentId="demo-doc"
+          reviewProvider={new InMemoryReviewProvider()}
+          chatProvider={createDemoChatProvider("conv-1")}
+          conversationId="conv-1"
+          storage={new MemoryStorage()}
+        />
+      </DashboardHelpProvider>,
+    );
+    // Each tab is its own help target, so the two can be described separately.
+    expect(screen.getByRole("tab", { name: "Review" })).toHaveAttribute(
+      "data-help-target",
+      "true",
+    );
+    expect(screen.getByRole("tab", { name: /Chat/ })).toHaveAttribute(
+      "data-help-target",
+      "true",
+    );
   });
 
   it("mounts the house ChatPanel on the Chat tab and sends a message", async () => {

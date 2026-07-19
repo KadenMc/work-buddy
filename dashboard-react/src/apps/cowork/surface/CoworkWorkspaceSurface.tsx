@@ -27,6 +27,7 @@ import {
   isDirty,
   type ReviewRailData,
 } from "../rail";
+import { useResizableRail } from "./useResizableRail";
 import "./styles.css";
 
 const DRIFT_LABEL: Record<string, string> = {
@@ -44,12 +45,6 @@ const COWORK_EDITOR_HELP: HelpContent = {
   summary: "This is the editor pane.",
   details:
     "It binds a Tiptap editor to a local Y.Doc through the eight-point load-order contract, projects AI proposals as an ephemeral review layer, and materializes edits block by block.",
-};
-
-const COWORK_RAIL_HELP: HelpContent = {
-  summary: "Review the agent's work and chat about the document.",
-  details:
-    "The Review tab lists tracked edits, flags, and claims to accept or reject as a sitting. The Chat tab is the document conversation with the agent.",
 };
 
 const COWORK_HEALTH_HELP: HelpContent = {
@@ -144,18 +139,23 @@ function CoworkWorkspaceLayout({
   readonly railRef?: (element: HTMLElement | null) => void;
 }) {
   const helping = useDashboardHelpEnabled();
+  const { width, bodyRef, separatorProps } = useResizableRail();
   return (
     <main className={`wb-cowork${helping ? " is-helping" : ""}`} aria-label={label}>
       <CoworkHealthStrip health={health} />
-      <div className="wb-cowork__body">
+      <div className="wb-cowork__body" ref={bodyRef}>
         <HelpTarget content={COWORK_EDITOR_HELP} placement="top">
           <div className="wb-cowork__editor-region">{editor}</div>
         </HelpTarget>
-        <HelpTarget content={COWORK_RAIL_HELP} placement="left">
-          <aside className="wb-cowork__rail" aria-label="Review and chat" ref={railRef}>
-            {rail}
-          </aside>
-        </HelpTarget>
+        <div className="wb-cowork__rail-resizer" {...separatorProps} />
+        <aside
+          className="wb-cowork__rail"
+          aria-label="Review and chat"
+          ref={railRef}
+          style={{ inlineSize: `${width}px` }}
+        >
+          {rail}
+        </aside>
       </div>
     </main>
   );

@@ -77,12 +77,54 @@
 }
 
 .wb-cowork__rail {
-  flex: 0 0 20rem;
+  flex: 0 0 auto;
+  inline-size: 20rem;
   display: flex;
   flex-direction: column;
   min-block-size: 0;
-  border-inline-start: 1px solid var(--wb-color-border-default);
   background: var(--wb-color-surface-raised);
+}
+
+/*
+ * The grab strip between the editor and the rail. It is the divider (a 1px line
+ * that matches the old rail border at rest) and the resize handle, driven by
+ * useResizableRail through role="separator".
+ */
+.wb-cowork__rail-resizer {
+  flex: 0 0 auto;
+  inline-size: 7px;
+  align-self: stretch;
+  border: none;
+  padding: 0;
+  background: transparent;
+  cursor: col-resize;
+  position: relative;
+  touch-action: none;
+}
+
+.wb-cowork__rail-resizer::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 3px;
+  inline-size: 1px;
+  background: var(--wb-color-border-default);
+  transition: inline-size 120ms ease;
+}
+
+.wb-cowork__rail-resizer:hover::before,
+.wb-cowork__rail-resizer:focus-visible::before {
+  inline-size: 2px;
+}
+
+.wb-cowork__rail-resizer:focus-visible {
+  outline: none;
+  box-shadow: var(--wb-shadow-focus);
+}
+
+body.wb-cowork-resizing {
+  cursor: col-resize;
+  user-select: none;
 }
 
 .wb-cowork__rail-tabs {
@@ -229,7 +271,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .wb-cowork__rail-tab {
+  .wb-cowork__rail-tab,
+  .wb-cowork__rail-resizer::before {
     transition: none;
   }
 }
@@ -237,6 +280,9 @@
 @media (forced-colors: active) {
   .wb-cowork__drift {
     border: 1px solid CanvasText;
+  }
+  .wb-cowork__rail-resizer::before {
+    background: CanvasText;
   }
   .wb-cowork__rail-tab[aria-selected="true"] {
     border-color: Highlight;
