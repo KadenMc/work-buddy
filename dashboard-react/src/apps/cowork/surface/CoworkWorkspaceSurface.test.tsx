@@ -1,6 +1,6 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
   DashboardIntent,
@@ -28,11 +28,81 @@ const renderSurface = () =>
     </DashboardEventProvider>,
   );
 
-describe("CoworkWorkspaceSurface", () => {
-  it("renders the health strip, editor pane, and review rail regions", async () => {
+describe("CoworkWorkspaceSurface default (empty) mode", () => {
+  const originalUrl = window.location.href;
+  beforeEach(() => window.history.replaceState({}, "", "/app/cowork"));
+  afterEach(() => window.history.replaceState({}, "", originalUrl));
+
+  it("opens with honest empty states and no fabricated content", async () => {
     const { container } = renderSurface();
 
-    // Health strip reflects the coarse document session.
+    // Health strip: no document open (its existing null branch).
+    await waitFor(
+      () =>
+        expect(
+          within(screen.getByLabelText("Document health")).getByText(
+            "No document open",
+          ),
+        ).toBeVisible(),
+      { timeout: 10_000 },
+    );
+
+    // The editor mounts as a real, empty editable surface, with none of the old
+    // self-describing blurb and no demo document title.
+    await waitFor(
+      () => expect(container.querySelector(".ProseMirror")).not.toBeNull(),
+      { timeout: 10_000 },
+    );
+    expect(screen.queryByText(/This is the editor pane/)).toBeNull();
+    expect(screen.queryByText("Co-work demo document")).toBeNull();
+
+    // Review rail: no fabricated proposals, just an honest empty layer.
+    await waitFor(
+      () => expect(screen.getByText("Nothing to review here.")).toBeVisible(),
+      { timeout: 10_000 },
+    );
+    expect(
+      screen.queryByText("Add the vault content hash to the cache key."),
+    ).toBeNull();
+  }, 15_000);
+
+  it("shows an honest empty chat: a real composer, no scripted agent turn, no fake typing", async () => {
+    const { container } = renderSurface();
+    await waitFor(
+      () => expect(container.querySelector(".ProseMirror")).not.toBeNull(),
+      { timeout: 10_000 },
+    );
+
+    await userEvent.click(screen.getByRole("tab", { name: /Chat/ }));
+
+    // A real composer is present.
+    expect(screen.getByRole("textbox", { name: "Message" })).toBeVisible();
+    // No fabricated agent message, and no perpetual typing indicator.
+    expect(screen.queryByText(/I proposed a few tracked edits/)).toBeNull();
+    expect(container.querySelector(".wb-chat-typing")).toBeNull();
+  }, 15_000);
+
+  it("has no accessibility violations in its empty resting state", async () => {
+    const { container } = renderSurface();
+    await waitFor(
+      () => expect(container.querySelector(".ProseMirror")).not.toBeNull(),
+      { timeout: 10_000 },
+    );
+    await expectNoAccessibilityViolations(container);
+  }, 15_000);
+});
+
+describe("CoworkWorkspaceSurface demo fixture (?cowork_fixture=demo)", () => {
+  const originalUrl = window.location.href;
+  beforeEach(() =>
+    window.history.replaceState({}, "", "/app/cowork?cowork_fixture=demo"),
+  );
+  afterEach(() => window.history.replaceState({}, "", originalUrl));
+
+  it("renders the fabricated demo scene behind the explicit flag", async () => {
+    const { container } = renderSurface();
+
+    // Health strip reflects the demo document session.
     await waitFor(
       () => expect(screen.getByText("Co-work demo document")).toBeVisible(),
       { timeout: 10_000 },
@@ -40,22 +110,24 @@ describe("CoworkWorkspaceSurface", () => {
     expect(screen.getByText("In sync")).toBeVisible();
     expect(screen.getByText("0 open proposals")).toBeVisible();
 
-    // Rail tabs.
-    expect(screen.getByRole("tab", { name: "Review" })).toHaveAttribute(
-      "aria-selected",
-      "true",
-    );
-    expect(screen.getByRole("tab", { name: /Chat/ })).toBeVisible();
+    // The demo review rail fixture is present.
+    expect(
+      screen.getByText("Add the vault content hash to the cache key."),
+    ).toBeVisible();
 
-    // Editor pane mounts a live ProseMirror editor with its seeded content.
+    // The demo editor seeds coherent prose (scoped to the editor, since the rail also
+    // quotes these phrases), not the self-describing blurb.
     await waitFor(
       () => expect(container.querySelector(".ProseMirror")).not.toBeNull(),
       { timeout: 10_000 },
     );
-    expect(screen.getByText(/This is the editor pane/)).toBeVisible();
+    expect(
+      within(screen.getByLabelText("Editor")).getByText(/Context bundle cache/),
+    ).toBeVisible();
+    expect(screen.queryByText(/This is the editor pane/)).toBeNull();
   }, 15_000);
 
-  it("switches to the Chat tab", async () => {
+  it("keeps the scripted demo chat behind the flag", async () => {
     renderSurface();
     await waitFor(
       () => expect(screen.getByText("Co-work demo document")).toBeVisible(),
@@ -67,24 +139,11 @@ describe("CoworkWorkspaceSurface", () => {
       "aria-selected",
       "true",
     );
-    // The Chat tab now mounts the house chat panel seeded with the document agent's
-    // opening message, not the rail placeholder stub.
     await waitFor(
       () =>
-        expect(
-          screen.getByText(/I proposed a few tracked edits/),
-        ).toBeVisible(),
+        expect(screen.getByText(/I proposed a few tracked edits/)).toBeVisible(),
       { timeout: 10_000 },
     );
-  }, 15_000);
-
-  it("has no accessibility violations in its resting state", async () => {
-    const { container } = renderSurface();
-    await waitFor(
-      () => expect(container.querySelector(".ProseMirror")).not.toBeNull(),
-      { timeout: 10_000 },
-    );
-    await expectNoAccessibilityViolations(container);
   }, 15_000);
 });
 

@@ -56,11 +56,16 @@ function renderRail(preference: ThemePreference) {
 }
 
 describe("Co-work theme matrix", () => {
+  const originalUrl = window.location.href;
   beforeEach(() => {
     localStorage.clear();
+    // Drive the fabricated demo scene so axe covers the populated composed surface
+    // (health strip, seeded editor, and review rail with cards), not the empty default.
+    window.history.replaceState({}, "", "/app/cowork?cowork_fixture=demo");
   });
   afterEach(() => {
     localStorage.clear();
+    window.history.replaceState({}, "", originalUrl);
   });
 
   for (const preference of SCHEMES) {

@@ -72,6 +72,8 @@
   flex: 1 1 auto;
   min-inline-size: 0;
   overflow: auto;
+  padding: var(--wb-space-5);
+  background: var(--wb-color-surface-canvas);
 }
 
 .wb-cowork__rail {
@@ -148,15 +150,60 @@
   block-size: 100%;
 }
 
+/*
+ * The editable document surface. A bordered, padded, raised "page" on the canvas so it
+ * reads unmistakably as an editor rather than plain text, with an obvious focus state.
+ * Theme tokens only, no hardcoded colour.
+ */
 .wb-cowork-editor__surface {
-  padding: var(--wb-space-5) var(--wb-space-6);
-  min-block-size: 12rem;
-  outline: none;
+  box-sizing: border-box;
+  inline-size: 100%;
+  max-inline-size: 46rem;
+  margin-inline: auto;
+  min-block-size: 100%;
+  padding: var(--wb-space-6) var(--wb-space-7);
+  border: 1px solid var(--wb-color-border-default);
+  border-radius: var(--wb-radius-surface);
+  background: var(--wb-color-surface-raised);
   color: var(--wb-color-text-primary);
+  box-shadow: var(--wb-shadow-raised);
+  outline: none;
+  transition: border-color var(--wb-motion-duration-fast)
+    var(--wb-motion-easing-standard);
+}
+
+.wb-cowork-editor__surface:focus {
+  border-color: var(--wb-color-border-interactive);
 }
 
 .wb-cowork-editor__surface:focus-visible {
+  border-color: var(--wb-color-accent);
   box-shadow: var(--wb-shadow-focus);
+}
+
+/* Readable prose rhythm for seeded or typed content and its headings. */
+.wb-cowork-editor__surface > * {
+  margin-block: 0;
+}
+
+.wb-cowork-editor__surface > * + * {
+  margin-block-start: var(--wb-space-4);
+}
+
+.wb-cowork-editor__surface h1 {
+  font-size: var(--wb-font-size-xl);
+  font-weight: var(--wb-font-weight-semibold);
+  line-height: var(--wb-line-height-heading);
+}
+
+.wb-cowork-editor__surface h2 {
+  font-size: var(--wb-font-size-lg);
+  font-weight: var(--wb-font-weight-semibold);
+  line-height: var(--wb-line-height-heading);
+}
+
+.wb-cowork-editor__surface p {
+  line-height: var(--wb-line-height-relaxed);
 }
 
 /*

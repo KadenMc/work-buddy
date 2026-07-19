@@ -64,7 +64,8 @@
     }
 
     .wb-help-target,
-    .wb-view-host.is-helping .wb-help-target {
+    .wb-view-host.is-helping .wb-help-target,
+    .wb-cowork.is-helping .wb-help-target {
       outline: 2px dashed Highlight;
       box-shadow: none;
       animation: none;
