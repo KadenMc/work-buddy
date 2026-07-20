@@ -723,7 +723,7 @@ function StandardGridViewHost({
           {chromeSlots.contextualActions}
         </div>
       ) : null}
-      <div className="wb-view-toolbar" aria-label="View controls">
+      <div className="wb-view-toolbar" role="toolbar" aria-label="View controls">
         {providerLabel && renderChrome === undefined ? (
           <span className="wb-view-toolbar__provider">{providerLabel}</span>
         ) : null}
