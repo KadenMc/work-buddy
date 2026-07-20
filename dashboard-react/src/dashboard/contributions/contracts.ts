@@ -154,6 +154,18 @@ export interface WidgetDefinition {
   readonly multiplicity: WidgetMultiplicity;
   readonly rendererModuleId: WidgetModuleId;
   readonly theme: WidgetThemeDeclaration;
+  /**
+   * Marks this as an app-owned durable widget: one live element the dashboard
+   * keeps mounted across every grid remount, customize toggle, and interaction
+   * recovery, instead of re-hydrating it from a snapshot each time. Like a
+   * single-surface view, a durable widget owns the live local state below its
+   * frame and may read its own URL, listen to its own streams, and call its own
+   * routes directly, so the Widget Renderer Contract's URL, SSE, and direct-call
+   * exclusions do not apply to it. Every identity, trust, and theme invariant is
+   * still retained. A durable widget must be single_per_view and must declare no
+   * drafts, which validation enforces.
+   */
+  readonly durable?: boolean;
 }
 
 /** A stable purpose owned by a view, independent from its selected widget type. */

@@ -281,4 +281,77 @@ describe("validateAppContribution", () => {
       ]),
     );
   });
+
+  it("accepts a durable widget that is single_per_view with no drafts", () => {
+    const value = contribution();
+    const widget = value.widgetDefinitions[0]!;
+    const durable: AppContribution = {
+      ...value,
+      widgetDefinitions: [
+        { ...widget, durable: true, multiplicity: "single_per_view" },
+      ],
+    };
+    const codes = validate(durable).map((issue) => issue.code);
+    expect(codes).not.toContain("durable_widget_multiplicity");
+    expect(codes).not.toContain("durable_widget_drafts");
+  });
+
+  it("requires a durable widget to be single_per_view", () => {
+    const value = contribution();
+    const widget = value.widgetDefinitions[0]!;
+    const durable: AppContribution = {
+      ...value,
+      widgetDefinitions: [
+        { ...widget, durable: true, multiplicity: "multiple_per_view" },
+      ],
+    };
+    expect(validate(durable)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "durable_widget_multiplicity",
+          path: "widgetDefinitions[0].multiplicity",
+        }),
+      ]),
+    );
+  });
+
+  it("forbids a durable widget from declaring host-owned drafts", () => {
+    const value = contribution();
+    const widget = value.widgetDefinitions[0]!;
+    const durable: AppContribution = {
+      ...value,
+      widgetDefinitions: [
+        {
+          ...widget,
+          durable: true,
+          multiplicity: "single_per_view",
+          drafts: [
+            {
+              draftName: "body",
+              schema: { schemaId: "example.focus.draft", version: 1 },
+              persistence: "session",
+              sensitivity: "ordinary",
+              maxBytes: 4096,
+              clearPolicy: "confirm",
+              scope: { kind: "view" },
+            },
+          ],
+        },
+      ],
+    };
+    expect(validate(durable)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "durable_widget_drafts",
+          path: "widgetDefinitions[0].drafts",
+        }),
+      ]),
+    );
+  });
+
+  it("leaves an ordinary non-durable widget free of the durable rules", () => {
+    const codes = validate(contribution()).map((issue) => issue.code);
+    expect(codes).not.toContain("durable_widget_multiplicity");
+    expect(codes).not.toContain("durable_widget_drafts");
+  });
 });

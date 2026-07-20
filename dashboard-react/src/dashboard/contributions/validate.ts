@@ -576,6 +576,26 @@ const validateWidgetDefinition = (
   validateWidgetSize(widget, path, issues);
   issues.push(...validateWidgetThemeDeclaration(widget.theme, `${path}.theme`));
 
+  // A durable widget is a single keep-alive instance, so more than one per view
+  // is meaningless and it cannot use the host-owned draft machinery, which would
+  // re-key and remount the very element the durable lifecycle keeps alive.
+  if (widget.durable === true && widget.multiplicity !== "single_per_view") {
+    addIssue(
+      issues,
+      "durable_widget_multiplicity",
+      `${path}.multiplicity`,
+      "a durable widget is one keep-alive instance and must be single_per_view",
+    );
+  }
+  if (widget.durable === true && (widget.drafts?.length ?? 0) > 0) {
+    addIssue(
+      issues,
+      "durable_widget_drafts",
+      `${path}.drafts`,
+      "a durable widget keeps its own live state and must not declare drafts",
+    );
+  }
+
   const module = modules.get(widget.rendererModuleId);
   if (module === undefined) {
     addIssue(
