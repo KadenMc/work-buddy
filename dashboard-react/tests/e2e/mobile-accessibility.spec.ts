@@ -11,7 +11,9 @@ test("mobile uses canonical one-column DOM and visual order without mounting RGL
   await expect(page.locator(".wb-dashboard-mobile-stack")).toBeVisible();
   await expect(page.locator(".react-grid-layout")).toHaveCount(0);
   await expect(page.locator(".wb-widget-drag-handle")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Customize view" })).toHaveCount(0);
+  // The Customize entry is a navbar control now. It stays mounted at every width and
+  // self-disables on this narrow, hover-less viewport rather than being removed.
+  await expect(page.getByRole("button", { name: "Customize view" })).toBeDisabled();
 
   const titles = await page
     .locator(

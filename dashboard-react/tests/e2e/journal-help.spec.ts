@@ -77,7 +77,12 @@ test("Hover help explains view purposes and primitives without permanent copy", 
   await page.keyboard.press("Escape");
 
   await beginCustomize(page);
-  await expect(page.getByRole("button", { name: "Hover help" })).toHaveCount(0);
+  // Hover help is a navbar control now, so it stays present through a customize session.
+  // Entering customize turns help off, so the toggle reads unpressed and every HelpTarget
+  // drops back to its plain child, which is why no help affordance remains to reveal.
+  const helpToggle = page.getByRole("button", { name: "Hover help" });
+  await expect(helpToggle).toBeVisible();
+  await expect(helpToggle).toHaveAttribute("aria-pressed", "false");
   await expect(widget(page, "Quick Capture").locator(".wb-help-target")).toHaveCount(0);
   await page.getByRole("button", { name: "Cancel" }).click();
   await expect(page.getByRole("button", { name: "Hover help" })).toHaveAttribute(
