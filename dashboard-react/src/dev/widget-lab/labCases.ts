@@ -105,7 +105,13 @@ function makeCase(
 }
 
 export function listReusableLabWidgets(): readonly RegisteredWidget[] {
-  return dashboardRegistry.listWidgets();
+  // Durable widgets (for example the Co-work workspace card) are one app-owned keep-alive
+  // instance with their own live state, not reusable snapshot-hydrated widgets. They carry
+  // no deterministic Journal binding, so `inputForType` would throw for them. The lab
+  // renders the durable Co-work states in its own section (coworkLabCases) instead.
+  return dashboardRegistry
+    .listWidgets()
+    .filter((widget) => widget.definition.durable !== true);
 }
 
 export function buildModeCases(): readonly WidgetLabCase[] {
