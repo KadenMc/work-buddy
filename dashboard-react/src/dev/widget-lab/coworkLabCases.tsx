@@ -1,10 +1,11 @@
 /**
- * Co-work states for the Widget Lab. The Co-work surface is a single-surface view,
- * not a registered grid widget, so it cannot ride the WidgetHost cases the rest of
- * the lab builds. This section renders the review-rail family directly at the
- * states a reviewer needs to eyeball: each card type, each verb group, the
- * stale-base disabled state, and the narrow grouped fallback. It draws on the same
- * shipped demo scene the rail tests use, so the lab and the tests never drift.
+ * Co-work states for the Widget Lab. The Co-work workspace is one composite durable
+ * widget, which the reusable-widget cases deliberately skip: a durable widget is a single
+ * app-owned keep-alive instance with its own live state, not a snapshot-hydrated reusable
+ * type. This section renders the review-rail family directly at the states a reviewer needs
+ * to eyeball: each card type, each verb group, the stale-base disabled state, and the
+ * narrow grouped fallback. It draws on the same shipped demo scene the rail tests use, so
+ * the lab and the tests never drift.
  */
 
 import { useState, type ReactNode } from "react";

@@ -9,6 +9,7 @@ import {
 
 import Header from "../components/Header";
 import TabBar from "../components/TabBar";
+import { CustomizeModeProvider } from "../dashboard/customize";
 import { HelpModeProvider } from "../dashboard/help";
 import { SettingsRegistryProvider } from "../settings";
 import type { DashboardRouteDefinition } from "./routes";
@@ -176,7 +177,9 @@ export default function DashboardApp(props: DashboardAppProps) {
     <BrowserRouter basename="/app">
       <SettingsRegistryProvider>
         <HelpModeProvider>
-          <DashboardShell {...props} />
+          <CustomizeModeProvider>
+            <DashboardShell {...props} />
+          </CustomizeModeProvider>
         </HelpModeProvider>
       </SettingsRegistryProvider>
     </BrowserRouter>

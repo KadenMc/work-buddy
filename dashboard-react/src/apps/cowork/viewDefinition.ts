@@ -1,69 +1,33 @@
-import type {
-  SurfaceRegionDefinition,
-  ViewDefinition,
-} from "../../dashboard/contributions/contracts";
+import type { ViewDefinition } from "../../dashboard/contributions/contracts";
 import type { WidgetThemeDeclaration } from "../../dashboard/contributions/themeContract";
 import {
   COWORK_APP_ID,
-  COWORK_REGION_IDS,
-  COWORK_ROLE_IDS,
   COWORK_ROUTE,
   COWORK_VIEW_ID,
+  COWORK_WORKSPACE_INSTANCE_ID,
+  COWORK_WORKSPACE_ROLE_ID,
+  COWORK_WORKSPACE_SLOT_ID,
+  COWORK_WORKSPACE_TYPE_ID,
 } from "./bindings";
 
 /**
- * Theme Contract v1 proof shared by all three regions (section 5.4): each declares
- * full light, dark, forced-colors, and reduced-motion support and styles through
- * semantic tokens only. A redundant non-color encoding for every trust state lives in
- * the region components, not in this manifest.
+ * Theme Contract v1 proof for the composite workspace card (section 5.4): full light,
+ * dark, forced-colors, and reduced-motion support, styled through semantic tokens only. A
+ * redundant non-color encoding for every trust state lives in the region components, not in
+ * this manifest. The three regions the card composes share this one declaration.
  */
-const COWORK_REGION_THEME = {
+export const COWORK_WORKSPACE_THEME = {
   contractVersion: 1,
   conformance: "standard",
   supports: ["light", "dark", "forced-colors", "reduced-motion"],
   styling: "semantic-tokens",
 } as const satisfies WidgetThemeDeclaration;
 
-const COWORK_REGIONS: readonly SurfaceRegionDefinition[] = [
-  {
-    regionId: COWORK_REGION_IDS.editor,
-    role: COWORK_ROLE_IDS.editor,
-    presence: "required",
-    help: {
-      summary: "Edit the document with tracked AI suggestions in view.",
-      details:
-        "The editor pane owns the live document and its suggestion decorations. It projects open proposals as an ephemeral review layer over the human-written text and materializes edits block by block.",
-    },
-    theme: COWORK_REGION_THEME,
-  },
-  {
-    regionId: COWORK_REGION_IDS.reviewRail,
-    role: COWORK_ROLE_IDS.reviewRail,
-    presence: "required",
-    help: {
-      summary: "Review AI proposals and chat about the document beside it.",
-      details:
-        "The right rail carries a Review tab of aligned proposal cards and a Chat tab for the document conversation. It reads from the ledger and never mutates the editor directly.",
-    },
-    theme: COWORK_REGION_THEME,
-  },
-  {
-    regionId: COWORK_REGION_IDS.healthStrip,
-    role: COWORK_ROLE_IDS.healthStrip,
-    presence: "required",
-    help: {
-      summary: "See the document name, drift state, and open-proposal count.",
-      details:
-        "The header health strip is read-only chrome. It reflects the document identity, whether the file has drifted from its last materialized form, and how many proposals are open.",
-    },
-    theme: COWORK_REGION_THEME,
-  },
-];
-
 /**
- * The `wb.cowork.workspace` single-surface view (section 5). Grid slot and order fields
- * are empty by contract: the App renderer composes the three regions itself inside one
- * shared React tree rather than placing them on the widget grid.
+ * The `wb.cowork.workspace` view (section 5). A standard 24-column grid that places one
+ * composite durable widget: the workspace card carries the editor, the review rail, and the
+ * health strip inside one live React tree. The slot is required and locked, so the card is
+ * never removed and the shared live session is never split across the grid.
  */
 export const COWORK_VIEW_DEFINITION = {
   viewId: COWORK_VIEW_ID,
@@ -77,10 +41,26 @@ export const COWORK_VIEW_DEFINITION = {
   },
   primaryJob:
     "Co-author a document with AI proposals the human reviews, one decision at a time.",
-  layoutKind: "single-surface",
   grid: { columns: 24 },
-  defaultSlots: [],
-  readingOrder: [],
-  mobileOrder: [],
-  surface: { regions: COWORK_REGIONS },
+  defaultSlots: [
+    {
+      slotId: COWORK_WORKSPACE_SLOT_ID,
+      defaultInstanceId: COWORK_WORKSPACE_INSTANCE_ID,
+      requiredRole: COWORK_WORKSPACE_ROLE_ID,
+      defaultWidgetTypeId: COWORK_WORKSPACE_TYPE_ID,
+      presence: "required",
+      help: {
+        summary: "Co-author the document with its review rail in one place.",
+        details:
+          "This required Co-work placement carries the editor, the aligned review rail, and the header health strip in one live workspace. It keeps the document, its tracked AI proposals, and the document conversation on one shared session so a decision made in the rail lands in the same editor beside it.",
+      },
+      lockedReason:
+        "Without the workspace card, Co-work cannot co-author a document with its review rail on one shared session.",
+      defaultSettings: {},
+      defaultLayout: { x: 0, y: 0, w: 24, h: 20 },
+      allowedSubstitution: { minimumDefinitionVersion: 1 },
+    },
+  ],
+  readingOrder: [COWORK_WORKSPACE_SLOT_ID],
+  mobileOrder: [COWORK_WORKSPACE_SLOT_ID],
 } as const satisfies ViewDefinition;

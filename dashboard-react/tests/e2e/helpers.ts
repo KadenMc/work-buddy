@@ -23,7 +23,11 @@ export function widget(page: Page, name: string): Locator {
 }
 
 export async function beginCustomize(page: Page): Promise<void> {
-  await page.getByRole("button", { name: "Customize view" }).click();
+  // The navbar entry enables once a standard-grid host registers, so guard on enabled
+  // before the click for a clearer failure than a swallowed actionability timeout.
+  const toggle = page.getByRole("button", { name: "Customize view" });
+  await expect(toggle).toBeEnabled();
+  await toggle.click();
   await expect(page.locator(".wb-view-host")).toHaveClass(/is-customizing/);
 }
 

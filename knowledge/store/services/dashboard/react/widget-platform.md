@@ -24,6 +24,8 @@ entry_points:
 dev_notes: |-
   The desktop grid engine is private behind `ReactGridLayoutAdapter`; persisted personalization remains library-neutral. The desktop layout uses preserved outer gaps, collision prevention, explicit tidy behavior, and all-edge resize affordances. Mobile renders normal document flow from a persisted canonical order.
 
+  Durable widgets live in `dashboard-react/src/dashboard/widgets/durable/`: a keep-alive host above the grid owns one permanent wrapper per instance, portals the live `WidgetHost` in once, and light placeholder cells re-home the wrapper with appendChild when the grid remounts. The durable path pins `interactionMode` to operate (the draft-scope re-key is also structurally unreachable because durable forbids drafts) and maps a failed re-hydration with a previous good snapshot to a stale banner instead of unmounting. The navbar entry seam is `dashboard-react/src/dashboard/customize/` (a registration-handle controller; only the grid view host registers). Validation enforces durable implies single-instance and no drafts. Contract prose lives in `dashboard-react/ARCHITECTURE.md`.
+
   Draft repositories use schema-versioned records, compare-and-swap revisions, retention metadata, and cross-tab signaling. Production uses IndexedDB; tests inject in-memory repositories. Arrange and Preview safety is enforced by the host from declared intent effects, not by inspecting DOM elements or HTTP methods.
 ---
 
@@ -55,7 +57,7 @@ Renderers receive typed UI input and emit declared intents. Local presentation s
 
 ## Layout and personalization
 
-Dashboard Core owns layout editing, constraint enforcement, collision feedback, reset, undo/redo, and portable personalization patches. The grid library remains an implementation detail rather than part of persisted view state.
+Dashboard Core owns layout editing, constraint enforcement, collision feedback, reset, undo/redo, and portable personalization patches. The grid library remains an implementation detail rather than part of persisted view state. The Customize view entry control lives in the app shell navbar and activates when the mounted view registers a customize session, so grid views everywhere share one entry point while other surfaces leave it disabled.
 
 Desktop customization uses the grid. Mobile uses document flow and drag-reordering of a canonical sequence. Responsive changes may reflow or scroll content, but they must not silently remove primary controls or hide that a capability exists.
 
@@ -66,6 +68,12 @@ Desktop customization uses the grid. Mobile uses document flow and drag-reorderi
 - **Preview** freezes layout, forks drafts, permits local interaction, and simulates or blocks outward effects.
 
 Canceling Preview discards the forked preview state; it never claims to roll back an effect that already reached another system.
+
+App-owned durable widgets are the exception to arrange inertness. They stay live while the view is customized, which is their purpose.
+
+## App-owned durable widgets
+
+A widget definition may declare itself durable. Dashboard Core then keeps its renderer mounted for the life of the view in a keep-alive host above the grid and re-homes the same DOM into the widget's cell across layout remounts, so live client state such as an editor's document, cursor, and scroll survives customize toggles, interaction recovery, and the mobile switch. A durable widget is one cohesive App-owned surface. Like a single-surface view it may hold live state and talk to its own routes and the event stream directly, while every identity, input, and dispatch invariant is retained: its snapshot input stays JSON, it emits declared intents, and it never receives the provider or mutates a sibling. A durable widget declares one instance per view and no host drafts. The Co-work workspace card is the first durable widget.
 
 ## Host-owned working state and interaction surfaces
 

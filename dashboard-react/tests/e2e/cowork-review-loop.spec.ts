@@ -52,7 +52,10 @@ test("walks a sitting end to end in the browser", async ({ page }) => {
 test("exposes the three regions and one main landmark", async ({ page }) => {
   await openCowork(page);
 
+  // The grid host owns the single main. The workspace card is one durable widget, so its
+  // three regions compose inside a WidgetFrame section titled "Co-work workspace".
   await expect(page.getByRole("main")).toHaveCount(1);
+  await expect(page.getByRole("region", { name: "Co-work workspace" })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Review" })).toHaveAttribute(
     "aria-selected",
     "true",

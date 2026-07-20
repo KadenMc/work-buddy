@@ -15,6 +15,17 @@
   font-family: var(--wb-font-sans);
 }
 
+/*
+ * On mobile the grid falls back to a content-sized vertical stack, so the workspace card has
+ * no cell height to fill. Give it a fixed block-size there so the editor and rail stay usable
+ * (a cramped but honest v1). The desktop grid keeps sizing the card through the 100% chain.
+ */
+@media (max-width: 767px) {
+  .wb-cowork {
+    block-size: 32rem;
+  }
+}
+
 .wb-cowork__health {
   display: flex;
   align-items: center;

@@ -118,6 +118,11 @@ test("default dark mobile-order editor visual baseline", async ({ page }) => {
   await page.getByRole("button", { name: "Customize view" }).click();
   await page.getByRole("button", { name: "Mobile order" }).click();
   await expect(page.getByRole("grid", { name: "Mobile widget order" })).toBeVisible();
+  // Beginning customize remounts every non-durable widget, which briefly shows a
+  // draft-restore loader. Let the capture widget settle so the shot baselines its
+  // resolved content rather than the transient state.
+  await expect(page.getByText("Restoring draft")).toHaveCount(0);
+  await expect(page.getByRole("textbox", { name: "Capture text" })).toBeVisible();
 
   await expect(page).toHaveScreenshot("mobile-order-editor-dark-desktop.png", {
     animations: "disabled",

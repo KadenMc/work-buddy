@@ -9,16 +9,17 @@ export const COWORK_SECOND_PROPOSAL =
   "Name the exactness versus hashing-cost tradeoff.";
 
 /**
- * Open the Co-work surface and wait for the review rail to hydrate. The surface is
- * demo-backed in this tree (the live R2 and conversation transports wire in behind
- * the same seams later), so the walk below drives the in-memory review provider.
+ * Open the Co-work surface in its demo fixture and wait for the review rail to hydrate.
+ * The honest default is an empty review layer, so the specs opt into the fabricated demo
+ * scene with the cowork_fixture=demo query and drive the in-memory review provider. The
+ * live R2 and conversation transports wire in behind the same seams later.
  */
 export async function openCowork(page: Page): Promise<void> {
-  // The Co-work chunk (Tiptap, Yjs, the suggestion engine) is lazy-loaded, so the
-  // first hit on a cold dev server compiles a large graph. Absorb that in the
-  // wait budget rather than racing the default expect timeout.
+  // The Co-work chunk (Tiptap, Yjs, the suggestion engine) is lazy-loaded, so the first
+  // hit pulls a large graph. Absorb that in the wait budget rather than racing the default
+  // expect timeout.
   test.setTimeout(120_000);
-  await page.goto("/app/cowork", { waitUntil: "domcontentloaded" });
+  await page.goto("/app/cowork?cowork_fixture=demo", { waitUntil: "domcontentloaded" });
   await expect(page.getByRole("tab", { name: "Review" })).toBeVisible({
     timeout: 60_000,
   });

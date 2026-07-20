@@ -9,18 +9,24 @@
 
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import {
+  asViewId,
+  asWidgetInstanceId,
+  type WidgetPresentationContext,
+} from "../../../dashboard/contributions/contracts";
 import { DashboardEventProvider } from "../../../dashboard/events/DashboardEventProvider";
 import { ThemeProvider } from "../../../theme/ThemeProvider";
 import type { ThemePreference } from "../../../theme/contracts";
+import { fallbackCanvasTheme } from "../../../theme/resolveTheme";
 import { expectNoAccessibilityViolations } from "../../../test/setup";
 import { CoworkRail } from "../rail";
 import { InMemoryReviewProvider } from "../rail";
 import { createDemoChatProvider } from "../rail";
-import { InMemoryCoworkProvider } from "../providers/InMemoryCoworkProvider";
-import { COWORK_VIEW_DEFINITION } from "../viewDefinition";
-import { CoworkWorkspaceSurface } from "../surface/CoworkWorkspaceSurface";
+import type { CoworkDocumentSummary, CoworkWorkspaceInput } from "../contracts";
+import CoworkWorkspaceWidget from "../widget/CoworkWorkspaceWidget";
 
 const SCHEMES: readonly ThemePreference[] = [
   { scheme: "light", skinId: "wb.default" },
@@ -29,14 +35,65 @@ const SCHEMES: readonly ThemePreference[] = [
 
 const S1_TLDR = "Add the vault content hash to the cache key.";
 
+const DEMO_DOCUMENT: CoworkDocumentSummary = {
+  documentId: "demo-doc",
+  path: "docs/demo/co-work-demo.md",
+  title: "Co-work demo document",
+  profile: "co_authored",
+  driftState: "clean",
+  openProposalCount: 0,
+  openFlagCount: 0,
+};
+
+const DEMO_INPUT: CoworkWorkspaceInput = {
+  document: DEMO_DOCUMENT,
+  sessionQuality: "demo",
+};
+
+const presentation: WidgetPresentationContext = {
+  instanceId: asWidgetInstanceId("wb-cowork:workspace"),
+  viewId: asViewId("wb.cowork.workspace"),
+  width: 1280,
+  height: 720,
+  sizeMode: "expanded",
+  interactionMode: "operate",
+  editing: false,
+  theme: {
+    contractVersion: 1,
+    preference: { scheme: "light", skinId: "wb.default" },
+    resolvedScheme: "light",
+    skin: { id: "wb.default", version: 2, publisherAppId: "wb.core" },
+    accessibility: {
+      forcedColors: false,
+      reducedMotion: false,
+      reducedTransparency: false,
+    },
+  },
+  getCanvasTheme: () => fallbackCanvasTheme("light"),
+};
+
+const noopEmit: ComponentProps<typeof CoworkWorkspaceWidget>["emit"] = async (
+  intent,
+) => ({ intent_id: intent.intent_id, status: "accepted" });
+
+/**
+ * The workspace card is a grid widget now, so the theme matrix drives its renderer with the
+ * demo input under the shared ThemeProvider. The single `<main>` stands in for the grid host
+ * that owns the one page landmark, matching how the WidgetFrame wraps the card in
+ * production. The scheme is still forced through the ThemeProvider, so the same themed tree
+ * the dashboard mounts is the tree under axe.
+ */
 function renderSurface(preference: ThemePreference) {
   return render(
     <ThemeProvider initialPreference={preference}>
       <DashboardEventProvider>
-        <CoworkWorkspaceSurface
-          definition={COWORK_VIEW_DEFINITION}
-          provider={new InMemoryCoworkProvider()}
-        />
+        <main>
+          <CoworkWorkspaceWidget
+            input={DEMO_INPUT}
+            emit={noopEmit}
+            presentation={presentation}
+          />
+        </main>
       </DashboardEventProvider>
     </ThemeProvider>,
   );

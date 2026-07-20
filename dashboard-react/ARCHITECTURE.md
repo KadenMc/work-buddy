@@ -195,6 +195,22 @@ one-column compact DOM flow from the persisted canonical mobile order, so visual
 focus, and assistive-technology order agree. Desktop Customize mode exposes explicit
 Earlier/Later controls for editing this mobile order without relying on drag geometry.
 
+### Durable widgets
+
+Most widgets re-hydrate from their latest snapshot whenever the grid remounts, which a
+customize toggle or an interaction-recovery pass triggers. An app-owned **durable** widget
+(`durable: true` on its `WidgetDefinition`) is the exception. A keep-alive host above the grid
+keeps its one live element mounted across every such remount, and light placeholder cells
+re-home that element as the grid rebuilds, so its live local state, real DOM nodes, and focus
+survive intact. Like a single-surface view, a durable widget owns everything below its frame
+and may read its own URL, listen to its own streams, and call its own routes directly, so the
+Widget Renderer Contract's URL, SSE, and direct-call exclusions do not apply to it. Every
+identity, trust, and theme invariant still holds, and validation requires a durable widget to
+be `single_per_view` with no drafts. It is a generic capability keyed off `definition.durable`,
+with no widget-specific branch in `ViewHost`, `WidgetHost`, layout, or personalization code. A
+durable card can occupy a content-sized container on a narrow viewport, so its renderer must
+tolerate one. The Co-work workspace is the first durable widget.
+
 ## Theme Contract v1
 
 Theme is a two-axis choice:
@@ -245,7 +261,10 @@ replacement of allowlisted semantic values—not arbitrary CSS or layout overrid
    and a lazy WidgetModule from the owning App contribution.
 2. Keep renderer models presentation-oriented. Receive typed input and emit declared UI
    intents; place fetching, permission/consent decisions, and domain behavior in the
-   owning ViewProvider/App boundary.
+   owning ViewProvider/App boundary. Reach for a `durable` widget only when a renderer must
+   keep live local state that no snapshot can restore, such as a collaborative editor
+   session, accepting the keep-alive contract with its `single_per_view` and no-drafts
+   constraints in return.
 3. In the hosting ViewDefinition, add a stable local slot ID, required role, presence
    policy, default type/settings/bindings/layout, and explicit reading/mobile order.
 4. Register publisher contributions before views that select their types. Do not add
@@ -268,7 +287,9 @@ src/dashboard/contributions/     JSON-compatible contracts, validation, registry
 src/dashboard/providers/         Dashboard View API implementations/helpers
 src/dashboard/events/            singleton SSE normalization and reconciliation signals
 src/dashboard/views/             provider session and generic view composition
+src/dashboard/customize/         cross-view customize-mode controller and the navbar entry toggle
 src/dashboard/widgets/           generic host, frame, states, menus, catalog/replacement
+src/dashboard/widgets/durable/   keep-alive host, durable cell, and context for durable widgets
 src/dashboard/layout/            Work Buddy layout model, operations, RGL adapter, mobile order
 src/dashboard/personalization/   portable patches, reducer/edit history, repositories/migrations
 src/dashboard/accessibility/     host announcer and focus helpers
