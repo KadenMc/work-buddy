@@ -52,7 +52,11 @@ export default function CoworkWorkspaceWidget({
     );
   }
 
-  if (mode === "demo") {
+  // Dev-only fixture entry (see resolveFixtureMode). The import.meta.env.DEV guard makes the
+  // CoworkDemoWorkspace composition and its seed statically unreachable in a production build,
+  // so the bundler tree-shakes them out. The honest empty default and live are the only
+  // production modes.
+  if (import.meta.env.DEV && mode === "demo") {
     return <CoworkDemoWorkspace model={model} />;
   }
 

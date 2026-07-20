@@ -13,6 +13,7 @@ import { fallbackCanvasTheme } from "../../../theme/resolveTheme";
 import { expectNoAccessibilityViolations } from "../../../test/setup";
 import type { CoworkDocumentSummary, CoworkWorkspaceInput } from "../contracts";
 import CoworkWorkspaceWidget from "../widget/CoworkWorkspaceWidget";
+import { resolveFixtureMode } from "./CoworkWorkspaceSurface";
 
 /**
  * The composite workspace card is a normal grid widget now, so the tests drive its renderer
@@ -138,7 +139,12 @@ describe("CoworkWorkspaceWidget default (empty) mode", () => {
   }, 15_000);
 });
 
-describe("CoworkWorkspaceWidget demo fixture (?cowork_fixture=demo)", () => {
+// The demo scene is no longer a product surface (Ruling 1): it is a dev-only fixture entry the
+// e2e suites drive against the dev server, gated by import.meta.env.DEV so production tree-shakes
+// it. The unit environment runs with DEV true, so ?cowork_fixture=demo still composes the scene
+// here exactly as it does for the dev server. The production gate is proven in resolveFixtureMode
+// below.
+describe("CoworkWorkspaceWidget dev-only demo fixture entry (?cowork_fixture=demo)", () => {
   const originalUrl = window.location.href;
   beforeEach(() =>
     window.history.replaceState({}, "", "/app/cowork?cowork_fixture=demo"),
@@ -150,7 +156,7 @@ describe("CoworkWorkspaceWidget demo fixture (?cowork_fixture=demo)", () => {
     sessionQuality: "demo",
   };
 
-  it("renders the fabricated demo scene behind the explicit flag", async () => {
+  it("composes the fixture scene behind the dev-only entry", async () => {
     const { container } = renderWorkspace(demoInput);
 
     // Health strip reflects the demo document session.
@@ -178,7 +184,7 @@ describe("CoworkWorkspaceWidget demo fixture (?cowork_fixture=demo)", () => {
     expect(screen.queryByText(/This is the editor pane/)).toBeNull();
   }, 15_000);
 
-  it("keeps the scripted demo chat behind the flag", async () => {
+  it("keeps the scripted demo chat behind the dev-only entry", async () => {
     renderWorkspace(demoInput);
     await waitFor(
       () => expect(screen.getByText("Co-work demo document")).toBeVisible(),
@@ -321,4 +327,29 @@ describe("CoworkWorkspaceWidget live mode", () => {
     // The health strip reflects the live pull's open-proposal count.
     expect(screen.getByText("1 open proposal")).toBeVisible();
   }, 15_000);
+});
+
+describe("resolveFixtureMode: demo is dev-only, empty and live are the product modes", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("resolves ?cowork_fixture=demo to the demo scene when DEV is true", () => {
+    vi.stubEnv("DEV", true);
+    expect(resolveFixtureMode("demo", "demo-doc", undefined, "demo")).toBe("demo");
+  });
+
+  it("falls back to the honest empty default for ?cowork_fixture=demo in a production build", () => {
+    // import.meta.env.DEV is statically false in production, so the demo entry is scrapped and
+    // the CoworkDemoWorkspace it would select is tree-shaken out.
+    vi.stubEnv("DEV", false);
+    expect(resolveFixtureMode("demo", "demo-doc", undefined, "demo")).toBe("empty");
+  });
+
+  it("resolves a store-scoped session to live regardless of the demo gate", () => {
+    vi.stubEnv("DEV", false);
+    expect(resolveFixtureMode("complete", "live-doc", "live-store", null)).toBe("live");
+  });
+
+  it("defaults to the honest empty state with no override and no store id", () => {
+    expect(resolveFixtureMode("demo", undefined, undefined, null)).toBe("empty");
+  });
 });

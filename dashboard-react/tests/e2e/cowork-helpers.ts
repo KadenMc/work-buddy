@@ -28,6 +28,162 @@ export async function openCowork(page: Page): Promise<void> {
   });
 }
 
+/**
+ * Open the Co-work surface on its honest empty default route, no demo fixture and no live store,
+ * and wait for the empty workspace to hydrate. The editor textbox only mounts once the local
+ * Y.Doc has hydrated from its per-document transport, so it is the reliable ready signal, and the
+ * Review tab confirms the rail mounted beside it.
+ */
+export async function openCoworkEmpty(page: Page): Promise<void> {
+  // The Co-work chunk (Tiptap, Yjs, the suggestion engine) is lazy-loaded, so absorb the first
+  // cold compile in the wait budget rather than racing the default expect timeout.
+  test.setTimeout(120_000);
+  await page.goto("/app/cowork", { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("textbox", { name: "Document editor" })).toBeVisible({
+    timeout: 60_000,
+  });
+  await expect(page.getByRole("tab", { name: "Review" })).toBeVisible({
+    timeout: 60_000,
+  });
+}
+
+/** The IndexedDB database, object store, and key prefix the local Yjs transport persists into. */
+const COWORK_YDOC_DATABASE = "work-buddy-cowork";
+const COWORK_YDOC_STORE = "cowork-ydoc";
+const COWORK_YDOC_KEY_PREFIX = "wb.cowork.ydoc.";
+
+/**
+ * Wipe the browser storage the empty Co-work workspace persists into, so a reload round-trip
+ * starts from a pristine empty document every run. Playwright already isolates storage per test,
+ * so this is a determinism guard rather than cross-test cleanup. It reaches the app origin first
+ * because the storage APIs are origin-scoped, clears localStorage and sessionStorage (the chat and
+ * rail drafts), then empties the Yjs document object store in place. A clear runs as an ordinary
+ * transaction that completes before this call returns, so it leaves no connection-blocked
+ * deleteDatabase pending to fire mid-test and wipe a just-persisted edit. The whole step is
+ * time-bounded, so a storage hiccup can never hang the reset.
+ */
+export async function resetCoworkStorage(page: Page): Promise<void> {
+  await page.goto("/app/cowork", { waitUntil: "domcontentloaded" });
+  await page.evaluate(
+    async ({ database, store }) => {
+      try {
+        window.localStorage.clear();
+        window.sessionStorage.clear();
+      } catch {
+        // A storage-blocked context has nothing to clear.
+      }
+      await new Promise<void>((resolve) => {
+        let settled = false;
+        const done = (): void => {
+          if (settled) return;
+          settled = true;
+          resolve();
+        };
+        try {
+          const open = indexedDB.open(database, 1);
+          open.onupgradeneeded = () => {
+            if (!open.result.objectStoreNames.contains(store)) {
+              open.result.createObjectStore(store, { keyPath: "key" });
+            }
+          };
+          open.onsuccess = () => {
+            const db = open.result;
+            if (!db.objectStoreNames.contains(store)) {
+              db.close();
+              done();
+              return;
+            }
+            const transaction = db.transaction(store, "readwrite");
+            transaction.objectStore(store).clear();
+            const finish = (): void => {
+              db.close();
+              done();
+            };
+            transaction.oncomplete = finish;
+            transaction.onerror = finish;
+            transaction.onabort = finish;
+          };
+          open.onerror = done;
+          open.onblocked = done;
+        } catch {
+          done();
+        }
+        window.setTimeout(done, 2_000);
+      });
+    },
+    { database: COWORK_YDOC_DATABASE, store: COWORK_YDOC_STORE },
+  );
+}
+
+/**
+ * Wait until the editor content for a document has been folded into the durable compacted
+ * snapshot, the form a reload reliably rehydrates from. The transport writes each keystroke to
+ * the append log immediately, but a brand-new document's log does not by itself carry the initial
+ * editor structure, so the reload-safe form is the snapshot the editor's idle compaction produces.
+ * Polling for that snapshot keeps the reload round-trip deterministic rather than racing the
+ * compaction debounce.
+ */
+export async function waitForCoworkEditorDurable(
+  page: Page,
+  documentId: string,
+): Promise<void> {
+  const recordKey = `${COWORK_YDOC_KEY_PREFIX}${documentId}`;
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          ({ database, store, key }) =>
+            new Promise<boolean>((resolve) => {
+              let settled = false;
+              const done = (value: boolean): void => {
+                if (settled) return;
+                settled = true;
+                resolve(value);
+              };
+              try {
+                const open = indexedDB.open(database, 1);
+                open.onupgradeneeded = () => {
+                  if (!open.result.objectStoreNames.contains(store)) {
+                    open.result.createObjectStore(store, { keyPath: "key" });
+                  }
+                };
+                open.onsuccess = () => {
+                  const db = open.result;
+                  if (!db.objectStoreNames.contains(store)) {
+                    db.close();
+                    done(false);
+                    return;
+                  }
+                  const request = db
+                    .transaction(store, "readonly")
+                    .objectStore(store)
+                    .get(key);
+                  request.onsuccess = () => {
+                    const record = request.result as
+                      | { snapshot: unknown }
+                      | undefined;
+                    const durable =
+                      record !== undefined && record.snapshot !== null;
+                    db.close();
+                    done(durable);
+                  };
+                  request.onerror = () => {
+                    db.close();
+                    done(false);
+                  };
+                };
+                open.onerror = () => done(false);
+              } catch {
+                done(false);
+              }
+            }),
+          { database: COWORK_YDOC_DATABASE, store: COWORK_YDOC_STORE, key: recordKey },
+        ),
+      { timeout: 30_000, intervals: [200, 400, 800] },
+    )
+    .toBe(true);
+}
+
 interface AxeViolation {
   readonly id: string;
   readonly impact: string | null;

@@ -162,8 +162,9 @@ export interface WidgetDefinition {
    * frame and may read its own URL, listen to its own streams, and call its own
    * routes directly, so the Widget Renderer Contract's URL, SSE, and direct-call
    * exclusions do not apply to it. Every identity, trust, and theme invariant is
-   * still retained. A durable widget must be single_per_view and must declare no
-   * drafts, which validation enforces.
+   * still retained. A durable widget owns its own persistence and saves its live
+   * state through its own app-owned seams, so it declares no host drafts and must
+   * be single_per_view, which validation enforces.
    */
   readonly durable?: boolean;
 }

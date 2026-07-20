@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import { DashboardHelpProvider } from "../../../dashboard/help";
 import { expectNoAccessibilityViolations } from "../../../test/setup";
+import { loadChatDraft, saveChatDraft } from "../guards";
 import { CoworkRail } from "./CoworkRail";
 import { InMemoryReviewProvider } from "./InMemoryReviewProvider";
 import { createDemoChatProvider } from "./chatFixture";
@@ -95,6 +96,30 @@ describe("CoworkRail", () => {
         screen.getByText(/turn "Why does paragraph 2 say that\?" into a tracked-change proposal/),
       ).toBeVisible(),
     );
+  });
+
+  it("retains the chat draft on the plain panel and persists typing", async () => {
+    const storage = new MemoryStorage();
+    saveChatDraft(storage, "conv-1", "a half-written question");
+
+    renderRail(storage);
+    await userEvent.click(screen.getByRole("tab", { name: /Chat/ }));
+    await waitFor(() =>
+      expect(
+        screen.getByText(/I proposed a few tracked edits/),
+      ).toBeVisible(),
+    );
+
+    const composer = screen.getByRole("textbox", { name: "Message" });
+    expect(composer).toHaveValue("a half-written question");
+
+    await userEvent.type(composer, " and more");
+    await waitFor(() =>
+      expect(loadChatDraft(storage, "conv-1")).toBe(
+        (composer as HTMLTextAreaElement).value,
+      ),
+    );
+    expect(loadChatDraft(storage, "conv-1")).toContain("and more");
   });
 
   it("retains a partly-marked sitting across a remount through the draft", async () => {

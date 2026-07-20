@@ -247,4 +247,44 @@ describe("ViewHost durable widget keep-alive", () => {
     expect(after.value).toBe("hello");
     expect(probeMountCount).toBe(1);
   }, 15_000);
+
+  it("offers Arrange only on an all-durable view, hiding Preview interactions", async () => {
+    vi.stubGlobal("matchMedia", vi.fn(media));
+    const user = userEvent.setup();
+
+    render(
+      <ThemeProvider initialPreference={{ scheme: "light", skinId: "wb.default" }}>
+        <DashboardEventProvider>
+          <DashboardAnnouncer>
+            <DashboardTestRuntime>
+              <CustomizeModeProvider>
+                <CustomizeViewToggle />
+                <ViewHost
+                  registry={registry}
+                  definition={contribution.views[0]!}
+                  provider={provider}
+                  personalizationRepository={new InMemoryPersonalizationRepository()}
+                />
+              </CustomizeModeProvider>
+            </DashboardTestRuntime>
+          </DashboardAnnouncer>
+        </DashboardEventProvider>
+      </ThemeProvider>,
+    );
+
+    await screen.findByTestId("durable-probe", undefined, { timeout: 5_000 });
+
+    const customizeToggle = screen.getByRole("button", { name: "Customize view" });
+    await waitFor(() => expect(customizeToggle).toBeEnabled());
+    await user.click(customizeToggle);
+
+    // The one visible widget is durable, so Preview has nothing to sandbox. The view is in
+    // Arrange and offers no way into Preview, while the other arrange controls stay available.
+    expect(screen.getByText("Arranging layout")).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "Preview interactions" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Widgets/ })).toBeVisible();
+    expect(screen.getByRole("button", { name: /Mobile order/ })).toBeVisible();
+  }, 15_000);
 });
