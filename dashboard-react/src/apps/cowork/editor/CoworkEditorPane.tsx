@@ -3,8 +3,9 @@ import { EditorContent, useEditor } from "@tiptap/react";
 import * as Y from "yjs";
 
 import { CoworkYdocPersistence } from "../persistence/CoworkYdocPersistence";
-import { InMemoryCoworkYdocTransport } from "../persistence/InMemoryCoworkYdocTransport";
+import { LocalCoworkYdocTransport } from "../persistence/LocalCoworkYdocTransport";
 import type { CoworkYdocTransport } from "../persistence/transport";
+import { isLocalHumanOrigin } from "./applyOrigin";
 import { buildEditorExtensions, stopCapturingLoadTimeIds } from "./extensions";
 import { importCoworkMarkdown } from "./markdownImport";
 
@@ -13,12 +14,26 @@ import { importCoworkMarkdown } from "./markdownImport";
 // region, not seeded as document content. Modes that want seeded prose pass it explicitly.
 const DEFAULT_SEED_MARKDOWN = "";
 
+// A workspace with no supplied document id persists to one stable scratch key, so
+// widget-lab and any caller that omits the id still get reload-surviving local storage.
+const DEFAULT_DOCUMENT_ID = "cowork-empty";
+
+// Compaction folds the append log into a single snapshot once edits go idle, keeping the
+// persisted form small without the transport ever interpreting the Yjs bytes.
+const COMPACTION_IDLE_MS = 2_000;
+
 export interface CoworkEditorPaneProps {
+  /**
+   * Identifies the persisted document, so its local Yjs state is keyed per document and
+   * survives reload. The surface passes the workspace's document id here. Defaults to a
+   * stable empty-workspace key when omitted.
+   */
+  readonly documentId?: string;
   /** Markdown seeded into a brand-new document exactly once, on an empty fragment. */
   readonly seedMarkdown?: string;
   /** Injectable for tests; defaults to a fresh local Y.Doc. */
   readonly document?: Y.Doc;
-  /** Injectable for tests; defaults to the in-memory opaque-blob transport. */
+  /** Injectable for tests; defaults to the reload-surviving local transport. */
   readonly transport?: CoworkYdocTransport;
 }
 
@@ -85,6 +100,42 @@ function MountedCoworkEditor({
     stopCapturingLoadTimeIds(editor);
   }, [editor, persistence, seedContent, seedWhenEmpty]);
 
+  // Keep the persisted append log bounded. A human edit reschedules an idle-debounced
+  // compaction, and a reload or tab close flushes one immediately through pagehide, so
+  // the stored form stays compact across sessions.
+  useEffect(() => {
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    const cancelPending = (): void => {
+      if (idleTimer !== undefined) {
+        clearTimeout(idleTimer);
+        idleTimer = undefined;
+      }
+    };
+    const scheduleCompaction = (): void => {
+      cancelPending();
+      idleTimer = setTimeout(() => {
+        idleTimer = undefined;
+        void persistence.compact();
+      }, COMPACTION_IDLE_MS);
+    };
+    const onDocUpdate = (_update: Uint8Array, origin: unknown): void => {
+      // Only a human edit grows the log, so only that reschedules a compaction.
+      if (isLocalHumanOrigin(origin)) scheduleCompaction();
+    };
+    const onPageHide = (): void => {
+      cancelPending();
+      void persistence.compact();
+    };
+    document.on("update", onDocUpdate);
+    const hasWindow = typeof window !== "undefined";
+    if (hasWindow) window.addEventListener("pagehide", onPageHide);
+    return () => {
+      cancelPending();
+      document.off("update", onDocUpdate);
+      if (hasWindow) window.removeEventListener("pagehide", onPageHide);
+    };
+  }, [document, persistence]);
+
   return <EditorContent editor={editor} className="wb-cowork-editor__content" />;
 }
 
@@ -94,12 +145,17 @@ function MountedCoworkEditor({
  * gates the editor mount by conditionally rendering it (never `useEditor(null)`, F5.4).
  */
 export function CoworkEditorPane({
+  documentId,
   seedMarkdown = DEFAULT_SEED_MARKDOWN,
   document,
   transport,
 }: CoworkEditorPaneProps) {
   const [doc] = useState(() => document ?? new Y.Doc());
-  const [store] = useState(() => transport ?? new InMemoryCoworkYdocTransport());
+  const [store] = useState(
+    () =>
+      transport ??
+      new LocalCoworkYdocTransport({ documentId: documentId ?? DEFAULT_DOCUMENT_ID }),
+  );
   const [persistence] = useState(() => new CoworkYdocPersistence(doc, store));
   const [hydration, setHydration] = useState<{ readonly wasEmpty: boolean }>();
 
