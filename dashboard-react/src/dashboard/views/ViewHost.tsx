@@ -59,6 +59,11 @@ import { WidgetCatalogDrawer } from "../widgets/WidgetCatalogDrawer";
 import { WidgetHost } from "../widgets/WidgetHost";
 import { WidgetState } from "../widgets/WidgetStates";
 import {
+  DurableCell,
+  DurableWidgetHost,
+  type DurableEntry,
+} from "../widgets/durable";
+import {
   findCompatibleWidgetReplacements,
   planWidgetReplacement,
 } from "../widgets/replaceWidget";
@@ -478,6 +483,137 @@ function StandardGridViewHost({
     announce(`Widget ${command.kind === "move" ? "moved" : "resized"}`);
   };
 
+  // Builds the WidgetHost element for one instance. Both the normal grid cell and the
+  // keep-alive durable host render through this, so the two paths stay identical apart
+  // from the three durable exemptions: interaction stays pinned to "operate" (a durable
+  // widget owns its live state and is never frozen for arrange), the layout-edit hide and
+  // remove actions are withheld, and a failed re-hydration latches to a non-fatal "stale"
+  // banner instead of collapsing to an error.
+  const widgetHostFor = useCallback(
+    (
+      instance: EffectiveWidgetInstance,
+      { durable }: { readonly durable: boolean },
+    ): ReactNode => {
+      const registered = registry.getWidget(instance.widgetTypeId);
+      if (registered === undefined) {
+        return (
+          <WidgetFrame title="Unavailable widget">
+            <WidgetState state="unavailable" message={instance.unavailableReason} />
+          </WidgetFrame>
+        );
+      }
+      const slot = definition.defaultSlots.find(
+        (candidate) => candidate.slotId === instance.slotId,
+      );
+      const widgetSnapshot = widgetSnapshots.get(instance.instanceId);
+      const widgetSnapshotError = widgetSnapshotErrors.get(instance.instanceId);
+      const input = widgetSnapshot?.input;
+      const defaultWidth = registered.definition.sizeContract.default.w;
+      const normalStatus =
+        instance.unavailableReason !== undefined
+          ? "unavailable"
+          : widgetSnapshotError !== undefined
+            ? "error"
+            : widgetSnapshot?.status ?? "loading";
+      // unavailableReason always wins. Otherwise, when a re-hydration fails while a
+      // previous good snapshot is still held, a durable widget stays mounted on that last
+      // good input and shows a "stale" banner rather than tearing its live state down.
+      const staleLatched =
+        durable &&
+        instance.unavailableReason === undefined &&
+        widgetSnapshotError !== undefined &&
+        widgetSnapshot !== undefined;
+      const status = staleLatched ? "stale" : normalStatus;
+      const statusMessage = staleLatched
+        ? widgetSnapshotError
+        : instance.unavailableReason ??
+          widgetSnapshotError ??
+          widgetSnapshot?.quality.message;
+      return (
+        <WidgetHost
+          definition={registered.definition}
+          module={registered.module}
+          instanceId={instance.instanceId}
+          viewId={definition.viewId}
+          input={input}
+          status={status}
+          statusMessage={statusMessage}
+          width={instance.layout.w * 54}
+          height={instance.layout.h * 32}
+          sizeMode={isMobile ? "compact" : sizeModeFor(instance, defaultWidth)}
+          interactionMode={
+            durable ? "operate" : customizing ? customizeMode : "operate"
+          }
+          help={
+            slot?.help ??
+            registered.definition.help ?? {
+              summary: registered.definition.description,
+              details:
+                "This personally added widget is not assigned to a standard view purpose yet. Its reusable type description is shown as a fallback.",
+            }
+          }
+          gridSize={{ w: instance.layout.w, h: instance.layout.h }}
+          emit={(intent: WidgetIntent) =>
+            session.dispatch(intent).catch((error: unknown) => {
+              announce(`Widget action failed: ${String(error)}`, "assertive");
+              return {
+                intent_id: intent.intent_id,
+                ...(intent.client_mutation_id === undefined
+                  ? {}
+                  : { client_mutation_id: intent.client_mutation_id }),
+                status: "unavailable" as const,
+                message: error instanceof Error ? error.message : String(error),
+              };
+            })
+          }
+          presence={instance.presence === "personal" ? undefined : instance.presence}
+          lockedReason={slot?.lockedReason}
+          onRetry={() => void session.reload("refresh")}
+          onHide={
+            !durable && customizing
+              ? () => act({ type: "hide", instanceId: instance.instanceId })
+              : undefined
+          }
+          onRemove={
+            !durable && customizing
+              ? () => act({ type: "remove", instanceId: instance.instanceId })
+              : undefined
+          }
+        />
+      );
+    },
+    [
+      registry,
+      definition,
+      widgetSnapshots,
+      widgetSnapshotErrors,
+      isMobile,
+      customizing,
+      customizeMode,
+      session,
+      announce,
+      act,
+    ],
+  );
+
+  // The live nodes the keep-alive host owns: one per visible durable instance. The host
+  // portals each into a permanent wrapper and re-homes it across every grid remount, so
+  // these elements are never unmounted by a customize toggle or an interaction recovery.
+  const durableEntries = useMemo<readonly DurableEntry[]>(
+    () =>
+      editState.present.instances
+        .filter((instance) => instance.visibility === "shown")
+        .filter(
+          (instance) =>
+            registry.getWidget(instance.widgetTypeId)?.definition.durable === true,
+        )
+        .map((instance) => ({
+          instanceId: instance.instanceId,
+          node: widgetHostFor(instance, { durable: true }),
+        })),
+    [editState.present.instances, registry, widgetHostFor],
+  );
+
   if (session.snapshot === undefined) {
     return (
       <main className="wb-view-host" aria-label={definition.displayName}>
@@ -534,7 +670,7 @@ function StandardGridViewHost({
     return `Size unchanged for ${label}. Allowed size: ${minimum}–${maximum} grid units. Keep it inside the 24-column canvas without overlapping another widget. Empty space is allowed.`;
   };
 
-  const renderWidget = (instance: EffectiveWidgetInstance) => {
+  const renderWidget = (instance: EffectiveWidgetInstance): ReactNode => {
     const registered = registry.getWidget(instance.widgetTypeId);
     if (registered === undefined) {
       return (
@@ -543,61 +679,13 @@ function StandardGridViewHost({
         </WidgetFrame>
       );
     }
-    const slot = definition.defaultSlots.find((candidate) => candidate.slotId === instance.slotId);
-    const widgetSnapshot = widgetSnapshots.get(instance.instanceId);
-    const widgetSnapshotError = widgetSnapshotErrors.get(instance.instanceId);
-    const input = widgetSnapshot?.input;
-    const defaultWidth = registered.definition.sizeContract.default.w;
-    const status =
-      instance.unavailableReason !== undefined
-        ? "unavailable"
-        : widgetSnapshotError !== undefined
-          ? "error"
-          : widgetSnapshot?.status ?? "loading";
-    return (
-      <WidgetHost
-        definition={registered.definition}
-        module={registered.module}
-        instanceId={instance.instanceId}
-        viewId={definition.viewId}
-        input={input}
-        status={status}
-        statusMessage={
-          instance.unavailableReason ?? widgetSnapshotError ?? widgetSnapshot?.quality.message
-        }
-        width={instance.layout.w * 54}
-        height={instance.layout.h * 32}
-        sizeMode={isMobile ? "compact" : sizeModeFor(instance, defaultWidth)}
-        interactionMode={customizing ? customizeMode : "operate"}
-        help={
-          slot?.help ??
-          registered.definition.help ?? {
-            summary: registered.definition.description,
-            details:
-              "This personally added widget is not assigned to a standard view purpose yet. Its reusable type description is shown as a fallback.",
-          }
-        }
-        gridSize={{ w: instance.layout.w, h: instance.layout.h }}
-        emit={(intent: WidgetIntent) =>
-          session.dispatch(intent).catch((error: unknown) => {
-            announce(`Widget action failed: ${String(error)}`, "assertive");
-            return {
-              intent_id: intent.intent_id,
-              ...(intent.client_mutation_id === undefined
-                ? {}
-                : { client_mutation_id: intent.client_mutation_id }),
-              status: "unavailable" as const,
-              message: error instanceof Error ? error.message : String(error),
-            };
-          })
-        }
-        presence={instance.presence === "personal" ? undefined : instance.presence}
-        lockedReason={slot?.lockedReason}
-        onRetry={() => void session.reload("refresh")}
-        onHide={customizing ? () => act({ type: "hide", instanceId: instance.instanceId }) : undefined}
-        onRemove={customizing ? () => act({ type: "remove", instanceId: instance.instanceId }) : undefined}
-      />
-    );
+    // A durable widget lives in the keep-alive host above the grid. Its grid cell is a
+    // light placeholder that re-homes the live element on mount and parks it on unmount,
+    // so the cell may remount as often as the grid likes with no effect on the widget.
+    if (registered.definition.durable === true) {
+      return <DurableCell instanceId={instance.instanceId} />;
+    }
+    return widgetHostFor(instance, { durable: false });
   };
 
   return (
@@ -759,39 +847,41 @@ function StandardGridViewHost({
       {personalizationError ? (
         <p className="wb-view-host__warning" role="alert">{personalizationError}</p>
       ) : null}
-      {isMobile ? (
-        <div className="wb-dashboard-mobile-stack">
-          {orderedMobile.map((instance) => (
-            <div key={instance.instanceId}>{renderWidget(instance)}</div>
-          ))}
-        </div>
-      ) : (
-        <ReactGridLayoutAdapter
-          items={layoutFor(editState)}
-          editMode={customizing && customizeMode === "arrange"}
-          onDraftChange={(layout) =>
-            customizing && customizeMode === "arrange" && act({ type: "preview-layout", layout })
-          }
-          onInteractionStart={() => act({ type: "begin-interaction" })}
-          onKeyboardCommand={issueLayoutCommand}
-          onInteractionRejected={(kind, instanceId) =>
-            showDashboardNotice(layoutConstraintMessage(kind, instanceId))
-          }
-          onInteractionCancel={(kind, _instanceId, reason) => {
-            act({ type: "cancel-interaction" });
-            if (reason !== "edit-mode-ended") {
-              showDashboardNotice(
-                `${kind === "resize" ? "Resize" : "Move"} canceled because the pointer interaction ended outside the dashboard.`,
-              );
+      <DurableWidgetHost entries={durableEntries}>
+        {isMobile ? (
+          <div className="wb-dashboard-mobile-stack">
+            {orderedMobile.map((instance) => (
+              <div key={instance.instanceId}>{renderWidget(instance)}</div>
+            ))}
+          </div>
+        ) : (
+          <ReactGridLayoutAdapter
+            items={layoutFor(editState)}
+            editMode={customizing && customizeMode === "arrange"}
+            onDraftChange={(layout) =>
+              customizing && customizeMode === "arrange" && act({ type: "preview-layout", layout })
             }
-          }}
-          onInteractionEnd={() => act({ type: "commit-interaction" })}
-          renderItem={(layoutItem) => {
-            const instance = byId.get(layoutItem.instanceId);
-            return instance === undefined ? null : renderWidget(instance);
-          }}
-        />
-      )}
+            onInteractionStart={() => act({ type: "begin-interaction" })}
+            onKeyboardCommand={issueLayoutCommand}
+            onInteractionRejected={(kind, instanceId) =>
+              showDashboardNotice(layoutConstraintMessage(kind, instanceId))
+            }
+            onInteractionCancel={(kind, _instanceId, reason) => {
+              act({ type: "cancel-interaction" });
+              if (reason !== "edit-mode-ended") {
+                showDashboardNotice(
+                  `${kind === "resize" ? "Resize" : "Move"} canceled because the pointer interaction ended outside the dashboard.`,
+                );
+              }
+            }}
+            onInteractionEnd={() => act({ type: "commit-interaction" })}
+            renderItem={(layoutItem) => {
+              const instance = byId.get(layoutItem.instanceId);
+              return instance === undefined ? null : renderWidget(instance);
+            }}
+          />
+        )}
+      </DurableWidgetHost>
       {catalogOpen ? (
         <WidgetCatalogDrawer
           registry={registry}
