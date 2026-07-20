@@ -237,6 +237,28 @@
     box-shadow: 0 0 0 1px color-mix(in srgb, var(--wb-color-border-interactive) 28%, transparent), var(--wb-shadow-raised);
   }
 
+  /* A durable widget's placeholder cell and the permanent wrapper the host homes
+     into it both fill the grid item, so the live frame tracks the cell size
+     through the same 100% chain an ordinary grid widget uses. */
+  .wb-durable-cell { height: 100%; }
+  .wb-durable-slot { height: 100%; }
+  .wb-durable-slot > .wb-widget-frame { height: 100%; }
+
+  .wb-view-host.is-customizing .wb-durable-slot > .wb-widget-frame {
+    border-color: var(--wb-color-border-interactive);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--wb-color-border-interactive) 28%, transparent), var(--wb-shadow-raised);
+  }
+
+  /* The offstage parking spot for released wrappers. It stays in the document so
+     focus and containment checks keep working, but takes no space and shows
+     nothing. It is also marked inert and aria-hidden in the markup. */
+  .wb-durable-stash {
+    position: absolute;
+    width: 0;
+    height: 0;
+    overflow: hidden;
+  }
+
   .wb-widget-drag-handle {
     position: absolute;
     z-index: 3;
