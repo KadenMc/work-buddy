@@ -3,11 +3,13 @@ import type {
   IntentResult,
   ReconcileResult,
   ViewSnapshot,
+  WidgetLoadRequest,
   WidgetSnapshot,
+  WidgetTypeId,
 } from "../../../dashboard/contributions/contracts";
 import type { ViewProvider } from "../../../dashboard/providers/ViewProvider";
 import { COWORK_APP_ID, COWORK_VIEW_ID } from "../bindings";
-import type { CoworkViewModel } from "../contracts";
+import type { CoworkViewModel, CoworkWorkspaceInput } from "../contracts";
 
 const DEMO_MODEL: CoworkViewModel = {
   document: {
@@ -25,9 +27,8 @@ const DEMO_MODEL: CoworkViewModel = {
  * A deterministic in-memory coarse provider for the Co-work view (section 5.2). It
  * delivers only the JSON-compatible document session (which document is open, its
  * path / title / profile, drift, and open-proposal counts). It never carries the Yjs
- * binary or the sitting, which take the direct route to `/api/truth/doc/*`. Widget
- * hydration is unused because a single-surface view mounts one App-owned renderer, not
- * grid widgets.
+ * binary or the sitting, which take the direct route to `/api/truth/doc/*`. The composite
+ * workspace card hydrates from `loadWidget`. The live binary state stays widget-local.
  */
 export class InMemoryCoworkProvider implements ViewProvider {
   readonly appId = COWORK_APP_ID;
@@ -50,9 +51,26 @@ export class InMemoryCoworkProvider implements ViewProvider {
     };
   }
 
-  async loadWidget(): Promise<WidgetSnapshot> {
-    // A single-surface view mounts no widgets, so this boundary is never exercised.
-    throw new Error("The Co-work view is a single App-owned surface with no grid widgets");
+  async loadWidget(
+    widgetTypeId: WidgetTypeId,
+    request: WidgetLoadRequest,
+  ): Promise<WidgetSnapshot<CoworkWorkspaceInput>> {
+    // The composite workspace card is the one durable widget this view places. Its input
+    // is the coarse document session plus the demo session quality it resolves its mode
+    // from. The live Y.Doc and the sitting take the direct route, never this snapshot.
+    const input: CoworkWorkspaceInput = {
+      document: this.#model.document,
+      sessionQuality: "demo",
+    };
+    return {
+      widgetTypeId,
+      instanceId: request.instanceId,
+      revision: request.knownRevision ?? 1,
+      observedAt: new Date(0).toISOString(),
+      status: "ready",
+      quality: { kind: "demo", message: "In-memory Co-work document session." },
+      input,
+    };
   }
 
   async dispatch(intent: DashboardIntent): Promise<IntentResult> {
