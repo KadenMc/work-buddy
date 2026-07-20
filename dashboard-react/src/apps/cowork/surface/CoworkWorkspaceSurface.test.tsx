@@ -1,40 +1,86 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type {
-  DashboardIntent,
-  IntentResult,
-  ReconcileResult,
-  ViewSnapshot,
-  WidgetSnapshot,
+import {
+  asViewId,
+  asWidgetInstanceId,
+  type WidgetPresentationContext,
 } from "../../../dashboard/contributions/contracts";
 import { DashboardEventProvider } from "../../../dashboard/events/DashboardEventProvider";
-import type { ViewProvider } from "../../../dashboard/providers/ViewProvider";
+import { fallbackCanvasTheme } from "../../../theme/resolveTheme";
 import { expectNoAccessibilityViolations } from "../../../test/setup";
-import { COWORK_APP_ID, COWORK_VIEW_ID } from "../bindings";
-import type { CoworkViewModel } from "../contracts";
-import { InMemoryCoworkProvider } from "../providers/InMemoryCoworkProvider";
-import { COWORK_VIEW_DEFINITION } from "../viewDefinition";
-import { CoworkWorkspaceSurface } from "./CoworkWorkspaceSurface";
+import type { CoworkDocumentSummary, CoworkWorkspaceInput } from "../contracts";
+import CoworkWorkspaceWidget from "../widget/CoworkWorkspaceWidget";
 
-const renderSurface = () =>
+/**
+ * The composite workspace card is a normal grid widget now, so the tests drive its renderer
+ * with the hydrated WidgetRendererProps input the WidgetHost would pass, plus the URL the
+ * durable exemption lets it read. The single `<main>` stands in for the grid host that owns
+ * the one page landmark, mirroring how the WidgetFrame wraps the card in production.
+ */
+const presentation: WidgetPresentationContext = {
+  instanceId: asWidgetInstanceId("wb-cowork:workspace"),
+  viewId: asViewId("wb.cowork.workspace"),
+  width: 1280,
+  height: 720,
+  sizeMode: "expanded",
+  interactionMode: "operate",
+  editing: false,
+  theme: {
+    contractVersion: 1,
+    preference: { scheme: "light", skinId: "wb.default" },
+    resolvedScheme: "light",
+    skin: { id: "wb.default", version: 2, publisherAppId: "wb.core" },
+    accessibility: {
+      forcedColors: false,
+      reducedMotion: false,
+      reducedTransparency: false,
+    },
+  },
+  getCanvasTheme: () => fallbackCanvasTheme("light"),
+};
+
+const noopEmit: ComponentProps<typeof CoworkWorkspaceWidget>["emit"] = async (
+  intent,
+) => ({ intent_id: intent.intent_id, status: "accepted" });
+
+const DEMO_DOCUMENT: CoworkDocumentSummary = {
+  documentId: "demo-doc",
+  path: "docs/demo/co-work-demo.md",
+  title: "Co-work demo document",
+  profile: "co_authored",
+  driftState: "clean",
+  openProposalCount: 0,
+  openFlagCount: 0,
+};
+
+const renderWorkspace = (input: CoworkWorkspaceInput) =>
   render(
     <DashboardEventProvider>
-      <CoworkWorkspaceSurface
-        definition={COWORK_VIEW_DEFINITION}
-        provider={new InMemoryCoworkProvider()}
-      />
+      <main>
+        <CoworkWorkspaceWidget
+          input={input}
+          emit={noopEmit}
+          presentation={presentation}
+        />
+      </main>
     </DashboardEventProvider>,
   );
 
-describe("CoworkWorkspaceSurface default (empty) mode", () => {
+describe("CoworkWorkspaceWidget default (empty) mode", () => {
   const originalUrl = window.location.href;
   beforeEach(() => window.history.replaceState({}, "", "/app/cowork"));
   afterEach(() => window.history.replaceState({}, "", originalUrl));
 
+  const emptyInput: CoworkWorkspaceInput = {
+    document: null,
+    sessionQuality: "demo",
+  };
+
   it("opens with honest empty states and no fabricated content", async () => {
-    const { container } = renderSurface();
+    const { container } = renderWorkspace(emptyInput);
 
     // Health strip: no document open (its existing null branch).
     await waitFor(
@@ -67,7 +113,7 @@ describe("CoworkWorkspaceSurface default (empty) mode", () => {
   }, 15_000);
 
   it("shows an honest empty chat: a real composer, no scripted agent turn, no fake typing", async () => {
-    const { container } = renderSurface();
+    const { container } = renderWorkspace(emptyInput);
     await waitFor(
       () => expect(container.querySelector(".ProseMirror")).not.toBeNull(),
       { timeout: 10_000 },
@@ -83,7 +129,7 @@ describe("CoworkWorkspaceSurface default (empty) mode", () => {
   }, 15_000);
 
   it("has no accessibility violations in its empty resting state", async () => {
-    const { container } = renderSurface();
+    const { container } = renderWorkspace(emptyInput);
     await waitFor(
       () => expect(container.querySelector(".ProseMirror")).not.toBeNull(),
       { timeout: 10_000 },
@@ -92,15 +138,20 @@ describe("CoworkWorkspaceSurface default (empty) mode", () => {
   }, 15_000);
 });
 
-describe("CoworkWorkspaceSurface demo fixture (?cowork_fixture=demo)", () => {
+describe("CoworkWorkspaceWidget demo fixture (?cowork_fixture=demo)", () => {
   const originalUrl = window.location.href;
   beforeEach(() =>
     window.history.replaceState({}, "", "/app/cowork?cowork_fixture=demo"),
   );
   afterEach(() => window.history.replaceState({}, "", originalUrl));
 
+  const demoInput: CoworkWorkspaceInput = {
+    document: DEMO_DOCUMENT,
+    sessionQuality: "demo",
+  };
+
   it("renders the fabricated demo scene behind the explicit flag", async () => {
-    const { container } = renderSurface();
+    const { container } = renderWorkspace(demoInput);
 
     // Health strip reflects the demo document session.
     await waitFor(
@@ -128,7 +179,7 @@ describe("CoworkWorkspaceSurface demo fixture (?cowork_fixture=demo)", () => {
   }, 15_000);
 
   it("keeps the scripted demo chat behind the flag", async () => {
-    renderSurface();
+    renderWorkspace(demoInput);
     await waitFor(
       () => expect(screen.getByText("Co-work demo document")).toBeVisible(),
       { timeout: 10_000 },
@@ -147,41 +198,15 @@ describe("CoworkWorkspaceSurface demo fixture (?cowork_fixture=demo)", () => {
   }, 15_000);
 });
 
-/** A coarse provider that reports a live (non-demo) scope, so the surface goes live. */
-class LiveCoworkProvider implements ViewProvider {
-  readonly appId = COWORK_APP_ID;
-  async loadView(): Promise<ViewSnapshot<CoworkViewModel>> {
-    return {
-      viewId: COWORK_VIEW_ID,
-      revision: 1,
-      observedAt: new Date(0).toISOString(),
-      status: "ready",
-      quality: { kind: "complete", message: "Live Co-work scope." },
-      model: {
-        document: {
-          documentId: "live-doc",
-          path: "docs/live.md",
-          title: "Live doc",
-          profile: "co_authored",
-          driftState: "clean",
-          openProposalCount: 0,
-          openFlagCount: 0,
-        },
-      },
-      bindings: {},
-      widgetInputs: {},
-    };
-  }
-  async loadWidget(): Promise<WidgetSnapshot> {
-    throw new Error("single-surface view has no widgets");
-  }
-  async dispatch(intent: DashboardIntent): Promise<IntentResult> {
-    return { intent_id: intent.intent_id, status: "accepted" };
-  }
-  async reconcile(): Promise<ReconcileResult> {
-    return { changed: false };
-  }
-}
+const LIVE_DOCUMENT: CoworkDocumentSummary = {
+  documentId: "live-doc",
+  path: "docs/live.md",
+  title: "Live doc",
+  profile: "co_authored",
+  driftState: "clean",
+  openProposalCount: 0,
+  openFlagCount: 0,
+};
 
 /** The R2 doc-open payload the stubbed route returns, one edit proposal on the seed text. */
 const R2_LIVE_PAYLOAD = {
@@ -263,7 +288,7 @@ const liveFetch = () =>
     return jsonResponse({ error: "not_found" }, 404);
   });
 
-describe("CoworkWorkspaceSurface live mode", () => {
+describe("CoworkWorkspaceWidget live mode", () => {
   const originalFetch = globalThis.fetch;
   const originalUrl = window.location.href;
 
@@ -276,14 +301,7 @@ describe("CoworkWorkspaceSurface live mode", () => {
   const renderLive = () => {
     window.history.replaceState({}, "", "/app/cowork?store_id=live-store");
     globalThis.fetch = liveFetch() as unknown as typeof fetch;
-    return render(
-      <DashboardEventProvider>
-        <CoworkWorkspaceSurface
-          definition={COWORK_VIEW_DEFINITION}
-          provider={new LiveCoworkProvider()}
-        />
-      </DashboardEventProvider>,
-    );
+    return renderWorkspace({ document: LIVE_DOCUMENT, sessionQuality: "complete" });
   };
 
   it("pulls R2 and ingests the proposal so a card and a suggestion mark both render", async () => {
