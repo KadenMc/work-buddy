@@ -1,5 +1,8 @@
 @layer wb.components {
   .wb-view-host {
+    display: flex;
+    flex-direction: column;
+    gap: var(--wb-space-5);
     width: 100%;
     max-width: var(--wb-dashboard-max-width);
     margin: 0 auto;
@@ -55,11 +58,9 @@
 
   .wb-view-toolbar {
     display: flex;
-    min-height: var(--wb-control-height-lg);
     align-items: center;
     justify-content: flex-end;
     gap: var(--wb-space-4);
-    margin: var(--wb-space-6) 0 var(--wb-space-5);
   }
 
   .wb-view-toolbar__mode {

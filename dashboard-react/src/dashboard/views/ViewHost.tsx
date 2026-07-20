@@ -719,6 +719,14 @@ function StandardGridViewHost({
     return widgetHostFor(instance, { durable: false });
   };
 
+  // The toolbar earns a row only when it holds something: the customize menu, a refresh
+  // status, or a chrome-less view's provider label. Rendering it while idle would reserve
+  // an empty labeled toolbar between the title and the grid, which is both a wasted gap and
+  // an empty-landmark accessibility smell. When it is absent, the view-host flex column owns
+  // the small, deliberate gap that sits between the title chrome and the grid.
+  const showProviderLabel = providerLabel !== undefined && renderChrome === undefined;
+  const toolbarHasContent = customizing || session.reconciling || showProviderLabel;
+
   return (
     <main
       className={`wb-view-host${customizing ? " is-customizing" : ""}${
@@ -732,8 +740,9 @@ function StandardGridViewHost({
           {chromeSlots.contextualActions}
         </div>
       ) : null}
+      {toolbarHasContent ? (
       <div className="wb-view-toolbar" role="toolbar" aria-label="View controls">
-        {providerLabel && renderChrome === undefined ? (
+        {showProviderLabel ? (
           <span className="wb-view-toolbar__provider">{providerLabel}</span>
         ) : null}
         {session.reconciling ? <span role="status" aria-label="Refreshing…">Refreshing…</span> : null}
@@ -851,6 +860,7 @@ function StandardGridViewHost({
           </>
         ) : null}
       </div>
+      ) : null}
       {customizing && mobileOrderOpen ? (
         <MobileOrderEditor
           registry={registry}
