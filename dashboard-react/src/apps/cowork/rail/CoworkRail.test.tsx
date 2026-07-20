@@ -4,7 +4,12 @@ import { describe, expect, it } from "vitest";
 
 import { DashboardHelpProvider } from "../../../dashboard/help";
 import { expectNoAccessibilityViolations } from "../../../test/setup";
-import { loadChatDraft, saveChatDraft } from "../guards";
+import {
+  loadChatDraft,
+  loadRailTab,
+  saveChatDraft,
+  saveRailTab,
+} from "../guards";
 import { CoworkRail } from "./CoworkRail";
 import { InMemoryReviewProvider } from "./InMemoryReviewProvider";
 import { createDemoChatProvider } from "./chatFixture";
@@ -54,6 +59,20 @@ describe("CoworkRail", () => {
     );
     expect(screen.getByRole("tab", { name: /Chat/ })).toBeVisible();
     await waitFor(() => expect(screen.getByText(S1_TLDR)).toBeVisible());
+  });
+
+  it("restores the persisted rail tab on mount and persists a tab change", async () => {
+    const storage = new MemoryStorage();
+    saveRailTab(storage, "demo-doc", "chat");
+
+    renderRail(storage);
+    expect(screen.getByRole("tab", { name: /Chat/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+
+    await userEvent.click(screen.getByRole("tab", { name: "Review" }));
+    await waitFor(() => expect(loadRailTab(storage, "demo-doc")).toBe("review"));
   });
 
   it("gives the Review and Chat tabs their own hover help in help mode", () => {

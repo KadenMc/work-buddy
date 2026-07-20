@@ -21,7 +21,12 @@ import {
   type CoworkChatAnnotations,
   type ScrollAnchorTarget,
 } from "../chat";
-import { loadChatDraft, saveChatDraft } from "../guards";
+import {
+  loadChatDraft,
+  loadRailTab,
+  saveChatDraft,
+  saveRailTab,
+} from "../guards";
 import { ReviewPanel } from "./ReviewPanel";
 import type { QueueBindings } from "./QueueView";
 import type { AnchorRectSource, ReviewRailProvider } from "./provider";
@@ -66,9 +71,19 @@ export interface CoworkRailProps {
 }
 
 export function CoworkRail(props: CoworkRailProps) {
-  const [store] = useState(
-    () => props.store ?? new RailStore({ tab: props.initialTab ?? "review" }),
-  );
+  const [store] = useState(() => {
+    if (props.store) return props.store;
+    // The injecting site owns its own persistence, so only a rail-created store seeds its tab
+    // from storage and mirrors later changes back. Precedence: an explicit initialTab wins,
+    // then the retained tab, then the Review default.
+    const storage = props.storage ?? window.localStorage;
+    const initialTab =
+      props.initialTab ?? loadRailTab(storage, props.documentId) ?? "review";
+    return new RailStore(
+      { tab: initialTab },
+      { onTabChange: (tab) => saveRailTab(storage, props.documentId, tab) },
+    );
+  });
   const tab = useRailState(store, (state) => state.tab);
 
   const chat = useChatConversation(props.chatProvider, props.conversationId);

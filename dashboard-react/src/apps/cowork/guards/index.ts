@@ -13,6 +13,7 @@ export {
   saveChatDraft,
   useChatDraftPersistence,
 } from "./chatDraft";
+export { loadRailTab, saveRailTab } from "./railTab";
 export {
   UNSAVED_WORK_PROMPT,
   anyDirty,

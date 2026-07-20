@@ -15,6 +15,8 @@ import { CoworkEditorPane } from "../editor/CoworkEditorPane";
 import {
   isChatDraftDirty,
   loadChatDraft,
+  loadRailTab,
+  saveRailTab,
   useUnsavedWorkGuard,
 } from "../guards";
 import { useCoworkNavBinding } from "../keyboard";
@@ -310,8 +312,16 @@ export function CoworkLiveWorkspace({
   const annotations = useMemo(() => new CoworkChatAnnotations(), [documentId]);
 
   // The rail store is owned here so the route-change guard reads the same staged sitting the
-  // rail mutates, and the review keyboard binding comes from the settings registry.
-  const [railStore] = useState(() => new RailStore({ tab: "review" }));
+  // rail mutates, and the review keyboard binding comes from the settings registry. The tab
+  // seeds from and mirrors back to localStorage, so a reload keeps the Review or Chat choice
+  // (the onFeedbackCaptured switch to Chat below now persists through the same seam).
+  const [railStore] = useState(
+    () =>
+      new RailStore(
+        { tab: loadRailTab(window.localStorage, documentId) ?? "review" },
+        { onTabChange: (tab) => saveRailTab(window.localStorage, documentId, tab) },
+      ),
+  );
   const navBinding = useCoworkNavBinding();
 
   const bridge = useCoworkBridge({

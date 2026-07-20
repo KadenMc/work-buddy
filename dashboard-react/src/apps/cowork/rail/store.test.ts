@@ -66,6 +66,21 @@ describe("RailStore", () => {
     expect(store.getState().inspectorSpanId).toBeNull();
   });
 
+  it("invokes onTabChange with the new tab when one is provided", () => {
+    const onTabChange = vi.fn();
+    const store = new RailStore({}, { onTabChange });
+    store.setTab("chat");
+    expect(onTabChange).toHaveBeenCalledTimes(1);
+    expect(onTabChange).toHaveBeenCalledWith("chat");
+    expect(store.getState().tab).toBe("chat");
+  });
+
+  it("changes the tab safely without an onTabChange callback", () => {
+    const store = new RailStore();
+    store.setTab("chat");
+    expect(store.getState().tab).toBe("chat");
+  });
+
   it("hydrates a persisted draft", () => {
     const store = new RailStore();
     store.hydrateDecisions(
