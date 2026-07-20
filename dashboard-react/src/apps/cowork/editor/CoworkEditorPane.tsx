@@ -98,6 +98,14 @@ function MountedCoworkEditor({
       editor.commands.setContent(seedContent);
     }
     stopCapturingLoadTimeIds(editor);
+    // The collaborative binding synchronizes the editor's base structure into
+    // the document while the editor is being created, before start() attached
+    // the push observer, so a brand-new document's update log would reference a
+    // base that persistence never saw and a reload would rehydrate to nothing.
+    // One immediate compaction stores the complete current state as the
+    // snapshot, anchoring every later log entry, so a reload at any moment
+    // restores the document instead of orphaned updates over a missing base.
+    void persistence.compact();
   }, [editor, persistence, seedContent, seedWhenEmpty]);
 
   // Keep the persisted append log bounded. A human edit reschedules an idle-debounced

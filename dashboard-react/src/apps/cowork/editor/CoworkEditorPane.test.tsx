@@ -87,6 +87,77 @@ describe("CoworkEditorPane persistence", () => {
     );
   }, 20_000);
 
+  it("survives a reload that happens before any idle compaction", async () => {
+    // The collaborative binding writes the editor's base structure into the doc while
+    // the editor is created, before persistence can observe it. This test edits INSIDE
+    // that binding-created structure and remounts well before the idle compaction, so
+    // it fails if the base is never persisted (orphaned updates over a missing base)
+    // and passes only when the mount-time compaction anchors the full state.
+    const backing = new InMemoryCoworkYdocBackingStore();
+    const factory = () => backing;
+    const documentId = "pane-fast-reload-doc";
+    const marker = "fast reload marker";
+
+    const firstDoc = new Y.Doc();
+    const first = render(
+      <CoworkEditorPane
+        documentId={documentId}
+        document={firstDoc}
+        transport={new LocalCoworkYdocTransport({ documentId, factory })}
+      />,
+    );
+    await screen.findByRole(
+      "textbox",
+      { name: "Document editor" },
+      { timeout: 10_000 },
+    );
+
+    // Insert text into the binding-created paragraph, the shape a live keystroke has:
+    // an update whose ops reference structure the binding made during editor creation.
+    act(() => {
+      firstDoc.transact(() => {
+        const fragment = firstDoc.getXmlFragment("default");
+        const paragraph = fragment.get(0);
+        if (paragraph instanceof Y.XmlElement) {
+          paragraph.insert(0, [new Y.XmlText(marker)]);
+        } else {
+          const created = new Y.XmlElement("paragraph");
+          created.insert(0, [new Y.XmlText(marker)]);
+          fragment.insert(0, [created]);
+        }
+      }, ySyncPluginKey);
+    });
+
+    // Wait only for the push to land in the backing, never for the idle compaction.
+    await waitFor(
+      async () => {
+        const persisted = await reconstructFromBacking(factory, documentId);
+        expect(persisted.getXmlFragment("default").toString()).toContain(marker);
+      },
+      { timeout: 10_000 },
+    );
+
+    first.unmount();
+
+    const secondDoc = new Y.Doc();
+    const second = render(
+      <CoworkEditorPane
+        documentId={documentId}
+        document={secondDoc}
+        transport={new LocalCoworkYdocTransport({ documentId, factory })}
+      />,
+    );
+    const textbox = await within(second.container).findByRole(
+      "textbox",
+      { name: "Document editor" },
+      { timeout: 10_000 },
+    );
+    await waitFor(
+      () => expect(textbox.textContent ?? "").toContain(marker),
+      { timeout: 10_000 },
+    );
+  }, 25_000);
+
   it("mounts a live editor on the default local transport when none is injected", async () => {
     // No injected transport, so the pane builds the default local one and still mounts a
     // real editor (the process-memory fallback stands in for IndexedDB under jsdom).
