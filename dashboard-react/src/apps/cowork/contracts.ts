@@ -21,3 +21,15 @@ export interface CoworkDocumentSummary {
 export interface CoworkViewModel {
   readonly document: CoworkDocumentSummary | null;
 }
+
+/**
+ * The JSON-compatible input the coarse provider hydrates into the composite workspace
+ * widget (the durable card). It carries which document is open and the session quality
+ * the widget resolves its demo / live / empty mode from. The live Y.Doc, the editor
+ * instance, and the staged sitting stay widget-local and never ride this input. The
+ * widget reads them through the direct route seam its durable exemption sanctions.
+ */
+export interface CoworkWorkspaceInput {
+  readonly document: CoworkDocumentSummary | null;
+  readonly sessionQuality: string;
+}

@@ -1,14 +1,12 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 
-import type { SingleSurfaceRuntimeProps } from "../../../dashboard/contributions/viewModules";
 import { useOptionalDashboardEvents } from "../../../dashboard/events/DashboardEventProvider";
 import {
   HelpTarget,
   useDashboardHelpEnabled,
   type HelpContent,
 } from "../../../dashboard/help";
-import { useViewSession } from "../../../dashboard/views/useViewSession";
 import { InMemoryChatProvider } from "../../../widget-library/chat";
 import type { CoworkDriftState, CoworkViewModel } from "../contracts";
 import { CoworkBridgeEditor, useCoworkBridge } from "../bridge";
@@ -140,15 +138,17 @@ function CoworkHealthStrip({ health }: { health: CoworkHealthView | null }) {
  * percentages of the body, so the rail drags across a wide range in both directions and holds
  * its proportion when the window changes. The separator carries `role="separator"` with arrow
  * keys and double-click-to-reset from the library, and `useResizableRail` persists the split.
+ *
+ * The layout root is a plain `<div>`: the workspace card is one durable widget, and the grid
+ * host renders the single `<main>` above it while the WidgetFrame provides the named region.
+ * A second landmark here would nest inside that frame, so the shell owns styling only.
  */
 function CoworkWorkspaceLayout({
-  label,
   health,
   editor,
   rail,
   railRef,
 }: {
-  readonly label: string;
   readonly health: CoworkHealthView | null;
   readonly editor: ReactNode;
   readonly rail: ReactNode;
@@ -157,7 +157,7 @@ function CoworkWorkspaceLayout({
   const helping = useDashboardHelpEnabled();
   const { defaultLayout, onLayoutChanged } = useResizableRail();
   return (
-    <main className={`wb-cowork${helping ? " is-helping" : ""}`} aria-label={label}>
+    <div className={`wb-cowork${helping ? " is-helping" : ""}`}>
       <CoworkHealthStrip health={health} />
       <Group
         className="wb-cowork__body"
@@ -191,11 +191,13 @@ function CoworkWorkspaceLayout({
           </aside>
         </Panel>
       </Group>
-    </main>
+    </div>
   );
 }
 
-const healthFromModel = (model: CoworkViewModel | null): CoworkHealthView | null => {
+export const healthFromModel = (
+  model: CoworkViewModel | null,
+): CoworkHealthView | null => {
   const document = model?.document ?? null;
   if (document === null) return null;
   return {
@@ -210,11 +212,9 @@ const healthFromModel = (model: CoworkViewModel | null): CoworkHealthView | null
  * rail and the demo editor pane runs an in-memory Yjs transport, so widget-lab, the tests,
  * and an offline shell all render the same deterministic scene with no network.
  */
-function CoworkDemoWorkspace({
-  label,
+export function CoworkDemoWorkspace({
   model,
 }: {
-  readonly label: string;
   readonly model: CoworkViewModel | null;
 }) {
   const documentId = model?.document?.documentId ?? "demo-doc";
@@ -227,7 +227,6 @@ function CoworkDemoWorkspace({
 
   return (
     <CoworkWorkspaceLayout
-      label={label}
       health={healthFromModel(model)}
       editor={<CoworkEditorPane seedMarkdown={DEMO_DOCUMENT_MARKDOWN} />}
       rail={
@@ -248,7 +247,7 @@ function CoworkDemoWorkspace({
  * carries no fabricated proposals and no scripted agent turn: an empty review layer and an
  * empty document conversation with a real composer.
  */
-function CoworkEmptyWorkspace({ label }: { readonly label: string }) {
+export function CoworkEmptyWorkspace() {
   const reviewProvider = useMemo(
     () => new InMemoryReviewProvider({ data: EMPTY_REVIEW_DATA }),
     [],
@@ -267,7 +266,6 @@ function CoworkEmptyWorkspace({ label }: { readonly label: string }) {
 
   return (
     <CoworkWorkspaceLayout
-      label={label}
       health={null}
       editor={<CoworkEditorPane />}
       rail={
@@ -288,13 +286,11 @@ function CoworkEmptyWorkspace({ label }: { readonly label: string }) {
  * SSE nudge reloads the review layer, and the aligned stream measures the editor's suggestion
  * marks through the anchor-rect source.
  */
-function CoworkLiveWorkspace({
-  label,
+export function CoworkLiveWorkspace({
   documentId,
   storeId,
   fallbackHealth,
 }: {
-  readonly label: string;
   readonly documentId: string;
   readonly storeId: string;
   readonly fallbackHealth: CoworkHealthView | null;
@@ -358,7 +354,6 @@ function CoworkLiveWorkspace({
 
   return (
     <CoworkWorkspaceLayout
-      label={label}
       health={health}
       railRef={bridge.railRef}
       editor={<CoworkBridgeEditor {...bridge.editorProps} />}
@@ -379,7 +374,7 @@ function CoworkLiveWorkspace({
   );
 }
 
-type CoworkFixtureMode = "demo" | "live" | "empty";
+export type CoworkFixtureMode = "demo" | "live" | "empty";
 
 /**
  * Decide empty vs demo vs live. The honest default is empty (no document, honest empty
@@ -389,7 +384,7 @@ type CoworkFixtureMode = "demo" | "live" | "empty";
  * take, so a live scope with no store id, and any scope with no explicit demo flag, falls
  * back to the honest empty state rather than fabricated content.
  */
-function resolveFixtureMode(
+export function resolveFixtureMode(
   quality: string | undefined,
   documentId: string | undefined,
   storeId: string | undefined,
@@ -400,55 +395,3 @@ function resolveFixtureMode(
   if (wantLive && documentId !== undefined && storeId !== undefined) return "live";
   return "empty";
 }
-
-/**
- * The App-owned Co-work surface renderer (section 5, variant-A-hybrid). It composes the
- * three regions inside ONE React tree that shares the coarse document session: the header
- * health strip on top, the editor pane center-left, and the Review / Chat tabbed rail on
- * the right. The coarse session flows through the ViewProvider snapshot, and the live Y.Doc
- * and the sitting take the direct route to `/api/truth/doc/*`. Demo mode keeps the
- * deterministic in-memory scene for widget-lab and tests behind the fixture switch.
- */
-export function CoworkWorkspaceSurface({
-  definition,
-  provider,
-}: SingleSurfaceRuntimeProps) {
-  const session = useViewSession({ provider, viewId: definition.viewId });
-  const model = (session.snapshot?.model as CoworkViewModel | undefined) ?? null;
-  const documentId = model?.document?.documentId;
-
-  const search = typeof window === "undefined" ? "" : window.location.search;
-  const { storeId, override } = useMemo(() => {
-    const params = new URLSearchParams(search);
-    return {
-      storeId: params.get("store_id") ?? undefined,
-      override: params.get("cowork_fixture"),
-    };
-  }, [search]);
-
-  const mode = resolveFixtureMode(
-    session.snapshot?.quality.kind,
-    documentId,
-    storeId,
-    override,
-  );
-
-  if (mode === "live" && documentId !== undefined && storeId !== undefined) {
-    return (
-      <CoworkLiveWorkspace
-        label={definition.displayName}
-        documentId={documentId}
-        storeId={storeId}
-        fallbackHealth={healthFromModel(model)}
-      />
-    );
-  }
-
-  if (mode === "demo") {
-    return <CoworkDemoWorkspace label={definition.displayName} model={model} />;
-  }
-
-  return <CoworkEmptyWorkspace label={definition.displayName} />;
-}
-
-export default CoworkWorkspaceSurface;
