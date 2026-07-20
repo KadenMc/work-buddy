@@ -1,5 +1,6 @@
 import { Sparkle } from "@phosphor-icons/react/Sparkle";
 
+import { CustomizeViewToggle } from "../dashboard/customize/CustomizeViewToggle";
 import { HelpModeToggle } from "../dashboard/help/HelpModeToggle";
 import { useDashboardTemporalContext } from "../dashboard/temporal/DashboardTemporalContext";
 import { useClock } from "../hooks/useClock";
@@ -81,6 +82,7 @@ export default function Header({
       <div className="header-meta">
         <AppearanceControl />
         <HelpModeToggle />
+        <CustomizeViewToggle />
         <div className="header-statuses">
           <SidecarIndicator />
           <LiveIndicator />

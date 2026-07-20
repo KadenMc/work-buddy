@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -35,7 +36,8 @@ import type { ContributionRegistry } from "../contributions/registry";
 import type { RegisteredWidget } from "../contributions/registry";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { ReactGridLayoutAdapter } from "../layout/ReactGridLayoutAdapter";
-import { HelpTarget, useDashboardHelpEnabled, useHelpMode } from "../help";
+import { useDashboardHelpEnabled, useHelpMode } from "../help";
+import { useCustomizeMode, type CustomizeModeRegistration } from "../customize";
 import type { DashboardLayout, LayoutCommand } from "../layout/contracts";
 import { applyLayoutCommand } from "../layout/operations";
 import { useInteractionSurfaces } from "../interactions";
@@ -132,6 +134,7 @@ function StandardGridViewHost({
   const { announce } = useDashboardAnnouncer();
   const { notify, confirm } = useInteractionSurfaces();
   const isMobile = useMediaQuery("(max-width: 767px)");
+  const { register } = useCustomizeMode();
   const definitions = useMemo(
     () =>
       new Map(
@@ -308,6 +311,25 @@ function StandardGridViewHost({
     setResetPatchRequested(false);
     announce("Customize view mode started");
   };
+
+  // Register with the app-shell Customize controller so the navbar entry control can open
+  // this host's in-view layout editor. begin routes through a ref so the newest closure runs,
+  // the registration effect depends only on the stable register function so a controller state
+  // change never re-registers, and the host's customizing state propagates in its own effect.
+  const beginRef = useRef(beginCustomize);
+  beginRef.current = beginCustomize;
+  const registrationRef = useRef<CustomizeModeRegistration | null>(null);
+  useEffect(() => {
+    const registration = register({ begin: () => beginRef.current() });
+    registrationRef.current = registration;
+    return () => {
+      registration.unregister();
+      registrationRef.current = null;
+    };
+  }, [register]);
+  useEffect(() => {
+    registrationRef.current?.setCustomizing(customizing);
+  }, [customizing]);
 
   const cancelCustomize = () => {
     setEditState((current) => viewEditSessionReducer(current, { type: "cancel" }));
@@ -814,23 +836,7 @@ function StandardGridViewHost({
               </Button>
             </span>
           </>
-        ) : (
-          <>
-            <HelpTarget
-              content={{
-                summary: "Rearrange and resize the widgets in this view.",
-                details:
-                  "Customize view opens a dedicated desktop layout editor. You can move, resize, add, hide, or remove eligible widgets, preview the result safely, and then save or cancel the entire layout change.",
-              }}
-              placement="bottom end"
-              reactAriaComposite
-            >
-              <Button size="small" onClick={beginCustomize} disabled={isMobile}>
-                <Layout aria-hidden="true" /> Customize view
-              </Button>
-            </HelpTarget>
-          </>
-        )}
+        ) : null}
       </div>
       {customizing && mobileOrderOpen ? (
         <MobileOrderEditor

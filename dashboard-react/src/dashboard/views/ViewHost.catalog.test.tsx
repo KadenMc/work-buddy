@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "../../theme/ThemeProvider";
 import { DashboardTestRuntime } from "../../test/DashboardTestRuntime";
 import { DashboardAnnouncer } from "../accessibility/DashboardAnnouncer";
+import { CustomizeModeProvider } from "../customize";
+import { CustomizeViewToggle } from "../customize/CustomizeViewToggle";
 import type {
   AppContribution,
   DashboardIntent,
@@ -211,12 +213,15 @@ describe("ViewHost provider-bound catalog additions", () => {
         <DashboardEventProvider>
           <DashboardAnnouncer>
             <DashboardTestRuntime>
-              <ViewHost
-                registry={registry}
-                definition={contribution.views[0]!}
-                provider={provider}
-                personalizationRepository={new InMemoryPersonalizationRepository()}
-              />
+              <CustomizeModeProvider>
+                <CustomizeViewToggle />
+                <ViewHost
+                  registry={registry}
+                  definition={contribution.views[0]!}
+                  provider={provider}
+                  personalizationRepository={new InMemoryPersonalizationRepository()}
+                />
+              </CustomizeModeProvider>
             </DashboardTestRuntime>
           </DashboardAnnouncer>
         </DashboardEventProvider>
@@ -228,7 +233,9 @@ describe("ViewHost provider-bound catalog additions", () => {
     ).toBeVisible();
     expect(screen.getByText("Default input is behind")).toBeVisible();
     expect(screen.queryByRole("button", { name: "Widgets" })).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Customize view" }));
+    const customizeToggle = screen.getByRole("button", { name: "Customize view" });
+    await waitFor(() => expect(customizeToggle).toBeEnabled());
+    await user.click(customizeToggle);
     await user.click(screen.getByRole("button", { name: "Widgets" }));
 
     expect(screen.queryByRole("button", { name: "Add Unsupported Input" })).not.toBeInTheDocument();

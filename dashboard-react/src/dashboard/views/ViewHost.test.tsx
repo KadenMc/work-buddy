@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -9,6 +9,8 @@ import { dashboardRegistry } from "../../app/dashboardRegistry";
 import { ThemeProvider } from "../../theme/ThemeProvider";
 import { DashboardTestRuntime } from "../../test/DashboardTestRuntime";
 import { DashboardAnnouncer } from "../accessibility/DashboardAnnouncer";
+import { CustomizeModeProvider } from "../customize";
+import { CustomizeViewToggle } from "../customize/CustomizeViewToggle";
 import { DashboardEventProvider } from "../events/DashboardEventProvider";
 import { DashboardHelpProvider } from "../help";
 import { InMemoryPersonalizationRepository } from "../personalization/repository";
@@ -87,7 +89,11 @@ describe("ViewHost", () => {
         ).not.toBeNull(),
       { timeout: 15_000 },
     );
-    expect(screen.getByRole("button", { name: "Customize view" })).toBeDisabled();
+    // Customize view is a navbar control now, not a per-view button, so the host itself
+    // renders no such button. On mobile the navbar control also self-disables.
+    expect(
+      within(rendered.container).queryByRole("button", { name: "Customize view" }),
+    ).not.toBeInTheDocument();
   }, 20_000);
 
   it("keeps the desktop grid and standard timeline presentation", async () => {
@@ -100,12 +106,15 @@ describe("ViewHost", () => {
             <DashboardAnnouncer>
               <DashboardTestRuntime>
                 <DashboardHelpProvider enabled>
-                  <ViewHost
-                    registry={dashboardRegistry}
-                    definition={JOURNAL_VIEW_DEFINITION}
-                    provider={new InMemoryJournalProvider()}
-                    personalizationRepository={new InMemoryPersonalizationRepository()}
-                  />
+                  <CustomizeModeProvider>
+                    <CustomizeViewToggle />
+                    <ViewHost
+                      registry={dashboardRegistry}
+                      definition={JOURNAL_VIEW_DEFINITION}
+                      provider={new InMemoryJournalProvider()}
+                      personalizationRepository={new InMemoryPersonalizationRepository()}
+                    />
+                  </CustomizeModeProvider>
                 </DashboardHelpProvider>
               </DashboardTestRuntime>
             </DashboardAnnouncer>
@@ -151,7 +160,11 @@ describe("ViewHost", () => {
     ).toBeVisible();
 
     await userEvent.unhover(capturePurpose);
-    await userEvent.click(screen.getByRole("button", { name: "Customize view" }));
+    // The host registers with the shared controller, which enables the navbar toggle. Driving
+    // customize through that toggle proves the lifted entry control opens this view's editor.
+    const customizeToggle = screen.getByRole("button", { name: "Customize view" });
+    await waitFor(() => expect(customizeToggle).toBeEnabled());
+    await userEvent.click(customizeToggle);
     expect(screen.getByText("Arranging layout")).toBeVisible();
   }, 20_000);
 });
