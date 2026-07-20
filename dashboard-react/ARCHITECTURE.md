@@ -204,9 +204,16 @@ keeps its one live element mounted across every such remount, and light placehol
 re-home that element as the grid rebuilds, so its live local state, real DOM nodes, and focus
 survive intact. Like a single-surface view, a durable widget owns everything below its frame
 and may read its own URL, listen to its own streams, and call its own routes directly, so the
-Widget Renderer Contract's URL, SSE, and direct-call exclusions do not apply to it. Every
-identity, trust, and theme invariant still holds, and validation requires a durable widget to
-be `single_per_view` with no drafts. It is a generic capability keyed off `definition.durable`,
+Widget Renderer Contract's URL, SSE, and direct-call exclusions do not apply to it. A durable
+widget also owns its own persistence and saves its live state through its own app-owned seams,
+and it stays live in Operate, Arrange, and Preview alike, so anything typed into it is its real
+document and is saved even while the surrounding view is arranged or previewed. Because Preview
+sandboxes standard widgets only and has nothing to sandbox on a durable card, a view whose every
+visible widget is durable offers Arrange only, and a mixed view keeps Preview with copy that says
+the standard widgets are simulated while the live cards stay live and save. Every identity, trust,
+and theme invariant still holds, and validation requires a durable widget to be `single_per_view`
+with no drafts, the consequence of owning its own persistence. It is a generic capability keyed
+off `definition.durable`,
 with no widget-specific branch in `ViewHost`, `WidgetHost`, layout, or personalization code. A
 durable card can occupy a content-sized container on a narrow viewport, so its renderer must
 tolerate one. The Co-work workspace is the first durable widget.
@@ -263,8 +270,9 @@ replacement of allowlisted semantic values—not arbitrary CSS or layout overrid
    intents; place fetching, permission/consent decisions, and domain behavior in the
    owning ViewProvider/App boundary. Reach for a `durable` widget only when a renderer must
    keep live local state that no snapshot can restore, such as a collaborative editor
-   session, accepting the keep-alive contract with its `single_per_view` and no-drafts
-   constraints in return.
+   session. Such a widget owns its own persistence and saves its live state through its own
+   app-owned seams, so it takes on the keep-alive contract with its `single_per_view` and
+   no-drafts constraints in return.
 3. In the hosting ViewDefinition, add a stable local slot ID, required role, presence
    policy, default type/settings/bindings/layout, and explicit reading/mobile order.
 4. Register publisher contributions before views that select their types. Do not add

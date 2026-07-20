@@ -666,6 +666,15 @@ function StandardGridViewHost({
   const visibleInstances = editState.present.instances.filter(
     (instance) => instance.visibility === "shown",
   );
+  // Preview sandboxes standard widgets only, by forking their drafts and simulating or
+  // blocking their outward effects. A durable widget owns its persistence and stays live in
+  // every mode, so Preview has nothing to sandbox on it. A view whose every visible widget is
+  // durable therefore offers Arrange only. This resolves definition.durable exactly as
+  // renderWidget and durableEntries do, so it stays a generic rule with no per-view branch.
+  const everyVisibleWidgetIsDurable = visibleInstances.every(
+    (instance) =>
+      registry.getWidget(instance.widgetTypeId)?.definition.durable === true,
+  );
   const byId = new Map(visibleInstances.map((instance) => [instance.instanceId, instance]));
   const orderedMobile = editState.present.mobileOrder
     .map((instanceId) => byId.get(instanceId))
@@ -740,7 +749,7 @@ function StandardGridViewHost({
               <span className="wb-view-toolbar__constraint">
                 {customizeMode === "arrange"
                   ? "24 columns · gaps allowed · no overlap · resize from any edge"
-                  : "Widget actions are simulated or blocked · preview input is discarded"}
+                  : "Standard widget actions are simulated or blocked · their input is discarded · live cards stay live and save"}
               </span>
             </span>
             {customizeMode === "arrange" ? (
@@ -756,17 +765,21 @@ function StandardGridViewHost({
                   >
                     <DeviceMobile aria-hidden="true" /> Mobile order
                   </Button>
-                  <Button
-                    size="small"
-                    onClick={() => {
-                      setCatalogOpen(false);
-                      setMobileOrderOpen(false);
-                      setCustomizeMode("preview");
-                      announce("Interaction preview started; widget actions will not be saved");
-                    }}
-                  >
-                    <Eye aria-hidden="true" /> Preview interactions
-                  </Button>
+                  {!everyVisibleWidgetIsDurable ? (
+                    <Button
+                      size="small"
+                      onClick={() => {
+                        setCatalogOpen(false);
+                        setMobileOrderOpen(false);
+                        setCustomizeMode("preview");
+                        announce(
+                          "Interaction preview started. Standard widget actions will not be saved, but live cards stay live and save.",
+                        );
+                      }}
+                    >
+                      <Eye aria-hidden="true" /> Preview interactions
+                    </Button>
+                  ) : null}
                 </span>
                 <span className="wb-view-toolbar__group">
               <Button

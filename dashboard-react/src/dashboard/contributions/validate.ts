@@ -592,7 +592,7 @@ const validateWidgetDefinition = (
       issues,
       "durable_widget_drafts",
       `${path}.drafts`,
-      "a durable widget keeps its own live state and must not declare drafts",
+      "a durable widget owns its own persistence and keeps its own live state, so it must not declare host drafts",
     );
   }
 
