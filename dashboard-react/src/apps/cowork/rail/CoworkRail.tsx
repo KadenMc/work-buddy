@@ -191,6 +191,19 @@ export function CoworkRail(props: CoworkRailProps) {
             sendErrorMessage={chat.sendError ?? undefined}
             onRetry={chat.retry}
             noMessagesLabel="No messages yet. Ask the document agent anything."
+            initialValue={
+              loadChatDraft(
+                props.storage ?? window.localStorage,
+                props.conversationId,
+              ) ?? undefined
+            }
+            onDraftChange={(text) =>
+              saveChatDraft(
+                props.storage ?? window.localStorage,
+                props.conversationId,
+                text,
+              )
+            }
           />
         )}
       </div>

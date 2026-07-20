@@ -28,6 +28,15 @@ export interface ChatPanelProps {
   readonly sendErrorMessage?: string;
   readonly composerDisabled?: boolean;
   readonly composerPlaceholder?: string;
+  /** Seed the composer draft once on mount, e.g. from a retained unsent draft. */
+  readonly initialValue?: string;
+  /**
+   * Observe the live composer draft. Fired on every edit and with an empty
+   * string after a successful send, so a host can retain the unsent draft and
+   * arm an unsaved-work guard. Forwarded to the composer, which still owns the
+   * text state.
+   */
+  onDraftChange?(value: string): void;
   /** Reason shown in place of the composer when status is "read-only". */
   readonly readOnlyReason?: string;
   /** Full-panel copy for the "empty" host state. */
@@ -70,6 +79,8 @@ export function ChatPanel({
   sendErrorMessage,
   composerDisabled = false,
   composerPlaceholder,
+  initialValue,
+  onDraftChange,
   readOnlyReason,
   emptyMessage,
   errorMessage,
@@ -172,6 +183,8 @@ export function ChatPanel({
             disabled={composerDisabled === true || agentActivity === "stopped"}
             placeholder={composerPlaceholder}
             errorMessage={sendErrorMessage}
+            initialValue={initialValue}
+            onDraftChange={onDraftChange}
           />
         ) : null}
       </>

@@ -17,7 +17,7 @@ Reusable conversational surface for any view that mounts a house conversation. K
 
 | Component | Location | Contract |
 |---|---|---|
-| ChatPanel | `src/widget-library/chat/ChatPanel.tsx` | Message log plus composer with header slot and the standard host states (ready, loading, empty, error, read-only). Composer self-disables while the agent is stopped |
+| ChatPanel | `src/widget-library/chat/ChatPanel.tsx` | Message log plus composer with header slot and the standard host states (ready, loading, empty, error, read-only). Composer self-disables while the agent is stopped. Forwards the optional `initialValue`/`onDraftChange` draft seam to the composer for host-side draft retention |
 | ChatMessageList | `src/widget-library/chat/ChatMessageList.tsx` | Author-attributed transcript with unread boundary, scroll lock, jump-to-latest, inline choice and boolean answers, typing and agent-stopped indicators |
 | ChatComposer | `src/widget-library/chat/ChatComposer.tsx` | Enter submits, Shift plus Enter newline, IME-safe, draft retained on send failure, optional `initialValue`/`onDraftChange` draft-observation seam for host-side persistence and unsaved-work guards |
 | useChatConversation | `src/widget-library/chat/useChatConversation.ts` | Binds a ChatConversationProvider to load, silent-refresh, and send lifecycles. Provider must be referentially stable |

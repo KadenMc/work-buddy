@@ -90,6 +90,37 @@ describe("ChatPanel", () => {
     await waitFor(() => expect(onSend).toHaveBeenCalledWith("a reply"));
   });
 
+  it("seeds the composer from initialValue", () => {
+    render(
+      <ChatPanel
+        title="Doc chat"
+        messages={messages}
+        onSend={vi.fn()}
+        initialValue="a retained draft"
+      />,
+    );
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue(
+      "a retained draft",
+    );
+  });
+
+  it("reports composer edits through onDraftChange", async () => {
+    const onDraftChange = vi.fn();
+    render(
+      <ChatPanel
+        title="Doc chat"
+        messages={messages}
+        onSend={vi.fn()}
+        onDraftChange={onDraftChange}
+      />,
+    );
+    await userEvent.type(
+      screen.getByRole("textbox", { name: "Message" }),
+      "hi",
+    );
+    expect(onDraftChange).toHaveBeenCalledWith("hi");
+  });
+
   it("has no accessibility violations when ready", async () => {
     const { container } = render(
       <ChatPanel title="Doc chat" messages={messages} onSend={vi.fn()} />,
