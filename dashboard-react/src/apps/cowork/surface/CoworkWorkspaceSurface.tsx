@@ -62,9 +62,10 @@ const COWORK_HEALTH_HELP: HelpContent = {
 };
 
 /**
- * The demo document behind ?cowork_fixture=demo. Its prose carries the exact phrases the
- * in-memory review fixture anchors its proposals and claim to, so the gated demo scene reads
- * as one coherent document beside its review rail.
+ * The seed for the dev-only demo fixture (Ruling 1: demo is no longer a product surface). Its
+ * prose carries the exact phrases the in-memory review fixture anchors its proposals and claim
+ * to, so the fixture scene reads as one coherent document beside its review rail. It stays as
+ * test infrastructure behind the import.meta.env.DEV gate and is tree-shaken from production.
  */
 const DEMO_DOCUMENT_MARKDOWN = [
   "# Context bundle cache",
@@ -208,9 +209,11 @@ export const healthFromModel = (
 };
 
 /**
- * Demo mode (the fixture switch). The in-memory review and demo chat providers back the
- * rail and the demo editor pane runs an in-memory Yjs transport, so widget-lab, the tests,
- * and an offline shell all render the same deterministic scene with no network.
+ * The dev-only demo fixture scene (Ruling 1: not a product surface). The in-memory review and
+ * demo chat providers back the rail and the editor pane keys its local transport to the demo
+ * document id, so widget-lab, the tests, and the dev-server e2e suites render the same
+ * deterministic scene with no network. The whole composition sits behind import.meta.env.DEV
+ * at its call site, so production tree-shakes it entirely.
  */
 export function CoworkDemoWorkspace({
   model,
@@ -228,7 +231,9 @@ export function CoworkDemoWorkspace({
   return (
     <CoworkWorkspaceLayout
       health={healthFromModel(model)}
-      editor={<CoworkEditorPane seedMarkdown={DEMO_DOCUMENT_MARKDOWN} />}
+      editor={
+        <CoworkEditorPane documentId={documentId} seedMarkdown={DEMO_DOCUMENT_MARKDOWN} />
+      }
       rail={
         <CoworkRail
           documentId={documentId}
@@ -267,7 +272,10 @@ export function CoworkEmptyWorkspace() {
   return (
     <CoworkWorkspaceLayout
       health={null}
-      editor={<CoworkEditorPane />}
+      // Thread the stable empty-document id so the editor keys its local, reload-surviving
+      // transport to this scratch document (the coordination seam with the persistence work).
+      // The prop is optional, so this compiles whether or not the pane consumes it yet.
+      editor={<CoworkEditorPane documentId={EMPTY_DOCUMENT_ID} />}
       rail={
         <CoworkRail
           documentId={EMPTY_DOCUMENT_ID}
@@ -377,12 +385,14 @@ export function CoworkLiveWorkspace({
 export type CoworkFixtureMode = "demo" | "live" | "empty";
 
 /**
- * Decide empty vs demo vs live. The honest default is empty (no document, honest empty
- * states). An explicit `?cowork_fixture=demo` query opts into the fabricated demo scene
- * (widget-lab and manual testing). A live scope with a resolvable store id and document id
- * is live. Live needs the store id, supplied on navigation as the same `store_id` the routes
- * take, so a live scope with no store id, and any scope with no explicit demo flag, falls
- * back to the honest empty state rather than fabricated content.
+ * Decide empty vs live, with a dev-only demo fixture entry. The honest default is empty (no
+ * document, honest empty states). A live scope with a resolvable store id and document id is
+ * live, supplied on navigation as the same `store_id` the routes take. The demo scene is not a
+ * product surface (Ruling 1): `?cowork_fixture=demo` resolves to it only when
+ * import.meta.env.DEV is true, which is the dev server the e2e suites drive. In a production
+ * build import.meta.env.DEV is statically false, so the demo branch and every
+ * CoworkDemoWorkspace it selects are tree-shaken out, leaving the honest empty default and a
+ * live store-scoped session as the only production modes.
  */
 export function resolveFixtureMode(
   quality: string | undefined,
@@ -390,7 +400,7 @@ export function resolveFixtureMode(
   storeId: string | undefined,
   override: string | null,
 ): CoworkFixtureMode {
-  if (override === "demo") return "demo";
+  if (import.meta.env.DEV && override === "demo") return "demo";
   const wantLive = override === "live" || quality !== "demo";
   if (wantLive && documentId !== undefined && storeId !== undefined) return "live";
   return "empty";
