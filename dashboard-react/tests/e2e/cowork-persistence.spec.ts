@@ -67,8 +67,9 @@ test.describe("Co-work persistence across reload", () => {
       page.getByRole("textbox", { name: "Document editor" }),
     ).toContainText(EDITOR_MARKER, { timeout: 60_000 });
 
-    // The chat composer rehydrates its retained draft. The rail opens on Review, so switch back
-    // to Chat to read the seeded composer.
+    // The chat composer rehydrates its retained draft. Select Chat to surface the composer panel
+    // and read the seeded draft. The rail restores its last-active tab from per-document
+    // persistence, so this reselects the tab the pre-reload edit left active.
     await page.getByRole("tab", { name: /Chat/ }).click();
     await expect(page.getByRole("textbox", { name: "Message" })).toHaveValue(
       CHAT_DRAFT,

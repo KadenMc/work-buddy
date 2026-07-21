@@ -51,6 +51,12 @@ const INITIAL_STATE: RailState = {
 
 type Listener = () => void;
 
+/** Side-effect hooks the owner wires into the store without giving it a Storage. */
+export interface RailStoreOptions {
+  /** Called after the tab changes, so the owner can mirror it to storage. */
+  readonly onTabChange?: (tab: RailTab) => void;
+}
+
 /** Whether the sitting holds any staged decision (drives the dirty guard). */
 export function isDirty(state: RailState): boolean {
   return (
@@ -62,9 +68,11 @@ export function isDirty(state: RailState): boolean {
 export class RailStore {
   private state: RailState;
   private readonly listeners = new Set<Listener>();
+  private readonly options: RailStoreOptions;
 
-  constructor(initial: Partial<RailState> = {}) {
+  constructor(initial: Partial<RailState> = {}, options: RailStoreOptions = {}) {
     this.state = { ...INITIAL_STATE, ...initial };
+    this.options = options;
   }
 
   getState = (): RailState => this.state;
@@ -84,6 +92,7 @@ export class RailStore {
 
   setTab(tab: RailTab): void {
     this.set({ ...this.state, tab });
+    this.options.onTabChange?.(tab);
   }
 
   setMode(mode: RailMode): void {
