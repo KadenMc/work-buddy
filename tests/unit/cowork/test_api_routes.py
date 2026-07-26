@@ -67,7 +67,32 @@ def test_cowork_host_file_routes_reject_loopback_reverse_proxies(client):
         {
             "REMOTE_ADDR": "127.0.0.1",
             "HTTP_HOST": "localhost:5127",
+            "HTTP_FORWARDED": "for=100.64.0.42",
+        },
+        {
+            "REMOTE_ADDR": "127.0.0.1",
+            "HTTP_HOST": "localhost:5127",
+            "HTTP_VIA": "1.1 proxy.example",
+        },
+        {
+            "REMOTE_ADDR": "127.0.0.1",
+            "HTTP_HOST": "localhost:5127",
             "HTTP_X_FORWARDED_FOR": "100.64.0.42",
+        },
+        {
+            "REMOTE_ADDR": "127.0.0.1",
+            "HTTP_HOST": "localhost:5127",
+            "HTTP_X_FORWARDED_HOST": "workstation.example.ts.net",
+        },
+        {
+            "REMOTE_ADDR": "127.0.0.1",
+            "HTTP_HOST": "localhost:5127",
+            "HTTP_X_FORWARDED_PROTO": "https",
+        },
+        {
+            "REMOTE_ADDR": "127.0.0.1",
+            "HTTP_HOST": "localhost:5127",
+            "HTTP_X_REAL_IP": "100.64.0.42",
         },
     )
 

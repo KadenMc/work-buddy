@@ -82,7 +82,9 @@ const folderActionError = (error: unknown): CoworkApiError => {
   const apiError = asCoworkApiError(error);
   const messages: Readonly<Record<string, string>> = {
     folder_chooser_unavailable: "Folder selection isn’t available here.",
+    folder_chooser_busy: "The Folder picker is already open.",
     folder_chooser_failed: "The Folder picker couldn’t be opened.",
+    folder_chooser_timeout: "The Folder picker took too long. Try again.",
     selection_expired: "The Folder selection expired. Open the Folder again.",
     folder_changed: "The Folder changed while it was opening. Try again.",
     descendant_scan_incomplete: "Co-work couldn’t finish opening that Folder. Try again.",

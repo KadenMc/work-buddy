@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import shutil
+import stat
 import subprocess
 from pathlib import Path
 
@@ -13,10 +16,17 @@ from flask import Flask
 from work_buddy.cowork.folder_api import (
     FolderAccessPolicy,
     FolderTokenStore,
+    MAX_FOLDER_PATH_CHARS,
+    PICKER_INTENT_HEADER,
+    PICKER_INTENT_VALUE,
     create_folder_blueprint,
 )
-from work_buddy.cowork.project_store import ProjectStoreManager
+from work_buddy.cowork.native_folder_chooser import NativeFolderChooserError
+from work_buddy.cowork.project_store import FolderLifecycleError, ProjectStoreManager
 from work_buddy.truth.registry import TruthStoreRegistry
+
+
+PICKER_HEADERS = {PICKER_INTENT_HEADER: PICKER_INTENT_VALUE}
 
 
 def _tree_bytes(root: Path) -> dict[str, bytes | None]:
@@ -150,14 +160,134 @@ def test_inspect_route_reports_redirected_managed_layout_without_writing_target(
 
 def test_host_chooser_is_honest_about_cancel_and_unavailability(tmp_path: Path) -> None:
     unavailable, _, _ = _client(tmp_path)
-    response = unavailable.post("/api/truth/cowork/folders/choose")
-    assert response.status_code == 501
+    response = unavailable.post(
+        "/api/truth/cowork/folders/choose",
+        headers=PICKER_HEADERS,
+    )
+    assert response.status_code == 503
     assert response.get_json()["error"]["code"] == "folder_chooser_unavailable"
 
     cancelled, _, _ = _client(tmp_path / "cancel", chooser=lambda: None)
-    response = cancelled.post("/api/truth/cowork/folders/choose")
+    response = cancelled.post(
+        "/api/truth/cowork/folders/choose",
+        headers=PICKER_HEADERS,
+    )
     assert response.status_code == 200
     assert response.get_json() == {"cancelled": True, "ok": True}
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {},
+        {
+            **PICKER_HEADERS,
+            "Sec-Fetch-Site": "cross-site",
+        },
+        {
+            **PICKER_HEADERS,
+            "Origin": "https://unrelated.example",
+        },
+    ],
+)
+def test_host_chooser_requires_a_same_origin_dashboard_intent(
+    tmp_path: Path,
+    headers: dict[str, str],
+) -> None:
+    invoked = False
+
+    def choose():
+        nonlocal invoked
+        invoked = True
+        return tmp_path
+
+    client, _, _ = _client(tmp_path, chooser=choose)
+    response = client.post(
+        "/api/truth/cowork/folders/choose",
+        headers=headers,
+    )
+
+    assert response.status_code == 403
+    assert response.get_json()["error"]["code"] == "folder_picker_intent_required"
+    assert invoked is False
+
+
+@pytest.mark.parametrize(
+    ("code", "status"),
+    [
+        ("folder_chooser_busy", 409),
+        ("folder_chooser_failed", 503),
+    ],
+)
+def test_host_chooser_preserves_typed_failures(
+    tmp_path: Path,
+    code: str,
+    status: int,
+) -> None:
+    def fail():
+        raise NativeFolderChooserError(
+            "The Folder picker could not be opened.",
+            code=code,
+            status=status,
+            diagnostic="test-only diagnostic",
+        )
+
+    client, _, _ = _client(tmp_path, chooser=fail)
+    response = client.post(
+        "/api/truth/cowork/folders/choose",
+        headers=PICKER_HEADERS,
+    )
+    payload = response.get_json()
+
+    assert response.status_code == status
+    assert payload["error"]["code"] == code
+    assert payload["error"]["retryable"] is True
+    if code == "folder_chooser_busy":
+        assert "details" not in payload["error"]
+    else:
+        assert len(payload["error"]["details"]["trace_id"]) == 12
+    assert "test-only diagnostic" not in str(payload)
+
+
+def test_host_chooser_busy_is_not_logged_as_a_failure(
+    tmp_path: Path,
+    caplog,
+) -> None:
+    def fail():
+        raise NativeFolderChooserError(
+            "A Folder picker is already open.",
+            code="folder_chooser_busy",
+            status=409,
+        )
+
+    client, _, _ = _client(tmp_path, chooser=fail)
+    response = client.post(
+        "/api/truth/cowork/folders/choose",
+        headers=PICKER_HEADERS,
+    )
+
+    assert response.status_code == 409
+    assert not any(record.levelno >= logging.WARNING for record in caplog.records)
+
+
+@pytest.mark.parametrize(
+    ("case", "path"),
+    [
+        ("nul", "C:\\Bad\u0000Folder"),
+        ("oversized", "C:\\" + ("a" * MAX_FOLDER_PATH_CHARS)),
+    ],
+    ids=["nul", "oversized"],
+)
+def test_folder_access_policy_rejects_pathological_paths(
+    case: str,
+    path: str,
+) -> None:
+    del case
+    with pytest.raises(FolderLifecycleError) as raised:
+        FolderAccessPolicy().admit(path)
+
+    assert raised.value.code == "invalid_path"
+    assert raised.value.status == 400
 
 
 def test_choose_returns_host_path_and_opaque_selection_token(tmp_path: Path) -> None:
@@ -165,7 +295,10 @@ def test_choose_returns_host_path_and_opaque_selection_token(tmp_path: Path) -> 
     folder.mkdir()
     client, _, _ = _client(tmp_path, chooser=lambda: folder)
 
-    chosen = client.post("/api/truth/cowork/folders/choose").get_json()
+    chosen = client.post(
+        "/api/truth/cowork/folders/choose",
+        headers=PICKER_HEADERS,
+    ).get_json()
     assert chosen["cancelled"] is False
     assert chosen["folder_path"] == str(folder.resolve())
     assert len(chosen["selection_token"]) == 32
@@ -370,3 +503,35 @@ def test_opaque_folder_tokens_prune_expired_host_paths(
     assert tokens.resolve(current, kind="selection")["folder_path"].endswith(
         "current"
     )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+def test_opaque_folder_tokens_use_private_posix_permissions(tmp_path: Path) -> None:
+    tokens = FolderTokenStore(tmp_path / "tokens")
+    token = tokens.issue("selection", {"folder_path": "/private/path"})
+
+    assert stat.S_IMODE(tokens.root.stat().st_mode) == 0o700
+    assert stat.S_IMODE((tokens.root / f"{token}.json").stat().st_mode) == 0o600
+
+
+def test_opaque_folder_tokens_prune_more_than_one_legacy_batch(
+    tmp_path: Path,
+) -> None:
+    tokens = FolderTokenStore(tmp_path / "tokens")
+    tokens.root.mkdir(parents=True)
+    expired_body = json.dumps(
+        {
+            "kind": "selection",
+            "expires_at": 0,
+            "data": {"folder_path": "private"},
+        }
+    )
+    for index in range(300):
+        (tokens.root / f"{index:032x}.json").write_text(
+            expired_body,
+            encoding="utf-8",
+        )
+
+    current = tokens.issue("selection", {"folder_path": "current"})
+
+    assert list(tokens.root.glob("*.json")) == [tokens.root / f"{current}.json"]

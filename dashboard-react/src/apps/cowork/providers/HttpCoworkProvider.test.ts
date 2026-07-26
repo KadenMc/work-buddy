@@ -225,6 +225,65 @@ describe("HttpCoworkProvider", () => {
     expect((await provider.loadView()).model.folderSelection).toEqual({ kind: "none" });
   });
 
+  it.each([
+    [
+      "folder_chooser_unavailable",
+      503,
+      "Folder selection isn’t available here.",
+    ],
+    ["folder_chooser_busy", 409, "The Folder picker is already open."],
+    ["folder_chooser_failed", 503, "The Folder picker couldn’t be opened."],
+    [
+      "folder_chooser_timeout",
+      504,
+      "The Folder picker took too long. Try again.",
+    ],
+  ] as const)(
+    "gives %s a specific human-readable picker error",
+    async (code, status, expectedMessage) => {
+      const location = new MemoryLocation();
+      const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.startsWith("/api/truth/cowork/folders?")) {
+          return json({ read_only: false, folders: [], diagnostics: [] });
+        }
+        if (url.endsWith("/folders/choose")) {
+          return json(
+            {
+              error: {
+                code,
+                message: "Backend implementation detail.",
+                retryable: code !== "folder_chooser_unavailable",
+              },
+            },
+            status,
+          );
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      });
+      const provider = new HttpCoworkProvider({
+        location,
+        storage: localStorage,
+        client: new CoworkHttpClient(fetchImpl as typeof fetch),
+      });
+      await provider.loadView();
+
+      const result = await provider.dispatch(
+        intent(COWORK_INTENTS.folderSelect, { action: "choose" }),
+      );
+
+      expect(result).toMatchObject({
+        status: "rejected",
+        message: expectedMessage,
+      });
+      expect((await provider.loadView()).model.navigationError).toMatchObject({
+        code,
+        message: expectedMessage,
+        status,
+      });
+    },
+  );
+
   it("clears a stale picker error when the next picker attempt is cancelled", async () => {
     const location = new MemoryLocation();
     let chooserAttempts = 0;

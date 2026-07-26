@@ -14,6 +14,9 @@ import { CoworkHttpError, normalizeCoworkError } from "./errors";
 
 type JsonRecord = Record<string, unknown>;
 
+export const COWORK_FOLDER_PICKER_INTENT_HEADER = "X-Work-Buddy-Intent";
+export const COWORK_FOLDER_PICKER_INTENT = "cowork-folder-picker";
+
 const record = (value: unknown): JsonRecord =>
   typeof value === "object" && value !== null ? (value as JsonRecord) : {};
 const text = (value: unknown, fallback = ""): string =>
@@ -367,7 +370,10 @@ export class CoworkHttpClient {
   async chooseFolder(): Promise<CoworkChooseResult> {
     const payload = await this.#json("/api/truth/cowork/folders/choose", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        [COWORK_FOLDER_PICKER_INTENT_HEADER]: COWORK_FOLDER_PICKER_INTENT,
+      },
       body: "{}",
     });
     return {

@@ -2,7 +2,7 @@
 name: System Tray
 kind: reference
 description: Desktop notification-area icon and control panel for the sidecar — its own login item, not a supervised service
-summary: A PySide6 QSystemTrayIcon (the `tray` extra) that runs as its own detached process and login item beside WB-Sidecar. Left-click opens a dashboard-styled panel (live status, per-service list, start/stop/restart with confirm, open-dashboard/activity buttons); right-click gives a minimal fallback menu. It reads sidecar_state.json and shells out to the CLI lifecycle; it supervises nothing. Windows-first.
+summary: A PySide6 QSystemTrayIcon that runs as its own detached process and login item beside WB-Sidecar. PySide6 is a core Windows dependency shared with Co-work's native Folder picker and remains available through the `tray` extra on other platforms. Left-click opens a dashboard-styled panel (live status, per-service list, start/stop/restart with confirm, open-dashboard/activity buttons); right-click gives a minimal fallback menu. It reads sidecar_state.json and shells out to the CLI lifecycle; it supervises nothing. Windows-first.
 entry_points:
 - work_buddy.tray
 tags:
@@ -58,11 +58,11 @@ dev_notes: |-
   pystray is lighter but caps forever at a context menu and is maintenance-
   inactive. PySide6 (`pyside6-essentials`, LGPL) draws a real popover panel
   (the value the tray exists for), is actively maintained, and is one backend
-  for all three OSes. The ~150 MB extra is immaterial next to the installer's
-  ~1 GB torch download, and it is an OPTIONAL `tray` extra so lean installs
-  skip it. Import Qt lazily inside `qt.py` so the Qt-free management surface
-  (`__init__`, `status`, `actions`, `pidfile`) and the `wbuddy start`
-  resurrection hook degrade cleanly when the extra is absent.
+  for all three OSes. On Windows `pyside6-essentials` is now a core dependency
+  shared with Co-work's native Folder picker; on other platforms the optional
+  `tray` extra supplies it. Import Qt lazily inside `qt.py` so the Qt-free
+  management surface (`__init__`, `status`, `actions`, `pidfile`) and the
+  `wbuddy start` resurrection hook degrade cleanly when PySide6 is absent.
 
   ## Cross-platform reality
 
@@ -110,4 +110,6 @@ The system tray is work-buddy's desktop face for the sidecar: a notification-are
 - Gated by `tray.enabled` (config, default off). `wbuddy tray enable` sets the flag, registers the `WB-Tray` login item, and starts the tray; `wbuddy tray disable` reverses all three; `wbuddy tray status` reports enabled / registered / running; `wbuddy tray run` is the foreground entry point the login item invokes.
 - The Windows installer offers a default-checked "tray at login" task; the `tray` extra is installed unconditionally so `wbuddy tray enable` works later without a download. `wbuddy uninstall` (and the Windows uninstaller) tears the tray down alongside the sidecar and PATH shim.
 
-Needs the `tray` extra (`uv sync --extra tray`, or `pip install -e ".[tray]"`).
+Windows core installs already include PySide6 for Co-work's native Folder
+picker. On other platforms, the tray needs the `tray` extra
+(`uv sync --extra tray`, or `pip install -e ".[tray]"`).

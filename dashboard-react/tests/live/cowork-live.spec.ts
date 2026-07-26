@@ -112,6 +112,9 @@ const chooseFolder = async (
   await page.route(
     "**/api/truth/cowork/folders/choose",
     async (route) => {
+      expect(route.request().headers()["x-work-buddy-intent"]).toBe(
+        "cowork-folder-picker",
+      );
       await route.fulfill({
         status: 200,
         contentType: "application/json",

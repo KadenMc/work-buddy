@@ -35,17 +35,27 @@ callers. Remote Co-work remains unavailable until Work Buddy has an
 authenticated remote surface; a network-bound dashboard must not expose Folder
 contents by implication. The guard also requires a local browser-visible Host
 and rejects forwarding/Tailscale proxy markers, because a loopback reverse
-proxy is not itself proof of a local user.
+proxy is not itself proof of a local user. Opening host UI has an additional
+boundary: `/folders/choose` requires the exact Co-work intent header, rejects
+cross-site browser provenance or a mismatched Origin, and the dashboard denies
+framing so another site cannot place the Folder control in a clickjacking frame.
 
 ## Folder and document flow
 
 With no Folder open, the toolbar's **Folder** control opens the native picker
-directly. On Windows this is the Explorer-style `IFileOpenDialog`, attached to
-the foreground window where possible. There is no intermediate menu, manual
-host-path form, setup lecture, or user-operated inspection step. Co-work checks
-and prepares the selected Folder behind the scenes, then shows its document
-catalog. The compact launcher keeps **New document**, recent Folders, and
-on-device documents together in the first viewport.
+directly. On Windows the dashboard launches a fixed
+`python -I -m work_buddy.cowork.folder_picker_helper` command. That isolated
+PySide6 process asks Qt for the operating system's native directory dialog with
+`ShowDirsOnly` and returns a selected path through a small versioned JSON
+protocol. It does not invoke a command shell or compile PowerShell/C# at
+runtime. A one-pixel Qt owner supplies a modal/topmost ownership hint so Windows
+can surface the native dialog above the browser without replacing it with a
+custom picker. A non-blocking process-local lock permits one picker at a time
+and returns a typed busy response to a second request. There is no intermediate
+menu, manual host-path form, setup lecture, or user-operated inspection step.
+Co-work checks and prepares the selected Folder behind the scenes, then shows
+its document catalog. The compact launcher keeps **New document**, recent
+Folders, and on-device documents together in the first viewport.
 
 The user can create a new document or add an existing Markdown file. A document
 started before a Folder is chosen is simply untitled and **Saved on this

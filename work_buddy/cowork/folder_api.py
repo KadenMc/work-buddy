@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 import uuid
-from itertools import islice
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 
@@ -25,6 +25,13 @@ from work_buddy.cowork.native_folder_chooser import (
 from work_buddy.truth.registry import TruthStoreRegistry
 
 
+logger = logging.getLogger(__name__)
+
+PICKER_INTENT_HEADER = "X-Work-Buddy-Intent"
+PICKER_INTENT_VALUE = "cowork-folder-picker"
+MAX_FOLDER_PATH_CHARS = 32_767
+
+
 class HostFolderChooser(Protocol):
     """Select a directory on the machine hosting Work Buddy, or cancel."""
 
@@ -40,14 +47,30 @@ class FolderAccessPolicy:
         )
 
     def admit(self, value: str | Path) -> Path:
-        path = Path(value).expanduser()
+        try:
+            raw_path = os.fspath(value)
+            if (
+                not isinstance(raw_path, str)
+                or "\x00" in raw_path
+                or len(raw_path) > MAX_FOLDER_PATH_CHARS
+            ):
+                raise ValueError("invalid Folder path")
+            path = Path(raw_path).expanduser()
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            raise FolderLifecycleError(
+                "invalid_path", "The selected Folder path is invalid.", status=400
+            ) from exc
         if not path.is_absolute():
             raise FolderLifecycleError(
                 "invalid_path", "Folder paths must be absolute host paths.", status=400
             )
         try:
             resolved = path.resolve(strict=True)
-        except OSError as exc:
+        except ValueError as exc:
+            raise FolderLifecycleError(
+                "invalid_path", "The selected Folder path is invalid.", status=400
+            ) from exc
+        except (OSError, RuntimeError) as exc:
             raise FolderLifecycleError(
                 "folder_not_found", "The selected Folder does not exist.", status=404
             ) from exc
@@ -88,9 +111,15 @@ class FolderTokenStore:
             "expires_at": time.time() + self.ttl_seconds,
             "data": dict(data),
         }
-        self.root.mkdir(parents=True, exist_ok=True)
+        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if os.name != "nt":
+            self.root.chmod(0o700)
         target = self.root / f"{token}.json"
-        fd = os.open(str(target), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        fd = os.open(
+            str(target),
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+            0o600,
+        )
         try:
             os.write(fd, json.dumps(body, separators=(",", ":")).encode("utf-8"))
             os.fsync(fd)
@@ -105,7 +134,7 @@ class FolderTokenStore:
             return
         now = time.time()
         try:
-            candidates = tuple(islice(self.root.glob("*.json"), 256))
+            candidates = tuple(self.root.glob("*.json"))
         except OSError:
             return
         for path in candidates:
@@ -196,6 +225,29 @@ def _body() -> Mapping[str, Any]:
     return value
 
 
+def _has_local_picker_intent() -> bool:
+    """Require a same-origin browser action before opening host UI.
+
+    The custom header makes an ordinary cross-origin request non-simple, so a
+    hostile page cannot submit it without a successful CORS preflight.  The
+    browser provenance checks fail closed as defense in depth if CORS policy is
+    ever broadened elsewhere.
+    """
+
+    if request.headers.get(PICKER_INTENT_HEADER) != PICKER_INTENT_VALUE:
+        return False
+    fetch_site = request.headers.get("Sec-Fetch-Site", "").strip().lower()
+    if fetch_site and fetch_site not in {"same-origin", "none"}:
+        return False
+    origin = request.headers.get("Origin")
+    if (
+        origin
+        and origin.rstrip("/").lower() != request.host_url.rstrip("/").lower()
+    ):
+        return False
+    return True
+
+
 def create_folder_blueprint(
     *,
     manager: ProjectStoreManager | None = None,
@@ -246,12 +298,20 @@ def create_folder_blueprint(
 
     @blueprint.post("/api/truth/cowork/folders/choose")
     def folders_choose():
+        if not _has_local_picker_intent():
+            return _error(
+                FolderLifecycleError(
+                    "folder_picker_intent_required",
+                    "Folder selection must be started from Co-work.",
+                    status=403,
+                )
+            )
         if chooser is None:
             return _error(
                 FolderLifecycleError(
                     "folder_chooser_unavailable",
                     "Folder selection is unavailable here.",
-                    status=501,
+                    status=503,
                 )
             )
         try:
@@ -270,12 +330,26 @@ def create_folder_blueprint(
                 }
             )
         except NativeFolderChooserError as exc:
+            details = None
+            if exc.code == "folder_chooser_busy":
+                logger.info("Co-work Folder picker request ignored because it is busy")
+            else:
+                trace_id = uuid.uuid4().hex[:12]
+                diagnostic = " ".join(str(exc.diagnostic).split())[:1000]
+                logger.warning(
+                    "Co-work Folder picker failed trace_id=%s code=%s diagnostic=%s",
+                    trace_id,
+                    exc.code,
+                    diagnostic,
+                )
+                details = {"trace_id": trace_id}
             return _error(
                 FolderLifecycleError(
-                    "folder_chooser_failed",
+                    exc.code,
                     str(exc),
-                    status=409,
-                    retryable=True,
+                    status=exc.status,
+                    retryable=exc.retryable,
+                    details=details,
                 )
             )
         except FolderLifecycleError as exc:
@@ -440,6 +514,8 @@ __all__ = [
     "FolderAccessPolicy",
     "FolderTokenStore",
     "HostFolderChooser",
+    "PICKER_INTENT_HEADER",
+    "PICKER_INTENT_VALUE",
     "cowork_folder_blueprint",
     "create_folder_blueprint",
 ]

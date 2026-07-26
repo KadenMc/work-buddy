@@ -32,6 +32,14 @@ def _dist_built() -> bool:
     return (_react_dist_dir() / "index.html").is_file()
 
 
+def test_dashboard_responses_cannot_be_embedded_in_cross_origin_frames(client):
+    response = client.get("/api/dashboard/context")
+
+    assert response.status_code == 200
+    assert response.headers["Content-Security-Policy"] == "frame-ancestors 'none'"
+    assert response.headers["X-Frame-Options"] == "DENY"
+
+
 def test_dashboard_context_uses_configured_timezone(client, monkeypatch):
     """Shared React chrome gets an explicit Work Buddy zone, never a browser guess."""
     from work_buddy import config as wb_config

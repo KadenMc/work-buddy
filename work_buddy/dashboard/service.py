@@ -45,6 +45,18 @@ app = Flask(__name__)
 _cfg = load_config()
 
 
+@app.after_request
+def _deny_dashboard_framing(response: Response) -> Response:
+    """Keep local dashboard actions out of hostile cross-origin frames."""
+
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "frame-ancestors 'none'",
+    )
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    return response
+
+
 def _is_read_only() -> bool:
     """Check if the dashboard is in read-only mode (no mutating actions)."""
     return _cfg.get("dashboard", {}).get("read_only", False)

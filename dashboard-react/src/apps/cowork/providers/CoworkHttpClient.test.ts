@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  COWORK_FOLDER_PICKER_INTENT,
+  COWORK_FOLDER_PICKER_INTENT_HEADER,
   CoworkHttpClient,
   normalizeDocumentSummary,
 } from "./CoworkHttpClient";
@@ -12,6 +14,31 @@ const json = (value: unknown, status = 200): Response =>
   });
 
 describe("CoworkHttpClient document lifecycle contracts", () => {
+  it("marks Folder picker requests with an explicit local user-intent header", async () => {
+    const fetchImpl = vi.fn(
+      async (_input: RequestInfo | URL, _init: RequestInit = {}) =>
+        json({ cancelled: true }),
+    );
+    const client = new CoworkHttpClient(fetchImpl as typeof fetch);
+
+    await expect(client.chooseFolder()).resolves.toMatchObject({ cancelled: true });
+
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    const [url, requestInit] = fetchImpl.mock.calls[0];
+    const init = requestInit ?? {};
+    const headers = new Headers(init.headers);
+    expect(String(url)).toBe("/api/truth/cowork/folders/choose");
+    expect(init).toMatchObject({
+      method: "POST",
+      credentials: "same-origin",
+      body: "{}",
+    });
+    expect(headers.get("Content-Type")).toBe("application/json");
+    expect(headers.get(COWORK_FOLDER_PICKER_INTENT_HEADER)).toBe(
+      COWORK_FOLDER_PICKER_INTENT,
+    );
+  });
+
   it("falls back to the path basename when the server title is blank", () => {
     expect(
       normalizeDocumentSummary({
