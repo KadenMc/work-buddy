@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -18,6 +19,15 @@ from work_buddy.cowork.folder_picker_helper import (
 
 def _selected(path: str, *, mode: str = PICKER_MODE_FOLDER) -> str:
     return json.dumps({"protocol": PICKER_PROTOCOL, "mode": mode, "path": path})
+
+
+def _windows_os_stub() -> SimpleNamespace:
+    """Advertise Windows to the module without mutating Python's shared os module."""
+
+    return SimpleNamespace(
+        name="nt",
+        fspath=native_folder_chooser.os.fspath,
+    )
 
 
 def test_windows_picker_uses_the_fixed_python_helper_protocol(monkeypatch) -> None:
@@ -348,7 +358,11 @@ def test_native_picker_timeout_is_bounded_and_recoverable(monkeypatch) -> None:
 
 
 def test_picker_lock_reports_a_distinct_conflict(monkeypatch) -> None:
-    monkeypatch.setattr(native_folder_chooser.os, "name", "nt")
+    monkeypatch.setattr(
+        native_folder_chooser,
+        "os",
+        _windows_os_stub(),
+    )
     monkeypatch.setattr(
         native_folder_chooser.importlib.util,
         "find_spec",
@@ -378,7 +392,11 @@ def test_picker_lock_releases_after_every_terminal_outcome(
     monkeypatch,
     outcome: str,
 ) -> None:
-    monkeypatch.setattr(native_folder_chooser.os, "name", "nt")
+    monkeypatch.setattr(
+        native_folder_chooser,
+        "os",
+        _windows_os_stub(),
+    )
     monkeypatch.setattr(
         native_folder_chooser.importlib.util,
         "find_spec",
@@ -525,7 +543,11 @@ def test_scoped_picker_modes_share_the_process_lock(
     monkeypatch,
     tmp_path,
 ) -> None:
-    monkeypatch.setattr(native_folder_chooser.os, "name", "nt")
+    monkeypatch.setattr(
+        native_folder_chooser,
+        "os",
+        _windows_os_stub(),
+    )
     monkeypatch.setattr(
         native_folder_chooser.importlib.util,
         "find_spec",
