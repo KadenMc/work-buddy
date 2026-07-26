@@ -1,7 +1,4 @@
-import { FolderOpen } from "@phosphor-icons/react/FolderOpen";
 import { NotePencil } from "@phosphor-icons/react/NotePencil";
-import { useState } from "react";
-import { Input, Label, TextField } from "react-aria-components";
 
 import { Button, InlineAlert, Spinner } from "../../../ui";
 import type {
@@ -10,41 +7,37 @@ import type {
   CoworkScratchSummary,
   CoworkViewModel,
 } from "../contracts";
+import { coworkErrorMessage } from "../providers/errors";
 
 interface CoworkLauncherProps {
   readonly model: CoworkViewModel;
-  readonly onChooseFolder: () => void;
-  readonly onInspectPath: (folderPath: string) => void;
-  readonly onContinueInspection: () => void;
+  readonly pendingFolderAction?: {
+    readonly action: string;
+    readonly storeId?: string;
+  } | null;
   readonly onRetryInspection: () => void;
   readonly onCancelInspection: () => void;
   readonly onInitialize: () => void;
   readonly onOpenFolder: (storeId: string) => void;
-  readonly onOpenPicker: () => void;
   readonly onOpenDocument: (document: CoworkDocumentSummary) => void;
   readonly onCreate: () => void;
   readonly onRegister: () => void;
-  readonly onOpenScratch: (scratch: CoworkScratchSummary) => void;
-  readonly onNewScratch: () => void;
+  readonly onOpenLocalDocument: (document: CoworkScratchSummary) => void;
+  readonly onNewDocument: () => void;
 }
 
 const unavailableCopy: Record<string, string> = {
-  folder_not_found: "That Folder no longer exists on the Work Buddy machine.",
-  folder_unreadable: "Work Buddy cannot read that Folder.",
-  folder_disallowed: "That Folder is outside the host paths Work Buddy may use.",
-  descendant_scan_incomplete:
-    "Co-work could not yet prove that setup would avoid a nested Folder.",
-  folder_too_large_for_safe_setup:
-    "This Folder is too large to verify safely with current settings. Choose a narrower Folder.",
+  folder_not_found: "That folder no longer exists.",
+  folder_unreadable: "Work Buddy can’t read that folder.",
+  folder_disallowed: "Work Buddy can’t open that location.",
+  descendant_scan_incomplete: "Co-work couldn’t finish opening that folder.",
+  folder_too_large_for_safe_setup: "Choose a smaller folder to use with Co-work.",
 };
 
 const folderConflictCopy: Record<string, string> = {
-  folder_layout_incomplete:
-    "This Folder has a partial Co-work setup that cannot be completed safely.",
-  folder_store_collision:
-    "This Folder’s Co-work identity is already registered to another location.",
-  identity_conflict:
-    "This Folder’s Co-work identity does not match its registered location.",
+  folder_layout_incomplete: "This folder has an incomplete Co-work setup.",
+  folder_store_collision: "This folder is already connected from another location.",
+  identity_conflict: "This folder doesn’t match the Co-work data registered for it.",
 };
 
 const folderFor = (model: CoworkViewModel): CoworkFolderSummary | null =>
@@ -52,47 +45,115 @@ const folderFor = (model: CoworkViewModel): CoworkFolderSummary | null =>
     ? model.folderSelection.folder
     : model.folders.find((entry) => entry.storeId === model.activeFolderStoreId) ?? null;
 
+const navigationMessage = (model: CoworkViewModel, fallback: string): string =>
+  model.navigationError === null
+    ? fallback
+    : coworkErrorMessage(model.navigationError, fallback);
+
+const parentSegments = (folderPath: string): readonly string[] =>
+  folderPath
+    .replace(/[\\/]+$/, "")
+    .split(/[\\/]+/)
+    .slice(0, -1)
+    .filter((segment) => segment.length > 0);
+
+const duplicateFolderContext = (
+  folder: CoworkFolderSummary,
+  folders: readonly CoworkFolderSummary[],
+): string | null => {
+  const duplicates = folders.filter(
+    (candidate) =>
+      candidate.folderName.toLocaleLowerCase() ===
+      folder.folderName.toLocaleLowerCase(),
+  );
+  if (duplicates.length < 2) return null;
+  const target = parentSegments(folder.folderPath);
+  const parents = duplicates.map((candidate) => parentSegments(candidate.folderPath));
+  for (let depth = 1; depth <= target.length; depth += 1) {
+    const label = target.slice(-depth).join(" / ");
+    const unique = parents.filter(
+      (segments) => segments.slice(-depth).join(" / ") === label,
+    ).length === 1;
+    if (unique) return label;
+  }
+  return target.join(" / ") || folder.folderPath;
+};
+
+const activityLabel = (document: CoworkScratchSummary): string => {
+  const edited = document.updatedAt !== document.createdAt;
+  const activityAt = new Date(edited ? document.updatedAt : document.createdAt);
+  if (Number.isNaN(activityAt.getTime())) return "Not saved to a folder yet";
+  return `${edited ? "Edited" : "Created"} ${new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(activityAt)}`;
+};
+
+function LocalDocuments({
+  documents,
+  onOpen,
+  disabled = false,
+}: {
+  readonly documents: readonly CoworkScratchSummary[];
+  readonly onOpen: (document: CoworkScratchSummary) => void;
+  readonly disabled?: boolean;
+}) {
+  if (documents.length === 0) return null;
+  return (
+    <section aria-labelledby="cowork-local-documents" className="wb-cowork-launcher__section">
+      <h3 id="cowork-local-documents">On this device</h3>
+      {documents.map((document) => (
+        <div key={document.scratchId} className="wb-cowork-launcher__local-document">
+          <span>
+            <strong>{document.title}</strong>
+            <small>
+              {document.recoveredFromPreviousEditor
+                ? "Recovered from an earlier session"
+                : activityLabel(document)}
+            </small>
+          </span>
+          <Button size="small" onClick={() => onOpen(document)} disabled={disabled}>
+            Continue
+          </Button>
+        </div>
+      ))}
+    </section>
+  );
+}
+
 export function CoworkLauncher({
   model,
-  onChooseFolder,
-  onInspectPath,
-  onContinueInspection,
+  pendingFolderAction = null,
   onRetryInspection,
   onCancelInspection,
   onInitialize,
   onOpenFolder,
-  onOpenPicker,
   onOpenDocument,
   onCreate,
   onRegister,
-  onOpenScratch,
-  onNewScratch,
+  onOpenLocalDocument,
+  onNewDocument,
 }: CoworkLauncherProps) {
-  const [manualPath, setManualPath] = useState("");
   const selection = model.folderSelection;
   const folder = folderFor(model);
-
-  if (selection.kind === "choosing" || selection.kind === "inspecting") {
-    return (
-      <section className="wb-cowork-launcher wb-cowork-launcher--centered" aria-busy="true">
-        <Spinner />
-        <h2>{selection.kind === "choosing" ? "Opening Folder…" : "Checking for Co-work…"}</h2>
-        <p>Co-work is inspecting the Folder without changing it.</p>
-        <Button onClick={onCancelInspection}>Cancel</Button>
-      </section>
-    );
-  }
+  const openingFolder = selection.kind === "choosing" || selection.kind === "inspecting";
+  const canReturnToPreviousContext =
+    model.activeSession.kind !== "none" || model.activeFolderStoreId !== null;
+  const returnLabel =
+    model.activeSession.kind === "none" ? "Back" : "Back to document";
+  const folderActionBusy = pendingFolderAction !== null;
+  const navigationBusy = openingFolder || folderActionBusy;
 
   if (selection.kind === "inspecting_descendants") {
     return (
-      <section className="wb-cowork-launcher wb-cowork-launcher--centered">
+      <section
+        className="wb-cowork-launcher wb-cowork-launcher--centered"
+        aria-label="Opening folder"
+        aria-busy="true"
+      >
         <Spinner />
-        <h2>Checking Folder boundaries…</h2>
-        <p>{selection.progress.visited.toLocaleString()} locations checked. Nothing has been written.</p>
-        <div className="wb-cowork-launcher__actions">
-          <Button onClick={onCancelInspection}>Cancel</Button>
-          <Button variant="primary" onClick={onContinueInspection}>Continue check</Button>
-        </div>
+        <p>Opening {selection.candidate.folderName}…</p>
+        <Button onClick={onCancelInspection}>Cancel</Button>
       </section>
     );
   }
@@ -100,18 +161,23 @@ export function CoworkLauncher({
   if (selection.kind === "setup_available") {
     return (
       <section className="wb-cowork-launcher wb-cowork-launcher--centered">
-        <FolderOpen weight="duotone" aria-hidden="true" className="wb-cowork-launcher__hero-icon" />
-        <h2>Set up Co-work in “{selection.candidate.folderName}”?</h2>
-        <p>
-          Co-work will add a tool-managed <code>.wbuddy</code> directory. Its document history,
-          review state, provenance, and recovery data live under <code>.wbuddy/cowork/</code>.
-        </p>
-        <p className="wb-cowork-launcher__path" title={selection.candidate.folderPath}>
-          {selection.candidate.folderPath}
-        </p>
+        {!folderActionBusy ? (
+          <InlineAlert tone="danger">
+            {navigationMessage(
+              model,
+              `Co-work couldn’t finish opening ${selection.candidate.folderName}.`,
+            )}
+          </InlineAlert>
+        ) : null}
         <div className="wb-cowork-launcher__actions">
-          <Button onClick={onCancelInspection}>Cancel</Button>
-          <Button variant="primary" onClick={onInitialize}>Set up Co-work</Button>
+          {canReturnToPreviousContext ? (
+            <Button onClick={onCancelInspection} disabled={folderActionBusy}>
+              {returnLabel}
+            </Button>
+          ) : null}
+          <Button variant="primary" onClick={onInitialize} disabled={folderActionBusy}>
+            {folderActionBusy ? "Opening…" : "Try again"}
+          </Button>
         </div>
       </section>
     );
@@ -121,12 +187,23 @@ export function CoworkLauncher({
     return (
       <section className="wb-cowork-launcher wb-cowork-launcher--centered">
         <InlineAlert tone="warning">
-          This location is already inside the Co-work Folder “{selection.owner.folderName}”.
+          {navigationMessage(
+            model,
+            `That location is inside ${selection.owner.folderName}.`,
+          )}
         </InlineAlert>
         <div className="wb-cowork-launcher__actions">
-          <Button onClick={onCancelInspection}>Choose another Folder</Button>
-          <Button variant="primary" onClick={() => onOpenFolder(selection.owner.storeId)}>
-            Open {selection.owner.folderName}
+          {canReturnToPreviousContext ? (
+            <Button onClick={onCancelInspection} disabled={folderActionBusy}>
+              {returnLabel}
+            </Button>
+          ) : null}
+          <Button
+            variant="primary"
+            onClick={() => onOpenFolder(selection.owner.storeId)}
+            disabled={folderActionBusy}
+          >
+            {folderActionBusy ? "Opening…" : `Open ${selection.owner.folderName}`}
           </Button>
         </div>
       </section>
@@ -137,15 +214,21 @@ export function CoworkLauncher({
     return (
       <section className="wb-cowork-launcher wb-cowork-launcher--centered">
         <InlineAlert tone="warning">
-          This Folder already contains another Folder with Co-work set up, so Co-work will
-          not set it up again here.
+          {navigationMessage(
+            model,
+            "Choose a smaller folder. This one already contains a Co-work folder.",
+          )}
         </InlineAlert>
         <ul className="wb-cowork-launcher__boundaries">
           {selection.boundaries.map((boundary) => (
-            <li key={boundary.folderPath}>{boundary.folderName} · {boundary.folderPath}</li>
+            <li key={boundary.folderPath} title={boundary.folderPath}>
+              {boundary.folderName}
+            </li>
           ))}
         </ul>
-        <Button onClick={onChooseFolder}>Choose another Folder</Button>
+        {canReturnToPreviousContext ? (
+          <Button onClick={onCancelInspection}>{returnLabel}</Button>
+        ) : null}
       </section>
     );
   }
@@ -153,15 +236,26 @@ export function CoworkLauncher({
   if (selection.kind === "store_layout_conflict") {
     return (
       <section className="wb-cowork-launcher wb-cowork-launcher--centered">
-        <InlineAlert tone="danger">
-          {folderConflictCopy[selection.reasonCode] ??
-            "Co-work found Folder data it cannot reconcile safely."}{" "}
-          It did not replace or merge anything.
-        </InlineAlert>
-        <p className="wb-cowork-launcher__path">{selection.candidate.folderPath}</p>
+        {!folderActionBusy ? (
+          <InlineAlert tone="danger">
+            {navigationMessage(
+              model,
+              folderConflictCopy[selection.reasonCode] ??
+                "Co-work found folder data it can’t open safely.",
+            )}
+          </InlineAlert>
+        ) : null}
         <div className="wb-cowork-launcher__actions">
-          {selection.availableActions.includes("retry") ? <Button onClick={onRetryInspection}>Retry inspection</Button> : null}
-          <Button onClick={onChooseFolder}>Choose another Folder</Button>
+          {canReturnToPreviousContext ? (
+            <Button onClick={onCancelInspection} disabled={folderActionBusy}>
+              {returnLabel}
+            </Button>
+          ) : null}
+          {selection.availableActions.includes("retry") ? (
+            <Button onClick={onRetryInspection} disabled={folderActionBusy}>
+              {folderActionBusy ? "Opening…" : "Try again"}
+            </Button>
+          ) : null}
         </div>
       </section>
     );
@@ -170,13 +264,26 @@ export function CoworkLauncher({
   if (selection.kind === "unavailable") {
     return (
       <section className="wb-cowork-launcher wb-cowork-launcher--centered">
-        <InlineAlert tone="danger">
-          {unavailableCopy[selection.reasonCode] ?? "This Folder is unavailable to Co-work."}
-        </InlineAlert>
-        {selection.candidate !== null ? <p className="wb-cowork-launcher__path">{selection.candidate.folderPath}</p> : null}
+        {!folderActionBusy ? (
+          <InlineAlert tone="danger">
+            {navigationMessage(
+              model,
+              unavailableCopy[selection.reasonCode] ??
+                "Co-work can’t open that folder.",
+            )}
+          </InlineAlert>
+        ) : null}
         <div className="wb-cowork-launcher__actions">
-          {selection.retryable ? <Button onClick={onRetryInspection}>Retry check</Button> : null}
-          <Button onClick={onChooseFolder}>Choose another Folder</Button>
+          {canReturnToPreviousContext ? (
+            <Button onClick={onCancelInspection} disabled={folderActionBusy}>
+              {returnLabel}
+            </Button>
+          ) : null}
+          {selection.retryable ? (
+            <Button onClick={onRetryInspection} disabled={folderActionBusy}>
+              {folderActionBusy ? "Opening…" : "Try again"}
+            </Button>
+          ) : null}
         </div>
       </section>
     );
@@ -185,23 +292,53 @@ export function CoworkLauncher({
   if (folder !== null) {
     const readyDocuments = model.catalog.documents
       .filter((document) => (document.initializationState ?? "ready") === "ready")
+      .reverse()
+      .sort((left, right) => {
+        if (left.updatedAt === right.updatedAt) return 0;
+        if (left.updatedAt == null) return 1;
+        if (right.updatedAt == null) return -1;
+        return right.updatedAt.localeCompare(left.updatedAt);
+      })
       .slice(0, 6);
     return (
-      <section className="wb-cowork-launcher">
-        <div className="wb-cowork-launcher__hero">
-          <NotePencil weight="duotone" aria-hidden="true" className="wb-cowork-launcher__hero-icon" />
-          <h2>Start a Co-work document in “{folder.folderName}”</h2>
-          <p>Write with clean Markdown output and review agent suggestions beside the document.</p>
-          <div className="wb-cowork-launcher__actions">
-            {readyDocuments.length > 0 ? <Button onClick={onOpenPicker}>Open existing</Button> : null}
-            <Button variant="primary" onClick={onCreate} disabled={!folder.permissions.create}>Create new document</Button>
-            <Button variant="ghost" onClick={onRegister} disabled={!folder.permissions.import}>Register existing Markdown</Button>
-          </div>
+      <section className="wb-cowork-launcher" aria-label={`${folder.folderName} documents`}>
+        {model.navigationError !== null ? (
+          <InlineAlert tone="danger">
+            {coworkErrorMessage(
+              model.navigationError,
+              "Co-work couldn’t open that Folder.",
+            )}
+          </InlineAlert>
+        ) : null}
+        <div className="wb-cowork-launcher__primary-actions">
+          <Button
+            variant="primary"
+            onClick={onCreate}
+            disabled={navigationBusy || !folder.permissions.create}
+          >
+            <NotePencil aria-hidden="true" /> New document
+          </Button>
+          <Button
+            onClick={onRegister}
+            disabled={navigationBusy || !folder.permissions.import}
+          >
+            Add Markdown
+          </Button>
         </div>
-        {model.catalog.status === "loading" ? <p role="status"><Spinner /> Loading documents…</p> : null}
+        {model.catalog.status === "loading" ? (
+          <p role="status" className="wb-cowork-launcher__loading">
+            <Spinner /> Loading documents…
+          </p>
+        ) : null}
         {model.catalog.error !== null ? (
           <InlineAlert tone="danger">
-            {model.catalog.error.message} <Button size="small" onClick={onRetryInspection}>Retry</Button>
+            {coworkErrorMessage(
+              model.catalog.error,
+              "Co-work couldn’t load the documents.",
+            )}{" "}
+            <Button size="small" onClick={onRetryInspection}>
+              Try again
+            </Button>
           </InlineAlert>
         ) : null}
         {readyDocuments.length > 0 ? (
@@ -209,87 +346,81 @@ export function CoworkLauncher({
             <h3 id="cowork-recent-documents">Recent documents</h3>
             <div className="wb-cowork-launcher__cards">
               {readyDocuments.map((document) => (
-                <button key={document.documentId} type="button" onClick={() => onOpenDocument(document)} className="wb-cowork-launcher__card">
+                <button
+                  key={document.documentId}
+                  type="button"
+                  onClick={() => onOpenDocument(document)}
+                  className="wb-cowork-launcher__card"
+                  disabled={navigationBusy}
+                >
                   <strong>{document.title}</strong>
                   <span>{document.path}</span>
-                  {document.openProposalCount > 0 ? <small>{document.openProposalCount} open proposals</small> : null}
+                  {document.openProposalCount > 0 ? (
+                    <small>{document.openProposalCount} open proposals</small>
+                  ) : null}
                 </button>
               ))}
             </div>
           </section>
         ) : null}
-        {model.scratches.length > 0 ? (
-          <section aria-labelledby="cowork-device-scratches" className="wb-cowork-launcher__section">
-            <h3 id="cowork-device-scratches">On this device</h3>
-            {model.scratches.map((scratch) => (
-              <div key={scratch.scratchId} className="wb-cowork-launcher__scratch">
-                <span><strong>{scratch.title}</strong><small>Saved on this device</small></span>
-                <Button size="small" onClick={() => onOpenScratch(scratch)}>Continue</Button>
-              </div>
-            ))}
-          </section>
-        ) : null}
+        <LocalDocuments
+          documents={model.scratches}
+          onOpen={onOpenLocalDocument}
+          disabled={navigationBusy}
+        />
       </section>
     );
   }
 
   return (
-    <section className="wb-cowork-launcher wb-cowork-launcher--centered">
-      <FolderOpen weight="duotone" aria-hidden="true" className="wb-cowork-launcher__hero-icon" />
-      <h2>Choose a Folder for Co-work</h2>
-      <p>A Folder keeps related documents together and defines where Markdown is saved.</p>
-      {model.navigationError !== null ? <InlineAlert tone="danger">{model.navigationError.message}</InlineAlert> : null}
-      <div className="wb-cowork-launcher__actions">
-        <Button
-          variant="primary"
-          onClick={onChooseFolder}
-          disabled={!model.folderChooser.available}
-          title={
-            model.folderChooser.available
-              ? "Choose a Folder on the Work Buddy machine"
-              : "A native host Folder chooser is not available; enter a host path below."
-          }
-        >
-          Open Folder
+    <section className="wb-cowork-launcher wb-cowork-launcher--start" aria-label="Start a document">
+      {model.navigationError !== null ? (
+        <InlineAlert tone="danger">
+          {coworkErrorMessage(
+            model.navigationError,
+            "Co-work couldn’t open that Folder.",
+          )}
+        </InlineAlert>
+      ) : null}
+      <div className="wb-cowork-launcher__primary-actions">
+        <Button variant="primary" onClick={onNewDocument} disabled={navigationBusy}>
+          <NotePencil aria-hidden="true" /> New document
         </Button>
-        <Button onClick={onNewScratch}>New local scratch</Button>
       </div>
       {!model.folderChooser.available ? (
-        <p className="wb-cowork-launcher__chooser-note">
-          This dashboard cannot open the host’s native Folder chooser. Enter a Folder path on
-          the Work Buddy machine below.
-        </p>
+        <InlineAlert tone="warning">
+          Folder selection isn’t available here.
+        </InlineAlert>
       ) : null}
-      <div className="wb-cowork-launcher__manual">
-        <TextField value={manualPath} onChange={setManualPath} className="wb-cowork-field">
-          <Label>Or enter a Folder path on the Work Buddy machine</Label>
-          <Input placeholder="C:\\Projects\\my-folder" />
-        </TextField>
-        <Button onClick={() => onInspectPath(manualPath)} disabled={manualPath.trim().length === 0}>Inspect Folder</Button>
-      </div>
       {model.folders.length > 0 ? (
         <section aria-labelledby="cowork-known-folders" className="wb-cowork-launcher__section">
-          <h3 id="cowork-known-folders">Recent Folders</h3>
+          <h3 id="cowork-known-folders">Recent folders</h3>
           <div className="wb-cowork-launcher__cards">
             {model.folders.map((known) => (
-              <button key={known.storeId} type="button" onClick={() => onOpenFolder(known.storeId)} className="wb-cowork-launcher__card">
-                <strong>{known.folderName}</strong><span>{known.folderPath}</span>
+              <button
+                key={known.storeId}
+                type="button"
+                title={known.folderPath}
+                onClick={() => onOpenFolder(known.storeId)}
+                className="wb-cowork-launcher__card"
+                disabled={navigationBusy}
+              >
+                <strong>{known.folderName}</strong>
+                {pendingFolderAction?.storeId === known.storeId ? (
+                  <small>Opening…</small>
+                ) : duplicateFolderContext(known, model.folders) !== null ? (
+                  <small>{duplicateFolderContext(known, model.folders)}</small>
+                ) : null}
               </button>
             ))}
           </div>
         </section>
       ) : null}
-      {model.scratches.length > 0 ? (
-        <section aria-labelledby="cowork-device-scratches-empty" className="wb-cowork-launcher__section">
-          <h3 id="cowork-device-scratches-empty">On this device</h3>
-          {model.scratches.map((scratch) => (
-            <div key={scratch.scratchId} className="wb-cowork-launcher__scratch">
-              <span><strong>{scratch.title}</strong><small>{scratch.recoveredFromPreviousEditor ? "Recovered from the previous Co-work editor" : "Local scratch"}</small></span>
-              <Button size="small" onClick={() => onOpenScratch(scratch)}>Continue</Button>
-            </div>
-          ))}
-        </section>
-      ) : null}
+      <LocalDocuments
+        documents={model.scratches}
+        onOpen={onOpenLocalDocument}
+        disabled={navigationBusy}
+      />
     </section>
   );
 }

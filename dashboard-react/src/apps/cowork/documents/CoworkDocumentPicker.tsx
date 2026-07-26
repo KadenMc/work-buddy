@@ -14,6 +14,7 @@ import {
 
 import { Button, InlineAlert } from "../../../ui";
 import type { CoworkDocumentSummary, CoworkFolderSummary } from "../contracts";
+import { asCoworkApiError, coworkErrorMessage } from "../providers/errors";
 
 interface CoworkDocumentPickerProps {
   readonly folder: CoworkFolderSummary;
@@ -73,7 +74,12 @@ export function CoworkDocumentPicker({
     } catch (openError) {
       openingIdRef.current = null;
       setOpeningId(null);
-      setError(openError instanceof Error ? openError.message : String(openError));
+      setError(
+        coworkErrorMessage(
+          asCoworkApiError(openError),
+          "Co-work couldn’t open that document.",
+        ),
+      );
     }
   };
 
@@ -83,9 +89,9 @@ export function CoworkDocumentPicker({
     }} className="wb-cowork-dialog-overlay">
       <Modal className="wb-cowork-dialog wb-cowork-dialog--picker">
         <Dialog aria-labelledby="cowork-picker-title" className="wb-cowork-dialog__body">
-          <Heading id="cowork-picker-title" slot="title">Open a Co-work document</Heading>
+          <Heading id="cowork-picker-title" slot="title">Open document</Heading>
           <div className="wb-cowork-picker__context">
-            <span><strong>{folder.folderName}</strong> · {folder.folderPath}</span>
+            <strong title={folder.folderPath}>{folder.folderName}</strong>
             <Button size="small" variant="ghost" onClick={onChangeFolder}>Change Folder</Button>
           </div>
           {error !== null ? <InlineAlert role="alert" tone="danger">{error}</InlineAlert> : null}
@@ -94,10 +100,10 @@ export function CoworkDocumentPicker({
             <Input autoFocus placeholder="Search by title or relative path" />
           </TextField>
           {ready.length === 0 ? (
-            <p className="wb-cowork-dialog__empty">No ready documents match this search.</p>
+            <p className="wb-cowork-dialog__empty">No documents match this search.</p>
           ) : (
             <ListBox
-              aria-label="Ready Co-work documents"
+              aria-label="Documents"
               selectionMode="single"
               selectedKeys={currentDocumentId === undefined ? [] : [currentDocumentId]}
               className="wb-cowork-picker__list"
@@ -150,7 +156,7 @@ export function CoworkDocumentPicker({
                     title={document.disabledReason ?? "This document cannot be opened yet."}
                     onClick={() => onRepair(document)}
                   >
-                    {document.permissions?.repair ? "Repair" : "Inspect"}
+                    {document.permissions?.repair ? "Repair" : "Unavailable"}
                   </Button>
                 </div>
               ))}
@@ -158,7 +164,7 @@ export function CoworkDocumentPicker({
           ) : null}
           <div className="wb-cowork-dialog__actions wb-cowork-picker__footer">
             <Button onClick={onClose} disabled={openingId !== null}>Close</Button>
-            <Button onClick={onRegister} disabled={openingId !== null}>Register Markdown</Button>
+            <Button onClick={onRegister} disabled={openingId !== null}>Add Markdown</Button>
             <Button variant="primary" onClick={onCreate} disabled={openingId !== null}>Create new document</Button>
           </div>
           {openingId !== null ? <p role="status">Opening document…</p> : null}

@@ -56,6 +56,35 @@ describe("LocalCoworkYdocTransport", () => {
     expect(alphaPull.batches).toEqual([new Uint8Array([1, 2, 3])]);
   });
 
+  it("deletes only the selected document's persisted bytes", async () => {
+    const backing = new InMemoryCoworkYdocBackingStore();
+    const factory = () => backing;
+    const discarded = new LocalCoworkYdocTransport({
+      documentId: "discarded",
+      factory,
+    });
+    const retained = new LocalCoworkYdocTransport({
+      documentId: "retained",
+      factory,
+    });
+    for (const [transport, byte] of [
+      [discarded, 1],
+      [retained, 2],
+    ] as const) {
+      const base = await transport.pull({});
+      await transport.push({
+        batch: new Uint8Array([byte]),
+        baseSha256: base.docSha256,
+        baseYdocGeneration: base.ydocGeneration,
+      });
+    }
+
+    await discarded.delete();
+
+    expect((await discarded.pull({})).batches).toEqual([]);
+    expect((await retained.pull({})).batches).toEqual([new Uint8Array([2])]);
+  });
+
   it("stores a compaction snapshot and truncates the superseded log", async () => {
     const transport = new LocalCoworkYdocTransport({
       documentId: "doc-compaction",

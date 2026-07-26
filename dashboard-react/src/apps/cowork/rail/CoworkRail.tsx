@@ -38,14 +38,14 @@ import "./styles.css";
 const REVIEW_TAB_HELP: HelpContent = {
   summary: "Review the agent's proposed changes.",
   details:
-    "Lists the tracked edits, flags, and claims the agent raised on this document. Decide on each one, then submit them together as a single sitting.",
+    "Agent suggestions and questions appear here. Review each item, then submit your decisions together.",
 };
 
 /** Hover-help for the Chat tab, surfaced when app-shell help mode is on. */
 const CHAT_TAB_HELP: HelpContent = {
   summary: "Talk to the agent about this document.",
   details:
-    "The document conversation. Ask a question, leave feedback on a highlighted passage, and read the agent's replies without leaving the review.",
+    "Ask a question, leave feedback on a highlighted passage, and read the agent's replies without leaving the document.",
 };
 
 export interface CoworkRailProps {

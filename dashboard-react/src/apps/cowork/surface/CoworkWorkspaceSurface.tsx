@@ -63,9 +63,9 @@ const DRIFT_LABEL: Record<string, string> = {
  * document where it would read as fabricated content.
  */
 const COWORK_EDITOR_HELP: HelpContent = {
-  summary: "This is the editor pane.",
+  summary: "Write and edit your document here.",
   details:
-    "It binds a Tiptap editor to a local Y.Doc through the load-order contract, projects AI proposals as an ephemeral review layer, and saves admitted canonical Markdown through dual compare-and-swap checks.",
+    "Your work is saved safely on this device as you edit. Agent suggestions appear separately for review, and Save updates the Markdown file in your Folder.",
 };
 
 const COWORK_HEALTH_HELP: HelpContent = {
@@ -358,32 +358,26 @@ export function CoworkDemoWorkspace({
  * Compatibility empty fixture. The production widget supplies the actionable lifecycle
  * launcher; this boundary intentionally mounts no editor, rail, chat, or resizer.
  */
-export function CoworkEmptyWorkspace() {
-  return (
-    <section className="wb-cowork-empty" aria-labelledby="cowork-empty-title">
-      <h2 id="cowork-empty-title">Start a Co-work document</h2>
-      <p>Choose a Folder, then open or create a document.</p>
-    </section>
-  );
-}
-
-/** A named device-local scratch: editor only, never a fake registered session. */
+/** A crash-safe untitled document kept on this device until the user saves it to a folder. */
 export function CoworkScratchWorkspace({
   scratchId,
   onPromotionHandle,
   onSyncStatus,
+  onLocalEdit,
 }: {
   readonly scratchId: string;
   readonly onPromotionHandle?: (handle: CoworkScratchPromotionHandle | null) => void;
   readonly onSyncStatus?: (status: CoworkSyncStatus) => void;
+  readonly onLocalEdit?: () => void;
 }) {
   return (
-    <div className="wb-cowork wb-cowork--scratch">
+    <div className="wb-cowork wb-cowork--local-document">
       <div className="wb-cowork__editor-region">
         <CoworkEditorPane
           documentId={scratchId}
           onPromotionHandle={onPromotionHandle}
           onSyncStatus={onSyncStatus}
+          onLocalEdit={onLocalEdit}
         />
       </div>
     </div>

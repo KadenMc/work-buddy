@@ -1,8 +1,8 @@
 ---
 name: Co-work
 kind: concept
-description: The Folder-based human and agent working surface for living documents, with durable editing, explicit file writes, proposal review, and scoped provenance.
-summary: A user opens an ordinary Folder, sets it up for Co-work under .wbuddy/cowork, and creates or registers Markdown documents without defining a separate project type. Co-work restores the selected Folder and document from the URL, keeps structured editing state durable through an offline-capable outbox, writes Markdown only through an explicit human action, detects outside file changes before overwrite, and routes agent contributions through human-reviewed proposals.
+description: The Folder-based human and agent working surface for living documents, with durable editing, explicit file writes, and proposal review.
+summary: A user opens an ordinary Folder and Co-work prepares its .wbuddy/cowork support data automatically, without defining a separate project type. The user can create a document or add existing Markdown, while an untitled document remains saved on the device until it is given a Folder location. Co-work restores the selected Folder and document from the URL, keeps structured editing state durable through an offline-capable outbox, writes Markdown only through an explicit human action, detects outside file changes before overwrite, and routes agent contributions through human-reviewed proposals.
 tags:
 - cowork
 - documents
@@ -23,7 +23,8 @@ Co-work is work-buddy's surface for co-authoring living documents with an agent.
 The unit a user chooses is simply a **Folder**. Its displayed name is the
 directory name; Co-work does not make the user define a second project object or
 select a predefined document type. A completely ordinary Folder can be inspected
-without mutation and then explicitly set up for Co-work.
+without mutation. Choosing it is the user's intent to open it: Co-work performs
+the read-only checks and, when needed, creates its support data automatically.
 
 Setup creates `.wbuddy/manifest.yaml` for work-buddy-level metadata and the
 canonical Co-work store at `.wbuddy/cowork/`.
@@ -38,13 +39,21 @@ proxy is not itself proof of a local user.
 
 ## Folder and document flow
 
-With no Folder open, the surface presents a Folder launcher rather than an empty
-editor. A user can choose a Folder with the native picker or enter a path. Co-work
-then shows the Folder's document catalog and supports three deliberate starts:
+With no Folder open, the toolbar's **Folder** control opens the native picker
+directly. On Windows this is the Explorer-style `IFileOpenDialog`, attached to
+the foreground window where possible. There is no intermediate menu, manual
+host-path form, setup lecture, or user-operated inspection step. Co-work checks
+and prepares the selected Folder behind the scenes, then shows its document
+catalog. The compact launcher keeps **New document**, recent Folders, and
+on-device documents together in the first viewport.
 
-- create a new Markdown document;
-- register an existing Markdown file; or
-- begin in a scratch document and promote it into the Folder later.
+The user can create a new document or add an existing Markdown file. A document
+started before a Folder is chosen is simply untitled and **Saved on this
+device** until the user saves it into a Folder; `scratch` is only an internal
+persistence term, not a separate user-facing document type. Additional
+on-device documents are numbered (`Untitled 2`, `Untitled 3`, and so on), and
+their human edits refresh an **Edited** timestamp so recovery choices remain
+identifiable.
 
 Folder and document selection are encoded in the URL, so reload, history
 navigation, and a shared local link restore the same working context. Document
@@ -58,13 +67,20 @@ A Co-work document has two related representations:
 - the authoritative structured collaborative head used by the editor, with
   monotonic versions and compare-and-swap protection; and
 - the Markdown file in the selected Folder, which is materialized only through
-  the explicit **Save Markdown** action.
+  the explicit **Save** action.
 
 Local edits enter an IndexedDB outbox before transport. The provider can reload
 them after a browser refresh or temporary disconnection and acknowledges them
 only after the server durably accepts them. Opening or reimporting a document
 uses a durability barrier and one atomic model commit, so a delayed request
 cannot replace a newer navigation choice.
+
+If device hydration fails, the editor presents a working retry action rather
+than remaining in an indefinite loading state. The document bar presents one
+prioritized durability/save status and only the recovery action that can
+currently make progress. Rendered errors use human-facing recovery copy;
+Y.Doc, snapshot, hash, generation, and other persistence details stay in
+diagnostics.
 
 Each outbox entry carries the document's stable logical Y.Doc generation. Normal
 snapshot compaction changes the cursor epoch but preserves that generation, so

@@ -107,7 +107,7 @@ export function ClaimCard({
 
       {staged !== undefined ? (
         <p className="wb-cowork-rail__card-badge is-staged" role="status">
-          Staged: {CLAIM_VERB_LABEL[staged.verb]}
+          Selected: {CLAIM_VERB_LABEL[staged.verb]}
         </p>
       ) : null}
     </li>

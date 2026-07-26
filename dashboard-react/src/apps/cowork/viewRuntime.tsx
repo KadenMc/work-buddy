@@ -1,10 +1,9 @@
-import { CoworkViewChrome, type CoworkProviderState } from "./chrome/CoworkViewChrome";
+import { CoworkViewChrome } from "./chrome/CoworkViewChrome";
 import type {
   StandardViewRuntimeConfiguration,
   StandardViewRuntimeContext,
 } from "../../dashboard/contributions/viewModules";
 import { LocalStoragePersonalizationRepository } from "../../dashboard/personalization/repository";
-import type { CoworkViewModel } from "./contracts";
 import {
   HttpCoworkProvider,
   type CoworkLocationAdapter,
@@ -42,13 +41,6 @@ const browserLocationAdapter = (initialSearch: string): CoworkLocationAdapter =>
   };
 };
 
-const providerStateFromModel = (model: unknown): CoworkProviderState | null => {
-  const state = model as Partial<CoworkViewModel> | null;
-  if (state?.activeSession?.kind === "registered") return "live";
-  if (state?.activeSession?.kind === "scratch") return "local";
-  return null;
-};
-
 /** Production Co-work runtime: HTTP lifecycle provider plus router-owned location. */
 export function createRuntime(
   context: StandardViewRuntimeContext,
@@ -62,11 +54,8 @@ export function createRuntime(
     }),
     providerLabel: "Co-work Folder and document session",
     personalizationRepository: new LocalStoragePersonalizationRepository(context.storage),
-    renderChrome: (snapshot, slots) => (
-      <CoworkViewChrome
-        providerState={providerStateFromModel(snapshot.model)}
-        hostActions={slots.contextualActions}
-      />
+    renderChrome: (_snapshot, slots) => (
+      <CoworkViewChrome hostActions={slots.contextualActions} />
     ),
   };
 }

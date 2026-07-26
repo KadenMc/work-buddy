@@ -219,7 +219,7 @@ describe("CoworkDocumentLifecycleDialog idempotent recovery", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Repair structured document" }));
+    await user.click(screen.getByRole("button", { name: "Repair document" }));
     await waitFor(() => expect(onOpened).toHaveBeenCalledTimes(1));
     expect(onOpened).toHaveBeenCalledWith(
       expect.objectContaining({

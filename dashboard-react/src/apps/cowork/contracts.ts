@@ -258,6 +258,10 @@ export interface CoworkScratchCloseIntentPayload {
   readonly scratchId?: string;
 }
 
+export interface CoworkScratchTouchIntentPayload {
+  readonly scratchId: string;
+}
+
 export const COWORK_INTENTS = {
   folderSelect: "wb.cowork.folder.select",
   catalogRefresh: "wb.cowork.catalog.refresh",
@@ -266,4 +270,5 @@ export const COWORK_INTENTS = {
   documentClose: "wb.cowork.document.close",
   scratchOpen: "wb.cowork.scratch.open",
   scratchClose: "wb.cowork.scratch.close",
+  scratchTouch: "wb.cowork.scratch.touch",
 } as const;

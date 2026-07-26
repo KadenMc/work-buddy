@@ -40,7 +40,6 @@ const model: CoworkViewModel = {
 const baseProps = {
   model,
   onChooseFolder: vi.fn(),
-  onOpenFolder: vi.fn(),
   onOpenPicker: vi.fn(),
   onCreate: vi.fn(),
   onCloseSession: vi.fn(),
@@ -48,7 +47,7 @@ const baseProps = {
 };
 
 describe("CoworkDocumentBar Save", () => {
-  it("shows factual structured/projection state and invokes Save Markdown", async () => {
+  it("shows one concrete save state and invokes Save", async () => {
     const user = userEvent.setup();
     const onSaveMarkdown = vi.fn();
     render(
@@ -63,10 +62,8 @@ describe("CoworkDocumentBar Save", () => {
       />,
     );
 
-    expect(
-      screen.getByText("Synced to Co-work · Markdown has unsaved changes"),
-    ).toBeVisible();
-    await user.click(screen.getByRole("button", { name: "Save Markdown" }));
+    expect(screen.getByRole("status")).toHaveTextContent("Unsaved changes");
+    await user.click(screen.getByRole("button", { name: "Save" }));
     expect(onSaveMarkdown).toHaveBeenCalledTimes(1);
   });
 
@@ -92,10 +89,10 @@ describe("CoworkDocumentBar Save", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(
       "Markdown changed outside Co-work",
     );
-    expect(screen.getByRole("button", { name: "Save Markdown" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
   });
 
-  it("offers an explicit retry for retryable Save failures", () => {
+  it("prioritizes device-safe sync recovery over a second file-save retry", () => {
     render(
       <CoworkDocumentBar
         {...baseProps}
@@ -111,10 +108,38 @@ describe("CoworkDocumentBar Save", () => {
           },
         }}
         onSaveMarkdown={vi.fn()}
+        onRetrySync={vi.fn()}
       />,
     );
 
-    expect(screen.getByRole("button", { name: "Retry Save Markdown" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Try saving again" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Sync now" })).toBeEnabled();
+    expect(screen.getByRole("status")).toHaveTextContent("Saved on this device");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("offers the file-save retry once Co-work sync is clean", () => {
+    render(
+      <CoworkDocumentBar
+        {...baseProps}
+        syncStatus="clean"
+        materializationState={{
+          kind: "error",
+          fileSha256: "a".repeat(64),
+          canRetry: true,
+          error: {
+            code: "network_error",
+            message: "The network connection was lost.",
+            retryable: true,
+          },
+        }}
+        onSaveMarkdown={vi.fn()}
+        onRetrySync={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Try saving again" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Sync now" })).toBeNull();
     expect(screen.getByRole("alert")).toHaveTextContent("network connection was lost");
   });
 
@@ -151,7 +176,7 @@ describe("CoworkDocumentBar Save", () => {
       />,
     );
 
-    const review = screen.getByRole("button", { name: "Review external changes" });
+    const review = screen.getByRole("button", { name: "Review file changes" });
     expect(review).toBeDisabled();
     expect(review).toHaveAccessibleDescription(
       "Sync this document to Co-work before reviewing external changes.",
@@ -163,7 +188,7 @@ describe("CoworkDocumentBar Save", () => {
     expect(onReviewExternalChanges).not.toHaveBeenCalled();
   });
 
-  it("does not offer scratch promotion until the visible editor exposes an export handle", () => {
+  it("does not offer document saving until the visible editor exposes an export handle", () => {
     const scratchModel: CoworkViewModel = {
       ...model,
       routeTarget: { kind: "scratch", scratchId: "scratch-1", title: "Draft" },
@@ -181,12 +206,50 @@ describe("CoworkDocumentBar Save", () => {
     );
 
     expect(screen.getByRole("button", { name: "Loading editor…" })).toBeDisabled();
-    expect(screen.queryByRole("button", { name: "Save as document" })).toBeNull();
-    expect(screen.getByRole("status")).toHaveTextContent("Device save failed");
-    expect(screen.getByRole("button", { name: "Retry device save" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Save document" })).toBeNull();
+    expect(screen.getByRole("status")).toHaveTextContent("Couldn’t save on this device");
+    expect(screen.queryByRole("button", { name: "Try saving again" })).toBeNull();
 
     rerender(<CoworkDocumentBar {...props} promotionReady syncStatus="clean" />);
-    expect(screen.getByRole("button", { name: "Save as document" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Save document" })).toBeEnabled();
     expect(screen.getByRole("status")).toHaveTextContent("Saved on this device");
+  });
+
+  it("puts the destructive on-device discard action behind the overflow menu", async () => {
+    const user = userEvent.setup();
+    const onDiscardLocalDocument = vi.fn();
+    const scratchModel: CoworkViewModel = {
+      ...model,
+      routeTarget: { kind: "scratch", scratchId: "scratch-1", title: "Untitled" },
+      activeSession: { kind: "scratch", scratchId: "scratch-1", title: "Untitled" },
+      document: null,
+    };
+    render(
+      <CoworkDocumentBar
+        {...baseProps}
+        model={scratchModel}
+        syncStatus="clean"
+        promotionReady
+        onDiscardLocalDocument={onDiscardLocalDocument}
+      />,
+    );
+
+    expect(screen.queryByRole("menuitem", { name: "Discard document" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "More document actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Discard document" }));
+
+    expect(onDiscardLocalDocument).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens the native folder picker directly without a second menu action", async () => {
+    const user = userEvent.setup();
+    const onChooseFolder = vi.fn();
+    render(<CoworkDocumentBar {...baseProps} onChooseFolder={onChooseFolder} />);
+
+    await user.click(screen.getByRole("button", { name: "Open Folder" }));
+
+    expect(onChooseFolder).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(screen.queryByText(/Open another Folder/i)).toBeNull();
   });
 });

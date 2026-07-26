@@ -22,7 +22,7 @@ import {
   type CoworkBootstrapPrepared,
   type CoworkCandidateDocument,
 } from "../providers/CoworkHttpClient";
-import { asCoworkApiError } from "../providers/errors";
+import { asCoworkApiError, coworkErrorMessage } from "../providers/errors";
 import { sha256Hex } from "../persistence/hashing";
 import { bootstrapCoworkYdoc } from "./bootstrapCoworkYdoc";
 
@@ -148,15 +148,15 @@ export function CoworkDocumentLifecycleDialog({
         ? "Preparing document…"
         : mode === "repair"
           ? "Preparing safe repair…"
-          : "Reading exact Markdown…",
-    reading: "Reading exact Markdown…",
-    building: "Preparing the structured document…",
+          : "Reading Markdown…",
+    reading: "Reading Markdown…",
+    building: "Preparing document…",
     committing:
       mode === "create"
         ? "Creating document…"
         : mode === "repair"
-          ? "Repairing structured document…"
-          : "Registering with Co-work…",
+          ? "Repairing document…"
+          : "Adding document…",
     opening: "Opening document…",
   }[stage];
 
@@ -173,7 +173,7 @@ export function CoworkDocumentLifecycleDialog({
     const normalizedTitle = title.trim();
     const normalizedPath = shownPath.replace(/\\/g, "/").trim();
     if (mode === "repair" && repairDocument === undefined) {
-      setError("Choose the Co-work document to repair.");
+      setError("Choose the document to repair.");
       return;
     }
     if (mode === "create" && normalizedTitle.length === 0) {
@@ -257,7 +257,7 @@ export function CoworkDocumentLifecycleDialog({
         snapshotSha256 = initialized.snapshotSha256;
       } else {
         if ((await sha256Hex(initialContent.sourceBytes)) !== stagedSourceSha256) {
-          throw new Error("The scratch changed while Co-work was preparing it.");
+          throw new Error("The document changed while Co-work was preparing it.");
         }
         const validationDoc = new Y.Doc();
         try {
@@ -267,11 +267,11 @@ export function CoworkDocumentLifecycleDialog({
               .getMap<unknown>("wb-cowork:fidelity")
               .get("source_sha256") !== stagedSourceSha256
           ) {
-            throw new Error("The scratch snapshot does not match its Markdown source.");
+            throw new Error("The saved document data doesn’t match its Markdown.");
           }
         } catch (snapshotError) {
           if (snapshotError instanceof Error) throw snapshotError;
-          throw new Error("The scratch snapshot could not be prepared.");
+          throw new Error("The document couldn’t be prepared.");
         } finally {
           validationDoc.destroy();
         }
@@ -292,7 +292,16 @@ export function CoworkDocumentLifecycleDialog({
     } catch (submitError) {
       // Retain a prepared/ambiguously committed intent and its stable key. Retry can then
       // recover the same staged source or the actor-scoped committed receipt.
-      setError(asCoworkApiError(submitError).message);
+      setError(
+        coworkErrorMessage(
+          asCoworkApiError(submitError),
+          mode === "register"
+            ? "Co-work couldn’t add that Markdown file."
+            : mode === "repair"
+              ? "Co-work couldn’t repair that document."
+              : "Co-work couldn’t create that document.",
+        ),
+      );
       setStage("idle");
     }
   };
@@ -310,24 +319,23 @@ export function CoworkDocumentLifecycleDialog({
         <Dialog aria-labelledby="cowork-lifecycle-dialog-title" className="wb-cowork-dialog__body">
           <Heading id="cowork-lifecycle-dialog-title" slot="title">
             {mode === "create"
-              ? "Create a Co-work document"
+              ? "New document"
               : mode === "repair"
-                ? "Repair Co-work document"
-                : "Register existing Markdown"}
+                ? "Repair document"
+                : "Add Markdown document"}
           </Heading>
           <p className="wb-cowork-dialog__folder">
-            <strong>{folder.folderName}</strong>
-            <span title={folder.folderPath}>{folder.folderPath}</span>
+            <strong title={folder.folderPath}>{folder.folderName}</strong>
           </p>
           {mode === "register" ? (
             <p>
-              Register a Markdown file already inside this Folder. Co-work edits it in place
-              and preserves it as the Markdown projection.
+              Choose a Markdown file from this folder. Co-work will keep editing the same
+              file.
             </p>
           ) : mode === "repair" ? (
             <InlineAlert tone="warning">
-              Co-work will read the exact current Markdown and rebuild only its structured
-              document state. The Markdown file itself will not be rewritten or deleted.
+              Co-work will rebuild this document’s editing data from the current Markdown.
+              The Markdown file itself will not be rewritten or deleted.
             </InlineAlert>
           ) : null}
 
@@ -341,16 +349,16 @@ export function CoworkDocumentLifecycleDialog({
             <>
               <TextField value={query} onChange={setQuery} className="wb-cowork-field">
                 <Label>Find Markdown</Label>
-                <Input autoFocus placeholder="Search paths in this Folder" />
+                <Input autoFocus placeholder="Search this folder" />
               </TextField>
               {candidateStatus === "loading" ? (
                 <p role="status"><Spinner /> Looking for Markdown files…</p>
               ) : candidateStatus === "error" ? (
                 <InlineAlert tone="warning">
-                  Candidate search is unavailable. Enter a relative path below.
+                  Co-work couldn’t list Markdown files. Enter the file’s location below.
                 </InlineAlert>
               ) : candidates.length === 0 ? (
-                <p className="wb-cowork-dialog__empty">No matching unregistered Markdown files.</p>
+                <p className="wb-cowork-dialog__empty">No matching Markdown files.</p>
               ) : (
                 <ListBox
                   aria-label="Markdown files"
@@ -416,8 +424,8 @@ export function CoworkDocumentLifecycleDialog({
               {mode === "create"
                 ? "Create document"
                 : mode === "repair"
-                  ? "Repair structured document"
-                  : "Register Markdown"}
+                  ? "Repair document"
+                  : "Add document"}
             </Button>
           </div>
         </Dialog>

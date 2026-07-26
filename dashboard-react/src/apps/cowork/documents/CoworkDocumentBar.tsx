@@ -1,4 +1,5 @@
 import { CaretDown } from "@phosphor-icons/react/CaretDown";
+import { DotsThree } from "@phosphor-icons/react/DotsThree";
 import { FolderSimple } from "@phosphor-icons/react/FolderSimple";
 import { Plus } from "@phosphor-icons/react/Plus";
 import { X } from "@phosphor-icons/react/X";
@@ -8,11 +9,12 @@ import { Button } from "../../../ui";
 import type { CoworkViewModel } from "../contracts";
 import type { CoworkSyncStatus } from "../persistence/CoworkYdocPersistence";
 import type { CoworkMaterializationState } from "../materialization/contracts";
+import { coworkErrorMessage } from "../providers/errors";
 
 interface CoworkDocumentBarProps {
   readonly model: CoworkViewModel;
   readonly onChooseFolder: () => void;
-  readonly onOpenFolder: (storeId: string) => void;
+  readonly folderActionBusy?: boolean;
   readonly onOpenPicker: () => void;
   readonly onCreate: () => void;
   readonly onCloseSession: () => void;
@@ -25,6 +27,7 @@ interface CoworkDocumentBarProps {
   readonly onRetrySync?: () => void;
   readonly onReviewExternalChanges?: () => void;
   readonly onRemoveDocument?: () => void;
+  readonly onDiscardLocalDocument?: () => void;
 }
 
 export const coworkReimportLocalBlockedReason = (
@@ -47,30 +50,48 @@ export const coworkReimportLocalBlockedReason = (
   return "Save the current Co-work edits before reviewing external changes.";
 };
 
-const projectionLabel = (
+const registeredStatusLabel = (
   model: CoworkViewModel,
+  syncStatus?: CoworkSyncStatus,
   state?: CoworkMaterializationState,
-): string | null => {
-  if (model.activeSession.kind !== "registered") return null;
-  if (state !== undefined) {
-    if (state.kind === "checking") return "Checking Markdown…";
-    if (state.kind === "up_to_date") return "Markdown up to date";
-    if (state.kind === "unsaved") return "Markdown has unsaved changes";
-    if (state.kind === "saving") return "Saving Markdown…";
-    if (state.kind === "conflict") return "Markdown save conflict";
-    if (state.kind === "error") return "Markdown save failed";
-    return "Markdown is read-only";
+): string => {
+  const sync = syncStatus ?? (model.readOnly ? "read_only" : "hydrating");
+  if (sync === "read_only" || state?.kind === "read_only") return "Read-only";
+  if (sync === "hydrating" || state === undefined || state.kind === "checking") {
+    return "Loading…";
   }
-  const drift = model.activeSession.document.driftState;
-  if (drift === "drifted") return "Markdown changed outside Co-work";
-  if (drift === "missing") return "Markdown file missing";
-  return "Markdown up to date";
+  if (
+    sync === "saving" ||
+    sync === "retrying" ||
+    state.kind === "saving"
+  ) {
+    return "Saving…";
+  }
+  if (sync === "saved_on_device" || sync === "offline") return "Saved on this device";
+  if (sync === "conflict") return "Sync conflict";
+  if (sync === "error") return "Couldn’t save";
+  if (state.kind === "unsaved") return "Unsaved changes";
+  if (state.kind === "conflict") {
+    return state.error.code === "stale_file" ? "File changed outside Co-work" : "Save conflict";
+  }
+  if (state.kind === "error") return "Couldn’t save";
+  return "Saved";
+};
+
+const localStatusLabel = (syncStatus?: CoworkSyncStatus): string => {
+  const sync = syncStatus ?? "hydrating";
+  if (sync === "hydrating") return "Loading…";
+  if (sync === "saving" || sync === "retrying") return "Saving…";
+  if (sync === "offline" || sync === "error") return "Couldn’t save on this device";
+  if (sync === "conflict") return "Save conflict";
+  if (sync === "read_only") return "Read-only";
+  return "Saved on this device";
 };
 
 export function CoworkDocumentBar({
   model,
   onChooseFolder,
-  onOpenFolder,
+  folderActionBusy = false,
   onOpenPicker,
   onCreate,
   onCloseSession,
@@ -83,6 +104,7 @@ export function CoworkDocumentBar({
   onRetrySync,
   onReviewExternalChanges,
   onRemoveDocument,
+  onDiscardLocalDocument,
 }: CoworkDocumentBarProps) {
   const folder =
     model.folderSelection.kind === "initialized"
@@ -92,92 +114,51 @@ export function CoworkDocumentBar({
     ? model.activeSession.document
     : null;
   const scratch = model.activeSession.kind === "scratch" ? model.activeSession : null;
-  const folderItems = new Map(model.folders.map((entry) => [entry.storeId, entry] as const));
-  const structuredLabel: Record<CoworkSyncStatus, string> = {
-    hydrating: "Loading document…",
-    clean: "Synced to Co-work",
-    saving: "Saving to Co-work…",
-    saved_on_device: "Saved on this device; waiting to sync",
-    retrying: "Saving to Co-work…",
-    offline: "Offline; edits are saved on this device",
-    conflict: "Sync conflict",
-    error: "Co-work sync failed",
-    read_only: "Read-only",
-  };
-  const scratchLabel: Record<CoworkSyncStatus, string> = {
-    hydrating: "Loading scratch…",
-    clean: "Saved on this device",
-    saving: "Saving on this device…",
-    saved_on_device: "Saved on this device",
-    retrying: "Saving on this device…",
-    offline: "Device save unavailable",
-    conflict: "Device save conflict",
-    error: "Device save failed",
-    read_only: "Read-only",
-  };
+  const openingFolder =
+    model.folderSelection.kind === "choosing" ||
+    model.folderSelection.kind === "inspecting" ||
+    model.folderSelection.kind === "inspecting_descendants";
+  const folderControlBusy = folderActionBusy || openingFolder;
   const reimportBlockedReason = coworkReimportLocalBlockedReason(
     syncStatus,
     materializationState,
   );
+  const canRemove =
+    !folderActionBusy &&
+    onRemoveDocument !== undefined &&
+    document?.permissions?.retire !== false &&
+    document?.driftState === "clean" &&
+    syncStatus === "clean" &&
+    materializationState?.kind === "up_to_date";
 
   return (
     <header className="wb-cowork__document-bar" aria-label="Co-work document controls">
       <div className="wb-cowork__document-context">
-        <MenuTrigger>
-          <Button
-            variant="ghost"
-            className="wb-cowork__folder-trigger"
-            title={
-              folder?.folderPath ??
-              (model.folderChooser.available
-                ? "Choose a Folder on the Work Buddy machine"
-                : "Use the host Folder path field in the launcher")
-            }
-            disabled={folder === null && !model.folderChooser.available}
-          >
-            <FolderSimple weight="duotone" aria-hidden="true" />
-            <span>{folder?.folderName ?? "Open Folder…"}</span>
-            <CaretDown aria-hidden="true" />
-          </Button>
-          <Popover className="wb-popover wb-cowork__folder-popover" placement="bottom start">
-            <Menu
-              aria-label="Co-work Folders"
-              className="wb-action-menu"
-              onAction={(key: Key) => {
-                if (String(key) === "choose") onChooseFolder();
-                else if (folderItems.has(String(key))) onOpenFolder(String(key));
-              }}
-            >
-              {model.folders.map((entry) => (
-                <MenuItem
-                  id={entry.storeId}
-                  key={entry.storeId}
-                  textValue={`${entry.folderName} ${entry.folderPath}`}
-                  className="wb-action-menu__item wb-cowork__folder-item"
-                >
-                  <span><strong>{entry.folderName}</strong><small>{entry.folderPath}</small></span>
-                </MenuItem>
-              ))}
-              <MenuItem
-                id="choose"
-                className="wb-action-menu__item"
-                isDisabled={!model.folderChooser.available}
-              >
-                Open another Folder…
-              </MenuItem>
-            </Menu>
-          </Popover>
-        </MenuTrigger>
+        <Button
+          variant="ghost"
+          className="wb-cowork__folder-trigger"
+          onClick={onChooseFolder}
+          title={folder?.folderPath ?? "Open Folder"}
+          disabled={!model.folderChooser.available || folderControlBusy}
+        >
+          <FolderSimple weight="duotone" aria-hidden="true" />
+          <span>{openingFolder ? "Opening…" : folder?.folderName ?? "Open Folder"}</span>
+        </Button>
 
         <Button
           variant="ghost"
           className="wb-cowork__document-trigger"
           onClick={onOpenPicker}
-          disabled={folder === null}
-          title={document?.path ?? (scratch === null ? "Choose a document" : "Local scratch")}
+          disabled={folder === null || folderControlBusy}
+          title={
+            document?.path ??
+            (scratch === null ? "Open a document" : "Saved on this device")
+          }
         >
           <span>{document?.title ?? scratch?.title ?? "Open a document…"}</span>
-          {document !== null ? <small>{document.path}</small> : scratch !== null ? <small>Local</small> : null}
+          {document !== null ? (
+            <small>{document.path}</small>
+          ) : null}
           {folder !== null ? <CaretDown aria-hidden="true" /> : null}
         </Button>
       </div>
@@ -187,9 +168,9 @@ export function CoworkDocumentBar({
           {model.openingTarget !== null
             ? "Loading document…"
             : document !== null
-              ? `${structuredLabel[syncStatus ?? (model.readOnly ? "read_only" : "hydrating")]} · ${projectionLabel(model, materializationState)}`
+              ? registeredStatusLabel(model, syncStatus, materializationState)
               : scratch !== null
-                ? scratchLabel[syncStatus ?? "hydrating"]
+                ? localStatusLabel(syncStatus)
                 : ""}
         </span>
         {document?.driftState === "drifted" ? (
@@ -197,14 +178,16 @@ export function CoworkDocumentBar({
             size="small"
             onClick={onReviewExternalChanges}
             disabled={
-              onReviewExternalChanges === undefined || reimportBlockedReason !== null
+              folderActionBusy ||
+              onReviewExternalChanges === undefined ||
+              reimportBlockedReason !== null
             }
             aria-describedby={
               reimportBlockedReason === null ? undefined : "cowork-reimport-blocked-reason"
             }
             title={reimportBlockedReason ?? "Compare and safely replace from Markdown."}
           >
-            Review external changes
+            Review file changes
           </Button>
         ) : null}
         {document?.driftState === "drifted" && reimportBlockedReason !== null ? (
@@ -220,97 +203,143 @@ export function CoworkDocumentBar({
             size="small"
             variant="primary"
             onClick={onPromoteScratch}
-            disabled={promotionBusy || !promotionReady}
+            disabled={folderActionBusy || promotionBusy || !promotionReady}
             title={
               promotionReady
-                ? "Create a registered Co-work document from this scratch."
-                : "The scratch editor is still loading."
+                ? "Choose a folder and save this document."
+                : "The document is still loading."
             }
           >
             {promotionBusy
-              ? "Preparing…"
+              ? "Saving…"
               : promotionReady
-                ? "Save as document"
+                ? "Save document"
                 : "Loading editor…"}
           </Button>
         ) : document !== null && document.permissions?.materialize !== false ? (
+          syncStatus === "clean" ? (
+            <Button
+              size="small"
+              variant="primary"
+              onClick={onSaveMarkdown}
+              disabled={
+                onSaveMarkdown === undefined ||
+                materializationState === undefined ||
+                materializationState.kind === "checking" ||
+                materializationState.kind === "up_to_date" ||
+                materializationState.kind === "saving" ||
+                materializationState.kind === "read_only" ||
+                ((materializationState.kind === "conflict" ||
+                  materializationState.kind === "error") &&
+                  !materializationState.canRetry)
+              }
+            >
+              {materializationState?.kind === "saving"
+                ? "Saving…"
+                : (materializationState?.kind === "conflict" ||
+                      materializationState?.kind === "error") &&
+                    materializationState.canRetry
+                  ? "Try saving again"
+                  : "Save"}
+            </Button>
+          ) : null
+        ) : folder !== null && document === null ? (
           <Button
             size="small"
             variant="primary"
-            onClick={onSaveMarkdown}
-            disabled={
-              onSaveMarkdown === undefined ||
-              materializationState === undefined ||
-              materializationState.kind === "checking" ||
-              materializationState.kind === "up_to_date" ||
-              materializationState.kind === "saving" ||
-              materializationState.kind === "read_only" ||
-              ((materializationState.kind === "conflict" ||
-                materializationState.kind === "error") &&
-                !materializationState.canRetry)
-            }
+            onClick={onCreate}
+            disabled={folderActionBusy || !folder.permissions.create}
           >
-            {materializationState?.kind === "saving"
-              ? "Saving Markdown…"
-              : (materializationState?.kind === "conflict" ||
-                    materializationState?.kind === "error") &&
-                  materializationState.canRetry
-                ? "Retry Save Markdown"
-                : "Save Markdown"}
-          </Button>
-        ) : folder !== null && document === null ? (
-          <Button size="small" variant="primary" onClick={onCreate} disabled={!folder.permissions.create}>
             <Plus aria-hidden="true" /> New
           </Button>
         ) : folder !== null && document !== null ? (
-          <Button size="small" onClick={onCreate} disabled={!folder.permissions.create}>
+          <Button
+            size="small"
+            onClick={onCreate}
+            disabled={folderActionBusy || !folder.permissions.create}
+          >
             <Plus aria-hidden="true" /> New
           </Button>
         ) : null}
-        {(document !== null || scratch !== null) &&
+        {(document !== null || (scratch !== null && promotionReady)) &&
         (syncStatus === "offline" ||
           syncStatus === "error" ||
           syncStatus === "conflict") ? (
           <Button size="small" onClick={onRetrySync} disabled={onRetrySync === undefined}>
-            {scratch !== null ? "Retry device save" : "Retry Co-work sync"}
+            {scratch !== null ? "Try saving again" : "Sync now"}
           </Button>
         ) : null}
         {document !== null || scratch !== null ? (
-          <Button size="small" variant="ghost" onClick={onCloseSession} aria-label="Close document">
-            <X aria-hidden="true" /> Close
-          </Button>
-        ) : null}
-        {document !== null ? (
           <Button
             size="small"
             variant="ghost"
-            onClick={onRemoveDocument}
-            disabled={
-              onRemoveDocument === undefined ||
-              document.permissions?.retire === false ||
-              document.driftState !== "clean" ||
-              syncStatus !== "clean" ||
-              materializationState?.kind !== "up_to_date"
-            }
-            title={
-              document.driftState !== "clean"
-                ? "Resolve the external Markdown change before removing this document."
-                : syncStatus !== "clean" || materializationState?.kind !== "up_to_date"
-                  ? "Save and sync the document before removing it from Co-work."
-                  : "Keep the Markdown file and history, but stop managing it in Co-work."
-            }
+            onClick={onCloseSession}
+            aria-label="Close document"
+            disabled={folderActionBusy}
           >
-            Remove from Co-work
+            <X aria-hidden="true" /> Close
           </Button>
         ) : null}
-        {materializationState?.kind === "conflict" ||
-        materializationState?.kind === "error" ? (
+        {document !== null || scratch !== null ? (
+          <MenuTrigger>
+            <Button
+              size="small"
+              variant="ghost"
+              aria-label="More document actions"
+              title="More document actions"
+              disabled={folderActionBusy}
+            >
+              <DotsThree weight="bold" aria-hidden="true" />
+            </Button>
+            <Popover className="wb-popover" placement="bottom end">
+              <Menu
+                aria-label="More document actions"
+                className="wb-action-menu"
+                onAction={(key: Key) => {
+                  if (String(key) === "remove") onRemoveDocument?.();
+                  if (String(key) === "discard-local") onDiscardLocalDocument?.();
+                }}
+              >
+                {document !== null ? (
+                  <MenuItem
+                    id="remove"
+                    className="wb-action-menu__item"
+                    isDisabled={folderActionBusy || !canRemove}
+                    textValue="Remove from Co-work"
+                  >
+                    Remove from Co-work
+                  </MenuItem>
+                ) : (
+                  <MenuItem
+                    id="discard-local"
+                    className="wb-action-menu__item"
+                    isDisabled={
+                      onDiscardLocalDocument === undefined ||
+                      folderActionBusy ||
+                      syncStatus === "hydrating" ||
+                      syncStatus === "saving" ||
+                      syncStatus === "retrying"
+                    }
+                    textValue="Discard document"
+                  >
+                    Discard document
+                  </MenuItem>
+                )}
+              </Menu>
+            </Popover>
+          </MenuTrigger>
+        ) : null}
+        {syncStatus === "clean" &&
+        (materializationState?.kind === "conflict" ||
+          materializationState?.kind === "error") ? (
           <span
             className={`wb-cowork__save-message is-${materializationState.kind}`}
             role="alert"
-            title={materializationState.error.code}
           >
-            {materializationState.error.message}
+            {coworkErrorMessage(
+              materializationState.error,
+              "Co-work couldn’t save the file.",
+            )}
           </span>
         ) : null}
       </div>

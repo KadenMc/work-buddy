@@ -87,7 +87,7 @@ describe("CoworkRail family accessibility", () => {
       ),
     );
     // The stale state is announced in text, not by colour alone.
-    expect(screen.getByText(/Stale base/)).toBeVisible();
+    expect(screen.getByText(/based on an older version/i)).toBeVisible();
     await expectNoAccessibilityViolations(container);
   });
 

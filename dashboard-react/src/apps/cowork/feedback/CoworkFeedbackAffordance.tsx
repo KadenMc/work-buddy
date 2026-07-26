@@ -19,6 +19,7 @@ import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import type { Editor } from "@tiptap/core";
 
 import type { FeedbackCapture } from "../chat";
+import { asCoworkApiError, coworkErrorMessage } from "../providers/errors";
 import {
   DEFAULT_FEEDBACK_CONTEXT_CHARS,
   quoteAnchorFromRange,
@@ -32,7 +33,7 @@ import "./styles.css";
 
 /** Shown on the disabled trigger when the document has no live scope. */
 const LIVE_REQUIRED_TITLE =
-  "Open a registered Folder document to give feedback.";
+  "Open a document saved in a Folder to give feedback.";
 
 interface FloatPos {
   readonly left: number;
@@ -193,9 +194,10 @@ export function CoworkFeedbackAffordance({
     } catch (caught) {
       // Never lose the user's words: keep the draft open with the typed text.
       setError(
-        caught instanceof Error
-          ? caught.message
-          : "Feedback could not be sent.",
+        coworkErrorMessage(
+          asCoworkApiError(caught),
+          "Feedback could not be sent.",
+        ),
       );
     } finally {
       setSubmitting(false);

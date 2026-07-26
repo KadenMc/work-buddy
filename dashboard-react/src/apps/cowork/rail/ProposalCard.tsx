@@ -109,17 +109,17 @@ export function ProposalCard({
 
       {!proposal.baseOk ? (
         <p className="wb-cowork-rail__card-badge is-stale">
-          Stale base, reject or defer only
+          Based on an older version — reject or defer
         </p>
       ) : null}
 
       {proposal.fixesRef !== null ? (
-        <p className="wb-cowork-rail__card-badge is-fix">Drafted fix pending</p>
+        <p className="wb-cowork-rail__card-badge is-fix">Suggested fix</p>
       ) : null}
 
       {staged !== undefined ? (
         <p className="wb-cowork-rail__card-badge is-staged" role="status">
-          Staged: {PROPOSAL_VERB_LABEL[staged.verb]}
+          Selected: {PROPOSAL_VERB_LABEL[staged.verb]}
         </p>
       ) : null}
     </li>

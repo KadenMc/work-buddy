@@ -55,6 +55,7 @@ export interface PersistedCoworkYdocState {
 export interface CoworkYdocBackingStore {
   read(key: string): Promise<PersistedCoworkYdocState | undefined>;
   write(key: string, state: PersistedCoworkYdocState): Promise<void>;
+  delete(key: string): Promise<void>;
 }
 
 /** Produces the backing store one transport instance uses. Injectable for tests. */
@@ -99,6 +100,10 @@ export class InMemoryCoworkYdocBackingStore implements CoworkYdocBackingStore {
 
   async write(key: string, state: PersistedCoworkYdocState): Promise<void> {
     this.#records.set(key, cloneState(state));
+  }
+
+  async delete(key: string): Promise<void> {
+    this.#records.delete(key);
   }
 }
 
@@ -166,6 +171,13 @@ export class IndexedDbCoworkYdocBackingStore implements CoworkYdocBackingStore {
     await transactionDone(transaction);
   }
 
+  async delete(key: string): Promise<void> {
+    const database = await this.#open();
+    const transaction = database.transaction(STORE_NAME, "readwrite");
+    await requestResult(transaction.objectStore(STORE_NAME).delete(key));
+    await transactionDone(transaction);
+  }
+
   #open(): Promise<IDBDatabase> {
     if (this.#database !== undefined) return this.#database;
     this.#database = new Promise((resolve, reject) => {
@@ -183,10 +195,12 @@ export class IndexedDbCoworkYdocBackingStore implements CoworkYdocBackingStore {
   }
 }
 
-/** IndexedDB when the runtime provides it, else the process-memory fallback. */
+const fallbackBackingStore = new InMemoryCoworkYdocBackingStore();
+
+/** IndexedDB when the runtime provides it, else a shared process-memory fallback. */
 const defaultBackingStore = (): CoworkYdocBackingStore =>
   typeof indexedDB === "undefined"
-    ? new InMemoryCoworkYdocBackingStore()
+    ? fallbackBackingStore
     : new IndexedDbCoworkYdocBackingStore();
 
 export class LocalCoworkYdocTransport implements CoworkYdocTransport {
@@ -208,6 +222,11 @@ export class LocalCoworkYdocTransport implements CoworkYdocTransport {
 
   push(request: CoworkYdocPushRequest): Promise<CoworkYdocPushResult> {
     return this.#enqueue(() => this.#push(request));
+  }
+
+  /** Permanently remove this local document after its editor has been quiesced. */
+  delete(): Promise<void> {
+    return this.#enqueue(() => this.#backing.delete(this.#key));
   }
 
   /**

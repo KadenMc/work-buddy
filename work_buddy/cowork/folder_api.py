@@ -32,7 +32,7 @@ class HostFolderChooser(Protocol):
 
 
 class FolderAccessPolicy:
-    """Admission policy for server-host paths entered outside a native chooser."""
+    """Admission policy for server-host paths supplied by trusted API callers."""
 
     def __init__(self, allowed_roots: tuple[str | Path, ...] = ()) -> None:
         self.allowed_roots = tuple(
@@ -132,7 +132,7 @@ class FolderTokenStore:
         except (OSError, ValueError, TypeError) as exc:
             raise FolderLifecycleError(
                 "selection_expired",
-                "The Folder selection expired; inspect the Folder again.",
+                "The Folder selection expired; open the Folder again.",
                 status=409,
                 retryable=True,
             ) from exc
@@ -144,7 +144,7 @@ class FolderTokenStore:
             path.unlink(missing_ok=True)
             raise FolderLifecycleError(
                 "selection_expired",
-                "The Folder selection expired; inspect the Folder again.",
+                "The Folder selection expired; open the Folder again.",
                 status=409,
                 retryable=True,
             )
@@ -237,7 +237,7 @@ def create_folder_blueprint(
                 "read_only": read_only(),
                 "chooser": {
                     "available": chooser is not None,
-                    "kind": "host_native" if chooser is not None else "manual_host_path",
+                    "kind": "host_native" if chooser is not None else "unavailable",
                 },
                 "folders": summaries,
                 "diagnostics": diagnostics,
@@ -250,7 +250,7 @@ def create_folder_blueprint(
             return _error(
                 FolderLifecycleError(
                     "folder_chooser_unavailable",
-                    "A host-native Folder chooser is unavailable; enter an allowed host path.",
+                    "Folder selection is unavailable here.",
                     status=501,
                 )
             )

@@ -9,7 +9,7 @@ import {
   type CoworkReimportPrepared,
   type CoworkReimportReceipt,
 } from "../providers/CoworkHttpClient";
-import { asCoworkApiError } from "../providers/errors";
+import { asCoworkApiError, coworkErrorMessage } from "../providers/errors";
 import { sha256Hex } from "../persistence/hashing";
 import { bootstrapCoworkYdoc } from "./bootstrapCoworkYdoc";
 
@@ -122,7 +122,12 @@ export function CoworkReimportDialog({
       })
       .catch((loadError) => {
         if (!active) return;
-        setError(asCoworkApiError(loadError).message);
+        setError(
+          coworkErrorMessage(
+            asCoworkApiError(loadError),
+            "Co-work couldn’t compare the Markdown file.",
+          ),
+        );
         setStage("review");
       });
     return () => {
@@ -164,7 +169,12 @@ export function CoworkReimportDialog({
       }
       setStage("confirm");
     } catch (prepareError) {
-      setError(asCoworkApiError(prepareError).message);
+      setError(
+        coworkErrorMessage(
+          asCoworkApiError(prepareError),
+          "Co-work couldn’t prepare those file changes.",
+        ),
+      );
       setStage(committedRef.current === null ? "review" : "confirm");
     }
   };
@@ -213,7 +223,12 @@ export function CoworkReimportDialog({
       preparedRef.current = null;
       commitPayloadRef.current = null;
     } catch (commitError) {
-      setError(asCoworkApiError(commitError).message);
+      setError(
+        coworkErrorMessage(
+          asCoworkApiError(commitError),
+          "Co-work couldn’t replace the document.",
+        ),
+      );
       // Preserve the actor-bound prepared intent. Retry reuses the same staged source and
       // commit route; a response-lost commit is recovered by the same idempotent operation.
       setStage("confirm");
@@ -264,7 +279,7 @@ export function CoworkReimportDialog({
             </InlineAlert>
           ) : null}
           {error !== null ? <InlineAlert tone="danger" role="alert">{error}</InlineAlert> : null}
-          {busy ? <p role="status"><Spinner /> {stage === "loading" ? "Comparing exact Markdown…" : stage === "preparing" ? "Preparing replacement…" : "Replacing Co-work document…"}</p> : null}
+          {busy ? <p role="status"><Spinner /> {stage === "loading" ? "Comparing changes…" : stage === "preparing" ? "Preparing replacement…" : "Updating document…"}</p> : null}
           <div className="wb-cowork-dialog__actions">
             <Button onClick={close} disabled={busy}>Cancel</Button>
             {stage === "confirm" ? (

@@ -130,7 +130,7 @@ describe("CoworkFeedbackAffordance", () => {
     expect(trigger).toBeDisabled();
     expect(trigger).toHaveAttribute(
       "title",
-      expect.stringMatching(/registered Folder document/i),
+      expect.stringMatching(/document saved in a Folder/i),
     );
 
     await userEvent.click(trigger);

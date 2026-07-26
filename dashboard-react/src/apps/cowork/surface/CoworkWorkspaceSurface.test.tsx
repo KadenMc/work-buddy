@@ -11,7 +11,11 @@ import {
 import { DashboardEventProvider } from "../../../dashboard/events/DashboardEventProvider";
 import { fallbackCanvasTheme } from "../../../theme/resolveTheme";
 import { expectNoAccessibilityViolations } from "../../../test/setup";
-import type { CoworkDocumentSummary, CoworkWorkspaceInput } from "../contracts";
+import {
+  COWORK_INTENTS,
+  type CoworkDocumentSummary,
+  type CoworkWorkspaceInput,
+} from "../contracts";
 import CoworkWorkspaceWidget, {
   reimportReceiptMatchesDocument,
 } from "../widget/CoworkWorkspaceWidget";
@@ -59,20 +63,26 @@ const DEMO_DOCUMENT: CoworkDocumentSummary = {
   openFlagCount: 0,
 };
 
+const workspaceElement = (
+  input: CoworkWorkspaceInput,
+  emit: ComponentProps<typeof CoworkWorkspaceWidget>["emit"] = noopEmit,
+) =>
+  <DashboardEventProvider>
+    <main>
+      <CoworkWorkspaceWidget
+        input={input}
+        emit={emit}
+        presentation={presentation}
+      />
+    </main>
+  </DashboardEventProvider>;
+
 const renderWorkspace = (
   input: CoworkWorkspaceInput,
   emit: ComponentProps<typeof CoworkWorkspaceWidget>["emit"] = noopEmit,
 ) =>
   render(
-    <DashboardEventProvider>
-      <main>
-        <CoworkWorkspaceWidget
-          input={input}
-          emit={emit}
-          presentation={presentation}
-        />
-      </main>
-    </DashboardEventProvider>,
+    workspaceElement(input, emit),
   );
 
 describe("CoworkWorkspaceWidget default (empty) mode", () => {
@@ -85,13 +95,15 @@ describe("CoworkWorkspaceWidget default (empty) mode", () => {
     sessionQuality: "demo",
   };
 
-  it("opens with an actionable Folder-first launcher and no empty theatre", async () => {
+  it("opens with direct Folder selection and a simple new-document action", async () => {
     const { container } = renderWorkspace(emptyInput);
 
-    expect(
-      screen.getByRole("heading", { name: "Choose a Folder for Co-work" }),
-    ).toBeVisible();
-    expect(screen.getAllByRole("button", { name: /Open Folder/i }).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Open Folder" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "New document" })).toBeVisible();
+    expect(screen.queryByText("Choose a Folder for Co-work")).toBeNull();
+    expect(screen.queryByText(/Folder keeps related documents/i)).toBeNull();
+    expect(screen.queryByRole("textbox", { name: /Folder path/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Inspect Folder" })).toBeNull();
     expect(container.querySelector(".ProseMirror")).toBeNull();
     expect(screen.queryByRole("tab", { name: /Review/ })).toBeNull();
     expect(screen.queryByRole("separator")).toBeNull();
@@ -99,13 +111,65 @@ describe("CoworkWorkspaceWidget default (empty) mode", () => {
     expect(screen.queryByText("Co-work demo document")).toBeNull();
   }, 15_000);
 
-  it("offers a named local scratch without pretending it is a registered document", async () => {
+  it("offers a normal new document without exposing its local persistence implementation", async () => {
     const { container } = renderWorkspace(emptyInput);
-    expect(screen.getByRole("button", { name: "New local scratch" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "New document" })).toBeVisible();
+    expect(screen.queryByText(/scratch/i)).toBeNull();
     expect(container.querySelector(".ProseMirror")).toBeNull();
     expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull();
     expect(screen.queryByText(/I proposed a few tracked edits/)).toBeNull();
   }, 15_000);
+
+  it("adds compact parent context only when recent Folder names collide", () => {
+    const permissions = {
+      read: true,
+      create: true,
+      import: true,
+      materialize: true,
+      retire: true,
+    };
+    renderWorkspace({
+      ...emptyInput,
+      folders: [
+        {
+          storeId: "store-alpha",
+          folderName: "work-buddy",
+          folderPath: "C:/Projects/alpha/work-buddy",
+          layout: "wbuddy_cowork_v1",
+          reachable: true,
+          eligibility: "eligible",
+          ineligibleReason: null,
+          permissions,
+          documentSurface: {
+            enabled: true,
+            allowedDocumentClasses: ["co_authored"],
+            feedbackCapture: true,
+          },
+          documentCount: 0,
+        },
+        {
+          storeId: "store-beta",
+          folderName: "work-buddy",
+          folderPath: "C:/Projects/beta/work-buddy",
+          layout: "wbuddy_cowork_v1",
+          reachable: true,
+          eligibility: "eligible",
+          ineligibleReason: null,
+          permissions,
+          documentSurface: {
+            enabled: true,
+            allowedDocumentClasses: ["co_authored"],
+            feedbackCapture: true,
+          },
+          documentCount: 0,
+        },
+      ],
+    });
+
+    expect(screen.getByText("alpha")).toBeVisible();
+    expect(screen.getByText("beta")).toBeVisible();
+    expect(screen.queryByText("C:/Projects/alpha")).toBeNull();
+  });
 
   it("has no accessibility violations in its empty resting state", async () => {
     const { container } = renderWorkspace(emptyInput);
@@ -113,7 +177,7 @@ describe("CoworkWorkspaceWidget default (empty) mode", () => {
     await expectNoAccessibilityViolations(container);
   }, 15_000);
 
-  it("asks before initializing an ordinary Folder and still mounts no editor", () => {
+  it("uses setup_available only as a concise retry state after automatic setup fails", () => {
     const { container } = renderWorkspace({
       ...emptyInput,
       folderSelection: {
@@ -125,13 +189,325 @@ describe("CoworkWorkspaceWidget default (empty) mode", () => {
       },
     });
 
-    expect(
-      screen.getByRole("heading", { name: "Set up Co-work in “work-buddy”?" }),
-    ).toBeVisible();
-    expect(screen.getByText(".wbuddy/cowork/", { exact: false })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Set up Co-work" })).toBeVisible();
+    expect(screen.getByText("Co-work couldn’t finish opening work-buddy.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Try again" })).toBeVisible();
+    expect(screen.queryByText(/\.wbuddy|provenance|tool-managed/i)).toBeNull();
     expect(container.querySelector(".ProseMirror")).toBeNull();
     expect(screen.queryByRole("tab", { name: /Review/ })).toBeNull();
+  });
+
+  it("serializes a pending Folder open and makes its temporary state obvious", async () => {
+    const user = userEvent.setup();
+    let release!: () => void;
+    const emit = vi.fn(
+      (intent: Parameters<typeof noopEmit>[0]) =>
+        new Promise<Awaited<ReturnType<typeof noopEmit>>>((resolve) => {
+          release = () =>
+            resolve({
+              intent_id: intent.intent_id,
+              status: "accepted" as const,
+            });
+        }),
+    );
+    renderWorkspace(
+      {
+        ...emptyInput,
+        activeFolderStoreId: "prior-store",
+        folderSelection: {
+          kind: "setup_available",
+          candidate: {
+            folderName: "work-buddy",
+            folderPath: "C:/Projects/work-buddy",
+          },
+        },
+      },
+      emit,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    const back = screen.getByRole("button", { name: "Back" });
+    const actions = back.parentElement;
+    expect(actions).not.toBeNull();
+    const opening = within(actions!).getByRole("button", { name: "Opening…" });
+    expect(opening).toBeDisabled();
+    expect(back).toBeDisabled();
+    expect(
+      screen.queryByText("Co-work couldn’t finish opening work-buddy."),
+    ).toBeNull();
+    await user.click(opening);
+    expect(emit).toHaveBeenCalledTimes(1);
+
+    release();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Try again" })).toBeEnabled(),
+    );
+  });
+
+  it("blocks New and Continue while a recent Folder is opening", async () => {
+    const user = userEvent.setup();
+    let release!: () => void;
+    const emit = vi.fn(
+      (intent: Parameters<typeof noopEmit>[0]) =>
+        new Promise<Awaited<ReturnType<typeof noopEmit>>>((resolve) => {
+          release = () =>
+            resolve({
+              intent_id: intent.intent_id,
+              status: "accepted" as const,
+            });
+        }),
+    );
+    const knownFolder = {
+      storeId: "recent-store",
+      folderName: "work-buddy",
+      folderPath: "C:/Projects/work-buddy",
+      layout: "wbuddy_cowork_v1",
+      reachable: true,
+      eligibility: "eligible",
+      ineligibleReason: null,
+      documentSurface: {
+        enabled: true,
+        allowedDocumentClasses: ["co_authored"],
+        feedbackCapture: true,
+      },
+      permissions: {
+        read: true,
+        create: true,
+        import: true,
+        materialize: true,
+        retire: true,
+      },
+      documentCount: 0,
+    } as const;
+    renderWorkspace(
+      {
+        ...emptyInput,
+        folders: [knownFolder],
+        scratches: [
+          {
+            scratchId: "scratch-1",
+            title: "Untitled",
+            createdAt: "2026-07-25T12:00:00Z",
+            updatedAt: "2026-07-25T12:00:00Z",
+            recoveredFromPreviousEditor: false,
+          },
+        ],
+      },
+      emit,
+    );
+
+    await user.click(screen.getByRole("button", { name: "work-buddy" }));
+
+    const newDocument = screen.getByRole("button", { name: "New document" });
+    const continueDocument = screen.getByRole("button", { name: "Continue" });
+    expect(newDocument).toBeDisabled();
+    expect(continueDocument).toBeDisabled();
+    await user.click(newDocument);
+    await user.click(continueDocument);
+    expect(emit).toHaveBeenCalledTimes(1);
+
+    release();
+    await waitFor(() => expect(newDocument).toBeEnabled());
+  });
+
+  it("shows a native Folder picker failure once without leaving the start screen", async () => {
+    const user = userEvent.setup();
+    const emit = vi.fn(async (intent: Parameters<typeof noopEmit>[0]) => ({
+      intent_id: intent.intent_id,
+      status: "rejected" as const,
+      message: "The Folder picker couldn’t be opened.",
+    }));
+    const { container } = renderWorkspace(emptyInput, emit);
+
+    await user.click(screen.getByRole("button", { name: "Open Folder" }));
+
+    expect(
+      screen.getAllByText("The Folder picker couldn’t be opened."),
+    ).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "New document" })).toBeVisible();
+    expect(container.querySelector(".ProseMirror")).toBeNull();
+  });
+
+  it("shows one Folder error when saving an on-device document needs setup", async () => {
+    const user = userEvent.setup();
+    const message = "Co-work couldn’t finish opening work-buddy.";
+    const emit = vi.fn(async (intent: Parameters<typeof noopEmit>[0]) => ({
+      intent_id: intent.intent_id,
+      status:
+        intent.intent_type === COWORK_INTENTS.folderSelect
+          ? ("rejected" as const)
+          : ("accepted" as const),
+      ...(intent.intent_type === COWORK_INTENTS.folderSelect ? { message } : {}),
+    }));
+    const scratchInput: CoworkWorkspaceInput = {
+      document: null,
+      sessionQuality: "complete",
+      scratches: [
+        {
+          scratchId: "scratch-1",
+          title: "Untitled",
+          createdAt: "2026-07-25T12:00:00Z",
+          updatedAt: "2026-07-25T12:00:00Z",
+          recoveredFromPreviousEditor: false,
+        },
+      ],
+      routeTarget: {
+        kind: "scratch",
+        scratchId: "scratch-1",
+        title: "Untitled",
+      },
+      activeSession: {
+        kind: "scratch",
+        scratchId: "scratch-1",
+        title: "Untitled",
+      },
+    };
+    const { rerender } = renderWorkspace(scratchInput, emit);
+    const saveDocument = await screen.findByRole(
+      "button",
+      { name: "Save document" },
+      { timeout: 10_000 },
+    );
+
+    await user.click(saveDocument);
+    await waitFor(() => expect(screen.getAllByText(message)).toHaveLength(1));
+
+    rerender(
+      workspaceElement(
+        {
+          ...scratchInput,
+          folderSelection: {
+            kind: "setup_available",
+            candidate: {
+              folderName: "work-buddy",
+              folderPath: "C:/Projects/work-buddy",
+            },
+          },
+          navigationError: {
+            code: "setup_failed",
+            message,
+            retryable: true,
+          },
+        },
+        emit,
+      ),
+    );
+
+    expect(screen.getAllByText(message)).toHaveLength(1);
+  }, 15_000);
+
+  it("retries a terminal Folder check and can return to the prior Folder", async () => {
+    const user = userEvent.setup();
+    const emit = vi.fn(async (intent: Parameters<typeof noopEmit>[0]) => ({
+      intent_id: intent.intent_id,
+      status: "accepted" as const,
+    }));
+    renderWorkspace(
+      {
+        ...emptyInput,
+        activeFolderStoreId: "prior-store",
+        routeTarget: { kind: "launcher", storeId: "prior-store" },
+        folderSelection: {
+          kind: "unavailable",
+          candidate: {
+            folderName: "archive",
+            folderPath: "C:/Projects/archive",
+          },
+          reasonCode: "descendant_scan_incomplete",
+          retryable: true,
+        },
+        catalog: {
+          status: "error",
+          documents: [],
+          refreshedAt: null,
+          error: {
+            code: "network_error",
+            message: "Documents could not be loaded.",
+            retryable: true,
+          },
+        },
+      },
+      emit,
+    );
+
+    expect(screen.getByRole("button", { name: "Back" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    expect(emit).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        intent_type: COWORK_INTENTS.folderSelect,
+        payload: { action: "retry" },
+      }),
+    );
+
+    emit.mockClear();
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    expect(emit).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        intent_type: COWORK_INTENTS.folderSelect,
+        payload: { action: "cancel" },
+      }),
+    );
+  });
+
+  it("shows a failed owner-Folder open in the terminal Folder screen", async () => {
+    const user = userEvent.setup();
+    const owner = {
+      storeId: "owner-store",
+      folderName: "work-buddy",
+      folderPath: "C:/Projects/work-buddy",
+      layout: "wbuddy_cowork_v1",
+      reachable: true,
+      eligibility: "eligible",
+      ineligibleReason: null,
+      documentSurface: {
+        enabled: true,
+        allowedDocumentClasses: ["co_authored"],
+        feedbackCapture: true,
+      },
+      permissions: {
+        read: true,
+        create: true,
+        import: true,
+        materialize: true,
+        retire: true,
+      },
+      documentCount: 0,
+    } as const;
+    const input: CoworkWorkspaceInput = {
+      ...emptyInput,
+      folderSelection: {
+        kind: "inside_existing_folder",
+        candidate: {
+          folderName: "notes",
+          folderPath: "C:/Projects/work-buddy/notes",
+        },
+        owner,
+      },
+    };
+    const message = "Work Buddy couldn’t open work-buddy.";
+    const emit = vi.fn(async (intent: Parameters<typeof noopEmit>[0]) => ({
+      intent_id: intent.intent_id,
+      status: "rejected" as const,
+      message,
+    }));
+    const { rerender } = renderWorkspace(input, emit);
+
+    await user.click(screen.getByRole("button", { name: "Open work-buddy" }));
+    rerender(
+      workspaceElement(
+        {
+          ...input,
+          navigationError: {
+            code: "network_error",
+            message,
+            retryable: true,
+          },
+        },
+        emit,
+      ),
+    );
+
+    expect(screen.getAllByText(message)).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Open work-buddy" })).toBeVisible();
   });
 });
 
@@ -423,13 +799,101 @@ describe("CoworkWorkspaceWidget live mode", () => {
       emit,
     );
 
-    await user.click(screen.getByRole("button", { name: "Open existing" }));
+    await user.click(screen.getByRole("button", { name: "Open a document…" }));
 
     expect(
-      screen.getByRole("dialog", { name: "Open a Co-work document" }),
+      screen.getByRole("dialog", { name: "Open document" }),
     ).toBeVisible();
     expect(screen.getByRole("option", { name: /Live doc/ })).toBeVisible();
     expect(emit).not.toHaveBeenCalled();
+  });
+
+  it("keeps an active document in place when the native Folder picker fails", async () => {
+    const user = userEvent.setup();
+    const emit = vi.fn(async (intent: Parameters<typeof noopEmit>[0]) =>
+      intent.intent_type === COWORK_INTENTS.folderSelect
+        ? {
+            intent_id: intent.intent_id,
+            status: "rejected" as const,
+            message: "The Folder picker couldn’t be opened.",
+          }
+        : {
+            intent_id: intent.intent_id,
+            status: "accepted" as const,
+          },
+    );
+    const { container } = renderLive(emit);
+
+    await user.click(screen.getByRole("button", { name: "work-buddy" }));
+
+    expect(
+      screen.getAllByText("The Folder picker couldn’t be opened."),
+    ).toHaveLength(1);
+    expect(container.querySelector(".wb-cowork-lifecycle__session")).not.toBeNull();
+    expect(container.querySelector(".wb-cowork-lifecycle__session")).not.toHaveAttribute(
+      "inert",
+    );
+  });
+
+  it("lets a document return from failed Folder setup without duplicating the error", async () => {
+    const user = userEvent.setup();
+    const message = "Co-work couldn’t finish opening archive.";
+    const emit = vi.fn(async (intent: Parameters<typeof noopEmit>[0]) => ({
+      intent_id: intent.intent_id,
+      status: "rejected" as const,
+      message,
+    }));
+    renderWorkspace(
+      {
+        document: LIVE_DOCUMENT,
+        sessionQuality: "complete",
+        folders: [LIVE_FOLDER],
+        folderSelection: {
+          kind: "setup_available",
+          candidate: {
+            folderName: "archive",
+            folderPath: "C:/Projects/archive",
+          },
+        },
+        activeFolderStoreId: LIVE_FOLDER.storeId,
+        catalog: {
+          status: "ready",
+          documents: [LIVE_DOCUMENT],
+          refreshedAt: "2026-07-22T00:00:00Z",
+          error: null,
+        },
+        scratches: [],
+        routeTarget: {
+          kind: "registered",
+          storeId: LIVE_FOLDER.storeId,
+          documentId: LIVE_DOCUMENT.documentId,
+        },
+        activeSession: {
+          kind: "registered",
+          storeId: LIVE_FOLDER.storeId,
+          document: LIVE_DOCUMENT,
+        },
+        openingTarget: null,
+        navigationError: {
+          code: "setup_failed",
+          message,
+          retryable: true,
+        },
+        readOnly: false,
+      },
+      emit,
+    );
+
+    expect(screen.getByRole("button", { name: "Back to document" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+
+    expect(screen.getAllByText(message)).toHaveLength(1);
+    expect(emit).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        intent_type: COWORK_INTENTS.folderSelect,
+        payload: { action: "initialize" },
+      }),
+    );
   });
 
   it("refreshes the open document on focus and coalesces a burst", async () => {
@@ -502,7 +966,7 @@ describe("CoworkWorkspaceWidget live mode", () => {
       timeout: 10_000,
     });
     await waitFor(
-      () => expect(screen.getByText("Structured document unavailable.")).toBeVisible(),
+      () => expect(screen.getByText("Document couldn’t be opened.")).toBeVisible(),
       { timeout: 10_000 },
     );
     expect(container.querySelector("[data-wb-suggestion]")).toBeNull();
@@ -554,12 +1018,12 @@ describe("CoworkWorkspaceWidget live mode", () => {
     });
     await user.click(screen.getByText("Name the review rail."));
     await user.click(screen.getByRole("button", { name: "Accept" }));
-    expect(screen.getByText("Staged: Accept")).toBeVisible();
+    expect(screen.getByText("Selected: Accept")).toBeVisible();
 
     await user.click(editorTab);
     expect(editorTab).toHaveAttribute("aria-selected", "true");
     await user.click(reviewTab);
-    expect(screen.getByText("Staged: Accept")).toBeVisible();
+    expect(screen.getByText("Selected: Accept")).toBeVisible();
 
     reviewTab.focus();
     await user.keyboard("{End}");

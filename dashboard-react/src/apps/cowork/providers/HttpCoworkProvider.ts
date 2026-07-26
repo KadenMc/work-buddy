@@ -24,10 +24,14 @@ import {
   type CoworkRouteTarget,
   type CoworkScratchCloseIntentPayload,
   type CoworkScratchOpenIntentPayload,
+  type CoworkScratchTouchIntentPayload,
   type CoworkViewModel,
   type CoworkWorkspaceInput,
 } from "../contracts";
-import { CoworkScratchRegistry } from "../scratch/registry";
+import {
+  CoworkScratchRegistry,
+  type CoworkScratchTransportFactory,
+} from "../scratch/registry";
 import {
   CoworkHttpClient,
   type CoworkInspectionResult,
@@ -50,6 +54,7 @@ export interface HttpCoworkProviderOptions {
   readonly location: CoworkLocationAdapter;
   readonly storage: Storage;
   readonly client?: CoworkHttpClient;
+  readonly scratchTransportFactory?: CoworkScratchTransportFactory;
 }
 
 const emptyCatalog = (status: CoworkCatalogState["status"] = "empty"): CoworkCatalogState => ({
@@ -73,6 +78,24 @@ const payloadRecord = (intent: DashboardIntent): Record<string, unknown> =>
     ? (intent.payload as Record<string, unknown>)
     : {};
 
+const folderActionError = (error: unknown): CoworkApiError => {
+  const apiError = asCoworkApiError(error);
+  const messages: Readonly<Record<string, string>> = {
+    folder_chooser_unavailable: "Folder selection isn’t available here.",
+    folder_chooser_failed: "The Folder picker couldn’t be opened.",
+    selection_expired: "The Folder selection expired. Open the Folder again.",
+    folder_changed: "The Folder changed while it was opening. Try again.",
+    descendant_scan_incomplete: "Co-work couldn’t finish opening that Folder. Try again.",
+    folder_unreachable: "Co-work couldn’t open that Folder.",
+    network_error: "Co-work couldn’t finish opening that Folder. Try again.",
+    request_failed: "Co-work couldn’t finish opening that Folder. Try again.",
+  };
+  return {
+    ...apiError,
+    message: messages[apiError.code] ?? apiError.message,
+  };
+};
+
 const routeFromSearch = (
   search: string,
   scratchRegistry: CoworkScratchRegistry,
@@ -89,7 +112,7 @@ const routeFromSearch = (
     return {
       kind: "scratch",
       scratchId,
-      title: scratch?.title ?? "Scratch not found",
+      title: scratch?.title ?? "Document not found",
     };
   }
   if (storeId !== null) return { kind: "launcher", storeId };
@@ -127,6 +150,8 @@ export class HttpCoworkProvider implements ViewProvider {
   #catalogEpoch = 0;
   #boot?: Promise<void>;
   #inspectionToken: string | null = null;
+  #inspectionEpoch = 0;
+  #folderActivationEpoch = 0;
   #folderMutationKey: {
     readonly inspectionToken: string;
     readonly operation: "initialize";
@@ -141,7 +166,10 @@ export class HttpCoworkProvider implements ViewProvider {
   constructor(options: HttpCoworkProviderOptions) {
     this.#location = options.location;
     this.#client = options.client ?? new CoworkHttpClient();
-    this.#scratches = new CoworkScratchRegistry(options.storage);
+    this.#scratches = new CoworkScratchRegistry(
+      options.storage,
+      options.scratchTransportFactory,
+    );
     const routeTarget = routeFromSearch(options.location.getSearch(), this.#scratches);
     const requestedStoreId =
       routeTarget.kind === "scratch" ? null : routeTarget.storeId;
@@ -246,8 +274,16 @@ export class HttpCoworkProvider implements ViewProvider {
         }
         case COWORK_INTENTS.scratchClose: {
           const input = payloadRecord(intent) as unknown as CoworkScratchCloseIntentPayload;
-          if (input.retire === true) this.#closeScratch(input);
-          else await this.#withDurableSessionLeave(null, () => this.#closeScratch(input));
+          if (input.retire === true && this.#model.activeSession.kind !== "scratch") {
+            await this.#closeScratch(input);
+          } else {
+            await this.#withDurableSessionLeave(null, () => this.#closeScratch(input));
+          }
+          break;
+        }
+        case COWORK_INTENTS.scratchTouch: {
+          const input = payloadRecord(intent) as unknown as CoworkScratchTouchIntentPayload;
+          this.#touchScratch(input);
           break;
         }
         default:
@@ -263,7 +299,10 @@ export class HttpCoworkProvider implements ViewProvider {
         revision: this.#revision,
       };
     } catch (error) {
-      const apiError = asCoworkApiError(error);
+      const apiError =
+        intent.intent_type === COWORK_INTENTS.folderSelect
+          ? folderActionError(error)
+          : asCoworkApiError(error);
       this.#patch({ navigationError: apiError }, `intent-failed:${intent.intent_type}`);
       return {
         intent_id: intent.intent_id,
@@ -483,8 +522,11 @@ export class HttpCoworkProvider implements ViewProvider {
           document: null,
         };
       } else {
-        await this.#activateFolder(route.storeId, false);
-        if (epoch !== this.#requestEpoch) return;
+        const activated = await this.#activateFolder(
+          route.storeId,
+          () => epoch === this.#requestEpoch,
+        );
+        if (!activated || epoch !== this.#requestEpoch) return;
         this.#model = {
           ...this.#model,
           activeSession: { kind: "none" },
@@ -501,11 +543,15 @@ export class HttpCoworkProvider implements ViewProvider {
       if (scratch === undefined) {
         const error: CoworkApiError = {
           code: "scratch_not_found",
-          message: "This scratch was not found on this device.",
+          message: "This document was not found on this device.",
           retryable: false,
         };
         this.#model = {
           ...this.#model,
+          routeTarget: {
+            kind: "launcher",
+            storeId: this.#model.activeFolderStoreId,
+          },
           openingTarget: null,
           navigationError: error,
           activeSession: { kind: "none" },
@@ -541,10 +587,14 @@ export class HttpCoworkProvider implements ViewProvider {
     if (notify && epoch === this.#requestEpoch) this.#touch("location:document");
   }
 
-  async #activateFolder(storeId: string, navigate: boolean): Promise<void> {
+  async #activateFolder(
+    storeId: string,
+    isCurrent: () => boolean = () => true,
+  ): Promise<boolean> {
     let folder = this.#model.folders.find((entry) => entry.storeId === storeId);
     if (folder === undefined) {
       const folders = await this.#client.listFolders(true);
+      if (!isCurrent()) return false;
       folder = folders.folders.find((entry) => entry.storeId === storeId);
       this.#model = {
         ...this.#model,
@@ -553,25 +603,31 @@ export class HttpCoworkProvider implements ViewProvider {
         readOnly: folders.readOnly,
       };
     }
+    if (!isCurrent()) return false;
     if (folder === undefined) {
       const error: CoworkApiError = {
         code: "folder_not_found",
         message: "This Folder is no longer available.",
         retryable: true,
       };
+      const hasPreviousFolder = this.#model.activeFolderStoreId !== null;
       this.#model = {
         ...this.#model,
-        activeFolderStoreId: null,
         folderSelection: {
           kind: "unavailable",
           candidate: null,
           reasonCode: "folder_not_found",
           retryable: true,
         },
-        catalog: { ...emptyCatalog("unreachable"), error },
+        ...(hasPreviousFolder
+          ? {}
+          : {
+              activeFolderStoreId: null,
+              catalog: { ...emptyCatalog("unreachable"), error },
+            }),
         navigationError: error,
       };
-      return;
+      throw new CoworkHttpError(error);
     }
     this.#model = {
       ...this.#model,
@@ -580,7 +636,7 @@ export class HttpCoworkProvider implements ViewProvider {
       navigationError: null,
     };
     await this.#loadCatalog(folder.storeId);
-    if (navigate) this.#location.pushSearch(`?store_id=${encodeURIComponent(folder.storeId)}`);
+    return isCurrent();
   }
 
   async #loadCatalog(storeId: string): Promise<void> {
@@ -691,6 +747,8 @@ export class HttpCoworkProvider implements ViewProvider {
     existingEpoch?: number,
   ): Promise<void> {
     const previousTarget = this.#model.routeTarget;
+    const previousFolderSelection = this.#model.folderSelection;
+    const hadActiveSession = this.#model.activeSession.kind !== "none";
     const target: CoworkRouteTarget = {
       kind: "registered",
       storeId: input.storeId,
@@ -704,7 +762,35 @@ export class HttpCoworkProvider implements ViewProvider {
       navigationError: null,
     };
     if (this.#model.activeFolderStoreId !== input.storeId) {
-      await this.#activateFolder(input.storeId, false);
+      try {
+        const activated = await this.#activateFolder(
+          input.storeId,
+          () => epoch === this.#requestEpoch,
+        );
+        if (!activated || epoch !== this.#requestEpoch) return;
+      } catch (error) {
+        if (epoch !== this.#requestEpoch) return;
+        const apiError = asCoworkApiError(error);
+        this.#model = {
+          ...this.#model,
+          ...(hadActiveSession
+            ? { folderSelection: previousFolderSelection }
+            : {}),
+          openingTarget: null,
+          navigationError: apiError,
+          routeTarget:
+            navigate || hadActiveSession
+              ? previousTarget
+              : {
+                  kind: "unavailable",
+                  storeId: input.storeId,
+                  documentId: input.documentId,
+                  reason: apiError.code,
+                },
+        };
+        if (navigate || hadActiveSession) throw new CoworkHttpError(apiError);
+        return;
+      }
     }
     let document = this.#model.catalog.documents.find(
       (entry) => entry.documentId === input.documentId,
@@ -842,7 +928,7 @@ export class HttpCoworkProvider implements ViewProvider {
         ? this.#scratches.create(input.title)
         : this.#scratches.find(input.scratchId);
     if (scratch === undefined) {
-      throw new Error("This scratch was not found on this device.");
+      throw new Error("This document was not found on this device.");
     }
     this.#model = {
       ...this.#model,
@@ -865,17 +951,53 @@ export class HttpCoworkProvider implements ViewProvider {
     this.#touch("scratch-opened");
   }
 
-  #closeScratch(input: CoworkScratchCloseIntentPayload): void {
+  #touchScratch(input: CoworkScratchTouchIntentPayload): void {
+    if (
+      this.#model.activeSession.kind !== "scratch" ||
+      this.#model.activeSession.scratchId !== input.scratchId
+    ) {
+      throw new Error("That document is not open on this device.");
+    }
+    this.#scratches.touch(input.scratchId);
+    this.#model = {
+      ...this.#model,
+      scratches: this.#scratches.list(),
+    };
+    this.#touch("scratch-edited");
+  }
+
+  async #closeScratch(input: CoworkScratchCloseIntentPayload): Promise<void> {
     if (input.retire === true) {
       if (input.scratchId === undefined || input.scratchId.length === 0) {
-        throw new Error("Choose the scratch to retire.");
+        throw new Error("Choose the local document to remove.");
+      }
+      if (this.#model.activeSession.kind === "scratch") {
+        if (this.#model.activeSession.scratchId !== input.scratchId) {
+          throw new Error("That document is not open.");
+        }
+        await this.#scratches.discard(input.scratchId);
+        const storeId = this.#model.activeFolderStoreId;
+        this.#model = {
+          ...this.#model,
+          scratches: this.#scratches.list(),
+          routeTarget: { kind: "launcher", storeId },
+          activeSession: { kind: "none" },
+          openingTarget: null,
+          navigationError: null,
+          document: null,
+        };
+        this.#location.pushSearch(
+          storeId === null ? "?mode=launcher" : `?store_id=${encodeURIComponent(storeId)}`,
+        );
+        this.#touch("local-document-discarded");
+        return;
       }
       if (this.#model.activeSession.kind !== "registered") {
         throw new Error(
-          "The scratch remains on this device until its Co-work document is open.",
+          "This document remains on this device until its saved copy is open.",
         );
       }
-      this.#scratches.remove(input.scratchId);
+      await this.#scratches.discard(input.scratchId);
       this.#model = {
         ...this.#model,
         scratches: this.#scratches.list(),
@@ -896,7 +1018,11 @@ export class HttpCoworkProvider implements ViewProvider {
   }
 
   async #handleFolderIntent(input: CoworkFolderSelectIntentPayload): Promise<void> {
+    if (input.action !== "open") {
+      this.#folderActivationEpoch += 1;
+    }
     if (input.action === "cancel") {
+      this.#inspectionEpoch += 1;
       this.#inspectionToken = null;
       this.#folderMutationKey = null;
       this.#continuationToken = null;
@@ -909,17 +1035,36 @@ export class HttpCoworkProvider implements ViewProvider {
     }
     if (input.action === "open") {
       if (input.storeId === undefined) throw new Error("Choose a Folder to open.");
-      await this.#activateFolder(input.storeId, true);
+      if (
+        this.#model.folderSelection.kind === "initialized" ||
+        this.#model.folderSelection.kind === "none"
+      ) {
+        this.#selectionBeforeInspection = this.#model.folderSelection;
+      }
+      const activationEpoch = ++this.#folderActivationEpoch;
+      let activated = false;
+      try {
+        activated = await this.#activateFolder(
+          input.storeId,
+          () => activationEpoch === this.#folderActivationEpoch,
+        );
+      } catch (error) {
+        if (activationEpoch !== this.#folderActivationEpoch) return;
+        throw error;
+      }
+      if (!activated || activationEpoch !== this.#folderActivationEpoch) return;
       this.#model = {
         ...this.#model,
         routeTarget: { kind: "launcher", storeId: input.storeId },
         activeSession: { kind: "none" },
         document: null,
       };
+      this.#location.pushSearch(`?store_id=${encodeURIComponent(input.storeId)}`);
       this.#touch("folder-opened");
       return;
     }
     if (input.action === "choose") {
+      const inspectionEpoch = ++this.#inspectionEpoch;
       if (
         this.#model.folderSelection.kind === "initialized" ||
         this.#model.folderSelection.kind === "none"
@@ -929,11 +1074,24 @@ export class HttpCoworkProvider implements ViewProvider {
       this.#inspectionToken = null;
       this.#continuationToken = null;
       this.#folderMutationKey = null;
-      this.#patch({ folderSelection: { kind: "choosing" } }, "folder-choosing");
-      const chosen = await this.#client.chooseFolder();
+      this.#patch(
+        { folderSelection: { kind: "choosing" }, navigationError: null },
+        "folder-choosing",
+      );
+      let chosen: Awaited<ReturnType<CoworkHttpClient["chooseFolder"]>>;
+      try {
+        chosen = await this.#client.chooseFolder();
+      } catch (error) {
+        this.#restoreTransientFolderSelection(inspectionEpoch);
+        throw error;
+      }
+      if (inspectionEpoch !== this.#inspectionEpoch) return;
       if (chosen.cancelled) {
         this.#patch(
-          { folderSelection: this.#selectionBeforeInspection },
+          {
+            folderSelection: this.#selectionBeforeInspection,
+            navigationError: null,
+          },
           "folder-choose-cancelled",
         );
         return;
@@ -943,10 +1101,11 @@ export class HttpCoworkProvider implements ViewProvider {
         chosen.selectionToken === null
           ? { folderPath: chosen.folderPath }
           : { selectionToken: chosen.selectionToken };
-      await this.#inspect(this.#lastInspectionInput);
+      await this.#inspectWithFailureRecovery(this.#lastInspectionInput, inspectionEpoch);
       return;
     }
     if (input.action === "inspect") {
+      const inspectionEpoch = ++this.#inspectionEpoch;
       if (
         this.#model.folderSelection.kind === "initialized" ||
         this.#model.folderSelection.kind === "none"
@@ -954,7 +1113,7 @@ export class HttpCoworkProvider implements ViewProvider {
         this.#selectionBeforeInspection = this.#model.folderSelection;
       }
       if (input.folderPath === undefined || input.folderPath.trim().length === 0) {
-        throw new Error("Enter a Folder path on the Work Buddy machine.");
+        throw new Error("Choose a folder to open.");
       }
       this.#pendingCandidate = {
         folderName: (() => {
@@ -964,71 +1123,133 @@ export class HttpCoworkProvider implements ViewProvider {
         folderPath: input.folderPath,
       };
       this.#lastInspectionInput = { folderPath: input.folderPath };
-      await this.#inspect(this.#lastInspectionInput);
+      await this.#inspectWithFailureRecovery(this.#lastInspectionInput, inspectionEpoch);
       return;
     }
     if (input.action === "continue") {
-      if (this.#continuationToken === null) throw new Error("The Folder check expired. Try again.");
-      await this.#inspect({ continuationToken: this.#continuationToken });
+      if (this.#continuationToken === null) throw new Error("The folder check expired. Try again.");
+      const inspectionEpoch = ++this.#inspectionEpoch;
+      await this.#inspectWithFailureRecovery(
+        { continuationToken: this.#continuationToken },
+        inspectionEpoch,
+      );
       return;
     }
     if (input.action === "retry") {
-      await this.#inspect(
+      const inspectionEpoch = ++this.#inspectionEpoch;
+      await this.#inspectWithFailureRecovery(
         this.#continuationToken === null
           ? this.#lastInspectionInput
           : { continuationToken: this.#continuationToken },
+        inspectionEpoch,
       );
       return;
     }
     if (input.action === "initialize") {
-      if (this.#inspectionToken === null) {
-        throw new Error("The Folder inspection expired. Check the Folder again.");
+      try {
+        await this.#initializePendingFolder();
+      } catch (error) {
+        if (this.#requiresFreshFolderInspection(error) && this.#pendingCandidate !== null) {
+          const inspectionEpoch = ++this.#inspectionEpoch;
+          try {
+            await this.#refreshPendingFolderInspection(inspectionEpoch);
+          } catch (refreshError) {
+            this.#restoreTransientFolderSelection(inspectionEpoch);
+            throw refreshError;
+          }
+          return;
+        }
+        throw error;
       }
-      const folder = await this.#client.initializeFolder(
-        this.#inspectionToken,
-        this.#folderMutationIdempotencyKey(this.#inspectionToken, "initialize"),
-      );
-      this.#inspectionToken = null;
-      this.#folderMutationKey = null;
-      this.#continuationToken = null;
-      this.#model = {
-        ...this.#model,
-        folders: [folder, ...this.#model.folders.filter((entry) => entry.storeId !== folder.storeId)],
-        folderSelection: { kind: "initialized", folder },
-        activeFolderStoreId: folder.storeId,
-        routeTarget: { kind: "launcher", storeId: folder.storeId },
-        activeSession: { kind: "none" },
-        navigationError: null,
-        document: null,
-      };
-      await this.#loadCatalog(folder.storeId);
-      this.#location.pushSearch(`?store_id=${encodeURIComponent(folder.storeId)}`);
-      this.#touch("folder-initialized");
     }
+  }
+
+  async #inspectWithFailureRecovery(
+    input: {
+      readonly selectionToken?: string;
+      readonly folderPath?: string;
+      readonly continuationToken?: string;
+    },
+    inspectionEpoch: number,
+  ): Promise<void> {
+    try {
+      await this.#inspect(input, inspectionEpoch);
+    } catch (error) {
+      this.#restoreTransientFolderSelection(inspectionEpoch);
+      throw error;
+    }
+  }
+
+  #restoreTransientFolderSelection(inspectionEpoch: number): void {
+    if (inspectionEpoch !== this.#inspectionEpoch) return;
+    const kind = this.#model.folderSelection.kind;
+    if (kind !== "choosing" && kind !== "inspecting" && kind !== "inspecting_descendants") {
+      return;
+    }
+    this.#patch(
+      { folderSelection: this.#selectionBeforeInspection },
+      "folder-selection-failed",
+    );
   }
 
   async #inspect(input: {
     readonly selectionToken?: string;
     readonly folderPath?: string;
     readonly continuationToken?: string;
-  }): Promise<void> {
-    this.#patch(
-      {
-        folderSelection: {
-          kind: "inspecting",
-          candidate: this.#pendingCandidate,
+  }, inspectionEpoch = this.#inspectionEpoch, allowPathRefresh = true): Promise<void> {
+    if (input.continuationToken === undefined) {
+      this.#patch(
+        {
+          folderSelection: {
+            kind: "inspecting",
+            candidate: this.#pendingCandidate,
+          },
+          navigationError: null,
         },
-        navigationError: null,
-      },
-      "folder-inspecting",
-    );
-    const inspection = await this.#client.inspectFolder(input);
+        "folder-inspecting",
+      );
+    }
+    let inspection: CoworkInspectionResult;
+    try {
+      inspection = await this.#client.inspectFolder(input);
+    } catch (error) {
+      if (
+        allowPathRefresh &&
+        this.#requiresFreshFolderInspection(error) &&
+        this.#pendingCandidate !== null
+      ) {
+        await this.#refreshPendingFolderInspection(inspectionEpoch);
+        return;
+      }
+      throw error;
+    }
+    if (inspectionEpoch !== this.#inspectionEpoch) return;
     if (inspection.inspectionToken !== this.#inspectionToken) {
       this.#folderMutationKey = null;
     }
     this.#inspectionToken = inspection.inspectionToken;
     this.#continuationToken = inspection.continuationToken;
     if (inspection.candidate !== null) this.#pendingCandidate = inspection.candidate;
+    if (inspection.status === "inspection_pending") {
+      const selection = this.#selectionFromInspection(inspection);
+      this.#patch({ folderSelection: selection }, "folder-inspection-continuing");
+      const continuationToken = inspection.continuationToken;
+      if (continuationToken === null) return;
+      const retryAfterMs = Math.min(Math.max(inspection.retryAfterMs ?? 0, 0), 1_000);
+      if (retryAfterMs > 0) {
+        await new Promise<void>((resolve) => {
+          globalThis.setTimeout(resolve, retryAfterMs);
+        });
+      }
+      if (
+        inspectionEpoch !== this.#inspectionEpoch ||
+        this.#continuationToken !== continuationToken
+      ) {
+        return;
+      }
+      await this.#inspect({ continuationToken }, inspectionEpoch, allowPathRefresh);
+      return;
+    }
     if (inspection.status === "initialized") {
       if (inspection.inspectionToken === null) {
         throw new Error("The initialized Folder check expired. Check it again.");
@@ -1062,8 +1283,78 @@ export class HttpCoworkProvider implements ViewProvider {
       }
       return;
     }
+    if (inspection.status === "uninitialized" && this.#pendingCandidate !== null) {
+      try {
+        await this.#withDurableSessionLeave(null, () => this.#initializePendingFolder());
+      } catch (error) {
+        if (
+          allowPathRefresh &&
+          this.#requiresFreshFolderInspection(error) &&
+          this.#pendingCandidate !== null
+        ) {
+          await this.#refreshPendingFolderInspection(inspectionEpoch);
+          return;
+        }
+        if (this.#requiresFreshFolderInspection(error)) throw error;
+        this.#patch(
+          {
+            folderSelection: {
+              kind: "setup_available",
+              candidate: this.#pendingCandidate,
+            },
+          },
+          "folder-initialize-failed",
+        );
+        throw error;
+      }
+      return;
+    }
     const selection = this.#selectionFromInspection(inspection);
     this.#patch({ folderSelection: selection }, `folder-inspected:${inspection.status}`);
+  }
+
+  async #refreshPendingFolderInspection(inspectionEpoch: number): Promise<void> {
+    if (this.#pendingCandidate === null) {
+      throw new Error("Choose the Folder again.");
+    }
+    this.#inspectionToken = null;
+    this.#folderMutationKey = null;
+    this.#continuationToken = null;
+    this.#lastInspectionInput = {
+      folderPath: this.#pendingCandidate.folderPath,
+    };
+    await this.#inspect(this.#lastInspectionInput, inspectionEpoch, false);
+  }
+
+  #requiresFreshFolderInspection(error: unknown): boolean {
+    const code = asCoworkApiError(error).code;
+    return code === "selection_expired" || code === "folder_changed";
+  }
+
+  async #initializePendingFolder(): Promise<void> {
+    if (this.#inspectionToken === null) {
+      throw new Error("The folder check expired. Open the folder again.");
+    }
+    const folder = await this.#client.initializeFolder(
+      this.#inspectionToken,
+      this.#folderMutationIdempotencyKey(this.#inspectionToken, "initialize"),
+    );
+    this.#inspectionToken = null;
+    this.#folderMutationKey = null;
+    this.#continuationToken = null;
+    this.#model = {
+      ...this.#model,
+      folders: [folder, ...this.#model.folders.filter((entry) => entry.storeId !== folder.storeId)],
+      folderSelection: { kind: "initialized", folder },
+      activeFolderStoreId: folder.storeId,
+      routeTarget: { kind: "launcher", storeId: folder.storeId },
+      activeSession: { kind: "none" },
+      navigationError: null,
+      document: null,
+    };
+    await this.#loadCatalog(folder.storeId);
+    this.#location.pushSearch(`?store_id=${encodeURIComponent(folder.storeId)}`);
+    this.#touch("folder-initialized");
   }
 
   #selectionFromInspection(inspection: CoworkInspectionResult): CoworkFolderSelection {

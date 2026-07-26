@@ -172,12 +172,8 @@ export function ReviewPanel(props: ReviewPanelProps) {
       // items from the ledger, never from the fact that a submit was attempted.
       reload();
       props.onSubmitted?.();
-    } catch (error) {
-      setSubmitError(
-        error instanceof Error
-          ? error.message
-          : "Co-work could not commit this sitting. Your decisions are still staged.",
-      );
+    } catch {
+      setSubmitError("Co-work couldn’t apply your decisions.");
     } finally {
       setSubmitting(false);
     }
@@ -186,7 +182,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
   if (status === "loading" || data === null) {
     return (
       <div className="wb-cowork-rail__panel" role="status">
-        <p className="wb-cowork-rail__empty">Loading the review layer.</p>
+        <p className="wb-cowork-rail__empty">Loading review…</p>
       </div>
     );
   }
@@ -194,7 +190,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
   if (status === "error") {
     return (
       <div className="wb-cowork-rail__panel" role="alert">
-        <p className="wb-cowork-rail__empty">The review layer could not load.</p>
+        <p className="wb-cowork-rail__empty">Review couldn’t load.</p>
         <button
           type="button"
           className="wb-cowork-rail__verb wb-cowork-rail__verb--neutral"
@@ -259,14 +255,14 @@ export function ReviewPanel(props: ReviewPanelProps) {
           }}
         >
           {submitting
-            ? "Committing sitting…"
-            : `${submitError === null ? "Submit sitting" : "Retry sitting"}${pendingCount > 0 ? ` (${pendingCount})` : ""}`}
+            ? "Applying decisions…"
+            : `${submitError === null ? "Apply decisions" : "Try again"}${pendingCount > 0 ? ` (${pendingCount})` : ""}`}
         </button>
       </div>
 
       {submitError !== null ? (
         <p className="wb-cowork-rail__sitting-error" role="alert">
-          {submitError} Your staged decisions are still here.
+          {submitError} Your decisions are still here.
         </p>
       ) : null}
 

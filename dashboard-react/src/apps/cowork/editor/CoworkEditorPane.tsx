@@ -9,6 +9,7 @@ import {
 } from "../persistence/CoworkYdocPersistence";
 import { LocalCoworkYdocTransport } from "../persistence/LocalCoworkYdocTransport";
 import type { CoworkYdocTransport } from "../persistence/transport";
+import { Button, InlineAlert } from "../../../ui";
 import { isLocalHumanOrigin } from "./applyOrigin";
 import {
   buildEditorExtensions,
@@ -51,6 +52,7 @@ export interface CoworkEditorPaneProps {
   readonly transport?: CoworkYdocTransport;
   readonly onPromotionHandle?: (handle: CoworkScratchPromotionHandle | null) => void;
   readonly onSyncStatus?: (status: CoworkSyncStatus) => void;
+  readonly onLocalEdit?: () => void;
 }
 
 export interface CoworkScratchPromotionContent {
@@ -69,6 +71,7 @@ interface MountedCoworkEditorProps {
   readonly seedMarkdown: string;
   readonly seedWhenEmpty: boolean;
   readonly onEditorChange?: (editor: Editor | null) => void;
+  readonly onLocalEdit?: () => void;
 }
 
 /**
@@ -87,6 +90,7 @@ function MountedCoworkEditor({
   seedMarkdown,
   seedWhenEmpty,
   onEditorChange,
+  onLocalEdit,
 }: MountedCoworkEditorProps) {
   const extensions = useMemo(() => buildEditorExtensions(document), [document]);
   // An empty seed means a genuinely empty document, so nothing is parsed or set and the
@@ -164,7 +168,10 @@ function MountedCoworkEditor({
     };
     const onDocUpdate = (_update: Uint8Array, origin: unknown): void => {
       // Only a human edit grows the log, so only that reschedules a compaction.
-      if (isLocalHumanOrigin(origin)) scheduleCompaction();
+      if (isLocalHumanOrigin(origin)) {
+        scheduleCompaction();
+        onLocalEdit?.();
+      }
     };
     const onPageHide = (): void => {
       cancelPending();
@@ -178,7 +185,7 @@ function MountedCoworkEditor({
       document.off("update", onDocUpdate);
       if (hasWindow) window.removeEventListener("pagehide", onPageHide);
     };
-  }, [document, persistence]);
+  }, [document, onLocalEdit, persistence]);
 
   return <EditorContent editor={editor} className="wb-cowork-editor__content" />;
 }
@@ -195,6 +202,7 @@ export function CoworkEditorPane({
   transport,
   onPromotionHandle,
   onSyncStatus,
+  onLocalEdit,
 }: CoworkEditorPaneProps) {
   const [doc] = useState(() => document ?? new Y.Doc());
   const [store] = useState(
@@ -203,7 +211,12 @@ export function CoworkEditorPane({
       new LocalCoworkYdocTransport({ documentId: documentId ?? DEFAULT_DOCUMENT_ID }),
   );
   const [persistence] = useState(() => new CoworkYdocPersistence(doc, store));
-  const [hydration, setHydration] = useState<{ readonly wasEmpty: boolean }>();
+  const [hydration, setHydration] = useState<
+    | { readonly kind: "loading" }
+    | { readonly kind: "ready"; readonly wasEmpty: boolean }
+    | { readonly kind: "error" }
+  >({ kind: "loading" });
+  const [hydrationAttempt, setHydrationAttempt] = useState(0);
   const [mountedEditor, setMountedEditor] = useState<Editor | null>(null);
   const ensureScratchDurability = useCallback(async (): Promise<void> => {
     await persistence.flush();
@@ -284,25 +297,45 @@ export function CoworkEditorPane({
 
   useEffect(() => {
     let active = true;
-    void persistence.hydrate().then((result) => {
-      if (active) setHydration(result);
-    });
+    setHydration({ kind: "loading" });
+    void persistence
+      .hydrate()
+      .then((result) => {
+        if (active) setHydration({ kind: "ready", wasEmpty: result.wasEmpty });
+      })
+      .catch(() => {
+        if (active) setHydration({ kind: "error" });
+      });
     return () => {
       active = false;
-      void persistence.dispose().catch(() => undefined);
     };
-  }, [persistence]);
+  }, [hydrationAttempt, persistence]);
+
+  useEffect(
+    () => () => {
+      void persistence.dispose().catch(() => undefined);
+    },
+    [persistence],
+  );
 
   return (
     <section className="wb-cowork-editor" aria-label="Editor">
-      {hydration !== undefined ? (
+      {hydration.kind === "ready" ? (
         <MountedCoworkEditor
           document={doc}
           persistence={persistence}
           seedMarkdown={seedMarkdown}
           seedWhenEmpty={hydration.wasEmpty}
           onEditorChange={setMountedEditor}
+          onLocalEdit={onLocalEdit}
         />
+      ) : hydration.kind === "error" ? (
+        <InlineAlert tone="danger" role="alert">
+          <span>This document couldn’t be loaded from this device.</span>
+          <Button size="small" onClick={() => setHydrationAttempt((attempt) => attempt + 1)}>
+            Try again
+          </Button>
+        </InlineAlert>
       ) : (
         <p className="wb-cowork-editor__loading" role="status">
           Loading the document.

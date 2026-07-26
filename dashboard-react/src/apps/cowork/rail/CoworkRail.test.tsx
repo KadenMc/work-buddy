@@ -147,13 +147,13 @@ describe("CoworkRail", () => {
     await waitFor(() => expect(screen.getByText(S1_TLDR)).toBeVisible());
     await userEvent.click(screen.getByText(S1_TLDR));
     await userEvent.click(screen.getByRole("button", { name: "Accept" }));
-    expect(screen.getByText("Staged: Accept")).toBeVisible();
+    expect(screen.getByText("Selected: Accept")).toBeVisible();
 
     first.unmount();
 
     // A fresh rail with a fresh store, but the same storage, restores the draft.
     renderRail(storage);
-    await waitFor(() => expect(screen.getByText("Staged: Accept")).toBeVisible());
+    await waitFor(() => expect(screen.getByText("Selected: Accept")).toBeVisible());
   });
 
   it("has no accessibility violations on the Review composition", async () => {

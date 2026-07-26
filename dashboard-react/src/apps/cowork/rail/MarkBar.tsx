@@ -177,8 +177,8 @@ export function MarkBar(props: MarkBarProps) {
 
       {staleBase ? (
         <p className="wb-cowork-rail__stale-note" role="status">
-          Stale base. The document changed since this was proposed, so it can be
-          rejected or deferred only.
+          The document changed after this was proposed, so it can only be rejected
+          or deferred.
         </p>
       ) : null}
 

@@ -521,7 +521,9 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
         await persistence.flush();
         const fileSha256 = expectedFileSha256.current;
         if (fileSha256 === null || fileSha256.length === 0) {
-          throw new Error("Co-work cannot verify the Markdown file for this sitting.");
+          throw new Error(
+            "Co-work cannot verify the Markdown file before applying these decisions.",
+          );
         }
         return {
           expectedFileSha256: fileSha256,
@@ -536,10 +538,12 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
       },
       prepare: async (admittedItems, generation) => {
         if (editorRef.current === null) {
-          throw new Error("The editor is not ready, so the sitting cannot be prepared.");
+          throw new Error("The document is still loading. Try again in a moment.");
         }
         if (editGeneration.current !== generation) {
-          throw new Error("The document changed while the sitting was being prepared.");
+          throw new Error(
+            "The document changed while your decisions were being prepared. Review it and try again.",
+          );
         }
         return prepareCoworkSittingDocument(
           props.document,
@@ -606,7 +610,7 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
         if (!active) return;
         if (result.wasEmpty) {
           setHydrationError(
-            "This registered document has no initialized structured snapshot. Repair it from unchanged Markdown before opening.",
+            "This document’s editing data is missing. Repair it from the Markdown file before opening.",
           );
           return;
         }
@@ -617,10 +621,10 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
         persistence.start();
         setHydration(result);
       })
-      .catch((error: unknown) => {
+      .catch(() => {
         if (active) {
           setHydrationError(
-            error instanceof Error ? error.message : "Co-work could not hydrate this document.",
+            "Co-work couldn’t load this document. Try again or repair it from the Markdown file.",
           );
         }
       });
@@ -643,10 +647,10 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
     <section className="wb-cowork-editor" aria-label="Editor">
       {hydrationError !== undefined ? (
         <InlineAlert tone="danger" role="alert" className="wb-cowork-editor__hydration-error">
-          <strong>Structured document unavailable.</strong>
+          <strong>Document couldn’t be opened.</strong>
           <span>{hydrationError}</span>
           <Button size="small" onClick={() => setAttempt((current) => current + 1)}>
-            Retry validation
+            Try again
           </Button>
         </InlineAlert>
       ) : hydration !== undefined ? (

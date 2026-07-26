@@ -19,6 +19,7 @@ import {
   coworkReimportLocalBlockedReason,
 } from "../documents/CoworkDocumentBar";
 import { CoworkDocumentLifecycleDialog } from "../documents/CoworkDocumentLifecycleDialog";
+import { CoworkLocalDiscardDialog } from "../documents/CoworkLocalDiscardDialog";
 import { CoworkDocumentPicker } from "../documents/CoworkDocumentPicker";
 import { CoworkLauncher } from "../documents/CoworkLauncher";
 import { CoworkReimportDialog } from "../documents/CoworkReimportDialog";
@@ -31,6 +32,7 @@ import {
   CoworkHttpClient,
   type CoworkReimportReceipt,
 } from "../providers/CoworkHttpClient";
+import { asCoworkApiError, coworkErrorMessage } from "../providers/errors";
 import type { CoworkSyncStatus } from "../persistence/CoworkYdocPersistence";
 import type {
   CoworkMaterializationController,
@@ -77,6 +79,11 @@ const activeFolder = (model: CoworkViewModel): CoworkFolderSummary | null =>
 
 type LifecycleDialog = "create" | "register" | "repair" | null;
 
+interface PendingFolderAction {
+  readonly action: string;
+  readonly storeId?: string;
+}
+
 interface PendingScratchPromotion {
   readonly scratchId: string;
   readonly title: string;
@@ -117,6 +124,12 @@ export default function CoworkWorkspaceWidget({
     useState<PendingReimportReconciliation | null>(null);
   const [reimportRetryBusy, setReimportRetryBusy] = useState(false);
   const [retirementOpen, setRetirementOpen] = useState(false);
+  const [localDiscardOpen, setLocalDiscardOpen] = useState(false);
+  const [folderNotice, setFolderNotice] = useState<string | null>(null);
+  const [pendingFolderAction, setPendingFolderAction] =
+    useState<PendingFolderAction | null>(null);
+  const folderActionBusy = useRef(false);
+  const folderActionEpoch = useRef(0);
   const [localNotice, setLocalNotice] = useState<string | null>(null);
   const [syncStatus, setSyncStatus] = useState<CoworkSyncStatus>();
   const [documentSessionEpoch, setDocumentSessionEpoch] = useState(0);
@@ -127,6 +140,9 @@ export default function CoworkWorkspaceWidget({
   const [pendingPromotion, setPendingPromotion] =
     useState<PendingScratchPromotion | null>(null);
   const promotionHandle = useRef<CoworkScratchPromotionHandle | null>(null);
+  const scratchTouchCooldown = useRef<ReturnType<typeof globalThis.setTimeout> | null>(
+    null,
+  );
   const [promotionReady, setPromotionReady] = useState(false);
   const receivePromotionHandle = useCallback(
     (handle: CoworkScratchPromotionHandle | null): void => {
@@ -165,6 +181,48 @@ export default function CoworkWorkspaceWidget({
       dispatch(COWORK_INTENTS.folderSelect, { action, ...payload }),
     [dispatch],
   );
+  const runFolderAction = useCallback(
+    (action: string, payload: Record<string, JsonValue> = {}): void => {
+      if (action === "cancel") {
+        folderActionEpoch.current += 1;
+        folderActionBusy.current = false;
+        setPendingFolderAction(null);
+        setFolderNotice(null);
+        void folderAction(action, payload).catch((error: unknown) => {
+          setFolderNotice(
+            coworkErrorMessage(
+              asCoworkApiError(error),
+              "Co-work couldn’t return to the previous Folder.",
+            ),
+          );
+        });
+        return;
+      }
+      if (folderActionBusy.current) return;
+      const epoch = ++folderActionEpoch.current;
+      folderActionBusy.current = true;
+      setPendingFolderAction({
+        action,
+        ...(typeof payload.storeId === "string" ? { storeId: payload.storeId } : {}),
+      });
+      setFolderNotice(null);
+      void folderAction(action, payload)
+        .catch((error: unknown) => {
+          setFolderNotice(
+            coworkErrorMessage(
+              asCoworkApiError(error),
+              "Co-work couldn’t open that Folder. Try again.",
+            ),
+          );
+        })
+        .finally(() => {
+          if (folderActionEpoch.current !== epoch) return;
+          folderActionBusy.current = false;
+          setPendingFolderAction(null);
+        });
+    },
+    [folderAction],
+  );
 
   const openDocument = useCallback(
     async (document: CoworkDocumentSummary): Promise<void> => {
@@ -180,7 +238,7 @@ export default function CoworkWorkspaceWidget({
 
   const openLifecycleDialog = (next: Exclude<LifecycleDialog, null>): void => {
     if (folder === null) {
-      void folderAction("choose");
+      runFolderAction("choose");
       return;
     }
     setPickerOpen(false);
@@ -192,11 +250,11 @@ export default function CoworkWorkspaceWidget({
     if (model.activeSession.kind !== "scratch" || promotionBusy) return;
     const handle = promotionHandle.current;
     if (handle === null) {
-      setLocalNotice("The scratch is still loading. Try Save as document again in a moment.");
+      setLocalNotice("The document is still loading. Try Save document again in a moment.");
       return;
     }
     setPromotionBusy(true);
-    setLocalNotice("Preparing the exact scratch content…");
+    setLocalNotice("Preparing document…");
     try {
       const content = await handle.exportContent();
       setPendingPromotion({
@@ -205,10 +263,19 @@ export default function CoworkWorkspaceWidget({
         content,
       });
       if (folder === null) {
-        setLocalNotice(
-          "The scratch is still safe on this device. Choose a Folder for its document.",
-        );
-        await folderAction("choose");
+        setLocalNotice(null);
+        setFolderNotice(null);
+        try {
+          await folderAction("choose");
+        } catch (folderError) {
+          setFolderNotice(
+            coworkErrorMessage(
+              asCoworkApiError(folderError),
+              "Co-work couldn’t open that Folder. Try again.",
+            ),
+          );
+          return;
+        }
       } else {
         setLocalNotice(null);
         setPickerOpen(false);
@@ -216,9 +283,10 @@ export default function CoworkWorkspaceWidget({
       }
     } catch (promotionError) {
       setLocalNotice(
-        promotionError instanceof Error
-          ? promotionError.message
-          : "Co-work could not prepare this scratch.",
+        coworkErrorMessage(
+          asCoworkApiError(promotionError),
+          "Co-work couldn’t prepare this document.",
+        ),
       );
     } finally {
       setPromotionBusy(false);
@@ -265,6 +333,15 @@ export default function CoworkWorkspaceWidget({
   );
 
   const session = model.activeSession;
+  const markLocalEdit = useCallback((): void => {
+    if (session.kind !== "scratch" || scratchTouchCooldown.current !== null) return;
+    const scratchId = session.scratchId;
+    void dispatch(COWORK_INTENTS.scratchTouch, { scratchId }).catch(() => undefined);
+    scratchTouchCooldown.current = globalThis.setTimeout(() => {
+      scratchTouchCooldown.current = null;
+    }, 5_000);
+  }, [dispatch, session]);
+
   useEffect(() => {
     if (
       pendingReimport === null ||
@@ -286,26 +363,49 @@ export default function CoworkWorkspaceWidget({
   const sessionKey =
     session.kind === "registered"
       ? `${session.storeId}:${session.document.documentId}:${documentSessionEpoch}`
-      : session.kind;
+      : session.kind === "scratch"
+        ? `scratch:${session.scratchId}`
+        : session.kind;
   useEffect(() => {
+    if (scratchTouchCooldown.current !== null) {
+      globalThis.clearTimeout(scratchTouchCooldown.current);
+      scratchTouchCooldown.current = null;
+    }
     setSyncStatus(session.kind === "none" ? undefined : "hydrating");
     setMaterializationState(undefined);
     materializationController.current = null;
     promotionHandle.current = null;
     setPromotionReady(false);
+    return () => {
+      if (scratchTouchCooldown.current !== null) {
+        globalThis.clearTimeout(scratchTouchCooldown.current);
+        scratchTouchCooldown.current = null;
+      }
+    };
   }, [session.kind, sessionKey]);
   const documentRouteBlocksSession =
     model.openingTarget !== null || model.routeTarget.kind === "unavailable";
   const folderLifecycleActive =
     model.folderSelection.kind !== "none" &&
-    model.folderSelection.kind !== "initialized";
+    model.folderSelection.kind !== "initialized" &&
+    model.folderSelection.kind !== "choosing" &&
+    model.folderSelection.kind !== "inspecting";
+  const folderErrorNotice =
+    folderNotice ??
+    (session.kind === "none" || model.navigationError === null
+      ? null
+      : coworkErrorMessage(
+          model.navigationError,
+          "Co-work couldn’t open that Folder.",
+        ));
   const sessionIsInert = documentRouteBlocksSession || folderLifecycleActive;
   const backgroundCatalogRefreshPaused =
     sessionIsInert ||
     pickerOpen ||
     dialog !== null ||
     reimportOpen ||
-    retirementOpen;
+    retirementOpen ||
+    localDiscardOpen;
 
   useEffect(() => {
     if (session.kind !== "registered" || backgroundCatalogRefreshPaused) return;
@@ -357,7 +457,7 @@ export default function CoworkWorkspaceWidget({
   const saveMarkdown = useCallback(async (): Promise<void> => {
     const controller = materializationController.current;
     if (controller === null) {
-      setLocalNotice("The document is still loading. Try Save Markdown again in a moment.");
+      setLocalNotice("The document is still loading. Try Save again in a moment.");
       return;
     }
     setLocalNotice(null);
@@ -395,27 +495,36 @@ export default function CoworkWorkspaceWidget({
   const launcher = (
     <CoworkLauncher
       model={model}
-      onChooseFolder={() => void folderAction("choose")}
-      onInspectPath={(folderPath) => void folderAction("inspect", { folderPath })}
-      onContinueInspection={() => void folderAction("continue")}
+      pendingFolderAction={pendingFolderAction}
       onRetryInspection={() => {
-        if (model.activeFolderStoreId !== null && model.catalog.error !== null) {
-          void dispatch(COWORK_INTENTS.catalogRefresh, {});
+        if (
+          (model.folderSelection.kind === "none" ||
+            model.folderSelection.kind === "initialized") &&
+          model.activeFolderStoreId !== null &&
+          model.catalog.error !== null
+        ) {
+          void dispatch(COWORK_INTENTS.catalogRefresh, {}).catch((error: unknown) => {
+            setFolderNotice(
+              coworkErrorMessage(
+                asCoworkApiError(error),
+                "Co-work couldn’t load the documents.",
+              ),
+            );
+          });
         } else {
-          void folderAction("retry");
+          runFolderAction("retry");
         }
       }}
-      onCancelInspection={() => void folderAction("cancel")}
-      onInitialize={() => void folderAction("initialize")}
-      onOpenFolder={(storeId) => void folderAction("open", { storeId })}
-      onOpenPicker={() => setPickerOpen(true)}
+      onCancelInspection={() => runFolderAction("cancel")}
+      onInitialize={() => runFolderAction("initialize")}
+      onOpenFolder={(storeId) => runFolderAction("open", { storeId })}
       onOpenDocument={(document) => void openDocument(document)}
       onCreate={() => openLifecycleDialog("create")}
       onRegister={() => openLifecycleDialog("register")}
-      onOpenScratch={(scratch) =>
+      onOpenLocalDocument={(scratch) =>
         void dispatch(COWORK_INTENTS.scratchOpen, { scratchId: scratch.scratchId })
       }
-      onNewScratch={() => void dispatch(COWORK_INTENTS.scratchOpen, {})}
+      onNewDocument={() => void dispatch(COWORK_INTENTS.scratchOpen, {})}
     />
   );
 
@@ -427,10 +536,10 @@ export default function CoworkWorkspaceWidget({
     <div className="wb-cowork-lifecycle">
       <CoworkDocumentBar
         model={model}
-        onChooseFolder={() => void folderAction("choose")}
-        onOpenFolder={(storeId) => void folderAction("open", { storeId })}
+        folderActionBusy={pendingFolderAction !== null}
+        onChooseFolder={() => runFolderAction("choose")}
         onOpenPicker={() => {
-          if (folder === null) void folderAction("choose");
+          if (folder === null) runFolderAction("choose");
           else setPickerOpen(true);
         }}
         onCreate={() => openLifecycleDialog("create")}
@@ -462,6 +571,7 @@ export default function CoworkWorkspaceWidget({
           }
         }}
         onRemoveDocument={() => setRetirementOpen(true)}
+        onDiscardLocalDocument={() => setLocalDiscardOpen(true)}
       />
 
       {localNotice !== null ? (
@@ -469,10 +579,17 @@ export default function CoworkWorkspaceWidget({
           {localNotice}
         </InlineAlert>
       ) : null}
+      {folderErrorNotice !== null &&
+      !folderLifecycleActive &&
+      (session.kind !== "none" || model.navigationError === null) ? (
+        <InlineAlert tone="danger" className="wb-cowork-lifecycle__notice" role="alert">
+          {folderErrorNotice}
+        </InlineAlert>
+      ) : null}
       {pendingReimport !== null && !reimportOpen ? (
         <InlineAlert tone="warning" className="wb-cowork-lifecycle__notice">
-          <strong>The Markdown replacement is committed.</strong>
-          <span>Co-work still needs to reopen the replacement on this device.</span>
+          <strong>The replacement is saved.</strong>
+          <span>Co-work still needs to reopen it on this device.</span>
           <Button
             size="small"
             disabled={reimportRetryBusy}
@@ -482,9 +599,10 @@ export default function CoworkWorkspaceWidget({
               void reconcileCommittedReimport(pendingReimport)
                 .catch((error: unknown) => {
                   setLocalNotice(
-                    error instanceof Error
-                      ? error.message
-                      : "Co-work could not reopen the replacement.",
+                    coworkErrorMessage(
+                      asCoworkApiError(error),
+                      "Co-work could not reopen the replacement.",
+                    ),
                   );
                 })
                 .finally(() => setReimportRetryBusy(false));
@@ -498,8 +616,7 @@ export default function CoworkWorkspaceWidget({
       <div className="wb-cowork-lifecycle__body">
         {pendingReimport !== null ? (
           <section className="wb-cowork-open-state" role="status">
-            <h2>Reopening replaced document…</h2>
-            <p>Co-work is validating the committed Markdown replacement.</p>
+            <p>Reopening document…</p>
           </section>
         ) : session.kind === "registered" ? (
           <div
@@ -533,6 +650,7 @@ export default function CoworkWorkspaceWidget({
               scratchId={session.scratchId}
               onPromotionHandle={receivePromotionHandle}
               onSyncStatus={setSyncStatus}
+              onLocalEdit={markLocalEdit}
             />
           </div>
         ) : !folderLifecycleActive && model.routeTarget.kind === "launcher" ? launcher : null}
@@ -544,11 +662,16 @@ export default function CoworkWorkspaceWidget({
         {!folderLifecycleActive && documentRouteBlocksSession ? (
           <section className="wb-cowork-open-state" role={model.navigationError === null ? "status" : "alert"}>
             {model.navigationError === null ? (
-              <><h2>Loading document…</h2><p>Co-work is validating the structured snapshot before opening it.</p></>
+              <p>Opening document…</p>
             ) : (
               <>
                 <h2>This document could not be opened</h2>
-                <p>{model.navigationError.message}</p>
+                <p>
+                  {coworkErrorMessage(
+                    model.navigationError,
+                    "This document couldn’t be opened.",
+                  )}
+                </p>
                 <div className="wb-cowork-launcher__actions">
                   <Button onClick={() => {
                     if (model.routeTarget.kind === "unavailable") {
@@ -584,7 +707,7 @@ export default function CoworkWorkspaceWidget({
           }}
           onChangeFolder={() => {
             setPickerOpen(false);
-            void folderAction("choose");
+            runFolderAction("choose");
           }}
         />
       ) : null}
@@ -647,6 +770,20 @@ export default function CoworkWorkspaceWidget({
             setRetirementOpen(false);
             await dispatch(COWORK_INTENTS.documentClose, {});
             await dispatch(COWORK_INTENTS.catalogRefresh, {});
+          }}
+        />
+      ) : null}
+
+      {localDiscardOpen && session.kind === "scratch" ? (
+        <CoworkLocalDiscardDialog
+          title={session.title}
+          onClose={() => setLocalDiscardOpen(false)}
+          onDiscard={async () => {
+            await dispatch(COWORK_INTENTS.scratchClose, {
+              retire: true,
+              scratchId: session.scratchId,
+            });
+            setLocalDiscardOpen(false);
           }}
         />
       ) : null}

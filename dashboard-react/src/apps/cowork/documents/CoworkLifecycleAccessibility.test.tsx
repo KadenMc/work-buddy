@@ -141,9 +141,9 @@ describe("Co-work lifecycle dialog accessibility and focus", () => {
   });
 
   it.each([
-    ["create", "Create a Co-work document", "Title"],
-    ["register", "Register existing Markdown", "Find Markdown"],
-    ["repair", "Repair Co-work document", null],
+    ["create", "New document", "Title"],
+    ["register", "Add Markdown document", "Find Markdown"],
+    ["repair", "Repair document", null],
   ] as const)(
     "keeps the %s dialog accessible and restores focus",
     async (mode, heading, autofocusName) => {
@@ -178,7 +178,7 @@ describe("Co-work lifecycle dialog accessibility and focus", () => {
         expect(dialog).toContainElement(globalThis.document.activeElement as HTMLElement);
       }
       if (mode === "register") {
-        await screen.findByText("No matching unregistered Markdown files.");
+        await screen.findByText("No matching Markdown files.");
       }
       await expectNoAccessibilityViolations(container);
       await user.click(screen.getByRole("button", { name: "Cancel" }));

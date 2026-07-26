@@ -39,8 +39,7 @@ export const COWORK_VIEW_DEFINITION = {
     label: "Co-work",
     order: 30,
   },
-  primaryJob:
-    "Co-author a document with AI proposals the human reviews, one decision at a time.",
+  primaryJob: "Write and review documents with Co-work.",
   grid: { columns: 24 },
   defaultSlots: [
     {
@@ -50,12 +49,12 @@ export const COWORK_VIEW_DEFINITION = {
       defaultWidgetTypeId: COWORK_WORKSPACE_TYPE_ID,
       presence: "required",
       help: {
-        summary: "Co-author the document with its review rail in one place.",
+        summary: "Write and review documents in one place.",
         details:
-          "This required Co-work placement carries the editor, the aligned review rail, and the header health strip in one live workspace. It keeps the document, its tracked AI proposals, and the document conversation on one shared session so a decision made in the rail lands in the same editor beside it.",
+          "The workspace keeps your document, suggested changes, and conversation together.",
       },
       lockedReason:
-        "Without the workspace card, Co-work cannot co-author a document with its review rail on one shared session.",
+        "Co-work needs this workspace to keep the document and its review tools together.",
       defaultSettings: {},
       defaultLayout: { x: 0, y: 0, w: 24, h: 20 },
       allowedSubstitution: { minimumDefinitionVersion: 1 },

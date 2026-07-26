@@ -8,7 +8,7 @@ import {
   type CoworkRetirementPrepared,
   type CoworkRetirementReceipt,
 } from "../providers/CoworkHttpClient";
-import { asCoworkApiError } from "../providers/errors";
+import { asCoworkApiError, coworkErrorMessage } from "../providers/errors";
 
 const makeIdempotencyKey = (): string =>
   globalThis.crypto?.randomUUID?.() ??
@@ -41,7 +41,14 @@ export function CoworkRetirementDialog({
     void client
       .prepareRetirement(storeId, document.documentId, keyRef.current)
       .then(setPrepared)
-      .catch((prepareError) => setError(asCoworkApiError(prepareError).message))
+      .catch((prepareError) =>
+        setError(
+          coworkErrorMessage(
+            asCoworkApiError(prepareError),
+            "Co-work couldn’t check that document for safe removal.",
+          ),
+        ),
+      )
       .finally(() => setBusy(false));
   };
 
@@ -59,7 +66,12 @@ export function CoworkRetirementDialog({
       );
       await onRetired(receipt);
     } catch (retireError) {
-      setError(asCoworkApiError(retireError).message);
+      setError(
+        coworkErrorMessage(
+          asCoworkApiError(retireError),
+          "Co-work couldn’t remove that document.",
+        ),
+      );
       setBusy(false);
     }
   };

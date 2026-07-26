@@ -40,8 +40,7 @@ const COWORK_WIDGET_ROLES: readonly WidgetRoleContract[] = [
     roleId: COWORK_WORKSPACE_ROLE_ID,
     ownerAppId: COWORK_APP_ID,
     displayName: "Co-work workspace",
-    description:
-      "The composite co-authoring surface: the editor, its review rail, and the health strip on one shared live session.",
+    description: "Write and review documents in Co-work.",
     inputSchema: COWORK_WORKSPACE_INPUT_SCHEMA,
     outputIntentSchemas: COWORK_INTENT_SCHEMAS,
   },
@@ -49,13 +48,13 @@ const COWORK_WIDGET_ROLES: readonly WidgetRoleContract[] = [
     roleId: COWORK_ROLE_IDS.editor,
     ownerAppId: COWORK_APP_ID,
     displayName: "Co-work editor",
-    description: "Owns the live document, its suggestion decorations, and materialization.",
+    description: "Edit the current document.",
   },
   {
     roleId: COWORK_ROLE_IDS.reviewRail,
     ownerAppId: COWORK_APP_ID,
     displayName: "Co-work review rail",
-    description: "Aligned proposal review and the document conversation, ledger-backed.",
+    description: "Review suggested changes and discuss the document.",
   },
   {
     roleId: COWORK_ROLE_IDS.healthStrip,
@@ -81,8 +80,7 @@ const COWORK_WORKSPACE_WIDGET: WidgetDefinition = {
   definitionVersion: 1,
   publisherAppId: COWORK_APP_ID,
   displayName: "Co-work workspace",
-  description:
-    "Co-author a document with its tracked AI proposals and the review rail on one shared live session.",
+  description: "Write and review documents in Co-work.",
   libraryPath: ["Co-work", "Workspace"],
   providesRoles: [COWORK_WORKSPACE_ROLE_ID],
   settingsSchema: { schemaId: "wb.cowork.workspace-card.settings", version: 1 },

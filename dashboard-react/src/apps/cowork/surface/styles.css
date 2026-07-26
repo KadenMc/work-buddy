@@ -94,22 +94,6 @@
   color: var(--wb-color-text-muted);
 }
 
-.wb-cowork__folder-popover {
-  min-inline-size: min(28rem, calc(100vw - 2rem));
-}
-
-.wb-cowork__folder-item > span {
-  display: flex;
-  flex-direction: column;
-  min-inline-size: 0;
-}
-
-.wb-cowork__folder-item small {
-  overflow: hidden;
-  color: var(--wb-color-text-muted);
-  text-overflow: ellipsis;
-}
-
 .wb-cowork__sync-status {
   color: var(--wb-color-text-secondary);
   font-size: var(--wb-font-size-sm);
@@ -129,8 +113,7 @@
   color: var(--wb-color-text-warning, var(--wb-color-text-danger));
 }
 
-.wb-cowork-launcher,
-.wb-cowork-empty {
+.wb-cowork-launcher {
   box-sizing: border-box;
   inline-size: min(60rem, 100%);
   min-block-size: 100%;
@@ -138,8 +121,7 @@
   padding: clamp(var(--wb-space-5), 5vw, var(--wb-space-8));
 }
 
-.wb-cowork-launcher--centered,
-.wb-cowork-empty {
+.wb-cowork-launcher--centered {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -149,6 +131,16 @@
   text-align: center;
 }
 
+.wb-cowork-launcher--start {
+  display: flex;
+  flex-direction: column;
+  max-inline-size: 46rem;
+}
+
+.wb-cowork-launcher--start .wb-cowork-launcher__primary-actions {
+  padding-block: var(--wb-space-2) var(--wb-space-4);
+}
+
 .wb-cowork-launcher--centered p {
   max-inline-size: 42rem;
   margin: 0;
@@ -156,30 +148,9 @@
   line-height: var(--wb-line-height-relaxed);
 }
 
-.wb-cowork-launcher__hero {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--wb-space-3);
-  padding-block-end: var(--wb-space-6);
-  text-align: center;
-}
-
-.wb-cowork-launcher__hero h2,
 .wb-cowork-launcher--centered h2 {
   margin: 0;
   font-size: var(--wb-font-size-xl);
-}
-
-.wb-cowork-launcher__hero p {
-  margin: 0;
-  color: var(--wb-color-text-secondary);
-}
-
-.wb-cowork-launcher__hero-icon {
-  inline-size: 2.5rem;
-  block-size: 2.5rem;
-  color: var(--wb-color-accent);
 }
 
 .wb-cowork-launcher__actions {
@@ -189,25 +160,29 @@
   gap: var(--wb-space-2);
 }
 
-.wb-cowork-launcher__path {
-  max-inline-size: 100%;
-  overflow-wrap: anywhere;
-  color: var(--wb-color-text-muted);
-  font-family: var(--wb-font-mono);
-  font-size: var(--wb-font-size-sm);
+.wb-cowork-launcher__primary-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--wb-space-2);
+  padding-block: var(--wb-space-6);
 }
 
-.wb-cowork-launcher__manual {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
-  gap: var(--wb-space-3);
-  inline-size: min(38rem, 100%);
-  margin-block-start: var(--wb-space-4);
-  text-align: start;
+.wb-cowork-launcher__primary-actions svg {
+  inline-size: var(--wb-icon-size-sm);
+  block-size: var(--wb-icon-size-sm);
+}
+
+.wb-cowork-launcher__loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--wb-space-2);
+  color: var(--wb-color-text-muted);
 }
 
 .wb-cowork-launcher__section {
+  inline-size: 100%;
   margin-block-start: var(--wb-space-6);
   text-align: start;
 }
@@ -246,6 +221,11 @@
   outline: none;
 }
 
+.wb-cowork-launcher__card:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
 .wb-cowork-launcher__card span,
 .wb-cowork-launcher__card small {
   max-inline-size: 100%;
@@ -255,7 +235,7 @@
   white-space: nowrap;
 }
 
-.wb-cowork-launcher__scratch,
+.wb-cowork-launcher__local-document,
 .wb-cowork-picker__attention-row {
   display: flex;
   align-items: center;
@@ -265,13 +245,13 @@
   border-block-end: 1px solid var(--wb-color-border-subtle);
 }
 
-.wb-cowork-launcher__scratch > span,
+.wb-cowork-launcher__local-document > span,
 .wb-cowork-picker__attention-row > span {
   display: flex;
   flex-direction: column;
 }
 
-.wb-cowork-launcher__scratch small,
+.wb-cowork-launcher__local-document small,
 .wb-cowork-picker__attention-row small {
   color: var(--wb-color-text-muted);
 }
@@ -472,7 +452,7 @@
   text-align: center;
 }
 
-.wb-cowork--scratch .wb-cowork__editor-region {
+.wb-cowork--local-document .wb-cowork__editor-region {
   padding: var(--wb-space-6);
 }
 
@@ -518,10 +498,6 @@
     flex: 1 1 auto;
     overflow: hidden;
     text-overflow: ellipsis;
-  }
-
-  .wb-cowork-launcher__manual {
-    grid-template-columns: 1fr;
   }
 
   .wb-cowork-dialog-overlay {

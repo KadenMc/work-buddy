@@ -80,14 +80,14 @@ describe("ProposalCard", () => {
 
   it("shows the stale-base badge with a non-color text label when base_ok is false", () => {
     renderCard({ proposal: proposal({ baseOk: false }) });
-    expect(screen.getByText("Stale base, reject or defer only")).toBeVisible();
+    expect(screen.getByText("Based on an older version — reject or defer")).toBeVisible();
   });
 
   it("shows the staged verb badge", () => {
     renderCard({
       staged: { proposalId: "p1", verb: "confirm", canonicalSha256: "c" },
     });
-    expect(screen.getByText("Staged: Accept")).toBeVisible();
+    expect(screen.getByText("Selected: Accept")).toBeVisible();
   });
 
   it("selects on click and reflects selection with aria-pressed", async () => {

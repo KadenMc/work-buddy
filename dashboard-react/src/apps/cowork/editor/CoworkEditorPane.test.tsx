@@ -1,4 +1,5 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { ySyncPluginKey } from "@tiptap/y-tiptap";
 import { describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
@@ -28,6 +29,32 @@ const reconstructFromBacking = async (
 };
 
 describe("CoworkEditorPane persistence", () => {
+  it("reports human edits so local document recency can be refreshed", async () => {
+    const onLocalEdit = vi.fn();
+    const doc = new Y.Doc();
+    render(
+      <CoworkEditorPane
+        documentId="recency-doc"
+        document={doc}
+        transport={new InMemoryCoworkYdocTransport()}
+        onLocalEdit={onLocalEdit}
+      />,
+    );
+    await screen.findByRole(
+      "textbox",
+      { name: "Document editor" },
+      { timeout: 10_000 },
+    );
+
+    act(() => {
+      doc.transact(() => {
+        doc.getText("recency-probe").insert(0, "edited");
+      }, ySyncPluginKey);
+    });
+
+    await waitFor(() => expect(onLocalEdit).toHaveBeenCalled());
+  });
+
   it("rehydrates a human-origin edit after unmount and remount on the same key", async () => {
     // One shared backing stands in for the persisted store that outlives a reload.
     const backing = new InMemoryCoworkYdocBackingStore();
@@ -272,6 +299,52 @@ describe("CoworkEditorPane persistence", () => {
     releaseHydration();
     await screen.findByRole("textbox", { name: "Document editor" });
     await waitFor(() => expect(handles.some((handle) => handle !== null)).toBe(true));
+  });
+
+  it("shows a recoverable device-load error and retries hydration", async () => {
+    const user = userEvent.setup();
+    let pulls = 0;
+    const transport: CoworkYdocTransport = {
+      pull: async () => {
+        pulls += 1;
+        if (pulls === 1) throw new Error("IndexedDB read failed");
+        return {
+          snapshot: null,
+          snapshotSha256: null,
+          ydocGeneration: "generation-retry",
+          batches: [],
+          docSha256: "",
+          nextOffset: "0",
+        };
+      },
+      push: async () => ({
+        ok: true,
+        applied: true,
+        docSha256: "head-1",
+        structuredHeadSha256: "head-1",
+        ydocGeneration: "generation-retry",
+        nextOffset: "1",
+      }),
+    };
+    const handles: Array<CoworkScratchPromotionHandle | null> = [];
+    render(
+      <CoworkEditorPane
+        documentId="device-load-retry"
+        transport={transport}
+        onPromotionHandle={(handle) => handles.push(handle)}
+      />,
+    );
+
+    expect(
+      await screen.findByText("This document couldn’t be loaded from this device."),
+    ).toBeVisible();
+    expect(screen.queryByRole("textbox", { name: "Document editor" })).toBeNull();
+    expect(handles.some((handle) => handle !== null)).toBe(false);
+
+    await user.click(screen.getByRole("button", { name: "Try again" }));
+    await screen.findByRole("textbox", { name: "Document editor" });
+    await waitFor(() => expect(handles.some((handle) => handle !== null)).toBe(true));
+    expect(pulls).toBe(2);
   });
 
   it("reports a failed scratch device save and retries the full local snapshot", async () => {

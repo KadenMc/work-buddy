@@ -69,3 +69,16 @@ export const asCoworkApiError = (error: unknown): CoworkApiError => {
     retryable: true,
   };
 };
+
+const TECHNICAL_ERROR_LANGUAGE =
+  /\b(?:Y\.?Doc|snapshot|sha(?:256)?|hash|canonical|structured head|generation|offset|store[_ ]id|scope_root|provenance)\b/i;
+
+/** Keep diagnostics in the error object while preventing storage internals from reaching UI copy. */
+export const coworkErrorMessage = (
+  error: Pick<CoworkApiError, "message">,
+  fallback: string,
+): string => {
+  const message = error.message.trim();
+  if (message.length === 0 || TECHNICAL_ERROR_LANGUAGE.test(message)) return fallback;
+  return message;
+};
