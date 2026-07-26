@@ -142,15 +142,24 @@ describe("Co-work lifecycle dialog accessibility and focus", () => {
 
   it.each([
     ["create", "New document", "Title"],
-    ["register", "Add Markdown document", "Find Markdown"],
+    ["register", "New document from Markdown", null],
     ["repair", "Repair document", null],
   ] as const)(
     "keeps the %s dialog accessible and restores focus",
     async (mode, heading, autofocusName) => {
       const user = userEvent.setup();
       const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
-        if (String(input).startsWith("/api/truth/doc/candidates?")) {
-          return json({ candidates: [], next_cursor: null });
+        if (String(input) === "/api/truth/cowork/files/choose-markdown") {
+          return json(
+            {
+              error: {
+                code: "folder_chooser_failed",
+                message: "The picker could not start.",
+                retryable: true,
+              },
+            },
+            503,
+          );
         }
         throw new Error(`Unexpected request: ${String(input)}`);
       });
@@ -178,7 +187,7 @@ describe("Co-work lifecycle dialog accessibility and focus", () => {
         expect(dialog).toContainElement(globalThis.document.activeElement as HTMLElement);
       }
       if (mode === "register") {
-        await screen.findByText("No matching Markdown files.");
+        await screen.findByRole("button", { name: "Choose again" });
       }
       await expectNoAccessibilityViolations(container);
       await user.click(screen.getByRole("button", { name: "Cancel" }));

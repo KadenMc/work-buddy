@@ -1,12 +1,11 @@
-import { CaretDown } from "@phosphor-icons/react/CaretDown";
 import { DotsThree } from "@phosphor-icons/react/DotsThree";
 import { FolderSimple } from "@phosphor-icons/react/FolderSimple";
-import { Plus } from "@phosphor-icons/react/Plus";
+import { NotePencil } from "@phosphor-icons/react/NotePencil";
 import { X } from "@phosphor-icons/react/X";
 import { Menu, MenuItem, MenuTrigger, Popover, type Key } from "react-aria-components";
 
 import { Button } from "../../../ui";
-import type { CoworkViewModel } from "../contracts";
+import type { CoworkFolderSummary, CoworkViewModel } from "../contracts";
 import type { CoworkSyncStatus } from "../persistence/CoworkYdocPersistence";
 import type { CoworkMaterializationState } from "../materialization/contracts";
 import { coworkErrorMessage } from "../providers/errors";
@@ -48,6 +47,22 @@ export const coworkReimportLocalBlockedReason = (
     return null;
   }
   return "Save the current Co-work edits before reviewing external changes.";
+};
+
+export const coworkScratchPromotionBlockedReason = (
+  model: Pick<CoworkViewModel, "readOnly" | "folderChooser">,
+  folder: CoworkFolderSummary | null,
+): string | null => {
+  if (model.readOnly) {
+    return "Read-only mode. This document will stay on this device.";
+  }
+  if (folder === null && !model.folderChooser.available) {
+    return "Folder selection isn’t available here. This document will stay on this device.";
+  }
+  if (folder !== null && !folder.permissions.create) {
+    return "This Folder doesn’t allow new documents. This document will stay on this device.";
+  }
+  return null;
 };
 
 const registeredStatusLabel = (
@@ -123,6 +138,10 @@ export function CoworkDocumentBar({
     syncStatus,
     materializationState,
   );
+  const scratchPromotionBlockedReason = coworkScratchPromotionBlockedReason(
+    model,
+    folder,
+  );
   const canRemove =
     !folderActionBusy &&
     onRemoveDocument !== undefined &&
@@ -152,14 +171,13 @@ export function CoworkDocumentBar({
           disabled={folder === null || folderControlBusy}
           title={
             document?.path ??
-            (scratch === null ? "Open a document" : "Saved on this device")
+            (scratch === null ? "Open document" : "Saved on this device")
           }
         >
-          <span>{document?.title ?? scratch?.title ?? "Open a document…"}</span>
+          <span>{document?.title ?? scratch?.title ?? "Open document"}</span>
           {document !== null ? (
             <small>{document.path}</small>
           ) : null}
-          {folder !== null ? <CaretDown aria-hidden="true" /> : null}
         </Button>
       </div>
 
@@ -199,23 +217,44 @@ export function CoworkDocumentBar({
           </span>
         ) : null}
         {scratch !== null ? (
-          <Button
-            size="small"
-            variant="primary"
-            onClick={onPromoteScratch}
-            disabled={folderActionBusy || promotionBusy || !promotionReady}
-            title={
-              promotionReady
-                ? "Choose a folder and save this document."
-                : "The document is still loading."
-            }
-          >
-            {promotionBusy
-              ? "Saving…"
-              : promotionReady
-                ? "Save document"
-                : "Loading editor…"}
-          </Button>
+          <>
+            <Button
+              size="small"
+              variant="primary"
+              onClick={onPromoteScratch}
+              disabled={
+                folderActionBusy ||
+                promotionBusy ||
+                !promotionReady ||
+                scratchPromotionBlockedReason !== null
+              }
+              aria-describedby={
+                scratchPromotionBlockedReason === null
+                  ? undefined
+                  : "cowork-promotion-blocked-reason"
+              }
+              title={
+                scratchPromotionBlockedReason ??
+                (promotionReady
+                  ? "Choose a folder and save this document."
+                  : "The document is still loading.")
+              }
+            >
+              {promotionBusy
+                ? "Saving…"
+                : promotionReady
+                  ? "Save document"
+                  : "Loading editor…"}
+            </Button>
+            {scratchPromotionBlockedReason !== null ? (
+              <span
+                id="cowork-promotion-blocked-reason"
+                className="wb-cowork__save-message"
+              >
+                {scratchPromotionBlockedReason}
+              </span>
+            ) : null}
+          </>
         ) : document !== null && document.permissions?.materialize !== false ? (
           syncStatus === "clean" ? (
             <Button
@@ -250,7 +289,7 @@ export function CoworkDocumentBar({
             onClick={onCreate}
             disabled={folderActionBusy || !folder.permissions.create}
           >
-            <Plus aria-hidden="true" /> New
+            <NotePencil aria-hidden="true" /> New
           </Button>
         ) : folder !== null && document !== null ? (
           <Button
@@ -258,7 +297,7 @@ export function CoworkDocumentBar({
             onClick={onCreate}
             disabled={folderActionBusy || !folder.permissions.create}
           >
-            <Plus aria-hidden="true" /> New
+            <NotePencil aria-hidden="true" /> New
           </Button>
         ) : null}
         {(document !== null || (scratch !== null && promotionReady)) &&

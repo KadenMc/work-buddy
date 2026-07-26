@@ -129,7 +129,7 @@ const widgetRequest = {
 describe("HttpCoworkProvider", () => {
   beforeEach(() => localStorage.clear());
 
-  it("keeps inspection tokens private and initializes an ordinary selected Folder automatically", async () => {
+  it("keeps inspection tokens private and waits for confirmation before initializing a Folder", async () => {
     const location = new MemoryLocation();
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -177,6 +177,28 @@ describe("HttpCoworkProvider", () => {
         intent(COWORK_INTENTS.folderSelect, { action: "choose" }),
       ),
     ).toMatchObject({ status: "accepted" });
+    const confirmation = await provider.loadWidget(
+      asWidgetTypeId("wb.cowork.workspace-card"),
+      widgetRequest,
+    );
+    expect(confirmation.input.activeFolderStoreId).toBeNull();
+    expect(confirmation.input.folderSelection).toEqual({
+      kind: "setup_confirmation",
+      candidate: {
+        folderName: "work-buddy",
+        folderPath: "C:/Projects/work-buddy",
+      },
+    });
+    expect(fetchImpl.mock.calls.some(([input]) =>
+      String(input).endsWith("/folders/initialize"),
+    )).toBe(false);
+    expect(JSON.stringify(confirmation.input)).not.toContain("secret-");
+
+    expect(
+      await provider.dispatch(
+        intent(COWORK_INTENTS.folderSelect, { action: "initialize" }),
+      ),
+    ).toMatchObject({ status: "accepted" });
     const initialized = await provider.loadWidget(
       asWidgetTypeId("wb.cowork.workspace-card"),
       widgetRequest,
@@ -189,6 +211,81 @@ describe("HttpCoworkProvider", () => {
     expect(JSON.stringify(initialized.input)).not.toContain("secret-");
     expect(location.search).not.toContain("token");
     expect(location.search).toBe("?store_id=store-1");
+  });
+
+  it("keeps read-only Folder setup informational and never calls initialize", async () => {
+    const location = new MemoryLocation();
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/truth/cowork/folders?")) {
+        return json({
+          read_only: true,
+          folders: [],
+          diagnostics: [],
+          chooser: {
+            available: true,
+            kind: "host_native",
+            markdown_available: true,
+            location_available: true,
+          },
+        });
+      }
+      if (url.endsWith("/folders/inspect")) {
+        expect(JSON.parse(String(init?.body))).toEqual({
+          folder_path: "C:/Projects/work-buddy",
+        });
+        return json({
+          status: "uninitialized",
+          folder_name: "work-buddy",
+          folder_path: "C:/Projects/work-buddy",
+          inspection_token: "read-only-inspection-token",
+          available_actions: ["initialize"],
+        });
+      }
+      if (url.endsWith("/folders/initialize")) {
+        throw new Error("initialize must not be called in read-only mode");
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const provider = new HttpCoworkProvider({
+      location,
+      storage: localStorage,
+      client: new CoworkHttpClient(fetchImpl as typeof fetch),
+    });
+    await provider.loadView();
+
+    await expect(
+      provider.dispatch(
+        intent(COWORK_INTENTS.folderSelect, {
+          action: "inspect",
+          folderPath: "C:/Projects/work-buddy",
+        }),
+      ),
+    ).resolves.toMatchObject({ status: "accepted" });
+    expect((await provider.loadView()).model.folderSelection).toMatchObject({
+      kind: "setup_confirmation",
+    });
+
+    await expect(
+      provider.dispatch(
+        intent(COWORK_INTENTS.folderSelect, { action: "initialize" }),
+      ),
+    ).resolves.toMatchObject({
+      status: "rejected",
+      message: "Turn off read-only mode before setting up Co-work in this Folder.",
+    });
+    const snapshot = await provider.loadView();
+    expect(snapshot.model.folderSelection).toMatchObject({
+      kind: "setup_confirmation",
+    });
+    expect(snapshot.model.navigationError).toMatchObject({
+      code: "dashboard_read_only",
+    });
+    expect(
+      fetchImpl.mock.calls.some(([input]) =>
+        String(input).endsWith("/folders/initialize"),
+      ),
+    ).toBe(false);
   });
 
   it("restores the Folder control when choosing or opening a Folder fails", async () => {
@@ -662,7 +759,7 @@ describe("HttpCoworkProvider", () => {
   });
 
   it.each(["folder_changed", "selection_expired"] as const)(
-    "rechecks the Folder automatically when setup reports %s",
+    "rechecks and completes the confirmed setup after %s",
     async (failureCode) => {
       const location = new MemoryLocation();
       let inspections = 0;
@@ -720,6 +817,14 @@ describe("HttpCoworkProvider", () => {
           }),
         ),
       ).resolves.toMatchObject({ status: "accepted" });
+      expect((await provider.loadView()).model.folderSelection).toMatchObject({
+        kind: "setup_confirmation",
+      });
+      await expect(
+        provider.dispatch(
+          intent(COWORK_INTENTS.folderSelect, { action: "initialize" }),
+        ),
+      ).resolves.toMatchObject({ status: "accepted" });
       expect(inspections).toBe(2);
       expect(initializations).toBe(2);
       expect((await provider.loadView()).model.folderSelection).toMatchObject({
@@ -729,7 +834,7 @@ describe("HttpCoworkProvider", () => {
     },
   );
 
-  it("continues a bounded folder check automatically before opening the Folder", async () => {
+  it("continues a bounded folder check automatically before asking to set up the Folder", async () => {
     const location = new MemoryLocation();
     let inspections = 0;
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -760,8 +865,6 @@ describe("HttpCoworkProvider", () => {
           available_actions: ["initialize"],
         });
       }
-      if (url.endsWith("/folders/initialize")) return json({ folder });
-      if (url.startsWith("/api/truth/doc/list?")) return json({ docs: [] });
       throw new Error(`Unexpected request: ${url}`);
     });
     const provider = new HttpCoworkProvider({
@@ -782,8 +885,8 @@ describe("HttpCoworkProvider", () => {
 
     expect(inspections).toBe(2);
     expect((await provider.loadView()).model.folderSelection).toMatchObject({
-      kind: "initialized",
-      folder: { storeId: "store-1" },
+      kind: "setup_confirmation",
+      candidate: { folderName: "work-buddy" },
     });
   });
 
@@ -1180,6 +1283,14 @@ describe("HttpCoworkProvider", () => {
           folderPath: "C:/Projects/work-buddy",
         }),
       ),
+    ).toMatchObject({ status: "accepted" });
+    expect((await provider.loadView()).model.folderSelection).toMatchObject({
+      kind: "setup_confirmation",
+    });
+    expect(
+      await provider.dispatch(
+        intent(COWORK_INTENTS.folderSelect, { action: "initialize" }),
+      ),
     ).toMatchObject({ status: "rejected" });
     expect((await provider.loadView()).model.folderSelection).toMatchObject({
       kind: "setup_available",
@@ -1193,6 +1304,81 @@ describe("HttpCoworkProvider", () => {
     expect(mutationKeys).toHaveLength(2);
     expect(mutationKeys[1]).toBe(mutationKeys[0]);
     expect((await provider.loadView()).model.activeFolderStoreId).toBe("store-1");
+  });
+
+  it("refreshes an expired setup inspection and initializes once without a second click", async () => {
+    const location = new MemoryLocation();
+    let inspections = 0;
+    const initializationTokens: string[] = [];
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith("/api/truth/cowork/folders?")) {
+        return json({ read_only: false, folders: [], diagnostics: [] });
+      }
+      if (url.endsWith("/folders/inspect")) {
+        inspections += 1;
+        return json({
+          status: "uninitialized",
+          folder_name: "work-buddy",
+          folder_path: "C:/Projects/work-buddy",
+          inspection_token:
+            inspections === 1 ? "expired-inspection" : "fresh-inspection",
+          available_actions: ["initialize"],
+        });
+      }
+      if (url.endsWith("/folders/initialize")) {
+        const body = JSON.parse(String(init?.body)) as {
+          inspection_token: string;
+        };
+        initializationTokens.push(body.inspection_token);
+        if (body.inspection_token === "expired-inspection") {
+          return json(
+            {
+              error: {
+                code: "selection_expired",
+                message: "The Folder selection expired.",
+                retryable: true,
+              },
+            },
+            409,
+          );
+        }
+        return json({ folder });
+      }
+      if (url.startsWith("/api/truth/doc/list?")) return json({ docs: [] });
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const provider = new HttpCoworkProvider({
+      location,
+      storage: localStorage,
+      client: new CoworkHttpClient(fetchImpl as typeof fetch),
+    });
+    await provider.loadView();
+    await expect(
+      provider.dispatch(
+        intent(COWORK_INTENTS.folderSelect, {
+          action: "inspect",
+          folderPath: "C:/Projects/work-buddy",
+        }),
+      ),
+    ).resolves.toMatchObject({ status: "accepted" });
+
+    await expect(
+      provider.dispatch(
+        intent(COWORK_INTENTS.folderSelect, { action: "initialize" }),
+      ),
+    ).resolves.toMatchObject({ status: "accepted" });
+
+    expect(inspections).toBe(2);
+    expect(initializationTokens).toEqual([
+      "expired-inspection",
+      "fresh-inspection",
+    ]);
+    expect((await provider.loadView()).model).toMatchObject({
+      activeFolderStoreId: "store-1",
+      folderSelection: { kind: "initialized" },
+      navigationError: null,
+    });
   });
 
   it("restores the Folder control when a stale setup retry cannot recheck the Folder", async () => {
@@ -1245,6 +1431,13 @@ describe("HttpCoworkProvider", () => {
           folderPath: "C:/Projects/work-buddy",
         }),
       ),
+    ).resolves.toMatchObject({ status: "accepted" });
+    expect((await provider.loadView()).model.folderSelection).toMatchObject({
+      kind: "setup_confirmation",
+    });
+
+    await expect(
+      provider.dispatch(intent(COWORK_INTENTS.folderSelect, { action: "initialize" })),
     ).resolves.toMatchObject({ status: "rejected" });
     expect((await provider.loadView()).model.folderSelection).toMatchObject({
       kind: "setup_available",

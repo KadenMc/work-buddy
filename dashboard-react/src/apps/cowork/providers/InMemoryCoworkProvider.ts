@@ -13,7 +13,12 @@ import type { CoworkViewModel, CoworkWorkspaceInput } from "../contracts";
 
 const DEMO_MODEL: CoworkViewModel = {
   folders: [],
-  folderChooser: { available: true, kind: "fixture" },
+  folderChooser: {
+    available: true,
+    kind: "fixture",
+    markdownAvailable: true,
+    locationAvailable: true,
+  },
   folderSelection: { kind: "none" },
   activeFolderStoreId: null,
   catalog: {

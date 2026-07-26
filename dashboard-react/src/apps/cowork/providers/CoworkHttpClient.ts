@@ -5,6 +5,7 @@ import type {
   CoworkDocumentPermissions,
   CoworkDocumentSummary,
   CoworkFolderCandidate,
+  CoworkFolderChooserAvailability,
   CoworkFolderPermissions,
   CoworkFolderSummary,
 } from "../contracts";
@@ -16,6 +17,8 @@ type JsonRecord = Record<string, unknown>;
 
 export const COWORK_FOLDER_PICKER_INTENT_HEADER = "X-Work-Buddy-Intent";
 export const COWORK_FOLDER_PICKER_INTENT = "cowork-folder-picker";
+export const COWORK_MARKDOWN_PICKER_INTENT = "cowork-markdown-picker";
+export const COWORK_LOCATION_PICKER_INTENT = "cowork-location-picker";
 
 const record = (value: unknown): JsonRecord =>
   typeof value === "object" && value !== null ? (value as JsonRecord) : {};
@@ -28,16 +31,38 @@ const count = (value: unknown, fallback = 0): number =>
 const nullableText = (value: unknown): string | null =>
   typeof value === "string" ? value : null;
 
+const normalizeNativePathResult = (
+  payload: JsonRecord,
+  label: string,
+): CoworkNativePathResult => {
+  const cancelled = bool(payload.cancelled);
+  if (cancelled) return { cancelled: true, path: "" };
+  if (typeof payload.path !== "string") {
+    throw new CoworkHttpError({
+      code: "invalid_picker_response",
+      message: `The ${label} picker returned an invalid selection.`,
+      retryable: true,
+    });
+  }
+  return { cancelled: false, path: payload.path };
+};
+
 export interface CoworkFolderListResult {
   readonly readOnly: boolean;
   readonly folders: readonly CoworkFolderSummary[];
   readonly diagnostics: readonly unknown[];
-  readonly chooser: { readonly available: boolean; readonly kind: string };
+  readonly chooser: CoworkFolderChooserAvailability;
 }
 
 export interface CoworkChooseResult extends CoworkFolderCandidate {
   readonly cancelled: boolean;
   readonly selectionToken: string | null;
+}
+
+export interface CoworkNativePathResult {
+  readonly cancelled: boolean;
+  /** Folder-relative path. An empty path is the active Folder root. */
+  readonly path: string;
 }
 
 export type CoworkInspectionStatus =
@@ -354,6 +379,8 @@ export class CoworkHttpClient {
     const payload = await this.#json(
       `/api/truth/cowork/folders?include_ineligible=${includeIneligible ? "1" : "0"}`,
     );
+    const chooser = record(payload.chooser);
+    const available = bool(chooser.available, true);
     return {
       readOnly: bool(payload.read_only ?? payload.readOnly),
       folders: Array.isArray(payload.folders)
@@ -361,8 +388,16 @@ export class CoworkHttpClient {
         : [],
       diagnostics: Array.isArray(payload.diagnostics) ? payload.diagnostics : [],
       chooser: {
-        available: bool(record(payload.chooser).available, true),
-        kind: text(record(payload.chooser).kind, "host"),
+        available,
+        kind: text(chooser.kind, "host"),
+        markdownAvailable: bool(
+          chooser.markdown_available ?? chooser.markdownAvailable,
+          available,
+        ),
+        locationAvailable: bool(
+          chooser.location_available ?? chooser.locationAvailable,
+          available,
+        ),
       },
     };
   }
@@ -382,6 +417,30 @@ export class CoworkHttpClient {
       folderPath: text(payload.folder_path ?? payload.folderPath),
       selectionToken: nullableText(payload.selection_token ?? payload.selectionToken),
     };
+  }
+
+  async chooseMarkdownFile(storeId: string): Promise<CoworkNativePathResult> {
+    const payload = await this.#json("/api/truth/cowork/files/choose-markdown", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        [COWORK_FOLDER_PICKER_INTENT_HEADER]: COWORK_MARKDOWN_PICKER_INTENT,
+      },
+      body: JSON.stringify({ store_id: storeId }),
+    });
+    return normalizeNativePathResult(payload, "Markdown");
+  }
+
+  async chooseLocation(storeId: string): Promise<CoworkNativePathResult> {
+    const payload = await this.#json("/api/truth/cowork/folders/choose-location", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        [COWORK_FOLDER_PICKER_INTENT_HEADER]: COWORK_LOCATION_PICKER_INTENT,
+      },
+      body: JSON.stringify({ store_id: storeId }),
+    });
+    return normalizeNativePathResult(payload, "location");
   }
 
   async inspectFolder(input: {

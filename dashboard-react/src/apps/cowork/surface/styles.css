@@ -153,6 +153,20 @@
   font-size: var(--wb-font-size-xl);
 }
 
+.wb-cowork-launcher--centered .wb-cowork-launcher__path {
+  box-sizing: border-box;
+  inline-size: min(100%, 38rem);
+  padding: var(--wb-space-2) var(--wb-space-3);
+  overflow: hidden;
+  border: 1px solid var(--wb-color-border-muted);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-surface-subtle);
+  color: var(--wb-color-text-muted);
+  font: var(--wb-font-mono-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .wb-cowork-launcher__actions {
   display: flex;
   flex-wrap: wrap;
@@ -288,6 +302,51 @@
 .wb-cowork-field [slot="description"] {
   color: var(--wb-color-text-muted);
   font-size: var(--wb-font-size-sm);
+}
+
+.wb-cowork-dialog__destination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--wb-space-3);
+  min-block-size: 2.5rem;
+  padding: var(--wb-space-2) var(--wb-space-3);
+  border: 1px solid var(--wb-color-border-default);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-surface-canvas);
+}
+
+.wb-cowork-dialog__destination > span {
+  display: flex;
+  align-items: center;
+  gap: var(--wb-space-2);
+  min-inline-size: 0;
+}
+
+.wb-cowork-dialog__destination strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-cowork-dialog__selection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-1);
+  min-inline-size: 0;
+  margin: 0;
+  padding: var(--wb-space-3);
+  border: 1px solid var(--wb-color-border-muted);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-surface-subtle);
+}
+
+.wb-cowork-dialog__selection span {
+  overflow: hidden;
+  color: var(--wb-color-text-muted);
+  font-size: var(--wb-font-size-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .wb-cowork-dialog-overlay {

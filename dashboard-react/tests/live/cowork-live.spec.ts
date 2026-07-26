@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   access,
   lstat,
+  mkdir,
   readFile,
   readdir,
   writeFile,
@@ -130,6 +131,58 @@ const chooseFolder = async (
     { times: 1 },
   );
   await page.getByRole("button", { name: buttonName, exact: true }).click();
+};
+
+const chooseMarkdown = async (
+  page: Page,
+  relativePath: string,
+): Promise<void> => {
+  await page.route(
+    "**/api/truth/cowork/files/choose-markdown",
+    async (route) => {
+      expect(route.request().headers()["x-work-buddy-intent"]).toBe(
+        "cowork-markdown-picker",
+      );
+      expect(route.request().postDataJSON()).toEqual({ store_id: ordinaryStoreId });
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: true,
+          cancelled: false,
+          path: relativePath,
+        }),
+      });
+    },
+    { times: 1 },
+  );
+  await page.getByRole("button", { name: "New from Markdown", exact: true }).click();
+};
+
+const chooseLocation = async (
+  page: Page,
+  relativePath: string,
+): Promise<void> => {
+  await page.route(
+    "**/api/truth/cowork/folders/choose-location",
+    async (route) => {
+      expect(route.request().headers()["x-work-buddy-intent"]).toBe(
+        "cowork-location-picker",
+      );
+      expect(route.request().postDataJSON()).toEqual({ store_id: ordinaryStoreId });
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: true,
+          cancelled: false,
+          path: relativePath,
+        }),
+      });
+    },
+    { times: 1 },
+  );
+  await page.getByRole("button", { name: "Change", exact: true }).click();
 };
 
 const waitForEditor = async (page: Page): Promise<ReturnType<Page["getByRole"]>> => {
@@ -303,7 +356,7 @@ test.describe.serial("Co-work live lifecycle", () => {
     await expect(lifecycle.getByRole("button", { name: "Open Folder", exact: true })).toBeVisible();
     await expect(lifecycle.getByRole("button", { name: "New document", exact: true })).toBeVisible();
     await expect(
-      lifecycle.getByRole("button", { name: "Open a document…", exact: true }),
+      lifecycle.getByRole("button", { name: "Open document", exact: true }),
     ).toBeDisabled();
     await expect(lifecycle.getByText("Choose a Folder for Co-work")).toHaveCount(0);
     await expect(lifecycle.getByRole("textbox", { name: /Folder path/i })).toHaveCount(0);
@@ -348,8 +401,16 @@ test.describe.serial("Co-work live lifecycle", () => {
       { times: 1 },
     );
     await chooseFolder(page, fixture.ordinary, "Open Folder");
-    await initializeReached;
     expect(await treeDigest(fixture.ordinary.path)).toBe(ordinaryBefore);
+    await expect(
+      page.getByRole("heading", {
+        name: `Set up Co-work in “${fixture.ordinary.name}”?`,
+      }),
+    ).toBeVisible();
+    await expect(page.getByText(fixture.ordinary.path, { exact: true })).toBeVisible();
+    await expect(page.getByText(/support data under/)).toContainText(".wbuddy");
+    await page.getByRole("button", { name: "Set up Co-work" }).click();
+    await initializeReached;
     releaseInitialize();
 
     await expect(
@@ -390,22 +451,27 @@ test.describe.serial("Co-work live lifecycle", () => {
       await fileDigest(path.join(fixture.ordinary.path, ".wbuddy", "search", "state.bin")),
     ).toBe(fixture.ordinary.sibling_state_sha256);
 
-    await page.getByRole("button", { name: "New document" }).click();
+    await mkdir(path.join(fixture.ordinary.path, "drafts"));
+    await page.getByRole("button", { name: "New", exact: true }).click();
     await expect(page.getByRole("heading", { name: "New document" })).toBeVisible();
     await expect(page.getByText(/Document type/i)).toHaveCount(0);
     await page.getByLabel("Title").fill("First Working Note");
-    await expect(page.getByLabel(`Location inside ${fixture.ordinary.name}`)).toHaveValue(
+    await expect(page.getByLabel("File name")).toHaveValue(
       "first-working-note.md",
     );
+    await chooseLocation(page, "drafts");
+    await expect(
+      page.getByText(`${fixture.ordinary.name} / drafts`, { exact: true }),
+    ).toBeVisible();
     await page.getByRole("button", { name: "Create document" }).click();
     const editor = await waitForEditor(page);
     await expect(editor).toHaveText("");
     await expect(editor).not.toContainText("Context bundle cache");
     ({ documentId: firstDocumentId } = currentRouteIds(page));
     expect(currentRouteIds(page).storeId).toBe(ordinaryStoreId);
-    expect(await readFile(path.join(fixture.ordinary.path, "first-working-note.md"))).toEqual(
-      Buffer.alloc(0),
-    );
+    expect(
+      await readFile(path.join(fixture.ordinary.path, "drafts", "first-working-note.md")),
+    ).toEqual(Buffer.alloc(0));
 
     const documentResponse = await request.get(
       `/api/truth/doc/${firstDocumentId}?store_id=${ordinaryStoreId}`,
@@ -436,17 +502,7 @@ test.describe.serial("Co-work live lifecycle", () => {
     await expect(
       page.getByRole("button", { name: fixture.ordinary.name, exact: true }).first(),
     ).toBeVisible();
-    await page.getByRole("button", { name: "Add Markdown" }).click();
-    await expect(page.getByRole("heading", { name: "Add Markdown document" })).toBeVisible();
-    await expect(page.getByText(/Document type/i)).toHaveCount(0);
-    const candidate = page.getByRole("option", { name: new RegExp("Imported Note\\.MD", "i") });
-    await expect(candidate).toBeVisible({ timeout: 20_000 });
-    await candidate.click();
-    await expect(page.getByLabel(`Location inside ${fixture.ordinary.name}`)).toHaveValue(
-      fixture.source.relative_path,
-    );
-    await page.getByLabel("Display title (optional)").fill("Imported exact note");
-    await page.getByRole("button", { name: "Add document" }).click();
+    await chooseMarkdown(page, fixture.source.relative_path);
     const editor = await waitForEditor(page);
     await expect(editor).toContainText("Imported note");
     await expect(editor).toContainText("A line preserved exactly.");
@@ -468,12 +524,14 @@ test.describe.serial("Co-work live lifecycle", () => {
       `?store_id=${ordinaryStoreId}&document_id=${firstDocumentId}`,
     );
     await waitForEditor(page);
-    await page.getByRole("button", { name: /First Working Note first-working-note\.md/ }).click();
+    await page
+      .getByRole("button", { name: /First Working Note drafts\/first-working-note\.md/ })
+      .click();
     await expect(page.getByRole("heading", { name: "Open document" })).toBeVisible();
     await page.getByRole("button", { name: "Create new document" }).click();
     await expect(page.getByRole("heading", { name: "New document" })).toBeVisible();
     await page.getByLabel("Title").fill("Second Working Note");
-    await expect(page.getByLabel(`Location inside ${fixture.ordinary.name}`)).toHaveValue(
+    await expect(page.getByLabel("File name")).toHaveValue(
       "second-working-note.md",
     );
     await page.getByRole("button", { name: "Create document" }).click();
@@ -564,6 +622,7 @@ test.describe.serial("Co-work live lifecycle", () => {
     await expect(editor).toContainText(fixture.scratch.marker);
     await page.getByRole("button", { name: "Save document" }).click();
     await expect(page.getByRole("heading", { name: "New document" })).toBeVisible();
+    await expect(page.getByLabel("File name")).toHaveValue("recovered-document.md");
     await page.getByRole("button", { name: "Create document" }).click();
     await expect
       .poll(() => new URL(page.url()).searchParams.get("document_id"), { timeout: 30_000 })
@@ -585,7 +644,11 @@ test.describe.serial("Co-work live lifecycle", () => {
       `?store_id=${ordinaryStoreId}&document_id=${firstDocumentId}`,
     );
     const editor = await waitForEditor(page);
-    const file = path.join(fixture.ordinary.path, "first-working-note.md");
+    const file = path.join(
+      fixture.ordinary.path,
+      "drafts",
+      "first-working-note.md",
+    );
     const recoveryExport = path.join(
       fixture.ordinary.path,
       ".wbuddy",
@@ -1054,7 +1117,9 @@ test.describe.serial("Co-work live lifecycle", () => {
     });
     expect(violations).toEqual([]);
 
-    await page.getByRole("button", { name: /First Working Note first-working-note\.md/ }).click();
+    await page
+      .getByRole("button", { name: /First Working Note drafts\/first-working-note\.md/ })
+      .click();
     const search = page.getByRole("textbox", { name: "Search documents" });
     await expect(search).toBeFocused();
     await search.fill("Second Working Note");

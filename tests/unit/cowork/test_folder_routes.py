@@ -16,6 +16,8 @@ from flask import Flask
 from work_buddy.cowork.folder_api import (
     FolderAccessPolicy,
     FolderTokenStore,
+    LOCATION_PICKER_INTENT_VALUE,
+    MARKDOWN_PICKER_INTENT_VALUE,
     MAX_FOLDER_PATH_CHARS,
     PICKER_INTENT_HEADER,
     PICKER_INTENT_VALUE,
@@ -27,6 +29,12 @@ from work_buddy.truth.registry import TruthStoreRegistry
 
 
 PICKER_HEADERS = {PICKER_INTENT_HEADER: PICKER_INTENT_VALUE}
+MARKDOWN_PICKER_HEADERS = {
+    PICKER_INTENT_HEADER: MARKDOWN_PICKER_INTENT_VALUE
+}
+LOCATION_PICKER_HEADERS = {
+    PICKER_INTENT_HEADER: LOCATION_PICKER_INTENT_VALUE
+}
 
 
 def _tree_bytes(root: Path) -> dict[str, bytes | None]:
@@ -68,10 +76,30 @@ def _remove_directory_redirect(link: Path) -> None:
         link.unlink()
 
 
+def _windows_short_name(path: Path) -> str:
+    import ctypes
+    from ctypes import wintypes
+
+    get_short_path_name = ctypes.windll.kernel32.GetShortPathNameW
+    get_short_path_name.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+    ]
+    get_short_path_name.restype = wintypes.DWORD
+    buffer = ctypes.create_unicode_buffer(MAX_FOLDER_PATH_CHARS + 1)
+    length = get_short_path_name(str(path), buffer, len(buffer))
+    if length == 0 or length >= len(buffer):
+        pytest.skip("Windows short-name lookup is unavailable")
+    return Path(buffer.value).name
+
+
 def _client(
     tmp_path: Path,
     *,
     chooser=None,
+    markdown_chooser=None,
+    location_chooser=None,
     read_only=lambda: False,
     scan_budget: int = 2_000,
 ):
@@ -85,6 +113,8 @@ def _client(
         manager=manager,
         registry_factory=lambda: registry,
         chooser=chooser,
+        markdown_chooser=markdown_chooser,
+        location_chooser=location_chooser,
         access_policy=FolderAccessPolicy((tmp_path,)),
         read_only=read_only,
     )
@@ -92,6 +122,23 @@ def _client(
     app.config["TESTING"] = True
     app.register_blueprint(blueprint)
     return app.test_client(), manager, registry
+
+
+def _initialize_active_folder(
+    tmp_path: Path,
+    manager: ProjectStoreManager,
+    registry: TruthStoreRegistry,
+) -> tuple[Path, str]:
+    folder = tmp_path / "active"
+    folder.mkdir()
+    inspection = manager.inspect(folder)
+    store = manager.initialize(
+        folder,
+        registry=registry,
+        inspection_fingerprint=inspection.fingerprint or "",
+        idempotency_key="picker-active-folder",
+    )
+    return folder, store.store_id
 
 
 def test_manual_inspect_then_explicit_initialize_and_list(tmp_path: Path) -> None:
@@ -268,6 +315,455 @@ def test_host_chooser_busy_is_not_logged_as_a_failure(
 
     assert response.status_code == 409
     assert not any(record.levelno >= logging.WARNING for record in caplog.records)
+
+
+def test_markdown_picker_returns_a_safe_folder_relative_path(
+    tmp_path: Path,
+) -> None:
+    selected: dict[str, Path] = {}
+    starts: list[Path] = []
+
+    def choose(start):
+        starts.append(Path(start))
+        return selected["path"]
+
+    client, manager, registry = _client(
+        tmp_path,
+        markdown_chooser=choose,
+    )
+    folder, store_id = _initialize_active_folder(tmp_path, manager, registry)
+    markdown = folder / "research" / "資料.md"
+    markdown.parent.mkdir()
+    markdown.write_text("# Existing\n", encoding="utf-8")
+    selected["path"] = markdown
+
+    response = client.post(
+        "/api/truth/cowork/files/choose-markdown",
+        headers=MARKDOWN_PICKER_HEADERS,
+        json={"store_id": store_id},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "ok": True,
+        "cancelled": False,
+        "path": "research/資料.md",
+    }
+    assert starts == [folder.resolve()]
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "headers", "chooser_name"),
+    [
+        (
+            "/api/truth/cowork/files/choose-markdown",
+            MARKDOWN_PICKER_HEADERS,
+            "markdown",
+        ),
+        (
+            "/api/truth/cowork/folders/choose-location",
+            LOCATION_PICKER_HEADERS,
+            "location",
+        ),
+    ],
+)
+def test_scoped_pickers_treat_cancel_as_a_normal_result(
+    tmp_path: Path,
+    endpoint: str,
+    headers: dict[str, str],
+    chooser_name: str,
+) -> None:
+    kwargs = {
+        f"{chooser_name}_chooser": lambda _start: None,
+    }
+    client, manager, registry = _client(tmp_path, **kwargs)
+    _, store_id = _initialize_active_folder(tmp_path, manager, registry)
+
+    response = client.post(
+        endpoint,
+        headers=headers,
+        json={"store_id": store_id},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {"ok": True, "cancelled": True}
+
+
+def test_location_picker_returns_root_and_nested_relative_locations(
+    tmp_path: Path,
+) -> None:
+    selected: dict[str, Path] = {}
+
+    def choose(_start):
+        return selected["path"]
+
+    client, manager, registry = _client(
+        tmp_path,
+        location_chooser=choose,
+    )
+    folder, store_id = _initialize_active_folder(tmp_path, manager, registry)
+    nested = folder / "drafts" / "chapter"
+    nested.mkdir(parents=True)
+
+    selected["path"] = folder
+    root_response = client.post(
+        "/api/truth/cowork/folders/choose-location",
+        headers=LOCATION_PICKER_HEADERS,
+        json={"store_id": store_id},
+    )
+    selected["path"] = nested
+    nested_response = client.post(
+        "/api/truth/cowork/folders/choose-location",
+        headers=LOCATION_PICKER_HEADERS,
+        json={"store_id": store_id},
+    )
+
+    assert root_response.get_json() == {
+        "ok": True,
+        "cancelled": False,
+        "path": "",
+    }
+    assert nested_response.get_json() == {
+        "ok": True,
+        "cancelled": False,
+        "path": "drafts/chapter",
+    }
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "headers", "chooser_name"),
+    [
+        (
+            "/api/truth/cowork/files/choose-markdown",
+            MARKDOWN_PICKER_HEADERS,
+            "markdown",
+        ),
+        (
+            "/api/truth/cowork/folders/choose-location",
+            LOCATION_PICKER_HEADERS,
+            "location",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "request_change",
+    [
+        "missing-intent",
+        "wrong-intent",
+        "cross-site",
+        "remote-peer",
+        "proxied",
+    ],
+)
+def test_scoped_pickers_require_direct_same_origin_browser_intent(
+    tmp_path: Path,
+    endpoint: str,
+    headers: dict[str, str],
+    chooser_name: str,
+    request_change: str,
+) -> None:
+    invoked = False
+
+    def choose(_start):
+        nonlocal invoked
+        invoked = True
+        return tmp_path
+
+    kwargs = {f"{chooser_name}_chooser": choose}
+    client, manager, registry = _client(tmp_path, **kwargs)
+    _, store_id = _initialize_active_folder(tmp_path, manager, registry)
+    actual_headers = dict(headers)
+    environ = {}
+    if request_change == "missing-intent":
+        actual_headers = {}
+    elif request_change == "wrong-intent":
+        actual_headers[PICKER_INTENT_HEADER] = PICKER_INTENT_VALUE
+    elif request_change == "cross-site":
+        actual_headers["Sec-Fetch-Site"] = "cross-site"
+    elif request_change == "remote-peer":
+        environ["REMOTE_ADDR"] = "100.64.0.42"
+    else:
+        actual_headers["X-Forwarded-For"] = "100.64.0.42"
+
+    response = client.post(
+        endpoint,
+        headers=actual_headers,
+        json={"store_id": store_id},
+        environ_overrides=environ,
+    )
+
+    assert response.status_code == 403
+    assert response.get_json()["error"]["code"] == "folder_picker_intent_required"
+    assert invoked is False
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "headers", "chooser_name"),
+    [
+        (
+            "/api/truth/cowork/files/choose-markdown",
+            MARKDOWN_PICKER_HEADERS,
+            "markdown",
+        ),
+        (
+            "/api/truth/cowork/folders/choose-location",
+            LOCATION_PICKER_HEADERS,
+            "location",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    ("code", "status"),
+    [
+        ("folder_chooser_busy", 409),
+        ("folder_chooser_timeout", 504),
+        ("folder_chooser_failed", 503),
+    ],
+)
+def test_scoped_pickers_preserve_process_level_failure_codes(
+    tmp_path: Path,
+    endpoint: str,
+    headers: dict[str, str],
+    chooser_name: str,
+    code: str,
+    status: int,
+) -> None:
+    def fail(_start):
+        raise NativeFolderChooserError(
+            "The picker could not be opened.",
+            code=code,
+            status=status,
+            diagnostic="test-only scoped diagnostic",
+        )
+
+    kwargs = {f"{chooser_name}_chooser": fail}
+    client, manager, registry = _client(tmp_path, **kwargs)
+    _, store_id = _initialize_active_folder(tmp_path, manager, registry)
+
+    response = client.post(
+        endpoint,
+        headers=headers,
+        json={"store_id": store_id},
+    )
+    payload = response.get_json()
+
+    assert response.status_code == status
+    assert payload["error"]["code"] == code
+    assert "test-only scoped diagnostic" not in str(payload)
+    if code == "folder_chooser_busy":
+        assert "details" not in payload["error"]
+    else:
+        assert len(payload["error"]["details"]["trace_id"]) == 12
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "headers", "chooser_name"),
+    [
+        (
+            "/api/truth/cowork/files/choose-markdown",
+            MARKDOWN_PICKER_HEADERS,
+            "markdown",
+        ),
+        (
+            "/api/truth/cowork/folders/choose-location",
+            LOCATION_PICKER_HEADERS,
+            "location",
+        ),
+    ],
+)
+def test_scoped_pickers_reject_unknown_store_without_opening_host_ui(
+    tmp_path: Path,
+    endpoint: str,
+    headers: dict[str, str],
+    chooser_name: str,
+) -> None:
+    invoked = False
+
+    def choose(_start):
+        nonlocal invoked
+        invoked = True
+        return tmp_path
+
+    client, _, _ = _client(
+        tmp_path,
+        **{f"{chooser_name}_chooser": choose},
+    )
+    response = client.post(
+        endpoint,
+        headers=headers,
+        json={"store_id": "ts_unknown"},
+    )
+
+    assert response.status_code == 503
+    assert response.get_json()["error"]["code"] == "folder_unreachable"
+    assert invoked is False
+
+
+def test_markdown_picker_rejects_outside_managed_and_non_markdown_paths(
+    tmp_path: Path,
+) -> None:
+    selected: dict[str, Path] = {}
+    client, manager, registry = _client(
+        tmp_path,
+        markdown_chooser=lambda _start: selected["path"],
+    )
+    folder, store_id = _initialize_active_folder(tmp_path, manager, registry)
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside", encoding="utf-8")
+    managed = folder / ".wbuddy" / "hidden.md"
+    managed.write_text("managed", encoding="utf-8")
+    wrong_suffix = folder / "notes.txt"
+    wrong_suffix.write_text("plain", encoding="utf-8")
+
+    cases = [
+        (outside, "markdown_outside_folder"),
+        (managed, "invalid_markdown_file"),
+        (wrong_suffix, "invalid_markdown_file"),
+    ]
+    for path, code in cases:
+        selected["path"] = path
+        response = client.post(
+            "/api/truth/cowork/files/choose-markdown",
+            headers=MARKDOWN_PICKER_HEADERS,
+            json={"store_id": store_id},
+        )
+        assert response.status_code == 422
+        assert response.get_json()["error"]["code"] == code
+
+
+def test_markdown_picker_rejects_non_file_and_redirected_paths(
+    tmp_path: Path,
+) -> None:
+    selected: dict[str, Path] = {}
+    client, manager, registry = _client(
+        tmp_path,
+        markdown_chooser=lambda _start: selected["path"],
+    )
+    folder, store_id = _initialize_active_folder(tmp_path, manager, registry)
+    directory_named_markdown = folder / "directory.md"
+    directory_named_markdown.mkdir()
+    target = tmp_path / "redirect-target"
+    target.mkdir()
+    (target / "linked.md").write_text("linked", encoding="utf-8")
+    redirect = folder / "redirect"
+    _make_directory_redirect(redirect, target)
+    try:
+        selected["path"] = directory_named_markdown
+        non_file = client.post(
+            "/api/truth/cowork/files/choose-markdown",
+            headers=MARKDOWN_PICKER_HEADERS,
+            json={"store_id": store_id},
+        )
+        selected["path"] = redirect / "linked.md"
+        redirected = client.post(
+            "/api/truth/cowork/files/choose-markdown",
+            headers=MARKDOWN_PICKER_HEADERS,
+            json={"store_id": store_id},
+        )
+
+        assert non_file.status_code == 409
+        assert (
+            non_file.get_json()["error"]["code"]
+            == "markdown_file_unavailable"
+        )
+        assert redirected.status_code == 422
+        assert redirected.get_json()["error"]["code"] == "invalid_markdown_file"
+    finally:
+        _remove_directory_redirect(redirect)
+
+
+def test_markdown_picker_maps_selection_stat_failures_to_typed_error(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    selected: dict[str, Path] = {}
+    client, manager, registry = _client(
+        tmp_path,
+        markdown_chooser=lambda _start: selected["path"],
+    )
+    folder, store_id = _initialize_active_folder(tmp_path, manager, registry)
+    markdown = folder / "notes.md"
+    markdown.write_text("notes", encoding="utf-8")
+    selected["path"] = markdown
+
+    def blocked(_path: Path) -> bool:
+        raise PermissionError("blocked")
+
+    monkeypatch.setattr(
+        "work_buddy.cowork.folder_api._is_reparse_or_symlink",
+        blocked,
+    )
+
+    response = client.post(
+        "/api/truth/cowork/files/choose-markdown",
+        headers=MARKDOWN_PICKER_HEADERS,
+        json={"store_id": store_id},
+    )
+
+    assert response.status_code == 409
+    assert response.get_json()["error"]["code"] == "markdown_file_unavailable"
+
+
+def test_location_picker_rejects_outside_managed_file_and_redirect(
+    tmp_path: Path,
+) -> None:
+    selected: dict[str, Path] = {}
+    client, manager, registry = _client(
+        tmp_path,
+        location_chooser=lambda _start: selected["path"],
+    )
+    folder, store_id = _initialize_active_folder(tmp_path, manager, registry)
+    outside = tmp_path / "outside-location"
+    outside.mkdir()
+    ordinary_file = folder / "not-a-location.md"
+    ordinary_file.write_text("file", encoding="utf-8")
+    target = tmp_path / "redirect-location-target"
+    target.mkdir()
+    redirect = folder / "redirect-location"
+    _make_directory_redirect(redirect, target)
+    try:
+        cases = [
+            (outside, "location_outside_folder", 422),
+            (folder / ".wbuddy", "managed_location", 422),
+            (ordinary_file, "location_unavailable", 409),
+            (redirect, "location_unavailable", 422),
+        ]
+        for path, code, status in cases:
+            selected["path"] = path
+            response = client.post(
+                "/api/truth/cowork/folders/choose-location",
+                headers=LOCATION_PICKER_HEADERS,
+                json={"store_id": store_id},
+            )
+            assert response.status_code == status
+            assert response.get_json()["error"]["code"] == code
+    finally:
+        _remove_directory_redirect(redirect)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 8.3 aliases are platform-specific")
+def test_location_picker_rejects_managed_directory_via_windows_short_name(
+    tmp_path: Path,
+) -> None:
+    selected: dict[str, Path] = {}
+    client, manager, registry = _client(
+        tmp_path,
+        location_chooser=lambda _start: selected["path"],
+    )
+    folder, store_id = _initialize_active_folder(tmp_path, manager, registry)
+    short_name = _windows_short_name(folder / ".wbuddy")
+    if short_name.casefold() == ".wbuddy":
+        pytest.skip("8.3 short names are disabled for this volume")
+    selected["path"] = folder / short_name
+
+    response = client.post(
+        "/api/truth/cowork/folders/choose-location",
+        headers=LOCATION_PICKER_HEADERS,
+        json={"store_id": store_id},
+    )
+
+    assert response.status_code == 422
+    assert response.get_json()["error"]["code"] == "managed_location"
 
 
 @pytest.mark.parametrize(

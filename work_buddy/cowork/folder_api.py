@@ -5,13 +5,17 @@ from __future__ import annotations
 import json
 import logging
 import os
+import stat
 import time
 import uuid
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
+from urllib.parse import urlsplit
 
 from flask import Blueprint, jsonify, request
 
+from work_buddy.cowork.paths import CoworkPathError, resolve_markdown_path
 from work_buddy.cowork.project_store import (
     DEFAULT_TOKEN_TTL_SECONDS,
     FolderLifecycleError,
@@ -21,7 +25,10 @@ from work_buddy.cowork.project_store import (
 from work_buddy.cowork.native_folder_chooser import (
     NativeFolderChooserError,
     default_host_folder_chooser,
+    default_host_location_chooser,
+    default_host_markdown_chooser,
 )
+from work_buddy.truth.contracts import StorePaths
 from work_buddy.truth.registry import TruthStoreRegistry
 
 
@@ -29,13 +36,24 @@ logger = logging.getLogger(__name__)
 
 PICKER_INTENT_HEADER = "X-Work-Buddy-Intent"
 PICKER_INTENT_VALUE = "cowork-folder-picker"
+MARKDOWN_PICKER_INTENT_VALUE = "cowork-markdown-picker"
+LOCATION_PICKER_INTENT_VALUE = "cowork-location-picker"
 MAX_FOLDER_PATH_CHARS = 32_767
+MAX_STORE_ID_CHARS = 200
+_MARKDOWN_SUFFIXES = frozenset({".md", ".markdown"})
+_MANAGED_COMPONENT = ".wbuddy"
 
 
 class HostFolderChooser(Protocol):
     """Select a directory on the machine hosting Work Buddy, or cancel."""
 
     def __call__(self) -> str | Path | None: ...
+
+
+class HostScopedPathChooser(Protocol):
+    """Select a path from a picker rooted at an active Co-work Folder."""
+
+    def __call__(self, start_directory: str | Path) -> str | Path | None: ...
 
 
 class FolderAccessPolicy:
@@ -225,7 +243,36 @@ def _body() -> Mapping[str, Any]:
     return value
 
 
-def _has_local_picker_intent() -> bool:
+def _is_direct_loopback_request() -> bool:
+    """Reject remote and reverse-proxied requests before opening host UI."""
+
+    proxy_markers = (
+        "forwarded",
+        "via",
+        "x-forwarded-for",
+        "x-forwarded-host",
+        "x-forwarded-proto",
+        "x-real-ip",
+    )
+    proxied = any(request.headers.get(name) for name in proxy_markers) or any(
+        name.lower().startswith("tailscale-") for name in request.headers.keys()
+    )
+    try:
+        peer_is_loopback = ip_address(request.remote_addr or "").is_loopback
+    except ValueError:
+        peer_is_loopback = False
+    try:
+        hostname = urlsplit(f"//{request.host}").hostname
+        normalized_host = "" if hostname is None else hostname.rstrip(".").lower()
+        host_is_loopback = normalized_host == "localhost" or ip_address(
+            normalized_host
+        ).is_loopback
+    except ValueError:
+        host_is_loopback = False
+    return peer_is_loopback and host_is_loopback and not proxied
+
+
+def _has_local_picker_intent(expected_value: str = PICKER_INTENT_VALUE) -> bool:
     """Require a same-origin browser action before opening host UI.
 
     The custom header makes an ordinary cross-origin request non-simple, so a
@@ -234,7 +281,9 @@ def _has_local_picker_intent() -> bool:
     ever broadened elsewhere.
     """
 
-    if request.headers.get(PICKER_INTENT_HEADER) != PICKER_INTENT_VALUE:
+    if not _is_direct_loopback_request():
+        return False
+    if request.headers.get(PICKER_INTENT_HEADER) != expected_value:
         return False
     fetch_site = request.headers.get("Sec-Fetch-Site", "").strip().lower()
     if fetch_site and fetch_site not in {"same-origin", "none"}:
@@ -248,11 +297,273 @@ def _has_local_picker_intent() -> bool:
     return True
 
 
+def _active_store_root(
+    body: Mapping[str, Any],
+    *,
+    registry_factory: Callable[[], TruthStoreRegistry],
+) -> Path:
+    store_id = body.get("store_id")
+    if (
+        not isinstance(store_id, str)
+        or not store_id
+        or store_id != store_id.strip()
+        or len(store_id) > MAX_STORE_ID_CHARS
+    ):
+        raise FolderLifecycleError(
+            "invalid_request",
+            "Choose an active Folder before opening this picker.",
+            status=400,
+        )
+    try:
+        row = registry_factory().get_by_store_id(store_id, refresh=True)
+        if row is None or not row.reachable:
+            raise LookupError("store is not reachable")
+        if not row.document_surface_enabled:
+            raise FolderLifecycleError(
+                "document_surface_disabled",
+                "Co-work documents are not enabled for this Folder.",
+                status=403,
+            )
+        root = StorePaths.from_sidecar(row.path).root.resolve(strict=True)
+        if not root.is_dir():
+            raise LookupError("Folder root is not a directory")
+        return root
+    except FolderLifecycleError:
+        raise
+    except Exception as exc:
+        raise FolderLifecycleError(
+            "folder_unreachable",
+            "The selected Folder is no longer available.",
+            status=503,
+            retryable=True,
+        ) from exc
+
+
+def _is_reparse_or_symlink(path: Path) -> bool:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return False
+    if stat.S_ISLNK(info.st_mode):
+        return True
+    attributes = getattr(info, "st_file_attributes", 0)
+    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return bool(attributes & reparse)
+
+
+def _contained_picker_selection(
+    root: Path,
+    selected: str | Path,
+    *,
+    outside_code: str,
+    unavailable_code: str,
+    invalid_code: str,
+    managed_code: str,
+    item_label: str,
+) -> tuple[Path, str]:
+    """Resolve an existing selection without following aliases out of root."""
+
+    try:
+        raw = os.fspath(selected)
+    except TypeError as exc:
+        raise FolderLifecycleError(
+            invalid_code,
+            f"That {item_label} can’t be used by Co-work.",
+            status=422,
+        ) from exc
+    if (
+        not isinstance(raw, str)
+        or not raw
+        or "\x00" in raw
+        or len(raw) > MAX_FOLDER_PATH_CHARS
+    ):
+        raise FolderLifecycleError(
+            invalid_code,
+            f"That {item_label} can’t be used by Co-work.",
+            status=422,
+        )
+    raw_path = Path(raw).expanduser()
+    if not raw_path.is_absolute():
+        raise FolderLifecycleError(
+            outside_code,
+            f"Choose {item_label} inside the active Folder.",
+            status=422,
+        )
+    lexical = Path(os.path.abspath(str(raw_path)))
+    try:
+        common = os.path.commonpath((str(root), str(lexical)))
+    except ValueError as exc:
+        raise FolderLifecycleError(
+            outside_code,
+            f"Choose {item_label} inside the active Folder.",
+            status=422,
+        ) from exc
+    if os.path.normcase(common) != os.path.normcase(str(root)):
+        raise FolderLifecycleError(
+            outside_code,
+            f"Choose {item_label} inside the active Folder.",
+            status=422,
+        )
+    relative_text = os.path.relpath(str(lexical), str(root))
+    parts = () if relative_text == "." else Path(relative_text).parts
+    if any(part.casefold() == _MANAGED_COMPONENT for part in parts):
+        raise FolderLifecycleError(
+            managed_code,
+            "Work Buddy support files can’t be selected here.",
+            status=422,
+        )
+
+    cursor = root
+    for part in parts:
+        cursor /= part
+        try:
+            exists = cursor.exists() or cursor.is_symlink()
+        except OSError as exc:
+            raise FolderLifecycleError(
+                unavailable_code,
+                f"That {item_label} is no longer available.",
+                status=409,
+                retryable=True,
+            ) from exc
+        if not exists:
+            raise FolderLifecycleError(
+                unavailable_code,
+                f"That {item_label} is no longer available.",
+                status=409,
+                retryable=True,
+            )
+        try:
+            redirected = _is_reparse_or_symlink(cursor)
+        except OSError as exc:
+            raise FolderLifecycleError(
+                unavailable_code,
+                f"That {item_label} is no longer available.",
+                status=409,
+                retryable=True,
+            ) from exc
+        if redirected:
+            raise FolderLifecycleError(
+                invalid_code,
+                f"That {item_label} can’t be used by Co-work.",
+                status=422,
+            )
+
+    try:
+        resolved = lexical.resolve(strict=True)
+        resolved_common = os.path.commonpath((str(root), str(resolved)))
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise FolderLifecycleError(
+            unavailable_code,
+            f"That {item_label} is no longer available.",
+            status=409,
+            retryable=True,
+        ) from exc
+    if os.path.normcase(resolved_common) != os.path.normcase(str(root)):
+        raise FolderLifecycleError(
+            outside_code,
+            f"Choose {item_label} inside the active Folder.",
+            status=422,
+        )
+    canonical_relative_text = os.path.relpath(str(resolved), str(root))
+    canonical_parts = (
+        ()
+        if canonical_relative_text == "."
+        else Path(canonical_relative_text).parts
+    )
+    # Windows short-name aliases (for example ``WBUDDY~1``) can lexically
+    # conceal the managed ``.wbuddy`` directory.  Derive the public relative
+    # path from the resolved filesystem identity and enforce the namespace
+    # boundary again before returning it.
+    if any(part.casefold() == _MANAGED_COMPONENT for part in canonical_parts):
+        raise FolderLifecycleError(
+            managed_code,
+            "Work Buddy support files can’t be selected here.",
+            status=422,
+        )
+    return resolved, "/".join(canonical_parts)
+
+
+def _admit_markdown_selection(root: Path, selected: str | Path) -> str:
+    resolved, relative = _contained_picker_selection(
+        root,
+        selected,
+        outside_code="markdown_outside_folder",
+        unavailable_code="markdown_file_unavailable",
+        invalid_code="invalid_markdown_file",
+        managed_code="invalid_markdown_file",
+        item_label="a Markdown file",
+    )
+    if not relative or resolved.suffix.casefold() not in _MARKDOWN_SUFFIXES:
+        raise FolderLifecycleError(
+            "invalid_markdown_file",
+            "Choose a Markdown file ending in .md or .markdown.",
+            status=422,
+        )
+    if not resolved.is_file():
+        raise FolderLifecycleError(
+            "markdown_file_unavailable",
+            "That Markdown file is no longer available.",
+            status=409,
+            retryable=True,
+        )
+    try:
+        admitted = resolve_markdown_path(root, relative)
+    except CoworkPathError as exc:
+        raise FolderLifecycleError(
+            "invalid_markdown_file",
+            "That Markdown file can’t be used by Co-work.",
+            status=422,
+        ) from exc
+    if not admitted.path.is_file():
+        raise FolderLifecycleError(
+            "markdown_file_unavailable",
+            "That Markdown file is no longer available.",
+            status=409,
+            retryable=True,
+        )
+    return admitted.normalized
+
+
+def _admit_location_selection(root: Path, selected: str | Path) -> str:
+    resolved, relative = _contained_picker_selection(
+        root,
+        selected,
+        outside_code="location_outside_folder",
+        unavailable_code="location_unavailable",
+        invalid_code="location_unavailable",
+        managed_code="managed_location",
+        item_label="a location",
+    )
+    if not resolved.is_dir():
+        raise FolderLifecycleError(
+            "location_unavailable",
+            "That location is no longer available.",
+            status=409,
+            retryable=True,
+        )
+    probe = (
+        f"{relative}/work-buddy-location.md"
+        if relative
+        else "work-buddy-location.md"
+    )
+    try:
+        resolve_markdown_path(root, probe, for_create=True)
+    except CoworkPathError as exc:
+        raise FolderLifecycleError(
+            "location_unavailable",
+            "That location can’t be used by Co-work.",
+            status=422,
+        ) from exc
+    return relative
+
+
 def create_folder_blueprint(
     *,
     manager: ProjectStoreManager | None = None,
     registry_factory: Callable[[], TruthStoreRegistry] = TruthStoreRegistry,
     chooser: HostFolderChooser | None = None,
+    markdown_chooser: HostScopedPathChooser | None = None,
+    location_chooser: HostScopedPathChooser | None = None,
     access_policy: FolderAccessPolicy | None = None,
     read_only: Callable[[], bool] = _dashboard_read_only,
 ) -> Blueprint:
@@ -264,6 +575,31 @@ def create_folder_blueprint(
         manager.data_root / "runtime" / "cowork-folder-tokens"
     )
     blueprint = Blueprint(f"cowork_folders_{uuid.uuid4().hex}", __name__)
+
+    def native_picker_error(exc: NativeFolderChooserError, *, label: str):
+        details = None
+        if exc.code == "folder_chooser_busy":
+            logger.info("Co-work %s picker request ignored because it is busy", label)
+        else:
+            trace_id = uuid.uuid4().hex[:12]
+            diagnostic = " ".join(str(exc.diagnostic).split())[:1000]
+            logger.warning(
+                "Co-work %s picker failed trace_id=%s code=%s diagnostic=%s",
+                label,
+                trace_id,
+                exc.code,
+                diagnostic,
+            )
+            details = {"trace_id": trace_id}
+        return _error(
+            FolderLifecycleError(
+                exc.code,
+                str(exc),
+                status=exc.status,
+                retryable=exc.retryable,
+                details=details,
+            )
+        )
 
     @blueprint.get("/api/truth/cowork/folders")
     def folders_list():
@@ -290,6 +626,8 @@ def create_folder_blueprint(
                 "chooser": {
                     "available": chooser is not None,
                     "kind": "host_native" if chooser is not None else "unavailable",
+                    "markdown_available": markdown_chooser is not None,
+                    "location_available": location_chooser is not None,
                 },
                 "folders": summaries,
                 "diagnostics": diagnostics,
@@ -330,28 +668,85 @@ def create_folder_blueprint(
                 }
             )
         except NativeFolderChooserError as exc:
-            details = None
-            if exc.code == "folder_chooser_busy":
-                logger.info("Co-work Folder picker request ignored because it is busy")
-            else:
-                trace_id = uuid.uuid4().hex[:12]
-                diagnostic = " ".join(str(exc.diagnostic).split())[:1000]
-                logger.warning(
-                    "Co-work Folder picker failed trace_id=%s code=%s diagnostic=%s",
-                    trace_id,
-                    exc.code,
-                    diagnostic,
-                )
-                details = {"trace_id": trace_id}
+            return native_picker_error(exc, label="Folder")
+        except FolderLifecycleError as exc:
+            return _error(exc)
+
+    @blueprint.post("/api/truth/cowork/files/choose-markdown")
+    def files_choose_markdown():
+        if not _has_local_picker_intent(MARKDOWN_PICKER_INTENT_VALUE):
             return _error(
                 FolderLifecycleError(
-                    exc.code,
-                    str(exc),
-                    status=exc.status,
-                    retryable=exc.retryable,
-                    details=details,
+                    "folder_picker_intent_required",
+                    "Markdown selection must be started from Co-work.",
+                    status=403,
                 )
             )
+        if markdown_chooser is None:
+            return _error(
+                FolderLifecycleError(
+                    "folder_chooser_unavailable",
+                    "Markdown selection is unavailable here.",
+                    status=503,
+                )
+            )
+        try:
+            root = _active_store_root(
+                _body(),
+                registry_factory=registry_factory,
+            )
+            selected = markdown_chooser(root)
+            if selected is None:
+                return jsonify({"ok": True, "cancelled": True})
+            relative = _admit_markdown_selection(root, selected)
+            return jsonify(
+                {
+                    "ok": True,
+                    "cancelled": False,
+                    "path": relative,
+                }
+            )
+        except NativeFolderChooserError as exc:
+            return native_picker_error(exc, label="Markdown")
+        except FolderLifecycleError as exc:
+            return _error(exc)
+
+    @blueprint.post("/api/truth/cowork/folders/choose-location")
+    def folders_choose_location():
+        if not _has_local_picker_intent(LOCATION_PICKER_INTENT_VALUE):
+            return _error(
+                FolderLifecycleError(
+                    "folder_picker_intent_required",
+                    "Location selection must be started from Co-work.",
+                    status=403,
+                )
+            )
+        if location_chooser is None:
+            return _error(
+                FolderLifecycleError(
+                    "folder_chooser_unavailable",
+                    "Location selection is unavailable here.",
+                    status=503,
+                )
+            )
+        try:
+            root = _active_store_root(
+                _body(),
+                registry_factory=registry_factory,
+            )
+            selected = location_chooser(root)
+            if selected is None:
+                return jsonify({"ok": True, "cancelled": True})
+            relative = _admit_location_selection(root, selected)
+            return jsonify(
+                {
+                    "ok": True,
+                    "cancelled": False,
+                    "path": relative,
+                }
+            )
+        except NativeFolderChooserError as exc:
+            return native_picker_error(exc, label="Location")
         except FolderLifecycleError as exc:
             return _error(exc)
 
@@ -506,7 +901,9 @@ def create_folder_blueprint(
 
 
 cowork_folder_blueprint = create_folder_blueprint(
-    chooser=default_host_folder_chooser()
+    chooser=default_host_folder_chooser(),
+    markdown_chooser=default_host_markdown_chooser(),
+    location_chooser=default_host_location_chooser(),
 )
 
 
@@ -514,6 +911,9 @@ __all__ = [
     "FolderAccessPolicy",
     "FolderTokenStore",
     "HostFolderChooser",
+    "HostScopedPathChooser",
+    "LOCATION_PICKER_INTENT_VALUE",
+    "MARKDOWN_PICKER_INTENT_VALUE",
     "PICKER_INTENT_HEADER",
     "PICKER_INTENT_VALUE",
     "cowork_folder_blueprint",

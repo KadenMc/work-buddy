@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
-import type { CoworkViewModel } from "../contracts";
+import type { CoworkFolderSummary, CoworkViewModel } from "../contracts";
 import { CoworkDocumentBar } from "./CoworkDocumentBar";
 
 const document = {
@@ -24,7 +24,12 @@ const document = {
 
 const model: CoworkViewModel = {
   folders: [],
-  folderChooser: { available: true, kind: "host" },
+  folderChooser: {
+    available: true,
+    kind: "host",
+    markdownAvailable: true,
+    locationAvailable: true,
+  },
   folderSelection: { kind: "none" },
   activeFolderStoreId: "store-1",
   catalog: { status: "ready", documents: [document], refreshedAt: null, error: null },
@@ -35,6 +40,29 @@ const model: CoworkViewModel = {
   navigationError: null,
   readOnly: false,
   document,
+};
+
+const folder: CoworkFolderSummary = {
+  storeId: "store-1",
+  folderName: "work-buddy",
+  folderPath: "C:/Projects/work-buddy",
+  layout: "wbuddy_cowork_v1",
+  reachable: true,
+  eligibility: "eligible",
+  ineligibleReason: null,
+  documentSurface: {
+    enabled: true,
+    allowedDocumentClasses: ["co_authored"],
+    feedbackCapture: true,
+  },
+  permissions: {
+    read: true,
+    create: true,
+    import: true,
+    materialize: true,
+    retire: true,
+  },
+  documentCount: 0,
 };
 
 const baseProps = {
@@ -213,6 +241,100 @@ describe("CoworkDocumentBar Save", () => {
     rerender(<CoworkDocumentBar {...props} promotionReady syncStatus="clean" />);
     expect(screen.getByRole("button", { name: "Save document" })).toBeEnabled();
     expect(screen.getByRole("status")).toHaveTextContent("Saved on this device");
+  });
+
+  it("keeps an on-device document local when the dashboard is read-only", async () => {
+    const user = userEvent.setup();
+    const onPromoteScratch = vi.fn();
+    const scratchModel: CoworkViewModel = {
+      ...model,
+      readOnly: true,
+      routeTarget: { kind: "scratch", scratchId: "scratch-1", title: "Draft" },
+      activeSession: { kind: "scratch", scratchId: "scratch-1", title: "Draft" },
+      document: null,
+    };
+    render(
+      <CoworkDocumentBar
+        {...baseProps}
+        model={scratchModel}
+        promotionReady
+        syncStatus="clean"
+        onPromoteScratch={onPromoteScratch}
+      />,
+    );
+
+    const save = screen.getByRole("button", { name: "Save document" });
+    expect(save).toBeDisabled();
+    expect(save).toHaveAccessibleDescription(
+      "Read-only mode. This document will stay on this device.",
+    );
+    expect(
+      screen.getByText("Read-only mode. This document will stay on this device."),
+    ).toBeVisible();
+    await user.click(save);
+    expect(onPromoteScratch).not.toHaveBeenCalled();
+  });
+
+  it("keeps an on-device document local when Folder selection is unavailable", () => {
+    const scratchModel: CoworkViewModel = {
+      ...model,
+      folderChooser: {
+        ...model.folderChooser,
+        available: false,
+      },
+      routeTarget: { kind: "scratch", scratchId: "scratch-1", title: "Draft" },
+      activeSession: { kind: "scratch", scratchId: "scratch-1", title: "Draft" },
+      document: null,
+    };
+    render(
+      <CoworkDocumentBar
+        {...baseProps}
+        model={scratchModel}
+        promotionReady
+        syncStatus="clean"
+      />,
+    );
+
+    const save = screen.getByRole("button", { name: "Save document" });
+    expect(save).toBeDisabled();
+    expect(save).toHaveAccessibleDescription(
+      "Folder selection isn’t available here. This document will stay on this device.",
+    );
+    expect(
+      screen.getByText(
+        "Folder selection isn’t available here. This document will stay on this device.",
+      ),
+    ).toBeVisible();
+  });
+
+  it("keeps an on-device document local when the active Folder denies create", () => {
+    const blockedFolder: CoworkFolderSummary = {
+      ...folder,
+      permissions: { ...folder.permissions, create: false },
+    };
+    const scratchModel: CoworkViewModel = {
+      ...model,
+      folders: [blockedFolder],
+      folderSelection: { kind: "initialized", folder: blockedFolder },
+      routeTarget: { kind: "scratch", scratchId: "scratch-1", title: "Draft" },
+      activeSession: { kind: "scratch", scratchId: "scratch-1", title: "Draft" },
+      document: null,
+    };
+    render(
+      <CoworkDocumentBar
+        {...baseProps}
+        model={scratchModel}
+        promotionReady
+        syncStatus="clean"
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Save document" })).toBeDisabled();
+    expect(
+      screen.getByText(
+        "This Folder doesn’t allow new documents. This document will stay on this device.",
+      ),
+    ).toBeVisible();
   });
 
   it("puts the destructive on-device discard action behind the overflow menu", async () => {

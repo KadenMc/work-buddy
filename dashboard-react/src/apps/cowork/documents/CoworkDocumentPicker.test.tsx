@@ -47,11 +47,14 @@ const document: CoworkDocumentSummary = {
   },
 };
 
-const renderPicker = (onOpen = vi.fn(async () => undefined)) => {
+const renderPicker = (
+  onOpen = vi.fn(async () => undefined),
+  selectedFolder: CoworkFolderSummary = folder,
+) => {
   const onClose = vi.fn();
   render(
     <CoworkDocumentPicker
-      folder={folder}
+      folder={selectedFolder}
       documents={[document]}
       onClose={onClose}
       onOpen={onOpen}
@@ -85,5 +88,64 @@ describe("CoworkDocumentPicker activation", () => {
     await user.keyboard("{Enter}");
 
     await waitFor(() => expect(onOpen).toHaveBeenCalledTimes(1));
+  });
+
+  it("disables creation actions that the Folder does not permit", () => {
+    renderPicker(vi.fn(), {
+      ...folder,
+      permissions: {
+        ...folder.permissions,
+        create: false,
+        import: false,
+      },
+    });
+
+    expect(
+      screen.getByRole("button", { name: "New from Markdown" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Create new document" }),
+    ).toBeDisabled();
+  });
+
+  it("disables unavailable native picker actions with an honest explanation", async () => {
+    const user = userEvent.setup();
+    const onRegister = vi.fn();
+    const onChangeFolder = vi.fn();
+    render(
+      <CoworkDocumentPicker
+        folder={folder}
+        folderPickerAvailable={false}
+        markdownPickerAvailable={false}
+        documents={[document]}
+        onClose={vi.fn()}
+        onOpen={vi.fn()}
+        onCreate={vi.fn()}
+        onRegister={onRegister}
+        onRepair={vi.fn()}
+        onChangeFolder={onChangeFolder}
+      />,
+    );
+
+    const changeFolder = screen.getByRole("button", { name: "Change Folder" });
+    const fromMarkdown = screen.getByRole("button", {
+      name: "New from Markdown",
+    });
+    expect(changeFolder).toBeDisabled();
+    expect(changeFolder).toHaveAccessibleDescription(
+      "Folder selection isn’t available here. This Folder stays open.",
+    );
+    expect(fromMarkdown).toBeDisabled();
+    expect(fromMarkdown).toHaveAccessibleDescription(
+      "Markdown file selection isn’t available here.",
+    );
+    expect(
+      screen.getByText("Markdown file selection isn’t available here."),
+    ).toBeVisible();
+
+    await user.click(changeFolder);
+    await user.click(fromMarkdown);
+    expect(onChangeFolder).not.toHaveBeenCalled();
+    expect(onRegister).not.toHaveBeenCalled();
   });
 });

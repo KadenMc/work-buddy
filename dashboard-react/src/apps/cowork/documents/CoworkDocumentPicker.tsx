@@ -18,6 +18,8 @@ import { asCoworkApiError, coworkErrorMessage } from "../providers/errors";
 
 interface CoworkDocumentPickerProps {
   readonly folder: CoworkFolderSummary;
+  readonly folderPickerAvailable?: boolean;
+  readonly markdownPickerAvailable?: boolean;
   readonly documents: readonly CoworkDocumentSummary[];
   readonly currentDocumentId?: string;
   readonly onClose: () => void;
@@ -35,6 +37,8 @@ const isReady = (document: CoworkDocumentSummary): boolean =>
 
 export function CoworkDocumentPicker({
   folder,
+  folderPickerAvailable = true,
+  markdownPickerAvailable = true,
   documents,
   currentDocumentId,
   onClose,
@@ -92,8 +96,30 @@ export function CoworkDocumentPicker({
           <Heading id="cowork-picker-title" slot="title">Open document</Heading>
           <div className="wb-cowork-picker__context">
             <strong title={folder.folderPath}>{folder.folderName}</strong>
-            <Button size="small" variant="ghost" onClick={onChangeFolder}>Change Folder</Button>
+            <Button
+              size="small"
+              variant="ghost"
+              onClick={onChangeFolder}
+              disabled={!folderPickerAvailable}
+              aria-describedby={
+                folderPickerAvailable
+                  ? undefined
+                  : "cowork-folder-picker-unavailable"
+              }
+              title={
+                folderPickerAvailable
+                  ? "Choose another Folder."
+                  : "Folder selection isn’t available here."
+              }
+            >
+              Change Folder
+            </Button>
           </div>
+          {!folderPickerAvailable ? (
+            <InlineAlert id="cowork-folder-picker-unavailable" tone="warning">
+              Folder selection isn’t available here. This Folder stays open.
+            </InlineAlert>
+          ) : null}
           {error !== null ? <InlineAlert role="alert" tone="danger">{error}</InlineAlert> : null}
           <TextField value={query} onChange={setQuery} className="wb-cowork-field">
             <Label>Search documents</Label>
@@ -162,10 +188,40 @@ export function CoworkDocumentPicker({
               ))}
             </section>
           ) : null}
+          {!markdownPickerAvailable ? (
+            <InlineAlert id="cowork-markdown-picker-unavailable" tone="warning">
+              Markdown file selection isn’t available here.
+            </InlineAlert>
+          ) : null}
           <div className="wb-cowork-dialog__actions wb-cowork-picker__footer">
             <Button onClick={onClose} disabled={openingId !== null}>Close</Button>
-            <Button onClick={onRegister} disabled={openingId !== null}>Add Markdown</Button>
-            <Button variant="primary" onClick={onCreate} disabled={openingId !== null}>Create new document</Button>
+            <Button
+              onClick={onRegister}
+              disabled={
+                openingId !== null ||
+                !folder.permissions.import ||
+                !markdownPickerAvailable
+              }
+              aria-describedby={
+                markdownPickerAvailable
+                  ? undefined
+                  : "cowork-markdown-picker-unavailable"
+              }
+              title={
+                markdownPickerAvailable
+                  ? "Create a new document from an existing Markdown file."
+                  : "Markdown file selection isn’t available here."
+              }
+            >
+              New from Markdown
+            </Button>
+            <Button
+              variant="primary"
+              onClick={onCreate}
+              disabled={openingId !== null || !folder.permissions.create}
+            >
+              Create new document
+            </Button>
           </div>
           {openingId !== null ? <p role="status">Opening document…</p> : null}
         </Dialog>

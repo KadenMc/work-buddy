@@ -7,6 +7,7 @@ import { sha256Hex } from "../persistence/hashing";
 import { CoworkHttpClient } from "../providers/CoworkHttpClient";
 import {
   CoworkDocumentLifecycleDialog,
+  sameMarkdownPath,
   validRelativeMarkdownPath,
 } from "./CoworkDocumentLifecycleDialog";
 
@@ -32,6 +33,25 @@ const folder: CoworkFolderSummary = {
   },
   documentCount: 0,
 };
+
+describe("Co-work Markdown path identity", () => {
+  it("is case-insensitive for Windows Folders and case-sensitive for POSIX Folders", () => {
+    expect(
+      sameMarkdownPath(
+        "Notes/Existing.md",
+        "notes/existing.md",
+        "C:\\Projects\\work-buddy",
+      ),
+    ).toBe(true);
+    expect(
+      sameMarkdownPath(
+        "Notes/Existing.md",
+        "notes/existing.md",
+        "/srv/projects/work-buddy",
+      ),
+    ).toBe(false);
+  });
+});
 
 describe("CoworkDocumentLifecycleDialog idempotent recovery", () => {
   it("reuses the operation key and opens a committed receipt after a lost commit response", async () => {
@@ -256,14 +276,336 @@ describe("CoworkDocumentLifecycleDialog idempotent recovery", () => {
       />,
     );
     await user.type(screen.getByRole("textbox", { name: "Title" }), "Safe title");
-    const path = screen.getByRole("textbox", { name: /Location inside/ });
-    await user.clear(path);
-    await user.type(path, unsafePath);
+    const fileName = screen.getByRole("textbox", { name: "File name" });
+    await user.clear(fileName);
+    await user.type(fileName, unsafePath);
     await user.click(screen.getByRole("button", { name: "Create document" }));
 
     expect(screen.getByRole("alert")).toHaveTextContent(
-      "Use a safe relative .md or .markdown location",
+      /filename without folder separators|safe \.md or \.markdown filename/,
     );
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("uses the native location picker while preserving the active Folder root as default", async () => {
+    const user = userEvent.setup();
+    const requests: Array<{ readonly url: string; readonly init?: RequestInit }> = [];
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      requests.push({ url, init });
+      if (url === "/api/truth/cowork/folders/choose-location") {
+        return new Response(
+          JSON.stringify({ ok: true, cancelled: false, path: "Research/Notes" }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url === "/api/truth/doc/bootstrap?store_id=store-1") {
+        const form = init?.body as FormData;
+        const metadata = form.get("metadata");
+        expect(typeof metadata).toBe("string");
+        expect(JSON.parse(String(metadata))).toMatchObject({
+          mode: "create",
+          path: "Research/Notes/project-brief.md",
+          title: "Project brief",
+        });
+        return new Response(
+          JSON.stringify({
+            bootstrap_id: "bootstrap-create",
+            document_id: "doc-create",
+            mode: "create",
+            normalized_path: "Research/Notes/project-brief.md",
+            source_sha256:
+              "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            source_byte_length: 0,
+            source_url: "/bootstrap-create/source",
+            ydoc_schema: "yjs-v1",
+            expires_at: "2026-07-22T20:00:00Z",
+            state: "prepared",
+          }),
+          { status: 201, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url === "/bootstrap-create/source") return new Response(new Uint8Array(0));
+      if (url.startsWith("/api/truth/doc/bootstrap/bootstrap-create?")) {
+        return new Response(
+          JSON.stringify({
+            document_id: "doc-create",
+            path: "Research/Notes/project-brief.md",
+            title: "Project brief",
+            initialization_state: "ready",
+            drift_state: "clean",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    render(
+      <CoworkDocumentLifecycleDialog
+        mode="create"
+        folder={folder}
+        client={new CoworkHttpClient(fetchImpl as typeof fetch)}
+        initialTitle="Project brief"
+        onClose={vi.fn()}
+        onOpened={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByRole("group", { name: "Save in" }),
+    ).toHaveTextContent("work-buddy");
+    expect(screen.getByRole("textbox", { name: "File name" })).toHaveValue(
+      "project-brief.md",
+    );
+    await user.click(screen.getByRole("button", { name: "Change" }));
+
+    await waitFor(() =>
+      expect(screen.getByText("work-buddy / Research/Notes")).toBeVisible(),
+    );
+    const pickerRequest = requests.find(
+      (request) => request.url === "/api/truth/cowork/folders/choose-location",
+    );
+    expect(JSON.parse(String(pickerRequest?.init?.body))).toEqual({
+      store_id: "store-1",
+    });
+    await user.click(screen.getByRole("button", { name: "Create document" }));
+    await waitFor(() =>
+      expect(
+        requests.some((request) =>
+          request.url.startsWith("/api/truth/doc/bootstrap/bootstrap-create?"),
+        ),
+      ).toBe(true),
+    );
+  }, 20_000);
+
+  it("closes cleanly when the native Markdown picker is cancelled", async () => {
+    const onClose = vi.fn();
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      expect(String(input)).toBe("/api/truth/cowork/files/choose-markdown");
+      return new Response(JSON.stringify({ ok: true, cancelled: true }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+
+    render(
+      <CoworkDocumentLifecycleDialog
+        mode="register"
+        folder={folder}
+        client={new CoworkHttpClient(fetchImpl as typeof fetch)}
+        onClose={onClose}
+        onOpened={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByRole("dialog", { name: "New document from Markdown" }),
+    ).toBeVisible();
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce());
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it("opens a Windows Markdown path that is already registered with different casing", async () => {
+    const onClose = vi.fn();
+    const onOpened = vi.fn(async () => undefined);
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/truth/cowork/files/choose-markdown") {
+        return new Response(
+          JSON.stringify({ ok: true, cancelled: false, path: "Notes/EXISTING.md" }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url === "/api/truth/doc/list?store_id=store-1") {
+        return new Response(
+          JSON.stringify({
+            docs: [
+              {
+                document_id: "doc-existing",
+                path: "notes/existing.md",
+                title: "Existing",
+                initialization_state: "ready",
+                drift_state: "clean",
+              },
+            ],
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    render(
+      <CoworkDocumentLifecycleDialog
+        mode="register"
+        folder={folder}
+        client={new CoworkHttpClient(fetchImpl as typeof fetch)}
+        onClose={onClose}
+        onOpened={onOpened}
+      />,
+    );
+
+    await waitFor(() => expect(onOpened).toHaveBeenCalledOnce());
+    expect(onOpened).toHaveBeenCalledWith(
+      expect.objectContaining({ documentId: "doc-existing" }),
+    );
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(
+      fetchImpl.mock.calls.some(([input]) =>
+        String(input).includes("/api/truth/doc/bootstrap"),
+      ),
+    ).toBe(false);
+  });
+
+  it("recovers the authoritative document when bootstrap reports an identity conflict", async () => {
+    const onClose = vi.fn();
+    const onOpened = vi.fn(async () => undefined);
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/truth/cowork/files/choose-markdown") {
+        return new Response(
+          JSON.stringify({ ok: true, cancelled: false, path: "notes/existing.md" }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url === "/api/truth/doc/list?store_id=store-1") {
+        return new Response(JSON.stringify({ docs: [] }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url === "/api/truth/doc/bootstrap?store_id=store-1") {
+        return new Response(
+          JSON.stringify({
+            error: {
+              code: "already_registered",
+              message: "Markdown path is already registered",
+              retryable: false,
+              details: { document_id: "doc-existing" },
+            },
+          }),
+          { status: 409, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url === "/api/truth/doc/doc-existing?store_id=store-1") {
+        return new Response(
+          JSON.stringify({
+            document_id: "doc-existing",
+            path: "notes/existing.md",
+            title: "Existing",
+            initialization_state: "ready",
+            drift_state: "clean",
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    render(
+      <CoworkDocumentLifecycleDialog
+        mode="register"
+        folder={folder}
+        client={new CoworkHttpClient(fetchImpl as typeof fetch)}
+        onClose={onClose}
+        onOpened={onOpened}
+      />,
+    );
+
+    await waitFor(() => expect(onOpened).toHaveBeenCalledOnce());
+    expect(onOpened).toHaveBeenCalledWith(
+      expect.objectContaining({ documentId: "doc-existing" }),
+    );
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("offers Choose again with contextual copy after a recoverable picker failure", async () => {
+    const user = userEvent.setup();
+    const fetchImpl = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          error: {
+            code: "folder_chooser_failed",
+            message: "internal picker detail",
+            retryable: true,
+          },
+        }),
+        { status: 503, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    render(
+      <CoworkDocumentLifecycleDialog
+        mode="register"
+        folder={folder}
+        client={new CoworkHttpClient(fetchImpl as typeof fetch)}
+        onClose={vi.fn()}
+        onOpened={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "The Markdown picker couldn’t be opened.",
+    );
+    await user.click(screen.getByRole("button", { name: "Choose again" }));
+    await waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(2));
+  });
+
+  it("does not call the Markdown picker when that picker is unavailable", () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(null, { status: 500 }),
+    );
+    render(
+      <CoworkDocumentLifecycleDialog
+        mode="register"
+        folder={folder}
+        client={new CoworkHttpClient(fetchImpl as typeof fetch)}
+        markdownPickerAvailable={false}
+        onClose={vi.fn()}
+        onOpened={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByText("Markdown file selection isn’t available here."),
+    ).toBeVisible();
+    expect(
+      screen.queryByText("Opening Markdown picker…"),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Choose again" }),
+    ).toBeNull();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("keeps root creation available while explaining an unavailable destination picker", async () => {
+    const user = userEvent.setup();
+    const fetchImpl = vi.fn(async () =>
+      new Response(null, { status: 500 }),
+    );
+    render(
+      <CoworkDocumentLifecycleDialog
+        mode="create"
+        folder={folder}
+        client={new CoworkHttpClient(fetchImpl as typeof fetch)}
+        locationPickerAvailable={false}
+        onClose={vi.fn()}
+        onOpened={vi.fn()}
+      />,
+    );
+
+    const change = screen.getByRole("button", { name: "Change" });
+    expect(change).toBeDisabled();
+    expect(change).toHaveAccessibleDescription(
+      "Choosing another save location isn’t available here. You can still save in work-buddy.",
+    );
+    expect(
+      screen.getByText(
+        "Choosing another save location isn’t available here. You can still save in work-buddy.",
+      ),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Create document" }),
+    ).toBeEnabled();
+
+    await user.click(change);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 

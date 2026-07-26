@@ -1,4 +1,10 @@
 import { NotePencil } from "@phosphor-icons/react/NotePencil";
+import {
+  Dialog,
+  Heading,
+  Modal,
+  ModalOverlay,
+} from "react-aria-components";
 
 import { Button, InlineAlert, Spinner } from "../../../ui";
 import type {
@@ -20,7 +26,6 @@ interface CoworkLauncherProps {
   readonly onInitialize: () => void;
   readonly onOpenFolder: (storeId: string) => void;
   readonly onOpenDocument: (document: CoworkDocumentSummary) => void;
-  readonly onCreate: () => void;
   readonly onRegister: () => void;
   readonly onOpenLocalDocument: (document: CoworkScratchSummary) => void;
   readonly onNewDocument: () => void;
@@ -129,7 +134,6 @@ export function CoworkLauncher({
   onInitialize,
   onOpenFolder,
   onOpenDocument,
-  onCreate,
   onRegister,
   onOpenLocalDocument,
   onNewDocument,
@@ -158,6 +162,69 @@ export function CoworkLauncher({
     );
   }
 
+  if (selection.kind === "setup_confirmation") {
+    return (
+      <ModalOverlay
+        isOpen
+        isDismissable={false}
+        className="wb-cowork-dialog-overlay"
+      >
+        <Modal className="wb-cowork-dialog">
+          <Dialog
+            aria-labelledby="cowork-setup-title"
+            aria-describedby="cowork-setup-description"
+            className="wb-cowork-dialog__body"
+          >
+            <Heading id="cowork-setup-title" slot="title">
+              {model.readOnly
+                ? `Co-work isn’t set up in “${selection.candidate.folderName}”`
+                : `Set up Co-work in “${selection.candidate.folderName}”?`}
+            </Heading>
+            <p id="cowork-setup-description">
+              {model.readOnly ? (
+                <>
+                  This dashboard is read-only, so Co-work can’t add its support
+                  data under <code>.wbuddy</code>. No files were changed. Turn
+                  off read-only mode, then open this Folder again.
+                </>
+              ) : (
+                <>
+                  This adds Co-work support data under <code>.wbuddy</code>. Your
+                  documents won’t be changed.
+                </>
+              )}
+            </p>
+            <p
+              className="wb-cowork-dialog__selection"
+              title={selection.candidate.folderPath}
+            >
+              <strong>{selection.candidate.folderName}</strong>
+              <span>{selection.candidate.folderPath}</span>
+            </p>
+            <div className="wb-cowork-dialog__actions">
+              <Button
+                autoFocus
+                onClick={onCancelInspection}
+                disabled={folderActionBusy}
+              >
+                {model.readOnly ? "Close" : "Cancel"}
+              </Button>
+              {!model.readOnly ? (
+                <Button
+                  variant="primary"
+                  onClick={onInitialize}
+                  disabled={folderActionBusy}
+                >
+                  {folderActionBusy ? "Setting up…" : "Set up Co-work"}
+                </Button>
+              ) : null}
+            </div>
+          </Dialog>
+        </Modal>
+      </ModalOverlay>
+    );
+  }
+
   if (selection.kind === "setup_available") {
     return (
       <section className="wb-cowork-launcher wb-cowork-launcher--centered">
@@ -170,13 +237,11 @@ export function CoworkLauncher({
           </InlineAlert>
         ) : null}
         <div className="wb-cowork-launcher__actions">
-          {canReturnToPreviousContext ? (
-            <Button onClick={onCancelInspection} disabled={folderActionBusy}>
-              {returnLabel}
-            </Button>
-          ) : null}
+          <Button onClick={onCancelInspection} disabled={folderActionBusy}>
+            {canReturnToPreviousContext ? returnLabel : "Cancel"}
+          </Button>
           <Button variant="primary" onClick={onInitialize} disabled={folderActionBusy}>
-            {folderActionBusy ? "Opening…" : "Try again"}
+            {folderActionBusy ? "Setting up…" : "Try again"}
           </Button>
         </div>
       </section>
@@ -290,6 +355,7 @@ export function CoworkLauncher({
   }
 
   if (folder !== null) {
+    const markdownPickerUnavailable = !model.folderChooser.markdownAvailable;
     const readyDocuments = model.catalog.documents
       .filter((document) => (document.initializationState ?? "ready") === "ready")
       .reverse()
@@ -312,19 +378,34 @@ export function CoworkLauncher({
         ) : null}
         <div className="wb-cowork-launcher__primary-actions">
           <Button
-            variant="primary"
-            onClick={onCreate}
-            disabled={navigationBusy || !folder.permissions.create}
-          >
-            <NotePencil aria-hidden="true" /> New document
-          </Button>
-          <Button
             onClick={onRegister}
-            disabled={navigationBusy || !folder.permissions.import}
+            disabled={
+              navigationBusy ||
+              !folder.permissions.import ||
+              markdownPickerUnavailable
+            }
+            aria-describedby={
+              markdownPickerUnavailable
+                ? "cowork-launcher-markdown-picker-unavailable"
+                : undefined
+            }
+            title={
+              markdownPickerUnavailable
+                ? "Markdown file selection isn’t available here."
+                : "Create a new document from an existing Markdown file."
+            }
           >
-            Add Markdown
+            New from Markdown
           </Button>
         </div>
+        {markdownPickerUnavailable ? (
+          <InlineAlert
+            id="cowork-launcher-markdown-picker-unavailable"
+            tone="warning"
+          >
+            Markdown file selection isn’t available here.
+          </InlineAlert>
+        ) : null}
         {model.catalog.status === "loading" ? (
           <p role="status" className="wb-cowork-launcher__loading">
             <Spinner /> Loading documents…

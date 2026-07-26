@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   COWORK_FOLDER_PICKER_INTENT,
   COWORK_FOLDER_PICKER_INTENT_HEADER,
+  COWORK_LOCATION_PICKER_INTENT,
+  COWORK_MARKDOWN_PICKER_INTENT,
   CoworkHttpClient,
   normalizeDocumentSummary,
 } from "./CoworkHttpClient";
@@ -14,6 +16,32 @@ const json = (value: unknown, status = 200): Response =>
   });
 
 describe("CoworkHttpClient document lifecycle contracts", () => {
+  it("preserves picker-specific availability from Folder discovery", async () => {
+    const fetchImpl = vi.fn(async () =>
+      json({
+        read_only: false,
+        folders: [],
+        diagnostics: [],
+        chooser: {
+          available: true,
+          kind: "host_native",
+          markdown_available: false,
+          location_available: true,
+        },
+      }),
+    );
+    const client = new CoworkHttpClient(fetchImpl as typeof fetch);
+
+    await expect(client.listFolders()).resolves.toMatchObject({
+      chooser: {
+        available: true,
+        kind: "host_native",
+        markdownAvailable: false,
+        locationAvailable: true,
+      },
+    });
+  });
+
   it("marks Folder picker requests with an explicit local user-intent header", async () => {
     const fetchImpl = vi.fn(
       async (_input: RequestInfo | URL, _init: RequestInit = {}) =>
@@ -38,6 +66,62 @@ describe("CoworkHttpClient document lifecycle contracts", () => {
       COWORK_FOLDER_PICKER_INTENT,
     );
   });
+
+  it.each([
+    [
+      "Markdown",
+      "chooseMarkdownFile",
+      "/api/truth/cowork/files/choose-markdown",
+      COWORK_MARKDOWN_PICKER_INTENT,
+      "notes/source.md",
+    ],
+    [
+      "location",
+      "chooseLocation",
+      "/api/truth/cowork/folders/choose-location",
+      COWORK_LOCATION_PICKER_INTENT,
+      "",
+    ],
+  ] as const)(
+    "marks %s picker requests with store context and preserves an empty root path",
+    async (_label, method, expectedUrl, expectedIntent, path) => {
+      const fetchImpl = vi.fn(
+        async (_input: RequestInfo | URL, _init: RequestInit = {}) =>
+          json({ cancelled: false, path }),
+      );
+      const client = new CoworkHttpClient(fetchImpl as typeof fetch);
+
+      await expect(client[method]("store-1")).resolves.toEqual({
+        cancelled: false,
+        path,
+      });
+
+      const [url, init = {}] = fetchImpl.mock.calls[0];
+      const headers = new Headers(init.headers);
+      expect(String(url)).toBe(expectedUrl);
+      expect(init.method).toBe("POST");
+      expect(JSON.parse(String(init.body))).toEqual({ store_id: "store-1" });
+      expect(headers.get(COWORK_FOLDER_PICKER_INTENT_HEADER)).toBe(expectedIntent);
+    },
+  );
+
+  it.each(["chooseMarkdownFile", "chooseLocation"] as const)(
+    "rejects a successful %s response that omits its required path",
+    async (method) => {
+      const fetchImpl = vi.fn(
+        async (_input: RequestInfo | URL, _init: RequestInit = {}) =>
+          json({ cancelled: false }),
+      );
+      const client = new CoworkHttpClient(fetchImpl as typeof fetch);
+
+      await expect(client[method]("store-1")).rejects.toMatchObject({
+        apiError: {
+          code: "invalid_picker_response",
+          retryable: true,
+        },
+      });
+    },
+  );
 
   it("falls back to the path basename when the server title is blank", () => {
     expect(

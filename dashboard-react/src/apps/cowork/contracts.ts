@@ -55,6 +55,20 @@ export interface CoworkFolderPermissions {
   readonly retire: boolean;
 }
 
+export interface CoworkFolderChooserAvailability {
+  readonly available: boolean;
+  readonly kind: string;
+  readonly markdownAvailable: boolean;
+  readonly locationAvailable: boolean;
+}
+
+export interface CoworkFolderChooserInput {
+  readonly available: boolean;
+  readonly kind: string;
+  readonly markdownAvailable?: boolean;
+  readonly locationAvailable?: boolean;
+}
+
 export interface CoworkDocumentSurfacePolicy {
   readonly enabled: boolean;
   readonly allowedDocumentClasses: readonly string[];
@@ -112,6 +126,10 @@ export type CoworkFolderSelection =
       readonly progress: { readonly visited: number; readonly complete: false };
     }
   | { readonly kind: "initialized"; readonly folder: CoworkFolderSummary }
+  | {
+      readonly kind: "setup_confirmation";
+      readonly candidate: CoworkFolderCandidate;
+    }
   | {
       readonly kind: "setup_available";
       readonly candidate: CoworkFolderCandidate;
@@ -190,7 +208,7 @@ export interface CoworkScratchSummary {
 /** Coarse authoritative provider state. Binary Y.Doc data never enters this model. */
 export interface CoworkViewModel {
   readonly folders: readonly CoworkFolderSummary[];
-  readonly folderChooser: { readonly available: boolean; readonly kind: string };
+  readonly folderChooser: CoworkFolderChooserAvailability;
   readonly folderSelection: CoworkFolderSelection;
   readonly activeFolderStoreId: string | null;
   readonly catalog: CoworkCatalogState;
@@ -213,7 +231,7 @@ export interface CoworkWorkspaceInput {
   readonly document: CoworkDocumentSummary | null;
   readonly sessionQuality: string;
   readonly folders?: readonly CoworkFolderSummary[];
-  readonly folderChooser?: { readonly available: boolean; readonly kind: string };
+  readonly folderChooser?: CoworkFolderChooserInput;
   readonly folderSelection?: CoworkFolderSelection;
   readonly activeFolderStoreId?: string | null;
   readonly catalog?: CoworkCatalogState;

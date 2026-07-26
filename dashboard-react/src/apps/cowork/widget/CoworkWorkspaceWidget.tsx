@@ -17,6 +17,7 @@ import { COWORK_INTENTS } from "../contracts";
 import {
   CoworkDocumentBar,
   coworkReimportLocalBlockedReason,
+  coworkScratchPromotionBlockedReason,
 } from "../documents/CoworkDocumentBar";
 import { CoworkDocumentLifecycleDialog } from "../documents/CoworkDocumentLifecycleDialog";
 import { CoworkLocalDiscardDialog } from "../documents/CoworkLocalDiscardDialog";
@@ -48,7 +49,18 @@ import {
 
 const normalizeModel = (input: CoworkWorkspaceInput): CoworkViewModel => ({
   folders: input.folders ?? [],
-  folderChooser: input.folderChooser ?? { available: true, kind: "host" },
+  folderChooser: {
+    available: input.folderChooser?.available ?? true,
+    kind: input.folderChooser?.kind ?? "host",
+    markdownAvailable:
+      input.folderChooser?.markdownAvailable ??
+      input.folderChooser?.available ??
+      true,
+    locationAvailable:
+      input.folderChooser?.locationAvailable ??
+      input.folderChooser?.available ??
+      true,
+  },
   folderSelection: input.folderSelection ?? { kind: "none" },
   activeFolderStoreId: input.activeFolderStoreId ?? null,
   catalog: input.catalog ?? {
@@ -241,6 +253,13 @@ export default function CoworkWorkspaceWidget({
       runFolderAction("choose");
       return;
     }
+    if (
+      model.readOnly ||
+      (next === "create" && !folder.permissions.create) ||
+      (next === "register" && !folder.permissions.import)
+    ) {
+      return;
+    }
     setPickerOpen(false);
     if (next !== "repair") setRepairDocument(null);
     setDialog(next);
@@ -248,6 +267,14 @@ export default function CoworkWorkspaceWidget({
 
   const beginScratchPromotion = useCallback(async (): Promise<void> => {
     if (model.activeSession.kind !== "scratch" || promotionBusy) return;
+    const blockedReason = coworkScratchPromotionBlockedReason(
+      {
+        readOnly: model.readOnly,
+        folderChooser: model.folderChooser,
+      },
+      folder,
+    );
+    if (blockedReason !== null) return;
     const handle = promotionHandle.current;
     if (handle === null) {
       setLocalNotice("The document is still loading. Try Save document again in a moment.");
@@ -291,14 +318,32 @@ export default function CoworkWorkspaceWidget({
     } finally {
       setPromotionBusy(false);
     }
-  }, [folder, folderAction, model.activeSession, promotionBusy]);
+  }, [
+    folder,
+    folderAction,
+    model.activeSession,
+    model.folderChooser,
+    model.readOnly,
+    promotionBusy,
+  ]);
 
   useEffect(() => {
     if (pendingPromotion === null || folder === null || dialog !== null) return;
+    const blockedReason = coworkScratchPromotionBlockedReason(
+      {
+        readOnly: model.readOnly,
+        folderChooser: model.folderChooser,
+      },
+      folder,
+    );
+    if (blockedReason !== null) {
+      setPickerOpen(false);
+      return;
+    }
     setLocalNotice(null);
     setPickerOpen(false);
     setDialog("create");
-  }, [dialog, folder, pendingPromotion]);
+  }, [dialog, folder, model.folderChooser, model.readOnly, pendingPromotion]);
 
   const openPromotedDocument = useCallback(
     async (document: CoworkDocumentSummary): Promise<void> => {
@@ -519,7 +564,6 @@ export default function CoworkWorkspaceWidget({
       onInitialize={() => runFolderAction("initialize")}
       onOpenFolder={(storeId) => runFolderAction("open", { storeId })}
       onOpenDocument={(document) => void openDocument(document)}
-      onCreate={() => openLifecycleDialog("create")}
       onRegister={() => openLifecycleDialog("register")}
       onOpenLocalDocument={(scratch) =>
         void dispatch(COWORK_INTENTS.scratchOpen, { scratchId: scratch.scratchId })
@@ -536,7 +580,7 @@ export default function CoworkWorkspaceWidget({
     <div className="wb-cowork-lifecycle">
       <CoworkDocumentBar
         model={model}
-        folderActionBusy={pendingFolderAction !== null}
+        folderActionBusy={pendingFolderAction !== null || folderLifecycleActive}
         onChooseFolder={() => runFolderAction("choose")}
         onOpenPicker={() => {
           if (folder === null) runFolderAction("choose");
@@ -694,6 +738,8 @@ export default function CoworkWorkspaceWidget({
       {pickerOpen && folder !== null ? (
         <CoworkDocumentPicker
           folder={folder}
+          folderPickerAvailable={model.folderChooser.available}
+          markdownPickerAvailable={model.folderChooser.markdownAvailable}
           documents={model.catalog.documents}
           currentDocumentId={session.kind === "registered" ? session.document.documentId : undefined}
           onClose={() => setPickerOpen(false)}
@@ -717,6 +763,8 @@ export default function CoworkWorkspaceWidget({
           mode={dialog}
           folder={folder}
           client={client}
+          markdownPickerAvailable={model.folderChooser.markdownAvailable}
+          locationPickerAvailable={model.folderChooser.locationAvailable}
           initialTitle={pendingPromotion?.title}
           initialContent={pendingPromotion?.content}
           repairDocument={repairDocument ?? undefined}

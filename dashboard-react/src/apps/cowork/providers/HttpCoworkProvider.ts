@@ -177,7 +177,12 @@ export class HttpCoworkProvider implements ViewProvider {
       routeTarget.kind === "scratch" ? null : routeTarget.storeId;
     this.#model = {
       folders: [],
-      folderChooser: { available: true, kind: "host" },
+      folderChooser: {
+        available: true,
+        kind: "host",
+        markdownAvailable: true,
+        locationAvailable: true,
+      },
       folderSelection: { kind: "none" },
       // A URL carries a request, not proof that a Folder is initialized and reachable.
       activeFolderStoreId: null,
@@ -1148,6 +1153,14 @@ export class HttpCoworkProvider implements ViewProvider {
       return;
     }
     if (input.action === "initialize") {
+      if (this.#model.readOnly) {
+        throw new CoworkHttpError({
+          code: "dashboard_read_only",
+          message: "Turn off read-only mode before setting up Co-work in this Folder.",
+          retryable: false,
+          status: 403,
+        });
+      }
       try {
         await this.#initializePendingFolder();
       } catch (error) {
@@ -1159,7 +1172,39 @@ export class HttpCoworkProvider implements ViewProvider {
             this.#restoreTransientFolderSelection(inspectionEpoch);
             throw refreshError;
           }
-          return;
+          // A short-lived inspection can expire between the confirmation rendering
+          // and the user's click. If the refreshed result still permits setup,
+          // complete the confirmed action once with the fresh token. Any second
+          // failure falls through to the normal retry state; this is not a loop.
+          if (this.#model.folderSelection.kind !== "setup_confirmation") return;
+          try {
+            await this.#initializePendingFolder();
+            return;
+          } catch (retryError) {
+            if (this.#pendingCandidate !== null) {
+              this.#patch(
+                {
+                  folderSelection: {
+                    kind: "setup_available",
+                    candidate: this.#pendingCandidate,
+                  },
+                },
+                "folder-initialize-retry-failed",
+              );
+            }
+            throw retryError;
+          }
+        }
+        if (this.#pendingCandidate !== null) {
+          this.#patch(
+            {
+              folderSelection: {
+                kind: "setup_available",
+                candidate: this.#pendingCandidate,
+              },
+            },
+            "folder-initialize-failed",
+          );
         }
         throw error;
       }
@@ -1285,32 +1330,6 @@ export class HttpCoworkProvider implements ViewProvider {
       }
       return;
     }
-    if (inspection.status === "uninitialized" && this.#pendingCandidate !== null) {
-      try {
-        await this.#withDurableSessionLeave(null, () => this.#initializePendingFolder());
-      } catch (error) {
-        if (
-          allowPathRefresh &&
-          this.#requiresFreshFolderInspection(error) &&
-          this.#pendingCandidate !== null
-        ) {
-          await this.#refreshPendingFolderInspection(inspectionEpoch);
-          return;
-        }
-        if (this.#requiresFreshFolderInspection(error)) throw error;
-        this.#patch(
-          {
-            folderSelection: {
-              kind: "setup_available",
-              candidate: this.#pendingCandidate,
-            },
-          },
-          "folder-initialize-failed",
-        );
-        throw error;
-      }
-      return;
-    }
     const selection = this.#selectionFromInspection(inspection);
     this.#patch({ folderSelection: selection }, `folder-inspected:${inspection.status}`);
   }
@@ -1372,7 +1391,7 @@ export class HttpCoworkProvider implements ViewProvider {
       return { kind: "initialized", folder: inspection.folder };
     }
     if (inspection.status === "uninitialized" && candidate !== null) {
-      return { kind: "setup_available", candidate };
+      return { kind: "setup_confirmation", candidate };
     }
     if (
       inspection.status === "inside_existing_folder" &&
