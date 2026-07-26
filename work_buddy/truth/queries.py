@@ -1673,6 +1673,11 @@ def _recompute_proposal_canonical(row: sqlite3.Row) -> str | None:
         return proposal_canonical_sha256(
             document_id=row["document_id"],
             base_content_sha256=row["base_content_sha256"],
+            base_structured_head_sha256=(
+                row["base_structured_head_sha256"]
+                if "base_structured_head_sha256" in row.keys()
+                else None
+            ),
             selector=selector,
             quote_exact=row["quote_exact"],
             replacement=row["replacement"],
@@ -1830,6 +1835,33 @@ def _document_integrity_findings(
                     "base_content_sha256 differs from the document latest hash",
                     severity="warning",
                 )
+            if (
+                document is not None
+                and "base_structured_head_sha256" in prop.keys()
+                and prop["base_structured_head_sha256"] is not None
+                and document["ydoc_snapshot_sha256"] is not None
+            ):
+                try:
+                    from work_buddy.truth import ydoc_store
+
+                    live_head = ydoc_store.current_structured_head(
+                        store,
+                        document_id=document["id"],
+                        snapshot_sha256=document["ydoc_snapshot_sha256"],
+                    )
+                except Exception:  # noqa: BLE001 - integrity reports other corruption
+                    live_head = None
+                if (
+                    live_head is not None
+                    and prop["base_structured_head_sha256"] != live_head
+                ):
+                    add(
+                        "proposal-stale-structured-base",
+                        "proposal",
+                        proposal_id,
+                        "base_structured_head_sha256 differs from the live Y.Doc head",
+                        severity="warning",
+                    )
             # Dangling local claim refs (warning), the intra-store analogue of
             # the omitted cross-store FK. Cross-store URIs are not checked.
             raw_refs = prop["claim_refs_json"]

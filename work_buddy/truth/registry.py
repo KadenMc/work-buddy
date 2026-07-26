@@ -7,6 +7,7 @@ store's ``store.yaml`` and ``store_info`` row before it is returned.
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from dataclasses import dataclass
@@ -38,15 +39,69 @@ class RegisteredTruthStore:
     title: str | None
     last_seen: str
     reachable: bool
+    layout: str
+    document_surface_enabled: bool
+    allowed_document_classes: tuple[str, ...]
+    feedback_capture: bool
+    document_count: int
+    last_error: str | None
 
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
+def _filesystem_display_path(path: Path) -> Path:
+    """Recover on-disk component casing without changing path identity.
+
+    Windows comparisons are case-insensitive, but Folder basename/full-path
+    copy is user-facing. ``normcase`` therefore belongs only in ``path_key``;
+    persisting it as the open/display path would turn `Reference Folder` into
+    `reference folder`. Directory enumeration recovers existing component
+    names for old registry rows that were already normalized.
+    """
+
+    resolved = path.expanduser().resolve()
+    if os.name != "nt" or not resolved.exists():
+        return resolved
+    parts = resolved.parts
+    if not parts:
+        return resolved
+    current = Path(parts[0])
+    for part in parts[1:]:
+        try:
+            match = next(
+                (
+                    entry.name
+                    for entry in current.iterdir()
+                    if entry.name.casefold() == part.casefold()
+                ),
+                part,
+            )
+        except OSError:
+            match = part
+        current /= match
+    return current
+
+
 def _canonical_sidecar(path_or_root: str | Path) -> Path:
     sidecar = StorePaths.from_root(path_or_root).sidecar.resolve()
-    return Path(os.path.normcase(str(sidecar)))
+    return _filesystem_display_path(sidecar)
+
+
+def _path_key(path: str | Path) -> str:
+    return os.path.normcase(str(Path(path).expanduser().resolve()))
+
+
+def _layout_for_sidecar(path: Path) -> str:
+    return "wbuddy_cowork_v1"
+
+
+_SELECT_COLUMNS = (
+    "path, store_id, profile, title, last_seen, reachable, layout, "
+    "document_surface_enabled, allowed_document_classes_json, "
+    "feedback_capture, document_count, last_error"
+)
 
 
 class TruthStoreRegistry:
@@ -81,6 +136,12 @@ class TruthStoreRegistry:
 
     @staticmethod
     def _record(row: sqlite3.Row) -> RegisteredTruthStore:
+        try:
+            allowed = json.loads(row["allowed_document_classes_json"])
+        except (TypeError, ValueError):
+            allowed = []
+        if not isinstance(allowed, list):
+            allowed = []
         return RegisteredTruthStore(
             path=Path(row["path"]),
             store_id=row["store_id"],
@@ -88,6 +149,12 @@ class TruthStoreRegistry:
             title=row["title"],
             last_seen=row["last_seen"],
             reachable=bool(row["reachable"]),
+            layout=row["layout"],
+            document_surface_enabled=bool(row["document_surface_enabled"]),
+            allowed_document_classes=tuple(str(item) for item in allowed),
+            feedback_capture=bool(row["feedback_capture"]),
+            document_count=int(row["document_count"]),
+            last_error=row["last_error"],
         )
 
     @staticmethod
@@ -98,20 +165,22 @@ class TruthStoreRegistry:
         conn = self._connect()
         try:
             rows = conn.execute(
-                "SELECT path, store_id, profile, title, last_seen, reachable "
-                "FROM truth_stores WHERE store_id = ? ORDER BY path",
+                f"SELECT {_SELECT_COLUMNS} FROM truth_stores "
+                "WHERE store_id = ? ORDER BY path",
                 (store_id,),
             ).fetchall()
             return [self._record(row) for row in rows]
         finally:
             conn.close()
 
-    def _set_unreachable(self, path: Path) -> None:
+    def _set_unreachable(self, path: Path, error: str | None = None) -> None:
+        path_key = _path_key(path)
         conn = self._connect()
         try:
             conn.execute(
-                "UPDATE truth_stores SET reachable = 0 WHERE path = ?",
-                (str(path),),
+                "UPDATE truth_stores SET reachable = 0, last_error = ? "
+                "WHERE path_key = ?",
+                (error, path_key),
             )
             conn.commit()
         finally:
@@ -125,13 +194,24 @@ class TruthStoreRegistry:
         reachable: bool,
         observed_at: str,
     ) -> RegisteredTruthStore:
+        path = _canonical_sidecar(path)
+        path_key = _path_key(path)
         profile = store.profile
+        policy = profile.document_surface
+        with store._read_connection() as read_conn:
+            document_count = int(
+                read_conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+            )
+        layout = _layout_for_sidecar(path)
+        allowed_json = json.dumps(
+            list(policy.allowed_document_classes), separators=(",", ":")
+        )
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
             existing = conn.execute(
-                "SELECT store_id FROM truth_stores WHERE path = ?",
-                (str(path),),
+                "SELECT path, store_id FROM truth_stores WHERE path_key = ?",
+                (path_key,),
             ).fetchone()
             if existing is not None and existing["store_id"] != store.store_id:
                 raise RegistryIdentityMismatch(
@@ -141,21 +221,37 @@ class TruthStoreRegistry:
             conn.execute(
                 """
                 INSERT INTO truth_stores (
-                    path, store_id, profile, title, last_seen, reachable
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(path) DO UPDATE SET
+                    path, path_key, store_id, profile, title, last_seen, reachable,
+                    layout, document_surface_enabled,
+                    allowed_document_classes_json, feedback_capture,
+                    document_count, last_error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                ON CONFLICT(path_key) DO UPDATE SET
+                    path = excluded.path,
                     profile = excluded.profile,
                     title = excluded.title,
                     last_seen = excluded.last_seen,
-                    reachable = excluded.reachable
+                    reachable = excluded.reachable,
+                    layout = excluded.layout,
+                    document_surface_enabled = excluded.document_surface_enabled,
+                    allowed_document_classes_json = excluded.allowed_document_classes_json,
+                    feedback_capture = excluded.feedback_capture,
+                    document_count = excluded.document_count,
+                    last_error = NULL
                 """,
                 (
                     str(path),
+                    path_key,
                     store.store_id,
                     profile.profile,
                     profile.title,
                     observed_at,
                     int(reachable),
+                    layout,
+                    int(policy.enabled),
+                    allowed_json,
+                    int(policy.feedback_capture),
+                    document_count,
                 ),
             )
             conn.commit()
@@ -178,6 +274,12 @@ class TruthStoreRegistry:
             title=profile.title,
             last_seen=observed_at,
             reachable=reachable,
+            layout=layout,
+            document_surface_enabled=policy.enabled,
+            allowed_document_classes=tuple(policy.allowed_document_classes),
+            feedback_capture=policy.feedback_capture,
+            document_count=document_count,
+            last_error=None,
         )
 
     def register(
@@ -195,7 +297,7 @@ class TruthStoreRegistry:
 
         live_elsewhere: list[Path] = []
         for row in self._rows_for_store_id(store.store_id):
-            if row.path == path:
+            if _path_key(row.path) == _path_key(path):
                 continue
             try:
                 other = self._observe(row.path)
@@ -238,7 +340,7 @@ class TruthStoreRegistry:
         try:
             observed = self._observe(row.path)
         except Exception:
-            self._set_unreachable(row.path)
+            self._set_unreachable(row.path, "store_unreachable")
             return RegisteredTruthStore(
                 path=row.path,
                 store_id=row.store_id,
@@ -246,6 +348,12 @@ class TruthStoreRegistry:
                 title=row.title,
                 last_seen=row.last_seen,
                 reachable=False,
+                layout=row.layout,
+                document_surface_enabled=row.document_surface_enabled,
+                allowed_document_classes=row.allowed_document_classes,
+                feedback_capture=row.feedback_capture,
+                document_count=row.document_count,
+                last_error="store_unreachable",
             )
         if observed.store_id != row.store_id:
             self._set_unreachable(row.path)
@@ -299,8 +407,7 @@ class TruthStoreRegistry:
             rows = [
                 self._record(row)
                 for row in conn.execute(
-                    "SELECT path, store_id, profile, title, last_seen, reachable "
-                    "FROM truth_stores ORDER BY path"
+                    f"SELECT {_SELECT_COLUMNS} FROM truth_stores ORDER BY path"
                 ).fetchall()
             ]
         finally:
@@ -315,12 +422,12 @@ class TruthStoreRegistry:
     ) -> RegisteredTruthStore | None:
         """Return one registered path, optionally revalidating it first."""
         path = _canonical_sidecar(path_or_root)
+        path_key = _path_key(path)
         conn = self._connect()
         try:
             row = conn.execute(
-                "SELECT path, store_id, profile, title, last_seen, reachable "
-                "FROM truth_stores WHERE path = ?",
-                (str(path),),
+                f"SELECT {_SELECT_COLUMNS} FROM truth_stores WHERE path_key = ?",
+                (path_key,),
             ).fetchone()
         finally:
             conn.close()
@@ -386,23 +493,221 @@ class TruthStoreRegistry:
             )
         return rows[0] if rows else None
 
+    def relocate(
+        self,
+        old_path_or_root: str | Path,
+        new_path_or_root: str | Path,
+        *,
+        store_id: str,
+    ) -> RegisteredTruthStore:
+        """Atomically move one registry row after a validated filesystem move.
+
+        The new sidecar must already be readable and carry ``store_id``.  This
+        avoids the unregister/register gap that could lose inventory or admit a
+        duplicate identity when a canonical Folder is moved.
+        """
+
+        old_path = _canonical_sidecar(old_path_or_root)
+        new_path = _canonical_sidecar(new_path_or_root)
+        old_path_key = _path_key(old_path)
+        new_path_key = _path_key(new_path)
+        observed = self._observe(new_path)
+        if observed.store_id != store_id:
+            raise RegistryIdentityMismatch(
+                f"relocation target {new_path} carries store_id "
+                f"{observed.store_id}, expected {store_id}"
+            )
+        profile = observed.profile
+        policy = profile.document_surface
+        with observed._read_connection() as read_conn:
+            document_count = int(
+                read_conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+            )
+        now = self._clock()
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            source = conn.execute(
+                "SELECT store_id FROM truth_stores WHERE path_key = ?",
+                (old_path_key,),
+            ).fetchone()
+            target = conn.execute(
+                "SELECT store_id FROM truth_stores WHERE path_key = ?",
+                (new_path_key,),
+            ).fetchone()
+            if source is None:
+                raise TruthRegistryError(
+                    f"registry relocation source does not exist: {old_path}"
+                )
+            if source["store_id"] != store_id:
+                raise RegistryIdentityMismatch(
+                    f"registry relocation source carries {source['store_id']}, "
+                    f"expected {store_id}"
+                )
+            if target is not None and new_path_key != old_path_key:
+                raise TruthRegistryError(
+                    f"registry relocation target already exists: {new_path}"
+                )
+            conn.execute(
+                """
+                UPDATE truth_stores SET
+                    path = ?, path_key = ?, profile = ?, title = ?, last_seen = ?,
+                    reachable = 1, layout = ?,
+                    document_surface_enabled = ?,
+                    allowed_document_classes_json = ?, feedback_capture = ?,
+                    document_count = ?, last_error = NULL
+                WHERE path_key = ? AND store_id = ?
+                """,
+                (
+                    str(new_path),
+                    new_path_key,
+                    profile.profile,
+                    profile.title,
+                    now,
+                    _layout_for_sidecar(new_path),
+                    int(policy.enabled),
+                    json.dumps(
+                        list(policy.allowed_document_classes), separators=(",", ":")
+                    ),
+                    int(policy.feedback_capture),
+                    document_count,
+                    old_path_key,
+                    store_id,
+                ),
+            )
+            conn.commit()
+        except sqlite3.IntegrityError as exc:
+            if conn.in_transaction:
+                conn.rollback()
+            raise StoreIdentityCollision(
+                f"store_id {store_id} is already registered at another path"
+            ) from exc
+        except Exception:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+        finally:
+            conn.close()
+        row = self.get_by_path(new_path, refresh=False)
+        if row is None:  # pragma: no cover - guarded by the transaction above
+            raise TruthRegistryError("registry relocation did not publish its target")
+        return row
+
+    def register_projection(
+        self,
+        path_or_root: str | Path,
+        *,
+        store_id: str,
+        profile: str,
+        title: str | None,
+        document_surface_enabled: bool,
+        allowed_document_classes: tuple[str, ...] | list[str],
+        feedback_capture: bool,
+        document_count: int,
+    ) -> RegisteredTruthStore:
+        """Register a separately validated read-only store observation.
+
+        Folder adoption uses this seam after immutable profile/SQLite checks so
+        adding machine inventory cannot run store migrations, change PRAGMAs,
+        or create WAL/SHM files inside the selected Folder.
+        """
+
+        path = _canonical_sidecar(path_or_root)
+        path_key = _path_key(path)
+        now = self._clock()
+        allowed_json = json.dumps(
+            list(allowed_document_classes), separators=(",", ":")
+        )
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute(
+                "SELECT path, store_id FROM truth_stores WHERE path_key = ?",
+                (path_key,),
+            ).fetchone()
+            if existing is not None and existing["store_id"] != store_id:
+                raise RegistryIdentityMismatch(
+                    f"registered path {path} changed identity from "
+                    f"{existing['store_id']} to {store_id}"
+                )
+            conn.execute(
+                """
+                INSERT INTO truth_stores (
+                    path, path_key, store_id, profile, title, last_seen, reachable,
+                    layout, document_surface_enabled,
+                    allowed_document_classes_json, feedback_capture,
+                    document_count, last_error
+                ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, NULL)
+                ON CONFLICT(path_key) DO UPDATE SET
+                    path = excluded.path,
+                    profile = excluded.profile,
+                    title = excluded.title,
+                    last_seen = excluded.last_seen,
+                    reachable = 1,
+                    layout = excluded.layout,
+                    document_surface_enabled = excluded.document_surface_enabled,
+                    allowed_document_classes_json = excluded.allowed_document_classes_json,
+                    feedback_capture = excluded.feedback_capture,
+                    document_count = excluded.document_count,
+                    last_error = NULL
+                """,
+                (
+                    str(path),
+                    path_key,
+                    store_id,
+                    profile,
+                    title,
+                    now,
+                    _layout_for_sidecar(path),
+                    int(document_surface_enabled),
+                    allowed_json,
+                    int(feedback_capture),
+                    int(document_count),
+                ),
+            )
+            conn.commit()
+        except sqlite3.IntegrityError as exc:
+            if conn.in_transaction:
+                conn.rollback()
+            raise StoreIdentityCollision(
+                f"store_id {store_id} is already reachable at another path"
+            ) from exc
+        except Exception:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+        finally:
+            conn.close()
+        row = self.get_by_path(path, refresh=False)
+        if row is None:  # pragma: no cover - guarded by the upsert above
+            raise TruthRegistryError("validated store projection was not registered")
+        return row
+
     def open_store(self, store_id: str) -> TruthStore:
-        """Open and touch the single reachable store for an identity."""
+        """Open and touch the single reachable canonical store."""
+
         row = self.get_by_store_id(store_id, refresh=True)
         if row is None:
             raise TruthRegistryError(f"truth store is not reachable: {store_id}")
         store = self._observe(row.path)
+        # Opening is the common restart/request seam. Recovery takes each
+        # operation's normal path/document lock and re-reads state after it, so
+        # a live sibling publisher is never relabelled as abandoned.
+        from work_buddy.cowork.recovery import recover_store_persistence
+
+        recover_store_persistence(store)
         self.touch(store)
         return store
 
     def unregister(self, path_or_root: str | Path) -> bool:
         """Remove one historical path from the machine registry."""
         path = _canonical_sidecar(path_or_root)
+        path_key = _path_key(path)
         conn = self._connect()
         try:
             cursor = conn.execute(
-                "DELETE FROM truth_stores WHERE path = ?",
-                (str(path),),
+                "DELETE FROM truth_stores WHERE path_key = ?",
+                (path_key,),
             )
             conn.commit()
             return cursor.rowcount > 0

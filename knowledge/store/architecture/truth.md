@@ -31,7 +31,7 @@ dev_notes: |-
 
   The executable contract inventory is `tests/unit/truth/INVARIANT_COVERAGE.md`; declarative end-to-end workloads live in `tests/fixtures/truth/`. Released schema fixtures are immutable compatibility inputs: add a new versioned fixture instead of regenerating an old one.
 
-  Document surface constants and seams: `SCHEMA_VERSION` is 2 (adds `documents`, `document_spans`, `expressions`, `proposals`, `proposal_status_events`, `doc_events`), export `FORMAT_VERSION` is 3 with upcast support back to 1. The `truth.doc_*` event vocabulary's single source of truth is the frozenset in `work_buddy/truth/events.py`. Engine modules: `documents.py` (registration, drift, reimport, terminal retirement), `proposals.py` (decision funnel; rejecting decisions funnel through `_redact_if_policy`, which nulls content and scrubs the consumed gesture `payload_excerpt` in the same transaction), `expressions.py` (role-typed claim ties, minted on plain accept only), `ydoc_store.py` (snapshot blobs exported, runtime update log sidecar-local). Integrity's gesture-subject resolver matches proposals on `canonical_sha256` and exempts the reject_as_false closure-to-negation confirm shape from the claim-subject gesture checks. `proposals.quote_exact` is nullable to admit content redaction, following the `evidence_spans` pattern.
+  Document surface constants and seams: `SCHEMA_VERSION` and export `FORMAT_VERSION` are both 4, with export upcast support back to 1. Schema v4 adds append-only `document_versions`, structured-head compare-and-swap fields, lifecycle operation tables, and durable operation receipts on top of the original document, span, expression, proposal, status, and event tables. The `truth.doc_*` event vocabulary's single source of truth is the frozenset in `work_buddy/truth/events.py`. Engine modules: `documents.py` (registration and immutable version recording), `proposals.py` (decision funnel; rejecting decisions funnel through `_redact_if_policy`, which nulls content and scrubs the consumed gesture `payload_excerpt` in the same transaction), `expressions.py` (role-typed claim ties, minted on plain accept only), and `ydoc_store.py` (structured heads, bounded update admission, durable snapshots, and compaction). Co-work owns the higher-level drift, reimport, materialization, retirement, recovery, and sitting orchestration. Integrity's gesture-subject resolver matches proposals on `canonical_sha256` and exempts the reject_as_false closure-to-negation confirm shape from the claim-subject gesture checks. `proposals.quote_exact` is nullable to admit content redaction, following the `evidence_spans` pattern.
 ---
 
 Truth is work-buddy's durable kernel for recording what a claim says, which evidence supports it, who or what produced it, what a human decided, and how that state changed over time. The canonical implementation namespace is `work_buddy.truth`. The phrase **truth layer** remains a design and discovery alias rather than a separate canonical subsystem name.
@@ -47,13 +47,27 @@ The MCP surface provides the following capabilities:
 - Claim lifecycle: `truth_claim_propose`, `truth_claim_confirm`, `truth_claim_reject`, `truth_claim_challenge`, `truth_claim_supersede`, `truth_claim_redact`.
 - Read and maintenance: `truth_query`, `truth_sweep`.
 
-The direct shell surface is `wbuddy truth`. It has exactly five verbs: `capture`, `propose`, `query`, `confirm`, and `migrate`. The CLI opens the nearest `.wb-truth/` sidecar, or an explicitly selected store, without requiring the MCP gateway to be running. Interactive confirmation is a local-human surface only. A detected agent context cannot mint the human gesture even when it allocates a TTY, and must use MCP per-invocation consent or a still-valid gesture minted by a human. As with direct SQLite access, a local process that deliberately strips its agent identity remains inside the documented owning-machine trust boundary.
+The direct shell surface is `wbuddy truth`. It has exactly five verbs: `capture`, `propose`, `query`, `confirm`, and `migrate`. The CLI opens the nearest canonical Co-work `.wbuddy/cowork/` sidecar, or an explicitly selected canonical store, without requiring the MCP gateway to be running. Interactive confirmation is a local-human surface only. A detected agent context cannot mint the human gesture even when it allocates a TTY, and must use MCP per-invocation consent or a still-valid gesture minted by a human. As with direct SQLite access, a local process that deliberately strips its agent identity remains inside the documented owning-machine trust boundary.
 
 Portable store import is library-only through `work_buddy.truth.export.import_store`. No `truth_store_import` MCP capability or sixth CLI verb is registered. Portable recovery consumers call the kernel import seam explicitly.
 
 ## Store topology
 
-Each participating scope root owns one `.wb-truth/` sidecar. A sidecar contains a permanent store identity and profile in `store.yaml`, the working SQLite database in `store.db`, optional content-addressed blobs, and the deterministic recovery stream at `export/claims.jsonl`. Stores that use the document surface also keep a sidecar-local runtime update log for collaborative document state. That log is rebuildable working state and never part of the portable contract, while document snapshots ride the export as content-addressed blobs. Truth stores therefore travel with the project or purpose directory they describe. They are not another shared claim database under work-buddy's configured data root.
+Each participating root owns one scoped sidecar. A Folder initialized by Co-work
+uses `.wbuddy/cowork/`; the work-buddy namespace manifest lives alongside it at
+`.wbuddy/manifest.yaml`. `truth_store_create` uses that same safe Folder
+initialization and canonical location.
+
+A sidecar contains a permanent store identity and profile in `store.yaml`, the
+working SQLite database in `store.db`, optional content-addressed blobs, and the
+deterministic recovery stream at `export/claims.jsonl`. Stores that use the
+document surface also keep sidecar-local collaborative runtime state. Accepted
+updates are protected by an expected structured-head digest and bounded before
+admission; compaction publishes a new durable snapshot without changing the
+logical head. Append-only document versions and referenced snapshots ride the
+portable export. Truth stores therefore travel with the Folder, project, or
+purpose directory they describe. They are not another shared claim database
+under work-buddy's configured data root.
 
 The machine registry at `<data_root>/db/truth_registry.db` records known sidecar paths, permanent store IDs, profiles, titles, last-seen timestamps, and reachability. It is an inventory and health index, not a second source of Truth. Registry access revalidates reachable rows against the sidecar, and duplicate reachable paths for one permanent store identity fail closed.
 
@@ -75,11 +89,11 @@ Premise authority follows the weakest link: every required premise must resolve 
 
 ## Documents and tracked edits
 
-Scoped stores can register the documents their claims explain. A registered document binds a permanent identity to a path, title, and document class, and its addressable spans let prose anchor to the ledger. Expressions tie a span to a claim with a typed role (quote, paraphrase, summary, or instantiation), so a reader can ask what facts operate underneath a sentence.
+Scoped stores can register the documents their claims explain. A registered document binds a permanent identity to a safe relative path and title; Co-work does not require the user to choose a predefined document type. Its addressable spans let prose anchor to the ledger. Expressions tie a span to a claim with a typed role (quote, paraphrase, summary, or instantiation), so a reader can ask what facts operate underneath a sentence.
 
 Agents never edit a registered document's content directly. An agent edit arrives as a tracked-edit proposal whose canonical payload is hash-bound, and every decision on a proposal is a human gesture with the same single-use exact-review authority as claim confirmation: accept, accept with an amended replacement, reason-classed rejection, or dismissal. A plain accept mints the expression rows carried by the proposal's claim references. An amended accept skips that minting because the applied replacement is no longer the reviewed text. When the store's content gate directs it, a rejecting decision redacts the proposal's readable content in the same transaction, records the redaction through the proposal's own status history, and scrubs the consumed gesture receipt so no readable excerpt survives.
 
-Out-of-band edits are first-class: drift detection notices a document whose file diverged from its ledger state, and reimport reconciles it without rewriting history. Retirement is terminal for a document identity.
+Out-of-band edits are first-class: drift detection notices a document whose file diverged from its last materialized fingerprint and blocks overwrite. Reimport prepares and validates a replacement snapshot before atomically appending a new document version; it never rewrites history. Retirement is terminal for a document identity but preserves the file, versions, and ledger history.
 
 ## Lifecycle events
 
@@ -91,7 +105,7 @@ These events are an observer surface, not a write authority. Publication results
 
 Integrity sweeps and as-of queries read the durable ledger rather than trusting the projection. Errors represent conditions that make publication or recovery unsafe; portable warnings preserve unresolved conditions that may require another store or later human review.
 
-`claims.jsonl` is a deterministic, lossless recovery format, not a human-facing projection. Export preserves stable IDs, store identity, append order, and referenced blobs. Import validates the entire stream in a staged sidecar, upcasts supported older formats, rebuilds derived state, and atomically publishes only after the staged store reproduces the validated recovery export.
+`claims.jsonl` is a deterministic, lossless recovery format, not a human-facing projection. Export preserves stable IDs, store identity, append order, document versions, structured-head references, and referenced blobs. Import validates the entire stream in a staged sidecar, upcasts supported older formats, rebuilds derived state, and atomically publishes only after the staged store reproduces the validated recovery export.
 
 Integrity resolution understands the document surface. Proposal-subject gestures and proposal redactions are validated against proposal history, so a store that carries tracked-edit decisions round-trips through export and staged import.
 

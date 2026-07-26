@@ -12,6 +12,22 @@ import { COWORK_APP_ID, COWORK_VIEW_ID } from "../bindings";
 import type { CoworkViewModel, CoworkWorkspaceInput } from "../contracts";
 
 const DEMO_MODEL: CoworkViewModel = {
+  folders: [],
+  folderChooser: { available: true, kind: "fixture" },
+  folderSelection: { kind: "none" },
+  activeFolderStoreId: null,
+  catalog: {
+    status: "ready",
+    documents: [],
+    refreshedAt: new Date(0).toISOString(),
+    error: null,
+  },
+  scratches: [],
+  routeTarget: { kind: "launcher", storeId: null },
+  activeSession: { kind: "none" },
+  openingTarget: null,
+  navigationError: null,
+  readOnly: false,
   document: {
     documentId: "demo-doc",
     path: "docs/demo/co-work-demo.md",
@@ -59,7 +75,7 @@ export class InMemoryCoworkProvider implements ViewProvider {
     // is the coarse document session plus the demo session quality it resolves its mode
     // from. The live Y.Doc and the sitting take the direct route, never this snapshot.
     const input: CoworkWorkspaceInput = {
-      document: this.#model.document,
+      ...this.#model,
       sessionQuality: "demo",
     };
     return {

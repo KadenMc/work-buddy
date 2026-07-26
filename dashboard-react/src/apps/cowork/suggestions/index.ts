@@ -65,19 +65,20 @@ export {
   validateSitting,
 } from "./sitting";
 export type {
-  CoworkSittingRequest,
+  CoworkSittingCommitRequest,
+  CoworkSittingPrepareRequest,
   CoworkSittingTransport,
-  SubmitSittingParams,
 } from "./sitting";
 export type {
   AdapterEvents,
   DecisionItem,
   EpistemicState,
-  MaterializePayload,
   ProposalInput,
   QuoteAnchor,
+  SittingDocumentCommit,
   SittingItemResult,
-  SittingRequest,
+  SittingPrepareBody,
+  SittingPrepared,
   SittingResponse,
   SittingResultKind,
   SittingVerb,

@@ -1,5 +1,5 @@
 import { sha256Hex } from "./hashing";
-import { frameSegments } from "./framing";
+import { structuredHeadSha256 } from "./structuredHead";
 import type {
   CoworkYdocPull,
   CoworkYdocPullRequest,
@@ -9,6 +9,7 @@ import type {
 } from "./transport";
 
 const EMPTY = new Uint8Array(0);
+let nextGeneration = 0;
 
 /**
  * An in-memory stand-in for the opaque-blob server (section 1.4), for persistence tests. It
@@ -30,8 +31,11 @@ export class InMemoryCoworkYdocTransport implements CoworkYdocTransport {
   /** Absolute offset of the first entry currently in `#log` (advances on compaction). */
   #baseOffset = 0;
   #docSha256 = "";
+  readonly #ydocGeneration: string;
 
   constructor() {
+    nextGeneration += 1;
+    this.#ydocGeneration = `cowork-ydoc-generation/v1:memory:${String(nextGeneration)}`;
     // The empty-store fingerprint, so a first push can base against a known hash.
     void this.#recomputeDocSha256();
   }
@@ -43,8 +47,11 @@ export class InMemoryCoworkYdocTransport implements CoworkYdocTransport {
       return {
         snapshot: this.#snapshot,
         snapshotSha256: this.#snapshotSha256,
+        ydocGeneration: this.#ydocGeneration,
         batches: this.#log.map((batch) => new Uint8Array(batch)),
         docSha256: this.#docSha256,
+        structuredHeadSha256: this.#docSha256,
+        projectionSha256: "",
         nextOffset,
       };
     }
@@ -55,8 +62,12 @@ export class InMemoryCoworkYdocTransport implements CoworkYdocTransport {
       return {
         snapshot: this.#snapshot,
         snapshotSha256: this.#snapshotSha256,
+        ydocGeneration: this.#ydocGeneration,
         batches: this.#log.map((batch) => new Uint8Array(batch)),
         docSha256: this.#docSha256,
+        structuredHeadSha256: this.#docSha256,
+        projectionSha256: "",
+        cursorReset: true,
         nextOffset,
       };
     }
@@ -64,16 +75,29 @@ export class InMemoryCoworkYdocTransport implements CoworkYdocTransport {
     return {
       snapshot: null,
       snapshotSha256: null,
+      ydocGeneration: this.#ydocGeneration,
       batches: this.#log.slice(start).map((batch) => new Uint8Array(batch)),
       docSha256: this.#docSha256,
+      structuredHeadSha256: this.#docSha256,
+      projectionSha256: "",
       nextOffset,
     };
   }
 
   async push(request: CoworkYdocPushRequest): Promise<CoworkYdocPushResult> {
     await this.#ensureFingerprint();
-    if (request.baseSha256 !== this.#docSha256) {
-      return { ok: false, error: "stale_base", serverDocSha256: this.#docSha256 };
+    const base = request.baseStructuredHeadSha256 ?? request.baseSha256;
+    if (
+      request.baseYdocGeneration !== this.#ydocGeneration ||
+      base !== this.#docSha256
+    ) {
+      return {
+        ok: false,
+        error: "stale_base",
+        serverDocSha256: this.#docSha256,
+        serverStructuredHeadSha256: this.#docSha256,
+        serverYdocGeneration: this.#ydocGeneration,
+      };
     }
 
     if (request.compaction !== undefined) {
@@ -99,6 +123,9 @@ export class InMemoryCoworkYdocTransport implements CoworkYdocTransport {
       ok: true,
       applied: true,
       docSha256: this.#docSha256,
+      structuredHeadSha256: this.#docSha256,
+      ydocGeneration: this.#ydocGeneration,
+      projectionSha256: "",
       nextOffset: String(this.#baseOffset + this.#log.length),
     };
   }
@@ -125,8 +152,9 @@ export class InMemoryCoworkYdocTransport implements CoworkYdocTransport {
   }
 
   async #recomputeDocSha256(): Promise<void> {
-    this.#docSha256 = await sha256Hex(
-      frameSegments([this.#snapshot ?? EMPTY, ...this.#log]),
+    this.#docSha256 = await structuredHeadSha256(
+      this.#snapshot ?? EMPTY,
+      this.#log,
     );
   }
 }

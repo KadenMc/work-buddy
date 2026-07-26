@@ -1,157 +1,152 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   CoworkSittingClient,
+  HttpCoworkSittingTransport,
   InMemoryCoworkSittingTransport,
   buildMaterializePayload,
   validateSitting,
 } from "../sitting";
 import type { DecisionItem } from "../types";
 
-describe("validateSitting", () => {
-  it("requires amend_content on edit_confirm", () => {
-    expect(() =>
-      validateSitting(
-        [{ proposal_id: "p1", verb: "edit_confirm", canonical_sha256: "c1" }],
-        { rendered_markdown: "x", post_apply_content_sha256: "h" },
-      ),
-    ).toThrow(/amend_content/);
+const decision = (proposalId = "proposal-1", verb: DecisionItem["verb"] = "confirm"):
+  DecisionItem => ({
+    proposal_id: proposalId,
+    verb,
+    canonical_sha256: "c".repeat(64),
   });
 
-  it("requires redirect_note on redirect", () => {
-    expect(() =>
-      validateSitting(
-        [{ proposal_id: "p1", verb: "redirect", canonical_sha256: "c1" }],
-        null,
-      ),
-    ).toThrow(/redirect_note/);
-  });
-
-  it("requires a materialize block when the sitting contains an accept verb", () => {
-    expect(() =>
-      validateSitting([{ proposal_id: "p1", verb: "confirm", canonical_sha256: "c1" }], null),
-    ).toThrow(/materialize/);
-  });
-
-  it("forbids a materialize block when the sitting contains no accept verb", () => {
-    expect(() =>
-      validateSitting([{ proposal_id: "p1", verb: "reject_plain", canonical_sha256: "c1" }], {
-        rendered_markdown: "x",
-        post_apply_content_sha256: "h",
-      }),
-    ).toThrow(/materialize/);
-  });
-
-  it("accepts a valid mixed sitting", () => {
-    expect(() =>
-      validateSitting(
-        [
-          { proposal_id: "p1", verb: "confirm", canonical_sha256: "c1" },
-          { proposal_id: "p2", verb: "reject_plain", canonical_sha256: "c2" },
-        ],
-        { rendered_markdown: "x", post_apply_content_sha256: "h" },
-      ),
-    ).not.toThrow();
-  });
-});
-
-describe("buildMaterializePayload", () => {
-  it("computes the lowercase hex SHA-256 of the rendered Markdown", async () => {
-    const payload = await buildMaterializePayload("hello");
-    expect(payload.rendered_markdown).toBe("hello");
-    expect(payload.post_apply_content_sha256).toBe(
-      "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+describe("two-phase Co-work sitting transport", () => {
+  it("validates required human-authored fields", () => {
+    expect(() => validateSitting([{ ...decision(), verb: "edit_confirm" }])).toThrow(
+      /amend_content/,
     );
-  });
-});
-
-describe("CoworkSittingClient", () => {
-  it("composes the frozen R5 body and posts it through the transport", async () => {
-    const transport = new InMemoryCoworkSittingTransport();
-    const client = new CoworkSittingClient(transport);
-    const items: DecisionItem[] = [
-      { proposal_id: "p1", verb: "confirm", canonical_sha256: "c1" },
-    ];
-    const materialize = await buildMaterializePayload("# doc body");
-
-    const response = await client.submit({
-      documentId: "doc-42",
-      storeId: "store-1",
-      baseDocSha256: "base-sha",
-      items,
-      materialize,
-    });
-
-    const request = transport.lastRequest;
-    expect(request?.documentId).toBe("doc-42");
-    expect(request?.storeId).toBe("store-1");
-    expect(request?.body.base_doc_sha256).toBe("base-sha");
-    expect(request?.body.items).toEqual(items);
-    expect(request?.body.materialize).toEqual(materialize);
-
-    expect(response.ok).toBe(true);
-    expect(response.partial).toBe(false);
-    expect(response.results[0]).toMatchObject({
-      proposal_id: "p1",
-      verb: "confirm",
-      result: "applied",
-      materialized: true,
-    });
-    expect(response.results[0].gesture_id).not.toBeNull();
-    expect(response.materialize?.file_path).toBe("doc-42.md");
+    expect(() => validateSitting([{ ...decision(), verb: "redirect" }])).toThrow(
+      /redirect_note/,
+    );
+    expect(() =>
+      validateSitting([{ ...decision(), verb: "reject_as_preference" }]),
+    ).toThrow(/preference_text/);
   });
 
-  it("maps every verb to its R5 result kind and per-result fields", async () => {
-    const transport = new InMemoryCoworkSittingTransport();
-    const client = new CoworkSittingClient(transport);
-    const items: DecisionItem[] = [
-      { proposal_id: "rp", verb: "reject_plain", canonical_sha256: "c" },
-      { proposal_id: "rf", verb: "reject_as_false", canonical_sha256: "c", negation_text: "not so" },
-      { proposal_id: "rpref", verb: "reject_as_preference", canonical_sha256: "c" },
-      { proposal_id: "rd", verb: "redirect", canonical_sha256: "c", redirect_note: "elsewhere" },
-      { proposal_id: "df", verb: "defer", canonical_sha256: "c" },
-      { proposal_id: "en", verb: "endorse", canonical_sha256: "c" },
-      { proposal_id: "ds", verb: "dismiss", canonical_sha256: "c" },
-    ];
-
-    const response = await client.submit({
-      documentId: "doc-1",
-      storeId: "store-1",
-      baseDocSha256: "base",
-      items,
-      materialize: null,
-    });
-
-    const byId = new Map(response.results.map((result) => [result.proposal_id, result]));
-    expect(byId.get("rp")?.result).toBe("closed");
-    expect(byId.get("rf")?.result).toBe("closed");
-    expect(byId.get("rf")?.negation_claim_id).toBe("negation-rf");
-    expect(byId.get("rpref")?.preference_claim_id).toBe("preference-rpref");
-    expect(byId.get("rd")?.result).toBe("kept_open_redirected");
-    expect(byId.get("df")?.result).toBe("kept_open_deferred");
-    expect(byId.get("en")?.result).toBe("kept_open_endorsed");
-    expect(byId.get("ds")?.result).toBe("closed");
-    expect(response.materialize).toBeNull();
+  it("hashes canonical rendered Markdown", async () => {
+    const payload = await buildMaterializePayload("# exact\n");
+    expect(payload.rendered_markdown).toBe("# exact\n");
+    expect(payload.post_apply_content_sha256).toMatch(/^[a-f0-9]{64}$/u);
   });
 
-  it("returns a partial sitting with rejected_stale_view for a stale proposal", async () => {
+  it("prepares idempotently, partially admits, and commits only admitted items", async () => {
     const transport = new InMemoryCoworkSittingTransport(["stale"]);
     const client = new CoworkSittingClient(transport);
-    const response = await client.submit({
-      documentId: "doc-1",
-      storeId: "store-1",
-      baseDocSha256: "base",
-      items: [
-        { proposal_id: "stale", verb: "reject_plain", canonical_sha256: "c" },
-        { proposal_id: "fresh", verb: "reject_plain", canonical_sha256: "c" },
-      ],
-      materialize: null,
+    const request = {
+      documentId: "doc",
+      storeId: "store",
+      body: {
+        items: [decision("accepted"), decision("stale")],
+        expected_file_sha256: "f".repeat(64),
+        expected_ydoc_head_sha256: "h".repeat(64),
+        idempotency_key: "same-key",
+      },
+    } as const;
+
+    const first = await client.prepare(request);
+    const retry = await client.prepare(request);
+    expect(retry.intent_id).toBe(first.intent_id);
+    expect(first.admitted_items.map((item) => item.proposal_id)).toEqual(["accepted"]);
+    expect(first.failed_items.map((item) => item.proposal_id)).toEqual(["stale"]);
+
+    const snapshot = new Uint8Array([1, 2, 3]);
+    const result = await client.commit({
+      documentId: "doc",
+      storeId: "store",
+      intentId: first.intent_id,
+      documentCommit: {
+        snapshot,
+        snapshot_sha256: "s".repeat(64),
+        rendered_markdown: "accepted\n",
+        rendered_sha256: "m".repeat(64),
+      },
+    });
+    expect(result.partial).toBe(true);
+    expect(result.results.map((item) => item.result)).toEqual([
+      "applied",
+      "rejected_stale_view",
+    ]);
+    expect((await client.prepare(request)).result).toEqual(result);
+  });
+
+  it("uses prepare JSON and multipart commit on the canonical routes", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            ok: true,
+            intent_id: "intent-1",
+            state: "prepared",
+            expires_at: "later",
+            expected_file_sha256: "f".repeat(64),
+            expected_ydoc_head_sha256: "h".repeat(64),
+            expected_snapshot_sha256: "s".repeat(64),
+            admitted_items: [decision()],
+            failed_items: [],
+            requires_document_commit: true,
+          }),
+          { status: 201, headers: { "Content-Type": "application/json" } },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            ok: true,
+            intent_id: "intent-1",
+            partial: false,
+            results: [],
+            materialize: null,
+            structured_head_sha256: "s".repeat(64),
+            snapshot_sha256: "s".repeat(64),
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    const transport = new HttpCoworkSittingTransport(fetchImpl);
+    const prepared = await transport.prepare({
+      documentId: "doc one",
+      storeId: "store/one",
+      body: {
+        items: [decision()],
+        expected_file_sha256: "f".repeat(64),
+        expected_ydoc_head_sha256: "h".repeat(64),
+        idempotency_key: "key",
+      },
+    });
+    await transport.commit({
+      documentId: "doc one",
+      storeId: "store/one",
+      intentId: prepared.intent_id,
+      documentCommit: {
+        snapshot: new Uint8Array([1]),
+        snapshot_sha256: "s".repeat(64),
+        rendered_markdown: "text",
+        rendered_sha256: "m".repeat(64),
+      },
     });
 
-    expect(response.partial).toBe(true);
-    const stale = response.results.find((result) => result.proposal_id === "stale");
-    expect(stale?.result).toBe("rejected_stale_view");
-    expect(stale?.gesture_id).toBeNull();
-    expect(stale?.error).toBe("stale_view");
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe(
+      "/api/truth/doc/doc%20one/sitting/prepare?store_id=store%2Fone",
+    );
+    expect(JSON.parse(String((fetchImpl.mock.calls[0]?.[1] as RequestInit).body))).toMatchObject({
+      idempotency_key: "key",
+      expected_ydoc_head_sha256: "h".repeat(64),
+    });
+    expect(fetchImpl.mock.calls[1]?.[0]).toBe(
+      "/api/truth/doc/doc%20one/sitting/intent-1/commit?store_id=store%2Fone",
+    );
+    const commitForm = (fetchImpl.mock.calls[1]?.[1] as RequestInit).body as FormData;
+    expect(commitForm).toBeInstanceOf(FormData);
+    expect(JSON.parse(String(commitForm.get("metadata")))).toEqual({
+      snapshot_sha256: "s".repeat(64),
+      rendered_sha256: "m".repeat(64),
+    });
   });
 });

@@ -121,6 +121,7 @@ def proposal_canonical_sha256(
     *,
     document_id: str,
     base_content_sha256: str,
+    base_structured_head_sha256: str | None = None,
     selector: Any,
     quote_exact: str,
     replacement: str | None,
@@ -139,6 +140,11 @@ def proposal_canonical_sha256(
         "tldr": tldr,
         "claim_refs": _normalize_claim_refs(claim_refs),
     }
+    # Preserve the canonical digest of portable v3 proposals.  New proposals
+    # bind to the structured head; legacy rows with a null base retain their
+    # exact historical gesture binding.
+    if base_structured_head_sha256 is not None:
+        payload["base_structured_head_sha256"] = base_structured_head_sha256
     return sha256_text(canonical_json(payload))
 
 
@@ -254,6 +260,7 @@ def propose_edit(
     *,
     document_id: str,
     base_content_sha256: str,
+    base_structured_head_sha256: str | None = None,
     selector: Any,
     quote_exact: str,
     replacement: str | None = None,
@@ -274,6 +281,13 @@ def propose_edit(
     """
     document_ref = _valid_record_id(document_id, "document_id")
     base_digest = _valid_digest(base_content_sha256, "base_content_sha256")
+    structured_base = (
+        None
+        if base_structured_head_sha256 is None
+        else _valid_digest(
+            base_structured_head_sha256, "base_structured_head_sha256"
+        )
+    )
     quote = _require_text(quote_exact, "quote_exact")
     replacement_value = None if replacement is None else _require_text(
         replacement, "replacement"
@@ -290,6 +304,7 @@ def propose_edit(
     canonical = proposal_canonical_sha256(
         document_id=document_ref,
         base_content_sha256=base_digest,
+        base_structured_head_sha256=structured_base,
         selector=json.loads(selector_json),
         quote_exact=quote,
         replacement=replacement_value,
@@ -321,6 +336,7 @@ def propose_edit(
             id=identifier,
             document_id=document_ref,
             base_content_sha256=base_digest,
+            base_structured_head_sha256=structured_base,
             selector_json=selector_json,
             quote_exact=quote,
             span_sha256=span_sha256,
@@ -447,6 +463,8 @@ def accept_proposal(
     expected_context_sha256: str | None = None,
     observed_at: str | None = None,
     at: str | None = None,
+    conn: sqlite3.Connection | None = None,
+    current_structured_head_sha256: str | None = None,
 ) -> ProposalDecisionResult:
     """Consume a confirm (accept) or edit_confirm (amend) gesture, status 'applied'.
 
@@ -459,7 +477,7 @@ def accept_proposal(
     observed = _timestamp(observed_at or at, "accept observed_at")
     event_at = _timestamp(at or observed, "accept at")
     lifecycle = TruthLifecycle(store)
-    with store.write_transaction() as conn:
+    with store.write_transaction(conn) as conn:
         proposal = store._get_proposal_locked(conn, identifier)
         if proposal is None:
             raise InvariantViolation(f"proposal does not exist: {identifier}")
@@ -467,7 +485,26 @@ def accept_proposal(
         document = store._get_document_locked(conn, proposal.document_id)
         if document is None:
             raise InvariantViolation("proposal references a missing document")
-        if proposal.base_content_sha256 != document.content_sha256:
+        structured_stale = False
+        if proposal.base_structured_head_sha256 is not None:
+            if current_structured_head_sha256 is not None:
+                live_head = _valid_digest(
+                    current_structured_head_sha256,
+                    "current_structured_head_sha256",
+                )
+                structured_stale = live_head != proposal.base_structured_head_sha256
+            elif document.ydoc_snapshot_sha256 is None:
+                structured_stale = True
+            else:
+                from work_buddy.truth import ydoc_store
+
+                live_head = ydoc_store.current_structured_head(
+                    store,
+                    document_id=document.id,
+                    snapshot_sha256=document.ydoc_snapshot_sha256,
+                )
+                structured_stale = live_head != proposal.base_structured_head_sha256
+        if structured_stale or proposal.base_content_sha256 != document.content_sha256:
             raise TransitionError(
                 "stale-base proposal cannot be applied, decidable only via "
                 "reject or defer"
@@ -582,6 +619,7 @@ def reject_proposal(
     expected_context_sha256: str | None = None,
     observed_at: str | None = None,
     at: str | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> ProposalDecisionResult:
     """Apply a reject_plain or reject_as_preference rejection, close and redact.
 
@@ -609,7 +647,7 @@ def reject_proposal(
     elif result_claim_id is not None:
         raise TransitionError("reject_plain cannot carry a result claim")
     lifecycle = TruthLifecycle(store)
-    with store.write_transaction() as conn:
+    with store.write_transaction(conn) as conn:
         proposal = store._get_proposal_locked(conn, identifier)
         if proposal is None:
             raise InvariantViolation(f"proposal does not exist: {identifier}")
@@ -671,6 +709,7 @@ def decide_reject_as_false(
     expected_context_sha256: str | None = None,
     observed_at: str | None = None,
     at: str | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> ProposalDecisionResult:
     """The dedicated proposal-specific reject_as_false decision path (S3).
 
@@ -690,7 +729,7 @@ def decide_reject_as_false(
         negation_text, "negation_text"
     )
     lifecycle = TruthLifecycle(store)
-    with store.write_transaction() as conn:
+    with store.write_transaction(conn) as conn:
         proposal = store._get_proposal_locked(conn, identifier)
         if proposal is None:
             raise InvariantViolation(f"proposal does not exist: {identifier}")
@@ -819,12 +858,13 @@ def _route_open(
     expected_context_sha256: str | None,
     observed_at: str | None,
     at: str | None,
+    conn: sqlite3.Connection | None,
 ) -> ProposalDecisionResult:
     identifier = _valid_record_id(proposal_id, "proposal_id")
     observed = _timestamp(observed_at or at, "route observed_at")
     event_at = _timestamp(at or observed, "route at")
     lifecycle = TruthLifecycle(store)
-    with store.write_transaction() as conn:
+    with store.write_transaction(conn) as conn:
         proposal = store._get_proposal_locked(conn, identifier)
         if proposal is None:
             raise InvariantViolation(f"proposal does not exist: {identifier}")
@@ -870,6 +910,7 @@ def redirect_proposal(
     expected_context_sha256: str | None = None,
     observed_at: str | None = None,
     at: str | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> ProposalDecisionResult:
     """Consume a redirect gesture, record typed guidance, keep the proposal open."""
     guidance = _require_text(note, "note")
@@ -885,6 +926,7 @@ def redirect_proposal(
         expected_context_sha256=expected_context_sha256,
         observed_at=observed_at,
         at=at,
+        conn=conn,
     )
 
 
@@ -897,6 +939,7 @@ def defer_proposal(
     expected_context_sha256: str | None = None,
     observed_at: str | None = None,
     at: str | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> ProposalDecisionResult:
     """Consume a defer gesture, park the proposal open."""
     return _route_open(
@@ -911,6 +954,7 @@ def defer_proposal(
         expected_context_sha256=expected_context_sha256,
         observed_at=observed_at,
         at=at,
+        conn=conn,
     )
 
 
@@ -923,6 +967,7 @@ def endorse_flag(
     expected_context_sha256: str | None = None,
     observed_at: str | None = None,
     at: str | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> ProposalDecisionResult:
     """Consume an endorse gesture on a FLAG, keep it open, route to the agent.
 
@@ -940,6 +985,7 @@ def endorse_flag(
         expected_context_sha256=expected_context_sha256,
         observed_at=observed_at,
         at=at,
+        conn=conn,
     )
 
 
@@ -952,13 +998,14 @@ def dismiss_flag(
     expected_context_sha256: str | None = None,
     observed_at: str | None = None,
     at: str | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> ProposalDecisionResult:
     """Consume a reject_plain gesture on a FLAG, close it with no truth stance."""
     identifier = _valid_record_id(proposal_id, "proposal_id")
     observed = _timestamp(observed_at or at, "dismiss observed_at")
     event_at = _timestamp(at or observed, "dismiss at")
     lifecycle = TruthLifecycle(store)
-    with store.write_transaction() as conn:
+    with store.write_transaction(conn) as conn:
         proposal = store._get_proposal_locked(conn, identifier)
         if proposal is None:
             raise InvariantViolation(f"proposal does not exist: {identifier}")
@@ -1004,6 +1051,7 @@ def expire_proposal(
     basis_ref: str | None = None,
     actor: Actor,
     at: str | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> ProposalDecisionResult:
     """Expire a proposal by rule or sweep TOWARD RE-REVIEW (never acceptance)."""
     identifier = _valid_record_id(proposal_id, "proposal_id")
@@ -1011,7 +1059,7 @@ def expire_proposal(
     if basis not in {"rule", "sweep"}:
         raise TransitionError("expiry basis_kind must be rule or sweep")
     event_at = _timestamp(at, "expire at")
-    with store.write_transaction() as conn:
+    with store.write_transaction(conn) as conn:
         proposal = store._get_proposal_locked(conn, identifier)
         if proposal is None:
             raise InvariantViolation(f"proposal does not exist: {identifier}")

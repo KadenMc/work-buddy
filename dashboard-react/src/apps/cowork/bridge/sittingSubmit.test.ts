@@ -1,218 +1,212 @@
-import { afterEach, describe, expect, it } from "vitest";
-import type { Editor } from "@tiptap/core";
+import { describe, expect, it, vi } from "vitest";
 
-import { createWbTrackedChangesAdapter } from "../suggestions/adapter";
-import { InMemoryCoworkSittingTransport } from "../suggestions/sitting";
-import type { DecisionItem } from "../suggestions/types";
-import { editProposal, makeSuggestionEditor } from "../suggestions/__tests__/support";
 import type { SittingSubmission } from "../rail/provider";
-import type { StagedDecision } from "../rail/contracts";
-import type { RoutingDeliveryInput } from "../chat";
-import {
-  submitCoworkSitting,
-  toDecisionItem,
-  type DecisionApplier,
-} from "./sittingSubmit";
+import type { CoworkSittingTransport } from "../suggestions/sitting";
+import type {
+  DecisionItem,
+  SittingItemResult,
+  SittingPrepared,
+  SittingResponse,
+} from "../suggestions/types";
+import { submitCoworkSitting, toDecisionItem } from "./sittingSubmit";
+import type { CoworkSittingWorkspace } from "./sittingWorkspace";
 
-const staged = (over: Partial<StagedDecision> & Pick<StagedDecision, "proposalId" | "verb">): StagedDecision => ({
-  canonicalSha256: `canon-${over.proposalId}`,
-  ...over,
+const staged = (proposalId: string, verb: DecisionItem["verb"] = "confirm") => ({
+  proposalId,
+  verb,
+  canonicalSha256: "c".repeat(64),
 });
 
-const submission = (
-  proposalDecisions: readonly StagedDecision[],
-): SittingSubmission => ({
-  baseDocSha256: "base-sha",
-  proposalDecisions,
+const submission = (items = [staged("p1")]): SittingSubmission => ({
+  baseDocSha256: "f".repeat(64),
+  proposalDecisions: items,
   claimDecisions: [],
 });
 
-/** An applier double that records the decisions the submit path applied to the editor. */
-const recordingApplier = () => {
-  const applied: DecisionItem[] = [];
-  const applier: DecisionApplier = {
-    applyDecision: (item) => applied.push(item),
-  };
-  return { applier, applied };
-};
-
-let editor: Editor | null = null;
-afterEach(() => {
-  editor?.destroy();
-  editor = null;
+const itemResult = (
+  item: DecisionItem,
+  result: SittingItemResult["result"] = "applied",
+): SittingItemResult => ({
+  proposal_id: item.proposal_id,
+  verb: item.verb,
+  result,
+  base_ok: result !== "rejected_stale_view",
+  gesture_id: result === "rejected_stale_view" ? null : `g-${item.proposal_id}`,
+  negation_claim_id: null,
+  preference_claim_id: null,
+  new_proposal_id: null,
+  materialized: result === "applied",
+  error: result === "rejected_stale_view" ? "stale" : null,
 });
 
-describe("toDecisionItem", () => {
-  it("translates the rail camelCase fields to the R5 wire item", () => {
-    expect(
-      toDecisionItem(
-        staged({
-          proposalId: "s1",
-          verb: "edit_confirm",
-          amendContent: "amended text",
-        }),
-      ),
-    ).toEqual({
-      proposal_id: "s1",
-      verb: "edit_confirm",
-      canonical_sha256: "canon-s1",
-      amend_content: "amended text",
-    });
-  });
-
-  it("carries the reject_as_preference verbatim phrasing (FA-1)", () => {
-    expect(
-      toDecisionItem(
-        staged({
-          proposalId: "s2",
-          verb: "reject_as_preference",
-          preferenceText: "my preferred wording",
-        }),
-      ),
-    ).toEqual({
-      proposal_id: "s2",
-      verb: "reject_as_preference",
-      canonical_sha256: "canon-s2",
-      preference_text: "my preferred wording",
-    });
-  });
+const receipt = (intentId: string, results: readonly SittingItemResult[]): SittingResponse => ({
+  ok: true,
+  intent_id: intentId,
+  partial: results.some((item) => item.result === "rejected_stale_view"),
+  results,
+  materialize: { new_file_sha256: "m".repeat(64), document_version_id: "v1" },
+  structured_head_sha256: "s".repeat(64),
+  snapshot_sha256: "s".repeat(64),
 });
 
-describe("submitCoworkSitting", () => {
-  it("applies each decision, posts the items, and carries a materialize block for accepts", async () => {
-    const { applier, applied } = recordingApplier();
-    const transport = new InMemoryCoworkSittingTransport();
+const prepared = (
+  items: readonly DecisionItem[],
+  failed: readonly SittingItemResult[] = [],
+): SittingPrepared => ({
+  ok: true,
+  intent_id: "intent-1",
+  state: "prepared",
+  expires_at: "later",
+  expected_file_sha256: "f".repeat(64),
+  expected_ydoc_head_sha256: "h".repeat(64),
+  expected_snapshot_sha256: "b".repeat(64),
+  admitted_items: items,
+  failed_items: failed,
+  requires_document_commit: items.some(
+    (item) => item.verb === "confirm" || item.verb === "edit_confirm",
+  ),
+});
+
+const workspace = (events: string[]): CoworkSittingWorkspace => ({
+  synchronize: async () => ({
+    expectedFileSha256: "f".repeat(64),
+    expectedStructuredHeadSha256: "h".repeat(64),
+    generation: 4,
+  }),
+  prepare: async (items, generation) => {
+    events.push(`prepared:${items.map((item) => item.proposal_id).join(",")}`);
+    return {
+      generation,
+      commit: {
+        snapshot: new Uint8Array([1]),
+        snapshot_sha256: "s".repeat(64),
+        rendered_markdown: "# committed\n",
+        rendered_sha256: "m".repeat(64),
+      },
+      adopt: () => events.push("adopted"),
+      dispose: () => events.push("disposed"),
+    };
+  },
+  isCurrent: () => true,
+  refreshFromServer: async () => {
+    events.push("refreshed");
+  },
+});
+
+describe("submitCoworkSitting two-phase choreography", () => {
+  it("keeps live state untouched until commit and applies only server-admitted items", async () => {
+    const decisions = [toDecisionItem(staged("accepted")), toDecisionItem(staged("stale"))];
+    const events: string[] = [];
+    const transport: CoworkSittingTransport = {
+      prepare: async () => prepared([decisions[0]], [itemResult(decisions[1], "rejected_stale_view")]),
+      commit: async (request) => {
+        expect(events).toEqual(["prepared:accepted"]);
+        expect(request.documentCommit?.rendered_markdown).toBe("# committed\n");
+        events.push("server-committed");
+        return receipt("intent-1", [
+          itemResult(decisions[0]),
+          itemResult(decisions[1], "rejected_stale_view"),
+        ]);
+      },
+      cancel: async () => undefined,
+    };
 
     const result = await submitCoworkSitting({
-      documentId: "doc-1",
-      storeId: "store-1",
-      submission: submission([
-        staged({ proposalId: "s1", verb: "confirm" }),
-        staged({ proposalId: "s2", verb: "reject_plain" }),
-      ]),
-      adapter: applier,
+      documentId: "doc",
+      storeId: "store",
+      submission: submission([staged("accepted"), staged("stale")]),
+      workspace: workspace(events),
       transport,
-      renderMaterialized: async () => "# materialized\n",
+      idempotencyKeyFor: () => "stable-key",
     });
 
-    // Every staged decision was applied to the editor before the post.
-    expect(applied.map((item) => item.proposal_id)).toEqual(["s1", "s2"]);
-
-    const request = transport.lastRequest;
-    expect(request?.documentId).toBe("doc-1");
-    expect(request?.storeId).toBe("store-1");
-    expect(request?.body.base_doc_sha256).toBe("base-sha");
-    expect(request?.body.items.map((item) => item.verb)).toEqual([
-      "confirm",
-      "reject_plain",
+    expect(events).toEqual([
+      "prepared:accepted",
+      "server-committed",
+      "adopted",
+      "disposed",
     ]);
-    // A sitting with an accept carries the materialize block (section 1.5).
-    expect(request?.body.materialize?.rendered_markdown).toBe("# materialized\n");
-
-    // The response maps back to the rail shape.
-    expect(result.ok).toBe(true);
-    const byId = new Map(result.results.map((item) => [item.proposalId, item]));
-    expect(byId.get("s1")?.result).toBe("applied");
-    expect(byId.get("s2")?.result).toBe("closed");
+    expect(result.partial).toBe(true);
+    expect(result.results[1]?.result).toBe("rejected_stale_view");
   });
 
-  it("omits the materialize block and never renders when the sitting has no accept", async () => {
-    const { applier } = recordingApplier();
-    const transport = new InMemoryCoworkSittingTransport();
-
-    await submitCoworkSitting({
-      documentId: "doc-1",
-      storeId: "store-1",
-      submission: submission([
-        staged({ proposalId: "s1", verb: "redirect", redirectNote: "reconsider the scope" }),
-      ]),
-      adapter: applier,
-      transport,
-      renderMaterialized: async () => {
-        throw new Error("must not render markdown without an accept");
+  it("does not adopt on commit failure and preserves a stable retry key", async () => {
+    const events: string[] = [];
+    const keys: string[] = [];
+    const item = toDecisionItem(staged("p1"));
+    const transport: CoworkSittingTransport = {
+      prepare: async (request) => {
+        keys.push(request.body.idempotency_key);
+        return prepared([item]);
       },
-    });
-
-    expect(transport.lastRequest?.body.materialize).toBeNull();
-  });
-
-  it("accept round trip: applies the suggestion to the editor and clears the mark", async () => {
-    editor = makeSuggestionEditor({
-      content: "<p>Keys hash the cache key for reuse.</p>",
-    });
-    const adapter = createWbTrackedChangesAdapter();
-    adapter.attach(editor);
-    adapter.ingestProposal(
-      editProposal("s1", "the cache key", "the cache key and the vault hash", {
-        prefix: "hash ",
-        suffix: " for",
+      commit: async () => {
+        throw new TypeError("network lost after request");
+      },
+      cancel: async () => undefined,
+    };
+    const stableKey = vi.fn(() => "stable-key");
+    await expect(
+      submitCoworkSitting({
+        documentId: "doc",
+        storeId: "store",
+        submission: submission(),
+        workspace: workspace(events),
+        transport,
+        idempotencyKeyFor: stableKey,
       }),
-    );
-    expect(adapter.listOpen()).toEqual(["s1"]);
-
-    const transport = new InMemoryCoworkSittingTransport();
-    await submitCoworkSitting({
-      documentId: "doc-1",
-      storeId: "store-1",
-      submission: submission([staged({ proposalId: "s1", verb: "confirm" })]),
-      adapter,
-      transport,
-      renderMaterialized: async () => editor?.getText() ?? "",
-    });
-
-    // The accepted edit is applied and the tracked mark resolved.
-    expect(adapter.listOpen()).toEqual([]);
-    expect(editor.getText()).toContain("the cache key and the vault hash");
-  });
-});
-
-describe("routing deliveries", () => {
-  it("annotates a delivered redirect with its note and a delivered endorse", async () => {
-    const { applier } = recordingApplier();
-    const transport = new InMemoryCoworkSittingTransport();
-    const deliveries: RoutingDeliveryInput[] = [];
-
-    await submitCoworkSitting({
-      documentId: "doc-1",
-      storeId: "store-1",
-      submission: submission([
-        staged({ proposalId: "s1", verb: "redirect", redirectNote: "tighten the scope" }),
-        staged({ proposalId: "s2", verb: "endorse" }),
-        staged({ proposalId: "s3", verb: "reject_plain" }),
-      ]),
-      adapter: applier,
-      transport,
-      renderMaterialized: async () => "",
-      onRoutingDelivery: (delivery) => deliveries.push(delivery),
-    });
-
-    // Only the redirect and endorse route into the conversation, and the redirect carries the
-    // human's verbatim note.
-    expect(deliveries).toEqual([
-      { verb: "redirect", proposalId: "s1", state: "delivered", note: "tighten the scope" },
-      { verb: "endorse", proposalId: "s2", state: "delivered" },
-    ]);
+    ).rejects.toThrow(/network/u);
+    expect(events).toEqual(["prepared:p1", "disposed"]);
+    expect(keys).toEqual(["stable-key"]);
   });
 
-  it("marks a redirect that did not route as a failed delivery with a reason", async () => {
-    const { applier } = recordingApplier();
-    const transport = new InMemoryCoworkSittingTransport(["s1"]);
-    const deliveries: RoutingDeliveryInput[] = [];
-
+  it("recovers a response-lost committed intent by refreshing instead of reapplying", async () => {
+    const events: string[] = [];
+    const item = toDecisionItem(staged("p1"));
+    const committed = receipt("intent-1", [itemResult(item)]);
+    const transport: CoworkSittingTransport = {
+      prepare: async () => ({ ...prepared([item]), state: "committed", result: committed }),
+      commit: vi.fn(),
+      cancel: async () => undefined,
+    };
     await submitCoworkSitting({
-      documentId: "doc-1",
-      storeId: "store-1",
-      submission: submission([
-        staged({ proposalId: "s1", verb: "redirect", redirectNote: "tighten" }),
-      ]),
-      adapter: applier,
+      documentId: "doc",
+      storeId: "store",
+      submission: submission(),
+      workspace: workspace(events),
       transport,
-      renderMaterialized: async () => "",
-      onRoutingDelivery: (delivery) => deliveries.push(delivery),
+      idempotencyKeyFor: () => "stable-key",
     });
+    expect(events).toEqual(["refreshed"]);
+    expect(transport.commit).not.toHaveBeenCalled();
+  });
 
-    expect(deliveries).toEqual([
-      { verb: "redirect", proposalId: "s1", state: "failed", note: "tighten", reason: "stale_view" },
-    ]);
+  it("defensively rejects mixed claim decisions before synchronization or transport", async () => {
+    const synchronize = vi.fn();
+    const transport: CoworkSittingTransport = {
+      prepare: vi.fn(),
+      commit: vi.fn(),
+      cancel: vi.fn(),
+    };
+    await expect(
+      submitCoworkSitting({
+        documentId: "doc",
+        storeId: "store",
+        submission: {
+          ...submission(),
+          claimDecisions: [
+            { claimId: "claim-1", verb: "confirm", canonicalSha256: "claim-sha" },
+          ],
+        },
+        workspace: {
+          ...workspace([]),
+          synchronize,
+        },
+        transport,
+        idempotencyKeyFor: vi.fn(),
+      }),
+    ).rejects.toThrow(/No sitting decisions were submitted/u);
+    expect(synchronize).not.toHaveBeenCalled();
+    expect(transport.prepare).not.toHaveBeenCalled();
+    expect(transport.commit).not.toHaveBeenCalled();
   });
 });

@@ -55,7 +55,7 @@ Tags: [Kaden] stated or ratified by Kaden, [kernel] shipped or committed kernel 
 - **I12. The ledger is the truth about review state. In-document marks and files are projections.** A dropped mark re-anchors from the ledger by quote. Markdown never carries provenance. [kernel, distilled D7]
 - **I13. Materialized files stay native, clean Markdown in their natural locations.** Front-matter stamp only. Out-of-band file edits are legitimate input, detected and reconciled through review, never overwritten and never silently absorbed. [kernel]
 - **I14. Exactly one tracked-change engine, one history stack, one Markdown serializer.** [distilled gotchas]
-- **I15. One store boundary per scope.** Documents, spans, expressions, proposals, gestures, and claims for a scope live in that scope's `.wb-truth/` sidecar. No parallel surface database. [kernel, Q1]
+- **I15. One store boundary per Folder.** Documents, spans, expressions, proposals, gestures, and claims for a Folder live in that Folder's `.wbuddy/cowork/` sidecar. No parallel surface database. [kernel, Q1]
 - **I16. Local-first.** Offline, restart, and interruption tolerant. [Kaden]
 - **I17. Multi-user product scoping.** Kaden's setup is the validation fixture, not the requirements boundary. [feedback rule]
 - **I18. Dashboard citizenship.** Registered App contribution, Theme Contract v1, accessibility obligations, dirty-state guarding, same-origin `/api/truth/*`. [t-af909c0d, carve-out in §9]
@@ -76,7 +76,7 @@ Tags: [Kaden] stated or ratified by Kaden, [kernel] shipped or committed kernel 
 
 **Registration.** A document becomes surface-managed (a **cowork doc**, the everyday noun) by explicit registration into a scope's truth store: `documents` row (uuid, path, title, profile), current file imported as the initial structured document, import event recorded, hash stored. Idempotent, reversible (retiring re-materializes a final clean file, history retained).
 
-**Canonical object.** Per I2: the registered document IS the structured object, stored as Y.Doc update log + snapshots under `.wb-truth/runtime/` (gitignored binary, compacted), with metadata, spans, expressions, proposals, and events in `store.db`. The `.md` file is the materialized projection, hash-recorded, drift-guarded. Serialization-runtime decision (audit A1): the one serializer is JavaScript, so in v1 import and materialization run in the dashboard client, the server verifies hashes and performs the writes through the engine. Flows needing (de)serialization require the view open in v1. Escalation path: a small Node helper, at latest with the collab-phase Node service.
+**Canonical object.** Per I2: the registered document IS the structured object, stored as Y.Doc update log + snapshots under `.wbuddy/cowork/runtime/` (gitignored binary, compacted), with metadata, spans, expressions, proposals, and events in `store.db`. The `.md` file is the materialized projection, hash-recorded, drift-guarded. Serialization-runtime decision (audit A1): the one serializer is JavaScript, so in v1 import and materialization run in the dashboard client, the server verifies hashes and performs the writes through the engine. Flows needing (de)serialization require the view open in v1. Escalation path: a small Node helper, at latest with the collab-phase Node service.
 
 **Expressions in v1 (scoped small).** Schema lands in full (it is already designed), but creation paths and UI stay minimal:
 - An agent proposal MAY carry claim references. Accepting it mints expression rows for the affected spans (the edit "says" those claims).
@@ -93,7 +93,7 @@ Expression VERIFICATION (does the claim actually entail the passage) is K4's NLI
 **Storage layout** (extends the kernel sidecar):
 
 ```
-<scope-root>/.wb-truth/
+<folder>/.wbuddy/cowork/
   store.db          # + documents, document_spans, expressions, proposals,
                     #   doc events (additive DDL, ops gated by a profile
                     #   policy block: tables exist in every v2 store)

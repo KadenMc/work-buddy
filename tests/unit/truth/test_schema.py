@@ -172,7 +172,7 @@ def _v1_runner() -> truth_migrations._TruthMigrationRunner:
 def migrated_db(tmp_path: Path):
     path = tmp_path / "store.db"
     conn = _connect(path)
-    assert truth_migrations.migrate(conn, path) == 2
+    assert truth_migrations.migrate(conn, path) == 4
     _seed_all_tables(conn)
     try:
         yield conn, path
@@ -347,6 +347,19 @@ EXPECTED_COLUMNS = {
         "created_by_ref",
         "meta_json",
     },
+    "document_path_keys": {"document_id", "path_key"},
+    "document_versions": {
+        "id",
+        "document_id",
+        "kind",
+        "projection_sha256",
+        "ydoc_snapshot_sha256",
+        "structured_head_sha256",
+        "created_at",
+        "actor_kind",
+        "actor_ref",
+        "detail",
+    },
     "document_spans": {
         "id",
         "document_id",
@@ -376,6 +389,7 @@ EXPECTED_COLUMNS = {
         "id",
         "document_id",
         "base_content_sha256",
+        "base_structured_head_sha256",
         "selector_json",
         "quote_exact",
         "span_sha256",
@@ -416,10 +430,80 @@ EXPECTED_COLUMNS = {
         "ydoc_snapshot_sha256",
         "detail",
     },
+    "cowork_bootstrap_intents": {
+        "id",
+        "idempotency_key",
+        "actor_ref",
+        "request_sha256",
+        "mode",
+        "state",
+        "document_id",
+        "normalized_path",
+        "path_key",
+        "title",
+        "document_class",
+        "source_sha256",
+        "source_byte_length",
+        "expected_file_sha256",
+        "snapshot_sha256",
+        "structured_head_sha256",
+        "staged_path",
+        "created_at",
+        "updated_at",
+        "expires_at",
+        "committed_at",
+        "receipt_json",
+        "recovery_detail",
+    },
+    "cowork_materialization_intents": {
+        "id",
+        "idempotency_key",
+        "actor_ref",
+        "document_id",
+        "state",
+        "expected_file_sha256",
+        "expected_structured_head_sha256",
+        "snapshot_sha256",
+        "rendered_sha256",
+        "staged_path",
+        "quarantine_path",
+        "document_version_id",
+        "created_at",
+        "updated_at",
+        "committed_at",
+        "receipt_json",
+        "recovery_detail",
+    },
+    "cowork_sitting_intents": {
+        "id", "idempotency_key", "actor_ref", "document_id",
+        "request_sha256", "state", "expected_file_sha256",
+        "expected_structured_head_sha256", "expected_snapshot_sha256",
+        "admitted_items_json", "failed_items_json", "has_apply",
+        "new_snapshot_sha256", "new_structured_head_sha256",
+        "rendered_sha256", "materialization_intent_id", "created_at",
+        "updated_at", "expires_at", "committed_at", "receipt_json",
+        "recovery_detail",
+    },
+    "cowork_reimport_intents": {
+        "id", "idempotency_key", "actor_ref", "document_id", "state",
+        "expected_file_sha256", "prior_projection_sha256",
+        "prior_snapshot_sha256", "prior_structured_head_sha256",
+        "source_byte_length", "staged_path", "replacement_snapshot_sha256",
+        "replacement_structured_head_sha256", "document_version_id",
+        "created_at", "updated_at", "expires_at", "committed_at",
+        "receipt_json", "recovery_detail",
+    },
+    "cowork_retirement_intents": {
+        "id", "idempotency_key", "actor_ref", "document_id", "state",
+        "expected_file_sha256", "expected_projection_sha256",
+        "expected_snapshot_sha256", "expected_structured_head_sha256",
+        "consequence_sha256", "created_at", "updated_at", "expires_at",
+        "committed_at", "receipt_json", "recovery_detail",
+    },
 }
 
 
-def test_schema_v2_has_all_committed_tables_columns_indexes_and_triggers(
+def test_schema_v4_has_all_committed_tables_columns_indexes_and_triggers(
     migrated_db,
 ):
     conn, _ = migrated_db
@@ -461,6 +545,18 @@ def test_schema_v2_has_all_committed_tables_columns_indexes_and_triggers(
         "idx_proposals_canonical",
         "idx_proposal_status_proposal_seq",
         "idx_doc_events_document",
+        "idx_document_versions_document",
+        "idx_document_versions_projection",
+        "idx_document_versions_snapshot",
+        "idx_cowork_bootstrap_state_expiry",
+        "uq_cowork_bootstrap_live_path",
+        "idx_cowork_materialization_state",
+        "idx_cowork_sitting_state_expiry",
+        "idx_cowork_sitting_document",
+        "idx_cowork_reimport_state_expiry",
+        "idx_cowork_reimport_document",
+        "idx_cowork_retirement_state_expiry",
+        "idx_cowork_retirement_document",
     } <= set(indexes)
     assert "WHERE status = 'confirmed'" in indexes["uq_claim_status_confirm_gesture"]
 
@@ -468,7 +564,7 @@ def test_schema_v2_has_all_committed_tables_columns_indexes_and_triggers(
         row["name"]
         for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'")
     }
-    assert len(triggers) == 41
+    assert len(triggers) == 43
     assert not any(name.startswith("projections_") for name in triggers)
     assert not any(name.startswith("claims_current_") for name in triggers)
     assert truth_migrations.current_version(conn) == truth_migrations.SCHEMA_VERSION
@@ -478,13 +574,13 @@ def test_reopening_is_idempotent(tmp_path: Path):
     path = tmp_path / "store.db"
     conn = _connect(path)
     for _ in range(6):
-        assert truth_migrations.migrate(conn, path) == 2
-    assert conn.execute("SELECT COUNT(*) FROM _migration_history").fetchone()[0] == 2
+        assert truth_migrations.migrate(conn, path) == 4
+    assert conn.execute("SELECT COUNT(*) FROM _migration_history").fetchone()[0] == 4
     assert (
         conn.execute(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger'"
         ).fetchone()[0]
-        == 41
+        == 43
     )
     conn.close()
 
@@ -615,8 +711,8 @@ def test_every_sanctioned_mutation_is_allowed(migrated_db):
     )
 
     conn.execute("BEGIN")
-    conn.execute("UPDATE store_info SET schema_version = 2 WHERE store_id = 'store-1'")
-    assert conn.execute("SELECT schema_version FROM store_info").fetchone()[0] == 2
+    conn.execute("UPDATE store_info SET schema_version = 4 WHERE store_id = 'store-1'")
+    assert conn.execute("SELECT schema_version FROM store_info").fetchone()[0] == 4
     conn.rollback()
 
 
@@ -900,11 +996,11 @@ def test_each_version_bump_gets_its_own_snapshot(tmp_path: Path, monkeypatch):
 def test_newer_store_version_is_refused_before_snapshot(tmp_path: Path):
     path = tmp_path / "store.db"
     conn = _connect(path)
-    conn.execute("PRAGMA user_version = 3")
+    conn.execute("PRAGMA user_version = 5")
     conn.commit()
-    with pytest.raises(SchemaVersionTooNew, match="only knows up to v2"):
+    with pytest.raises(SchemaVersionTooNew, match="only knows up to v4"):
         truth_migrations.migrate(conn, path)
-    assert not (tmp_path / "store.pre-v3.db").exists()
+    assert not (tmp_path / "store.pre-v5.db").exists()
     conn.close()
 
 

@@ -27,7 +27,8 @@ import type { ProposalInput } from "../suggestions/types";
 import type { RoutingDeliveryInput } from "../chat";
 import type { CoworkDocClient } from "./HttpCoworkDocClient";
 import { mapR2ToReview } from "./reviewMapping";
-import { submitCoworkSitting, type DecisionApplier } from "./sittingSubmit";
+import { submitCoworkSitting } from "./sittingSubmit";
+import type { CoworkSittingWorkspace } from "./sittingWorkspace";
 
 /** Called with the ingestion inputs each time a pull resolves. */
 export type ProposalsListener = (proposals: readonly ProposalInput[]) => void;
@@ -40,10 +41,8 @@ export interface LiveReviewRailProviderOptions {
   readonly storeId: string;
   /** The sitting transport (HttpCoworkSittingTransport live, in-memory in tests). */
   readonly sittingTransport: CoworkSittingTransport;
-  /** The editor adapter, lazily resolved because the editor mounts after the rail. */
-  readonly getAdapter: () => DecisionApplier | null;
-  /** Render the post-apply document to Markdown for the materialize block. */
-  readonly renderMaterialized: () => Promise<string>;
+  /** Editor-owned clone/sync seam, lazily resolved because the editor mounts after the rail. */
+  readonly getSittingWorkspace: () => CoworkSittingWorkspace | null;
   /** Notified per routed item after a submit, so the Chat tab annotates the routing note. */
   readonly onRoutingDelivery?: (delivery: RoutingDeliveryInput) => void;
 }
@@ -55,6 +54,7 @@ export class LiveReviewRailProvider implements ReviewRailProvider {
   readonly #dataListeners = new Set<ReviewDataListener>();
   #lastProposals: readonly ProposalInput[] | null = null;
   #lastData: ReviewRailData | null = null;
+  #pendingKey: { readonly fingerprint: string; readonly key: string } | null = null;
 
   constructor(options: LiveReviewRailProviderOptions) {
     this.#options = options;
@@ -83,21 +83,38 @@ export class LiveReviewRailProvider implements ReviewRailProvider {
   }
 
   async submitSitting(submission: SittingSubmission): Promise<SittingResult> {
-    const adapter = this.#options.getAdapter();
-    if (adapter === null) {
-      throw new Error("the editor adapter is not ready, so the sitting cannot apply");
+    if (submission.claimDecisions.length > 0) {
+      throw new Error(
+        "Live claim review is not available yet. No sitting decisions were submitted.",
+      );
+    }
+    const workspace = this.#options.getSittingWorkspace();
+    if (workspace === null) {
+      throw new Error("the editor is not ready, so the sitting cannot be prepared");
     }
     return submitCoworkSitting({
       documentId: this.#options.documentId,
       storeId: this.#options.storeId,
       submission,
-      adapter,
+      workspace,
       transport: this.#options.sittingTransport,
-      renderMaterialized: this.#options.renderMaterialized,
+      idempotencyKeyFor: (fingerprint) => this.#idempotencyKey(fingerprint),
+      onCommitted: () => {
+        this.#pendingKey = null;
+      },
       ...(this.#options.onRoutingDelivery === undefined
         ? {}
         : { onRoutingDelivery: this.#options.onRoutingDelivery }),
     });
+  }
+
+  #idempotencyKey(fingerprint: string): string {
+    if (this.#pendingKey?.fingerprint === fingerprint) return this.#pendingKey.key;
+    const key =
+      globalThis.crypto?.randomUUID?.() ??
+      `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+    this.#pendingKey = { fingerprint, key };
+    return key;
   }
 
   /** The ingestion channel. A late subscriber immediately gets the last pull. */

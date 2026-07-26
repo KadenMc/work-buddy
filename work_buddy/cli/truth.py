@@ -85,23 +85,50 @@ def discover_store(
     *,
     cwd: str | Path | None = None,
 ) -> Path:
-    """Return the nearest scoped ``.wb-truth`` directory."""
+    """Return the nearest canonical Co-work data directory.
+
+    Managed-path safety checks reject redirected component directories before
+    any profile lookup follows them.
+    """
+
+    def resolve_candidate(candidate: Path) -> Path | None:
+        if candidate.name == "cowork" and candidate.parent.name == ".wbuddy":
+            owner_root = candidate.parent.parent
+        else:
+            owner_root = candidate
+
+        from work_buddy.cowork.project_store import (
+            FolderLifecycleError,
+            _assert_managed_layout_safe,
+        )
+
+        try:
+            _assert_managed_layout_safe(owner_root)
+        except FolderLifecycleError as exc:
+            raise TruthError(
+                "The Folder contains redirected or unsupported Work Buddy data."
+            ) from exc
+        canonical = owner_root / ".wbuddy" / "cowork"
+        canonical_valid = (canonical / "store.yaml").is_file()
+        if canonical_valid:
+            return canonical.resolve()
+        return None
 
     if explicit is not None:
-        candidate = Path(explicit).expanduser().resolve()
-        sidecar = candidate if candidate.name == ".wb-truth" else candidate / ".wb-truth"
-        if not (sidecar / "store.yaml").is_file():
-            raise TruthError(f"truth profile does not exist: {sidecar / 'store.yaml'}")
+        candidate = Path(os.path.abspath(Path(explicit).expanduser()))
+        sidecar = resolve_candidate(candidate)
+        if sidecar is None:
+            raise TruthError(f"Co-work data does not exist in Folder: {candidate}")
         return sidecar
 
     start = Path.cwd().resolve() if cwd is None else Path(cwd).expanduser().resolve()
     if start.is_file():
         start = start.parent
     for candidate in (start, *start.parents):
-        sidecar = candidate if candidate.name == ".wb-truth" else candidate / ".wb-truth"
-        if (sidecar / "store.yaml").is_file():
+        sidecar = resolve_candidate(candidate)
+        if sidecar is not None:
             return sidecar
-    raise TruthError(f"no truth store found from {start}. Pass --store PATH")
+    raise TruthError(f"no Co-work data found from {start}. Pass --store PATH")
 
 
 def _registry_class():
@@ -795,7 +822,8 @@ def _cmd_migrate(args: Any) -> tuple[TruthStore | None, dict[str, Any], list[str
             results.append({"path": str(path), "status": "unreachable"})
             continue
         try:
-            store = TruthStore.open(path)
+            sidecar = discover_store(path)
+            store = TruthStore.open(sidecar)
             registry.touch(store)
             results.append(
                 {

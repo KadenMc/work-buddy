@@ -13,7 +13,7 @@ import "./styles.css";
 export type CoworkProviderState = "live" | "local";
 
 export interface CoworkViewChromeProps {
-  readonly providerState: CoworkProviderState;
+  readonly providerState: CoworkProviderState | null;
   /** Placement slot for Dashboard-host-owned contextual controls. */
   readonly hostActions?: ReactNode;
 }
@@ -24,7 +24,7 @@ const PROVIDER_STATE: Record<
 > = {
   live: {
     label: "Live",
-    hint: "This document is store-scoped and ledger-backed, so edits sync to the server.",
+    hint: "This document is registered in a Folder, so edits sync to Co-work.",
   },
   local: {
     label: "Local",
@@ -42,7 +42,7 @@ const PROVIDER_STATE: Record<
  * would otherwise render for Co-work.
  */
 export function CoworkViewChrome({ providerState, hostActions }: CoworkViewChromeProps) {
-  const state = PROVIDER_STATE[providerState];
+  const state = providerState === null ? null : PROVIDER_STATE[providerState];
   return (
     <header className="cowork-view-chrome" aria-labelledby="cowork-view-title">
       <div className="cowork-view-chrome__main">
@@ -61,19 +61,21 @@ export function CoworkViewChrome({ providerState, hostActions }: CoworkViewChrom
         </div>
 
         <div className="cowork-view-chrome__actions">
-          <span
-            className="cowork-view-chrome__provider"
-            role="status"
-            data-state={providerState}
-            title={state.hint}
-          >
-            {providerState === "live" ? (
-              <Broadcast weight="duotone" aria-hidden="true" />
-            ) : (
-              <HardDrives weight="duotone" aria-hidden="true" />
-            )}
-            {state.label}
-          </span>
+          {providerState !== null && state !== null ? (
+            <span
+              className="cowork-view-chrome__provider"
+              role="status"
+              data-state={providerState}
+              title={state.hint}
+            >
+              {providerState === "live" ? (
+                <Broadcast weight="duotone" aria-hidden="true" />
+              ) : (
+                <HardDrives weight="duotone" aria-hidden="true" />
+              )}
+              {state.label}
+            </span>
+          ) : null}
           {hostActions}
         </div>
       </div>

@@ -21,9 +21,10 @@ export type ReviewUnsubscribe = () => void;
 export type ReviewInvalidationListener = () => void;
 
 /**
- * One sitting submission, the R5 request body in rail terms. proposalDecisions
- * are the per-item gestures, claimDecisions ride the same submit (a live
- * provider composes the claim path behind this seam).
+ * One sitting submission in rail terms. proposalDecisions map to the live R5
+ * request. claimDecisions remain part of the fixture-facing seam, but the live
+ * provider fails closed until R2 supplies enough claim payload to implement
+ * truthful claim semantics; it never silently drops or partially submits them.
  */
 export interface SittingSubmission {
   readonly baseDocSha256: string;

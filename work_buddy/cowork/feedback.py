@@ -33,8 +33,9 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from work_buddy.truth.anchors import CompositeSelector
+from work_buddy.cowork.policy import document_surface_allowed
 from work_buddy.truth.contracts import Actor, InvariantViolation
-from work_buddy.truth.documents import get_document
+from work_buddy.truth.documents import current_lifecycle, get_document
 from work_buddy.truth.events import emit_truth_event
 from work_buddy.truth.expressions import ensure_document_span
 from work_buddy.truth.identity import sha256_text
@@ -143,10 +144,14 @@ def capture_feedback(
 
     document = get_document(store, document_id)
     surface = store.profile.document_surface
-    if not surface.enabled:
-        raise InvariantViolation("document surface is disabled for this store")
+    if current_lifecycle(store, document.id) != "active":
+        raise InvariantViolation("feedback cannot be added to a retired document")
+    if not document_surface_allowed(store, document):
+        raise InvariantViolation(
+            "This document is not available in Co-work for this Folder"
+        )
     if not surface.feedback_capture:
-        raise InvariantViolation("feedback capture is disabled by the store profile")
+        raise InvariantViolation("feedback is disabled for this Folder")
 
     feedback_span = _coerce_span(span)
     selector = CompositeSelector(

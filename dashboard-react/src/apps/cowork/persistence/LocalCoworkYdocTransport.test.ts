@@ -20,7 +20,11 @@ describe("LocalCoworkYdocTransport", () => {
     expect(base.batches).toEqual([]);
 
     const batch = new Uint8Array([7, 8, 9, 254]);
-    const pushed = await writer.push({ batch, baseSha256: base.docSha256 });
+    const pushed = await writer.push({
+      batch,
+      baseSha256: base.docSha256,
+      baseYdocGeneration: base.ydocGeneration,
+    });
     expect(pushed.ok).toBe(true);
 
     const reader = new LocalCoworkYdocTransport({ documentId, factory });
@@ -39,6 +43,7 @@ describe("LocalCoworkYdocTransport", () => {
     await alpha.push({
       batch: new Uint8Array([1, 2, 3]),
       baseSha256: alphaBase.docSha256,
+      baseYdocGeneration: alphaBase.ydocGeneration,
     });
 
     // The other document id sees none of alpha's work.
@@ -57,7 +62,11 @@ describe("LocalCoworkYdocTransport", () => {
       factory: () => new InMemoryCoworkYdocBackingStore(),
     });
     const base = await transport.pull({});
-    await transport.push({ batch: new Uint8Array([1]), baseSha256: base.docSha256 });
+    await transport.push({
+      batch: new Uint8Array([1]),
+      baseSha256: base.docSha256,
+      baseYdocGeneration: base.ydocGeneration,
+    });
 
     const afterEdit = await transport.pull({});
     expect(afterEdit.batches).toHaveLength(1);
@@ -67,6 +76,7 @@ describe("LocalCoworkYdocTransport", () => {
     const compacted = await transport.push({
       batch: new Uint8Array([2]),
       baseSha256: afterEdit.docSha256,
+      baseYdocGeneration: afterEdit.ydocGeneration,
       compaction: { snapshot, snapshotSha256 },
     });
     expect(compacted.ok).toBe(true);
@@ -84,9 +94,11 @@ describe("LocalCoworkYdocTransport", () => {
       documentId: "doc-stale",
       factory: () => new InMemoryCoworkYdocBackingStore(),
     });
+    const current = await transport.pull({});
     const result = await transport.push({
       batch: new Uint8Array([0]),
       baseSha256: "not-the-current-hash",
+      baseYdocGeneration: current.ydocGeneration,
     });
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -107,7 +119,11 @@ describe("LocalCoworkYdocTransport", () => {
       expect(base.batches).toEqual([]);
 
       const batch = new Uint8Array([42, 43]);
-      const pushed = await transport.push({ batch, baseSha256: base.docSha256 });
+      const pushed = await transport.push({
+        batch,
+        baseSha256: base.docSha256,
+        baseYdocGeneration: base.ydocGeneration,
+      });
       expect(pushed.ok).toBe(true);
 
       const pulled = await transport.pull({});
@@ -123,13 +139,18 @@ describe("LocalCoworkYdocTransport", () => {
       factory: () => new InMemoryCoworkYdocBackingStore(),
     });
     const base = await transport.pull({});
-    await transport.push({ batch: new Uint8Array([10]), baseSha256: base.docSha256 });
+    await transport.push({
+      batch: new Uint8Array([10]),
+      baseSha256: base.docSha256,
+      baseYdocGeneration: base.ydocGeneration,
+    });
     const afterFirst = await transport.pull({});
     expect(afterFirst.batches).toHaveLength(1);
 
     await transport.push({
       batch: new Uint8Array([20]),
       baseSha256: afterFirst.docSha256,
+      baseYdocGeneration: afterFirst.ydocGeneration,
     });
 
     const slice = await transport.pull({ sinceOffset: afterFirst.nextOffset });
@@ -147,6 +168,7 @@ describe("LocalCoworkYdocTransport", () => {
       transport.push({
         batch: new Uint8Array([1]),
         baseSha256: base.docSha256,
+        baseYdocGeneration: base.ydocGeneration,
         compaction: { snapshot: new Uint8Array([1, 2, 3]), snapshotSha256: "0000" },
       }),
     ).rejects.toThrow(/re-hash/);

@@ -21,6 +21,13 @@ import * as Y from "yjs";
 
 import { HttpCoworkYdocTransport } from "../persistence/HttpCoworkYdocTransport";
 import type { CoworkYdocTransport } from "../persistence/transport";
+import type { CoworkSyncStatus } from "../persistence/CoworkYdocPersistence";
+import type { CoworkDriftState } from "../contracts";
+import type {
+  CoworkMaterializationController,
+  CoworkMaterializationState,
+  CoworkMaterializeReceipt,
+} from "../materialization/contracts";
 import {
   HttpCoworkSittingTransport,
   type CoworkSittingTransport,
@@ -43,19 +50,12 @@ import {
 } from "./HttpCoworkDocClient";
 import { LiveReviewRailProvider } from "./LiveReviewRailProvider";
 import { ProposalIngestor } from "./proposalIngestor";
-import { createEditorMaterializeRenderer } from "./materialize";
 import { resolveCoworkChatProvider } from "./chatProvider";
 import type { CoworkEditorReadyContext } from "./CoworkBridgeEditor";
+import type { CoworkSittingWorkspace } from "./sittingWorkspace";
 
-/** The default markdown a brand-new live document is seeded with, matching the demo pane. */
-export const DEFAULT_BRIDGE_SEED_MARKDOWN = [
-  "# Co-work document",
-  "",
-  "This is the editor pane. It binds a Tiptap editor to a local Y.Doc through the",
-  "eight-point load-order contract, projects AI proposals as an ephemeral review layer,",
-  "and materializes edits block by block.",
-  "",
-].join("\n");
+/** Registered documents are initialized by bootstrap; live hydration never fabricates text. */
+export const DEFAULT_BRIDGE_SEED_MARKDOWN = "";
 
 /** The health projection the top health strip renders in live mode. */
 export interface CoworkLiveHealth {
@@ -70,6 +70,16 @@ export interface UseCoworkBridgeOptions {
   /** True in demo / widget-lab / test mode, so the chat fixture is used deliberately. */
   readonly chatFixture?: boolean;
   readonly seedMarkdown?: string;
+  readonly readOnly?: boolean;
+  readonly onSyncStatus?: (status: CoworkSyncStatus) => void;
+  readonly currentFileSha256?: string | null;
+  readonly initialDriftState?: CoworkDriftState;
+  readonly canMaterialize?: boolean;
+  readonly onMaterializationState?: (state: CoworkMaterializationState) => void;
+  readonly onMaterializationController?: (
+    controller: CoworkMaterializationController | null,
+  ) => void;
+  readonly onMaterialized?: (receipt: CoworkMaterializeReceipt) => void;
   /** Injectable R2 client, else the same-origin HTTP client. */
   readonly docClient?: CoworkDocClient;
   /** Injectable Yjs transport, else the same-origin HTTP transport. */
@@ -102,6 +112,18 @@ export interface CoworkBridgeEditorMountProps {
   readonly onFeedbackCaptured?: (capture: FeedbackCapture) => void;
   /** Injectable R9 feedback transport, else the same-origin HTTP transport. */
   readonly feedbackTransport?: CoworkFeedbackTransport;
+  readonly readOnly?: boolean;
+  readonly onSyncStatus?: (status: CoworkSyncStatus) => void;
+  readonly currentFileSha256?: string | null;
+  readonly initialDriftState?: CoworkDriftState;
+  readonly canMaterialize?: boolean;
+  readonly onMaterializationState?: (state: CoworkMaterializationState) => void;
+  readonly onMaterializationController?: (
+    controller: CoworkMaterializationController | null,
+  ) => void;
+  readonly onMaterialized?: (receipt: CoworkMaterializeReceipt) => void;
+  readonly onSittingWorkspace?: (workspace: CoworkSittingWorkspace | null) => void;
+  readonly onSittingProjectionAdopted?: () => void;
 }
 
 export interface CoworkBridge {
@@ -142,6 +164,14 @@ export const useCoworkBridge = (
     conversationId,
     chatFixture = false,
     seedMarkdown = DEFAULT_BRIDGE_SEED_MARKDOWN,
+    readOnly = false,
+    onSyncStatus,
+    currentFileSha256,
+    initialDriftState,
+    canMaterialize,
+    onMaterializationState,
+    onMaterializationController,
+    onMaterialized,
     docClient,
     ydocTransport,
     sittingTransport,
@@ -154,6 +184,7 @@ export const useCoworkBridge = (
   const editorDomRef = useRef<HTMLElement | null>(null);
   const railRegionRef = useRef<HTMLElement | null>(null);
   const editorReadyRef = useRef(false);
+  const sittingWorkspaceRef = useRef<CoworkSittingWorkspace | null>(null);
   const [health, setHealth] = useState<CoworkLiveHealth | null>(null);
 
   // Kept in a ref so the review provider stays stable per (documentId, storeId) while always
@@ -165,6 +196,7 @@ export const useCoworkBridge = (
   // routes a capture through the surface's latest callback.
   const onFeedbackCapturedRef = useRef(onFeedbackCaptured);
   onFeedbackCapturedRef.current = onFeedbackCaptured;
+  const feedbackCaptureEnabled = onFeedbackCaptured !== undefined;
 
   const core = useMemo(() => {
     const doc = new Y.Doc();
@@ -178,17 +210,12 @@ export const useCoworkBridge = (
     const resolvedSittingTransport =
       sittingTransport ?? new HttpCoworkSittingTransport();
 
-    const renderMaterialized = createEditorMaterializeRenderer(
-      () => editorRef.current,
-    );
-
     const reviewProvider = new LiveReviewRailProvider({
       docClient: resolvedDocClient,
       documentId,
       storeId,
       sittingTransport: resolvedSittingTransport,
-      getAdapter: () => (editorReadyRef.current ? adapter : null),
-      renderMaterialized,
+      getSittingWorkspace: () => sittingWorkspaceRef.current,
       onRoutingDelivery: (delivery) => onRoutingDeliveryRef.current?.(delivery),
     });
 
@@ -205,7 +232,6 @@ export const useCoworkBridge = (
       reviewProvider,
       anchorRects,
       ydocTransport: resolvedYdocTransport,
-      renderMaterialized,
     };
     // The transports and clients are stable per (documentId, storeId). A test passes fresh
     // doubles for a fresh document, which is exactly when the whole bridge should rebuild.
@@ -231,6 +257,16 @@ export const useCoworkBridge = (
     };
   }, [core]);
 
+  useEffect(
+    () => () => {
+      core.ingestor.detach();
+      // The editor and rail unsubscribe during the same unmount. Defer final destruction so
+      // their cleanups can detach observers from an intact document first.
+      queueMicrotask(() => core.doc.destroy());
+    },
+    [core],
+  );
+
   const editorProps = useMemo<CoworkBridgeEditorMountProps>(
     () => ({
       document: core.doc,
@@ -252,10 +288,43 @@ export const useCoworkBridge = (
       documentId,
       storeId,
       feedbackTransport,
-      onFeedbackCaptured: (capture: FeedbackCapture) =>
-        onFeedbackCapturedRef.current?.(capture),
+      ...(feedbackCaptureEnabled
+        ? {
+            onFeedbackCaptured: (capture: FeedbackCapture) =>
+              onFeedbackCapturedRef.current?.(capture),
+          }
+        : {}),
+      readOnly,
+      onSyncStatus,
+      currentFileSha256,
+      initialDriftState,
+      canMaterialize,
+      onMaterializationState,
+      onMaterializationController,
+      onMaterialized,
+      onSittingWorkspace: (workspace) => {
+        sittingWorkspaceRef.current = workspace;
+      },
+      onSittingProjectionAdopted: () => {
+        core.ingestor.resetProjection();
+      },
     }),
-    [core, seedMarkdown, documentId, storeId, feedbackTransport],
+    [
+      core,
+      seedMarkdown,
+      documentId,
+      storeId,
+      feedbackTransport,
+      feedbackCaptureEnabled,
+      readOnly,
+      onSyncStatus,
+      currentFileSha256,
+      initialDriftState,
+      canMaterialize,
+      onMaterializationState,
+      onMaterializationController,
+      onMaterialized,
+    ],
   );
 
   const railRef = useMemo(

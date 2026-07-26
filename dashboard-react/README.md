@@ -56,11 +56,21 @@ npm run typecheck
 npm test
 npm run build
 npm run test:e2e
+npm run test:e2e:cowork-live
+npm run test:e2e:cowork-live:interactive
 ```
 
 `npm test` runs Vitest component and contract tests. `npm run test:e2e` starts Vite and
 runs Playwright against Chromium and Firefox; use `npm run test:e2e:ui` for the
 interactive runner. Set `PLAYWRIGHT_PORT` if port `4173` is unavailable.
+
+The Co-work live harness typechecks and builds the production bundle, then seeds a
+temporary, isolated Folder with its own data and config roots. It serves Flask and the
+production preview on random ports that explicitly exclude the normal dashboard port
+`5127`. The first command runs Playwright; the `:interactive` command prints an isolated
+URL and waits for Ctrl+C or its timeout. Both stop their services and remove the marked
+temporary root automatically, including after a failure. They never use live Folder,
+data, or config state.
 
 Focused Flask, launcher, and packaging tests live in the repository-level Python test
 suite and should be run through `uv run pytest ...` from the repository root.

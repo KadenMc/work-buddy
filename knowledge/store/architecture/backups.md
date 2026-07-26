@@ -37,7 +37,7 @@ Lives in `work_buddy/backups/`. The system has four moving parts (local snapshot
 
 ## Why it exists
 
-Work-buddy's vital databases and scoped Truth stores hold durable state that cannot be reconstructed from another system surface. A wide-fanout deletion, corrupted disk, or accidental removal of `.data/` or a `.wb-truth/` sidecar could otherwise cause categorical data loss. Soft-delete protects individual task rows. Backups protect the durable stores as a whole.
+Work-buddy's vital databases and scoped Truth stores hold durable state that cannot be reconstructed from another system surface. A wide-fanout deletion, corrupted disk, or accidental removal of `.data/` or a Co-work `.wbuddy/cowork/` sidecar could otherwise cause categorical data loss. Soft-delete protects individual task rows. Backups protect the durable stores as a whole.
 
 Vital DBs that get backed up (declared in `work_buddy/backups/local.py` as `VITAL_DBS`):
 
@@ -53,7 +53,7 @@ Vital DBs that get backed up (declared in `work_buddy/backups/local.py` as `VITA
 
 The logical name is what appears in the manifest and the snapshot tag. The on-disk filename is preserved inside the tarball so restore can reconstruct the directory layout.
 
-`truth_registry` is only the machine inventory of known scoped stores. Authoritative claims remain in `.wb-truth/` sidecars beside the material they govern. Those sidecars are covered dynamically through portable exports, not by adding their live SQLite databases to `VITAL_DBS`.
+`truth_registry` is only the machine inventory of known scoped stores. Authoritative claims live beside the material they govern in the canonical `.wbuddy/cowork/` sidecar. Those sidecars are covered dynamically through portable exports, not by adding their live SQLite databases to `VITAL_DBS`.
 
 ## Snapshot pipeline (`work_buddy/backups/local.py`)
 
@@ -81,7 +81,12 @@ Keys:
 
 ## Portable Truth coverage
 
-Registry discovery turns a variable set of scoped `.wb-truth/` stores into deterministic recovery members. Each included store contributes exactly `truth_stores/<store_id>/store.yaml` and `truth_stores/<store_id>/claims.jsonl`. The profile preserves permanent identity and policy. The JSONL stream preserves the lossless ordered ledger representation used by Truth import.
+Registry discovery turns the variable set of scoped `.wbuddy/cowork/` sidecars into deterministic
+recovery members. Each included store contributes exactly
+`truth_stores/<store_id>/store.yaml` and
+`truth_stores/<store_id>/claims.jsonl`. The profile preserves permanent
+identity and policy. The JSONL stream preserves the lossless ordered ledger
+representation used by Truth import.
 
 The backup pipeline never copies a scoped store's live `store.db`. This avoids treating a raw database image as the portable contract and avoids copying a database outside its own transaction protocol. If a store is unreachable, its manifest row is marked `unreachable`. If validation or export fails, the partial staged directory is removed and its row is marked `error`. Successful rows are marked `included` and carry the exported stream hash.
 

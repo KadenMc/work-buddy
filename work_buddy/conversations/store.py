@@ -394,6 +394,7 @@ def add_message(
     response_type: str = "none",
     choices: list[dict] | None = None,
     conn: sqlite3.Connection | None = None,
+    message_id: str | None = None,
 ) -> ConversationMessage | None:
     """Add a message to a conversation. Returns the message, or None if
     conversation not found.
@@ -417,7 +418,7 @@ def add_message(
         now = _now()
         status = "pending" if message_type == "question" else "sent"
         msg = ConversationMessage(
-            message_id=_new_id(),
+            message_id=message_id or _new_id(),
             conversation_id=conversation_id,
             role=role,
             content=content,
@@ -427,8 +428,8 @@ def add_message(
             choices=choices,
             status=status,
         )
-        conn.execute(
-            """INSERT INTO messages
+        cursor = conn.execute(
+            """INSERT OR IGNORE INTO messages
                (message_id, conversation_id, role, content, created_at,
                 message_type, response_type, choices, response, status)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
@@ -445,6 +446,23 @@ def add_message(
                 msg.status,
             ),
         )
+        if cursor.rowcount == 0:
+            row = conn.execute(
+                "SELECT * FROM messages WHERE message_id = ?", (msg.message_id,)
+            ).fetchone()
+            if row is None:
+                raise sqlite3.IntegrityError("message insert was ignored unexpectedly")
+            existing = ConversationMessage.from_row(dict(row))
+            if (
+                existing.conversation_id != msg.conversation_id
+                or existing.role != msg.role
+                or existing.content != msg.content
+                or existing.message_type != msg.message_type
+            ):
+                raise sqlite3.IntegrityError(
+                    "message_id was reused for different message content"
+                )
+            return existing
         conn.execute(
             "UPDATE conversations SET updated_at = ? WHERE conversation_id = ?",
             (now, conversation_id),

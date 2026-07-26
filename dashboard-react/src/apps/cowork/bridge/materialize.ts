@@ -5,18 +5,18 @@
  * runs, the sitting has already applied its accepts and rejects to the editor, so the
  * serialized content is the post-apply document.
  *
- * Scope note. This is the WIRING renderer, not the fidelity materializer. Byte-exact
- * block-splice materialization (copying unedited blocks verbatim, re-attaching YAML
- * frontmatter, so an undecided proposal in another block never reaches the file) is the
- * fidelity suite's obligation (gate conditions 6 and 8, the production-materializer item).
- * This renderer produces valid, hash-bound Markdown the server verifies and writes, and the
- * submit path takes it through a seam so the reference block-splice materializer can replace
- * it without touching the orchestration.
+ * Registered files enter this path only after bootstrap's exact no-edit round-trip gate has
+ * admitted the conservative canonical syntax subset. The renderer is therefore the production
+ * boundary for that admitted subset: it uses the same MarkdownManager as admission and restores
+ * verbatim frontmatter plus newline/BOM fidelity before the server verifies and writes the hash.
+ * Syntax that would require a lossless block-splice implementation is rejected at registration
+ * instead of being normalized silently on a later Save.
  */
 
 import type { Editor } from "@tiptap/core";
+import type * as Y from "yjs";
 
-import { createCoworkMarkdownManager } from "../editor/extensions";
+import { serializeCoworkEditorMarkdown } from "../editor/serializeCoworkMarkdown";
 
 /**
  * Build a materialize renderer bound to the live editor. Returns the post-apply document
@@ -26,13 +26,13 @@ import { createCoworkMarkdownManager } from "../editor/extensions";
  */
 export const createEditorMaterializeRenderer = (
   getEditor: () => Editor | null,
+  document?: Y.Doc,
 ): (() => Promise<string>) => {
-  const manager = createCoworkMarkdownManager();
   return async () => {
     const editor = getEditor();
     if (editor === null) {
       throw new Error("the editor is not mounted, so the document cannot materialize");
     }
-    return manager.serialize(editor.getJSON());
+    return serializeCoworkEditorMarkdown(editor, document);
   };
 };

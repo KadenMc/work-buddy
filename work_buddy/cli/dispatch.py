@@ -41,7 +41,7 @@ def _build_parser() -> argparse.ArgumentParser:
     truth_common.add_argument(
         "--store",
         default=argparse.SUPPRESS,
-        help="scope root or .wb-truth directory (default: discover from cwd)",
+        help="Folder or .wbuddy/cowork path (default: discover from cwd)",
     )
     truth_common.add_argument(
         "--json",

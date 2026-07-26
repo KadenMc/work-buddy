@@ -89,9 +89,9 @@ def test_dump_and_load_preserve_open_extension_metadata(tmp_path: Path) -> None:
     expected_extra = copy.deepcopy(original["future_profile_key"])
 
     written = dump_profile(original, tmp_path)
-    loaded = load_profile(tmp_path / ".wb-truth")
+    loaded = load_profile(tmp_path / ".wbuddy" / "cowork")
 
-    assert written == tmp_path / ".wb-truth" / "store.yaml"
+    assert written == tmp_path / ".wbuddy" / "cowork" / "store.yaml"
     assert loaded.validators == expected_validators
     assert loaded.extensions == expected_extensions
     assert loaded.gate.extensions["review_queue"] == expected_gate_extension

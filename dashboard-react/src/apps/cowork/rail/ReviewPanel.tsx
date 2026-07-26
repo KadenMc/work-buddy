@@ -7,7 +7,7 @@
  * persistence, and a dirty sitting arms the route-change guard.
  */
 
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 
 import { Inspector } from "./Inspector";
 import { FilterLens } from "./FilterLens";
@@ -49,6 +49,8 @@ export function ReviewPanel(props: ReviewPanelProps) {
   const { store } = props;
   const storage = props.storage ?? window.localStorage;
   const { data, status, reload } = useReviewData(props.provider);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   const filter = useRailState(store, (state) => state.filter);
   const mode = useRailState(store, (state) => state.mode);
@@ -152,17 +154,34 @@ export function ReviewPanel(props: ReviewPanelProps) {
   }, [props.anchorRects]);
 
   const submit = useCallback(async () => {
-    if (data === null) return;
-    await props.provider.submitSitting({
-      baseDocSha256: data.drift.currentFileSha256 ?? "",
-      proposalDecisions: Object.values(store.getState().decisions),
-      claimDecisions: Object.values(store.getState().claimDecisions),
-    });
-    store.clearAllDecisions();
-    // The draft mirror clears on the resulting empty-sitting persist.
-    reload();
-    props.onSubmitted?.();
-  }, [data, props, store, reload]);
+    if (data === null || submitting) return;
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      const result = await props.provider.submitSitting({
+        baseDocSha256: data.drift.currentFileSha256 ?? "",
+        proposalDecisions: Object.values(store.getState().decisions),
+        claimDecisions: Object.values(store.getState().claimDecisions),
+      });
+      for (const item of result.results) {
+        if (item.result !== "error" && item.result !== "rejected_stale_view") {
+          store.clearDecision(item.proposalId);
+        }
+      }
+      // Failed prepare items remain staged and durable. Reload re-derives only committed
+      // items from the ledger, never from the fact that a submit was attempted.
+      reload();
+      props.onSubmitted?.();
+    } catch (error) {
+      setSubmitError(
+        error instanceof Error
+          ? error.message
+          : "Co-work could not commit this sitting. Your decisions are still staged.",
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }, [data, props, reload, store, submitting]);
 
   if (status === "loading" || data === null) {
     return (
@@ -234,14 +253,22 @@ export function ReviewPanel(props: ReviewPanelProps) {
         <button
           type="button"
           className="wb-cowork-rail__submit"
-          disabled={!dirty}
+          disabled={!dirty || submitting}
           onClick={() => {
             void submit();
           }}
         >
-          Submit sitting{pendingCount > 0 ? ` (${pendingCount})` : ""}
+          {submitting
+            ? "Committing sitting…"
+            : `${submitError === null ? "Submit sitting" : "Retry sitting"}${pendingCount > 0 ? ` (${pendingCount})` : ""}`}
         </button>
       </div>
+
+      {submitError !== null ? (
+        <p className="wb-cowork-rail__sitting-error" role="alert">
+          {submitError} Your staged decisions are still here.
+        </p>
+      ) : null}
 
       <FilterLens
         filter={filter}

@@ -28,7 +28,7 @@ Integration-mode legend (house convention, from tms-glue §II.3): **1** upstream
 └───────────────┬─────────────────────────────────────────────────────┘
                 │ library calls
 ┌───────────────▼─────────────────────────────────────────────────────┐
-│ <scope-root>/.wb-truth/  (one sidecar, one boundary)                │
+│ <folder>/.wbuddy/cowork/  (one sidecar, one boundary)              │
 │  store.db: claims, evidence, gestures + NEW documents,              │
 │    document_spans, expressions, edit proposals, doc events          │
 │    (additive DDL, profile-gated)                                    │
@@ -48,8 +48,8 @@ Kaden's invariant [distilled §1]: the canonical document is **richer than Markd
 
 | State | Canonical home | Everything else is |
 |---|---|---|
-| Review state (proposals, decisions, gestures, claim lifecycle) | the scope's `.wb-truth/store.db` ledger | projection. Suggestion marks RENDER proposals, they never carry them. A dropped mark re-anchors from the ledger by quote (kernel `anchors.py`, the AOV firewall) |
-| Registered documents (class 2, surface-owned) | the Y.Doc update log + snapshots under `.wb-truth/runtime/`, plus ledger rows for review/provenance state | the `.md` file is the materialized projection in its natural location: clean native Markdown, no markup walls, front-matter stamp only (kernel projection contract). Out-of-band file edits are legitimate INPUT, detected by hash and reconciled back as proposals, never silently absorbed and never overwritten |
+| Review state (proposals, decisions, gestures, claim lifecycle) | the Folder's `.wbuddy/cowork/store.db` ledger | projection. Suggestion marks RENDER proposals, they never carry them. A dropped mark re-anchors from the ledger by quote (kernel `anchors.py`, the AOV firewall) |
+| Registered documents (class 2, surface-owned) | the Y.Doc update log + snapshots under `.wbuddy/cowork/runtime/`, plus ledger rows for review/provenance state | the `.md` file is the materialized projection in its natural location: clean native Markdown, no markup walls, front-matter stamp only (kernel projection contract). Out-of-band file edits are legitimate INPUT, detected by hash and reconciled back as proposals, never silently absorbed and never overwritten |
 | Unregistered files (class 3) | the file itself | untouched by this surface. Capturable as evidence like any file |
 | Authorship and interaction provenance | the append-only ledger (document events + kernel producer-identity laws) | in-document marks/attrs are working metadata, the ledger is the truth [distilled D7] |
 

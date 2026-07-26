@@ -60,6 +60,8 @@ export interface CoworkRailProps {
   readonly queueBindings?: QueueBindings;
   readonly narrow?: boolean;
   readonly initialTab?: RailTab;
+  /** Narrow workspace peer tabs own Review / Chat selection when false. */
+  readonly showTabs?: boolean;
   /**
    * The document linkage store for the Chat tab. When supplied the tab renders the richer
    * Co-work chat panel (feedback span links and routing-note delivery status) instead of the
@@ -112,7 +114,7 @@ export function CoworkRail(props: CoworkRailProps) {
 
   return (
     <div className="wb-cowork-rail">
-      <div
+      {props.showTabs !== false ? <div
         className="wb-cowork-rail__tabs"
         role="tablist"
         aria-label="Review and chat"
@@ -148,12 +150,16 @@ export function CoworkRail(props: CoworkRailProps) {
             ) : null}
           </button>
         </HelpTarget>
-      </div>
+      </div> : null}
 
       <div
         role="tabpanel"
         id="wb-cowork-rail-panel-review"
-        aria-labelledby="wb-cowork-rail-tab-review"
+        aria-labelledby={
+          props.showTabs === false
+            ? "wb-cowork-mobile-tab-review"
+            : "wb-cowork-rail-tab-review"
+        }
         className="wb-cowork-rail__tabpanel"
         hidden={tab !== "review"}
       >
@@ -171,7 +177,11 @@ export function CoworkRail(props: CoworkRailProps) {
       <div
         role="tabpanel"
         id="wb-cowork-rail-panel-chat"
-        aria-labelledby="wb-cowork-rail-tab-chat"
+        aria-labelledby={
+          props.showTabs === false
+            ? "wb-cowork-mobile-tab-chat"
+            : "wb-cowork-rail-tab-chat"
+        }
         className="wb-cowork-rail__tabpanel"
         hidden={tab !== "chat"}
       >

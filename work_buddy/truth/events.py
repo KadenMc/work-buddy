@@ -63,6 +63,7 @@ def emit_truth_event(
     event_type: str,
     *,
     store_id: str,
+    event_id: str | None = None,
     subject_kind: str | None = None,
     subject_id: str | None = None,
     data: Mapping[str, Any] | None = None,
@@ -92,9 +93,11 @@ def emit_truth_event(
             f"/wb/truth/{store_id}",
             event_type,
             payload,
+            id=event_id,
             durable=True,
             subject=subject,
             modality="internal",
+            idempotency_key=event_id,
         )
         publish(event)
     except Exception as exc:  # noqa: BLE001

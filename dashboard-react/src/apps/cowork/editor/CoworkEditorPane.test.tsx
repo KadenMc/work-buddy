@@ -1,13 +1,18 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import { ySyncPluginKey } from "@tiptap/y-tiptap";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
 
 import {
   InMemoryCoworkYdocBackingStore,
   LocalCoworkYdocTransport,
 } from "../persistence/LocalCoworkYdocTransport";
-import CoworkEditorPane from "./CoworkEditorPane";
+import { InMemoryCoworkYdocTransport } from "../persistence/InMemoryCoworkYdocTransport";
+import { sha256Hex } from "../persistence/hashing";
+import type { CoworkYdocTransport } from "../persistence/transport";
+import CoworkEditorPane, {
+  type CoworkScratchPromotionHandle,
+} from "./CoworkEditorPane";
 
 /** Reconstruct a Y.Doc from whatever the backing currently holds, as hydrate would. */
 const reconstructFromBacking = async (
@@ -168,4 +173,138 @@ describe("CoworkEditorPane persistence", () => {
       { timeout: 10_000 },
     );
   }, 15_000);
+
+  it("exports the exact visible scratch text and a matching valid Y.Doc snapshot", async () => {
+    const documentId = "pane-promotion-doc";
+    const marker = "Exact scratch content — keep every character.";
+    const scratchDoc = new Y.Doc();
+    const promotionHandle: { current: CoworkScratchPromotionHandle | null } = {
+      current: null,
+    };
+
+    render(
+      <CoworkEditorPane
+        documentId={documentId}
+        document={scratchDoc}
+        onPromotionHandle={(handle) => {
+          promotionHandle.current = handle;
+        }}
+      />,
+    );
+    const textbox = await screen.findByRole(
+      "textbox",
+      { name: "Document editor" },
+      { timeout: 10_000 },
+    );
+    act(() => {
+      scratchDoc.transact(() => {
+        const fragment = scratchDoc.getXmlFragment("default");
+        const paragraph = fragment.get(0);
+        if (paragraph instanceof Y.XmlElement) {
+          paragraph.insert(0, [new Y.XmlText(marker)]);
+        } else {
+          const created = new Y.XmlElement("paragraph");
+          created.insert(0, [new Y.XmlText(marker)]);
+          fragment.insert(0, [created]);
+        }
+      }, ySyncPluginKey);
+    });
+    await waitFor(() => expect(textbox.textContent).toContain(marker));
+    await waitFor(() => expect(promotionHandle.current).not.toBeNull());
+
+    const handle = promotionHandle.current;
+    if (handle === null) throw new Error("The promotion handle did not become ready.");
+    const promoted = await handle.exportContent();
+    expect(new TextDecoder().decode(promoted.sourceBytes)).toBe(marker);
+
+    const promotedDoc = new Y.Doc();
+    expect(() => Y.applyUpdate(promotedDoc, promoted.snapshot)).not.toThrow();
+    expect(promotedDoc.getXmlFragment("default").toString()).toContain(marker);
+    expect(
+      promotedDoc.getMap<unknown>("wb-cowork:fidelity").get("source_sha256"),
+    ).toBe(await sha256Hex(promoted.sourceBytes));
+    promotedDoc.destroy();
+  }, 20_000);
+
+  it("does not publish a promotion handle until hydration and editor mount complete", async () => {
+    let releaseHydration!: () => void;
+    const hydrationGate = new Promise<void>((resolve) => {
+      releaseHydration = resolve;
+    });
+    const transport: CoworkYdocTransport = {
+      pull: async () => {
+        await hydrationGate;
+        return {
+          snapshot: null,
+          snapshotSha256: null,
+          ydocGeneration: "generation-delayed",
+          batches: [],
+          docSha256: "",
+          structuredHeadSha256: "",
+          projectionSha256: "",
+          cursorReset: false,
+          nextOffset: "0",
+        };
+      },
+      push: async () => ({
+        ok: true,
+        applied: true,
+        docSha256: "head-1",
+        structuredHeadSha256: "head-1",
+        ydocGeneration: "generation-delayed",
+        projectionSha256: "",
+        nextOffset: "1",
+      }),
+    };
+    const handles: Array<CoworkScratchPromotionHandle | null> = [];
+    render(
+      <CoworkEditorPane
+        documentId="delayed-promotion"
+        transport={transport}
+        onPromotionHandle={(handle) => handles.push(handle)}
+      />,
+    );
+
+    await waitFor(() => expect(handles).toContain(null));
+    expect(handles.some((handle) => handle !== null)).toBe(false);
+    expect(screen.getByRole("status")).toHaveTextContent("Loading the document");
+
+    releaseHydration();
+    await screen.findByRole("textbox", { name: "Document editor" });
+    await waitFor(() => expect(handles.some((handle) => handle !== null)).toBe(true));
+  });
+
+  it("reports a failed scratch device save and retries the full local snapshot", async () => {
+    let allowPush = false;
+    const backing = new InMemoryCoworkYdocTransport();
+    const push = vi.fn(async (request: Parameters<CoworkYdocTransport["push"]>[0]) => {
+      if (!allowPush) throw new Error("IndexedDB transaction failed");
+      return backing.push(request);
+    });
+    const transport: CoworkYdocTransport = {
+      pull: (request) => backing.pull(request),
+      push,
+    };
+    const statuses: string[] = [];
+    const handleRef: { current: CoworkScratchPromotionHandle | null } = { current: null };
+    render(
+      <CoworkEditorPane
+        documentId="scratch-device-retry"
+        transport={transport}
+        onSyncStatus={(status) => statuses.push(status)}
+        onPromotionHandle={(handle) => {
+          handleRef.current = handle;
+        }}
+      />,
+    );
+    await screen.findByRole("textbox", { name: "Document editor" });
+    await waitFor(() => expect(statuses).toContain("error"));
+    await waitFor(() => expect(handleRef.current).not.toBeNull());
+
+    allowPush = true;
+    await handleRef.current?.retryDeviceSave();
+    expect(statuses[statuses.length - 1]).toBe("clean");
+    expect(push).toHaveBeenCalledTimes(2);
+    expect(backing.hasSnapshot).toBe(true);
+  });
 });

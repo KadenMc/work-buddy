@@ -19,7 +19,7 @@ from work_buddy.storage.migrations import (
 
 logger = get_logger(__name__)
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
 # Redacted spans retain their immutable identity/hash but not their quote or
 # quote context.  Keep the selector valid JSON (and valid for the existing
@@ -737,6 +737,268 @@ def _m002_document_surface(conn: sqlite3.Connection) -> None:
     )
 
 
+def _document_path_key(path: str) -> str:
+    """Return the host-local key used to reject path aliases.
+
+    Document paths are portable POSIX-style relative paths.  The key is local
+    machine state because case sensitivity is a property of the host on which
+    the folder is opened, not a portable ledger fact.
+    """
+
+    return path.casefold() if os.name == "nt" else path
+
+
+def _m003_cowork_document_foundation(conn: sqlite3.Connection) -> None:
+    """Add recoverable Co-work initialization and document-version history."""
+
+    conn.execute(
+        "ALTER TABLE proposals ADD COLUMN base_structured_head_sha256 TEXT"
+    )
+
+    # Recreate the append-only guard so the new nullable base is pinned too.
+    # Without this replacement SQLite would allow an UPDATE that changed only
+    # the newly-added column because the v2 trigger cannot mention it.
+    conn.execute("DROP TRIGGER IF EXISTS proposals_append_only_update")
+    conn.execute(
+        f"""
+        CREATE TRIGGER proposals_append_only_update
+        BEFORE UPDATE ON proposals
+        WHEN NOT (
+            OLD.redacted_at IS NULL
+            AND NEW.redacted_at IS NOT NULL
+            AND NEW.quote_exact IS NULL
+            AND NEW.replacement IS NULL
+            AND NEW.rationale IS NULL
+            AND NEW.tldr IS NULL
+            AND NEW.claim_refs_json IS NULL
+            AND NEW.selector_json = '{REDACTED_SELECTOR_JSON}'
+            AND NEW.id IS OLD.id
+            AND NEW.document_id IS OLD.document_id
+            AND NEW.base_content_sha256 IS OLD.base_content_sha256
+            AND NEW.base_structured_head_sha256 IS OLD.base_structured_head_sha256
+            AND NEW.span_sha256 IS OLD.span_sha256
+            AND NEW.canonical_sha256 IS OLD.canonical_sha256
+            AND NEW.dedup_key IS OLD.dedup_key
+            AND NEW.expires_at IS OLD.expires_at
+            AND NEW.created_at IS OLD.created_at
+            AND NEW.created_by_kind IS OLD.created_by_kind
+            AND NEW.created_by_ref IS OLD.created_by_ref
+            AND NEW.meta_json IS OLD.meta_json
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'append-only');
+        END
+        """
+    )
+
+    statements = (
+        """
+        CREATE TABLE document_path_keys (
+            document_id TEXT PRIMARY KEY REFERENCES documents(id),
+            path_key    TEXT NOT NULL UNIQUE
+        )
+        """,
+        """
+        CREATE TABLE document_versions (
+            id                     TEXT PRIMARY KEY,
+            document_id            TEXT NOT NULL REFERENCES documents(id),
+            kind                   TEXT NOT NULL,
+            projection_sha256      TEXT NOT NULL,
+            ydoc_snapshot_sha256   TEXT NOT NULL,
+            structured_head_sha256 TEXT NOT NULL,
+            created_at             TEXT NOT NULL,
+            actor_kind             TEXT NOT NULL,
+            actor_ref              TEXT,
+            detail                 TEXT
+        )
+        """,
+        "CREATE INDEX idx_document_versions_document "
+        "ON document_versions(document_id, created_at, id)",
+        "CREATE INDEX idx_document_versions_projection "
+        "ON document_versions(projection_sha256)",
+        "CREATE INDEX idx_document_versions_snapshot "
+        "ON document_versions(ydoc_snapshot_sha256)",
+        """
+        CREATE TRIGGER document_versions_append_only_update
+        BEFORE UPDATE ON document_versions
+        BEGIN
+            SELECT RAISE(ABORT, 'append-only');
+        END
+        """,
+        """
+        CREATE TRIGGER document_versions_append_only_delete
+        BEFORE DELETE ON document_versions
+        BEGIN
+            SELECT RAISE(ABORT, 'append-only');
+        END
+        """,
+        """
+        CREATE TABLE cowork_bootstrap_intents (
+            id                     TEXT PRIMARY KEY,
+            idempotency_key        TEXT NOT NULL,
+            actor_ref              TEXT NOT NULL,
+            request_sha256         TEXT NOT NULL,
+            mode                   TEXT NOT NULL,
+            state                  TEXT NOT NULL,
+            document_id            TEXT NOT NULL,
+            normalized_path        TEXT NOT NULL,
+            path_key               TEXT NOT NULL,
+            title                  TEXT,
+            document_class         TEXT NOT NULL,
+            source_sha256          TEXT NOT NULL,
+            source_byte_length     INTEGER NOT NULL,
+            expected_file_sha256   TEXT,
+            snapshot_sha256        TEXT,
+            structured_head_sha256 TEXT,
+            staged_path            TEXT,
+            created_at             TEXT NOT NULL,
+            updated_at             TEXT NOT NULL,
+            expires_at             TEXT NOT NULL,
+            committed_at           TEXT,
+            receipt_json           TEXT,
+            recovery_detail        TEXT,
+            UNIQUE(actor_ref, idempotency_key)
+        )
+        """,
+        "CREATE INDEX idx_cowork_bootstrap_state_expiry "
+        "ON cowork_bootstrap_intents(state, expires_at)",
+        "CREATE UNIQUE INDEX uq_cowork_bootstrap_live_path "
+        "ON cowork_bootstrap_intents(path_key) "
+        "WHERE state IN ('prepared', 'publishing')",
+        """
+        CREATE TABLE cowork_materialization_intents (
+            id                              TEXT PRIMARY KEY,
+            idempotency_key                 TEXT,
+            actor_ref                       TEXT NOT NULL,
+            document_id                     TEXT NOT NULL REFERENCES documents(id),
+            state                           TEXT NOT NULL,
+            expected_file_sha256            TEXT NOT NULL,
+            expected_structured_head_sha256 TEXT NOT NULL,
+            snapshot_sha256                 TEXT NOT NULL,
+            rendered_sha256                 TEXT NOT NULL,
+            staged_path                     TEXT,
+            quarantine_path                 TEXT,
+            document_version_id             TEXT NOT NULL,
+            created_at                      TEXT NOT NULL,
+            updated_at                      TEXT NOT NULL,
+            committed_at                    TEXT,
+            receipt_json                    TEXT,
+            recovery_detail                 TEXT,
+            UNIQUE(actor_ref, idempotency_key)
+        )
+        """,
+        "CREATE INDEX idx_cowork_materialization_state "
+        "ON cowork_materialization_intents(state, document_id)",
+    )
+    for statement in statements:
+        conn.execute(statement)
+
+    for row in conn.execute("SELECT id, path FROM documents ORDER BY id"):
+        try:
+            conn.execute(
+                "INSERT INTO document_path_keys (document_id, path_key) VALUES (?, ?)",
+                (row[0], _document_path_key(str(row[1]))),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise sqlite3.IntegrityError(
+                "existing document paths collide under the host filesystem rules"
+            ) from exc
+
+
+def _m004_cowork_lifecycle_intents(conn: sqlite3.Connection) -> None:
+    """Add recoverable human lifecycle intents outside the portable ledger."""
+
+    statements = (
+        """
+        CREATE TABLE cowork_sitting_intents (
+            id                              TEXT PRIMARY KEY,
+            idempotency_key                 TEXT NOT NULL,
+            actor_ref                       TEXT NOT NULL,
+            document_id                     TEXT NOT NULL REFERENCES documents(id),
+            request_sha256                  TEXT NOT NULL,
+            state                           TEXT NOT NULL,
+            expected_file_sha256            TEXT NOT NULL,
+            expected_structured_head_sha256 TEXT NOT NULL,
+            expected_snapshot_sha256        TEXT NOT NULL,
+            admitted_items_json             TEXT NOT NULL,
+            failed_items_json               TEXT NOT NULL,
+            has_apply                       INTEGER NOT NULL,
+            new_snapshot_sha256             TEXT,
+            new_structured_head_sha256      TEXT,
+            rendered_sha256                 TEXT,
+            materialization_intent_id       TEXT,
+            created_at                      TEXT NOT NULL,
+            updated_at                      TEXT NOT NULL,
+            expires_at                      TEXT NOT NULL,
+            committed_at                    TEXT,
+            receipt_json                    TEXT,
+            recovery_detail                 TEXT,
+            UNIQUE(actor_ref, idempotency_key)
+        )
+        """,
+        "CREATE INDEX idx_cowork_sitting_state_expiry "
+        "ON cowork_sitting_intents(state, expires_at)",
+        "CREATE INDEX idx_cowork_sitting_document "
+        "ON cowork_sitting_intents(document_id, state)",
+        """
+        CREATE TABLE cowork_reimport_intents (
+            id                              TEXT PRIMARY KEY,
+            idempotency_key                 TEXT NOT NULL,
+            actor_ref                       TEXT NOT NULL,
+            document_id                     TEXT NOT NULL REFERENCES documents(id),
+            state                           TEXT NOT NULL,
+            expected_file_sha256            TEXT NOT NULL,
+            prior_projection_sha256         TEXT NOT NULL,
+            prior_snapshot_sha256           TEXT NOT NULL,
+            prior_structured_head_sha256    TEXT NOT NULL,
+            source_byte_length              INTEGER NOT NULL,
+            staged_path                     TEXT NOT NULL,
+            replacement_snapshot_sha256     TEXT,
+            replacement_structured_head_sha256 TEXT,
+            document_version_id             TEXT NOT NULL,
+            created_at                      TEXT NOT NULL,
+            updated_at                      TEXT NOT NULL,
+            expires_at                      TEXT NOT NULL,
+            committed_at                    TEXT,
+            receipt_json                    TEXT,
+            recovery_detail                 TEXT,
+            UNIQUE(actor_ref, idempotency_key)
+        )
+        """,
+        "CREATE INDEX idx_cowork_reimport_state_expiry "
+        "ON cowork_reimport_intents(state, expires_at)",
+        "CREATE INDEX idx_cowork_reimport_document "
+        "ON cowork_reimport_intents(document_id, state)",
+        """
+        CREATE TABLE cowork_retirement_intents (
+            id                              TEXT PRIMARY KEY,
+            idempotency_key                 TEXT NOT NULL,
+            actor_ref                       TEXT NOT NULL,
+            document_id                     TEXT NOT NULL REFERENCES documents(id),
+            state                           TEXT NOT NULL,
+            expected_file_sha256            TEXT NOT NULL,
+            expected_projection_sha256      TEXT NOT NULL,
+            expected_snapshot_sha256        TEXT NOT NULL,
+            expected_structured_head_sha256 TEXT NOT NULL,
+            consequence_sha256              TEXT NOT NULL,
+            created_at                      TEXT NOT NULL,
+            updated_at                      TEXT NOT NULL,
+            expires_at                      TEXT NOT NULL,
+            committed_at                    TEXT,
+            receipt_json                    TEXT,
+            recovery_detail                 TEXT,
+            UNIQUE(actor_ref, idempotency_key)
+        )
+        """,
+        "CREATE INDEX idx_cowork_retirement_state_expiry "
+        "ON cowork_retirement_intents(state, expires_at)",
+        "CREATE INDEX idx_cowork_retirement_document "
+        "ON cowork_retirement_intents(document_id, state)",
+    )
+    for statement in statements:
+        conn.execute(statement)
+
+
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     row = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
@@ -823,6 +1085,16 @@ TRUTH_MIGRATIONS = _TruthMigrationRunner(
     migrations=[
         Migration(1, "initial truth ledger schema", _m001_initial_schema),
         Migration(2, "co-work document surface schema", _m002_document_surface),
+        Migration(
+            3,
+            "co-work document versions and recoverable persistence",
+            _m003_cowork_document_foundation,
+        ),
+        Migration(
+            4,
+            "recoverable co-work sitting and lifecycle intents",
+            _m004_cowork_lifecycle_intents,
+        ),
     ],
 )
 

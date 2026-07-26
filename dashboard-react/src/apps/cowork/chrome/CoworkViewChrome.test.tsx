@@ -14,6 +14,14 @@ import { CoworkViewChrome } from "./CoworkViewChrome";
 const renderChrome = (ui: ReactElement) => render(<main>{ui}</main>);
 
 describe("CoworkViewChrome", () => {
+  it("shows no persistence badge before a factual document session exists", () => {
+    renderChrome(<CoworkViewChrome providerState={null} />);
+
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.queryByText("Live")).toBeNull();
+    expect(screen.queryByText("Local")).toBeNull();
+  });
+
   it("names the view and shows the local badge for a local scratch session", () => {
     renderChrome(<CoworkViewChrome providerState="local" />);
 

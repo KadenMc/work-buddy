@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 
 import { useOptionalDashboardEvents } from "../../../dashboard/events/DashboardEventProvider";
@@ -7,11 +7,23 @@ import {
   useDashboardHelpEnabled,
   type HelpContent,
 } from "../../../dashboard/help";
-import { InMemoryChatProvider } from "../../../widget-library/chat";
-import type { CoworkDriftState, CoworkViewModel } from "../contracts";
+import type {
+  CoworkDocumentSummary,
+  CoworkDriftState,
+  CoworkViewModel,
+} from "../contracts";
+import type { CoworkSyncStatus } from "../persistence/CoworkYdocPersistence";
+import type {
+  CoworkMaterializationController,
+  CoworkMaterializationState,
+  CoworkMaterializeReceipt,
+} from "../materialization/contracts";
 import { CoworkBridgeEditor, useCoworkBridge } from "../bridge";
-import { CoworkChatAnnotations } from "../chat";
-import { CoworkEditorPane } from "../editor/CoworkEditorPane";
+import { CoworkChatAnnotations, type FeedbackCapture } from "../chat";
+import {
+  CoworkEditorPane,
+  type CoworkScratchPromotionHandle,
+} from "../editor/CoworkEditorPane";
 import {
   isChatDraftDirty,
   loadChatDraft,
@@ -26,7 +38,6 @@ import {
   RailStore,
   createDemoChatProvider,
   isDirty,
-  type ReviewRailData,
 } from "../rail";
 import {
   EDITOR_DEFAULT_SIZE,
@@ -54,7 +65,7 @@ const DRIFT_LABEL: Record<string, string> = {
 const COWORK_EDITOR_HELP: HelpContent = {
   summary: "This is the editor pane.",
   details:
-    "It binds a Tiptap editor to a local Y.Doc through the eight-point load-order contract, projects AI proposals as an ephemeral review layer, and materializes edits block by block.",
+    "It binds a Tiptap editor to a local Y.Doc through the load-order contract, projects AI proposals as an ephemeral review layer, and saves admitted canonical Markdown through dual compare-and-swap checks.",
 };
 
 const COWORK_HEALTH_HELP: HelpContent = {
@@ -78,31 +89,90 @@ const DEMO_DOCUMENT_MARKDOWN = [
   "",
 ].join("\n");
 
-const EMPTY_DOCUMENT_ID = "cowork-empty";
-const EMPTY_CONVERSATION_ID = "cowork-doc-none";
-
-/** The honest empty review layer: a titled-but-empty document with no proposals or claims. */
-const EMPTY_REVIEW_DATA: ReviewRailData = {
-  documentId: EMPTY_DOCUMENT_ID,
-  title: "No document open",
-  drift: {
-    state: "clean",
-    openProposalCount: 0,
-    openFlagCount: 0,
-    lastMaterializedSha256: null,
-    currentFileSha256: null,
-  },
-  proposals: [],
-  expressions: [],
-  provenanceSpans: [],
-  claims: [],
-};
-
 /** The unified health view both modes feed the strip, so it renders identically. */
 interface CoworkHealthView {
   readonly title: string;
   readonly driftState: CoworkDriftState;
   readonly openProposalCount: number;
+}
+
+type CoworkWorkspacePane = "editor" | "review" | "chat";
+const NARROW_WORKSPACE_QUERY = "(max-width: 760px)";
+
+const useNarrowWorkspace = (): boolean => {
+  const [narrow, setNarrow] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      typeof window.matchMedia === "function" &&
+      window.matchMedia(NARROW_WORKSPACE_QUERY).matches,
+  );
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return undefined;
+    const media = window.matchMedia(NARROW_WORKSPACE_QUERY);
+    const update = (): void => setNarrow(media.matches);
+    update();
+    media.addEventListener?.("change", update);
+    return () => media.removeEventListener?.("change", update);
+  }, []);
+  return narrow;
+};
+
+function CoworkPaneTabs({
+  active,
+  onChange,
+}: {
+  readonly active: CoworkWorkspacePane;
+  readonly onChange: (pane: CoworkWorkspacePane) => void;
+}) {
+  const panes: readonly CoworkWorkspacePane[] = ["editor", "review", "chat"];
+  const refs = useRef<Array<HTMLButtonElement | null>>([]);
+  const select = (index: number): void => {
+    const normalized = (index + panes.length) % panes.length;
+    const pane = panes[normalized];
+    onChange(pane);
+    refs.current[normalized]?.focus();
+  };
+  return (
+    <div className="wb-cowork__pane-tabs" role="tablist" aria-label="Co-work panes">
+      {panes.map((pane, index) => (
+        <button
+          key={pane}
+          ref={(element) => {
+            refs.current[index] = element;
+          }}
+          type="button"
+          role="tab"
+          id={`wb-cowork-mobile-tab-${pane}`}
+          className="wb-cowork__pane-tab"
+          aria-selected={active === pane}
+          aria-controls={
+            pane === "editor"
+              ? "wb-cowork-mobile-panel-editor"
+              : `wb-cowork-rail-panel-${pane}`
+          }
+          tabIndex={active === pane ? 0 : -1}
+          onClick={() => onChange(pane)}
+          onKeyDown={(event) => {
+            if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+              event.preventDefault();
+              select(index + 1);
+            } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+              event.preventDefault();
+              select(index - 1);
+            } else if (event.key === "Home") {
+              event.preventDefault();
+              select(0);
+            } else if (event.key === "End") {
+              event.preventDefault();
+              select(panes.length - 1);
+            }
+          }}
+        >
+          {pane[0].toLocaleUpperCase() + pane.slice(1)}
+        </button>
+      ))}
+    </div>
+  );
 }
 
 /**
@@ -117,7 +187,7 @@ function CoworkHealthStrip({ health }: { health: CoworkHealthView | null }) {
     <HelpTarget content={COWORK_HEALTH_HELP} placement="bottom start">
       <header className="wb-cowork__health" aria-label="Document health">
         <span className="wb-cowork__health-title">
-          {health?.title ?? "No document open"}
+          {health?.title ?? "Choose a document"}
         </span>
         {health !== null ? (
           <span className="wb-cowork__health-facts">
@@ -151,19 +221,29 @@ function CoworkWorkspaceLayout({
   editor,
   rail,
   railRef,
+  showHealth = true,
+  narrow = false,
+  activePane = "editor",
+  paneTabs = null,
 }: {
   readonly health: CoworkHealthView | null;
   readonly editor: ReactNode;
   readonly rail: ReactNode;
   readonly railRef?: (element: HTMLElement | null) => void;
+  readonly showHealth?: boolean;
+  readonly narrow?: boolean;
+  readonly activePane?: CoworkWorkspacePane;
+  readonly paneTabs?: ReactNode;
 }) {
   const helping = useDashboardHelpEnabled();
   const { defaultLayout, onLayoutChanged } = useResizableRail();
   return (
     <div className={`wb-cowork${helping ? " is-helping" : ""}`}>
-      <CoworkHealthStrip health={health} />
+      {showHealth ? <CoworkHealthStrip health={health} /> : null}
+      {paneTabs}
       <Group
         className="wb-cowork__body"
+        data-narrow={narrow}
         orientation="horizontal"
         defaultLayout={defaultLayout}
         onLayoutChanged={onLayoutChanged}
@@ -173,14 +253,25 @@ function CoworkWorkspaceLayout({
           className="wb-cowork__editor-panel"
           defaultSize={EDITOR_DEFAULT_SIZE}
           minSize={EDITOR_MIN_SIZE}
+          data-pane-active={!narrow || activePane === "editor"}
         >
           <HelpTarget content={COWORK_EDITOR_HELP} placement="top">
-            <div className="wb-cowork__editor-region">{editor}</div>
+            <div
+              id="wb-cowork-mobile-panel-editor"
+              className="wb-cowork__editor-region"
+              role={narrow ? "tabpanel" : undefined}
+              aria-labelledby={narrow ? "wb-cowork-mobile-tab-editor" : undefined}
+              hidden={narrow && activePane !== "editor"}
+              inert={narrow && activePane !== "editor" ? true : undefined}
+            >
+              {editor}
+            </div>
           </HelpTarget>
         </Panel>
         <Separator
           className="wb-cowork__rail-separator"
           aria-label="Resize the review panel"
+          hidden={narrow}
         />
         <Panel
           id={RAIL_PANEL_ID}
@@ -188,8 +279,15 @@ function CoworkWorkspaceLayout({
           defaultSize={RAIL_DEFAULT_SIZE}
           minSize={RAIL_MIN_SIZE}
           maxSize={RAIL_MAX_SIZE}
+          data-pane-active={!narrow || activePane !== "editor"}
         >
-          <aside className="wb-cowork__rail" aria-label="Review and chat" ref={railRef}>
+          <aside
+            className="wb-cowork__rail"
+            aria-label="Review and chat"
+            ref={railRef}
+            hidden={narrow && activePane === "editor"}
+            inert={narrow && activePane === "editor" ? true : undefined}
+          >
             {rail}
           </aside>
         </Panel>
@@ -209,6 +307,14 @@ export const healthFromModel = (
     openProposalCount: document.openProposalCount,
   };
 };
+
+export const healthFromDocument = (
+  document: CoworkDocumentSummary,
+): CoworkHealthView => ({
+  title: document.title,
+  driftState: document.driftState,
+  openProposalCount: document.openProposalCount,
+});
 
 /**
  * The dev-only demo fixture scene (Ruling 1: not a product surface). The in-memory review and
@@ -249,44 +355,38 @@ export function CoworkDemoWorkspace({
 }
 
 /**
- * Empty mode (the honest default). No document is open, so the health strip shows its
- * "No document open" state, the editor opens on an empty editable surface, and the rail
- * carries no fabricated proposals and no scripted agent turn: an empty review layer and an
- * empty document conversation with a real composer.
+ * Compatibility empty fixture. The production widget supplies the actionable lifecycle
+ * launcher; this boundary intentionally mounts no editor, rail, chat, or resizer.
  */
 export function CoworkEmptyWorkspace() {
-  const reviewProvider = useMemo(
-    () => new InMemoryReviewProvider({ data: EMPTY_REVIEW_DATA }),
-    [],
-  );
-  const chatProvider = useMemo(
-    () =>
-      new InMemoryChatProvider({
-        conversationId: EMPTY_CONVERSATION_ID,
-        title: "Document conversation",
-        status: "open",
-        agentLiveness: "unknown",
-        messages: [],
-      }),
-    [],
-  );
-
   return (
-    <CoworkWorkspaceLayout
-      health={null}
-      // Thread the stable empty-document id so the editor keys its local, reload-surviving
-      // transport to this scratch document (the coordination seam with the persistence work).
-      // The prop is optional, so this compiles whether or not the pane consumes it yet.
-      editor={<CoworkEditorPane documentId={EMPTY_DOCUMENT_ID} />}
-      rail={
-        <CoworkRail
-          documentId={EMPTY_DOCUMENT_ID}
-          reviewProvider={reviewProvider}
-          chatProvider={chatProvider}
-          conversationId={EMPTY_CONVERSATION_ID}
+    <section className="wb-cowork-empty" aria-labelledby="cowork-empty-title">
+      <h2 id="cowork-empty-title">Start a Co-work document</h2>
+      <p>Choose a Folder, then open or create a document.</p>
+    </section>
+  );
+}
+
+/** A named device-local scratch: editor only, never a fake registered session. */
+export function CoworkScratchWorkspace({
+  scratchId,
+  onPromotionHandle,
+  onSyncStatus,
+}: {
+  readonly scratchId: string;
+  readonly onPromotionHandle?: (handle: CoworkScratchPromotionHandle | null) => void;
+  readonly onSyncStatus?: (status: CoworkSyncStatus) => void;
+}) {
+  return (
+    <div className="wb-cowork wb-cowork--scratch">
+      <div className="wb-cowork__editor-region">
+        <CoworkEditorPane
+          documentId={scratchId}
+          onPromotionHandle={onPromotionHandle}
+          onSyncStatus={onSyncStatus}
         />
-      }
-    />
+      </div>
+    </div>
   );
 }
 
@@ -299,11 +399,29 @@ export function CoworkEmptyWorkspace() {
 export function CoworkLiveWorkspace({
   documentId,
   storeId,
+  document,
   fallbackHealth,
+  showHealth = true,
+  readOnly = false,
+  feedbackCapture = true,
+  onSyncStatus,
+  onMaterializationState,
+  onMaterializationController,
+  onMaterialized,
 }: {
   readonly documentId: string;
   readonly storeId: string;
+  readonly document: CoworkDocumentSummary;
   readonly fallbackHealth: CoworkHealthView | null;
+  readonly showHealth?: boolean;
+  readonly readOnly?: boolean;
+  readonly feedbackCapture?: boolean;
+  readonly onSyncStatus?: (status: CoworkSyncStatus) => void;
+  readonly onMaterializationState?: (state: CoworkMaterializationState) => void;
+  readonly onMaterializationController?: (
+    controller: CoworkMaterializationController | null,
+  ) => void;
+  readonly onMaterialized?: (receipt: CoworkMaterializeReceipt) => void;
 }) {
   const conversationId = `cowork-doc-${documentId}`;
 
@@ -322,19 +440,48 @@ export function CoworkLiveWorkspace({
         { onTabChange: (tab) => saveRailTab(window.localStorage, documentId, tab) },
       ),
   );
+  const narrowWorkspace = useNarrowWorkspace();
+  const [activePane, setActivePane] = useState<CoworkWorkspacePane>("editor");
+  const selectPane = useCallback(
+    (pane: CoworkWorkspacePane): void => {
+      setActivePane(pane);
+      if (pane !== "editor") railStore.setTab(pane);
+    },
+    [railStore],
+  );
+  useEffect(
+    () =>
+      railStore.subscribe(() => {
+        if (narrowWorkspace) setActivePane(railStore.getState().tab);
+      }),
+    [narrowWorkspace, railStore],
+  );
+  useEffect(() => setActivePane("editor"), [documentId]);
   const navBinding = useCoworkNavBinding();
 
   const bridge = useCoworkBridge({
     documentId,
     storeId,
     conversationId,
+    readOnly,
+    onSyncStatus,
+    currentFileSha256: document.currentFileSha256,
+    initialDriftState: document.driftState,
+    canMaterialize: document.permissions?.materialize !== false,
+    onMaterializationState,
+    onMaterializationController,
+    onMaterialized,
     onRoutingDelivery: (delivery) => annotations.annotateRoutingDelivery(delivery),
     // The last link of the feedback loop: R9 landed, so record the span-linked message on
     // the Chat tab and switch the rail to Chat so the human sees the feedback land.
-    onFeedbackCaptured: (capture) => {
-      annotations.annotateFeedback(capture);
-      railStore.setTab("chat");
-    },
+    ...(feedbackCapture
+      ? {
+          onFeedbackCaptured: (capture: FeedbackCapture) => {
+            annotations.annotateFeedback(capture);
+            railStore.setTab("chat");
+          },
+        }
+      : {}),
   });
 
   // The union route-change guard (guards/routeGuard): a staged-but-unsubmitted sitting or an
@@ -373,7 +520,15 @@ export function CoworkLiveWorkspace({
   return (
     <CoworkWorkspaceLayout
       health={health}
+      showHealth={showHealth}
       railRef={bridge.railRef}
+      narrow={narrowWorkspace}
+      activePane={activePane}
+      paneTabs={
+        narrowWorkspace ? (
+          <CoworkPaneTabs active={activePane} onChange={selectPane} />
+        ) : null
+      }
       editor={<CoworkBridgeEditor {...bridge.editorProps} />}
       rail={
         <CoworkRail
@@ -386,6 +541,8 @@ export function CoworkLiveWorkspace({
           queueBindings={navBinding}
           chatAnnotations={annotations}
           onScrollToChatAnchor={bridge.scrollToSpanAnchor}
+          narrow={narrowWorkspace}
+          showTabs={!narrowWorkspace}
         />
       }
     />

@@ -13,7 +13,7 @@ import yaml
 
 from work_buddy.truth.anchors import CompositeSelector
 from work_buddy.truth.contracts import Actor, InvariantViolation
-from work_buddy.truth.export import ExportResult, export_store, import_store
+from work_buddy.truth.export import FORMAT_VERSION, ExportResult, export_store, import_store
 from work_buddy.truth.identity import canonical_json, sha256_text
 from work_buddy.truth.lifecycle import TruthLifecycle
 from work_buddy.truth.locators import LocatorValidation, validate_locator
@@ -1046,7 +1046,7 @@ class CoworkWorkloadRunner:
         imported = import_store(
             result.path, restored_root, registry=EmptyRegistry()
         )
-        assert imported.source_format_version == 3
+        assert imported.source_format_version == FORMAT_VERSION
         restored_export = export_store(
             imported.store, restored_root / "restored-claims.jsonl"
         )

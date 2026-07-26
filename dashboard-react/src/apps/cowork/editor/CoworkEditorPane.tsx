@@ -1,16 +1,30 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EditorContent, useEditor } from "@tiptap/react";
+import type { Editor } from "@tiptap/core";
 import * as Y from "yjs";
 
-import { CoworkYdocPersistence } from "../persistence/CoworkYdocPersistence";
+import {
+  CoworkYdocPersistence,
+  type CoworkSyncStatus,
+} from "../persistence/CoworkYdocPersistence";
 import { LocalCoworkYdocTransport } from "../persistence/LocalCoworkYdocTransport";
 import type { CoworkYdocTransport } from "../persistence/transport";
 import { isLocalHumanOrigin } from "./applyOrigin";
-import { buildEditorExtensions, stopCapturingLoadTimeIds } from "./extensions";
+import {
+  buildEditorExtensions,
+  stopCapturingLoadTimeIds,
+} from "./extensions";
 import { importCoworkMarkdown } from "./markdownImport";
+import { sha256Hex } from "../persistence/hashing";
+import { serializeCoworkEditorMarkdown } from "./serializeCoworkMarkdown";
+import {
+  coworkSessionDurability,
+  createCoworkSessionDurabilityController,
+  scratchSessionDurabilityKey,
+} from "../session/CoworkSessionDurability";
 
 // A brand-new document opens empty and honest. What the pane IS (its load-order contract,
-// its review layer, its block-splice materialize) is documented as hover help on the editor
+// its review layer, its hash-bound canonical materialize) is documented as hover help on the editor
 // region, not seeded as document content. Modes that want seeded prose pass it explicitly.
 const DEFAULT_SEED_MARKDOWN = "";
 
@@ -35,6 +49,18 @@ export interface CoworkEditorPaneProps {
   readonly document?: Y.Doc;
   /** Injectable for tests; defaults to the reload-surviving local transport. */
   readonly transport?: CoworkYdocTransport;
+  readonly onPromotionHandle?: (handle: CoworkScratchPromotionHandle | null) => void;
+  readonly onSyncStatus?: (status: CoworkSyncStatus) => void;
+}
+
+export interface CoworkScratchPromotionContent {
+  readonly sourceBytes: Uint8Array;
+  readonly snapshot: Uint8Array;
+}
+
+export interface CoworkScratchPromotionHandle {
+  exportContent(): Promise<CoworkScratchPromotionContent>;
+  retryDeviceSave(): Promise<void>;
 }
 
 interface MountedCoworkEditorProps {
@@ -42,6 +68,7 @@ interface MountedCoworkEditorProps {
   readonly persistence: CoworkYdocPersistence;
   readonly seedMarkdown: string;
   readonly seedWhenEmpty: boolean;
+  readonly onEditorChange?: (editor: Editor | null) => void;
 }
 
 /**
@@ -59,6 +86,7 @@ function MountedCoworkEditor({
   persistence,
   seedMarkdown,
   seedWhenEmpty,
+  onEditorChange,
 }: MountedCoworkEditorProps) {
   const extensions = useMemo(() => buildEditorExtensions(document), [document]);
   // An empty seed means a genuinely empty document, so nothing is parsed or set and the
@@ -98,6 +126,7 @@ function MountedCoworkEditor({
       editor.commands.setContent(seedContent);
     }
     stopCapturingLoadTimeIds(editor);
+    onEditorChange?.(editor);
     // The collaborative binding synchronizes the editor's base structure into
     // the document while the editor is being created, before start() attached
     // the push observer, so a brand-new document's update log would reference a
@@ -105,8 +134,15 @@ function MountedCoworkEditor({
     // One immediate compaction stores the complete current state as the
     // snapshot, anchoring every later log entry, so a reload at any moment
     // restores the document instead of orphaned updates over a missing base.
-    void persistence.compact();
+    void persistence.compact().catch(() => undefined);
   }, [editor, persistence, seedContent, seedWhenEmpty]);
+
+  useEffect(
+    () => () => {
+      onEditorChange?.(null);
+    },
+    [onEditorChange],
+  );
 
   // Keep the persisted append log bounded. A human edit reschedules an idle-debounced
   // compaction, and a reload or tab close flushes one immediately through pagehide, so
@@ -123,7 +159,7 @@ function MountedCoworkEditor({
       cancelPending();
       idleTimer = setTimeout(() => {
         idleTimer = undefined;
-        void persistence.compact();
+        void persistence.compact().catch(() => undefined);
       }, COMPACTION_IDLE_MS);
     };
     const onDocUpdate = (_update: Uint8Array, origin: unknown): void => {
@@ -132,7 +168,7 @@ function MountedCoworkEditor({
     };
     const onPageHide = (): void => {
       cancelPending();
-      void persistence.compact();
+      void persistence.compact().catch(() => undefined);
     };
     document.on("update", onDocUpdate);
     const hasWindow = typeof window !== "undefined";
@@ -157,6 +193,8 @@ export function CoworkEditorPane({
   seedMarkdown = DEFAULT_SEED_MARKDOWN,
   document,
   transport,
+  onPromotionHandle,
+  onSyncStatus,
 }: CoworkEditorPaneProps) {
   const [doc] = useState(() => document ?? new Y.Doc());
   const [store] = useState(
@@ -166,6 +204,83 @@ export function CoworkEditorPane({
   );
   const [persistence] = useState(() => new CoworkYdocPersistence(doc, store));
   const [hydration, setHydration] = useState<{ readonly wasEmpty: boolean }>();
+  const [mountedEditor, setMountedEditor] = useState<Editor | null>(null);
+  const ensureScratchDurability = useCallback(async (): Promise<void> => {
+    await persistence.flush();
+    await persistence.compact();
+  }, [persistence]);
+  const durabilityKey = scratchSessionDurabilityKey(
+    documentId ?? DEFAULT_DOCUMENT_ID,
+  );
+  const durabilityController = useMemo(
+    () =>
+      createCoworkSessionDurabilityController({
+        pause: () => {
+          mountedEditor?.setEditable(false);
+          persistence.stop();
+        },
+        resume: () => {
+          persistence.start();
+          mountedEditor?.setEditable(true);
+        },
+        // This pane's transport is the device-local IndexedDB store, so flush is the
+        // scratch equivalent of the registered editor's outbox append barrier.
+        ensureDeviceDurability: ensureScratchDurability,
+      }),
+    [ensureScratchDurability, mountedEditor, persistence],
+  );
+
+  useEffect(
+    () => coworkSessionDurability.register(durabilityKey, durabilityController),
+    [durabilityController, durabilityKey],
+  );
+
+  useEffect(() => {
+    if (onSyncStatus === undefined) return;
+    return persistence.subscribeStatus(onSyncStatus);
+  }, [onSyncStatus, persistence]);
+
+  useEffect(() => {
+    if (onPromotionHandle === undefined) return;
+    if (mountedEditor === null) {
+      onPromotionHandle(null);
+      return;
+    }
+    const handle: CoworkScratchPromotionHandle = {
+      retryDeviceSave: ensureScratchDurability,
+      exportContent: async () => {
+        await ensureScratchDurability();
+        const fidelity = doc.getMap<unknown>("wb-cowork:fidelity");
+        const markdown = serializeCoworkEditorMarkdown(mountedEditor, doc);
+        const sourceBytes = new TextEncoder().encode(markdown);
+        const hasBom = fidelity.get("utf8_bom") === true;
+        const lineEnding = fidelity.get("newline_style");
+        const frontmatterValue = fidelity.get("frontmatter");
+        const frontmatter = typeof frontmatterValue === "string" ? frontmatterValue : null;
+        const clone = new Y.Doc();
+        Y.applyUpdate(clone, Y.encodeStateAsUpdate(doc));
+        const cloneFidelity = clone.getMap<unknown>("wb-cowork:fidelity");
+        cloneFidelity.set("schema", "cowork-fidelity/v1");
+        cloneFidelity.set("source_sha256", await sha256Hex(sourceBytes));
+        cloneFidelity.set("utf8_bom", hasBom);
+        cloneFidelity.set(
+          "newline_style",
+          lineEnding === "crlf" || lineEnding === "cr" ? lineEnding : "lf",
+        );
+        const trailingNewlineCount = fidelity.get("trailing_newline_count");
+        cloneFidelity.set(
+          "trailing_newline_count",
+          typeof trailingNewlineCount === "number" ? trailingNewlineCount : 0,
+        );
+        cloneFidelity.set("frontmatter", frontmatter);
+        const snapshot = Y.encodeStateAsUpdate(clone);
+        clone.destroy();
+        return { sourceBytes, snapshot };
+      },
+    };
+    onPromotionHandle(handle);
+    return () => onPromotionHandle(null);
+  }, [doc, ensureScratchDurability, mountedEditor, onPromotionHandle]);
 
   useEffect(() => {
     let active = true;
@@ -174,7 +289,7 @@ export function CoworkEditorPane({
     });
     return () => {
       active = false;
-      persistence.stop();
+      void persistence.dispose().catch(() => undefined);
     };
   }, [persistence]);
 
@@ -186,6 +301,7 @@ export function CoworkEditorPane({
           persistence={persistence}
           seedMarkdown={seedMarkdown}
           seedWhenEmpty={hydration.wasEmpty}
+          onEditorChange={setMountedEditor}
         />
       ) : (
         <p className="wb-cowork-editor__loading" role="status">

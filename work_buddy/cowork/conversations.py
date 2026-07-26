@@ -278,6 +278,7 @@ def deliver_decision(
     note: str | None = None,
     title: str | None = None,
     conn: sqlite3.Connection | None = None,
+    delivery_id: str | None = None,
 ) -> DeliveryStatus:
     """Deliver a redirect note or endorse into the document conversation.
 
@@ -311,6 +312,7 @@ def deliver_decision(
             content,
             message_type="text",
             conn=active,
+            message_id=delivery_id,
         )
         if message is None:
             return DeliveryStatus(

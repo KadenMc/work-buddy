@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,7 +12,9 @@ import { DashboardEventProvider } from "../../../dashboard/events/DashboardEvent
 import { fallbackCanvasTheme } from "../../../theme/resolveTheme";
 import { expectNoAccessibilityViolations } from "../../../test/setup";
 import type { CoworkDocumentSummary, CoworkWorkspaceInput } from "../contracts";
-import CoworkWorkspaceWidget from "../widget/CoworkWorkspaceWidget";
+import CoworkWorkspaceWidget, {
+  reimportReceiptMatchesDocument,
+} from "../widget/CoworkWorkspaceWidget";
 import { resolveFixtureMode } from "./CoworkWorkspaceSurface";
 
 /**
@@ -57,13 +59,16 @@ const DEMO_DOCUMENT: CoworkDocumentSummary = {
   openFlagCount: 0,
 };
 
-const renderWorkspace = (input: CoworkWorkspaceInput) =>
+const renderWorkspace = (
+  input: CoworkWorkspaceInput,
+  emit: ComponentProps<typeof CoworkWorkspaceWidget>["emit"] = noopEmit,
+) =>
   render(
     <DashboardEventProvider>
       <main>
         <CoworkWorkspaceWidget
           input={input}
-          emit={noopEmit}
+          emit={emit}
           presentation={presentation}
         />
       </main>
@@ -80,63 +85,54 @@ describe("CoworkWorkspaceWidget default (empty) mode", () => {
     sessionQuality: "demo",
   };
 
-  it("opens with honest empty states and no fabricated content", async () => {
+  it("opens with an actionable Folder-first launcher and no empty theatre", async () => {
     const { container } = renderWorkspace(emptyInput);
 
-    // Health strip: no document open (its existing null branch).
-    await waitFor(
-      () =>
-        expect(
-          within(screen.getByLabelText("Document health")).getByText(
-            "No document open",
-          ),
-        ).toBeVisible(),
-      { timeout: 10_000 },
-    );
-
-    // The editor mounts as a real, empty editable surface, with none of the old
-    // self-describing blurb and no demo document title.
-    await waitFor(
-      () => expect(container.querySelector(".ProseMirror")).not.toBeNull(),
-      { timeout: 10_000 },
-    );
+    expect(
+      screen.getByRole("heading", { name: "Choose a Folder for Co-work" }),
+    ).toBeVisible();
+    expect(screen.getAllByRole("button", { name: /Open Folder/i }).length).toBeGreaterThan(0);
+    expect(container.querySelector(".ProseMirror")).toBeNull();
+    expect(screen.queryByRole("tab", { name: /Review/ })).toBeNull();
+    expect(screen.queryByRole("separator")).toBeNull();
     expect(screen.queryByText(/This is the editor pane/)).toBeNull();
     expect(screen.queryByText("Co-work demo document")).toBeNull();
-
-    // Review rail: no fabricated proposals, just an honest empty layer.
-    await waitFor(
-      () => expect(screen.getByText("Nothing to review here.")).toBeVisible(),
-      { timeout: 10_000 },
-    );
-    expect(
-      screen.queryByText("Add the vault content hash to the cache key."),
-    ).toBeNull();
   }, 15_000);
 
-  it("shows an honest empty chat: a real composer, no scripted agent turn, no fake typing", async () => {
+  it("offers a named local scratch without pretending it is a registered document", async () => {
     const { container } = renderWorkspace(emptyInput);
-    await waitFor(
-      () => expect(container.querySelector(".ProseMirror")).not.toBeNull(),
-      { timeout: 10_000 },
-    );
-
-    await userEvent.click(screen.getByRole("tab", { name: /Chat/ }));
-
-    // A real composer is present.
-    expect(screen.getByRole("textbox", { name: "Message" })).toBeVisible();
-    // No fabricated agent message, and no perpetual typing indicator.
+    expect(screen.getByRole("button", { name: "New local scratch" })).toBeVisible();
+    expect(container.querySelector(".ProseMirror")).toBeNull();
+    expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull();
     expect(screen.queryByText(/I proposed a few tracked edits/)).toBeNull();
-    expect(container.querySelector(".wb-chat-typing")).toBeNull();
   }, 15_000);
 
   it("has no accessibility violations in its empty resting state", async () => {
     const { container } = renderWorkspace(emptyInput);
-    await waitFor(
-      () => expect(container.querySelector(".ProseMirror")).not.toBeNull(),
-      { timeout: 10_000 },
-    );
+    expect(container.querySelector(".ProseMirror")).toBeNull();
     await expectNoAccessibilityViolations(container);
   }, 15_000);
+
+  it("asks before initializing an ordinary Folder and still mounts no editor", () => {
+    const { container } = renderWorkspace({
+      ...emptyInput,
+      folderSelection: {
+        kind: "setup_available",
+        candidate: {
+          folderName: "work-buddy",
+          folderPath: "C:/Projects/work-buddy",
+        },
+      },
+    });
+
+    expect(
+      screen.getByRole("heading", { name: "Set up Co-work in “work-buddy”?" }),
+    ).toBeVisible();
+    expect(screen.getByText(".wbuddy/cowork/", { exact: false })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Set up Co-work" })).toBeVisible();
+    expect(container.querySelector(".ProseMirror")).toBeNull();
+    expect(screen.queryByRole("tab", { name: /Review/ })).toBeNull();
+  });
 });
 
 // The demo scene is no longer a product surface (Ruling 1): it is a dev-only fixture entry the
@@ -213,6 +209,29 @@ const LIVE_DOCUMENT: CoworkDocumentSummary = {
   openProposalCount: 0,
   openFlagCount: 0,
 };
+
+const LIVE_FOLDER = {
+  storeId: "live-store",
+  folderName: "work-buddy",
+  folderPath: "C:/Projects/work-buddy",
+  layout: "wbuddy_cowork_v1",
+  reachable: true,
+  eligibility: "eligible",
+  ineligibleReason: null,
+  documentSurface: {
+    enabled: true,
+    allowedDocumentClasses: ["co_authored"],
+    feedbackCapture: true,
+  },
+  permissions: {
+    read: true,
+    create: true,
+    import: true,
+    materialize: true,
+    retire: true,
+  },
+  documentCount: 1,
+} as const;
 
 /** The R2 doc-open payload the stubbed route returns, one edit proposal on the seed text. */
 const R2_LIVE_PAYLOAD = {
@@ -301,31 +320,251 @@ describe("CoworkWorkspaceWidget live mode", () => {
   afterEach(() => {
     globalThis.fetch = originalFetch;
     window.history.replaceState({}, "", originalUrl);
+    vi.useRealTimers();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
-  const renderLive = () => {
-    window.history.replaceState({}, "", "/app/cowork?store_id=live-store");
+  const renderLive = (
+    emit: ComponentProps<typeof CoworkWorkspaceWidget>["emit"] = noopEmit,
+  ) => {
+    window.history.replaceState({}, "", "/app/cowork?store_id=live-store&document_id=live-doc");
     globalThis.fetch = liveFetch() as unknown as typeof fetch;
-    return renderWorkspace({ document: LIVE_DOCUMENT, sessionQuality: "complete" });
+    return renderWorkspace({
+      document: LIVE_DOCUMENT,
+      sessionQuality: "complete",
+      folders: [LIVE_FOLDER],
+      folderSelection: { kind: "initialized", folder: LIVE_FOLDER },
+      activeFolderStoreId: LIVE_FOLDER.storeId,
+      catalog: {
+        status: "ready",
+        documents: [LIVE_DOCUMENT],
+        refreshedAt: "2026-07-22T00:00:00Z",
+        error: null,
+      },
+      scratches: [],
+      routeTarget: {
+        kind: "registered",
+        storeId: LIVE_FOLDER.storeId,
+        documentId: LIVE_DOCUMENT.documentId,
+      },
+      activeSession: {
+        kind: "registered",
+        storeId: LIVE_FOLDER.storeId,
+        document: LIVE_DOCUMENT,
+      },
+      openingTarget: null,
+      navigationError: null,
+      readOnly: false,
+    }, emit);
   };
 
-  it("pulls R2 and ingests the proposal so a card and a suggestion mark both render", async () => {
+  it("remounts a replacement only after the clean catalog matches its commit receipt", () => {
+    const receipt = {
+      intentId: "reimport-1",
+      documentId: LIVE_DOCUMENT.documentId,
+      sourceSha256: "source-v2",
+      snapshotSha256: "snapshot-v2",
+      structuredHeadSha256: "head-v2",
+      documentVersionId: "version-v2",
+      docEventId: "event-v2",
+      staledProposalIds: [],
+      reimportedAt: "2026-07-22T19:00:00Z",
+    };
+    const committedDocument: CoworkDocumentSummary = {
+      ...LIVE_DOCUMENT,
+      currentFileSha256: receipt.sourceSha256,
+      snapshotSha256: receipt.snapshotSha256,
+      structuredHeadSha256: receipt.structuredHeadSha256,
+    };
+
+    expect(
+      reimportReceiptMatchesDocument(receipt, {
+        ...committedDocument,
+        driftState: "drifted",
+      }),
+    ).toBe(false);
+    expect(
+      reimportReceiptMatchesDocument(receipt, {
+        ...committedDocument,
+        structuredHeadSha256: "stale-head",
+      }),
+    ).toBe(false);
+    expect(reimportReceiptMatchesDocument(receipt, committedDocument)).toBe(true);
+  });
+
+  it("opens the document picker instead of guessing which existing document to open", async () => {
+    const user = userEvent.setup();
+    const emit = vi.fn(async (intent: Parameters<typeof noopEmit>[0]) => ({
+      intent_id: intent.intent_id,
+      status: "accepted" as const,
+    }));
+    window.history.replaceState({}, "", "/app/cowork?store_id=live-store");
+    renderWorkspace(
+      {
+        document: null,
+        sessionQuality: "complete",
+        folders: [LIVE_FOLDER],
+        folderSelection: { kind: "initialized", folder: LIVE_FOLDER },
+        activeFolderStoreId: LIVE_FOLDER.storeId,
+        catalog: {
+          status: "ready",
+          documents: [LIVE_DOCUMENT],
+          refreshedAt: "2026-07-22T00:00:00Z",
+          error: null,
+        },
+        scratches: [],
+        routeTarget: { kind: "launcher", storeId: LIVE_FOLDER.storeId },
+        activeSession: { kind: "none" },
+        openingTarget: null,
+        navigationError: null,
+        readOnly: false,
+      },
+      emit,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Open existing" }));
+
+    expect(
+      screen.getByRole("dialog", { name: "Open a Co-work document" }),
+    ).toBeVisible();
+    expect(screen.getByRole("option", { name: /Live doc/ })).toBeVisible();
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it("refreshes the open document on focus and coalesces a burst", async () => {
+    let releaseRefresh!: () => void;
+    const refreshGate = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const emit = vi.fn(async (intent: Parameters<typeof noopEmit>[0]) => {
+      if (intent.intent_type === "wb.cowork.catalog.refresh") await refreshGate;
+      return { intent_id: intent.intent_id, status: "accepted" as const };
+    });
+    renderLive(emit);
+    emit.mockClear();
+
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+      window.dispatchEvent(new Event("focus"));
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(emit).toHaveBeenCalledTimes(1);
+    expect(emit.mock.calls[0]?.[0].intent_type).toBe("wb.cowork.catalog.refresh");
+
+    releaseRefresh();
+    await waitFor(() => expect(emit).toHaveBeenCalledTimes(2));
+    expect(
+      emit.mock.calls.every(
+        ([intent]) => intent.intent_type === "wb.cowork.catalog.refresh",
+      ),
+    ).toBe(true);
+  });
+
+  it("polls only while the open document is visible", async () => {
+    vi.useFakeTimers();
+    let visibility: DocumentVisibilityState = "hidden";
+    vi.spyOn(document, "visibilityState", "get").mockImplementation(
+      () => visibility,
+    );
+    const emit = vi.fn(async (intent: Parameters<typeof noopEmit>[0]) => ({
+      intent_id: intent.intent_id,
+      status: "accepted" as const,
+    }));
+    renderLive(emit);
+    emit.mockClear();
+
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+      await Promise.resolve();
+    });
+    expect(emit).not.toHaveBeenCalled();
+
+    visibility = "visible";
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+      await Promise.resolve();
+    });
+    expect(emit).toHaveBeenCalledTimes(1);
+
+    emit.mockClear();
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+      await Promise.resolve();
+    });
+    expect(emit).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed when a registered document has no canonical structured snapshot", async () => {
     const { container } = renderLive();
 
-    // The live pull drives the rail card from the one source of truth.
     await waitFor(() => expect(screen.getByText("Name the review rail.")).toBeVisible(), {
       timeout: 10_000,
     });
-
-    // The SAME pull ingests the proposal into the editor, so a suggestion mark renders.
     await waitFor(
-      () => expect(container.querySelector("[data-wb-suggestion]")).not.toBeNull(),
+      () => expect(screen.getByText("Structured document unavailable.")).toBeVisible(),
       { timeout: 10_000 },
     );
+    expect(container.querySelector("[data-wb-suggestion]")).toBeNull();
+    expect(screen.queryByText(/This is the editor pane/)).toBeNull();
+  }, 15_000);
 
-    // The health strip reflects the live pull's open-proposal count.
-    expect(screen.getByText("1 open proposal")).toBeVisible();
+  it("uses mounted Editor, Review, and Chat peer panes with roving focus on narrow screens", async () => {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn((query: string) => ({
+        matches: query === "(max-width: 760px)",
+        media: query,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(() => true),
+      })),
+    );
+    const user = userEvent.setup();
+    renderLive();
+
+    const paneTabs = await screen.findByRole("tablist", { name: "Co-work panes" });
+    const editorTab = within(paneTabs).getByRole("tab", { name: "Editor" });
+    const reviewTab = within(paneTabs).getByRole("tab", { name: "Review" });
+    const chatTab = within(paneTabs).getByRole("tab", { name: "Chat" });
+    expect(editorTab).toHaveAttribute("aria-selected", "true");
+    expect(editorTab).toHaveAttribute("tabindex", "0");
+    expect(reviewTab).toHaveAttribute("tabindex", "-1");
+    expect(chatTab).toHaveAttribute("tabindex", "-1");
+    expect(document.getElementById("wb-cowork-mobile-panel-editor")).toBeVisible();
+    expect(document.getElementById("wb-cowork-rail-panel-review")).not.toBeVisible();
+
+    editorTab.focus();
+    await user.keyboard("{ArrowRight}");
+    expect(reviewTab).toHaveFocus();
+    expect(reviewTab).toHaveAttribute("aria-selected", "true");
+    expect(reviewTab).toHaveAttribute("tabindex", "0");
+    expect(editorTab).toHaveAttribute("tabindex", "-1");
+    expect(document.getElementById("wb-cowork-mobile-panel-editor")).toHaveAttribute(
+      "inert",
+    );
+    expect(document.getElementById("wb-cowork-mobile-panel-editor")).not.toBeVisible();
+    expect(document.getElementById("wb-cowork-rail-panel-review")).toBeVisible();
+
+    await waitFor(() => expect(screen.getByText("Name the review rail.")).toBeVisible(), {
+      timeout: 10_000,
+    });
+    await user.click(screen.getByText("Name the review rail."));
+    await user.click(screen.getByRole("button", { name: "Accept" }));
+    expect(screen.getByText("Staged: Accept")).toBeVisible();
+
+    await user.click(editorTab);
+    expect(editorTab).toHaveAttribute("aria-selected", "true");
+    await user.click(reviewTab);
+    expect(screen.getByText("Staged: Accept")).toBeVisible();
+
+    reviewTab.focus();
+    await user.keyboard("{End}");
+    expect(chatTab).toHaveFocus();
+    expect(chatTab).toHaveAttribute("aria-selected", "true");
   }, 15_000);
 });
 

@@ -11,10 +11,13 @@ disk.
 
 from __future__ import annotations
 
+import io
+import json
+
 import pytest
 
 from work_buddy.truth import proposals
-from work_buddy.truth.identity import sha256_text
+from work_buddy.truth.identity import sha256_bytes, sha256_text
 
 from .conftest import gesture_actor_ref, gesture_count
 
@@ -81,17 +84,43 @@ def test_full_review_loop(loop):
     store_id = loop["store_id"]
     ops = loop["ops"]
 
-    # Register the document through R10 with the file on disk.
-    (loop["root"] / DOC_REL).parent.mkdir(parents=True, exist_ok=True)
-    (loop["root"] / DOC_REL).write_bytes(DOC_BODY.encode("utf-8"))
-    register = client.post(
-        _url("/api/truth/doc/register", store_id),
-        json={"path": DOC_REL, "title": "Review loop", "profile": "co_authored"},
+    # Initialize the document through the binary two-phase bootstrap contract.
+    source = DOC_BODY.encode("utf-8")
+    prepare_bootstrap = client.post(
+        _url("/api/truth/doc/bootstrap", store_id),
+        data={
+            "metadata": json.dumps(
+                {
+                    "mode": "create",
+                    "path": DOC_REL,
+                    "title": "Review loop",
+                    "idempotency_key": "review-loop-bootstrap-0001",
+                }
+            ),
+            "source": (io.BytesIO(source), "review-loop.md"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert prepare_bootstrap.status_code == 201
+    bootstrap_intent = prepare_bootstrap.get_json()
+    initial_snapshot = b"YDOC:" + source
+    register = client.put(
+        _url(
+            f"/api/truth/doc/bootstrap/{bootstrap_intent['bootstrap_id']}",
+            store_id,
+        ),
+        data=initial_snapshot,
+        content_type="application/octet-stream",
+        headers={
+            "X-WB-Source-Sha256": sha256_bytes(source),
+            "X-WB-Snapshot-Sha256": sha256_bytes(initial_snapshot),
+            "X-WB-Ydoc-Schema": "cowork-yjs/v1",
+        },
     )
     assert register.status_code == 200
     registered = register.get_json()
     doc_id = registered["document_id"]
-    base_sha256 = registered["current_file_sha256"]
+    base_sha256 = registered["projection_sha256"]
 
     # Propose three edits through the ops surface.
     p_confirm = _propose(
@@ -111,57 +140,83 @@ def test_full_review_loop(loop):
         for pid in (p_confirm, p_false, p_pref)
     }
 
-    # Pull the Yjs transport (R3). A freshly registered doc has no snapshot yet,
-    # so the pull is an empty body that still reports the current content hash.
+    # Pull the initialized Yjs transport (R3).
     pull = client.get(_url(f"/api/truth/doc/{doc_id}/ydoc", store_id))
     assert pull.status_code == 200
     assert pull.headers["X-WB-Doc-Sha256"] == base_sha256
+    assert initial_snapshot in pull.data
 
     # Submit one sitting: accept the first, reject the second as false with a
     # verbatim negation, reject the third as preference with verbatim text.
     post_apply_sha256 = sha256_text(RENDERED_AFTER_ACCEPT)
     negation_text = "Beta sentence is accurate as written."
     preference_text = "Keep the gamma sentence exactly as it stands."
-    response = client.post(
-        _url(f"/api/truth/doc/{doc_id}/marks", store_id),
-        json={
-            "base_doc_sha256": base_sha256,
-            "items": [
-                {
-                    "proposal_id": p_confirm,
-                    "verb": "confirm",
-                    "canonical_sha256": canonical[p_confirm],
-                },
-                {
-                    "proposal_id": p_false,
-                    "verb": "reject_as_false",
-                    "canonical_sha256": canonical[p_false],
-                    "negation_text": negation_text,
-                },
-                {
-                    "proposal_id": p_pref,
-                    "verb": "reject_as_preference",
-                    "canonical_sha256": canonical[p_pref],
-                    "preference_text": preference_text,
-                },
-            ],
-            "materialize": {
-                "rendered_markdown": RENDERED_AFTER_ACCEPT,
-                "post_apply_content_sha256": post_apply_sha256,
-            },
+    items = [
+        {
+            "proposal_id": p_confirm,
+            "verb": "confirm",
+            "canonical_sha256": canonical[p_confirm],
         },
+        {
+            "proposal_id": p_false,
+            "verb": "reject_as_false",
+            "canonical_sha256": canonical[p_false],
+            "negation_text": negation_text,
+        },
+        {
+            "proposal_id": p_pref,
+            "verb": "reject_as_preference",
+            "canonical_sha256": canonical[p_pref],
+            "preference_text": preference_text,
+        },
+    ]
+    prepared_sitting = client.post(
+        _url(f"/api/truth/doc/{doc_id}/sitting/prepare", store_id),
+        json={
+            "items": items,
+            "expected_file_sha256": base_sha256,
+            "expected_ydoc_head_sha256": registered["structured_head_sha256"],
+            "idempotency_key": "review-loop-sitting-0001",
+        },
+        headers={"X-WB-User-Ref": USER_REF},
+    )
+    assert prepared_sitting.status_code == 201
+    sitting = prepared_sitting.get_json()
+    assert sitting["failed_items"] == []
+    assert sitting["requires_document_commit"] is True
+
+    replacement_snapshot = b"YDOC:" + RENDERED_AFTER_ACCEPT.encode("utf-8")
+    response = client.put(
+        _url(
+            f"/api/truth/doc/{doc_id}/sitting/{sitting['intent_id']}/commit",
+            store_id,
+        ),
+        data={
+            "metadata": json.dumps(
+                {
+                    "snapshot_sha256": sha256_bytes(replacement_snapshot),
+                    "rendered_sha256": post_apply_sha256,
+                }
+            ),
+            "snapshot": (io.BytesIO(replacement_snapshot), "snapshot.bin"),
+            "markdown": (
+                io.BytesIO(RENDERED_AFTER_ACCEPT.encode("utf-8")),
+                "rendered.md",
+            ),
+        },
+        content_type="multipart/form-data",
         headers={"X-WB-User-Ref": USER_REF},
     )
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["ok"] is True
-    assert payload["partial"] is True
+    assert payload["partial"] is False
     results = {item["proposal_id"]: item for item in payload["results"]}
 
-    # confirm -> applied and materialized, its gesture minted.
+    # confirm -> applied and its gesture minted. Publication is represented by
+    # the sitting-level materialize receipt, not repeated on each item.
     confirm_result = results[p_confirm]
     assert confirm_result["result"] == "applied"
-    assert confirm_result["materialized"] is True
     assert confirm_result["gesture_id"]
 
     # reject_as_false -> closed, a confirmed negation minted from the verbatim text.

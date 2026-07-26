@@ -22,7 +22,7 @@ parents:
 # Truth
 
 Truth is work-buddy's scoped evidence and claim ledger. Each store lives in a
-project-owned `.wb-truth` sidecar and is addressed through a machine registry.
+project-owned `.wbuddy/cowork` sidecar and is addressed through a machine registry.
 The authoritative record is append-only except for sanctioned content
 redaction. Human decisions bind one exact claim hash and its displayed receipts.
 

@@ -31,10 +31,10 @@ export const importCoworkMarkdown = (
 
 /**
  * Whole-document serialize with the frontmatter re-attached verbatim. This is the
- * fidelity-safe path ONLY for a no-edit round-trip and for reconstructing a body from a
- * parsed document. Per SP-3 and the fidelity gate, an EDITED document must materialize
- * through a block-splice materializer (copying unedited blocks byte-for-byte), never
- * through a whole-document serialize. The frontmatter is never fed to the serializer.
+ * fidelity-safe path for no-edit admission and for edited documents whose original source
+ * passed that exact canonical round-trip gate. Files containing syntax this serializer would
+ * normalize are refused at registration until a broader lossless materializer exists. The
+ * frontmatter is never fed to the serializer.
  */
 export const serializeCoworkMarkdown = (
   imported: CoworkMarkdownImport,

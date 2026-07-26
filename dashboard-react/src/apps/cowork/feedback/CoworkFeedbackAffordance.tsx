@@ -32,7 +32,7 @@ import "./styles.css";
 
 /** Shown on the disabled trigger when the document has no live scope. */
 const LIVE_REQUIRED_TITLE =
-  "Open this document in a live scope to give feedback.";
+  "Open a registered Folder document to give feedback.";
 
 interface FloatPos {
   readonly left: number;
