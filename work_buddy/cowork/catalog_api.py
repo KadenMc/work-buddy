@@ -68,14 +68,14 @@ def _store_from_request():
     except Exception:  # noqa: BLE001 - registry details stay server-side
         return None, _error(
             "folder_unreachable",
-            "The selected Folder is not reachable by Co-work.",
+            "The selected folder is not reachable by Co-work.",
             503,
             retryable=True,
         )
     if not store.profile.document_surface.enabled:
         return None, _error(
             "document_surface_disabled",
-            "Co-work documents are not enabled for this Folder.",
+            "Co-work documents are not enabled for this folder.",
             403,
         )
     return store, None
@@ -132,7 +132,7 @@ def _candidate_paths(root: Path) -> tuple[tuple[Path, ...], bool]:
     """Return one bounded scan, shared briefly across picker keystrokes.
 
     The picker issues a new filtered query as the user types. Rewalking a large
-    Folder for every keypress makes the debounce cosmetic, so the machine-local
+    folder for every keypress makes the debounce cosmetic, so the machine-local
     catalog reuses an immutable bounded result for a short window. Registration
     membership and path containment are still re-evaluated on every response.
     """

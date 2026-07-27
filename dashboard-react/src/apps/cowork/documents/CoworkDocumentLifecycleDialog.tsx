@@ -120,12 +120,12 @@ const pickerErrorMessage = (
     folder_chooser_unavailable:
       kind === "markdown"
         ? "Markdown file selection isn’t available here."
-        : "Folder selection isn’t available here.",
+        : "Choosing a folder isn’t available here.",
     folder_chooser_failed: `The ${noun} couldn’t be opened.`,
-    markdown_outside_folder: "Choose a Markdown file inside the active Folder.",
+    markdown_outside_folder: "Choose a Markdown file inside the active folder.",
     markdown_file_unavailable: "That Markdown file is no longer available.",
     invalid_markdown_file: "Choose a .md or .markdown file.",
-    location_outside_folder: "Choose a location inside the active Folder.",
+    location_outside_folder: "Choose a location inside the active folder.",
     location_unavailable: "That location is no longer available.",
     managed_location: "Choose a document folder outside Co-work’s support data.",
   };
@@ -416,7 +416,7 @@ export function CoworkDocumentLifecycleDialog({
     setPickerFailure(null);
     setError(null);
     if (!validRelativeMarkdownPath(normalizedPath)) {
-      setError("Choose a .md or .markdown file inside the active Folder.");
+      setError("Choose a .md or .markdown file inside the active folder.");
       return;
     }
     try {
@@ -552,7 +552,7 @@ export function CoworkDocumentLifecycleDialog({
           </p>
           {mode === "register" ? (
             <p>
-              Choose a Markdown file in this Folder. Co-work uses the original file;
+              Choose a Markdown file in this folder. Co-work uses the original file;
               no copy is made.
             </p>
           ) : mode === "repair" ? (
@@ -628,7 +628,7 @@ export function CoworkDocumentLifecycleDialog({
                     }
                     title={
                       locationPickerAvailable
-                        ? "Choose another location in this Folder."
+                        ? "Choose another location in this folder."
                         : "Choosing another save location isn’t available here."
                     }
                   >

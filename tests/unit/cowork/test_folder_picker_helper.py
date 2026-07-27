@@ -151,7 +151,7 @@ def test_qt_helper_requests_platform_native_dialogs(
     assert folder_picker_helper._choose_native_folder() == "C:\\Selected"
     assert observed["dialog"] == (
         observed["anchor"],
-        "Open Folder",
+        "Open folder",
         str(folder_picker_helper.Path.home()),
         native_folder_option,
     )

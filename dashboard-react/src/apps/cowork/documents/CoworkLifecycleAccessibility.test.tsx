@@ -89,6 +89,7 @@ describe("Co-work lifecycle dialog accessibility and focus", () => {
           <CoworkDocumentPicker
             documents={[document]}
             localDocuments={[]}
+            folderName={folder.folderName}
             onClose={close}
             onOpen={vi.fn()}
             onOpenLocal={vi.fn()}
@@ -119,6 +120,7 @@ describe("Co-work lifecycle dialog accessibility and focus", () => {
       <CoworkDocumentPicker
         documents={[document, secondDocument]}
         localDocuments={[]}
+        folderName={folder.folderName}
         currentDocumentId={document.documentId}
         onClose={vi.fn()}
         onOpen={onOpen}

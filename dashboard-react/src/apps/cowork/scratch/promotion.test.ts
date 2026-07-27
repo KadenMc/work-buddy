@@ -34,7 +34,7 @@ describe("finishScratchPromotion", () => {
 
   it("retires the scratch only after the registered document opens", async () => {
     const order: string[] = [];
-    await finishScratchPromotion(
+    const result = await finishScratchPromotion(
       registeredDocument,
       "scratch-local",
       async () => {
@@ -46,5 +46,20 @@ describe("finishScratchPromotion", () => {
     );
 
     expect(order).toEqual(["opened", "retired"]);
+    expect(result).toEqual({ retired: true });
+  });
+
+  it("keeps a cleanup failure recoverable after the registered document opens", async () => {
+    const cleanupError = new Error("browser storage stayed busy");
+    const result = await finishScratchPromotion(
+      registeredDocument,
+      "scratch-local",
+      async () => undefined,
+      async () => {
+        throw cleanupError;
+      },
+    );
+
+    expect(result).toEqual({ retired: false, error: cleanupError });
   });
 });

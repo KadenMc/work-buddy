@@ -438,10 +438,10 @@ def test_other_native_pickers_use_the_same_concise_title(monkeypatch) -> None:
 
     macos_command, macos_cancelled_code = observed[0]
     zenity_command, zenity_cancelled_code = observed[1]
-    assert '"Open Folder"' in macos_command[-1]
-    assert "Choose a Folder for Co-work" not in macos_command[-1]
+    assert '"Open folder"' in macos_command[-1]
+    assert "Choose a folder for Co-work" not in macos_command[-1]
     assert macos_cancelled_code is None
-    assert "--title=Open Folder" in zenity_command
+    assert "--title=Open folder" in zenity_command
     assert zenity_cancelled_code == 1
 
 

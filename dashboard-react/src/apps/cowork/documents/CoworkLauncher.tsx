@@ -13,6 +13,10 @@ import type {
   CoworkViewModel,
 } from "../contracts";
 import { coworkErrorMessage } from "../providers/errors";
+import {
+  CoworkLocalDocumentMetadata,
+  coworkFolderDocumentMetadata,
+} from "./CoworkDocumentMetadata";
 
 interface CoworkLauncherProps {
   readonly model: CoworkViewModel;
@@ -81,20 +85,6 @@ const duplicateFolderContext = (
   return target.join(" / ") || folder.folderPath;
 };
 
-const localDocumentMetadata = (document: CoworkScratchSummary): string => {
-  if (document.recoveredFromPreviousEditor) {
-    return "Recovered from an earlier session · Not saved to a Folder";
-  }
-  const edited = document.updatedAt !== document.createdAt;
-  const activityAt = new Date(edited ? document.updatedAt : document.createdAt);
-  if (Number.isNaN(activityAt.getTime())) return "Not saved to a Folder";
-  const activity = `${edited ? "Edited" : "Created"} ${new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(activityAt)}`;
-  return `Not saved to a Folder · ${activity}`;
-};
-
 type LauncherDocument =
   | {
       readonly kind: "registered";
@@ -112,12 +102,14 @@ type LauncherDocument =
 function Documents({
   registered,
   local,
+  folderName,
   onOpenRegistered,
   onOpenLocal,
   disabled = false,
 }: {
   readonly registered: readonly CoworkDocumentSummary[];
   readonly local: readonly CoworkScratchSummary[];
+  readonly folderName: string | null;
   readonly onOpenRegistered: (document: CoworkDocumentSummary) => void;
   readonly onOpenLocal: (document: CoworkScratchSummary) => void;
   readonly disabled?: boolean;
@@ -171,8 +163,10 @@ function Documents({
                 <strong>{entry.document.title}</strong>
                 <small>
                   {entry.kind === "registered"
-                    ? entry.document.path
-                    : localDocumentMetadata(entry.document)}
+                    ? folderName === null
+                      ? entry.document.path
+                      : coworkFolderDocumentMetadata(folderName, entry.document.path)
+                    : <CoworkLocalDocumentMetadata document={entry.document} />}
                 </small>
               </span>
               {entry.kind === "registered" &&
@@ -247,7 +241,7 @@ export function CoworkLauncher({
                 <>
                   This dashboard is read-only, so Co-work can’t add its support
                   data under <code>.wbuddy</code>. No files were changed. Turn
-                  off read-only mode, then open this Folder again.
+                  off read-only mode, then open this folder again.
                 </>
               ) : (
                 <>
@@ -430,7 +424,7 @@ export function CoworkLauncher({
           <InlineAlert tone="danger">
             {coworkErrorMessage(
               model.navigationError,
-              "Co-work couldn’t open that Folder.",
+              "Co-work couldn’t open that folder.",
             )}
           </InlineAlert>
         ) : null}
@@ -452,7 +446,8 @@ export function CoworkLauncher({
         ) : null}
         <Documents
           registered={readyDocuments}
-          local={model.scratches}
+          local={[]}
+          folderName={folder.folderName}
           onOpenRegistered={onOpenDocument}
           onOpenLocal={onOpenLocalDocument}
           disabled={navigationBusy}
@@ -467,18 +462,19 @@ export function CoworkLauncher({
         <InlineAlert tone="danger">
           {coworkErrorMessage(
             model.navigationError,
-            "Co-work couldn’t open that Folder.",
+            "Co-work couldn’t open that folder.",
           )}
         </InlineAlert>
       ) : null}
       {!model.folderChooser.available ? (
         <InlineAlert tone="warning">
-          Folder selection isn’t available here.
+          Choosing a folder isn’t available here.
         </InlineAlert>
       ) : null}
       <Documents
         registered={[]}
         local={model.scratches}
+        folderName={null}
         onOpenRegistered={onOpenDocument}
         onOpenLocal={onOpenLocalDocument}
         disabled={navigationBusy}

@@ -172,7 +172,7 @@ def prepare_retirement(
         if not document_surface_allowed(store, document):
             raise RetirementError(
                 "policy_forbidden",
-                "This document is not available in Co-work for this Folder.",
+                "This document is not available in Co-work for this folder.",
                 status=403,
             )
         _require_no_recovery(store, document_id)
@@ -263,7 +263,7 @@ def commit_retirement(
         if not document_surface_allowed(store, document):
             raise RetirementError(
                 "policy_forbidden",
-                "This document is not available in Co-work for this Folder.",
+                "This document is not available in Co-work for this folder.",
                 status=403,
             )
         _require_no_recovery(store, document_id)

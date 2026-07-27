@@ -65,7 +65,7 @@ const DRIFT_LABEL: Record<string, string> = {
 const COWORK_EDITOR_HELP: HelpContent = {
   summary: "Write and edit your document here.",
   details:
-    "Your work is saved safely on this device as you edit. Agent suggestions appear separately for review, and Save updates the Markdown file in your Folder.",
+    "Your work is saved safely in this browser as you edit. Agent suggestions appear separately for review, and Save updates the Markdown file in your folder.",
 };
 
 const COWORK_HEALTH_HELP: HelpContent = {

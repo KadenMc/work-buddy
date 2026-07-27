@@ -81,16 +81,16 @@ const payloadRecord = (intent: DashboardIntent): Record<string, unknown> =>
 const folderActionError = (error: unknown): CoworkApiError => {
   const apiError = asCoworkApiError(error);
   const messages: Readonly<Record<string, string>> = {
-    folder_chooser_unavailable: "Folder selection isn’t available here.",
-    folder_chooser_busy: "The Folder picker is already open.",
-    folder_chooser_failed: "The Folder picker couldn’t be opened.",
-    folder_chooser_timeout: "The Folder picker took too long. Try again.",
-    selection_expired: "The Folder selection expired. Open the Folder again.",
-    folder_changed: "The Folder changed while it was opening. Try again.",
-    descendant_scan_incomplete: "Co-work couldn’t finish opening that Folder. Try again.",
-    folder_unreachable: "Co-work couldn’t open that Folder.",
-    network_error: "Co-work couldn’t finish opening that Folder. Try again.",
-    request_failed: "Co-work couldn’t finish opening that Folder. Try again.",
+    folder_chooser_unavailable: "Choosing a folder isn’t available here.",
+    folder_chooser_busy: "The folder picker is already open.",
+    folder_chooser_failed: "The folder picker couldn’t be opened.",
+    folder_chooser_timeout: "The folder picker took too long. Try again.",
+    selection_expired: "The folder selection expired. Open the folder again.",
+    folder_changed: "The folder changed while it was opening. Try again.",
+    descendant_scan_incomplete: "Co-work couldn’t finish opening that folder. Try again.",
+    folder_unreachable: "Co-work couldn’t open that folder.",
+    network_error: "Co-work couldn’t finish opening that folder. Try again.",
+    request_failed: "Co-work couldn’t finish opening that folder. Try again.",
   };
   return {
     ...apiError,
@@ -398,7 +398,7 @@ export class HttpCoworkProvider implements ViewProvider {
       if (document === undefined) {
         throw new CoworkHttpError({
           code: "document_reload_missing",
-          message: "The committed document replacement is not in this Folder yet.",
+          message: "The committed document replacement is not in this folder yet.",
           retryable: true,
         });
       }
@@ -623,7 +623,7 @@ export class HttpCoworkProvider implements ViewProvider {
     if (folder === undefined) {
       const error: CoworkApiError = {
         code: "folder_not_found",
-        message: "This Folder is no longer available.",
+        message: "This folder is no longer available.",
         retryable: true,
       };
       const hasPreviousFolder = this.#model.activeFolderStoreId !== null;
@@ -1091,7 +1091,7 @@ export class HttpCoworkProvider implements ViewProvider {
       return;
     }
     if (input.action === "open") {
-      if (input.storeId === undefined) throw new Error("Choose a Folder to open.");
+      if (input.storeId === undefined) throw new Error("Choose a folder to open.");
       if (
         this.#model.folderSelection.kind === "initialized" ||
         this.#model.folderSelection.kind === "none"
@@ -1206,7 +1206,7 @@ export class HttpCoworkProvider implements ViewProvider {
       if (this.#model.readOnly) {
         throw new CoworkHttpError({
           code: "dashboard_read_only",
-          message: "Turn off read-only mode before setting up Co-work in this Folder.",
+          message: "Turn off read-only mode before setting up Co-work in this folder.",
           retryable: false,
           status: 403,
         });
@@ -1349,7 +1349,7 @@ export class HttpCoworkProvider implements ViewProvider {
     }
     if (inspection.status === "initialized") {
       if (inspection.inspectionToken === null) {
-        throw new Error("The initialized Folder check expired. Check it again.");
+        throw new Error("The initialized folder check expired. Check it again.");
       }
       try {
         await this.#withDurableSessionLeave(null, async () => {
@@ -1386,7 +1386,7 @@ export class HttpCoworkProvider implements ViewProvider {
 
   async #refreshPendingFolderInspection(inspectionEpoch: number): Promise<void> {
     if (this.#pendingCandidate === null) {
-      throw new Error("Choose the Folder again.");
+      throw new Error("Choose the folder again.");
     }
     this.#inspectionToken = null;
     this.#folderMutationKey = null;
@@ -1433,7 +1433,7 @@ export class HttpCoworkProvider implements ViewProvider {
     if (inspection.status === "inspection_pending") {
       return {
         kind: "inspecting_descendants",
-        candidate: candidate ?? { folderName: "Folder", folderPath: "" },
+        candidate: candidate ?? { folderName: "folder", folderPath: "" },
         progress: inspection.progress ?? { visited: 0, complete: false },
       };
     }

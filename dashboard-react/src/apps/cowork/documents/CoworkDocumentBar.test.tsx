@@ -144,7 +144,7 @@ describe("CoworkDocumentBar Save", () => {
 
     expect(screen.queryByRole("button", { name: "Try saving again" })).toBeNull();
     expect(screen.getByRole("button", { name: "Sync now" })).toBeEnabled();
-    expect(screen.getByRole("status")).toHaveTextContent("Saved on this device");
+    expect(screen.getByRole("status")).toHaveTextContent("Saved in this browser");
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
@@ -237,12 +237,12 @@ describe("CoworkDocumentBar Save", () => {
 
     expect(screen.getByRole("button", { name: "Loading editor…" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Save document" })).toBeNull();
-    expect(screen.getByRole("status")).toHaveTextContent("Couldn’t save on this device");
+    expect(screen.getByRole("status")).toHaveTextContent("Couldn’t save in this browser");
     expect(screen.queryByRole("button", { name: "Try saving again" })).toBeNull();
 
     rerender(<CoworkDocumentBar {...props} promotionReady syncStatus="clean" />);
     expect(screen.getByRole("button", { name: "Save document" })).toBeEnabled();
-    expect(screen.getByRole("status")).toHaveTextContent("Saved on this device");
+    expect(screen.getByRole("status")).toHaveTextContent("Saved in this browser");
   });
 
   it("keeps an on-device document local when the dashboard is read-only", async () => {
@@ -268,10 +268,10 @@ describe("CoworkDocumentBar Save", () => {
     const save = screen.getByRole("button", { name: "Save document" });
     expect(save).toBeDisabled();
     expect(save).toHaveAccessibleDescription(
-      "Read-only mode. This document will stay on this device.",
+      "Read-only mode. This document will stay in this browser.",
     );
     expect(
-      screen.getByText("Read-only mode. This document will stay on this device."),
+      screen.getByText("Read-only mode. This document will stay in this browser."),
     ).toBeVisible();
     await user.click(save);
     expect(onPromoteScratch).not.toHaveBeenCalled();
@@ -300,11 +300,11 @@ describe("CoworkDocumentBar Save", () => {
     const save = screen.getByRole("button", { name: "Save document" });
     expect(save).toBeDisabled();
     expect(save).toHaveAccessibleDescription(
-      "Folder selection isn’t available here. This document will stay on this device.",
+      "Choosing a folder isn’t available here. This document will stay in this browser.",
     );
     expect(
       screen.getByText(
-        "Folder selection isn’t available here. This document will stay on this device.",
+        "Choosing a folder isn’t available here. This document will stay in this browser.",
       ),
     ).toBeVisible();
   });
@@ -334,7 +334,7 @@ describe("CoworkDocumentBar Save", () => {
     expect(screen.getByRole("button", { name: "Save document" })).toBeDisabled();
     expect(
       screen.getByText(
-        "This Folder doesn’t allow new documents. This document will stay on this device.",
+        "This folder doesn’t allow new documents. This document will stay in this browser.",
       ),
     ).toBeVisible();
   });
@@ -370,7 +370,7 @@ describe("CoworkDocumentBar Save", () => {
     const onChooseFolder = vi.fn();
     render(<CoworkDocumentBar {...baseProps} onChooseFolder={onChooseFolder} />);
 
-    await user.click(screen.getByRole("button", { name: "Open Folder" }));
+    await user.click(screen.getByRole("button", { name: "Open folder" }));
 
     expect(onChooseFolder).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("menu")).toBeNull();
@@ -396,11 +396,11 @@ describe("CoworkDocumentBar Save", () => {
     });
     expect(unavailableImport).toHaveAttribute("aria-disabled", "true");
     expect(unavailableImport).toHaveAccessibleDescription(
-      "Open a Folder before creating a document from Markdown.",
+      "Open a folder before creating a document from Markdown.",
     );
     unavailableImport.focus();
     expect(unavailableImport).toHaveFocus();
-    expect(screen.queryByRole("button", { name: "Close Folder" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Close folder" })).toBeNull();
 
     const folderModel: CoworkViewModel = {
       ...noFolderModel,
@@ -415,7 +415,7 @@ describe("CoworkDocumentBar Save", () => {
     expect(
       screen.getByRole("button", { name: "New from Markdown" }),
     ).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Close Folder" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Close folder" })).toBeVisible();
   });
 
   it("closes the selected Folder through a distinct, discoverable control", async () => {
@@ -434,7 +434,7 @@ describe("CoworkDocumentBar Save", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Close Folder" }));
+    await user.click(screen.getByRole("button", { name: "Close folder" }));
     expect(onCloseFolder).toHaveBeenCalledTimes(1);
 
     rerender(
@@ -449,7 +449,7 @@ describe("CoworkDocumentBar Save", () => {
         onCloseFolder={onCloseFolder}
       />,
     );
-    expect(screen.getByRole("button", { name: "Open Folder" })).toHaveFocus();
+    expect(screen.getByRole("button", { name: "Open folder" })).toHaveFocus();
   });
 
   it("shows and announces a pending Folder close", () => {
@@ -472,7 +472,7 @@ describe("CoworkDocumentBar Save", () => {
       "aria-busy",
       "true",
     );
-    expect(screen.getByText("Closing Folder…", { exact: true })).toHaveAttribute(
+    expect(screen.getByText("Closing folder…", { exact: true })).toHaveAttribute(
       "role",
       "status",
     );

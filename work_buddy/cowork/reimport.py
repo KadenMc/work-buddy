@@ -238,7 +238,7 @@ def prepare_reimport(
         if not document_surface_allowed(store, document):
             raise ReimportError(
                 "policy_forbidden",
-                "This document is not available in Co-work for this Folder.",
+                "This document is not available in Co-work for this folder.",
                 status=403,
             )
         state = inspect_lifecycle_state(store, document)
@@ -391,7 +391,7 @@ def commit_reimport(
         if not document_surface_allowed(store, document):
             raise ReimportError(
                 "policy_forbidden",
-                "This document is not available in Co-work for this Folder.",
+                "This document is not available in Co-work for this folder.",
                 status=403,
             )
         state = inspect_lifecycle_state(store, document)

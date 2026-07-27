@@ -1,9 +1,9 @@
-"""Safe Folder-relative Markdown path resolution for Co-work.
+"""Safe folder-relative Markdown path resolution for Co-work.
 
 All Co-work file operations use this module rather than joining caller input
-onto a Folder path directly.  The returned path is suitable for an immediate
+onto a folder path directly.  The returned path is suitable for an immediate
 operation, but callers performing a mutation must still hold the applicable
-Folder/path lock and re-run this resolver directly before I/O.
+folder/path lock and re-run this resolver directly before I/O.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ _WINDOWS_DEVICE_NAMES = frozenset(
 
 
 class CoworkPathError(ValueError):
-    """A caller-supplied document path is unsafe or outside its Folder."""
+    """A caller-supplied document path is unsafe or outside its folder."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,9 +52,9 @@ def _folder_root(store_or_root: Any) -> Path:
     try:
         root = Path(candidate).expanduser().resolve(strict=True)
     except (OSError, TypeError) as exc:
-        raise CoworkPathError("Folder root does not exist or is not accessible") from exc
+        raise CoworkPathError("The folder root does not exist or is not accessible") from exc
     if not root.is_dir():
-        raise CoworkPathError("Folder root is not a directory")
+        raise CoworkPathError("The folder root is not a directory")
     return root
 
 
@@ -82,7 +82,7 @@ def _validate_relative_path(relative_path: str) -> tuple[str, tuple[str, ...]]:
     if "\\" in relative_path:
         raise CoworkPathError("Markdown path must use forward slashes")
     if relative_path.startswith(("/", "//")) or _DRIVE_PREFIX.match(relative_path):
-        raise CoworkPathError("Markdown path must be Folder-relative")
+        raise CoworkPathError("Markdown path must be folder-relative")
     if any(ord(character) < 32 or ord(character) == 127 for character in relative_path):
         raise CoworkPathError("Markdown path contains a control character")
 
@@ -113,7 +113,7 @@ def _assert_contained(root: Path, candidate: Path) -> None:
     except ValueError as exc:
         raise CoworkPathError("Markdown path is on a different filesystem root") from exc
     if common != root:
-        raise CoworkPathError("Markdown path escapes the selected Folder")
+        raise CoworkPathError("Markdown path escapes the selected folder")
 
 
 def _path_key(normalized: str) -> str:
@@ -128,7 +128,7 @@ def resolve_markdown_path(
     *,
     for_create: bool = False,
 ) -> ResolvedMarkdownPath:
-    """Resolve one safe Folder-relative Markdown path.
+    """Resolve one safe folder-relative Markdown path.
 
     ``for_create`` permits the final path to be absent but requires every
     existing ancestor to be a real directory. Symlinks and Windows reparse

@@ -38,6 +38,7 @@ const renderPicker = (onOpen = vi.fn(async () => undefined)) => {
     <CoworkDocumentPicker
       documents={[document]}
       localDocuments={[localDocument]}
+      folderName="research-notes"
       onClose={onClose}
       onOpen={onOpen}
       onOpenLocal={vi.fn()}
@@ -76,8 +77,9 @@ describe("CoworkDocumentPicker activation", () => {
     const onClose = vi.fn();
     render(
       <CoworkDocumentPicker
-        documents={[document]}
+        documents={[]}
         localDocuments={[localDocument]}
+        folderName={null}
         onClose={onClose}
         onOpen={vi.fn()}
         onOpenLocal={onOpenLocal}
@@ -85,7 +87,15 @@ describe("CoworkDocumentPicker activation", () => {
       />,
     );
 
-    await user.click(screen.getByRole("option", { name: /Untitled.*Not saved to a Folder/ }));
+    const unsavedLabel = screen.getByText("Not saved to folder");
+    expect(unsavedLabel.tagName).toBe("EM");
+    expect(screen.getByText(/Saved in this browser/)).toBeVisible();
+    expect(screen.getByPlaceholderText("Search by title")).toBeVisible();
+    await user.click(
+      screen.getByRole("option", {
+        name: /Untitled.*Not saved to folder.*Saved in this browser/,
+      }),
+    );
     await waitFor(() => expect(onOpenLocal).toHaveBeenCalledWith(localDocument));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
@@ -102,6 +112,7 @@ describe("CoworkDocumentPicker activation", () => {
     const user = userEvent.setup();
     const shared = {
       localDocuments: [] as readonly CoworkScratchSummary[],
+      folderName: "research-notes",
       onClose: vi.fn(),
       onOpen: vi.fn(),
       onOpenLocal: vi.fn(),
@@ -136,6 +147,7 @@ describe("CoworkDocumentPicker activation", () => {
           },
         ]}
         localDocuments={[]}
+        folderName="research-notes"
         onClose={vi.fn()}
         onOpen={vi.fn()}
         onOpenLocal={vi.fn()}
@@ -145,5 +157,19 @@ describe("CoworkDocumentPicker activation", () => {
 
     expect(screen.getByText("No documents are ready to open.")).toBeVisible();
     expect(screen.getByRole("heading", { name: "Needs attention" })).toBeVisible();
+    expect(screen.getByText("research-notes · notes/first-working-note.md")).toBeVisible();
+  });
+
+  it("names the folder for every folder-backed document", () => {
+    renderPicker();
+
+    expect(
+      screen.getByPlaceholderText("Search by title or relative path"),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("option", {
+        name: /First Working Note.*research-notes.*notes\/first-working-note\.md/,
+      }),
+    ).toBeVisible();
   });
 });

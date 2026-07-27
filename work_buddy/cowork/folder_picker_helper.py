@@ -94,7 +94,7 @@ def _choose_native_path(
         else:
             selected = QFileDialog.getExistingDirectory(
                 anchor,
-                "Open Folder" if mode == PICKER_MODE_FOLDER else "Choose Location",
+                "Open folder" if mode == PICKER_MODE_FOLDER else "Choose Location",
                 str(start_directory),
                 QFileDialog.Option.ShowDirsOnly,
             )
@@ -106,13 +106,13 @@ def _choose_native_path(
 
 
 def _choose_native_folder() -> str | None:
-    """Open the existing Folder chooser with its original home start."""
+    """Open the existing folder chooser with its original home start."""
 
     return _choose_native_path(PICKER_MODE_FOLDER, Path.home())
 
 
 def _choose_native_markdown(start_directory: str | Path) -> str | None:
-    """Choose one existing Markdown file, starting inside the active Folder."""
+    """Choose one existing Markdown file, starting inside the active folder."""
 
     return _choose_native_path(
         PICKER_MODE_MARKDOWN,
@@ -121,7 +121,7 @@ def _choose_native_markdown(start_directory: str | Path) -> str | None:
 
 
 def _choose_native_location(start_directory: str | Path) -> str | None:
-    """Choose a destination directory, starting inside the active Folder."""
+    """Choose a destination directory, starting inside the active folder."""
 
     return _choose_native_path(
         PICKER_MODE_LOCATION,
@@ -181,7 +181,7 @@ def main(argv: list[str] | None = None) -> int:
         mode = str(arguments.mode)
         if mode == PICKER_MODE_FOLDER:
             if arguments.start is not None:
-                raise ValueError("the Folder picker does not accept a start argument")
+                raise ValueError("the folder picker does not accept a start argument")
             chooser = _choose_native_folder
         else:
             start = _validate_start_directory(arguments.start)

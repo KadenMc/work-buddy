@@ -46,7 +46,7 @@ def _store():
         return _registry().open_store(store_id)
     except Exception as exc:  # noqa: BLE001
         raise bootstrap.BootstrapError(
-            "store_unreachable", "That Folder is not reachable by Co-work.", status=404
+            "store_unreachable", "That folder is not reachable by Co-work.", status=404
         ) from exc
 
 

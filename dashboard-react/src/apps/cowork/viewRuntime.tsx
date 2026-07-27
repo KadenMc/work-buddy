@@ -52,7 +52,7 @@ export function createRuntime(
       location,
       storage: context.storage,
     }),
-    providerLabel: "Co-work Folder and document session",
+    providerLabel: "Co-work folder and document session",
     personalizationRepository: new LocalStoragePersonalizationRepository(context.storage),
     renderChrome: (_snapshot, slots) => (
       <CoworkViewChrome hostActions={slots.contextualActions} />

@@ -127,7 +127,7 @@ def _resolve_store(store_id: str | None):
     try:
         store = _open_store(identifier)
     except Exception:  # noqa: BLE001 - internal registry details stay server-side
-        return None, _fail("That Folder is not reachable by Co-work.", 404)
+        return None, _fail("That folder is not reachable by Co-work.", 404)
     return store, None
 
 
@@ -142,9 +142,9 @@ def _resolve_document(store: TruthStore, document_id: str):
 def _document_surface_or_403(store: TruthStore, *, feedback: bool = False):
     policy = store.profile.document_surface
     if not policy.enabled:
-        return _fail("Co-work documents are not enabled for this Folder.", 403)
+        return _fail("Co-work documents are not enabled for this folder.", 403)
     if feedback and not policy.feedback_capture:
-        return _fail("Feedback is not enabled for this Folder.", 403)
+        return _fail("Feedback is not enabled for this folder.", 403)
     return None
 
 
@@ -637,7 +637,7 @@ def api_doc_feedback(document_id: str):
                     "ok": False,
                     "error": {
                         "code": "policy_forbidden",
-                        "message": "This document is not available in Co-work for this Folder.",
+                        "message": "This document is not available in Co-work for this folder.",
                         "details": {},
                     },
                 }

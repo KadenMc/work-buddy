@@ -2,7 +2,7 @@
 
 The browser cannot safely turn a client-side directory handle into a path on the
 machine running Work Buddy. Local desktop installs therefore ask the host OS to
-choose a Folder, Markdown file, or destination directory; hosts without a
+choose a folder, Markdown file, or destination directory; hosts without a
 graphical picker report it as unavailable.
 """
 
@@ -59,7 +59,7 @@ def _run_dialog(
     *,
     cancelled_code: int | None = 1,
     empty_is_none: bool = True,
-    selection_label: str = "Folder",
+    selection_label: str = "folder",
 ) -> str | None:
     kwargs: dict[str, object] = {
         "capture_output": True,
@@ -157,7 +157,7 @@ def _validated_start_directory(value: str | Path | None) -> Path:
         raw = os.fspath(value)
     except TypeError as exc:
         raise NativeFolderChooserError(
-            "The picker could not use this Folder.",
+            "The picker could not use this folder.",
             retryable=False,
             diagnostic="Picker start directory was not path-like.",
         ) from exc
@@ -168,14 +168,14 @@ def _validated_start_directory(value: str | Path | None) -> Path:
         or len(raw) > _MAX_SELECTED_PATH_CHARS
     ):
         raise NativeFolderChooserError(
-            "The picker could not use this Folder.",
+            "The picker could not use this folder.",
             retryable=False,
             diagnostic="Picker start directory failed bounded validation.",
         )
     candidate = Path(raw).expanduser()
     if not candidate.is_absolute():
         raise NativeFolderChooserError(
-            "The picker could not use this Folder.",
+            "The picker could not use this folder.",
             retryable=False,
             diagnostic="Picker start directory was not absolute.",
         )
@@ -183,7 +183,7 @@ def _validated_start_directory(value: str | Path | None) -> Path:
         resolved = candidate.resolve(strict=True)
     except (OSError, RuntimeError, ValueError) as exc:
         raise NativeFolderChooserError(
-            "The picker could not use this Folder.",
+            "The picker could not use this folder.",
             retryable=False,
             diagnostic=_diagnostic_excerpt(
                 f"Picker start directory was unavailable: {type(exc).__name__}"
@@ -191,7 +191,7 @@ def _validated_start_directory(value: str | Path | None) -> Path:
         ) from exc
     if not resolved.is_dir():
         raise NativeFolderChooserError(
-            "The picker could not use this Folder.",
+            "The picker could not use this folder.",
             retryable=False,
             diagnostic="Picker start directory was not a directory.",
         )
@@ -259,7 +259,7 @@ def _choose_windows(
             diagnostic="Unsupported native picker mode.",
         )
     command = [python, "-I", "-m", _WINDOWS_HELPER_MODULE]
-    selection_label = "Folder"
+    selection_label = "folder"
     if requested_mode != PICKER_MODE_FOLDER:
         start = _validated_start_directory(start_directory)
         command.extend(
@@ -294,11 +294,11 @@ def _choose_macos(
     cancel_marker = _macos_cancel_marker(requested_mode)
     if requested_mode == PICKER_MODE_FOLDER:
         script = (
-            'try\nPOSIX path of (choose folder with prompt "Open Folder")\n'
+            'try\nPOSIX path of (choose folder with prompt "Open folder")\n'
             f'on error number -128\nreturn "{cancel_marker}"\nend try'
         )
         command = ["/usr/bin/osascript", "-e", script]
-        selection_label = "Folder"
+        selection_label = "folder"
     else:
         start = _validated_start_directory(start_directory)
         if requested_mode == PICKER_MODE_MARKDOWN:
@@ -313,7 +313,7 @@ def _choose_macos(
                 'choose folder with prompt "Choose Location" '
                 'default location (POSIX file (item 1 of argv))'
             )
-            selection_label = "Folder"
+            selection_label = "folder"
         else:
             raise NativeFolderChooserError(
                 "The picker could not be opened.",
@@ -353,9 +353,9 @@ def _choose_zenity(
 
     requested_mode = mode or PICKER_MODE_FOLDER
     command = [zenity, "--file-selection"]
-    selection_label = "Folder"
+    selection_label = "folder"
     if requested_mode == PICKER_MODE_FOLDER:
-        command.extend(["--directory", "--title=Open Folder"])
+        command.extend(["--directory", "--title=Open folder"])
     else:
         start = _validated_start_directory(start_directory)
         command.append(f"--filename={str(start) + os.sep}")
@@ -383,7 +383,7 @@ def _locked_picker_call(implementation: Callable[[], str | None]) -> str | None:
 
     if not _DIALOG_LOCK.acquire(blocking=False):
         raise NativeFolderChooserError(
-            "A Folder picker is already open.",
+            "A folder picker is already open.",
             code="folder_chooser_busy",
             status=409,
         )
@@ -463,7 +463,7 @@ def default_host_markdown_chooser() -> HostScopedPathChooser | None:
 
 
 def default_host_location_chooser() -> HostScopedPathChooser | None:
-    """Return the native destination-Folder chooser supported by this host."""
+    """Return the native destination-folder chooser supported by this host."""
 
     from work_buddy.cowork.folder_picker_helper import PICKER_MODE_LOCATION
 

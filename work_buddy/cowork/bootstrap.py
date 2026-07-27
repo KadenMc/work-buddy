@@ -128,13 +128,13 @@ def _authorize_profile(store: TruthStore) -> None:
     surface = store.profile.document_surface
     if not surface.enabled:
         raise BootstrapError(
-            "policy_forbidden", "Co-work is not enabled for this Folder", status=403
+            "policy_forbidden", "Co-work is not enabled for this folder", status=403
         )
     allowed = surface.allowed_document_classes
     if allowed and "co_authored" not in allowed:
         raise BootstrapError(
             "policy_forbidden",
-            "This Folder does not admit co-authored documents",
+            "This folder does not admit co-authored documents",
             status=403,
         )
 

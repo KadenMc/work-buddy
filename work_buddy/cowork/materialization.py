@@ -442,7 +442,7 @@ def publish_projection(
         if not document_surface_allowed(store, document):
             raise MaterializationError(
                 "policy_forbidden",
-                "This document is not available in Co-work for this Folder.",
+                "This document is not available in Co-work for this folder.",
                 status=403,
             )
         readiness = classify_document(store, document)

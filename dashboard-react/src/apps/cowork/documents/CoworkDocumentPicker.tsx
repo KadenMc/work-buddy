@@ -15,10 +15,16 @@ import {
 import { Button, InlineAlert } from "../../../ui";
 import type { CoworkDocumentSummary, CoworkScratchSummary } from "../contracts";
 import { asCoworkApiError, coworkErrorMessage } from "../providers/errors";
+import {
+  CoworkLocalDocumentMetadata,
+  coworkFolderDocumentMetadata,
+  coworkLocalDocumentMetadataText,
+} from "./CoworkDocumentMetadata";
 
 interface CoworkDocumentPickerProps {
   readonly documents: readonly CoworkDocumentSummary[];
   readonly localDocuments: readonly CoworkScratchSummary[];
+  readonly folderName: string | null;
   readonly currentDocumentId?: string;
   readonly currentLocalDocumentId?: string;
   readonly onClose: () => void;
@@ -31,22 +37,6 @@ const isReady = (document: CoworkDocumentSummary): boolean =>
   (document.initializationState ?? "ready") === "ready" &&
   document.permissions?.open !== false &&
   document.lifecycle !== "retired";
-
-const localMetadata = (document: CoworkScratchSummary): string => {
-  if (document.recoveredFromPreviousEditor) {
-    return "Recovered from an earlier session · Not saved to a Folder";
-  }
-  const edited = document.updatedAt !== document.createdAt;
-  const activityAt = new Date(edited ? document.updatedAt : document.createdAt);
-  if (Number.isNaN(activityAt.getTime())) return "Not saved to a Folder";
-  return `Not saved to a Folder · ${edited ? "Edited" : "Created"} ${new Intl.DateTimeFormat(
-    undefined,
-    {
-      dateStyle: "medium",
-      timeStyle: "short",
-    },
-  ).format(activityAt)}`;
-};
 
 type PickerDocument =
   | {
@@ -63,6 +53,7 @@ type PickerDocument =
 export function CoworkDocumentPicker({
   documents,
   localDocuments,
+  folderName,
   currentDocumentId,
   currentLocalDocumentId,
   onClose,
@@ -153,7 +144,14 @@ export function CoworkDocumentPicker({
           {error !== null ? <InlineAlert role="alert" tone="danger">{error}</InlineAlert> : null}
           <TextField value={query} onChange={setQuery} className="wb-cowork-field">
             <Label>Search documents</Label>
-            <Input autoFocus placeholder="Search by title or relative path" />
+            <Input
+              autoFocus
+              placeholder={
+                folderName === null
+                  ? "Search by title"
+                  : "Search by title or relative path"
+              }
+            />
           </TextField>
           {ready.length === 0 ? (
             <p className="wb-cowork-dialog__empty">
@@ -176,8 +174,10 @@ export function CoworkDocumentPicker({
                   key={entry.key}
                   textValue={`${entry.document.title} ${
                     entry.kind === "registered"
-                      ? entry.document.path
-                      : localMetadata(entry.document)
+                      ? folderName === null
+                        ? entry.document.path
+                        : coworkFolderDocumentMetadata(folderName, entry.document.path)
+                      : coworkLocalDocumentMetadataText(entry.document)
                   }`}
                   onAction={() => void open(entry.key)}
                   onKeyDown={(event) => {
@@ -199,8 +199,10 @@ export function CoworkDocumentPicker({
                     <strong>{entry.document.title}</strong>
                     <small>
                       {entry.kind === "registered"
-                        ? entry.document.path
-                        : localMetadata(entry.document)}
+                        ? folderName === null
+                          ? entry.document.path
+                          : coworkFolderDocumentMetadata(folderName, entry.document.path)
+                        : <CoworkLocalDocumentMetadata document={entry.document} />}
                     </small>
                   </span>
                   <span className="wb-cowork-picker__signals">
@@ -225,7 +227,14 @@ export function CoworkDocumentPicker({
               <h3 id="cowork-needs-attention-title">Needs attention</h3>
               {needsAttention.map((document) => (
                 <div key={document.documentId} className="wb-cowork-picker__attention-row">
-                  <span><strong>{document.title}</strong><small>{document.path}</small></span>
+                  <span>
+                    <strong>{document.title}</strong>
+                    <small>
+                      {folderName === null
+                        ? document.path
+                        : coworkFolderDocumentMetadata(folderName, document.path)}
+                    </small>
+                  </span>
                   <Button
                     size="small"
                     disabled={!document.permissions?.repair || openingKey !== null}

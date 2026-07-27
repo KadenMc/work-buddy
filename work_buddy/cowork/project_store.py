@@ -1,7 +1,7 @@
-"""Canonical Co-work Folder layout, inspection, and setup.
+"""Canonical Co-work folder layout, inspection, and setup.
 
 Inspection helpers in this module are read-only with respect to the selected
-Folder. Resumable scan cursors, idempotency receipts, and locks live beneath
+folder. Resumable scan cursors, idempotency receipts, and locks live beneath
 Work Buddy's machine data root.
 """
 
@@ -175,11 +175,11 @@ def _canonical_folder(folder: str | Path) -> Path:
         resolved = Path(folder).expanduser().resolve(strict=True)
     except OSError as exc:
         raise FolderLifecycleError(
-            "folder_not_found", "The selected Folder does not exist.", status=404
+            "folder_not_found", "The selected folder does not exist.", status=404
         ) from exc
     if not resolved.is_dir():
         raise FolderLifecycleError(
-            "folder_not_found", "The selected path is not a Folder.", status=404
+            "folder_not_found", "The selected path is not a folder.", status=404
         )
     return resolved
 
@@ -191,7 +191,7 @@ def _managed_path_error(root: Path, path: Path) -> FolderLifecycleError:
         relative = path.name
     return FolderLifecycleError(
         "folder_layout_incomplete",
-        "The Folder contains redirected or unsupported Work Buddy data.",
+        "The folder contains redirected or unsupported Work Buddy data.",
         details={"managed_path": relative},
     )
 
@@ -206,7 +206,7 @@ def _lstat_managed(root: Path, path: Path) -> os.stat_result | None:
     except OSError as exc:
         raise FolderLifecycleError(
             "folder_unreachable",
-            "The Folder's Work Buddy data could not be inspected safely.",
+            "The folder's Work Buddy data could not be inspected safely.",
             status=503,
             retryable=True,
         ) from exc
@@ -256,7 +256,7 @@ def _assert_managed_tree_safe(
                     except OSError as exc:
                         raise FolderLifecycleError(
                             "folder_unreachable",
-                            "The Folder's Work Buddy data could not be inspected safely.",
+                            "The folder's Work Buddy data could not be inspected safely.",
                             status=503,
                             retryable=True,
                         ) from exc
@@ -280,7 +280,7 @@ def _assert_managed_tree_safe(
         except OSError as exc:
             raise FolderLifecycleError(
                 "folder_unreachable",
-                "The Folder's Work Buddy data could not be inspected safely.",
+                "The folder's Work Buddy data could not be inspected safely.",
                 status=503,
                 retryable=True,
             ) from exc
@@ -307,7 +307,7 @@ def _assert_managed_layout_safe(root: Path) -> None:
     ``Path.resolve`` and ordinary ``exists``/``is_file`` calls follow links.
     This check deliberately uses ``lstat``/``scandir(..., follow_symlinks=False)``
     first, including Windows' reparse-point attribute, so a junction or
-    symlink cannot turn a selected Folder operation into an external write.
+    symlink cannot turn a selected folder operation into an external write.
     """
 
     root_info = root.stat()
@@ -327,7 +327,7 @@ def _managed_sidecar_root(sidecar: str | Path) -> tuple[Path, Path]:
         return lexical, lexical.parent.parent
     raise FolderLifecycleError(
         "folder_layout_incomplete",
-        "The Co-work data path is outside a recognized Folder layout.",
+        "The Co-work data path is outside a recognized folder layout.",
     )
 
 
@@ -361,7 +361,7 @@ def read_manifest(folder: str | Path) -> ManifestSnapshot:
     except OSError as exc:
         raise FolderLifecycleError(
             "folder_unreachable",
-            "The Work Buddy Folder manifest could not be read.",
+            "The Work Buddy folder manifest could not be read.",
             status=503,
             retryable=True,
         ) from exc
@@ -522,19 +522,19 @@ def patch_cowork_manifest(
     if snapshot.sha256 != expected_sha256:
         raise FolderLifecycleError(
             "folder_changed",
-            "The Folder manifest changed after it was inspected.",
+            "The folder manifest changed after it was inspected.",
             retryable=True,
         )
     patched = _patched_manifest_bytes(snapshot)
     if snapshot.has_cowork:
         return snapshot, patched
-    # Re-read immediately before publication. The surrounding exact-Folder
+    # Re-read immediately before publication. The surrounding exact-folder
     # lock serializes Work Buddy writers; this byte check catches outside edits.
     if snapshot.exists:
         current = snapshot.path.read_bytes()
         if current != snapshot.raw:
             raise FolderLifecycleError(
-                "folder_changed", "The Folder manifest changed during setup.", retryable=True
+                "folder_changed", "The folder manifest changed during setup.", retryable=True
             )
         _atomic_write(snapshot.path, patched)
     else:
@@ -542,7 +542,7 @@ def patch_cowork_manifest(
             _atomic_write(snapshot.path, patched, absent_only=True)
         except FileExistsError as exc:
             raise FolderLifecycleError(
-                "folder_changed", "A Folder manifest appeared during setup.", retryable=True
+                "folder_changed", "A folder manifest appeared during setup.", retryable=True
             ) from exc
     return snapshot, patched
 
@@ -590,7 +590,7 @@ def _read_store_identity(sidecar: Path) -> StoreIdentity:
         profile = validate_profile(raw_profile)
     except Exception as exc:
         raise FolderLifecycleError(
-            "folder_layout_incomplete", "This Folder's Co-work configuration is invalid."
+            "folder_layout_incomplete", "This folder's Co-work configuration is invalid."
         ) from exc
     try:
         # ``immutable=1`` prevents SQLite from creating or updating WAL/SHM
@@ -617,11 +617,11 @@ def _read_store_identity(sidecar: Path) -> StoreIdentity:
             conn.close()
     except sqlite3.Error as exc:
         raise FolderLifecycleError(
-            "folder_layout_incomplete", "This Folder's Co-work data cannot be read."
+            "folder_layout_incomplete", "This folder's Co-work data cannot be read."
         ) from exc
     if len(rows) != 1 or quick != "ok":
         raise FolderLifecycleError(
-            "folder_layout_incomplete", "This Folder's Co-work data failed integrity checks."
+            "folder_layout_incomplete", "This folder's Co-work data failed integrity checks."
         )
     row = rows[0]
     if (
@@ -704,7 +704,7 @@ def folder_summary(row: RegisteredTruthStore, *, read_only: bool) -> dict[str, A
 
 
 class ProjectStoreManager:
-    """Coordinates read-only Folder inspection and explicit publications."""
+    """Coordinates read-only folder inspection and explicit publications."""
 
     def __init__(
         self,
@@ -750,14 +750,14 @@ class ProjectStoreManager:
             except (OSError, ValueError) as exc:
                 raise FolderLifecycleError(
                     "descendant_scan_incomplete",
-                    "The Folder scan can no longer be resumed; inspect it again.",
+                    "The folder scan can no longer be resumed; inspect it again.",
                     retryable=True,
                 ) from exc
             if state.get("root") != str(root) or state.get("root_mtime_ns") != root_info.st_mtime_ns:
                 state_path.unlink(missing_ok=True)
                 raise FolderLifecycleError(
                     "descendant_scan_incomplete",
-                    "The Folder changed while descendants were inspected.",
+                    "The folder changed while descendants were inspected.",
                     retryable=True,
                 )
             token = continuation_token
@@ -775,14 +775,14 @@ class ProjectStoreManager:
                     state_path.unlink(missing_ok=True)
                     raise FolderLifecycleError(
                         "descendant_scan_incomplete",
-                        "A visited Folder descendant changed during inspection.",
+                        "A visited folder descendant changed during inspection.",
                         retryable=True,
                     ) from exc
                 if current_mtime != expected_mtime:
                     state_path.unlink(missing_ok=True)
                     raise FolderLifecycleError(
                         "descendant_scan_incomplete",
-                        "A visited Folder descendant changed during inspection.",
+                        "A visited folder descendant changed during inspection.",
                         retryable=True,
                     )
         else:
@@ -826,7 +826,7 @@ class ProjectStoreManager:
                         except OSError as exc:
                             raise FolderLifecycleError(
                                 "descendant_scan_incomplete",
-                                "A Folder descendant could not be inspected.",
+                                "A folder descendant could not be inspected.",
                                 retryable=True,
                             ) from exc
                         attributes = getattr(info, "st_file_attributes", 0)
@@ -844,7 +844,7 @@ class ProjectStoreManager:
                     state_path.unlink(missing_ok=True)
                     raise FolderLifecycleError(
                         "descendant_scan_incomplete",
-                        "A Folder descendant changed while it was inspected.",
+                        "A folder descendant changed while it was inspected.",
                         retryable=True,
                     )
                 fingerprints[relative] = after_mtime
@@ -860,7 +860,7 @@ class ProjectStoreManager:
             state_path.unlink(missing_ok=True)
             raise FolderLifecycleError(
                 "descendant_scan_incomplete",
-                "The Folder descendant scan could not be completed.",
+                "The folder descendant scan could not be completed.",
                 retryable=True,
             ) from exc
 
@@ -1057,12 +1057,12 @@ class ProjectStoreManager:
         registry: TruthStoreRegistry,
         inspection_fingerprint: str,
     ) -> RegisteredTruthStore:
-        """Adopt one validated canonical Folder into machine inventory.
+        """Adopt one validated canonical folder into machine inventory.
 
         This action writes only the machine registry. It performs immutable
-        profile/SQLite reads under the exact-Folder and external store locks;
+        profile/SQLite reads under the exact-folder and external store locks;
         it never opens the project database through the mutating TruthStore
-        path and never creates files beneath the selected Folder.
+        path and never creates files beneath the selected folder.
         """
 
         root = _canonical_folder(folder)
@@ -1071,13 +1071,13 @@ class ProjectStoreManager:
             if current.fingerprint != inspection_fingerprint:
                 raise FolderLifecycleError(
                     "folder_changed",
-                    "The Folder changed after it was inspected.",
+                    "The folder changed after it was inspected.",
                     retryable=True,
                 )
             if current.status != "initialized" or current.store_id is None:
                 raise FolderLifecycleError(
                     "folder_changed",
-                    "The Folder is no longer an initialized canonical Co-work Folder.",
+                    "The folder is no longer an initialized canonical Co-work folder.",
                     retryable=True,
                 )
             canonical = StorePaths.canonical(root)
@@ -1093,7 +1093,7 @@ class ProjectStoreManager:
                 ):
                     raise FolderLifecycleError(
                         "folder_changed",
-                        "The initialized Folder changed while it was opened.",
+                        "The initialized folder changed while it was opened.",
                         retryable=True,
                     )
                 identity = _read_store_identity(canonical.sidecar)
@@ -1111,12 +1111,12 @@ class ProjectStoreManager:
                 except StoreIdentityCollision as exc:
                     raise FolderLifecycleError(
                         "folder_store_collision",
-                        "This Co-work data is already associated with another Folder.",
+                        "This Co-work data is already associated with another folder.",
                     ) from exc
                 except RegistryIdentityMismatch as exc:
                     raise FolderLifecycleError(
                         "identity_conflict",
-                        "The registered Folder path carries another store identity.",
+                        "The registered folder path carries another store identity.",
                     ) from exc
 
     def _receipt_path(self, idempotency_key: str) -> Path:
@@ -1185,11 +1185,11 @@ class ProjectStoreManager:
             current = self.inspect(root, complete_scan=True)
             if current.fingerprint != inspection_fingerprint:
                 raise FolderLifecycleError(
-                    "folder_changed", "The Folder changed after it was inspected.", retryable=True
+                    "folder_changed", "The folder changed after it was inspected.", retryable=True
                 )
             if current.status != "uninitialized":
                 raise FolderLifecycleError(
-                    "folder_changed", "The Folder is no longer available for setup.", retryable=True
+                    "folder_changed", "The folder is no longer available for setup.", retryable=True
                 )
             _assert_managed_layout_safe(root)
             manifest = read_manifest(root)

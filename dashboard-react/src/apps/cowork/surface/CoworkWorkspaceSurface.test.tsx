@@ -98,7 +98,7 @@ describe("CoworkWorkspaceWidget default (empty) mode", () => {
   it("opens with direct Folder selection and the stable toolbar actions", async () => {
     const { container } = renderWorkspace(emptyInput);
 
-    expect(screen.getByRole("button", { name: "Open Folder" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Open folder" })).toBeVisible();
     expect(screen.getByRole("button", { name: "New" })).toBeVisible();
     expect(
       screen.getByRole("button", { name: "New from Markdown" }),
@@ -130,6 +130,12 @@ describe("CoworkWorkspaceWidget default (empty) mode", () => {
     const { container } = renderWorkspace(
       {
         ...emptyInput,
+        catalog: {
+          status: "ready",
+          documents: [DEMO_DOCUMENT],
+          refreshedAt: "2026-07-22T00:00:00Z",
+          error: null,
+        },
         scratches: [
           {
             scratchId: "local-1",
@@ -145,8 +151,14 @@ describe("CoworkWorkspaceWidget default (empty) mode", () => {
 
     await user.click(screen.getByRole("button", { name: "Open document" }));
     const option = screen.getByRole("option", {
-      name: /Untitled.*Not saved to a Folder/,
+      name: /Untitled.*Not saved to folder.*Saved in this browser/,
     });
+    expect(screen.queryByRole("option", { name: /Co-work demo document/ })).toBeNull();
+    expect(
+      within(screen.getByRole("dialog", { name: "Open document" })).getByText(
+        "Not saved to folder",
+      ).tagName,
+    ).toBe("EM");
     await user.click(option);
 
     expect(emit).toHaveBeenCalledWith(
@@ -321,7 +333,7 @@ describe("CoworkWorkspaceWidget default (empty) mode", () => {
     expect(
       screen.getByText(/This dashboard is read-only/),
     ).toHaveTextContent(
-      "This dashboard is read-only, so Co-work can’t add its support data under .wbuddy. No files were changed. Turn off read-only mode, then open this Folder again.",
+      "This dashboard is read-only, so Co-work can’t add its support data under .wbuddy. No files were changed. Turn off read-only mode, then open this folder again.",
     );
     expect(
       screen.queryByRole("button", { name: "Set up Co-work" }),
@@ -475,14 +487,14 @@ describe("CoworkWorkspaceWidget default (empty) mode", () => {
     const emit = vi.fn(async (intent: Parameters<typeof noopEmit>[0]) => ({
       intent_id: intent.intent_id,
       status: "rejected" as const,
-      message: "The Folder picker couldn’t be opened.",
+      message: "The folder picker couldn’t be opened.",
     }));
     const { container } = renderWorkspace(emptyInput, emit);
 
-    await user.click(screen.getByRole("button", { name: "Open Folder" }));
+    await user.click(screen.getByRole("button", { name: "Open folder" }));
 
     expect(
-      screen.getAllByText("The Folder picker couldn’t be opened."),
+      screen.getAllByText("The folder picker couldn’t be opened."),
     ).toHaveLength(1);
     expect(screen.getByRole("button", { name: "New" })).toBeVisible();
     expect(container.querySelector(".ProseMirror")).toBeNull();
@@ -636,7 +648,7 @@ describe("CoworkWorkspaceWidget default (empty) mode", () => {
     await waitFor(() =>
       expect(
         screen.getAllByText(
-          "This Folder doesn’t allow new documents. This document will stay on this device.",
+          "This folder doesn’t allow new documents. This document will stay in this browser.",
         ).length,
       ).toBeGreaterThan(0),
     );
@@ -989,11 +1001,18 @@ describe("CoworkWorkspaceWidget live mode", () => {
     }, emit);
   };
 
-  it("presents Folder and not-yet-saved work in one Documents list", async () => {
+  it("filters Documents to the open folder and shows browser-local work only without one", async () => {
     const user = userEvent.setup();
     const emit = vi.fn(noopEmit);
+    const localDocument = {
+      scratchId: "local-1",
+      title: "Untitled",
+      createdAt: "2026-07-25T12:00:00Z",
+      updatedAt: "2026-07-25T12:05:00Z",
+      recoveredFromPreviousEditor: false,
+    } as const;
     window.history.replaceState({}, "", "/app/cowork?store_id=live-store");
-    const { container } = renderWorkspace(
+    const { container, rerender } = renderWorkspace(
       {
         document: null,
         sessionQuality: "complete",
@@ -1006,15 +1025,7 @@ describe("CoworkWorkspaceWidget live mode", () => {
           refreshedAt: "2026-07-22T00:00:00Z",
           error: null,
         },
-        scratches: [
-          {
-            scratchId: "local-1",
-            title: "Untitled",
-            createdAt: "2026-07-25T12:00:00Z",
-            updatedAt: "2026-07-25T12:05:00Z",
-            recoveredFromPreviousEditor: false,
-          },
-        ],
+        scratches: [localDocument],
         routeTarget: { kind: "launcher", storeId: LIVE_FOLDER.storeId },
         activeSession: { kind: "none" },
         openingTarget: null,
@@ -1028,16 +1039,12 @@ describe("CoworkWorkspaceWidget live mode", () => {
     expect(screen.queryByRole("heading", { name: "Recent documents" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "On this device" })).toBeNull();
     const folderDocument = screen.getByRole("button", {
-      name: /Live doc.*docs\/live\.md/,
+      name: /Live doc.*work-buddy.*docs\/live\.md/,
     });
-    const localDocument = screen.getByRole("button", {
-      name: /Untitled.*Not saved to a Folder/,
-    });
+    expect(screen.queryByRole("button", { name: /Untitled/ })).toBeNull();
     expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
 
     await user.click(folderDocument);
-    await user.click(localDocument);
-
     expect(emit).toHaveBeenCalledWith(
       expect.objectContaining({
         intent_type: COWORK_INTENTS.documentOpen,
@@ -1047,6 +1054,40 @@ describe("CoworkWorkspaceWidget live mode", () => {
         },
       }),
     );
+
+    rerender(
+      workspaceElement(
+        {
+          document: null,
+          sessionQuality: "complete",
+          folders: [LIVE_FOLDER],
+          folderSelection: { kind: "none" },
+          activeFolderStoreId: null,
+          catalog: {
+            status: "ready",
+            documents: [],
+            refreshedAt: null,
+            error: null,
+          },
+          scratches: [localDocument],
+          routeTarget: { kind: "launcher", storeId: null },
+          activeSession: { kind: "none" },
+          openingTarget: null,
+          navigationError: null,
+          readOnly: false,
+        },
+        emit,
+      ),
+    );
+
+    expect(screen.queryByRole("button", { name: /Live doc/ })).toBeNull();
+    const browserLocalDocument = screen.getByRole("button", {
+      name: /Untitled.*Not saved to folder.*Saved in this browser/,
+    });
+    const notSaved = screen.getByText("Not saved to folder");
+    expect(notSaved.tagName).toBe("EM");
+    await user.click(browserLocalDocument);
+
     expect(emit).toHaveBeenCalledWith(
       expect.objectContaining({
         intent_type: COWORK_INTENTS.scratchOpen,
@@ -1093,7 +1134,7 @@ describe("CoworkWorkspaceWidget live mode", () => {
     expect(screen.getByRole("button", { name: "New" })).toBeVisible();
     expect(screen.getByRole("button", { name: "New from Markdown" })).toBeVisible();
 
-    await user.click(screen.getByRole("button", { name: "Close Folder" }));
+    await user.click(screen.getByRole("button", { name: "Close folder" }));
     expect(emit).toHaveBeenCalledWith(
       expect.objectContaining({
         intent_type: COWORK_INTENTS.folderClose,
@@ -1210,7 +1251,15 @@ describe("CoworkWorkspaceWidget live mode", () => {
           refreshedAt: "2026-07-22T00:00:00Z",
           error: null,
         },
-        scratches: [],
+        scratches: [
+          {
+            scratchId: "local-picker",
+            title: "Browser draft",
+            createdAt: "2026-07-25T12:00:00Z",
+            updatedAt: "2026-07-25T12:05:00Z",
+            recoveredFromPreviousEditor: false,
+          },
+        ],
         routeTarget: { kind: "launcher", storeId: LIVE_FOLDER.storeId },
         activeSession: { kind: "none" },
         openingTarget: null,
@@ -1232,7 +1281,12 @@ describe("CoworkWorkspaceWidget live mode", () => {
     expect(
       screen.getByRole("dialog", { name: "Open document" }),
     ).toBeVisible();
-    expect(screen.getByRole("option", { name: /Live doc/ })).toBeVisible();
+    expect(
+      screen.getByRole("option", {
+        name: /Live doc.*work-buddy.*docs\/live\.md/,
+      }),
+    ).toBeVisible();
+    expect(screen.queryByRole("option", { name: /Browser draft/ })).toBeNull();
     expect(emit).not.toHaveBeenCalled();
   });
 
@@ -1243,7 +1297,7 @@ describe("CoworkWorkspaceWidget live mode", () => {
         ? {
             intent_id: intent.intent_id,
             status: "rejected" as const,
-            message: "The Folder picker couldn’t be opened.",
+            message: "The folder picker couldn’t be opened.",
           }
         : {
             intent_id: intent.intent_id,
@@ -1255,7 +1309,7 @@ describe("CoworkWorkspaceWidget live mode", () => {
     await user.click(screen.getByRole("button", { name: "work-buddy" }));
 
     expect(
-      screen.getAllByText("The Folder picker couldn’t be opened."),
+      screen.getAllByText("The folder picker couldn’t be opened."),
     ).toHaveLength(1);
     expect(container.querySelector(".wb-cowork-lifecycle__session")).not.toBeNull();
     expect(container.querySelector(".wb-cowork-lifecycle__session")).not.toHaveAttribute(

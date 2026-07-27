@@ -148,10 +148,10 @@ def capture_feedback(
         raise InvariantViolation("feedback cannot be added to a retired document")
     if not document_surface_allowed(store, document):
         raise InvariantViolation(
-            "This document is not available in Co-work for this Folder"
+            "This document is not available in Co-work for this folder"
         )
     if not surface.feedback_capture:
-        raise InvariantViolation("feedback is disabled for this Folder")
+        raise InvariantViolation("feedback is disabled for this folder")
 
     feedback_span = _coerce_span(span)
     selector = CompositeSelector(

@@ -272,7 +272,7 @@ describe("HttpCoworkProvider", () => {
       ),
     ).resolves.toMatchObject({
       status: "rejected",
-      message: "Turn off read-only mode before setting up Co-work in this Folder.",
+      message: "Turn off read-only mode before setting up Co-work in this folder.",
     });
     const snapshot = await provider.loadView();
     expect(snapshot.model.folderSelection).toMatchObject({
@@ -326,14 +326,14 @@ describe("HttpCoworkProvider", () => {
     [
       "folder_chooser_unavailable",
       503,
-      "Folder selection isn’t available here.",
+      "Choosing a folder isn’t available here.",
     ],
-    ["folder_chooser_busy", 409, "The Folder picker is already open."],
-    ["folder_chooser_failed", 503, "The Folder picker couldn’t be opened."],
+    ["folder_chooser_busy", 409, "The folder picker is already open."],
+    ["folder_chooser_failed", 503, "The folder picker couldn’t be opened."],
     [
       "folder_chooser_timeout",
       504,
-      "The Folder picker took too long. Try again.",
+      "The folder picker took too long. Try again.",
     ],
   ] as const)(
     "gives %s a specific human-readable picker error",
@@ -1656,7 +1656,7 @@ describe("HttpCoworkProvider", () => {
     const snapshot = await provider.loadView();
     expect(snapshot.model.folderSelection).toEqual({ kind: "none" });
     expect(snapshot.model.navigationError?.message).toBe(
-      "Co-work couldn’t finish opening that Folder. Try again.",
+      "Co-work couldn’t finish opening that folder. Try again.",
     );
   });
 

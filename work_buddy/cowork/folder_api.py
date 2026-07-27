@@ -1,4 +1,4 @@
-"""Standalone Flask blueprint for Co-work Folder discovery and setup."""
+"""Standalone Flask blueprint for Co-work folder discovery and setup."""
 
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ class HostFolderChooser(Protocol):
 
 
 class HostScopedPathChooser(Protocol):
-    """Select a path from a picker rooted at an active Co-work Folder."""
+    """Select a path from a picker rooted at an active Co-work folder."""
 
     def __call__(self, start_directory: str | Path) -> str | Path | None: ...
 
@@ -72,29 +72,29 @@ class FolderAccessPolicy:
                 or "\x00" in raw_path
                 or len(raw_path) > MAX_FOLDER_PATH_CHARS
             ):
-                raise ValueError("invalid Folder path")
+                raise ValueError("invalid folder path")
             path = Path(raw_path).expanduser()
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             raise FolderLifecycleError(
-                "invalid_path", "The selected Folder path is invalid.", status=400
+                "invalid_path", "The selected folder path is invalid.", status=400
             ) from exc
         if not path.is_absolute():
             raise FolderLifecycleError(
-                "invalid_path", "Folder paths must be absolute host paths.", status=400
+                "invalid_path", "The folder path must be an absolute host path.", status=400
             )
         try:
             resolved = path.resolve(strict=True)
         except ValueError as exc:
             raise FolderLifecycleError(
-                "invalid_path", "The selected Folder path is invalid.", status=400
+                "invalid_path", "The selected folder path is invalid.", status=400
             ) from exc
         except (OSError, RuntimeError) as exc:
             raise FolderLifecycleError(
-                "folder_not_found", "The selected Folder does not exist.", status=404
+                "folder_not_found", "The selected folder does not exist.", status=404
             ) from exc
         if not resolved.is_dir():
             raise FolderLifecycleError(
-                "folder_not_found", "The selected path is not a Folder.", status=404
+                "folder_not_found", "The selected path is not a folder.", status=404
             )
         if self.allowed_roots:
             admitted = False
@@ -108,7 +108,7 @@ class FolderAccessPolicy:
             if not admitted:
                 raise FolderLifecycleError(
                     "folder_disallowed",
-                    "That host Folder is outside the configured allowed roots.",
+                    "That host folder is outside the configured allowed roots.",
                     status=403,
                 )
         return resolved
@@ -179,26 +179,26 @@ class FolderTokenStore:
         except (OSError, ValueError, TypeError) as exc:
             raise FolderLifecycleError(
                 "selection_expired",
-                "The Folder selection expired; open the Folder again.",
+                "The folder selection expired; open the folder again.",
                 status=409,
                 retryable=True,
             ) from exc
         if body.get("kind") != kind:
             raise FolderLifecycleError(
-                "invalid_request", "The Folder token is for a different action.", status=400
+                "invalid_request", "The folder token is for a different action.", status=400
             )
         if float(body.get("expires_at") or 0) <= time.time():
             path.unlink(missing_ok=True)
             raise FolderLifecycleError(
                 "selection_expired",
-                "The Folder selection expired; open the Folder again.",
+                "The folder selection expired; open the folder again.",
                 status=409,
                 retryable=True,
             )
         data = body.get("data")
         if not isinstance(data, Mapping):
             raise FolderLifecycleError(
-                "invalid_request", "The Folder token is malformed.", status=400
+                "invalid_request", "The folder token is malformed.", status=400
             )
         return data
 
@@ -311,7 +311,7 @@ def _active_store_root(
     ):
         raise FolderLifecycleError(
             "invalid_request",
-            "Choose an active Folder before opening this picker.",
+            "Choose an active folder before opening this picker.",
             status=400,
         )
     try:
@@ -321,19 +321,19 @@ def _active_store_root(
         if not row.document_surface_enabled:
             raise FolderLifecycleError(
                 "document_surface_disabled",
-                "Co-work documents are not enabled for this Folder.",
+                "Co-work documents are not enabled for this folder.",
                 status=403,
             )
         root = StorePaths.from_sidecar(row.path).root.resolve(strict=True)
         if not root.is_dir():
-            raise LookupError("Folder root is not a directory")
+            raise LookupError("The folder root is not a directory")
         return root
     except FolderLifecycleError:
         raise
     except Exception as exc:
         raise FolderLifecycleError(
             "folder_unreachable",
-            "The selected Folder is no longer available.",
+            "The selected folder is no longer available.",
             status=503,
             retryable=True,
         ) from exc
@@ -386,7 +386,7 @@ def _contained_picker_selection(
     if not raw_path.is_absolute():
         raise FolderLifecycleError(
             outside_code,
-            f"Choose {item_label} inside the active Folder.",
+            f"Choose {item_label} inside the active folder.",
             status=422,
         )
     lexical = Path(os.path.abspath(str(raw_path)))
@@ -395,13 +395,13 @@ def _contained_picker_selection(
     except ValueError as exc:
         raise FolderLifecycleError(
             outside_code,
-            f"Choose {item_label} inside the active Folder.",
+            f"Choose {item_label} inside the active folder.",
             status=422,
         ) from exc
     if os.path.normcase(common) != os.path.normcase(str(root)):
         raise FolderLifecycleError(
             outside_code,
-            f"Choose {item_label} inside the active Folder.",
+            f"Choose {item_label} inside the active folder.",
             status=422,
         )
     relative_text = os.path.relpath(str(lexical), str(root))
@@ -461,7 +461,7 @@ def _contained_picker_selection(
     if os.path.normcase(resolved_common) != os.path.normcase(str(root)):
         raise FolderLifecycleError(
             outside_code,
-            f"Choose {item_label} inside the active Folder.",
+            f"Choose {item_label} inside the active folder.",
             status=422,
         )
     canonical_relative_text = os.path.relpath(str(resolved), str(root))
@@ -567,7 +567,7 @@ def create_folder_blueprint(
     access_policy: FolderAccessPolicy | None = None,
     read_only: Callable[[], bool] = _dashboard_read_only,
 ) -> Blueprint:
-    """Build the Folder blueprint with injectable host and persistence seams."""
+    """Build the folder blueprint with injectable host and persistence seams."""
 
     manager = manager or ProjectStoreManager()
     access_policy = access_policy or FolderAccessPolicy(_default_allowed_roots())
@@ -640,7 +640,7 @@ def create_folder_blueprint(
             return _error(
                 FolderLifecycleError(
                     "folder_picker_intent_required",
-                    "Folder selection must be started from Co-work.",
+                    "Choosing a folder must be started from Co-work.",
                     status=403,
                 )
             )
@@ -648,7 +648,7 @@ def create_folder_blueprint(
             return _error(
                 FolderLifecycleError(
                     "folder_chooser_unavailable",
-                    "Folder selection is unavailable here.",
+                    "Choosing a folder is unavailable here.",
                     status=503,
                 )
             )
@@ -668,7 +668,7 @@ def create_folder_blueprint(
                 }
             )
         except NativeFolderChooserError as exc:
-            return native_picker_error(exc, label="Folder")
+            return native_picker_error(exc, label="folder")
         except FolderLifecycleError as exc:
             return _error(exc)
 
@@ -762,7 +762,7 @@ def create_folder_blueprint(
             if supplied != 1:
                 raise FolderLifecycleError(
                     "invalid_request",
-                    "Provide exactly one Folder selection, path, or continuation token.",
+                    "Provide exactly one folder selection, path, or continuation token.",
                     status=400,
                 )
             if "selection_token" in body:
@@ -833,7 +833,7 @@ def create_folder_blueprint(
             if data.get("status") != "initialized":
                 raise FolderLifecycleError(
                     "invalid_request",
-                    "The Folder token does not authorize opening an initialized Folder.",
+                    "The folder token does not authorize opening an initialized folder.",
                     status=400,
                 )
             folder = access_policy.admit(str(data["folder_path"]))
@@ -865,7 +865,7 @@ def create_folder_blueprint(
             data = tokens.resolve(body.get("inspection_token"), kind="inspection")
             if data.get("status") != "uninitialized":
                 raise FolderLifecycleError(
-                    "invalid_request", "The Folder token does not authorize this action.",
+                    "invalid_request", "The folder token does not authorize this action.",
                     status=400,
                 )
             key = body.get("idempotency_key")
@@ -885,7 +885,7 @@ def create_folder_blueprint(
             if row is None:
                 raise FolderLifecycleError(
                     "recovery_in_progress",
-                    "The Folder was set up, but Co-work is still finishing recovery.",
+                    "The folder was set up, but Co-work is still finishing recovery.",
                     status=503,
                     retryable=True,
                 )

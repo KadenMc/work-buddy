@@ -219,7 +219,7 @@ def push_ydoc(
         if not document_surface_allowed(store, current):
             raise PushGateError(
                 "policy_forbidden",
-                "This document is not available in Co-work for this Folder.",
+                "This document is not available in Co-work for this folder.",
                 403,
             )
         if documents.current_ydoc_generation(store, current.id) != expected_generation:

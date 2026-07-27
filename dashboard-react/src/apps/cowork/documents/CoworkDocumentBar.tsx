@@ -58,13 +58,13 @@ export const coworkScratchPromotionBlockedReason = (
   folder: CoworkFolderSummary | null,
 ): string | null => {
   if (model.readOnly) {
-    return "Read-only mode. This document will stay on this device.";
+    return "Read-only mode. This document will stay in this browser.";
   }
   if (folder === null && !model.folderChooser.available) {
-    return "Folder selection isn’t available here. This document will stay on this device.";
+    return "Choosing a folder isn’t available here. This document will stay in this browser.";
   }
   if (folder !== null && !folder.permissions.create) {
-    return "This Folder doesn’t allow new documents. This document will stay on this device.";
+    return "This folder doesn’t allow new documents. This document will stay in this browser.";
   }
   return null;
 };
@@ -86,7 +86,7 @@ const registeredStatusLabel = (
   ) {
     return "Saving…";
   }
-  if (sync === "saved_on_device" || sync === "offline") return "Saved on this device";
+  if (sync === "saved_on_device" || sync === "offline") return "Saved in this browser";
   if (sync === "conflict") return "Sync conflict";
   if (sync === "error") return "Couldn’t save";
   if (state.kind === "unsaved") return "Unsaved changes";
@@ -101,10 +101,10 @@ const localStatusLabel = (syncStatus?: CoworkSyncStatus): string => {
   const sync = syncStatus ?? "hydrating";
   if (sync === "hydrating") return "Loading…";
   if (sync === "saving" || sync === "retrying") return "Saving…";
-  if (sync === "offline" || sync === "error") return "Couldn’t save on this device";
+  if (sync === "offline" || sync === "error") return "Couldn’t save in this browser";
   if (sync === "conflict") return "Save conflict";
   if (sync === "read_only") return "Read-only";
-  return "Saved on this device";
+  return "Saved in this browser";
 };
 
 export function CoworkDocumentBar({
@@ -161,17 +161,17 @@ export function CoworkDocumentBar({
     folder === null
       ? null
       : model.readOnly
-        ? "Read-only mode. New Folder documents aren’t available."
+        ? "Read-only mode. New folder documents aren’t available."
         : !folder.permissions.create
-          ? "This Folder doesn’t allow new documents."
+          ? "This folder doesn’t allow new documents."
           : null;
   const importBlockedReason =
     folder === null
-      ? "Open a Folder before creating a document from Markdown."
+      ? "Open a folder before creating a document from Markdown."
       : model.readOnly
-        ? "Read-only mode. New Folder documents aren’t available."
+        ? "Read-only mode. New folder documents aren’t available."
         : !folder.permissions.import
-          ? "This Folder doesn’t allow documents from Markdown."
+          ? "This folder doesn’t allow documents from Markdown."
           : !model.folderChooser.markdownAvailable
             ? "Markdown file selection isn’t available here."
             : null;
@@ -197,11 +197,11 @@ export function CoworkDocumentBar({
             variant="ghost"
             className="wb-cowork__folder-trigger"
             onClick={onChooseFolder}
-            title={folder?.folderPath ?? "Open Folder"}
+            title={folder?.folderPath ?? "Open folder"}
             disabled={!model.folderChooser.available || folderControlBusy}
           >
             <FolderSimple weight="duotone" aria-hidden="true" />
-            <span>{openingFolder ? "Opening…" : folder?.folderName ?? "Open Folder"}</span>
+            <span>{openingFolder ? "Opening…" : folder?.folderName ?? "Open folder"}</span>
           </Button>
           {folder !== null ? (
             <Button
@@ -210,15 +210,15 @@ export function CoworkDocumentBar({
               className="wb-cowork__folder-close"
               onClick={onCloseFolder}
               disabled={folderControlBusy}
-              title="Close this Folder without removing it or changing its files."
+              title="Close this folder without removing it or changing its files."
             >
               <X aria-hidden="true" />
-              <span>{closingFolder ? "Closing…" : "Close Folder"}</span>
+              <span>{closingFolder ? "Closing…" : "Close folder"}</span>
             </Button>
           ) : null}
           {closingFolder ? (
             <span className="wb-visually-hidden" role="status">
-              Closing Folder…
+              Closing folder…
             </span>
           ) : null}
         </div>
@@ -230,7 +230,7 @@ export function CoworkDocumentBar({
           disabled={!canOpenDocuments || folderControlBusy}
           title={
             document?.path ??
-            (scratch === null ? "Open document" : "Saved on this device")
+            (scratch === null ? "Open document" : "Saved in this browser")
           }
         >
           <span>{document?.title ?? scratch?.title ?? "Open document"}</span>
@@ -386,7 +386,7 @@ export function CoworkDocumentBar({
             createBlockedReason ??
             (folder === null
               ? "Start a document and choose where to save it later."
-              : "Create a document in this Folder.")
+              : "Create a document in this folder.")
           }
         >
           <NotePencil aria-hidden="true" /> New

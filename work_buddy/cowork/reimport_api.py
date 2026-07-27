@@ -23,12 +23,12 @@ def _registry():
 def _store():
     store_id = str(request.args.get("store_id") or "").strip()
     if not store_id:
-        raise reimport.ReimportError("store_id_required", "A Folder selection is required.")
+        raise reimport.ReimportError("store_id_required", "A folder selection is required.")
     try:
         return _registry().open_store(store_id)
     except Exception as exc:  # noqa: BLE001
         raise reimport.ReimportError(
-            "folder_unreachable", "The selected Folder is not reachable.", status=404
+            "folder_unreachable", "The selected folder is not reachable.", status=404
         ) from exc
 
 

@@ -353,7 +353,7 @@ test.describe.serial("Co-work live lifecycle", () => {
 
     await gotoCowork(page);
     const lifecycle = page.locator(".wb-cowork-lifecycle");
-    await expect(lifecycle.getByRole("button", { name: "Open Folder", exact: true })).toBeVisible();
+    await expect(lifecycle.getByRole("button", { name: "Open folder", exact: true })).toBeVisible();
     await expect(lifecycle.getByRole("button", { name: "New", exact: true })).toBeVisible();
     await expect(
       lifecycle.getByRole("button", { name: "Open document", exact: true }),
@@ -400,7 +400,7 @@ test.describe.serial("Co-work live lifecycle", () => {
       },
       { times: 1 },
     );
-    await chooseFolder(page, fixture.ordinary, "Open Folder");
+    await chooseFolder(page, fixture.ordinary, "Open folder");
     expect(await treeDigest(fixture.ordinary.path)).toBe(ordinaryBefore);
     await expect(
       page.getByRole("heading", {
@@ -612,10 +612,10 @@ test.describe.serial("Co-work live lifecycle", () => {
       page.getByRole("button", { name: fixture.ordinary.name, exact: true }).first(),
     ).toBeVisible();
 
-    await page.getByRole("button", { name: "Close Folder", exact: true }).click();
+    await page.getByRole("button", { name: "Close folder", exact: true }).click();
 
     await expect(page).toHaveURL(/[?&]mode=launcher(?:&|$)/);
-    const openFolder = page.getByRole("button", { name: "Open Folder", exact: true });
+    const openFolder = page.getByRole("button", { name: "Open folder", exact: true });
     await expect(openFolder).toBeVisible();
     await expect(openFolder).toBeFocused();
     await expect(page.getByRole("heading", { name: "Folders", exact: true })).toBeVisible();
@@ -625,7 +625,7 @@ test.describe.serial("Co-work live lifecycle", () => {
       .click();
     await expect(page).toHaveURL(new RegExp(`store_id=${ordinaryStoreId}`));
     await expect(
-      page.getByRole("button", { name: "Close Folder", exact: true }),
+      page.getByRole("button", { name: "Close folder", exact: true }),
     ).toBeVisible();
   });
 
@@ -633,7 +633,7 @@ test.describe.serial("Co-work live lifecycle", () => {
     page,
   }) => {
     await seedLegacyScratch(page);
-    await gotoCowork(page, `?store_id=${ordinaryStoreId}`);
+    await gotoCowork(page, "?mode=launcher");
     const recovered = page.getByRole("button", {
       name: /Recovered document.*Recovered from an earlier session/,
     });
@@ -641,7 +641,7 @@ test.describe.serial("Co-work live lifecycle", () => {
     await recovered.click();
     const editor = await waitForEditor(page);
     await expect(editor).toContainText(fixture.scratch.marker);
-    await page.getByRole("button", { name: "Save document" }).click();
+    await chooseFolder(page, fixture.ordinary, "Save document");
     await expect(page.getByRole("heading", { name: "New document" })).toBeVisible();
     await expect(page.getByLabel("File name")).toHaveValue("recovered-document.md");
     await page.getByRole("button", { name: "Create document" }).click();
@@ -701,7 +701,7 @@ test.describe.serial("Co-work live lifecycle", () => {
     await editor.click();
     await page.keyboard.insertText(firstOfflineEdit);
     const syncStatus = page.locator(".wb-cowork__sync-status");
-    await expect(syncStatus).toContainText("Saved on this device", {
+    await expect(syncStatus).toContainText("Saved in this browser", {
       timeout: 30_000,
     });
     const outboxKey = `${ordinaryStoreId}:${firstDocumentId}`;
@@ -729,7 +729,7 @@ test.describe.serial("Co-work live lifecycle", () => {
     await page.reload({ waitUntil: "domcontentloaded" });
     const recoveredEditor = await waitForEditor(page);
     await expect(page.locator(".wb-cowork__sync-status")).toContainText(
-      "Saved on this device",
+      "Saved in this browser",
       { timeout: 30_000 },
     );
     const reopenedOutbox = await readBrowserOutbox(page, outboxKey);
@@ -1145,7 +1145,7 @@ test.describe.serial("Co-work live lifecycle", () => {
     await expect(search).toBeFocused();
     await search.fill("Second Working Note");
     const second = page.getByRole("option", {
-      name: /Second Working Note second-working-note\.md/,
+      name: /Second Working Note.*second-working-note\.md/,
     });
     await second.focus();
     await page.keyboard.press("Enter");
@@ -1181,7 +1181,7 @@ test.describe.serial("Co-work live lifecycle", () => {
     page,
   }) => {
     await gotoCowork(page, "?cowork_fixture=demo&mode=launcher");
-    await expect(page.getByRole("button", { name: "Open Folder" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Open folder" })).toBeVisible();
     await expect(page.getByRole("button", { name: "New", exact: true })).toBeVisible();
     await expect(page.getByText("Context bundle cache")).toHaveCount(0);
     await expect(page.getByRole("textbox", { name: "Document editor" })).toHaveCount(0);

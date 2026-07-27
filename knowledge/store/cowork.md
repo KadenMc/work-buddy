@@ -1,8 +1,8 @@
 ---
 name: Co-work
 kind: concept
-description: The Folder-based human and agent working surface for living documents, with durable editing, explicit file writes, and proposal review.
-summary: A user opens an ordinary Folder, Co-work inspects it without mutation, and a one-time confirmation discloses the .wbuddy support data before setup. An invariant toolbar owns New, New from Markdown, Folder selection, document selection, and explicit Folder closing; the launcher presents registered and not-yet-saved work in one Documents list. Co-work restores the selected Folder and document from the URL, keeps structured editing state durable through an offline-capable outbox, writes Markdown only through an explicit human action, detects outside file changes before overwrite, and routes agent contributions through human-reviewed proposals.
+description: The human-and-agent surface for living documents, organized around ordinary folders with durable editing, explicit file writes, and proposal review.
+summary: A user opens an ordinary folder, Co-work inspects it without mutation, and a one-time confirmation discloses the .wbuddy support data before setup. An invariant toolbar owns New, New from Markdown, folder selection, document selection, and explicit folder closing. The launcher and document picker show only the active folder's registered documents while a folder is open, and only browser-local documents when no folder is open; every row states its location. Co-work restores the selected folder and document from the URL, keeps structured editing state durable through an offline-capable outbox, writes Markdown only through an explicit human action, detects outside file changes before overwrite, and routes agent contributions through human-reviewed proposals.
 tags:
 - cowork
 - documents
@@ -16,48 +16,48 @@ aliases:
 - document surface
 - living documents
 dev_notes: |
-  Native filesystem results are treated as untrusted input even though the picker runs on the host. Scoped Markdown and destination routes resolve the selected filesystem identity, derive the returned relative path from that resolved identity, and reapply containment plus the `.wbuddy` exclusion. This is load-bearing on Windows, where an 8.3 alias such as `WBUDDY~1` can otherwise disguise the managed directory. Registered Markdown identity is case-insensitive for Windows Folder roots and case-sensitive for POSIX roots; the server remains authoritative for races and unusual Unicode identities.
+  Native filesystem results are treated as untrusted input even though the picker runs on the host. Scoped Markdown and destination routes resolve the selected filesystem identity, derive the returned relative path from that resolved identity, and reapply containment plus the `.wbuddy` exclusion. This is load-bearing on Windows, where an 8.3 alias such as `WBUDDY~1` can otherwise disguise the managed directory. Registered Markdown identity is case-insensitive for Windows folder roots and case-sensitive for POSIX roots; the server remains authoritative for races and unusual Unicode identities.
 
   The Windows helper protocol is versioned and mode-bound. macOS cancellation returns an explicit protocol-and-mode-bound success marker; every nonzero `osascript` exit remains a genuine picker error. All picker modes share one non-blocking process lock.
 
-  First-time setup is a focus-managed modal and disables stale document chrome from any previously active Folder. If the short-lived inspection token expires after the user confirms setup, the provider refreshes inspection and retries initialization exactly once on that same click. Do not turn that bounded retry into a loop.
+  First-time setup is a focus-managed modal and disables stale document chrome from any previously active folder. If the short-lived inspection token expires after the user confirms setup, the provider refreshes inspection and retries initialization exactly once on that same click. Do not turn that bounded retry into a loop.
 
-  Folder, Markdown-file, and destination-Folder picker availability are distinct server capabilities and must remain distinct through the client model. Permission and availability checks are repeated at intent dispatch boundaries, not left to disabled controls alone. In read-only mode, ordinary-Folder setup is informational and cannot initialize. An on-device document remains local when the dashboard is read-only, its active Folder denies create, or it has no Folder and Folder selection is unavailable.
+  Native folder, Markdown-file, and destination-folder picker availability are distinct server capabilities and must remain distinct through the client model. Permission and availability checks are repeated at intent dispatch boundaries, not left to disabled controls alone. In read-only mode, ordinary folder setup is informational and cannot initialize. A browser-local document remains local when the dashboard is read-only, its active folder denies create, or it has no folder and folder selection is unavailable.
 
-  `wb.cowork.folder.close@1` is a dedicated navigation intent. It is not the Folder-selection `cancel` action: cancel restores the context that existed before a transient picker or inspection, while Close Folder deliberately clears the active Folder and catalog. A registered session must pass the device-durability leave barrier first; an active on-device document is Folder-independent and remains open. Closing never unregisters a Folder, retires a document, mutates `.wbuddy`, or changes Markdown.
+  `wb.cowork.folder.close@1` is a dedicated navigation intent. It is not the folder-selection `cancel` action: cancel restores the context that existed before a transient picker or inspection, while **Close folder** deliberately clears the active folder and catalog. A registered session must pass the device-durability leave barrier first; an active browser-local document is folder-independent and remains open. Closing never unregisters a folder, retires a document, mutates `.wbuddy`, or changes Markdown.
 ---
 
 # Co-work
 
 Co-work is work-buddy's surface for co-authoring living documents with an agent.
-The unit a user chooses is simply a **Folder**. Its displayed name is the
+The unit a user chooses is simply a **folder**. Its displayed name is the
 directory name; Co-work does not make the user define a second project object or
-select a predefined document type. A completely ordinary Folder can be inspected
+select a predefined document type. A completely ordinary folder can be inspected
 without mutation. Choosing it is the user's intent to inspect and open it. If
-the Folder has not been used with Co-work before, the dashboard pauses before
+the folder has not been used with Co-work before, the dashboard pauses before
 mutation and asks the user to **Set up Co-work** there.
 
 Setup creates `.wbuddy/manifest.yaml` for work-buddy-level metadata and the
 canonical Co-work store at `.wbuddy/cowork/`. The confirmation names the
 `.wbuddy` support data, shows the selected host path, and states that existing
 documents are not changed. Cancelling it writes nothing. An already initialized
-Folder opens directly without asking again.
+folder opens directly without asking again.
 
 Because the dashboard has no authentication and Co-work can read host files,
 all `/api/truth/cowork/*` and `/api/truth/doc/*` routes reject non-loopback
 callers. Remote Co-work remains unavailable until Work Buddy has an
-authenticated remote surface; a network-bound dashboard must not expose Folder
+authenticated remote surface; a network-bound dashboard must not expose folder
 contents by implication. The guard also requires a local browser-visible Host
 and rejects forwarding/Tailscale proxy markers, because a loopback reverse
 proxy is not itself proof of a local user. Opening host UI has an additional
-boundary: every native Folder, Markdown-file, and destination picker route
+boundary: every native folder, Markdown-file, and destination picker route
 requires its exact Co-work intent header, rejects cross-site browser provenance
 or a mismatched Origin, and the dashboard denies framing so another site cannot
 place the controls in a clickjacking frame.
 
-## Folder and document flow
+## Working with folders and documents
 
-With no Folder open, the toolbar's **Folder** control opens the native picker
+With no folder open, the toolbar's **folder** control opens the native picker
 directly. On Windows the dashboard launches a fixed
 `python -I -m work_buddy.cowork.folder_picker_helper` command with only bounded,
 validated mode and starting-directory arguments. That isolated PySide6 process
@@ -69,42 +69,46 @@ above the browser without replacing it with a custom picker. A non-blocking
 process-local lock permits one native picker at a time and returns a typed busy
 response to a second request.
 
-After read-only inspection, an ordinary Folder shows the one-time setup
-confirmation; an initialized Folder opens its document catalog directly. The
+After read-only inspection, an ordinary folder shows the one-time setup
+confirmation; an initialized folder opens its document catalog directly. The
 confirmation is a focus-managed modal, begins on **Cancel**, and prevents
-document actions from a previously active Folder while the decision is open.
+document actions from a previously active folder while the decision is open.
 When the dashboard itself is read-only, the modal instead explains that Co-work
-is not set up in the Folder, offers only **Close**, and changes no files.
+is not set up in the folder, offers only **Close**, and changes no files.
 
 The document bar keeps the same foundational controls in every resting state:
-the Folder control, **Open document**, **New from Markdown**, and NotePencil
-**New**. With no Folder, New starts an ordinary document saved on the device;
-with a Folder, it opens the contained create flow. New from Markdown remains in
+the folder control, **Open document**, **New from Markdown**, and NotePencil
+**New**. With no folder, New starts an ordinary browser-local document; with a
+folder, it opens the contained create flow. New from Markdown remains in
 the same toolbar position and is disabled with a specific explanation until an
-import-capable Folder and native Markdown picker are available. These creation
+import-capable folder and native Markdown picker are available. These creation
 actions never appear in the launcher body or inside the Open document dialog.
 
-The launcher has one **Documents** list. It combines ready registered documents
-from the active Folder with not-yet-saved documents, distinguishing them through
-secondary path or “Not saved to a Folder” metadata rather than competing
-“Recent documents” and “On this device” sections. The whole row names and opens
-the document; there are no repeated generic Continue buttons. With no active
-Folder, the same list simply contains the available not-yet-saved documents and
-a separate **Folders** section presents known Folder navigation. It is not
-called Recent folders because registry order does not represent recency.
-**Open document** searches the same two document sources and therefore remains
-usable when only device-saved documents exist.
+The launcher has one **Documents** list whose contents follow the current
+context. With a folder open, it contains only ready registered documents from
+that folder; every row shows the folder name and relative Markdown path. With no
+folder open, it contains only browser-local documents; every row shows italic
+*Not saved to folder*, **Saved in this browser**, and its activity or recovery
+detail. The whole row names and opens the document, with no repeated generic
+Continue buttons and no competing “Recent documents” or “On this device”
+sections.
 
-An active Folder has a separate, visible **Close Folder** control beside its
-name. Closing a Folder preserves the known-Folder registry and every device-
-saved document. It closes a registered document only after the existing
-device-durability barrier succeeds, while an active device-saved document stays
-open without Folder context. A successful registered or idle close navigates to
-`?mode=launcher`; a durability failure leaves the Folder, document, catalog, and
+The **Open document** picker follows the same boundary: active-folder documents
+only while a folder is open, browser-local documents only otherwise. Search
+never crosses that boundary. The folder-neutral launcher also has a separate
+**Folders** section for known folder navigation. It is not called Recent folders
+because registry order does not represent recency.
+
+An active folder has a separate, visible **Close folder** control beside its
+name. Closing a folder preserves the known-folder registry and every
+browser-local document. It closes a registered document only after the existing
+device-durability barrier succeeds, while an active browser-local document stays
+open without folder context. A successful registered or idle close navigates to
+`?mode=launcher`; a durability failure leaves the folder, document, catalog, and
 URL in place.
 
 **New from Markdown** opens the operating system's native file picker, rooted
-at the active Folder and filtered to `.md` and `.markdown`. The server accepts
+at the active folder and filtered to `.md` and `.markdown`. The server accepts
 only a real, contained, non-managed Markdown path after resolving its filesystem
 identity; aliases cannot be used to enter `.wbuddy`. Co-work creates its
 collaborative document representation from the existing bytes and continues to
@@ -113,25 +117,33 @@ registration. If the file is already registered, Co-work opens that document.
 If Markdown-file selection is unavailable on the host, the action is disabled
 with a visible explanation rather than failing after a click.
 
-For a newly created document, **Save in** defaults to the active Folder and
-**Change** opens the native destination-Folder picker. The filename is derived
+For a newly created document, **Save in** defaults to the active folder and
+**Change** opens the native destination-folder picker. The filename is derived
 from the title and remains independently editable; the resulting relative path
 still passes the same server-authoritative containment and reserved-name
-validation as every document create. When destination-Folder selection is
+validation as every document create. When destination-folder selection is
 unavailable, **Change** is disabled with a visible explanation while saving at
-the Folder root remains available. A document started before a Folder is chosen
-is simply untitled and **Saved on this device** until the user saves it into a
-Folder. **Save document** is disabled with a visible explanation when the
-dashboard is read-only, the active Folder denies create, or no Folder is active
-and Folder selection is unavailable; the document remains safely on the device.
+the folder root remains available. A document started before a folder is chosen
+is simply untitled, *Not saved to folder*, and **Saved in this browser**. Its
+list metadata is stored in browser local storage and its structured content in
+IndexedDB; it is not yet a Markdown file.
+
+**Save document** can later place that browser-local document into an existing
+or newly selected folder. Co-work first makes the local content durable, creates
+and validates the registered document, opens that registered copy, and only then
+retires the browser-local copy. A failure before the registered copy opens leaves
+the browser-local document intact. Saving is disabled with a visible explanation
+when the dashboard is read-only, the active folder denies create, or no folder
+is active and folder selection is unavailable.
+
 `scratch` is only an internal persistence term, not a separate user-facing
-document type. Additional on-device documents are numbered
+document type. Additional browser-local documents are numbered
 (`Untitled 2`, `Untitled 3`, and so on), and their human edits refresh an
 **Edited** timestamp so recovery choices remain identifiable.
 
-Folder and document selection are encoded in the URL, so reload, history
+The selected folder and document are encoded in the URL, so reload, history
 navigation, and a shared local link restore the same working context. Document
-selection and Folder closing do not imply a file write. Retiring a document
+selection and folder closing do not imply a file write. Retiring a document
 removes it from the active catalog while preserving its Markdown file and
 durable history.
 
@@ -141,7 +153,7 @@ A Co-work document has two related representations:
 
 - the authoritative structured collaborative head used by the editor, with
   monotonic versions and compare-and-swap protection; and
-- the Markdown file in the selected Folder, which is materialized only through
+- the Markdown file in the selected folder, which is materialized only through
   the explicit **Save** action.
 
 Local edits enter an IndexedDB outbox before transport. The provider can reload
@@ -189,6 +201,6 @@ approve its own content.
 The review rail groups proposals into a sitting so the user can decide them in
 context. The document's Markdown file is written through the materialization
 engine, never directly by an agent, and the claims a document expresses live in
-the Folder's scoped Truth ledger through expression links. Internally, the
+the folder's scoped Truth ledger through expression links. Internally, the
 engine still uses terms such as scope root, store ID, and Truth store; the
-dashboard consistently calls the thing the user selected a **Folder**.
+dashboard consistently calls the thing the user selected a **folder**.

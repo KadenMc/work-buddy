@@ -206,7 +206,7 @@ export default function CoworkWorkspaceWidget({
           setFolderNotice(
             coworkErrorMessage(
               asCoworkApiError(error),
-              "Co-work couldn’t return to the previous Folder.",
+              "Co-work couldn’t return to the previous folder.",
             ),
           );
         });
@@ -226,8 +226,8 @@ export default function CoworkWorkspaceWidget({
             coworkErrorMessage(
               asCoworkApiError(error),
               action === "close"
-                ? "Co-work couldn’t close that Folder. Your current work is still open."
-                : "Co-work couldn’t open that Folder. Try again.",
+                ? "Co-work couldn’t close that folder. Your current work is still open."
+                : "Co-work couldn’t open that folder. Try again.",
             ),
           );
         })
@@ -243,7 +243,7 @@ export default function CoworkWorkspaceWidget({
   const openDocument = useCallback(
     async (document: CoworkDocumentSummary): Promise<void> => {
       const storeId = model.activeFolderStoreId;
-      if (storeId === null) throw new Error("Choose a Folder before opening a document.");
+      if (storeId === null) throw new Error("Choose a folder before opening a document.");
       await dispatch(COWORK_INTENTS.documentOpen, {
         storeId,
         documentId: document.documentId,
@@ -302,7 +302,7 @@ export default function CoworkWorkspaceWidget({
           setFolderNotice(
             coworkErrorMessage(
               asCoworkApiError(folderError),
-              "Co-work couldn’t open that Folder. Try again.",
+              "Co-work couldn’t open that folder. Try again.",
             ),
           );
           return;
@@ -356,7 +356,7 @@ export default function CoworkWorkspaceWidget({
         await openDocument(document);
         return;
       }
-      await finishScratchPromotion(
+      const result = await finishScratchPromotion(
         document,
         promotion.scratchId,
         openDocument,
@@ -367,6 +367,11 @@ export default function CoworkWorkspaceWidget({
           }),
       );
       setPendingPromotion(null);
+      if (!result.retired) {
+        setLocalNotice(
+          "Document saved to folder. Its browser copy couldn’t be removed, so it remains available when no folder is open.",
+        );
+      }
     },
     [dispatch, openDocument, pendingPromotion],
   );
@@ -445,7 +450,7 @@ export default function CoworkWorkspaceWidget({
       ? null
       : coworkErrorMessage(
           model.navigationError,
-          "Co-work couldn’t open that Folder.",
+          "Co-work couldn’t open that folder.",
         ));
   const sessionIsInert = documentRouteBlocksSession || folderLifecycleActive;
   const backgroundCatalogRefreshPaused =
@@ -738,7 +743,7 @@ export default function CoworkWorkspaceWidget({
                     }
                   }}>Retry</Button>
                   <Button onClick={() => void dispatch(COWORK_INTENTS.documentClose, {})}>
-                    Return to Folder
+                    Return to folder
                   </Button>
                 </div>
               </>
@@ -749,8 +754,9 @@ export default function CoworkWorkspaceWidget({
 
       {pickerOpen ? (
         <CoworkDocumentPicker
-          documents={model.catalog.documents}
-          localDocuments={model.scratches}
+          documents={folder === null ? [] : model.catalog.documents}
+          localDocuments={folder === null ? model.scratches : []}
+          folderName={folder?.folderName ?? null}
           currentDocumentId={session.kind === "registered" ? session.document.documentId : undefined}
           currentLocalDocumentId={session.kind === "scratch" ? session.scratchId : undefined}
           onClose={() => setPickerOpen(false)}

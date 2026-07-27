@@ -63,7 +63,7 @@ const COWORK_WIDGET_ROLES: readonly WidgetRoleContract[] = [
     ownerAppId: COWORK_APP_ID,
     displayName: "Co-work health strip",
     description:
-      "Folder and document identity, persistence status, and lifecycle actions.",
+      "The folder and document identity, persistence status, and lifecycle actions.",
   },
 ];
 

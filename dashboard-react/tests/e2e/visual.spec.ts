@@ -296,7 +296,7 @@ test.describe("Co-work launcher visuals", () => {
     await page.goto("/app/cowork?store_id=visual-store", {
       waitUntil: "domcontentloaded",
     });
-    await expect(page.getByRole("button", { name: "Close Folder", exact: true })).toBeVisible({
+    await expect(page.getByRole("button", { name: "Close folder", exact: true })).toBeVisible({
       timeout: 60_000,
     });
     await expect(page.getByRole("heading", { name: "Documents", exact: true })).toBeVisible();
@@ -317,7 +317,7 @@ test.describe("Co-work launcher visuals", () => {
     await page.goto("/app/cowork?store_id=visual-store", {
       waitUntil: "domcontentloaded",
     });
-    await expect(page.getByRole("button", { name: "Close Folder", exact: true })).toBeVisible({
+    await expect(page.getByRole("button", { name: "Close folder", exact: true })).toBeVisible({
       timeout: 60_000,
     });
     await expect(page.getByRole("heading", { name: "Documents", exact: true })).toBeVisible();
