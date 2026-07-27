@@ -354,7 +354,7 @@ test.describe.serial("Co-work live lifecycle", () => {
     await gotoCowork(page);
     const lifecycle = page.locator(".wb-cowork-lifecycle");
     await expect(lifecycle.getByRole("button", { name: "Open Folder", exact: true })).toBeVisible();
-    await expect(lifecycle.getByRole("button", { name: "New document", exact: true })).toBeVisible();
+    await expect(lifecycle.getByRole("button", { name: "New", exact: true })).toBeVisible();
     await expect(
       lifecycle.getByRole("button", { name: "Open document", exact: true }),
     ).toBeDisabled();
@@ -524,11 +524,7 @@ test.describe.serial("Co-work live lifecycle", () => {
       `?store_id=${ordinaryStoreId}&document_id=${firstDocumentId}`,
     );
     await waitForEditor(page);
-    await page
-      .getByRole("button", { name: /First Working Note drafts\/first-working-note\.md/ })
-      .click();
-    await expect(page.getByRole("heading", { name: "Open document" })).toBeVisible();
-    await page.getByRole("button", { name: "Create new document" }).click();
+    await page.getByRole("button", { name: "New", exact: true }).click();
     await expect(page.getByRole("heading", { name: "New document" })).toBeVisible();
     await page.getByLabel("Title").fill("Second Working Note");
     await expect(page.getByLabel("File name")).toHaveValue(
@@ -608,16 +604,41 @@ test.describe.serial("Co-work live lifecycle", () => {
     expect(currentRouteIds(page).documentId).toBe(firstDocumentId);
   });
 
+  test("Close Folder returns to the Folder launcher and can reopen it without a native picker", async ({
+    page,
+  }) => {
+    await gotoCowork(page, `?store_id=${ordinaryStoreId}`);
+    await expect(
+      page.getByRole("button", { name: fixture.ordinary.name, exact: true }).first(),
+    ).toBeVisible();
+
+    await page.getByRole("button", { name: "Close Folder", exact: true }).click();
+
+    await expect(page).toHaveURL(/[?&]mode=launcher(?:&|$)/);
+    const openFolder = page.getByRole("button", { name: "Open Folder", exact: true });
+    await expect(openFolder).toBeVisible();
+    await expect(openFolder).toBeFocused();
+    await expect(page.getByRole("heading", { name: "Folders", exact: true })).toBeVisible();
+
+    await page
+      .getByRole("button", { name: fixture.ordinary.name, exact: true })
+      .click();
+    await expect(page).toHaveURL(new RegExp(`store_id=${ordinaryStoreId}`));
+    await expect(
+      page.getByRole("button", { name: "Close Folder", exact: true }),
+    ).toBeVisible();
+  });
+
   test("AC-09: legacy local writing is recovered and removed only after saving opens", async ({
     page,
   }) => {
     await seedLegacyScratch(page);
     await gotoCowork(page, `?store_id=${ordinaryStoreId}`);
-    const recovered = page.locator(".wb-cowork-launcher__local-document").filter({
-      hasText: "Recovered document",
+    const recovered = page.getByRole("button", {
+      name: /Recovered document.*Recovered from an earlier session/,
     });
     await expect(recovered).toContainText("Recovered from an earlier session");
-    await recovered.getByRole("button", { name: "Continue" }).click();
+    await recovered.click();
     const editor = await waitForEditor(page);
     await expect(editor).toContainText(fixture.scratch.marker);
     await page.getByRole("button", { name: "Save document" }).click();
@@ -1161,7 +1182,7 @@ test.describe.serial("Co-work live lifecycle", () => {
   }) => {
     await gotoCowork(page, "?cowork_fixture=demo&mode=launcher");
     await expect(page.getByRole("button", { name: "Open Folder" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "New document" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "New", exact: true })).toBeVisible();
     await expect(page.getByText("Context bundle cache")).toHaveCount(0);
     await expect(page.getByRole("textbox", { name: "Document editor" })).toHaveCount(0);
 

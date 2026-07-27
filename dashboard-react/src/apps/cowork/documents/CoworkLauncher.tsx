@@ -1,4 +1,3 @@
-import { NotePencil } from "@phosphor-icons/react/NotePencil";
 import {
   Dialog,
   Heading,
@@ -26,9 +25,7 @@ interface CoworkLauncherProps {
   readonly onInitialize: () => void;
   readonly onOpenFolder: (storeId: string) => void;
   readonly onOpenDocument: (document: CoworkDocumentSummary) => void;
-  readonly onRegister: () => void;
   readonly onOpenLocalDocument: (document: CoworkScratchSummary) => void;
-  readonly onNewDocument: () => void;
 }
 
 const unavailableCopy: Record<string, string> = {
@@ -84,44 +81,111 @@ const duplicateFolderContext = (
   return target.join(" / ") || folder.folderPath;
 };
 
-const activityLabel = (document: CoworkScratchSummary): string => {
+const localDocumentMetadata = (document: CoworkScratchSummary): string => {
+  if (document.recoveredFromPreviousEditor) {
+    return "Recovered from an earlier session · Not saved to a Folder";
+  }
   const edited = document.updatedAt !== document.createdAt;
   const activityAt = new Date(edited ? document.updatedAt : document.createdAt);
-  if (Number.isNaN(activityAt.getTime())) return "Not saved to a folder yet";
-  return `${edited ? "Edited" : "Created"} ${new Intl.DateTimeFormat(undefined, {
+  if (Number.isNaN(activityAt.getTime())) return "Not saved to a Folder";
+  const activity = `${edited ? "Edited" : "Created"} ${new Intl.DateTimeFormat(undefined, {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(activityAt)}`;
+  return `Not saved to a Folder · ${activity}`;
 };
 
-function LocalDocuments({
-  documents,
-  onOpen,
+type LauncherDocument =
+  | {
+      readonly kind: "registered";
+      readonly key: string;
+      readonly sortAt: string | null;
+      readonly document: CoworkDocumentSummary;
+    }
+  | {
+      readonly kind: "local";
+      readonly key: string;
+      readonly sortAt: string;
+      readonly document: CoworkScratchSummary;
+    };
+
+function Documents({
+  registered,
+  local,
+  onOpenRegistered,
+  onOpenLocal,
   disabled = false,
 }: {
-  readonly documents: readonly CoworkScratchSummary[];
-  readonly onOpen: (document: CoworkScratchSummary) => void;
+  readonly registered: readonly CoworkDocumentSummary[];
+  readonly local: readonly CoworkScratchSummary[];
+  readonly onOpenRegistered: (document: CoworkDocumentSummary) => void;
+  readonly onOpenLocal: (document: CoworkScratchSummary) => void;
   readonly disabled?: boolean;
 }) {
-  if (documents.length === 0) return null;
+  const documents: readonly LauncherDocument[] = [
+    ...registered.map(
+      (document): LauncherDocument => ({
+        kind: "registered",
+        key: `registered:${document.documentId}`,
+        sortAt: document.updatedAt ?? null,
+        document,
+      }),
+    ),
+    ...local.map(
+      (document): LauncherDocument => ({
+        kind: "local",
+        key: `local:${document.scratchId}`,
+        sortAt: document.updatedAt,
+        document,
+      }),
+    ),
+  ].sort((left, right) => {
+    if (left.sortAt === right.sortAt) return left.key.localeCompare(right.key);
+    if (left.sortAt === null) return 1;
+    if (right.sortAt === null) return -1;
+    return right.sortAt.localeCompare(left.sortAt);
+  });
+
   return (
-    <section aria-labelledby="cowork-local-documents" className="wb-cowork-launcher__section">
-      <h3 id="cowork-local-documents">On this device</h3>
-      {documents.map((document) => (
-        <div key={document.scratchId} className="wb-cowork-launcher__local-document">
-          <span>
-            <strong>{document.title}</strong>
-            <small>
-              {document.recoveredFromPreviousEditor
-                ? "Recovered from an earlier session"
-                : activityLabel(document)}
-            </small>
-          </span>
-          <Button size="small" onClick={() => onOpen(document)} disabled={disabled}>
-            Continue
-          </Button>
+    <section aria-labelledby="cowork-documents" className="wb-cowork-launcher__section">
+      <h3 id="cowork-documents">Documents</h3>
+      {documents.length === 0 ? (
+        <p className="wb-cowork-launcher__empty">No documents yet.</p>
+      ) : (
+        <div className="wb-cowork-launcher__document-list">
+          {documents.map((entry) => (
+            <button
+              key={entry.key}
+              type="button"
+              onClick={() => {
+                if (entry.kind === "registered") {
+                  onOpenRegistered(entry.document);
+                } else {
+                  onOpenLocal(entry.document);
+                }
+              }}
+              className="wb-cowork-launcher__document"
+              disabled={disabled}
+            >
+              <span className="wb-cowork-launcher__document-copy">
+                <strong>{entry.document.title}</strong>
+                <small>
+                  {entry.kind === "registered"
+                    ? entry.document.path
+                    : localDocumentMetadata(entry.document)}
+                </small>
+              </span>
+              {entry.kind === "registered" &&
+              entry.document.openProposalCount > 0 ? (
+                <small className="wb-cowork-launcher__document-signal">
+                  {entry.document.openProposalCount} open{" "}
+                  {entry.document.openProposalCount === 1 ? "proposal" : "proposals"}
+                </small>
+              ) : null}
+            </button>
+          ))}
         </div>
-      ))}
+      )}
     </section>
   );
 }
@@ -134,9 +198,7 @@ export function CoworkLauncher({
   onInitialize,
   onOpenFolder,
   onOpenDocument,
-  onRegister,
   onOpenLocalDocument,
-  onNewDocument,
 }: CoworkLauncherProps) {
   const selection = model.folderSelection;
   const folder = folderFor(model);
@@ -355,17 +417,13 @@ export function CoworkLauncher({
   }
 
   if (folder !== null) {
-    const markdownPickerUnavailable = !model.folderChooser.markdownAvailable;
     const readyDocuments = model.catalog.documents
-      .filter((document) => (document.initializationState ?? "ready") === "ready")
-      .reverse()
-      .sort((left, right) => {
-        if (left.updatedAt === right.updatedAt) return 0;
-        if (left.updatedAt == null) return 1;
-        if (right.updatedAt == null) return -1;
-        return right.updatedAt.localeCompare(left.updatedAt);
-      })
-      .slice(0, 6);
+      .filter(
+        (document) =>
+          (document.initializationState ?? "ready") === "ready" &&
+          document.lifecycle !== "retired" &&
+          document.permissions?.open !== false,
+      );
     return (
       <section className="wb-cowork-launcher" aria-label={`${folder.folderName} documents`}>
         {model.navigationError !== null ? (
@@ -374,36 +432,6 @@ export function CoworkLauncher({
               model.navigationError,
               "Co-work couldn’t open that Folder.",
             )}
-          </InlineAlert>
-        ) : null}
-        <div className="wb-cowork-launcher__primary-actions">
-          <Button
-            onClick={onRegister}
-            disabled={
-              navigationBusy ||
-              !folder.permissions.import ||
-              markdownPickerUnavailable
-            }
-            aria-describedby={
-              markdownPickerUnavailable
-                ? "cowork-launcher-markdown-picker-unavailable"
-                : undefined
-            }
-            title={
-              markdownPickerUnavailable
-                ? "Markdown file selection isn’t available here."
-                : "Create a new document from an existing Markdown file."
-            }
-          >
-            New from Markdown
-          </Button>
-        </div>
-        {markdownPickerUnavailable ? (
-          <InlineAlert
-            id="cowork-launcher-markdown-picker-unavailable"
-            tone="warning"
-          >
-            Markdown file selection isn’t available here.
           </InlineAlert>
         ) : null}
         {model.catalog.status === "loading" ? (
@@ -422,31 +450,11 @@ export function CoworkLauncher({
             </Button>
           </InlineAlert>
         ) : null}
-        {readyDocuments.length > 0 ? (
-          <section aria-labelledby="cowork-recent-documents" className="wb-cowork-launcher__section">
-            <h3 id="cowork-recent-documents">Recent documents</h3>
-            <div className="wb-cowork-launcher__cards">
-              {readyDocuments.map((document) => (
-                <button
-                  key={document.documentId}
-                  type="button"
-                  onClick={() => onOpenDocument(document)}
-                  className="wb-cowork-launcher__card"
-                  disabled={navigationBusy}
-                >
-                  <strong>{document.title}</strong>
-                  <span>{document.path}</span>
-                  {document.openProposalCount > 0 ? (
-                    <small>{document.openProposalCount} open proposals</small>
-                  ) : null}
-                </button>
-              ))}
-            </div>
-          </section>
-        ) : null}
-        <LocalDocuments
-          documents={model.scratches}
-          onOpen={onOpenLocalDocument}
+        <Documents
+          registered={readyDocuments}
+          local={model.scratches}
+          onOpenRegistered={onOpenDocument}
+          onOpenLocal={onOpenLocalDocument}
           disabled={navigationBusy}
         />
       </section>
@@ -454,7 +462,7 @@ export function CoworkLauncher({
   }
 
   return (
-    <section className="wb-cowork-launcher wb-cowork-launcher--start" aria-label="Start a document">
+    <section className="wb-cowork-launcher" aria-label="Co-work workspace">
       {model.navigationError !== null ? (
         <InlineAlert tone="danger">
           {coworkErrorMessage(
@@ -463,19 +471,21 @@ export function CoworkLauncher({
           )}
         </InlineAlert>
       ) : null}
-      <div className="wb-cowork-launcher__primary-actions">
-        <Button variant="primary" onClick={onNewDocument} disabled={navigationBusy}>
-          <NotePencil aria-hidden="true" /> New document
-        </Button>
-      </div>
       {!model.folderChooser.available ? (
         <InlineAlert tone="warning">
           Folder selection isn’t available here.
         </InlineAlert>
       ) : null}
+      <Documents
+        registered={[]}
+        local={model.scratches}
+        onOpenRegistered={onOpenDocument}
+        onOpenLocal={onOpenLocalDocument}
+        disabled={navigationBusy}
+      />
       {model.folders.length > 0 ? (
         <section aria-labelledby="cowork-known-folders" className="wb-cowork-launcher__section">
-          <h3 id="cowork-known-folders">Recent folders</h3>
+          <h3 id="cowork-known-folders">Folders</h3>
           <div className="wb-cowork-launcher__cards">
             {model.folders.map((known) => (
               <button
@@ -497,11 +507,6 @@ export function CoworkLauncher({
           </div>
         </section>
       ) : null}
-      <LocalDocuments
-        documents={model.scratches}
-        onOpen={onOpenLocalDocument}
-        disabled={navigationBusy}
-      />
     </section>
   );
 }

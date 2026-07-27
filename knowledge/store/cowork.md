@@ -2,7 +2,7 @@
 name: Co-work
 kind: concept
 description: The Folder-based human and agent working surface for living documents, with durable editing, explicit file writes, and proposal review.
-summary: A user opens an ordinary Folder, Co-work inspects it without mutation, and a one-time confirmation discloses the .wbuddy support data before setup. The user can create a document or start one from an existing Markdown file in place, while an untitled document remains saved on the device until it is given a Folder location. Co-work restores the selected Folder and document from the URL, keeps structured editing state durable through an offline-capable outbox, writes Markdown only through an explicit human action, detects outside file changes before overwrite, and routes agent contributions through human-reviewed proposals.
+summary: A user opens an ordinary Folder, Co-work inspects it without mutation, and a one-time confirmation discloses the .wbuddy support data before setup. An invariant toolbar owns New, New from Markdown, Folder selection, document selection, and explicit Folder closing; the launcher presents registered and not-yet-saved work in one Documents list. Co-work restores the selected Folder and document from the URL, keeps structured editing state durable through an offline-capable outbox, writes Markdown only through an explicit human action, detects outside file changes before overwrite, and routes agent contributions through human-reviewed proposals.
 tags:
 - cowork
 - documents
@@ -23,6 +23,8 @@ dev_notes: |
   First-time setup is a focus-managed modal and disables stale document chrome from any previously active Folder. If the short-lived inspection token expires after the user confirms setup, the provider refreshes inspection and retries initialization exactly once on that same click. Do not turn that bounded retry into a loop.
 
   Folder, Markdown-file, and destination-Folder picker availability are distinct server capabilities and must remain distinct through the client model. Permission and availability checks are repeated at intent dispatch boundaries, not left to disabled controls alone. In read-only mode, ordinary-Folder setup is informational and cannot initialize. An on-device document remains local when the dashboard is read-only, its active Folder denies create, or it has no Folder and Folder selection is unavailable.
+
+  `wb.cowork.folder.close@1` is a dedicated navigation intent. It is not the Folder-selection `cancel` action: cancel restores the context that existed before a transient picker or inspection, while Close Folder deliberately clears the active Folder and catalog. A registered session must pass the device-durability leave barrier first; an active on-device document is Folder-independent and remains open. Closing never unregisters a Folder, retires a document, mutates `.wbuddy`, or changes Markdown.
 ---
 
 # Co-work
@@ -72,12 +74,34 @@ confirmation; an initialized Folder opens its document catalog directly. The
 confirmation is a focus-managed modal, begins on **Cancel**, and prevents
 document actions from a previously active Folder while the decision is open.
 When the dashboard itself is read-only, the modal instead explains that Co-work
-is not set up in the Folder, offers only **Close**, and changes no files. The
-document bar shows **Open document** without a dropdown caret and a single
-NotePencil **New** action. The selected-Folder launcher does not repeat that New
-action. **Open document** searches registered Co-work documents and their
-Co-work-specific state. Create and import actions are disabled when the active
-Folder does not grant the corresponding permission.
+is not set up in the Folder, offers only **Close**, and changes no files.
+
+The document bar keeps the same foundational controls in every resting state:
+the Folder control, **Open document**, **New from Markdown**, and NotePencil
+**New**. With no Folder, New starts an ordinary document saved on the device;
+with a Folder, it opens the contained create flow. New from Markdown remains in
+the same toolbar position and is disabled with a specific explanation until an
+import-capable Folder and native Markdown picker are available. These creation
+actions never appear in the launcher body or inside the Open document dialog.
+
+The launcher has one **Documents** list. It combines ready registered documents
+from the active Folder with not-yet-saved documents, distinguishing them through
+secondary path or “Not saved to a Folder” metadata rather than competing
+“Recent documents” and “On this device” sections. The whole row names and opens
+the document; there are no repeated generic Continue buttons. With no active
+Folder, the same list simply contains the available not-yet-saved documents and
+a separate **Folders** section presents known Folder navigation. It is not
+called Recent folders because registry order does not represent recency.
+**Open document** searches the same two document sources and therefore remains
+usable when only device-saved documents exist.
+
+An active Folder has a separate, visible **Close Folder** control beside its
+name. Closing a Folder preserves the known-Folder registry and every device-
+saved document. It closes a registered document only after the existing
+device-durability barrier succeeds, while an active device-saved document stays
+open without Folder context. A successful registered or idle close navigates to
+`?mode=launcher`; a durability failure leaves the Folder, document, catalog, and
+URL in place.
 
 **New from Markdown** opens the operating system's native file picker, rooted
 at the active Folder and filtered to `.md` and `.markdown`. The server accepts
@@ -107,8 +131,9 @@ document type. Additional on-device documents are numbered
 
 Folder and document selection are encoded in the URL, so reload, history
 navigation, and a shared local link restore the same working context. Document
-selection does not imply a file write. Retiring a document removes it from the
-active catalog while preserving its Markdown file and durable history.
+selection and Folder closing do not imply a file write. Retiring a document
+removes it from the active catalog while preserving its Markdown file and
+durable history.
 
 ## Editing and persistence
 

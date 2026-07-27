@@ -190,7 +190,9 @@ export default function CoworkWorkspaceWidget({
 
   const folderAction = useCallback(
     (action: string, payload: Record<string, JsonValue> = {}) =>
-      dispatch(COWORK_INTENTS.folderSelect, { action, ...payload }),
+      action === "close"
+        ? dispatch(COWORK_INTENTS.folderClose, {})
+        : dispatch(COWORK_INTENTS.folderSelect, { action, ...payload }),
     [dispatch],
   );
   const runFolderAction = useCallback(
@@ -223,7 +225,9 @@ export default function CoworkWorkspaceWidget({
           setFolderNotice(
             coworkErrorMessage(
               asCoworkApiError(error),
-              "Co-work couldn’t open that Folder. Try again.",
+              action === "close"
+                ? "Co-work couldn’t close that Folder. Your current work is still open."
+                : "Co-work couldn’t open that Folder. Try again.",
             ),
           );
         })
@@ -564,11 +568,9 @@ export default function CoworkWorkspaceWidget({
       onInitialize={() => runFolderAction("initialize")}
       onOpenFolder={(storeId) => runFolderAction("open", { storeId })}
       onOpenDocument={(document) => void openDocument(document)}
-      onRegister={() => openLifecycleDialog("register")}
       onOpenLocalDocument={(scratch) =>
         void dispatch(COWORK_INTENTS.scratchOpen, { scratchId: scratch.scratchId })
       }
-      onNewDocument={() => void dispatch(COWORK_INTENTS.scratchOpen, {})}
     />
   );
 
@@ -581,12 +583,22 @@ export default function CoworkWorkspaceWidget({
       <CoworkDocumentBar
         model={model}
         folderActionBusy={pendingFolderAction !== null || folderLifecycleActive}
+        closingFolder={pendingFolderAction?.action === "close"}
         onChooseFolder={() => runFolderAction("choose")}
-        onOpenPicker={() => {
-          if (folder === null) runFolderAction("choose");
-          else setPickerOpen(true);
+        onCloseFolder={() => {
+          setPickerOpen(false);
+          setDialog(null);
+          runFolderAction("close");
         }}
-        onCreate={() => openLifecycleDialog("create")}
+        onOpenPicker={() => setPickerOpen(true)}
+        onCreate={() => {
+          if (folder === null) {
+            void dispatch(COWORK_INTENTS.scratchOpen, {});
+          } else {
+            openLifecycleDialog("create");
+          }
+        }}
+        onRegister={() => openLifecycleDialog("register")}
         onCloseSession={() =>
           void dispatch(
             session.kind === "scratch"
@@ -735,25 +747,21 @@ export default function CoworkWorkspaceWidget({
         ) : null}
       </div>
 
-      {pickerOpen && folder !== null ? (
+      {pickerOpen ? (
         <CoworkDocumentPicker
-          folder={folder}
-          folderPickerAvailable={model.folderChooser.available}
-          markdownPickerAvailable={model.folderChooser.markdownAvailable}
           documents={model.catalog.documents}
+          localDocuments={model.scratches}
           currentDocumentId={session.kind === "registered" ? session.document.documentId : undefined}
+          currentLocalDocumentId={session.kind === "scratch" ? session.scratchId : undefined}
           onClose={() => setPickerOpen(false)}
           onOpen={openDocument}
-          onCreate={() => openLifecycleDialog("create")}
-          onRegister={() => openLifecycleDialog("register")}
+          onOpenLocal={(scratch) =>
+            dispatch(COWORK_INTENTS.scratchOpen, { scratchId: scratch.scratchId })
+          }
           onRepair={(document) => {
             setPickerOpen(false);
             setRepairDocument(document);
             setDialog("repair");
-          }}
-          onChangeFolder={() => {
-            setPickerOpen(false);
-            runFolderAction("choose");
           }}
         />
       ) : null}

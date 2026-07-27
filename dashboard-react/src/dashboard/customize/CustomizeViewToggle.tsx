@@ -34,6 +34,7 @@ export function CustomizeViewToggle() {
       <Button
         size="small"
         variant={customizing ? "primary" : "secondary"}
+        className="wb-customize-view-toggle"
         aria-pressed={customizing}
         disabled={isMobile || !available || customizing}
         onClick={begin}

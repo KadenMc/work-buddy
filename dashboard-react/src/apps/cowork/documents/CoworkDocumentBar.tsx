@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { DotsThree } from "@phosphor-icons/react/DotsThree";
 import { FolderSimple } from "@phosphor-icons/react/FolderSimple";
 import { NotePencil } from "@phosphor-icons/react/NotePencil";
@@ -13,9 +14,12 @@ import { coworkErrorMessage } from "../providers/errors";
 interface CoworkDocumentBarProps {
   readonly model: CoworkViewModel;
   readonly onChooseFolder: () => void;
+  readonly onCloseFolder: () => void;
   readonly folderActionBusy?: boolean;
+  readonly closingFolder?: boolean;
   readonly onOpenPicker: () => void;
   readonly onCreate: () => void;
+  readonly onRegister: () => void;
   readonly onCloseSession: () => void;
   readonly onPromoteScratch: () => void;
   readonly promotionBusy?: boolean;
@@ -106,9 +110,12 @@ const localStatusLabel = (syncStatus?: CoworkSyncStatus): string => {
 export function CoworkDocumentBar({
   model,
   onChooseFolder,
+  onCloseFolder,
   folderActionBusy = false,
+  closingFolder = false,
   onOpenPicker,
   onCreate,
+  onRegister,
   onCloseSession,
   onPromoteScratch,
   promotionBusy = false,
@@ -149,26 +156,78 @@ export function CoworkDocumentBar({
     document?.driftState === "clean" &&
     syncStatus === "clean" &&
     materializationState?.kind === "up_to_date";
+  const canOpenDocuments = folder !== null || model.scratches.length > 0;
+  const createBlockedReason =
+    folder === null
+      ? null
+      : model.readOnly
+        ? "Read-only mode. New Folder documents aren’t available."
+        : !folder.permissions.create
+          ? "This Folder doesn’t allow new documents."
+          : null;
+  const importBlockedReason =
+    folder === null
+      ? "Open a Folder before creating a document from Markdown."
+      : model.readOnly
+        ? "Read-only mode. New Folder documents aren’t available."
+        : !folder.permissions.import
+          ? "This Folder doesn’t allow documents from Markdown."
+          : !model.folderChooser.markdownAvailable
+            ? "Markdown file selection isn’t available here."
+            : null;
+  const folderTriggerRef = useRef<HTMLButtonElement>(null);
+  const hadFolderRef = useRef(folder !== null);
+
+  useEffect(() => {
+    if (hadFolderRef.current && folder === null) {
+      folderTriggerRef.current?.focus();
+    }
+    hadFolderRef.current = folder !== null;
+  }, [folder]);
 
   return (
     <header className="wb-cowork__document-bar" aria-label="Co-work document controls">
       <div className="wb-cowork__document-context">
-        <Button
-          variant="ghost"
-          className="wb-cowork__folder-trigger"
-          onClick={onChooseFolder}
-          title={folder?.folderPath ?? "Open Folder"}
-          disabled={!model.folderChooser.available || folderControlBusy}
+        <div
+          className="wb-cowork__folder-control"
+          aria-busy={closingFolder || undefined}
         >
-          <FolderSimple weight="duotone" aria-hidden="true" />
-          <span>{openingFolder ? "Opening…" : folder?.folderName ?? "Open Folder"}</span>
-        </Button>
+          <Button
+            ref={folderTriggerRef}
+            variant="ghost"
+            className="wb-cowork__folder-trigger"
+            onClick={onChooseFolder}
+            title={folder?.folderPath ?? "Open Folder"}
+            disabled={!model.folderChooser.available || folderControlBusy}
+          >
+            <FolderSimple weight="duotone" aria-hidden="true" />
+            <span>{openingFolder ? "Opening…" : folder?.folderName ?? "Open Folder"}</span>
+          </Button>
+          {folder !== null ? (
+            <Button
+              size="small"
+              variant="ghost"
+              className="wb-cowork__folder-close"
+              onClick={onCloseFolder}
+              disabled={folderControlBusy}
+              title="Close this Folder without removing it or changing its files."
+            >
+              <X aria-hidden="true" />
+              <span>{closingFolder ? "Closing…" : "Close Folder"}</span>
+            </Button>
+          ) : null}
+          {closingFolder ? (
+            <span className="wb-visually-hidden" role="status">
+              Closing Folder…
+            </span>
+          ) : null}
+        </div>
 
         <Button
           variant="ghost"
           className="wb-cowork__document-trigger"
           onClick={onOpenPicker}
-          disabled={folder === null || folderControlBusy}
+          disabled={!canOpenDocuments || folderControlBusy}
           title={
             document?.path ??
             (scratch === null ? "Open document" : "Saved on this device")
@@ -282,23 +341,60 @@ export function CoworkDocumentBar({
                   : "Save"}
             </Button>
           ) : null
-        ) : folder !== null && document === null ? (
-          <Button
-            size="small"
-            variant="primary"
-            onClick={onCreate}
-            disabled={folderActionBusy || !folder.permissions.create}
+        ) : null}
+        <Button
+          size="small"
+          onClick={() => {
+            if (importBlockedReason !== null) return;
+            onRegister();
+          }}
+          disabled={folderActionBusy}
+          aria-disabled={importBlockedReason !== null || undefined}
+          aria-describedby={
+            importBlockedReason === null
+              ? undefined
+              : "cowork-new-from-markdown-blocked-reason"
+          }
+          title={
+            importBlockedReason ??
+            "Create a new document from an existing Markdown file."
+          }
+        >
+          New from Markdown
+        </Button>
+        {importBlockedReason !== null ? (
+          <span
+            id="cowork-new-from-markdown-blocked-reason"
+            className="wb-visually-hidden"
           >
-            <NotePencil aria-hidden="true" /> New
-          </Button>
-        ) : folder !== null && document !== null ? (
-          <Button
-            size="small"
-            onClick={onCreate}
-            disabled={folderActionBusy || !folder.permissions.create}
-          >
-            <NotePencil aria-hidden="true" /> New
-          </Button>
+            {importBlockedReason}
+          </span>
+        ) : null}
+        <Button
+          size="small"
+          variant="primary"
+          onClick={() => {
+            if (createBlockedReason !== null) return;
+            onCreate();
+          }}
+          disabled={folderActionBusy}
+          aria-disabled={createBlockedReason !== null || undefined}
+          aria-describedby={
+            createBlockedReason === null ? undefined : "cowork-new-blocked-reason"
+          }
+          title={
+            createBlockedReason ??
+            (folder === null
+              ? "Start a document and choose where to save it later."
+              : "Create a document in this Folder.")
+          }
+        >
+          <NotePencil aria-hidden="true" /> New
+        </Button>
+        {createBlockedReason !== null ? (
+          <span id="cowork-new-blocked-reason" className="wb-visually-hidden">
+            {createBlockedReason}
+          </span>
         ) : null}
         {(document !== null || (scratch !== null && promotionReady)) &&
         (syncStatus === "offline" ||
@@ -316,7 +412,7 @@ export function CoworkDocumentBar({
             aria-label="Close document"
             disabled={folderActionBusy}
           >
-            <X aria-hidden="true" /> Close
+            <X aria-hidden="true" /> Close document
           </Button>
         ) : null}
         {document !== null || scratch !== null ? (

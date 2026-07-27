@@ -282,6 +282,7 @@ export interface CoworkScratchTouchIntentPayload {
 
 export const COWORK_INTENTS = {
   folderSelect: "wb.cowork.folder.select",
+  folderClose: "wb.cowork.folder.close",
   catalogRefresh: "wb.cowork.catalog.refresh",
   documentOpen: "wb.cowork.document.open",
   documentReload: "wb.cowork.document.reload",

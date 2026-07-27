@@ -479,6 +479,212 @@ describe("HttpCoworkProvider", () => {
     }
   });
 
+  it("closes an idle Folder without forgetting known Folders or on-device documents", async () => {
+    const scratch = new CoworkScratchRegistry(localStorage).create("Local draft");
+    const location = new MemoryLocation("?store_id=store-1");
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith("/api/truth/cowork/folders?")) {
+        return json({ read_only: false, folders: [folder], diagnostics: [] });
+      }
+      if (url.startsWith("/api/truth/doc/list?")) {
+        return json({ docs: [document("old")] });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const provider = new HttpCoworkProvider({
+      location,
+      storage: localStorage,
+      client: new CoworkHttpClient(fetchImpl as typeof fetch),
+    });
+
+    const beforeClose = (await provider.loadView()).model;
+    expect(beforeClose.activeFolderStoreId).toBe("store-1");
+    expect(beforeClose.catalog.documents).toHaveLength(1);
+
+    await expect(
+      provider.dispatch(intent(COWORK_INTENTS.folderClose, {})),
+    ).resolves.toMatchObject({ status: "accepted" });
+
+    const closed = (await provider.loadView()).model;
+    expect(location.search).toBe("?mode=launcher");
+    expect(closed.activeFolderStoreId).toBeNull();
+    expect(closed.folderSelection).toEqual({ kind: "none" });
+    expect(closed.catalog).toMatchObject({
+      status: "empty",
+      documents: [],
+      error: null,
+    });
+    expect(closed.routeTarget).toEqual({ kind: "launcher", storeId: null });
+    expect(closed.activeSession).toEqual({ kind: "none" });
+    expect(closed.folders.map((entry) => entry.storeId)).toEqual(["store-1"]);
+    expect(closed.scratches).toEqual([
+      expect.objectContaining({
+        scratchId: scratch.scratchId,
+        title: "Local draft",
+      }),
+    ]);
+  });
+
+  it("keeps an on-device document open when its Folder is closed", async () => {
+    const scratch = new CoworkScratchRegistry(localStorage).create("Local draft");
+    const location = new MemoryLocation("?store_id=store-1");
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith("/api/truth/cowork/folders?")) {
+        return json({ read_only: false, folders: [folder], diagnostics: [] });
+      }
+      if (url.startsWith("/api/truth/doc/list?")) return json({ docs: [] });
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const provider = new HttpCoworkProvider({
+      location,
+      storage: localStorage,
+      client: new CoworkHttpClient(fetchImpl as typeof fetch),
+    });
+    await provider.loadView();
+    await provider.dispatch(
+      intent(COWORK_INTENTS.scratchOpen, { scratchId: scratch.scratchId }),
+    );
+    expect((await provider.loadView()).model.activeFolderStoreId).toBe("store-1");
+
+    const prepareToLeave = vi.fn();
+    const unregister = coworkSessionDurability.register(
+      scratchSessionDurabilityKey(scratch.scratchId),
+      { prepareToLeave },
+    );
+    try {
+      await expect(
+        provider.dispatch(intent(COWORK_INTENTS.folderClose, {})),
+      ).resolves.toMatchObject({ status: "accepted" });
+
+      const closed = (await provider.loadView()).model;
+      expect(prepareToLeave).not.toHaveBeenCalled();
+      expect(location.search).toBe(`?scratch_id=${scratch.scratchId}`);
+      expect(closed.activeFolderStoreId).toBeNull();
+      expect(closed.folderSelection).toEqual({ kind: "none" });
+      expect(closed.catalog.documents).toEqual([]);
+      expect(closed.routeTarget).toEqual({
+        kind: "scratch",
+        scratchId: scratch.scratchId,
+        title: "Local draft",
+      });
+      expect(closed.activeSession).toEqual({
+        kind: "scratch",
+        scratchId: scratch.scratchId,
+        title: "Local draft",
+      });
+      expect(closed.scratches).toEqual([
+        expect.objectContaining({ scratchId: scratch.scratchId }),
+      ]);
+    } finally {
+      unregister();
+    }
+  });
+
+  it("keeps a registered document and its Folder open when Folder-close durability fails", async () => {
+    const location = new MemoryLocation("?store_id=store-1&document_id=old");
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith("/api/truth/cowork/folders?")) {
+        return json({ read_only: false, folders: [folder], diagnostics: [] });
+      }
+      if (url.startsWith("/api/truth/doc/list?")) {
+        return json({ docs: [document("old")] });
+      }
+      if (url.includes("/api/truth/doc/old/ydoc?")) return validYdocResponse();
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const provider = new HttpCoworkProvider({
+      location,
+      storage: localStorage,
+      client: new CoworkHttpClient(fetchImpl as typeof fetch),
+    });
+    await provider.loadView();
+
+    const prepareToLeave = vi.fn(async () => {
+      throw new Error("IndexedDB append failed");
+    });
+    const unregister = coworkSessionDurability.register(
+      registeredSessionDurabilityKey("store-1", "old"),
+      { prepareToLeave },
+    );
+    try {
+      await expect(
+        provider.dispatch(intent(COWORK_INTENTS.folderClose, {})),
+      ).resolves.toMatchObject({ status: "rejected" });
+
+      const failed = (await provider.loadView()).model;
+      expect(prepareToLeave).toHaveBeenCalledTimes(1);
+      expect(location.search).toBe("?store_id=store-1&document_id=old");
+      expect(failed.activeFolderStoreId).toBe("store-1");
+      expect(failed.folderSelection).toMatchObject({
+        kind: "initialized",
+        folder: { storeId: "store-1" },
+      });
+      expect(failed.catalog.documents).toEqual([
+        expect.objectContaining({ documentId: "old" }),
+      ]);
+      expect(failed.routeTarget).toEqual({
+        kind: "registered",
+        storeId: "store-1",
+        documentId: "old",
+      });
+      expect(failed.activeSession).toMatchObject({
+        kind: "registered",
+        storeId: "store-1",
+        document: { documentId: "old" },
+      });
+    } finally {
+      unregister();
+    }
+  });
+
+  it("makes a registered document durable before closing its Folder", async () => {
+    const location = new MemoryLocation("?store_id=store-1&document_id=old");
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith("/api/truth/cowork/folders?")) {
+        return json({ read_only: false, folders: [folder], diagnostics: [] });
+      }
+      if (url.startsWith("/api/truth/doc/list?")) {
+        return json({ docs: [document("old")] });
+      }
+      if (url.includes("/api/truth/doc/old/ydoc?")) return validYdocResponse();
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const provider = new HttpCoworkProvider({
+      location,
+      storage: localStorage,
+      client: new CoworkHttpClient(fetchImpl as typeof fetch),
+    });
+    await provider.loadView();
+
+    const commit = vi.fn();
+    const cancel = vi.fn();
+    const prepareToLeave = vi.fn(async () => ({ commit, cancel }));
+    const unregister = coworkSessionDurability.register(
+      registeredSessionDurabilityKey("store-1", "old"),
+      { prepareToLeave },
+    );
+    try {
+      await expect(
+        provider.dispatch(intent(COWORK_INTENTS.folderClose, {})),
+      ).resolves.toMatchObject({ status: "accepted" });
+
+      const closed = (await provider.loadView()).model;
+      expect(prepareToLeave).toHaveBeenCalledTimes(1);
+      expect(commit).toHaveBeenCalledTimes(1);
+      expect(cancel).not.toHaveBeenCalled();
+      expect(location.search).toBe("?mode=launcher");
+      expect(closed.activeFolderStoreId).toBeNull();
+      expect(closed.activeSession).toEqual({ kind: "none" });
+      expect(closed.document).toBeNull();
+    } finally {
+      unregister();
+    }
+  });
+
   it("keeps the latest Folder when concurrent recent-Folder opens finish out of order", async () => {
     const location = new MemoryLocation();
     const secondFolder = {

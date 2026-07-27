@@ -249,6 +249,14 @@ export class HttpCoworkProvider implements ViewProvider {
           }
           break;
         }
+        case COWORK_INTENTS.folderClose: {
+          const targetKey =
+            this.#model.activeSession.kind === "scratch"
+              ? scratchSessionDurabilityKey(this.#model.activeSession.scratchId)
+              : null;
+          await this.#withDurableSessionLeave(targetKey, () => this.#closeFolder());
+          break;
+        }
         case COWORK_INTENTS.catalogRefresh:
           if (this.#model.activeFolderStoreId !== null) {
             await this.#loadCatalog(this.#model.activeFolderStoreId);
@@ -307,7 +315,8 @@ export class HttpCoworkProvider implements ViewProvider {
       };
     } catch (error) {
       const apiError =
-        intent.intent_type === COWORK_INTENTS.folderSelect
+        intent.intent_type === COWORK_INTENTS.folderSelect ||
+        intent.intent_type === COWORK_INTENTS.folderClose
           ? folderActionError(error)
           : asCoworkApiError(error);
       this.#patch({ navigationError: apiError }, `intent-failed:${intent.intent_type}`);
@@ -927,6 +936,47 @@ export class HttpCoworkProvider implements ViewProvider {
       storeId === null ? "?mode=launcher" : `?store_id=${encodeURIComponent(storeId)}`,
     );
     this.#touch("document-closed");
+  }
+
+  #closeFolder(): void {
+    this.#requestEpoch += 1;
+    this.#catalogEpoch += 1;
+    this.#inspectionEpoch += 1;
+    this.#folderActivationEpoch += 1;
+    this.#inspectionToken = null;
+    this.#folderMutationKey = null;
+    this.#continuationToken = null;
+    this.#pendingCandidate = null;
+    this.#selectionBeforeInspection = { kind: "none" };
+    this.#lastInspectionInput = {};
+
+    const session = this.#model.activeSession;
+    const keepScratch = session.kind === "scratch";
+    const routeTarget: CoworkRouteTarget = keepScratch
+      ? {
+          kind: "scratch",
+          scratchId: session.scratchId,
+          title: session.title,
+        }
+      : { kind: "launcher", storeId: null };
+
+    this.#model = {
+      ...this.#model,
+      activeFolderStoreId: null,
+      folderSelection: { kind: "none" },
+      catalog: emptyCatalog(),
+      routeTarget,
+      activeSession: keepScratch ? session : { kind: "none" },
+      openingTarget: null,
+      navigationError: null,
+      document: null,
+    };
+    this.#location.pushSearch(
+      keepScratch
+        ? `?scratch_id=${encodeURIComponent(session.scratchId)}`
+        : "?mode=launcher",
+    );
+    this.#touch("folder-closed");
   }
 
   #openScratch(input: CoworkScratchOpenIntentPayload): void {

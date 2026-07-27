@@ -53,7 +53,7 @@ describe("Co-work App contribution", () => {
     expect(widget.definition.multiplicity).toBe("single_per_view");
     expect(widget.definition.drafts ?? []).toEqual([]);
     expect(widget.definition.outputIntentSchemas).toEqual(COWORK_INTENT_SCHEMAS);
-    expect(widget.definition.outputIntentEffects).toHaveLength(7);
+    expect(widget.definition.outputIntentEffects).toHaveLength(9);
     expect(widget.definition.outputIntentEffects).toContainEqual({
       schema: { schemaId: "wb.cowork.document.reload", version: 1 },
       effect: "read",

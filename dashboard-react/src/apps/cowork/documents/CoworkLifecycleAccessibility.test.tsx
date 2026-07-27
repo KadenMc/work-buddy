@@ -87,14 +87,12 @@ describe("Co-work lifecycle dialog accessibility and focus", () => {
         label="Open picker"
         dialog={(close) => (
           <CoworkDocumentPicker
-            folder={folder}
             documents={[document]}
+            localDocuments={[]}
             onClose={close}
             onOpen={vi.fn()}
-            onCreate={vi.fn()}
-            onRegister={vi.fn()}
+            onOpenLocal={vi.fn()}
             onRepair={vi.fn()}
-            onChangeFolder={vi.fn()}
           />
         )}
       />,
@@ -119,15 +117,13 @@ describe("Co-work lifecycle dialog accessibility and focus", () => {
     };
     render(
       <CoworkDocumentPicker
-        folder={folder}
         documents={[document, secondDocument]}
+        localDocuments={[]}
         currentDocumentId={document.documentId}
         onClose={vi.fn()}
         onOpen={onOpen}
-        onCreate={vi.fn()}
-        onRegister={vi.fn()}
+        onOpenLocal={vi.fn()}
         onRepair={vi.fn()}
-        onChangeFolder={vi.fn()}
       />,
     );
 

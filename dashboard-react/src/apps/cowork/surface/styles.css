@@ -71,6 +71,12 @@
   justify-content: flex-end;
 }
 
+.wb-cowork__folder-control {
+  display: flex;
+  min-inline-size: 0;
+  max-inline-size: 32rem;
+}
+
 .wb-cowork__folder-trigger,
 .wb-cowork__document-trigger {
   display: inline-flex;
@@ -80,6 +86,32 @@
   max-inline-size: 20rem;
   border: 1px solid var(--wb-color-border-default);
   background: var(--wb-color-surface-canvas);
+}
+
+.wb-cowork__folder-control .wb-cowork__folder-trigger {
+  flex: 1 1 auto;
+}
+
+.wb-cowork__folder-close {
+  flex: 0 0 auto;
+  margin-inline-start: -1px;
+  border: 1px solid var(--wb-color-border-default);
+  background: var(--wb-color-surface-canvas);
+  white-space: nowrap;
+}
+
+.wb-cowork__folder-close svg,
+.wb-cowork__document-actions .wb-button svg {
+  inline-size: var(--wb-icon-size-sm);
+  block-size: var(--wb-icon-size-sm);
+}
+
+.wb-cowork__document-actions .wb-button[aria-disabled="true"] {
+  border-color: var(--wb-color-border-subtle);
+  background: var(--wb-color-surface-inset);
+  color: var(--wb-color-text-disabled);
+  cursor: not-allowed;
+  transform: none;
 }
 
 .wb-cowork__folder-trigger > span,
@@ -131,16 +163,6 @@
   text-align: center;
 }
 
-.wb-cowork-launcher--start {
-  display: flex;
-  flex-direction: column;
-  max-inline-size: 46rem;
-}
-
-.wb-cowork-launcher--start .wb-cowork-launcher__primary-actions {
-  padding-block: var(--wb-space-2) var(--wb-space-4);
-}
-
 .wb-cowork-launcher--centered p {
   max-inline-size: 42rem;
   margin: 0;
@@ -172,19 +194,6 @@
   flex-wrap: wrap;
   justify-content: center;
   gap: var(--wb-space-2);
-}
-
-.wb-cowork-launcher__primary-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: var(--wb-space-2);
-  padding-block: var(--wb-space-6);
-}
-
-.wb-cowork-launcher__primary-actions svg {
-  inline-size: var(--wb-icon-size-sm);
-  block-size: var(--wb-icon-size-sm);
 }
 
 .wb-cowork-launcher__loading {
@@ -249,7 +258,77 @@
   white-space: nowrap;
 }
 
-.wb-cowork-launcher__local-document,
+.wb-cowork-launcher__document-list {
+  overflow: hidden;
+  border: 1px solid var(--wb-color-border-default);
+  border-radius: var(--wb-radius-surface);
+  background: var(--wb-color-surface-raised);
+}
+
+.wb-cowork-launcher__document {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--wb-space-4);
+  inline-size: 100%;
+  min-inline-size: 0;
+  padding: var(--wb-space-3) var(--wb-space-4);
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.wb-cowork-launcher__document + .wb-cowork-launcher__document {
+  border-block-start: 1px solid var(--wb-color-border-subtle);
+}
+
+.wb-cowork-launcher__document:hover,
+.wb-cowork-launcher__document:focus-visible {
+  background: var(--wb-color-surface-subtle);
+  box-shadow: inset 3px 0 0 var(--wb-color-border-interactive);
+  outline: none;
+}
+
+.wb-cowork-launcher__document:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.wb-cowork-launcher__document-copy {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-inline-size: 0;
+}
+
+.wb-cowork-launcher__document-copy strong,
+.wb-cowork-launcher__document-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-cowork-launcher__document-copy small,
+.wb-cowork-launcher__document-signal {
+  color: var(--wb-color-text-muted);
+}
+
+.wb-cowork-launcher__document-signal {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.wb-cowork-launcher__empty {
+  margin: 0;
+  padding: var(--wb-space-4);
+  border: 1px dashed var(--wb-color-border-muted);
+  border-radius: var(--wb-radius-surface);
+  color: var(--wb-color-text-muted);
+}
+
 .wb-cowork-picker__attention-row {
   display: flex;
   align-items: center;
@@ -259,13 +338,11 @@
   border-block-end: 1px solid var(--wb-color-border-subtle);
 }
 
-.wb-cowork-launcher__local-document > span,
 .wb-cowork-picker__attention-row > span {
   display: flex;
   flex-direction: column;
 }
 
-.wb-cowork-launcher__local-document small,
 .wb-cowork-picker__attention-row small {
   color: var(--wb-color-text-muted);
 }
@@ -547,10 +624,23 @@
     inline-size: 100%;
   }
 
+  .wb-cowork__document-context {
+    flex-wrap: wrap;
+  }
+
+  .wb-cowork__folder-control {
+    flex: 1 1 18rem;
+    max-inline-size: none;
+  }
+
   .wb-cowork__folder-trigger,
   .wb-cowork__document-trigger {
     flex: 1 1 0;
     max-inline-size: none;
+  }
+
+  .wb-cowork__document-trigger {
+    flex-basis: 12rem;
   }
 
   .wb-cowork__sync-status {

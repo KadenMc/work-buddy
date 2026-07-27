@@ -68,8 +68,10 @@ const folder: CoworkFolderSummary = {
 const baseProps = {
   model,
   onChooseFolder: vi.fn(),
+  onCloseFolder: vi.fn(),
   onOpenPicker: vi.fn(),
   onCreate: vi.fn(),
+  onRegister: vi.fn(),
   onCloseSession: vi.fn(),
   onPromoteScratch: vi.fn(),
 };
@@ -373,5 +375,106 @@ describe("CoworkDocumentBar Save", () => {
     expect(onChooseFolder).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("menu")).toBeNull();
     expect(screen.queryByText(/Open another Folder/i)).toBeNull();
+  });
+
+  it("keeps New and New from Markdown in the toolbar across Folder states", () => {
+    const noFolderModel: CoworkViewModel = {
+      ...model,
+      activeFolderStoreId: null,
+      routeTarget: { kind: "launcher", storeId: null },
+      activeSession: { kind: "none" },
+      catalog: { ...model.catalog, documents: [] },
+      document: null,
+    };
+    const { rerender } = render(
+      <CoworkDocumentBar {...baseProps} model={noFolderModel} />,
+    );
+
+    expect(screen.getByRole("button", { name: "New" })).toBeEnabled();
+    const unavailableImport = screen.getByRole("button", {
+      name: "New from Markdown",
+    });
+    expect(unavailableImport).toHaveAttribute("aria-disabled", "true");
+    expect(unavailableImport).toHaveAccessibleDescription(
+      "Open a Folder before creating a document from Markdown.",
+    );
+    unavailableImport.focus();
+    expect(unavailableImport).toHaveFocus();
+    expect(screen.queryByRole("button", { name: "Close Folder" })).toBeNull();
+
+    const folderModel: CoworkViewModel = {
+      ...noFolderModel,
+      folders: [folder],
+      folderSelection: { kind: "initialized", folder },
+      activeFolderStoreId: folder.storeId,
+      routeTarget: { kind: "launcher", storeId: folder.storeId },
+    };
+    rerender(<CoworkDocumentBar {...baseProps} model={folderModel} />);
+
+    expect(screen.getByRole("button", { name: "New" })).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "New from Markdown" }),
+    ).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Close Folder" })).toBeVisible();
+  });
+
+  it("closes the selected Folder through a distinct, discoverable control", async () => {
+    const user = userEvent.setup();
+    const onCloseFolder = vi.fn();
+    const folderModel: CoworkViewModel = {
+      ...model,
+      folders: [folder],
+      folderSelection: { kind: "initialized", folder },
+    };
+    const { rerender } = render(
+      <CoworkDocumentBar
+        {...baseProps}
+        model={folderModel}
+        onCloseFolder={onCloseFolder}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Close Folder" }));
+    expect(onCloseFolder).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <CoworkDocumentBar
+        {...baseProps}
+        model={{
+          ...folderModel,
+          activeFolderStoreId: null,
+          folderSelection: { kind: "none" },
+          routeTarget: { kind: "launcher", storeId: null },
+        }}
+        onCloseFolder={onCloseFolder}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Open Folder" })).toHaveFocus();
+  });
+
+  it("shows and announces a pending Folder close", () => {
+    render(
+      <CoworkDocumentBar
+        {...baseProps}
+        model={{
+          ...model,
+          folders: [folder],
+          folderSelection: { kind: "initialized", folder },
+        }}
+        folderActionBusy
+        closingFolder
+      />,
+    );
+
+    const closing = screen.getByRole("button", { name: "Closing…" });
+    expect(closing).toBeDisabled();
+    expect(closing.parentElement).toHaveAttribute(
+      "aria-busy",
+      "true",
+    );
+    expect(screen.getByText("Closing Folder…", { exact: true })).toHaveAttribute(
+      "role",
+      "status",
+    );
   });
 });

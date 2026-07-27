@@ -2,31 +2,8 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
-import type { CoworkDocumentSummary, CoworkFolderSummary } from "../contracts";
+import type { CoworkDocumentSummary, CoworkScratchSummary } from "../contracts";
 import { CoworkDocumentPicker } from "./CoworkDocumentPicker";
-
-const folder: CoworkFolderSummary = {
-  storeId: "store-1",
-  folderName: "work-buddy",
-  folderPath: "C:/Projects/work-buddy",
-  layout: "wbuddy_cowork_v1",
-  reachable: true,
-  eligibility: "eligible",
-  ineligibleReason: null,
-  documentSurface: {
-    enabled: true,
-    allowedDocumentClasses: ["co_authored"],
-    feedbackCapture: true,
-  },
-  permissions: {
-    read: true,
-    create: true,
-    import: true,
-    materialize: true,
-    retire: true,
-  },
-  documentCount: 1,
-};
 
 const document: CoworkDocumentSummary = {
   documentId: "doc-1",
@@ -47,21 +24,24 @@ const document: CoworkDocumentSummary = {
   },
 };
 
-const renderPicker = (
-  onOpen = vi.fn(async () => undefined),
-  selectedFolder: CoworkFolderSummary = folder,
-) => {
+const localDocument: CoworkScratchSummary = {
+  scratchId: "scratch-1",
+  title: "Untitled",
+  createdAt: "2026-07-26T12:00:00Z",
+  updatedAt: "2026-07-26T12:05:00Z",
+  recoveredFromPreviousEditor: false,
+};
+
+const renderPicker = (onOpen = vi.fn(async () => undefined)) => {
   const onClose = vi.fn();
   render(
     <CoworkDocumentPicker
-      folder={selectedFolder}
       documents={[document]}
+      localDocuments={[localDocument]}
       onClose={onClose}
       onOpen={onOpen}
-      onCreate={vi.fn()}
-      onRegister={vi.fn()}
+      onOpenLocal={vi.fn()}
       onRepair={vi.fn()}
-      onChangeFolder={vi.fn()}
     />,
   );
   return { onClose, onOpen };
@@ -90,62 +70,80 @@ describe("CoworkDocumentPicker activation", () => {
     await waitFor(() => expect(onOpen).toHaveBeenCalledTimes(1));
   });
 
-  it("disables creation actions that the Folder does not permit", () => {
-    renderPicker(vi.fn(), {
-      ...folder,
-      permissions: {
-        ...folder.permissions,
-        create: false,
-        import: false,
-      },
-    });
-
-    expect(
-      screen.getByRole("button", { name: "New from Markdown" }),
-    ).toBeDisabled();
-    expect(
-      screen.getByRole("button", { name: "Create new document" }),
-    ).toBeDisabled();
-  });
-
-  it("disables unavailable native picker actions with an honest explanation", async () => {
+  it("opens an on-device document from the same selector", async () => {
     const user = userEvent.setup();
-    const onRegister = vi.fn();
-    const onChangeFolder = vi.fn();
+    const onOpenLocal = vi.fn(async () => undefined);
+    const onClose = vi.fn();
     render(
       <CoworkDocumentPicker
-        folder={folder}
-        folderPickerAvailable={false}
-        markdownPickerAvailable={false}
         documents={[document]}
-        onClose={vi.fn()}
+        localDocuments={[localDocument]}
+        onClose={onClose}
         onOpen={vi.fn()}
-        onCreate={vi.fn()}
-        onRegister={onRegister}
+        onOpenLocal={onOpenLocal}
         onRepair={vi.fn()}
-        onChangeFolder={onChangeFolder}
       />,
     );
 
-    const changeFolder = screen.getByRole("button", { name: "Change Folder" });
-    const fromMarkdown = screen.getByRole("button", {
-      name: "New from Markdown",
-    });
-    expect(changeFolder).toBeDisabled();
-    expect(changeFolder).toHaveAccessibleDescription(
-      "Folder selection isn’t available here. This Folder stays open.",
-    );
-    expect(fromMarkdown).toBeDisabled();
-    expect(fromMarkdown).toHaveAccessibleDescription(
-      "Markdown file selection isn’t available here.",
-    );
-    expect(
-      screen.getByText("Markdown file selection isn’t available here."),
-    ).toBeVisible();
+    await user.click(screen.getByRole("option", { name: /Untitled.*Not saved to a Folder/ }));
+    await waitFor(() => expect(onOpenLocal).toHaveBeenCalledWith(localDocument));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
 
-    await user.click(changeFolder);
-    await user.click(fromMarkdown);
-    expect(onChangeFolder).not.toHaveBeenCalled();
-    expect(onRegister).not.toHaveBeenCalled();
+  it("contains document selection only, without duplicated creation actions", () => {
+    renderPicker();
+
+    expect(screen.queryByRole("button", { name: "New from Markdown" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Create new document" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Change Folder" })).toBeNull();
+  });
+
+  it("distinguishes an empty collection from an empty search result", async () => {
+    const user = userEvent.setup();
+    const shared = {
+      localDocuments: [] as readonly CoworkScratchSummary[],
+      onClose: vi.fn(),
+      onOpen: vi.fn(),
+      onOpenLocal: vi.fn(),
+      onRepair: vi.fn(),
+    };
+    const { rerender } = render(
+      <CoworkDocumentPicker {...shared} documents={[]} />,
+    );
+
+    expect(screen.getByText("No documents yet.")).toBeVisible();
+
+    rerender(<CoworkDocumentPicker {...shared} documents={[document]} />);
+    await user.type(screen.getByRole("textbox", { name: "Search documents" }), "missing");
+
+    expect(screen.getByText("No documents match this search.")).toBeVisible();
+  });
+
+  it("explains when the only documents need attention", () => {
+    render(
+      <CoworkDocumentPicker
+        documents={[
+          {
+            ...document,
+            initializationState: "bootstrap_required",
+            permissions: {
+              open: false,
+              edit: true,
+              materialize: true,
+              repair: true,
+              retire: true,
+            },
+          },
+        ]}
+        localDocuments={[]}
+        onClose={vi.fn()}
+        onOpen={vi.fn()}
+        onOpenLocal={vi.fn()}
+        onRepair={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("No documents are ready to open.")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Needs attention" })).toBeVisible();
   });
 });

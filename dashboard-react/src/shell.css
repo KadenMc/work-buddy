@@ -207,7 +207,9 @@
 
     .header-statuses,
     .clock,
-    .header__descriptor {
+    .header__descriptor,
+    .wb-help-mode-toggle,
+    .wb-customize-view-toggle {
       display: none;
     }
 

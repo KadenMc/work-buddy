@@ -19,6 +19,7 @@ export function HelpModeToggle() {
     <Button
       size="small"
       variant={enabled ? "primary" : "secondary"}
+      className="wb-help-mode-toggle"
       aria-pressed={enabled}
       disabled={isMobile}
       onClick={() => {

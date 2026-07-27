@@ -21,12 +21,14 @@ const COWORK_WORKSPACE_INPUT_SCHEMA: JsonSchemaReference = {
 
 export const COWORK_INTENT_SCHEMAS = [
   { schemaId: "wb.cowork.folder.select", version: 1 },
+  { schemaId: "wb.cowork.folder.close", version: 1 },
   { schemaId: "wb.cowork.catalog.refresh", version: 1 },
   { schemaId: "wb.cowork.document.open", version: 1 },
   { schemaId: "wb.cowork.document.reload", version: 1 },
   { schemaId: "wb.cowork.document.close", version: 1 },
   { schemaId: "wb.cowork.scratch.open", version: 1 },
   { schemaId: "wb.cowork.scratch.close", version: 1 },
+  { schemaId: "wb.cowork.scratch.touch", version: 1 },
 ] as const satisfies readonly JsonSchemaReference[];
 
 /**
@@ -94,22 +96,22 @@ const COWORK_WORKSPACE_WIDGET: WidgetDefinition = {
     },
     {
       schema: COWORK_INTENT_SCHEMAS[1],
-      effect: "read",
+      effect: "navigation",
       preview: "block",
     },
     {
       schema: COWORK_INTENT_SCHEMAS[2],
-      effect: "navigation",
-      preview: "block",
-    },
-    {
-      schema: COWORK_INTENT_SCHEMAS[3],
       effect: "read",
       preview: "block",
     },
     {
-      schema: COWORK_INTENT_SCHEMAS[4],
+      schema: COWORK_INTENT_SCHEMAS[3],
       effect: "navigation",
+      preview: "block",
+    },
+    {
+      schema: COWORK_INTENT_SCHEMAS[4],
+      effect: "read",
       preview: "block",
     },
     {
@@ -120,6 +122,16 @@ const COWORK_WORKSPACE_WIDGET: WidgetDefinition = {
     {
       schema: COWORK_INTENT_SCHEMAS[6],
       effect: "navigation",
+      preview: "block",
+    },
+    {
+      schema: COWORK_INTENT_SCHEMAS[7],
+      effect: "navigation",
+      preview: "block",
+    },
+    {
+      schema: COWORK_INTENT_SCHEMAS[8],
+      effect: "mutation",
       preview: "block",
     },
   ],
