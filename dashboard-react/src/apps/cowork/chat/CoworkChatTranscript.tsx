@@ -37,6 +37,8 @@ export interface CoworkChatTranscriptProps {
   readonly label?: string;
   /** Drives the typing indicator and the agent-stopped notice. */
   readonly agentActivity?: ChatAgentActivity;
+  /** Lets a parent replace the passive stopped notice with a recovery action. */
+  readonly showStoppedNotice?: boolean;
   /** Span links keyed by message id (resolveSpanLinks output). */
   readonly spanLinks?: ReadonlyMap<string, ResolvedSpanLink>;
   /** Routing-note deliveries rendered as status notices after the transcript. */
@@ -63,13 +65,17 @@ function routingLabel(delivery: RoutingDelivery): string {
   if (delivery.state === "delivered") {
     return `${target} sent to the document agent.`;
   }
-  return `${target} could not be delivered to the document agent.`;
+  if (delivery.state === "queued") {
+    return `${target} saved in chat. Restart chat to continue.`;
+  }
+  return `${target} could not be saved in chat.`;
 }
 
 export function CoworkChatTranscript({
   messages,
   label,
   agentActivity = "idle",
+  showStoppedNotice = true,
   spanLinks,
   routing,
   onScrollToAnchor,
@@ -251,12 +257,12 @@ export function CoworkChatTranscript({
                 data-state={delivery.state}
               >
                 <InlineAlert
-                  tone={delivery.state === "delivered" ? "info" : "danger"}
+                  tone={delivery.state === "failed" ? "danger" : "info"}
                   role="status"
                   className="wb-cowork-chat-routing__alert"
                 >
                   <span aria-hidden="true">
-                    {delivery.state === "delivered" ? "→ " : "! "}
+                    {delivery.state === "failed" ? "! " : "→ "}
                   </span>
                   {routingLabel(delivery)}
                   {delivery.reason !== undefined && delivery.reason.length > 0 ? (
@@ -294,11 +300,10 @@ export function CoworkChatTranscript({
         </div>
       ) : null}
 
-      {agentActivity === "stopped" ? (
+      {agentActivity === "stopped" && showStoppedNotice ? (
         <InlineAlert tone="danger" role="status" className="wb-chat-stopped">
           <span aria-hidden="true">■ </span>
-          Agent stopped responding. Close this chat and start a new one to
-          continue.
+          Chat paused. Your messages are still here.
         </InlineAlert>
       ) : null}
 

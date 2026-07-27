@@ -8,10 +8,17 @@ through the ``conn`` parameter, so no test touches the shared conversations DB.
 from __future__ import annotations
 
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from work_buddy.conversations.store import _ensure_schema, get_conversation_with_messages
+from work_buddy.conversations.store import (
+    _ensure_schema,
+    add_message,
+    get_conversation_with_messages,
+    get_pending_question,
+)
+from work_buddy.conversations import store as conversation_store
 from work_buddy.cowork import conversations as cw
 from work_buddy.truth.contracts import InvariantViolation
 from work_buddy.truth.identity import new_id, parse_truth_uri
@@ -46,6 +53,39 @@ def test_ensure_document_conversation_lazy_creation_is_idempotent(conv_conn):
     )
     assert second.created is False
     assert second.conversation_id == first.conversation_id
+
+
+def test_concurrent_ensure_document_conversation_creates_one_binding(
+    tmp_path,
+    monkeypatch,
+):
+    database = tmp_path / "throwaway-concurrent-bindings.db"
+    monkeypatch.setattr(conversation_store, "_DB_PATH", database)
+    conn = conversation_store.get_connection()
+    try:
+        conversation_store._ensure_schema(conn)
+    finally:
+        conn.close()
+    store_id = new_id()
+
+    def _ensure(_index):
+        return cw.ensure_document_conversation(
+            document_id="throwaway-concurrent-doc",
+            store_id=store_id,
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        bindings = list(pool.map(_ensure, range(8)))
+    assert len({binding.conversation_id for binding in bindings}) == 1
+    assert sum(binding.created for binding in bindings) == 1
+    conn = conversation_store.get_connection()
+    try:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM conversations WHERE source = ?",
+            (cw.CONVERSATION_SOURCE,),
+        ).fetchone()[0] == 1
+    finally:
+        conn.close()
 
 
 def test_ensure_document_conversation_separates_documents(conv_conn):
@@ -86,6 +126,33 @@ def test_post_feedback_message_lands_as_user_text(conv_conn):
     stored = _messages(conv_conn, binding.conversation_id)
     assert stored[-1]["role"] == "user"
     assert stored[-1]["content"] == text
+
+
+def test_feedback_is_an_ordinary_turn_and_does_not_answer_pending(conv_conn):
+    binding = cw.ensure_document_conversation(
+        document_id="throwaway-doc-pending",
+        store_id=new_id(),
+        conn=conv_conn,
+    )
+    question = add_message(
+        binding.conversation_id,
+        "agent",
+        "Choose yes or no.",
+        message_type="question",
+        response_type="boolean",
+        conn=conv_conn,
+    )
+    assert question is not None
+    feedback = cw.post_feedback_message(
+        conversation_id=binding.conversation_id,
+        text="This selection needs a source.",
+        conn=conv_conn,
+    )
+    assert feedback is not None
+    pending = get_pending_question(binding.conversation_id, conn=conv_conn)
+    assert pending is not None
+    assert pending.message_id == question.message_id
+    assert pending.response is None
 
 
 def test_post_feedback_message_rejects_blank_text(conv_conn):

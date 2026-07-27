@@ -105,8 +105,19 @@ function renderRail(preference: ThemePreference) {
       <CoworkRail
         documentId="demo-doc"
         reviewProvider={new InMemoryReviewProvider()}
-        chatProvider={createDemoChatProvider("conv-theme")}
-        conversationId="conv-theme"
+        chat={{
+          kind: "ready",
+          provider: createDemoChatProvider("conv-theme"),
+          conversationId: "conv-theme",
+          draftStorageId: "conv-theme",
+          agent: {
+            status: "running",
+            alive: true,
+            started: true,
+            error: null,
+          },
+          onEnsureAgent: () => {},
+        }}
       />
     </ThemeProvider>,
   );

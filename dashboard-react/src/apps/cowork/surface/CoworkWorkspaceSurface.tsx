@@ -19,7 +19,13 @@ import type {
   CoworkMaterializeReceipt,
 } from "../materialization/contracts";
 import { CoworkBridgeEditor, useCoworkBridge } from "../bridge";
-import { CoworkChatAnnotations, type FeedbackCapture } from "../chat";
+import {
+  CoworkChatAnnotations,
+  createHttpChatProvider,
+  useDocumentConversationBinding,
+  type CoworkDocumentConversationBindingClient,
+  type FeedbackCapture,
+} from "../chat";
 import {
   CoworkEditorPane,
   type CoworkScratchPromotionHandle,
@@ -38,6 +44,7 @@ import {
   RailStore,
   createDemoChatProvider,
   isDirty,
+  type CoworkRailChat,
 } from "../rail";
 import {
   EDITOR_DEFAULT_SIZE,
@@ -346,8 +353,19 @@ export function CoworkDemoWorkspace({
         <CoworkRail
           documentId={documentId}
           reviewProvider={reviewProvider}
-          chatProvider={chatProvider}
-          conversationId={conversationId}
+          chat={{
+            kind: "ready",
+            provider: chatProvider,
+            conversationId,
+            draftStorageId: conversationId,
+            agent: {
+              status: "running",
+              alive: true,
+              started: true,
+              error: null,
+            },
+            onEnsureAgent: () => {},
+          }}
         />
       }
     />
@@ -402,6 +420,7 @@ export function CoworkLiveWorkspace({
   onMaterializationState,
   onMaterializationController,
   onMaterialized,
+  conversationBindingClient,
 }: {
   readonly documentId: string;
   readonly storeId: string;
@@ -416,12 +435,19 @@ export function CoworkLiveWorkspace({
     controller: CoworkMaterializationController | null,
   ) => void;
   readonly onMaterialized?: (receipt: CoworkMaterializeReceipt) => void;
+  /** Injectable server-binding client for focused integration tests. */
+  readonly conversationBindingClient?: CoworkDocumentConversationBindingClient;
 }) {
-  const conversationId = `cowork-doc-${documentId}`;
+  const workspaceIdentity = `${storeId}\u0000${documentId}`;
+  const workspaceIdentityRef = useRef(workspaceIdentity);
+  workspaceIdentityRef.current = workspaceIdentity;
 
   // One document conversation linkage store per document. The submit path annotates a routing
   // note delivery here, and the feedback entry point annotates the captured span when R9 lands.
-  const annotations = useMemo(() => new CoworkChatAnnotations(), [documentId]);
+  const annotations = useMemo(
+    () => new CoworkChatAnnotations(),
+    [documentId, storeId],
+  );
 
   // The rail store is owned here so the route-change guard reads the same staged sitting the
   // rail mutates, and the review keyboard binding comes from the settings registry. The tab
@@ -434,14 +460,101 @@ export function CoworkLiveWorkspace({
         { onTabChange: (tab) => saveRailTab(window.localStorage, documentId, tab) },
       ),
   );
+  const conversation = useDocumentConversationBinding({
+    documentId,
+    storeId,
+    client: conversationBindingClient,
+  });
+  useEffect(() => {
+    annotations.replaceFeedback(conversation.feedback);
+  }, [annotations, conversation.feedback]);
+  const chatDraftStorageId = `document:${storeId}:${documentId}`;
+  const chatProvider = useMemo(
+    () =>
+      conversation.phase === "ready" && conversation.conversationId !== null
+        ? createHttpChatProvider({
+            conversationId: conversation.conversationId,
+          })
+        : null,
+    [conversation.conversationId, conversation.phase],
+  );
+  const ensureConversation = useCallback((): void => {
+    void conversation.ensure();
+  }, [conversation.ensure]);
+  const activateChat = useCallback((): void => {
+    if (
+      conversation.phase === "ensuring" ||
+      conversation.ensuring ||
+      (conversation.phase === "ready" &&
+        conversation.agent.status === "running")
+    ) {
+      return;
+    }
+    void conversation.ensure();
+  }, [
+    conversation.agent.status,
+    conversation.ensure,
+    conversation.ensuring,
+    conversation.phase,
+  ]);
+  const chat: CoworkRailChat = useMemo(() => {
+    if (
+      conversation.phase === "ready" &&
+      conversation.conversationId !== null &&
+      chatProvider !== null
+    ) {
+      return {
+        kind: "ready",
+        provider: chatProvider,
+        conversationId: conversation.conversationId,
+        draftStorageId: chatDraftStorageId,
+        agent: conversation.agent,
+        ensuringAgent: conversation.ensuring,
+        ensureError: conversation.error,
+        onEnsureAgent: ensureConversation,
+      };
+    }
+    if (conversation.phase === "idle") {
+      return {
+        kind: "idle",
+        draftStorageId: chatDraftStorageId,
+        onStart: ensureConversation,
+      };
+    }
+    if (conversation.phase === "error") {
+      return {
+        kind: "error",
+        draftStorageId: chatDraftStorageId,
+        error:
+          conversation.error ?? "Chat could not be loaded.",
+        action:
+          conversation.conversationId === null ? "start" : "restart",
+        onRetry: ensureConversation,
+      };
+    }
+    return {
+      kind: conversation.phase === "ensuring" ? "ensuring" : "loading",
+      draftStorageId: chatDraftStorageId,
+    };
+  }, [
+    chatDraftStorageId,
+    chatProvider,
+    conversation.agent,
+    conversation.conversationId,
+    conversation.error,
+    conversation.ensuring,
+    conversation.phase,
+    ensureConversation,
+  ]);
   const narrowWorkspace = useNarrowWorkspace();
   const [activePane, setActivePane] = useState<CoworkWorkspacePane>("editor");
   const selectPane = useCallback(
     (pane: CoworkWorkspacePane): void => {
       setActivePane(pane);
       if (pane !== "editor") railStore.setTab(pane);
+      if (pane === "chat") activateChat();
     },
-    [railStore],
+    [activateChat, railStore],
   );
   useEffect(
     () =>
@@ -456,7 +569,6 @@ export function CoworkLiveWorkspace({
   const bridge = useCoworkBridge({
     documentId,
     storeId,
-    conversationId,
     readOnly,
     onSyncStatus,
     currentFileSha256: document.currentFileSha256,
@@ -471,6 +583,13 @@ export function CoworkLiveWorkspace({
     ...(feedbackCapture
       ? {
           onFeedbackCaptured: (capture: FeedbackCapture) => {
+            if (
+              workspaceIdentityRef.current !==
+              `${capture.storeId}\u0000${capture.documentId}`
+            ) {
+              return;
+            }
+            conversation.adoptFeedback(capture);
             annotations.annotateFeedback(capture);
             railStore.setTab("chat");
           },
@@ -484,8 +603,10 @@ export function CoworkLiveWorkspace({
   const guardDirty = useCallback(
     () =>
       isDirty(railStore.getState()) ||
-      isChatDraftDirty(loadChatDraft(window.localStorage, conversationId) ?? ""),
-    [railStore, conversationId],
+      isChatDraftDirty(
+        loadChatDraft(window.localStorage, chatDraftStorageId) ?? "",
+      ),
+    [railStore, chatDraftStorageId],
   );
   useUnsavedWorkGuard(guardDirty);
 
@@ -528,8 +649,8 @@ export function CoworkLiveWorkspace({
         <CoworkRail
           documentId={documentId}
           reviewProvider={bridge.reviewProvider}
-          chatProvider={bridge.chatProvider}
-          conversationId={conversationId}
+          chat={chat}
+          onChatSelected={activateChat}
           anchorRects={bridge.anchorRects}
           store={railStore}
           queueBindings={navBinding}

@@ -22,6 +22,22 @@ export {
 } from "./annotations";
 
 export {
+  HttpCoworkDocumentConversationBindingClient,
+  normalizeCoworkDocumentAgent,
+  type CoworkDocumentAgent,
+  type CoworkDocumentAgentStatus,
+  type CoworkDocumentConversationBinding,
+  type CoworkDocumentConversationBindingClient,
+} from "./documentConversationBinding";
+
+export {
+  useDocumentConversationBinding,
+  type CoworkConversationBindingPhase,
+  type CoworkConversationBindingState,
+  type UseDocumentConversationBindingResult,
+} from "./useDocumentConversationBinding";
+
+export {
   CoworkChatPanel,
   type CoworkChatPanelProps,
 } from "./CoworkChatPanel";

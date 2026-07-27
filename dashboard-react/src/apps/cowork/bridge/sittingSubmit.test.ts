@@ -8,7 +8,11 @@ import type {
   SittingPrepared,
   SittingResponse,
 } from "../suggestions/types";
-import { submitCoworkSitting, toDecisionItem } from "./sittingSubmit";
+import {
+  routingDeliveriesFrom,
+  submitCoworkSitting,
+  toDecisionItem,
+} from "./sittingSubmit";
 import type { CoworkSittingWorkspace } from "./sittingWorkspace";
 
 const staged = (proposalId: string, verb: DecisionItem["verb"] = "confirm") => ({
@@ -208,5 +212,100 @@ describe("submitCoworkSitting two-phase choreography", () => {
     expect(synchronize).not.toHaveBeenCalled();
     expect(transport.prepare).not.toHaveBeenCalled();
     expect(transport.commit).not.toHaveBeenCalled();
+  });
+});
+
+describe("routingDeliveriesFrom", () => {
+  const routingReceipt = (
+    delivery: NonNullable<SittingResponse["routing_deliveries"]>[number],
+  ): SittingResponse => ({
+    ...receipt("intent-routing", []),
+    routing_deliveries: [delivery],
+  });
+
+  const baseDelivery = {
+    delivery_id: "delivery-1",
+    verb: "redirect" as const,
+    proposal_id: "proposal-1",
+    note: "Tighten this section.",
+  };
+
+  it("reports delivered only when the note is durable and the agent is running", () => {
+    expect(
+      routingDeliveriesFrom(
+        [],
+        routingReceipt({
+          ...baseDelivery,
+          delivered: true,
+          conversation_id: "conversation-1",
+          message_id: "message-1",
+          agent: {
+            status: "running",
+            alive: true,
+            started: true,
+            error: null,
+          },
+        }),
+      ),
+    ).toEqual([
+      {
+        verb: "redirect",
+        proposalId: "proposal-1",
+        state: "delivered",
+        note: "Tighten this section.",
+      },
+    ]);
+  });
+
+  it("reports queued when the note is durable but the agent needs a restart", () => {
+    expect(
+      routingDeliveriesFrom(
+        [],
+        routingReceipt({
+          ...baseDelivery,
+          delivered: true,
+          conversation_id: "conversation-1",
+          message_id: "message-1",
+          reason: "Chat is stopped.",
+          agent: {
+            status: "stopped",
+            alive: false,
+            started: false,
+            error: null,
+          },
+        }),
+      ),
+    ).toEqual([
+      {
+        verb: "redirect",
+        proposalId: "proposal-1",
+        state: "queued",
+        note: "Tighten this section.",
+        reason: "Chat is stopped.",
+      },
+    ]);
+  });
+
+  it("reports failed when the routing note was not saved", () => {
+    expect(
+      routingDeliveriesFrom(
+        [],
+        routingReceipt({
+          ...baseDelivery,
+          delivered: false,
+          conversation_id: null,
+          message_id: null,
+          reason: "The document is retired.",
+        }),
+      ),
+    ).toEqual([
+      {
+        verb: "redirect",
+        proposalId: "proposal-1",
+        state: "failed",
+        note: "Tighten this section.",
+        reason: "The document is retired.",
+      },
+    ]);
   });
 });

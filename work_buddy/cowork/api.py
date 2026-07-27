@@ -29,7 +29,9 @@ from flask import Blueprint, Response, jsonify, request
 
 from work_buddy.cowork import (
     conversations,
+    document_agent,
     feedback,
+    lifecycle_lock,
     lifecycle_state,
     readiness,
     transport,
@@ -436,6 +438,158 @@ def api_doc_get(document_id: str):
 
 
 # ---------------------------------------------------------------------------
+# Document conversation binding and explicit driver lifecycle.
+# ---------------------------------------------------------------------------
+
+
+def _conversation_spawn_failure() -> document_agent.DocumentAgentStatus:
+    return document_agent.DocumentAgentStatus(
+        status="spawn_failed",
+        alive=False,
+        started=False,
+        error="Chat couldn’t start. Try again.",
+    )
+
+
+@cowork_blueprint.get("/api/truth/doc/<document_id>/conversation")
+def api_doc_conversation_get(document_id: str):
+    """Read the existing real binding and persisted driver status, without writes."""
+    store, error = _resolve_store(request.args.get("store_id"))
+    if error:
+        return error
+    gate = _document_surface_or_403(store)
+    if gate:
+        return gate
+    document, doc_error = _resolve_document(store, document_id)
+    if doc_error:
+        return doc_error
+    if not document_surface_allowed(store, document):
+        return _fail("This document is not available in Co-work for this folder.", 403)
+
+    conversation_id = conversations.find_document_conversation(
+        document_id=document.id,
+        store_id=store.store_id,
+    )
+    consumer = (
+        None
+        if conversation_id is None
+        else document_agent.document_agent_consumer(store.store_id, document.id)
+    )
+    agent_status = document_agent.inspect_document_agent(
+        conversation_id,
+        consumer=consumer,
+    )
+    feedback_payload = feedback.feedback_items(
+        store,
+        document_id=document.id,
+        conversation_id=conversation_id,
+    )
+    return jsonify(
+        {
+            "ok": True,
+            "conversation_id": conversation_id,
+            "agent": agent_status.to_dict(),
+            "feedback": feedback_payload,
+        }
+    )
+
+
+@cowork_blueprint.post("/api/truth/doc/<document_id>/conversation")
+def api_doc_conversation_ensure(document_id: str):
+    """Explicitly ensure the real binding and one generation-scoped driver."""
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    store, error = _resolve_store(request.args.get("store_id"))
+    if error:
+        return error
+    gate = _document_surface_or_403(store)
+    if gate:
+        return gate
+
+    from work_buddy.consent import user_initiated
+
+    try:
+        # This lock is the cross-database lifecycle boundary.  It is acquired
+        # before reading the Truth document and held through conversation bind
+        # and driver ensure, so retirement cannot commit and miss a later bind.
+        with lifecycle_lock.document_lifecycle_lock(
+            store.store_id,
+            document_id,
+        ):
+            document, doc_error = _resolve_document(store, document_id)
+            if doc_error:
+                return doc_error
+            if documents.current_lifecycle(store, document.id) != "active":
+                return _fail("Chat cannot be started for a retired document.", 409)
+            if not document_surface_allowed(store, document):
+                return _fail(
+                    "This document is not available in Co-work for this folder.",
+                    403,
+                )
+            with user_initiated("dashboard.cowork.conversation_start"):
+                binding = conversations.ensure_document_conversation(
+                    document_id=document.id,
+                    store_id=store.store_id,
+                )
+                from work_buddy.conversations.store import get_conversation
+
+                bound_conversation = get_conversation(binding.conversation_id)
+                if (
+                    bound_conversation is None
+                    or bound_conversation.status == "closed"
+                ):
+                    return (
+                        jsonify(
+                            {
+                                "ok": False,
+                                "error": {
+                                    "code": "conversation_closed",
+                                    "message": (
+                                        "This document's conversation is closed "
+                                        "and cannot be restarted."
+                                    ),
+                                    "details": {},
+                                    "retryable": False,
+                                },
+                            }
+                        ),
+                        409,
+                    )
+                try:
+                    agent_status = document_agent.ensure_document_agent(
+                        store_id=store.store_id,
+                        document_id=document.id,
+                        conversation_id=binding.conversation_id,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Document-agent ensure failed after conversation binding: "
+                        "store=%s document=%s conversation=%s",
+                        store.store_id,
+                        document.id,
+                        binding.conversation_id,
+                    )
+                    agent_status = _conversation_spawn_failure()
+                feedback_payload = feedback.feedback_items(
+                    store,
+                    document_id=document.id,
+                    conversation_id=binding.conversation_id,
+                )
+    except InvariantViolation as exc:
+        return _fail(str(exc), 400)
+    return jsonify(
+        {
+            "ok": True,
+            "conversation_id": binding.conversation_id,
+            "created": binding.created,
+            "agent": agent_status.to_dict(),
+            "feedback": feedback_payload,
+        }
+    )
+
+
+# ---------------------------------------------------------------------------
 # R3 / R4 Yjs transport (binary, application/octet-stream).
 # ---------------------------------------------------------------------------
 
@@ -613,37 +767,6 @@ def api_doc_feedback(document_id: str):
     gate = _document_surface_or_403(store, feedback=True)
     if gate:
         return gate
-    document, doc_error = _resolve_document(store, document_id)
-    if doc_error:
-        return doc_error
-    if documents.current_lifecycle(store, document.id) != "active":
-        return (
-            jsonify(
-                {
-                    "ok": False,
-                    "error": {
-                        "code": "document_retired",
-                        "message": "Feedback cannot be added to a retired document.",
-                        "details": {},
-                    },
-                }
-            ),
-            409,
-        )
-    if not document_surface_allowed(store, document):
-        return (
-            jsonify(
-                {
-                    "ok": False,
-                    "error": {
-                        "code": "policy_forbidden",
-                        "message": "This document is not available in Co-work for this folder.",
-                        "details": {},
-                    },
-                }
-            ),
-            403,
-        )
     body = request.get_json(silent=True)
     if not isinstance(body, dict):
         return _fail("request body must be a JSON object", 400)
@@ -667,19 +790,86 @@ def api_doc_feedback(document_id: str):
         # it VERBATIM as user_authored kernel evidence plus a document-span anchor,
         # and the feedback_poster hook posts it into the document's single
         # conversation, returning the conversation and message it landed in.
-        with user_initiated("dashboard.cowork.feedback"):
-            poster = conversations.feedback_poster(
-                document_id=document.id,
-                store_id=store.store_id,
-            )
-            capture = feedback.capture_feedback(
-                store,
-                document_id=document.id,
-                span=feedback_span,
-                verbatim_text=text,
-                actor=actor,
-                post_message=poster,
-            )
+        # Keep the active check, authored persistence, conversation bind/message,
+        # and driver ensure in one cross-process lifecycle critical section.
+        with lifecycle_lock.document_lifecycle_lock(
+            store.store_id,
+            document_id,
+        ):
+            document, doc_error = _resolve_document(store, document_id)
+            if doc_error:
+                return doc_error
+            if documents.current_lifecycle(store, document.id) != "active":
+                return (
+                    jsonify(
+                        {
+                            "ok": False,
+                            "error": {
+                                "code": "document_retired",
+                                "message": (
+                                    "Feedback cannot be added to a retired document."
+                                ),
+                                "details": {},
+                            },
+                        }
+                    ),
+                    409,
+                )
+            if not document_surface_allowed(store, document):
+                return (
+                    jsonify(
+                        {
+                            "ok": False,
+                            "error": {
+                                "code": "policy_forbidden",
+                                "message": (
+                                    "This document is not available in Co-work "
+                                    "for this folder."
+                                ),
+                                "details": {},
+                            },
+                        }
+                    ),
+                    403,
+                )
+            with user_initiated("dashboard.cowork.feedback"):
+                poster = conversations.feedback_poster(
+                    document_id=document.id,
+                    store_id=store.store_id,
+                )
+                capture = feedback.capture_feedback(
+                    store,
+                    document_id=document.id,
+                    span=feedback_span,
+                    verbatim_text=text,
+                    actor=actor,
+                    post_message=poster,
+                )
+                try:
+                    agent_status = document_agent.ensure_document_agent(
+                        store_id=store.store_id,
+                        document_id=document.id,
+                        conversation_id=capture.conversation_id,
+                        feedback=document_agent.FeedbackPromptContext(
+                            text=text,
+                            exact=feedback_span["exact"],
+                            prefix=feedback_span["prefix"],
+                            suffix=feedback_span["suffix"],
+                            message_id=capture.message_id,
+                        ),
+                    )
+                except Exception:
+                    # The authored turn, span, evidence, and event are already
+                    # durable. Driver startup is a recoverable nested failure and
+                    # must never turn successful feedback into a misleading error.
+                    logger.exception(
+                        "Document-agent ensure failed after feedback persisted: "
+                        "store=%s document=%s conversation=%s",
+                        store.store_id,
+                        document.id,
+                        capture.conversation_id,
+                    )
+                    agent_status = _conversation_spawn_failure()
     except InvariantViolation as exc:
         return _fail(str(exc), 400)
     return jsonify(
@@ -688,6 +878,8 @@ def api_doc_feedback(document_id: str):
             "evidence_id": capture.evidence_id,
             "span_id": capture.document_span_id,
             "conversation_id": capture.conversation_id,
+            "message_id": capture.message_id,
+            "agent": agent_status.to_dict(),
         }
     )
 

@@ -5,7 +5,11 @@
  * alignment. The in-memory providers back the default rendering and the tests.
  */
 
-export { CoworkRail, type CoworkRailProps } from "./CoworkRail";
+export {
+  CoworkRail,
+  type CoworkRailProps,
+  type CoworkRailChat,
+} from "./CoworkRail";
 export { ReviewPanel, type ReviewPanelProps } from "./ReviewPanel";
 export { RailDriftStrip, type RailDriftStripProps } from "./RailDriftStrip";
 export { StreamView, type StreamViewProps } from "./StreamView";

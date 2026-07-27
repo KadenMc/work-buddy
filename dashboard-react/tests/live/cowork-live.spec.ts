@@ -515,6 +515,327 @@ test.describe.serial("Co-work live lifecycle", () => {
     expect(await readFile(fixture.source.path)).toEqual(before);
   });
 
+  test("AC-05: selected feedback opens and restores the real document conversation", async ({
+    page,
+    request,
+  }) => {
+    const quote = "A line preserved exactly.";
+    const feedback = "Please make this line more concrete.";
+    const reply = "I’ve got it. I’ll suggest a more concrete version for review.";
+    const bindingUrl =
+      `/api/truth/doc/${importedDocumentId}/conversation?store_id=${ordinaryStoreId}`;
+    const resetAgent = await request.post(
+      "/api/_cowork-live/agent-control",
+      {
+        headers: { "X-WB-Cowork-Live-Control": expectedHarnessNonce },
+        data: { mode: "running", reset: true },
+      },
+    );
+    expect(resetAgent.ok(), await resetAgent.text()).toBe(true);
+
+    const before = await request.get(bindingUrl);
+    expect(before.ok()).toBe(true);
+    expect(await before.json()).toEqual(
+      expect.objectContaining({
+        ok: true,
+        conversation_id: null,
+        agent: expect.objectContaining({
+          status: "not_started",
+          started: false,
+        }),
+      }),
+    );
+
+    const conversationRequests: string[] = [];
+    const conversationStarts: string[] = [];
+    page.on("request", (observed) => {
+      const parsed = new URL(observed.url());
+      if (parsed.pathname.startsWith("/api/conversations/")) {
+        conversationRequests.push(parsed.pathname);
+      }
+      if (
+        parsed.pathname === `/api/truth/doc/${importedDocumentId}/conversation` &&
+        observed.method() === "POST"
+      ) {
+        conversationStarts.push(parsed.pathname);
+      }
+    });
+
+    await gotoCowork(
+      page,
+      `?store_id=${ordinaryStoreId}&document_id=${importedDocumentId}`,
+    );
+    await waitForEditor(page);
+    await page.getByText(quote, { exact: true }).selectText();
+    await page.getByRole("button", { name: "Give feedback", exact: true }).click();
+    await page
+      .getByRole("textbox", {
+        name: "Feedback on the selected passage",
+        exact: true,
+      })
+      .fill(feedback);
+
+    const feedbackResponsePromise = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname ===
+          `/api/truth/doc/${importedDocumentId}/feedback` &&
+        response.request().method() === "POST",
+    );
+    await page.getByRole("button", { name: "Send feedback", exact: true }).click();
+    const feedbackResponse = await feedbackResponsePromise;
+    expect(feedbackResponse.ok()).toBe(true);
+    const feedbackPayload = (await feedbackResponse.json()) as {
+      ok: boolean;
+      conversation_id: string;
+      message_id: string;
+      agent: {
+        status: string;
+        alive: boolean | null;
+        started: boolean;
+        error: string | null;
+      };
+    };
+    expect(feedbackPayload.ok).toBe(true);
+    expect(feedbackPayload.conversation_id).toMatch(/^[0-9a-f]{12}$/);
+    expect(feedbackPayload.conversation_id).not.toContain("cowork-doc-");
+    expect(feedbackPayload.message_id).not.toBe("");
+    expect(feedbackPayload.agent).toEqual(
+      expect.objectContaining({
+        status: "running",
+        alive: true,
+        started: true,
+        error: null,
+      }),
+    );
+
+    await expect(page.getByText(feedback, { exact: true })).toBeVisible({
+      timeout: 30_000,
+    });
+    const feedbackMessage = page
+      .locator(".wb-chat-msg")
+      .filter({ hasText: feedback });
+    await expect(
+      feedbackMessage.getByRole("button", {
+        name: `Jump to the passage "${quote}"`,
+      }),
+    ).toBeVisible();
+    const expectedConversationPath =
+      `/api/conversations/${feedbackPayload.conversation_id}`;
+    await expect
+      .poll(() => conversationRequests.includes(expectedConversationPath))
+      .toBe(true);
+    expect(
+      conversationRequests.some((pathname) => pathname.includes("cowork-doc-")),
+    ).toBe(false);
+    const spawnedAfterFeedback = await request.get(
+      "/api/_cowork-live/agent-state",
+      {
+        headers: { "X-WB-Cowork-Live-Control": expectedHarnessNonce },
+      },
+    );
+    expect(spawnedAfterFeedback.ok(), await spawnedAfterFeedback.text()).toBe(
+      true,
+    );
+    expect(await spawnedAfterFeedback.json()).toEqual(
+      expect.objectContaining({
+        spawn_calls: 1,
+        mode: "running",
+        conversation_ids: [feedbackPayload.conversation_id],
+      }),
+    );
+
+    // One mounted provider means one request on the house 3s poll cadence.
+    const requestsBeforePoll = conversationRequests.filter(
+      (pathname) => pathname === expectedConversationPath,
+    ).length;
+    await expect
+      .poll(
+        () =>
+          conversationRequests.filter(
+            (pathname) => pathname === expectedConversationPath,
+          ).length,
+        { timeout: 5_000 },
+      )
+      .toBeGreaterThan(requestsBeforePoll);
+    await page.waitForTimeout(500);
+    expect(
+      conversationRequests.filter(
+        (pathname) => pathname === expectedConversationPath,
+      ).length - requestsBeforePoll,
+    ).toBe(1);
+
+    const replyResponse = await request.post(
+      "/api/_cowork-live/conversation-reply",
+      {
+        headers: { "X-WB-Cowork-Live-Control": expectedHarnessNonce },
+        data: {
+          conversation_id: feedbackPayload.conversation_id,
+          message: reply,
+        },
+      },
+    );
+    expect(replyResponse.ok(), await replyResponse.text()).toBe(true);
+    await expect(page.getByText(reply, { exact: true })).toBeVisible({
+      timeout: 15_000,
+    });
+
+    const startsBeforeReload = conversationStarts.length;
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await waitForEditor(page);
+    await expect(page.getByText(feedback, { exact: true })).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.getByText(reply, { exact: true })).toBeVisible();
+    await expect(
+      page.getByRole("button", {
+        name: `Jump to the passage "${quote}"`,
+      }),
+    ).toBeVisible();
+    expect(conversationStarts).toHaveLength(startsBeforeReload);
+    const spawnedAfterReload = await request.get(
+      "/api/_cowork-live/agent-state",
+      {
+        headers: { "X-WB-Cowork-Live-Control": expectedHarnessNonce },
+      },
+    );
+    expect(spawnedAfterReload.ok(), await spawnedAfterReload.text()).toBe(true);
+    expect(await spawnedAfterReload.json()).toEqual(
+      expect.objectContaining({
+        spawn_calls: 1,
+        conversation_ids: [feedbackPayload.conversation_id],
+      }),
+    );
+
+    const restored = await request.get(bindingUrl);
+    expect(restored.ok()).toBe(true);
+    expect(await restored.json()).toEqual(
+      expect.objectContaining({
+        ok: true,
+        conversation_id: feedbackPayload.conversation_id,
+      }),
+    );
+  });
+
+  test("AC-05B: failed agent start keeps feedback visible until an explicit restart", async ({
+    page,
+    request,
+  }) => {
+    const quote = "A line preserved exactly.";
+    const feedback = "Keep this note even if chat cannot start.";
+    const control = await request.post("/api/_cowork-live/agent-control", {
+      headers: { "X-WB-Cowork-Live-Control": expectedHarnessNonce },
+      data: { mode: "spawn_failed", reset: true },
+    });
+    expect(control.ok(), await control.text()).toBe(true);
+
+    await gotoCowork(
+      page,
+      `?store_id=${ordinaryStoreId}&document_id=${importedDocumentId}`,
+    );
+    await waitForEditor(page);
+    await page.getByText(quote, { exact: true }).selectText();
+    await page
+      .getByRole("button", { name: "Give feedback", exact: true })
+      .click();
+    await page
+      .getByRole("textbox", {
+        name: "Feedback on the selected passage",
+        exact: true,
+      })
+      .fill(feedback);
+
+    const feedbackResponsePromise = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname ===
+          `/api/truth/doc/${importedDocumentId}/feedback` &&
+        response.request().method() === "POST",
+    );
+    await page
+      .getByRole("button", { name: "Send feedback", exact: true })
+      .click();
+    const feedbackResponse = await feedbackResponsePromise;
+    expect(feedbackResponse.ok()).toBe(true);
+    const feedbackPayload = (await feedbackResponse.json()) as {
+      conversation_id: string;
+      message_id: string;
+      agent: { status: string; alive: boolean | null };
+    };
+    expect(feedbackPayload.agent).toEqual(
+      expect.objectContaining({
+        status: "spawn_failed",
+        alive: false,
+      }),
+    );
+
+    await expect(page.getByText(feedback, { exact: true })).toBeVisible({
+      timeout: 30_000,
+    });
+    const failedFeedbackMessage = page
+      .locator(".wb-chat-msg")
+      .filter({ hasText: feedback });
+    await expect(
+      failedFeedbackMessage.getByRole("button", {
+        name: `Jump to the passage "${quote}"`,
+      }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("Chat couldn’t start.", { exact: true }),
+    ).toBeVisible();
+    const retryStart = page.getByRole("button", {
+      name: "Try again",
+      exact: true,
+    });
+    await expect(retryStart).toBeVisible();
+
+    const failedState = await request.get("/api/_cowork-live/agent-state", {
+      headers: { "X-WB-Cowork-Live-Control": expectedHarnessNonce },
+    });
+    expect(failedState.ok(), await failedState.text()).toBe(true);
+    expect(await failedState.json()).toEqual(
+      expect.objectContaining({
+        spawn_calls: 1,
+        mode: "spawn_failed",
+        conversation_ids: [feedbackPayload.conversation_id],
+      }),
+    );
+
+    const recover = await request.post("/api/_cowork-live/agent-control", {
+      headers: { "X-WB-Cowork-Live-Control": expectedHarnessNonce },
+      data: { mode: "running" },
+    });
+    expect(recover.ok(), await recover.text()).toBe(true);
+    const retryResponse = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname ===
+          `/api/truth/doc/${importedDocumentId}/conversation` &&
+        response.request().method() === "POST",
+    );
+    await retryStart.click();
+    expect((await retryResponse).ok()).toBe(true);
+
+    await expect(page.getByText(feedback, { exact: true })).toBeVisible();
+    await expect(
+      page.getByRole("textbox", { name: "Message" }),
+    ).toBeVisible();
+    const recoveredState = await request.get(
+      "/api/_cowork-live/agent-state",
+      {
+        headers: { "X-WB-Cowork-Live-Control": expectedHarnessNonce },
+      },
+    );
+    expect(recoveredState.ok(), await recoveredState.text()).toBe(true);
+    expect(await recoveredState.json()).toEqual(
+      expect.objectContaining({
+        spawn_calls: 2,
+        mode: "running",
+        conversation_ids: [
+          feedbackPayload.conversation_id,
+          feedbackPayload.conversation_id,
+        ],
+      }),
+    );
+  });
+
   test("AC-08 AC-12: save exact Markdown, switch documents and Folders, and honor browser history", async ({
     page,
     request,

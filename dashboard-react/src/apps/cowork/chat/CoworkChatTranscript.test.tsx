@@ -119,7 +119,7 @@ describe("CoworkChatTranscript", () => {
         agentActivity="stopped"
       />,
     );
-    expect(screen.getByText(/Agent stopped responding/)).toBeInTheDocument();
+    expect(screen.getByText(/Chat paused/)).toBeInTheDocument();
   });
 
   it("accrues unread and clears it on jump to latest", () => {
@@ -193,9 +193,28 @@ describe("CoworkChatTranscript", () => {
       />,
     );
     expect(
-      screen.getByText(/Endorsement could not be delivered/),
+      screen.getByText(/Endorsement could not be saved in chat/),
     ).toBeInTheDocument();
     expect(screen.getByText(/conversation_unavailable/)).toBeInTheDocument();
+  });
+
+  it("explains when a routing note is saved but awaits a chat restart", () => {
+    render(
+      <CoworkChatTranscript
+        messages={[]}
+        routing={[
+          {
+            id: "routing-3",
+            verb: "redirect",
+            proposalId: "p3",
+            state: "queued",
+          },
+        ]}
+      />,
+    );
+    expect(
+      screen.getByText(/Redirect saved in chat. Restart chat to continue./),
+    ).toBeInTheDocument();
   });
 
   it("has no accessibility violations in a populated transcript", async () => {

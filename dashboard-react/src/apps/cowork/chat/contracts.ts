@@ -6,6 +6,8 @@
 // shape. It only adds the document linkage the Co-work surface renders on top
 // of the shared ChatMessage.
 
+import type { CoworkDocumentAgent } from "./documentConversationBinding";
+
 /**
  * A quote anchor as the R9 feedback route and kernel anchors.py address it. The
  * exact quote plus its neighbourhood re-locate the passage after edits, so the
@@ -21,14 +23,21 @@ export interface QuoteAnchor {
 /**
  * The R9 feedback-capture response, plus the verbatim text and the span anchor
  * the caller sent. R9 posts the text as the user's message and returns the
- * evidence, span, and conversation it landed in, so the chat side correlates the
- * span linkage to that message by its verbatim content (the text is exactly what
- * R9 posted, never provisional server copy).
+ * evidence, span, message, and conversation it landed in. The exact message id
+ * is authoritative, so repeated identical feedback remains unambiguous even
+ * when responses arrive out of order.
  */
 export interface FeedbackCapture {
+  /** The document identity that originated the async feedback request. */
+  readonly documentId: string;
+  readonly storeId: string;
   readonly evidenceId: string;
   readonly spanId: string;
   readonly conversationId: string;
+  /** The exact user message created by R9. */
+  readonly messageId: string;
+  /** Agent state returned by R9 after its user-authorized ensure attempt. */
+  readonly agent?: CoworkDocumentAgent;
   /** The verbatim feedback text, exactly as R9 posted it as the user message. */
   readonly text: string;
   /** The document span the feedback was anchored to, for the scroll-to seam. */
@@ -47,14 +56,14 @@ export interface ScrollAnchorTarget {
 }
 
 /** Delivery outcome of one routing note (a redirect or endorse) to the agent. */
-export type RoutingDeliveryState = "delivered" | "failed";
+export type RoutingDeliveryState = "delivered" | "queued" | "failed";
 
 /**
  * The record the submit path hands the chat side after a redirect or endorse
  * kept a proposal open and routed the human's guidance into this conversation.
- * The verb is the shipped gesture-kind name. The submit path knows the outcome
- * from the R5 per-item result, so delivery status is authoritative here rather
- * than parsed from the server-composed note message.
+ * The verb is the shipped gesture-kind name. Delivery status comes from the
+ * server's conversation write and document-agent outcome; it is never inferred
+ * from the review gesture alone.
  */
 export interface RoutingDeliveryInput {
   readonly verb: "redirect" | "endorse";
@@ -62,7 +71,7 @@ export interface RoutingDeliveryInput {
   readonly state: RoutingDeliveryState;
   /** The human's verbatim note on a redirect. Endorse carries none. */
   readonly note?: string;
-  /** A short reason on a failed delivery. */
+  /** A short, user-safe reason when persistence or agent startup was incomplete. */
   readonly reason?: string;
 }
 

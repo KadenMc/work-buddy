@@ -18,7 +18,7 @@
 import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import type { Editor } from "@tiptap/core";
 
-import type { FeedbackCapture } from "../chat";
+import { type FeedbackCapture } from "../chat";
 import { asCoworkApiError, coworkErrorMessage } from "../providers/errors";
 import {
   DEFAULT_FEEDBACK_CONTEXT_CHARS,
@@ -178,9 +178,13 @@ export function CoworkFeedbackAffordance({
         throw new Error("Feedback was not accepted. Try again.");
       }
       onCaptured({
+        documentId,
+        storeId,
         evidenceId: response.evidence_id,
         spanId: response.span_id,
+        messageId: response.message_id,
         conversationId: response.conversation_id,
+        agent: response.agent,
         text,
         anchor: {
           exact: draft.anchor.exact,

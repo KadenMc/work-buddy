@@ -22,7 +22,14 @@ describe("HttpCoworkFeedbackTransport", () => {
         ok: true,
         evidence_id: "ev-1",
         span_id: "sp-1",
+        message_id: "message-1",
         conversation_id: "c-1",
+        agent: {
+          status: "running",
+          alive: true,
+          started: true,
+          error: null,
+        },
       }),
     );
     const transport = new HttpCoworkFeedbackTransport(
@@ -43,7 +50,9 @@ describe("HttpCoworkFeedbackTransport", () => {
 
     expect(response.evidence_id).toBe("ev-1");
     expect(response.span_id).toBe("sp-1");
+    expect(response.message_id).toBe("message-1");
     expect(response.conversation_id).toBe("c-1");
+    expect(response.agent.status).toBe("running");
 
     const [url, init] = fetchImpl.mock.calls[0] as unknown as [
       string,
@@ -66,9 +75,18 @@ describe("HttpCoworkFeedbackTransport", () => {
     });
   });
 
-  it("throws on a non-2xx response so the caller can preserve the typed text", async () => {
+  it("surfaces a structured human error for a rejected 4xx request", async () => {
     const fetchImpl = vi.fn(async () =>
-      jsonResponse({ error: "nope" }, { status: 403 }),
+      jsonResponse(
+        {
+          error: {
+            code: "policy_forbidden",
+            message: "Feedback is disabled for this document.",
+            retryable: false,
+          },
+        },
+        { status: 403 },
+      ),
     );
     const transport = new HttpCoworkFeedbackTransport(
       fetchImpl as unknown as typeof fetch,
@@ -81,7 +99,73 @@ describe("HttpCoworkFeedbackTransport", () => {
         span: { exact: "x", prefix: "", suffix: "", node_id_hint: null },
         text: "note",
       }),
-    ).rejects.toThrow(/403/);
+    ).rejects.toThrow("Feedback is disabled for this document.");
+  });
+
+  it("uses reconciliation copy for a 5xx after a potentially durable write", async () => {
+    const transport = new HttpCoworkFeedbackTransport(
+      vi.fn(async () =>
+        jsonResponse(
+          { error: { message: "internal failure" } },
+          { status: 503 },
+        ),
+      ) as unknown as typeof fetch,
+    );
+
+    await expect(
+      transport.submit({
+        documentId: "d",
+        storeId: "s",
+        span: { exact: "x", prefix: "", suffix: "", node_id_hint: null },
+        text: "note",
+      }),
+    ).rejects.toThrow(/may have been saved.*reload before trying again/i);
+  });
+
+  it("uses reconciliation copy when the response is lost", async () => {
+    const transport = new HttpCoworkFeedbackTransport(
+      vi.fn(async () => {
+        throw new TypeError("fetch failed");
+      }) as unknown as typeof fetch,
+    );
+
+    await expect(
+      transport.submit({
+        documentId: "d",
+        storeId: "s",
+        span: { exact: "x", prefix: "", suffix: "", node_id_hint: null },
+        text: "note",
+      }),
+    ).rejects.toThrow(/may have been saved.*reload before trying again/i);
+  });
+
+  it("reports a reconciliation error for a malformed successful response", async () => {
+    const transport = new HttpCoworkFeedbackTransport(
+      vi.fn(async () =>
+        jsonResponse({
+          ok: true,
+          evidence_id: "ev-1",
+          span_id: "span-1",
+          conversation_id: "conversation-1",
+          // message_id is required to link the durable turn unambiguously.
+          agent: {
+            status: "running",
+            alive: true,
+            started: true,
+            error: null,
+          },
+        }),
+      ) as unknown as typeof fetch,
+    );
+
+    await expect(
+      transport.submit({
+        documentId: "doc-1",
+        storeId: "store-1",
+        span: { exact: "quote", prefix: "", suffix: "", node_id_hint: null },
+        text: "Keep this.",
+      }),
+    ).rejects.toThrow(/may have been saved.*reload before trying again/i);
   });
 });
 
@@ -98,7 +182,14 @@ describe("InMemoryCoworkFeedbackTransport", () => {
       ok: true,
       evidence_id: "ev-d1",
       span_id: "span-d1",
-      conversation_id: "cowork-doc-d1",
+      message_id: "feedback-message-d1",
+      conversation_id: "server-feedback-conversation-d1",
+      agent: {
+        status: "running",
+        alive: true,
+        started: true,
+        error: null,
+      },
     });
     expect(transport.lastRequest?.text).toBe("note");
     expect(transport.lastRequest?.span.exact).toBe("x");

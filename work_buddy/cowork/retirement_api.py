@@ -2,14 +2,57 @@
 
 from __future__ import annotations
 
+import logging
+
 from flask import Blueprint, jsonify, request
 
-from work_buddy.cowork import retirement
+from work_buddy.cowork import conversations, lifecycle_lock, retirement
+from work_buddy.conversations.store import close_conversation
 from work_buddy.truth.contracts import Actor, InvariantViolation
 from work_buddy.truth.identity import sha256_text
 
 
 retirement_blueprint = Blueprint("cowork_retirement_lifecycle", __name__)
+logger = logging.getLogger(__name__)
+
+
+def _stop_document_conversation(store_id: str, document_id: str) -> None:
+    """Close the bound conversation so every persisted driver lease is revoked."""
+    conversation_id = conversations.find_document_conversation(
+        document_id=document_id,
+        store_id=store_id,
+    )
+    if conversation_id is None:
+        return
+    try:
+        closed = close_conversation(conversation_id)
+    except Exception as exc:
+        logger.exception(
+            "Could not stop Co-work conversation after document retirement: "
+            "store=%s document=%s conversation=%s",
+            store_id,
+            document_id,
+            conversation_id,
+        )
+        raise retirement.RetirementError(
+            "conversation_stop_failed",
+            (
+                "The document was removed, but its conversation could not be "
+                "stopped. Retry the removal."
+            ),
+            status=503,
+            retryable=True,
+        ) from exc
+    if not closed:
+        raise retirement.RetirementError(
+            "conversation_stop_failed",
+            (
+                "The document was removed, but its conversation could not be "
+                "stopped. Retry the removal."
+            ),
+            status=503,
+            retryable=True,
+        )
 
 
 def _registry():
@@ -76,12 +119,20 @@ def api_retire_document(document_id: str):
         with user_initiated("dashboard.cowork.retire"):
             intent_id = str(body.get("intent_id") or "").strip()
             if intent_id:
-                receipt = retirement.commit_retirement(
-                    store,
-                    document_id=document_id,
-                    intent_id=intent_id,
-                    actor=actor,
-                )
+                # The dedicated lifecycle lock is outer to both the Truth/Ydoc
+                # retirement transaction and the conversations close/revoke.
+                # Start, feedback, and routing use the same first lock.
+                with lifecycle_lock.document_lifecycle_lock(
+                    store.store_id,
+                    document_id,
+                ):
+                    receipt = retirement.commit_retirement(
+                        store,
+                        document_id=document_id,
+                        intent_id=intent_id,
+                        actor=actor,
+                    )
+                    _stop_document_conversation(store.store_id, document_id)
                 from work_buddy.cowork.api import _emit
 
                 _emit(
@@ -111,6 +162,11 @@ def api_retire_document(document_id: str):
             "consequence_sha256": intent.consequence_sha256,
         }
         if intent.state == "committed" and intent.receipt is not None:
+            with lifecycle_lock.document_lifecycle_lock(
+                store.store_id,
+                document_id,
+            ):
+                _stop_document_conversation(store.store_id, document_id)
             payload["state"] = "committed"
             payload["result"] = intent.receipt
         return jsonify(payload), 201 if created else 200

@@ -7,8 +7,10 @@ import json
 
 import pytest
 
+from work_buddy.conversations import store as conversation_store
 from work_buddy.cowork import (
     bootstrap,
+    conversations,
     materialization,
     reimport,
     retirement,
@@ -390,6 +392,73 @@ def test_retirement_requires_prepared_clean_confirmation_and_retains_file(
     with store._read_connection() as conn:
         assert conn.execute("SELECT COUNT(*) FROM document_spans").fetchone()[0] == before_spans
         assert conn.execute("SELECT COUNT(*) FROM evidence").fetchone()[0] == before_evidence
+
+
+def test_retirement_route_revokes_bound_agent_lease_and_prevents_respawn(
+    store_ctx,
+    client,
+    fake_document_agent,
+):
+    store = store_ctx["store"]
+    document, _source, _snapshot = _ready(
+        store_ctx,
+        key="lifecycle-retire-agent-lease",
+        path="docs/retire-agent-lease.md",
+    )
+    binding = conversations.ensure_document_conversation(
+        document_id=document.id,
+        store_id=store.store_id,
+    )
+    consumer = f"cowork-document:{store.store_id}:{document.id}"
+    generation = "retirement-generation"
+    claim = conversation_store.claim_agent_lease(
+        binding.conversation_id,
+        consumer,
+        generation,
+    )
+    assert claim is not None and claim["claimed"] is True
+    assert conversation_store.activate_agent_lease(
+        binding.conversation_id,
+        consumer,
+        generation,
+        81234,
+    )
+
+    url = f"/api/truth/doc/{document.id}/retire?store_id={store.store_id}"
+    prepared = client.post(
+        url,
+        json={"idempotency_key": "retire-agent-lease-0001"},
+    )
+    assert prepared.status_code == 201
+    committed = client.post(
+        url,
+        json={"intent_id": prepared.get_json()["intent_id"]},
+    )
+    assert committed.status_code == 200
+    assert committed.get_json()["lifecycle"] == "retired"
+
+    lease = conversation_store.get_agent_lease(
+        binding.conversation_id,
+        consumer,
+    )
+    assert lease is not None
+    assert lease["status"] == "stopped"
+    assert conversation_store.receive_user_message(
+        binding.conversation_id,
+        consumer,
+        generation,
+    ) == {"status": "lease_lost"}
+    assert (
+        conversation_store.get_conversation(binding.conversation_id).status
+        == "closed"
+    )
+    assert fake_document_agent == []
+
+    restart = client.post(
+        f"/api/truth/doc/{document.id}/conversation?store_id={store.store_id}"
+    )
+    assert restart.status_code == 409
+    assert fake_document_agent == []
 
 
 def test_retirement_stale_confirmation_fails_without_retiring(store_ctx):

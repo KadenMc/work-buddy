@@ -16,6 +16,7 @@ import {
   type CoworkDocumentSummary,
   type CoworkWorkspaceInput,
 } from "../contracts";
+import { saveRailTab } from "../guards";
 import CoworkWorkspaceWidget, {
   reimportReceiptMatchesDocument,
 } from "../widget/CoworkWorkspaceWidget";
@@ -917,6 +918,32 @@ const R2_LIVE_PAYLOAD = {
   events_cursor: "c0",
 };
 
+const LIVE_CONVERSATION_ID = "7f39ad04bc12";
+const LIVE_AGENT = {
+  status: "running",
+  alive: true,
+  started: false,
+  error: null,
+} as const;
+
+const liveConversationPayload = () => ({
+  conversation: {
+    conversation_id: LIVE_CONVERSATION_ID,
+    title: "Document conversation",
+    status: "open",
+    agent_alive: true,
+  },
+  messages: [
+    {
+      message_id: "agent-1",
+      role: "agent",
+      content: "I’m ready to work on this document.",
+      message_type: "text",
+      status: "sent",
+    },
+  ],
+});
+
 const jsonResponse = (body: unknown, status = 200): Response =>
   ({
     ok: status < 400,
@@ -943,6 +970,17 @@ const liveFetch = () =>
   vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = String(input);
     const method = (init?.method ?? "GET").toUpperCase();
+    if (url.includes("/api/truth/doc/live-doc/conversation")) {
+      return jsonResponse({
+        ok: true,
+        conversation_id: LIVE_CONVERSATION_ID,
+        created: method === "POST",
+        agent: LIVE_AGENT,
+      });
+    }
+    if (url.includes(`/api/conversations/${LIVE_CONVERSATION_ID}`)) {
+      return jsonResponse(liveConversationPayload());
+    }
     if (url.includes("/ydoc")) {
       if (method === "POST") {
         return jsonResponse({ ok: true, applied: true, doc_sha256: "h1", next_offset: "1" });
@@ -969,9 +1007,10 @@ describe("CoworkWorkspaceWidget live mode", () => {
 
   const renderLive = (
     emit: ComponentProps<typeof CoworkWorkspaceWidget>["emit"] = noopEmit,
+    fetchImpl: typeof fetch = liveFetch() as unknown as typeof fetch,
   ) => {
     window.history.replaceState({}, "", "/app/cowork?store_id=live-store&document_id=live-doc");
-    globalThis.fetch = liveFetch() as unknown as typeof fetch;
+    globalThis.fetch = fetchImpl;
     return renderWorkspace({
       document: LIVE_DOCUMENT,
       sessionQuality: "complete",
@@ -1000,6 +1039,255 @@ describe("CoworkWorkspaceWidget live mode", () => {
       readOnly: false,
     }, emit);
   };
+
+  it("loads and reloads the exact server-issued conversation id", async () => {
+    const firstFetch = liveFetch();
+    const first = renderLive(
+      noopEmit,
+      firstFetch as unknown as typeof fetch,
+    );
+
+    await waitFor(() =>
+      expect(
+        firstFetch.mock.calls.some(
+          ([input, init]) =>
+            String(input) ===
+              "/api/truth/doc/live-doc/conversation?store_id=live-store" &&
+            (init?.method ?? "GET") === "GET",
+        ),
+      ).toBe(true),
+    );
+    await waitFor(() =>
+      expect(
+        firstFetch.mock.calls.some(
+          ([input]) =>
+            String(input) ===
+            `/api/conversations/${LIVE_CONVERSATION_ID}`,
+        ),
+      ).toBe(true),
+    );
+    expect(
+      firstFetch.mock.calls.some(([input]) =>
+        String(input).includes("/api/conversations/cowork-doc-"),
+      ),
+    ).toBe(false);
+    await userEvent.click(screen.getByRole("tab", { name: /Chat/ }));
+    expect(
+      firstFetch.mock.calls.filter(
+        ([input, init]) =>
+          String(input).includes("/conversation?store_id=live-store") &&
+          init?.method === "POST",
+      ),
+    ).toHaveLength(0);
+    first.unmount();
+
+    const reloadFetch = liveFetch();
+    renderLive(noopEmit, reloadFetch as unknown as typeof fetch);
+    await waitFor(() =>
+      expect(
+        reloadFetch.mock.calls.some(
+          ([input]) =>
+            String(input) ===
+            `/api/conversations/${LIVE_CONVERSATION_ID}`,
+        ),
+      ).toBe(true),
+    );
+    expect(
+      reloadFetch.mock.calls.filter(
+        ([input, init]) =>
+          String(input).includes("/conversation?store_id=live-store") &&
+          init?.method === "POST",
+      ),
+    ).toHaveLength(0);
+    saveRailTab(window.localStorage, "live-doc", "review");
+  });
+
+  it("restores a persisted Chat view with GET only", async () => {
+    saveRailTab(window.localStorage, "live-doc", "chat");
+    const fetchImpl = liveFetch();
+    renderLive(noopEmit, fetchImpl as unknown as typeof fetch);
+
+    expect(
+      await screen.findByText("I’m ready to work on this document."),
+    ).toBeVisible();
+    expect(
+      fetchImpl.mock.calls.filter(
+        ([input, init]) =>
+          String(input).includes("/conversation?store_id=live-store") &&
+          init?.method === "POST",
+      ),
+    ).toHaveLength(0);
+    saveRailTab(window.localStorage, "live-doc", "review");
+  });
+
+  it("hydrates persisted feedback span links on reload by exact message id", async () => {
+    saveRailTab(window.localStorage, "live-doc", "chat");
+    const persistedFeedback = {
+      evidence_id: "feedback-evidence-1",
+      span_id: "feedback-span-1",
+      conversation_id: LIVE_CONVERSATION_ID,
+      message_id: "feedback-message-1",
+      text: "Use a measurable claim.",
+      anchor: {
+        exact: "very effective",
+        prefix: "This is ",
+        suffix: " today.",
+        node_id_hint: null,
+      },
+    };
+    const feedbackFetch = () => {
+      const fallback = liveFetch();
+      return vi.fn(
+        async (
+          input: RequestInfo | URL,
+          init?: RequestInit,
+        ): Promise<Response> => {
+          const url = String(input);
+          if (url.includes("/api/truth/doc/live-doc/conversation")) {
+            return jsonResponse({
+              ok: true,
+              conversation_id: LIVE_CONVERSATION_ID,
+              created: false,
+              agent: LIVE_AGENT,
+              feedback: [persistedFeedback],
+            });
+          }
+          if (url === `/api/conversations/${LIVE_CONVERSATION_ID}`) {
+            return jsonResponse({
+              conversation: {
+                conversation_id: LIVE_CONVERSATION_ID,
+                title: "Chat about this document",
+                status: "open",
+                agent_alive: true,
+              },
+              messages: [
+                {
+                  message_id: "feedback-message-1",
+                  role: "user",
+                  content: "Use a measurable claim.",
+                },
+              ],
+            });
+          }
+          return fallback(input, init);
+        },
+      );
+    };
+
+    const firstFetch = feedbackFetch();
+    const first = renderLive(
+      noopEmit,
+      firstFetch as unknown as typeof fetch,
+    );
+    expect(
+      await screen.findByRole("button", {
+        name: 'Jump to the passage "very effective"',
+      }),
+    ).toBeVisible();
+    first.unmount();
+
+    const reloadFetch = feedbackFetch();
+    renderLive(noopEmit, reloadFetch as unknown as typeof fetch);
+    expect(
+      await screen.findByRole("button", {
+        name: 'Jump to the passage "very effective"',
+      }),
+    ).toBeVisible();
+    expect(
+      reloadFetch.mock.calls.filter(
+        ([input, init]) =>
+          String(input).includes("/conversation?store_id=live-store") &&
+          init?.method === "POST",
+      ),
+    ).toHaveLength(0);
+    saveRailTab(window.localStorage, "live-doc", "review");
+  });
+
+  it("ensures on a current Chat click, then loads only the returned opaque id", async () => {
+    const baseFetch = liveFetch();
+    const ensuredId = "server-issued-after-click-72";
+    const fetchImpl = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        const url = String(input);
+        const method = (init?.method ?? "GET").toUpperCase();
+        if (url.includes("/api/truth/doc/live-doc/conversation")) {
+          if (method === "GET") {
+            return jsonResponse({
+              ok: true,
+              conversation_id: null,
+              agent: {
+                status: "not_started",
+                alive: null,
+                started: false,
+                error: null,
+              },
+            });
+          }
+          return jsonResponse({
+            ok: true,
+            conversation_id: ensuredId,
+            created: true,
+            agent: { ...LIVE_AGENT, started: true },
+          });
+        }
+        if (url === `/api/conversations/${ensuredId}`) {
+          return jsonResponse({
+            conversation: {
+              conversation_id: ensuredId,
+              title: "Chat about this document",
+              status: "open",
+              agent_alive: true,
+            },
+            messages: [
+              {
+                message_id: "agent-click",
+                role: "agent",
+                content: "Chat started from this click.",
+              },
+            ],
+          });
+        }
+        return baseFetch(input, init);
+      },
+    );
+    renderLive(noopEmit, fetchImpl as unknown as typeof fetch);
+
+    await waitFor(() =>
+      expect(
+        fetchImpl.mock.calls.some(
+          ([input, init]) =>
+            String(input).includes("/conversation?store_id=live-store") &&
+            init?.method === "GET",
+        ),
+      ).toBe(true),
+    );
+    expect(
+      fetchImpl.mock.calls.some(([input]) =>
+        String(input).startsWith("/api/conversations/"),
+      ),
+    ).toBe(false);
+
+    await userEvent.click(screen.getByRole("tab", { name: /Chat/ }));
+    expect(await screen.findByText("Chat started from this click.")).toBeVisible();
+    expect(
+      fetchImpl.mock.calls.some(
+        ([input, init]) =>
+          String(input).includes("/conversation?store_id=live-store") &&
+          init?.method === "POST",
+      ),
+    ).toBe(true);
+    expect(
+      fetchImpl.mock.calls.some(
+        ([input]) => String(input) === `/api/conversations/${ensuredId}`,
+      ),
+    ).toBe(true);
+    expect(
+      fetchImpl.mock.calls.some(([input]) =>
+        String(input).includes("/api/conversations/cowork-doc-"),
+      ),
+    ).toBe(false);
+    saveRailTab(window.localStorage, "live-doc", "review");
+  });
 
   it("filters Documents to the open folder and shows browser-local work only without one", async () => {
     const user = userEvent.setup();

@@ -75,6 +75,9 @@ export class HttpChatConversationProvider implements ChatConversationProvider {
   private readonly basePath: string;
   private readonly listeners = new Set<ChatInvalidationListener>();
   private timer: ReturnType<typeof setInterval> | null = null;
+  private lastSnapshot: ChatConversationSnapshot | null = null;
+  private requestSequence = 0;
+  private cachedSequence = 0;
 
   constructor(config: HttpChatConfig) {
     this.conversationId = config.conversationId;
@@ -120,6 +123,7 @@ export class HttpChatConversationProvider implements ChatConversationProvider {
     conversationId: string,
   ): Promise<ChatConversationSnapshot> {
     this.assertBound(conversationId);
+    const sequence = ++this.requestSequence;
     const response = await this.fetcher()(this.endpoint(), {
       method: "GET",
       headers: { Accept: "application/json" },
@@ -128,7 +132,15 @@ export class HttpChatConversationProvider implements ChatConversationProvider {
     if (!response.ok || !isConversationPayload(payload)) {
       throw new Error(errorText(payload, response, "Conversation could not load."));
     }
-    return normalizeConversationPayload(payload);
+    if (payload.conversation.conversation_id !== this.conversationId) {
+      throw new Error("Chat returned the wrong conversation.");
+    }
+    const snapshot = normalizeConversationPayload(payload);
+    if (sequence >= this.cachedSequence) {
+      this.cachedSequence = sequence;
+      this.lastSnapshot = snapshot;
+    }
+    return snapshot;
   }
 
   async sendMessage(
@@ -139,10 +151,14 @@ export class HttpChatConversationProvider implements ChatConversationProvider {
     const response = await this.fetcher()(this.endpoint("/respond"), {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
-      // The respond route answers a pending question or appends a general user
-      // message from the one value field. inReplyTo is a client-side hint the
-      // house route does not consume, so only value crosses the wire.
-      body: JSON.stringify({ value: input.value }),
+      // Co-work replies carry the exact pending-question message id. A plain
+      // composer turn omits it and therefore remains an ordinary user message.
+      body: JSON.stringify({
+        value: input.value,
+        ...(input.inReplyTo === undefined
+          ? {}
+          : { in_reply_to: input.inReplyTo }),
+      }),
     });
     const payload = await this.readJson(response);
     const failed =
@@ -153,10 +169,56 @@ export class HttpChatConversationProvider implements ChatConversationProvider {
         errorText(payload, response, "Message could not be delivered."),
       );
     }
-    // The respond route returns only an ack (message_id), so the next snapshot
-    // comes from a reload. A transient reload failure surfaces as a send error
-    // and the poll loop reconciles the successfully posted turn on its next tick.
-    return this.loadConversation(conversationId);
+    const messageId =
+      isRecord(payload) &&
+      typeof payload.message_id === "string" &&
+      payload.message_id.trim().length > 0
+        ? payload.message_id
+        : null;
+    if (messageId === null) {
+      throw new Error(
+        "Your message may have been delivered, but chat could not confirm it. Wait for chat to refresh before trying again.",
+      );
+    }
+
+    // The POST acknowledgement is authoritative: once it returns a message id,
+    // a transient follow-up GET failure must not retain the draft and invite a
+    // duplicate send. Block older in-flight loads from regressing the cache,
+    // then prefer the server snapshot and fall back to an optimistic user turn.
+    const acknowledgementSequence = ++this.requestSequence;
+    this.cachedSequence = Math.max(
+      this.cachedSequence,
+      acknowledgementSequence,
+    );
+    try {
+      return await this.loadConversation(conversationId);
+    } catch {
+      const base =
+        this.lastSnapshot ?? {
+          conversationId: this.conversationId,
+          status: "open",
+          agentLiveness: "unknown",
+          messages: [],
+        };
+      if (base.messages.some((message) => message.id === messageId)) {
+        return base;
+      }
+      const optimistic: ChatConversationSnapshot = {
+        ...base,
+        messages: [
+          ...base.messages,
+          {
+            id: messageId,
+            author: "user",
+            content: input.value,
+          },
+        ],
+      };
+      this.requestSequence += 1;
+      this.cachedSequence = this.requestSequence;
+      this.lastSnapshot = optimistic;
+      return optimistic;
+    }
   }
 
   subscribe(
