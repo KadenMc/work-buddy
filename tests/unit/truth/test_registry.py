@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 
@@ -13,10 +14,7 @@ from work_buddy.truth.export import (
     import_store,
 )
 from work_buddy.truth.identity import new_id
-from work_buddy.truth.registry import (
-    RegistryIdentityMismatch,
-    TruthStoreRegistry,
-)
+from work_buddy.truth.registry import RegistryIdentityMismatch, TruthStoreRegistry
 from work_buddy.truth.store import TruthStore
 
 
@@ -65,9 +63,32 @@ def test_registry_schema_and_public_row_are_frozen(tmp_path: Path) -> None:
         "title",
         "last_seen",
         "reachable",
+        "layout",
+        "document_surface_enabled",
+        "allowed_document_classes_json",
+        "feedback_capture",
+        "document_count",
+        "last_error",
+        "path_key",
     ]
     assert "WHERE reachable = 1" in index_sql
-    assert version == 1
+    assert version == 4
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows path identity is case-insensitive")
+def test_registry_preserves_filesystem_case_while_alias_lookup_is_case_insensitive(
+    tmp_path: Path,
+) -> None:
+    registry = TruthStoreRegistry(tmp_path / "truth_registry.db")
+    store = _store(tmp_path / "Reference Folder")
+
+    registered = registry.register(Path(str(store.paths.sidecar).lower()))
+
+    assert registered.path == store.paths.sidecar.resolve()
+    assert registered.path.parent.parent.name == "Reference Folder"
+    alias = registry.get_by_path(Path(str(store.paths.sidecar).upper()), refresh=False)
+    assert alias is not None and alias.path == registered.path
+    assert len(registry.list_stores(refresh=False)) == 1
 
 
 def test_register_touch_and_access_validate_identity(tmp_path: Path) -> None:
@@ -176,4 +197,30 @@ def test_real_registry_unstubs_import_collision_preflight(tmp_path: Path) -> Non
 
     with pytest.raises(StoreIdentityCollision, match="already registered"):
         import_store(exported.path, target, registry=registry)
-    assert not (target / ".wb-truth").exists()
+    assert not (target / ".wbuddy" / "cowork").exists()
+
+
+def test_canonical_sidecar_projection_and_atomic_relocation(tmp_path: Path) -> None:
+    registry = TruthStoreRegistry(tmp_path / "truth_registry.db")
+    source_root = tmp_path / "source"
+    source = _store(source_root)
+    registered = registry.register(source)
+    store_id = source.store_id
+    assert registered.layout == "wbuddy_cowork_v1"
+    assert registered.document_surface_enabled is False
+
+    target_root = tmp_path / "target"
+    target_root.mkdir()
+    canonical = target_root / ".wbuddy" / "cowork"
+    canonical.parent.mkdir()
+    source.paths.sidecar.rename(canonical)
+    relocated = registry.relocate(
+        source.paths.sidecar,
+        canonical,
+        store_id=store_id,
+    )
+
+    assert relocated.path == canonical.resolve()
+    assert relocated.layout == "wbuddy_cowork_v1"
+    assert registry.get_by_path(source.paths.sidecar, refresh=False) is None
+    assert registry.paths_for_store_id(store_id) == (canonical.resolve(),)

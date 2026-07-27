@@ -15,6 +15,7 @@ user_initiated boundary and threads a real dashboard-user actor through.
 from __future__ import annotations
 
 import logging
+import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -132,11 +133,19 @@ def _dispatch(
     item: dict[str, Any],
     gesture_id: str,
     at: str | None,
+    conn: sqlite3.Connection | None = None,
+    current_structured_head_sha256: str | None = None,
 ) -> Any:
     proposal_id = proposal.id
     if verb == "confirm":
         return proposals.accept_proposal(
-            store, proposal_id=proposal_id, gesture_id=gesture_id, actor=actor, at=at
+            store,
+            proposal_id=proposal_id,
+            gesture_id=gesture_id,
+            actor=actor,
+            at=at,
+            conn=conn,
+            current_structured_head_sha256=current_structured_head_sha256,
         )
     if verb == "edit_confirm":
         return proposals.accept_proposal(
@@ -146,6 +155,8 @@ def _dispatch(
             actor=actor,
             amended_replacement=item.get("amend_content"),
             at=at,
+            conn=conn,
+            current_structured_head_sha256=current_structured_head_sha256,
         )
     if verb == "reject_plain":
         return proposals.reject_proposal(
@@ -155,6 +166,7 @@ def _dispatch(
             actor=actor,
             reason_class="reject_plain",
             at=at,
+            conn=conn,
         )
     if verb == "reject_as_false":
         return proposals.decide_reject_as_false(
@@ -164,9 +176,12 @@ def _dispatch(
             actor=actor,
             negation_text=item.get("negation_text"),
             at=at,
+            conn=conn,
         )
     if verb == "reject_as_preference":
-        result_claim_id = _resolve_preference_claim(store, actor, item, at=at)
+        result_claim_id = _resolve_preference_claim(
+            store, actor, item, at=at, conn=conn
+        )
         return proposals.reject_proposal(
             store,
             proposal_id=proposal_id,
@@ -175,6 +190,7 @@ def _dispatch(
             reason_class="reject_as_preference",
             result_claim_id=result_claim_id,
             at=at,
+            conn=conn,
         )
     if verb == "redirect":
         return proposals.redirect_proposal(
@@ -184,18 +200,34 @@ def _dispatch(
             actor=actor,
             note=item.get("redirect_note"),
             at=at,
+            conn=conn,
         )
     if verb == "defer":
         return proposals.defer_proposal(
-            store, proposal_id=proposal_id, gesture_id=gesture_id, actor=actor, at=at
+            store,
+            proposal_id=proposal_id,
+            gesture_id=gesture_id,
+            actor=actor,
+            at=at,
+            conn=conn,
         )
     if verb == "endorse":
         return proposals.endorse_flag(
-            store, proposal_id=proposal_id, gesture_id=gesture_id, actor=actor, at=at
+            store,
+            proposal_id=proposal_id,
+            gesture_id=gesture_id,
+            actor=actor,
+            at=at,
+            conn=conn,
         )
     if verb == "dismiss":
         return proposals.dismiss_flag(
-            store, proposal_id=proposal_id, gesture_id=gesture_id, actor=actor, at=at
+            store,
+            proposal_id=proposal_id,
+            gesture_id=gesture_id,
+            actor=actor,
+            at=at,
+            conn=conn,
         )
     raise InvariantViolation(f"unhandled verb: {verb!r}")
 
@@ -212,6 +244,7 @@ def _resolve_preference_claim(
     item: dict[str, Any],
     *,
     at: str | None,
+    conn: sqlite3.Connection | None = None,
 ) -> str:
     """Return the result claim id for a reject_as_preference decision (FA-1).
 
@@ -231,6 +264,7 @@ def _resolve_preference_claim(
         actor=actor,
         created_at=at,
         status_at=at,
+        conn=conn,
     )
     return minted.claim.id
 
@@ -256,6 +290,8 @@ def decide_one(
     item: dict[str, Any],
     *,
     at: str | None = None,
+    conn: sqlite3.Connection | None = None,
+    current_structured_head_sha256: str | None = None,
 ) -> ItemOutcome:
     """Validate, mint one gesture, and commit one mark, independent of the rest."""
     proposal_id = str(item.get("proposal_id") or "").strip()
@@ -265,18 +301,38 @@ def decide_one(
     if verb not in _ALL_VERBS:
         return _error(proposal_id, verb, False, f"unsupported verb: {verb!r}")
     try:
-        proposal = proposals.get_proposal(store, proposal_id)
+        proposal = proposals.get_proposal(store, proposal_id, conn=conn)
     except InvariantViolation:
         return _error(proposal_id, verb, False, "proposal does not exist")
 
-    base_ok = proposal.base_content_sha256 == document.content_sha256
+    observed_head = current_structured_head_sha256
+    if (
+        proposal.base_structured_head_sha256 is not None
+        and observed_head is None
+        and document.ydoc_snapshot_sha256 is not None
+    ):
+        from work_buddy.truth import ydoc_store
+
+        observed_head = ydoc_store.current_structured_head(
+            store,
+            document_id=document.id,
+            snapshot_sha256=document.ydoc_snapshot_sha256,
+        )
+    structured_base_ok = (
+        proposal.base_structured_head_sha256 is None
+        or observed_head == proposal.base_structured_head_sha256
+    )
+    base_ok = (
+        proposal.base_content_sha256 == document.content_sha256
+        and structured_base_ok
+    )
 
     # I6 single-use binding: the shown hash must still equal the live payload.
     if supplied != proposal.canonical_sha256:
         return _stale_view(proposal_id, verb, base_ok)
 
     try:
-        latest = proposals.latest_proposal_status(store, proposal_id)
+        latest = proposals.latest_proposal_status(store, proposal_id, conn=conn)
     except InvariantViolation:
         return _error(proposal_id, verb, base_ok, "proposal has no status history")
     if latest.status != "open":
@@ -322,9 +378,20 @@ def decide_one(
         kind=_VERB_GESTURE_KIND[verb],
         displayed_payload_sha256=proposal.canonical_sha256,
         at=at,
+        conn=conn,
     )
     try:
-        decision = _dispatch(store, proposal, actor, verb, item, gesture.id, at)
+        decision = _dispatch(
+            store,
+            proposal,
+            actor,
+            verb,
+            item,
+            gesture.id,
+            at,
+            conn=conn,
+            current_structured_head_sha256=observed_head,
+        )
     except _DECISION_ERRORS as exc:
         return _error(proposal_id, verb, base_ok, str(exc))
 

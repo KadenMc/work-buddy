@@ -465,13 +465,16 @@ def test_empty_store_round_trip_and_existing_empty_sidecar(tmp_path: Path) -> No
     exported = export_store(source)
     target = tmp_path / "target"
     target.mkdir()
-    (target / ".wb-truth").mkdir()
+    (target / ".wbuddy" / "cowork").mkdir(parents=True)
 
     result = import_store(exported.path, target, registry=FakeRegistry())
 
     assert result.record_count == 0
     assert result.blob_count == 0
     assert result.store.store_id == source.store_id
+    assert result.store.paths.sidecar == (target / ".wbuddy" / "cowork").resolve()
+    manifest = (target / ".wbuddy" / "manifest.yaml").read_text(encoding="utf-8")
+    assert "cowork:" in manifest
     again = export_store(result.store, tmp_path / "again.jsonl")
     assert again.path.read_bytes() == exported.path.read_bytes()
 
@@ -536,14 +539,38 @@ def test_registry_collision_and_nonempty_target_are_refused_before_writes(
 
     with pytest.raises(StoreIdentityCollision, match="already registered"):
         import_store(exported.path, target, registry=registry)
-    assert not (target / ".wb-truth").exists()
+    assert not (target / ".wbuddy" / "cowork").exists()
 
-    sidecar = target / ".wb-truth"
-    sidecar.mkdir()
+    sidecar = target / ".wbuddy" / "cowork"
+    sidecar.mkdir(parents=True)
     (sidecar / "sentinel").write_text("keep", encoding="utf-8")
     with pytest.raises(TruthImportError, match="must be empty"):
         import_store(exported.path, target, registry=FakeRegistry())
     assert (sidecar / "sentinel").read_text(encoding="utf-8") == "keep"
+
+
+def test_import_rejects_missing_or_redirected_target_root(tmp_path: Path) -> None:
+    source = _create_store(tmp_path / "source")
+    exported = export_store(source)
+
+    with pytest.raises(TruthImportError, match="must already exist"):
+        import_store(
+            exported.path,
+            tmp_path / "missing",
+            registry=FakeRegistry(),
+        )
+
+    external = tmp_path / "external"
+    external.mkdir()
+    target = tmp_path / "target"
+    target.mkdir()
+    try:
+        (target / ".wbuddy").symlink_to(external, target_is_directory=True)
+    except OSError:
+        return
+    with pytest.raises(TruthImportError, match="redirected or unsupported"):
+        import_store(exported.path, target, registry=FakeRegistry())
+    assert list(external.iterdir()) == []
 
 
 @pytest.mark.parametrize(
@@ -965,8 +992,8 @@ def test_import_rejects_newer_malformed_duplicate_header_and_trailing_records(
             registry=FakeRegistry(),
         )
     duplicate_header = payload.replace(
-        b'"format_version":3',
-        b'"format_version":3,"format_version":3',
+        b'"format_version":4',
+        b'"format_version":4,"format_version":4',
         1,
     )
     with pytest.raises(TruthImportError, match="malformed JSON"):
@@ -999,12 +1026,12 @@ def test_older_schema_export_rebuilds_under_a_newer_engine(tmp_path: Path) -> No
 
     assert restored.get_claim(claim.id).canonical_sha256 == claim.canonical_sha256
     with restored.connect() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
         assert conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'documents'"
         ).fetchone()
     header = _objects(restored.paths.claims_export.read_bytes())[0]
-    assert header["store_info"]["schema_version"] == 2
+    assert header["store_info"]["schema_version"] == 4
 
 
 def test_staging_failure_is_not_published_and_existing_empty_target_is_restored(
@@ -1015,8 +1042,8 @@ def test_staging_failure_is_not_published_and_existing_empty_target_is_restored(
     exported = export_store(source)
     target = tmp_path / "target"
     target.mkdir()
-    sidecar = target / ".wb-truth"
-    sidecar.mkdir()
+    sidecar = target / ".wbuddy" / "cowork"
+    sidecar.mkdir(parents=True)
 
     def fail_insert(*args, **kwargs):
         raise RuntimeError("staged insert failed")
@@ -1027,7 +1054,7 @@ def test_staging_failure_is_not_published_and_existing_empty_target_is_restored(
 
     assert sidecar.is_dir()
     assert list(sidecar.iterdir()) == []
-    assert not list(target.glob(".wb-truth-import-*"))
+    assert not list(target.glob(".wbuddy-cowork-import-*"))
 
 
 def test_export_refuses_missing_blob_and_unordered_base_rows(tmp_path: Path) -> None:

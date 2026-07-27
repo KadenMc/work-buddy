@@ -57,7 +57,7 @@ function renderQueue() {
 }
 
 const submitButton = () =>
-  screen.getByRole("button", { name: /Submit sitting/ });
+  screen.getByRole("button", { name: /Apply decisions/ });
 
 describe("Co-work keyboard-driven sitting", () => {
   beforeEach(() => {
@@ -95,7 +95,7 @@ describe("Co-work keyboard-driven sitting", () => {
     // mode staging auto-advances to the next undecided item.
     screen.getByRole("button", { name: "Accept" }).focus();
     await user.keyboard("{Enter}");
-    expect(submitButton()).toHaveTextContent("Submit sitting (1)");
+    expect(submitButton()).toHaveTextContent("Apply decisions (1)");
     await waitFor(() => expect(screen.getByText(/Item 2/)).toBeVisible());
 
     // Item 2: reject as preference collects verbatim text inline before staging.
@@ -107,7 +107,7 @@ describe("Co-work keyboard-driven sitting", () => {
     await user.type(field, "Prefer the original phrasing.");
     screen.getByRole("button", { name: "Stage" }).focus();
     await user.keyboard("{Enter}");
-    expect(submitButton()).toHaveTextContent("Submit sitting (2)");
+    expect(submitButton()).toHaveTextContent("Apply decisions (2)");
     await waitFor(() => expect(screen.getByText(/Item 3/)).toBeVisible());
 
     // Characterise the Escape gap: opening the redirect input and pressing Escape
@@ -127,7 +127,7 @@ describe("Co-work keyboard-driven sitting", () => {
       screen.queryByLabelText("Guidance for the agent"),
     ).toBeNull();
     // Item 3 stays undecided, so the staged count is unchanged.
-    expect(submitButton()).toHaveTextContent("Submit sitting (2)");
+    expect(submitButton()).toHaveTextContent("Apply decisions (2)");
 
     // Submit the sitting with the keyboard. The two decided proposals leave the
     // open set, so the queue shrinks and the submit button disarms.

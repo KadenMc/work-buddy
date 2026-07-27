@@ -110,7 +110,7 @@ def _seed_document_surface(conn: sqlite3.Connection) -> None:
 def doc_db(tmp_path: Path):
     path = tmp_path / "store.db"
     conn = _connect(path)
-    assert truth_migrations.migrate(conn, path) == 2
+    assert truth_migrations.migrate(conn, path) == 4
     _insert_store_info(conn, 2)
     _seed_document_surface(conn)
     try:
@@ -335,7 +335,7 @@ def _build_migrated_v1_store(tmp_path: Path, monkeypatch) -> Path:
         assert truth_migrations.migrate(conn, path) == 1
         _seed_v1_redactable_rows(conn)
         monkeypatch.undo()
-        assert truth_migrations.migrate(conn, path) == 2
+        assert truth_migrations.migrate(conn, path) == 4
     finally:
         conn.close()
     return path

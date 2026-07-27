@@ -50,7 +50,7 @@
   border: none;
   border-radius: var(--wb-radius-control) var(--wb-radius-control) 0 0;
   background: transparent;
-  color: var(--wb-color-text-muted);
+  color: var(--wb-color-text-secondary);
   font: inherit;
   font-weight: var(--wb-font-weight-medium);
   cursor: pointer;
@@ -199,7 +199,7 @@
 .wb-cowork-rail__empty {
   margin: 0;
   padding: var(--wb-space-6);
-  color: var(--wb-color-text-muted);
+  color: var(--wb-color-text-secondary);
   font-size: var(--wb-font-size-sm);
 }
 
@@ -248,7 +248,7 @@
 
 .wb-cowork-rail__drift-count {
   margin-inline-start: auto;
-  color: var(--wb-color-text-muted);
+  color: var(--wb-color-text-secondary);
 }
 
 /* ---------- filter lens ---------- */
@@ -282,7 +282,7 @@
 .wb-cowork-rail__chip[aria-pressed="true"] {
   background: var(--wb-color-accent-soft);
   border-color: var(--wb-color-accent);
-  color: var(--wb-color-accent);
+  color: var(--wb-color-text-strong);
 }
 
 .wb-cowork-rail__chip:focus-visible {

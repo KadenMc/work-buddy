@@ -101,11 +101,11 @@ Kernel v0 is a design artifact set plus the thinnest engine slice that can hold 
 
 ## 7. Former open questions (now resolved or escalated)
 
-1. **Sidecar naming and granularity:** committed in Part II §4 (`.wb-truth/` per scope root). The co-think unification question is escalated to Kaden (Part II §9, Q1).
+1. **Sidecar naming and granularity:** committed in Part II §4 (`.wbuddy/cowork/` per Folder). The co-think unification question is escalated to Kaden (Part II §9, Q1).
 2. **First validation workload pairing:** committed: my-career person-facts + electricrag project-canon, with a co-think session as the third *fixture-only* workload.
 3. ~~Datalog appetite~~ resolved by evidence: Cozo dormant, Avenue B closed (§8).
 4. **Profile authoring surface:** committed: `store.yaml` in the sidecar (AOV-style config) + one knowledge-store directions unit per profile for agent behavior. Both, each doing the job it is shaped for.
-5. **Kernel name:** committed provisionally as `truth` (`work_buddy/truth/`, `.wb-truth/`, `truth_*` capabilities). Ratification escalated (Part II §9, Q3) since product-facing naming is Kaden's call.
+5. **Kernel name:** committed provisionally as `truth` (`work_buddy/truth/`, `truth_*` capabilities), while project storage is the Co-work component at `.wbuddy/cowork/`. Ratification escalated (Part II §9, Q3) since product-facing naming is Kaden's call.
 
 ## 8. Substrate verification results (verified 2026-07-10)
 
@@ -211,18 +211,18 @@ Integration modes: **1** upstream dependency, **2** VCS-pinned, **3** tracking f
 **Sidecar layout.** One store per scope root:
 
 ```
-<scope-root>/.wb-truth/
+<folder>/.wbuddy/cowork/
   store.db          # the kernel store (SQLite, WAL)
   store.yaml        # profile + store identity echo (human-readable)
   blobs/<sha256>    # large evidence snapshots (content-addressed)
   exports/          # PROV-JSON and other derived exports (rebuildable)
 ```
 
-`<scope-root>` is typically a repo root (`electricrag/.wb-truth/`) or a purpose directory (`my-career/.wb-truth/`). Multiple stores per machine are the normal case. work-buddy's own preference canon lives at `<data_root>/truth/personal/.wb-truth/`.
+`<folder>` is typically a repo root (`electricrag/.wbuddy/cowork/`) or a purpose directory (`my-career/.wbuddy/cowork/`). Multiple stores per machine are the normal case. Work Buddy's own preference canon is registered as its own canonical Co-work Folder.
 
-**Git posture and portability.** `store.db` and `blobs/` are gitignored by a generated `.wb-truth/.gitignore` (binary churn does not belong in consumer repos). `store.yaml` is committed. Two durability paths, both committed here:
+**Git posture and portability.** `store.db` and `blobs/` are gitignored by a generated `.wbuddy/cowork/.gitignore` (binary churn does not belong in consumer repos). `store.yaml` is committed. Two durability paths, both committed here:
 - **Machine durability:** the store registry feeds registered store paths into work-buddy backup coverage (K1 acceptance includes this wiring).
-- **Repo-travel durability (the canonical text form):** the engine maintains `.wb-truth/export/claims.jsonl`, a deterministic, append-ordered JSONL export of the full ledger (records in insertion order, stable field order), regenerated on write. **Committed to the consumer repo by default** (Kaden, Q6 resolution: these repos are private, versioning is wanted). A profile may opt out (`export_committed: false`) for future public or shared repos. It diffs cleanly in PRs, travels with clones, and `truth_store_import` rebuilds a working `store.db` from it on any machine, preserving `store_id`. The registry refuses two live stores with the same `store_id` at different paths (restore-beside-live is an explicit error, resolved by the human choosing which is live). Real multi-machine concurrent WRITE sync is explicitly out of scope for v0 (documented limitation: one writing machine per store at a time, git is the transport).
+- **Repo-travel durability (the canonical text form):** the engine maintains `.wbuddy/cowork/export/claims.jsonl`, a deterministic, append-ordered JSONL export of the full ledger (records in insertion order, stable field order), regenerated on write. **Committed to the consumer repo by default** (Kaden, Q6 resolution: these repos are private, versioning is wanted). A profile may opt out (`export_committed: false`) for future public or shared repos. It diffs cleanly in PRs, travels with clones, and `truth_store_import` rebuilds a working `store.db` from it on any machine, preserving `store_id`. The registry refuses two live stores with the same `store_id` at different paths (restore-beside-live is an explicit error, resolved by the human choosing which is live). Real multi-machine concurrent WRITE sync is explicitly out of scope for v0 (documented limitation: one writing machine per store at a time, git is the transport).
 
 **Identity.** `store_id` = uuid4 hex minted at creation, echoed in both `store.yaml` and `store_info`. Record ids = uuid4 hex. Cross-store reference URI: `wb-truth://<store_id>/<kind>/<record_id>` where kind is `claim`, `evidence`, `span`, `derivation`. Entity references use the existing registry's ids as soft URIs (`wb-entity://<id>`), no cross-database foreign keys, resolution stays the registry's job.
 
@@ -279,11 +279,11 @@ Kaden's Q3 exposed a real gap: an earlier convergence.md claim that "the MCP gat
 
 **Separate the three planes:**
 
-1. **Data plane: where truth lives.** Already settled and unchanged: per-scope stores inside consumer repos (`electricrag/.wb-truth/`), with the committed JSONL export as the diffable repo-travel form. One addition that answers "files stored where the file should live": **human-facing canon files remain real files in their natural locations.** `electricrag/docs/canon/*.md` continues to exist, maintained as a **materialized projection** of the store (the docs-materialization pattern, `materialize.py`). Humans read and diff files where they always did. The store is the ledger behind them, not a replacement for having files.
+1. **Data plane: where truth lives.** Already settled and unchanged: one canonical Co-work component per Folder inside consumer repos (`electricrag/.wbuddy/cowork/`), with the committed JSONL export as the diffable repo-travel form. One addition that answers "files stored where the file should live": **human-facing canon files remain real files in their natural locations.** `electricrag/docs/canon/*.md` continues to exist, maintained as a **materialized projection** of the store (the docs-materialization pattern, `materialize.py`). Humans read and diff files where they always did. The store is the ledger behind them, not a replacement for having files.
 
 2. **Invocation plane: how agents and humans in a consumer repo call the engine.** **CLI-first: `wbuddy truth <verb>`.** The `wbuddy` entry point already exists machine-wide (`~/.local/bin` shims from the uv migration) and the engine is a library, so the CLI opens the store directly with no gateway, no MCP mount, and no server dependency for reads and proposes. Engine-level gates are entry-point-independent (the actor rules live in the engine, not the transport), so this adds no bypass: agents invoking the CLI can capture evidence, propose, and query, and CANNOT confirm, because confirm requires a gesture minted by an interactive surface. CLI confirm exists only as (a) an interactive TTY review session run by the human, or (b) `--gesture <id>` referencing a gesture already minted by the dashboard. The TTY check is a local-trust convention, consistent with the raw-file honesty paragraph in §II.6: the owning human is not the adversary, agents are gated structurally by the engine.
 
-3. **Context plane: what a consumer repo's sessions need to know.** One short rules file, not the work-buddy world. **`wbuddy project init`** (new, K2) scaffolds a consumer repo: creates `.wb-truth/` with the chosen profile, registers the store (registry + backup coverage), writes the generated `.gitignore`, and drops a ~20-line agent-facing snippet (`.claude/rules/wb-truth.md` or a CLAUDE.md section, consumer's choice) documenting the store's existence, the profile's citation discipline, and the five CLI verbs. That snippet is the ENTIRE work-buddy context a consumer session carries.
+3. **Context plane: what a consumer repo's sessions need to know.** One short rules file, not the work-buddy world. **`wbuddy project init`** (new, K2) scaffolds a consumer repo: creates `.wbuddy/cowork/` with the chosen profile, registers the store (registry + backup coverage), writes the generated `.gitignore`, and drops a ~20-line agent-facing snippet (`.claude/rules/wbuddy-cowork.md` or a CLAUDE.md section, consumer's choice) documenting the store's existence, the profile's citation discipline, and the five CLI verbs. That snippet is the ENTIRE work-buddy context a consumer session carries.
 
 **Why not the alternatives:**
 - **Full wb MCP in consumer repos:** context and tool-surface bloat, rejected by Kaden directly.
@@ -537,14 +537,14 @@ Explicitly deferred beyond K5: the co-think editor build (its own phased plan), 
 | Blob growth | Content-addressed blobs dedup by hash, size ceiling per profile, big media stays out of scope for v0 |
 | Consumer repos without work-buddy | Stores are plain SQLite + YAML, readable by anything. The engine is required only for writes that must honor invariants |
 | Human edits a resident Markdown projection (drift) | The projection contract (§II.4): render manifests + hash-based drift detection, materialize never overwrites dirty files, reconcile maps edits to supersession proposals through the review queue with honest `unattested` attribution |
-| Second-store-of-truth drift (registry vs knowledge store) | The non-competition table (convergence.md §3) is enforced in reviews: no truth jobs in the entity registry, no claim tables outside `.wb-truth/` |
+| Second-store-of-truth drift (registry vs knowledge store) | The non-competition table (convergence.md §3) is enforced in reviews: no truth jobs in the entity registry, no claim tables outside `.wbuddy/cowork/` |
 | Naming churn after code lands | §9 Q3 asks for ratification before K0 merges, rename is one mechanical sweep at most |
 
 ## II.9 Forks: RESOLVED by Kaden (2026-07-11)
 
 | Q | Decision | Where it landed |
 |---|---|---|
-| Q1 co-think sidecar | **(A) Unified**: claims/gestures/supersessions live in the scope's `.wb-truth/` store (profile `cothink-doc`), `.wb-cothink/` keeps only CRDT runtime state referencing claim ids | §II.4, co-think phasing consumes this |
+| Q1 co-think sidecar | **(A) Unified**: claims/gestures/supersessions live in the Folder's `.wbuddy/cowork/` store (profile `cothink-doc`), `.wb-cothink/` keeps only CRDT runtime state referencing claim ids | §II.4, co-think phasing consumes this |
 | Q2 electricrag scope | **(A) New canonizations only**, opportunistic per-topic migration when a file is next touched | K2 row |
 | Q3 naming | **`truth` ratified**, and the question expanded into the consumer-surface design: CLI-first invocation, `wbuddy project init` onboarding, canon files remain materialized projections in natural locations, no wb MCP in consumer repos | §II.4b (new) |
 | Q4 rejected-content | **Reason-classed** per Kaden's distinction: reject-as-false mints a confirmed negative claim (refutes link), reject-as-preference offers a preference claim, plain reject redacts per policy | §II.5 rejection block |

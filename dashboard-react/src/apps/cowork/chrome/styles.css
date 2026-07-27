@@ -1,8 +1,6 @@
 /*
  * Co-work view chrome. The App-owned header Dashboard Core renders above the view toolbar,
- * mirroring the Journal chrome primitives. Theme Contract v1 semantic tokens only. The
- * provider badge carries a redundant text label alongside its data attribute, so the live
- * and local states survive forced-colors (SP-6 G3) without relying on colour.
+ * mirroring the Journal chrome primitives. Theme Contract v1 semantic tokens only.
  */
 @layer wb.components {
   .cowork-view-chrome {
@@ -66,42 +64,10 @@
     line-height: var(--wb-line-height-tight);
   }
 
-  .cowork-view-chrome__primary-job {
-    margin-top: var(--wb-space-2);
-    color: var(--wb-color-text-secondary);
-    font-size: var(--wb-font-size-sm);
-    font-weight: var(--wb-font-weight-medium);
-  }
-
   .cowork-view-chrome__actions {
     flex: 0 0 auto;
     justify-content: flex-end;
     gap: var(--wb-space-4);
-  }
-
-  .cowork-view-chrome__provider {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--wb-space-2);
-    padding: var(--wb-space-1) var(--wb-space-3);
-    border: 1px solid var(--wb-color-border-default);
-    border-radius: var(--wb-radius-pill);
-    background: var(--wb-color-surface-raised);
-    color: var(--wb-color-text-secondary);
-    font-size: var(--wb-font-size-sm);
-    font-weight: var(--wb-font-weight-medium);
-  }
-
-  .cowork-view-chrome__provider svg {
-    width: var(--wb-icon-size-sm);
-    height: var(--wb-icon-size-sm);
-    flex: 0 0 auto;
-  }
-
-  .cowork-view-chrome__provider[data-state="live"] {
-    border-color: var(--wb-color-status-success);
-    background: var(--wb-color-status-success-surface);
-    color: var(--wb-color-status-success);
   }
 
   @media (max-width: 47.99rem) {
@@ -119,15 +85,6 @@
     }
     .cowork-view-chrome__actions {
       margin-left: auto;
-    }
-  }
-
-  @media (forced-colors: active) {
-    .cowork-view-chrome__provider {
-      border: 1px solid CanvasText;
-    }
-    .cowork-view-chrome__provider[data-state="live"] {
-      border-color: Highlight;
     }
   }
 }

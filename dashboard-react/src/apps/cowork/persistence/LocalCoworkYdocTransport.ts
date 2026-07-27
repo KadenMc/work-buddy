@@ -20,8 +20,8 @@
  * operation on the same instance.
  */
 
-import { frameSegments } from "./framing";
 import { sha256Hex } from "./hashing";
+import { structuredHeadSha256 } from "./structuredHead";
 import type {
   CoworkYdocPull,
   CoworkYdocPullRequest,
@@ -55,6 +55,7 @@ export interface PersistedCoworkYdocState {
 export interface CoworkYdocBackingStore {
   read(key: string): Promise<PersistedCoworkYdocState | undefined>;
   write(key: string, state: PersistedCoworkYdocState): Promise<void>;
+  delete(key: string): Promise<void>;
 }
 
 /** Produces the backing store one transport instance uses. Injectable for tests. */
@@ -99,6 +100,10 @@ export class InMemoryCoworkYdocBackingStore implements CoworkYdocBackingStore {
 
   async write(key: string, state: PersistedCoworkYdocState): Promise<void> {
     this.#records.set(key, cloneState(state));
+  }
+
+  async delete(key: string): Promise<void> {
+    this.#records.delete(key);
   }
 }
 
@@ -166,6 +171,13 @@ export class IndexedDbCoworkYdocBackingStore implements CoworkYdocBackingStore {
     await transactionDone(transaction);
   }
 
+  async delete(key: string): Promise<void> {
+    const database = await this.#open();
+    const transaction = database.transaction(STORE_NAME, "readwrite");
+    await requestResult(transaction.objectStore(STORE_NAME).delete(key));
+    await transactionDone(transaction);
+  }
+
   #open(): Promise<IDBDatabase> {
     if (this.#database !== undefined) return this.#database;
     this.#database = new Promise((resolve, reject) => {
@@ -183,19 +195,24 @@ export class IndexedDbCoworkYdocBackingStore implements CoworkYdocBackingStore {
   }
 }
 
-/** IndexedDB when the runtime provides it, else the process-memory fallback. */
+const fallbackBackingStore = new InMemoryCoworkYdocBackingStore();
+
+/** IndexedDB when the runtime provides it, else a shared process-memory fallback. */
 const defaultBackingStore = (): CoworkYdocBackingStore =>
   typeof indexedDB === "undefined"
-    ? new InMemoryCoworkYdocBackingStore()
+    ? fallbackBackingStore
     : new IndexedDbCoworkYdocBackingStore();
 
 export class LocalCoworkYdocTransport implements CoworkYdocTransport {
   readonly #key: string;
+  readonly #ydocGeneration: string;
   readonly #backing: CoworkYdocBackingStore;
   #chain: Promise<unknown> = Promise.resolve();
 
   constructor(options: LocalCoworkYdocTransportOptions) {
     this.#key = `${STORAGE_KEY_PREFIX}${options.documentId}`;
+    this.#ydocGeneration =
+      `cowork-ydoc-generation/v1:local:${options.documentId}`;
     this.#backing = (options.factory ?? defaultBackingStore)();
   }
 
@@ -205,6 +222,11 @@ export class LocalCoworkYdocTransport implements CoworkYdocTransport {
 
   push(request: CoworkYdocPushRequest): Promise<CoworkYdocPushResult> {
     return this.#enqueue(() => this.#push(request));
+  }
+
+  /** Permanently remove this local document after its editor has been quiesced. */
+  delete(): Promise<void> {
+    return this.#enqueue(() => this.#backing.delete(this.#key));
   }
 
   /**
@@ -228,7 +250,7 @@ export class LocalCoworkYdocTransport implements CoworkYdocTransport {
   }
 
   async #fingerprint(state: PersistedCoworkYdocState): Promise<string> {
-    return sha256Hex(frameSegments([state.snapshot ?? EMPTY, ...state.log]));
+    return structuredHeadSha256(state.snapshot ?? EMPTY, state.log);
   }
 
   async #pull(request: CoworkYdocPullRequest): Promise<CoworkYdocPull> {
@@ -242,8 +264,11 @@ export class LocalCoworkYdocTransport implements CoworkYdocTransport {
       return {
         snapshot: cloneBytes(state.snapshot),
         snapshotSha256: state.snapshotSha256,
+        ydocGeneration: this.#ydocGeneration,
         batches: fullBatches(),
         docSha256,
+        structuredHeadSha256: docSha256,
+        projectionSha256: "",
         nextOffset,
       };
     }
@@ -254,8 +279,12 @@ export class LocalCoworkYdocTransport implements CoworkYdocTransport {
       return {
         snapshot: cloneBytes(state.snapshot),
         snapshotSha256: state.snapshotSha256,
+        ydocGeneration: this.#ydocGeneration,
         batches: fullBatches(),
         docSha256,
+        structuredHeadSha256: docSha256,
+        projectionSha256: "",
+        cursorReset: true,
         nextOffset,
       };
     }
@@ -263,8 +292,11 @@ export class LocalCoworkYdocTransport implements CoworkYdocTransport {
     return {
       snapshot: null,
       snapshotSha256: null,
+      ydocGeneration: this.#ydocGeneration,
       batches: state.log.slice(start).map((batch) => new Uint8Array(batch)),
       docSha256,
+      structuredHeadSha256: docSha256,
+      projectionSha256: "",
       nextOffset,
     };
   }
@@ -272,8 +304,18 @@ export class LocalCoworkYdocTransport implements CoworkYdocTransport {
   async #push(request: CoworkYdocPushRequest): Promise<CoworkYdocPushResult> {
     const state = await this.#load();
     const docSha256 = await this.#fingerprint(state);
-    if (request.baseSha256 !== docSha256) {
-      return { ok: false, error: "stale_base", serverDocSha256: docSha256 };
+    const base = request.baseStructuredHeadSha256 ?? request.baseSha256;
+    if (
+      request.baseYdocGeneration !== this.#ydocGeneration ||
+      base !== docSha256
+    ) {
+      return {
+        ok: false,
+        error: "stale_base",
+        serverDocSha256: docSha256,
+        serverStructuredHeadSha256: docSha256,
+        serverYdocGeneration: this.#ydocGeneration,
+      };
     }
 
     if (request.compaction !== undefined) {
@@ -312,6 +354,9 @@ export class LocalCoworkYdocTransport implements CoworkYdocTransport {
       ok: true,
       applied: true,
       docSha256: nextDocSha256,
+      structuredHeadSha256: nextDocSha256,
+      ydocGeneration: this.#ydocGeneration,
+      projectionSha256: "",
       nextOffset: String(nextState.baseOffset + nextState.log.length),
     };
   }

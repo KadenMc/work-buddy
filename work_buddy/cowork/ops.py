@@ -30,7 +30,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from work_buddy.mcp_server.op_registry import register_op
-from work_buddy.truth import documents, expressions, proposals
+from work_buddy.truth import documents, expressions, proposals, ydoc_store
 from work_buddy.truth.anchors import CompositeSelector, parse_selector
 from work_buddy.truth.contracts import InvariantViolation
 from work_buddy.truth.events import emit_truth_event
@@ -161,7 +161,12 @@ def _claim_refs_view(claim_refs_json: str | None) -> list[dict[str, str]]:
 
 
 def _current_file_sha256(store: TruthStore, path: str) -> str | None:
-    target = store.paths.root / path
+    from work_buddy.cowork.paths import CoworkPathError, resolve_markdown_path
+
+    try:
+        target = resolve_markdown_path(store, path).path
+    except CoworkPathError:
+        return None
     if not target.is_file():
         return None
     return sha256_bytes(target.read_bytes())
@@ -170,7 +175,9 @@ def _current_file_sha256(store: TruthStore, path: str) -> str | None:
 def _proposal_view(
     proposal: Any,
     document: Any,
+    store: TruthStore,
 ) -> dict[str, Any]:
+    live_structured_head = _structured_head_for_document(store, document)
     return {
         "proposal_id": proposal.id,
         "kind": "edit" if proposal.replacement is not None else "flag",
@@ -181,11 +188,29 @@ def _proposal_view(
         "tldr": proposal.tldr,
         "producer": _producer_view(proposal.meta_json),
         "base_doc_sha256": proposal.base_content_sha256,
+        "base_structured_head_sha256": proposal.base_structured_head_sha256,
         "canonical_sha256": proposal.canonical_sha256,
-        "base_ok": proposal.base_content_sha256 == document.content_sha256,
+        "base_ok": (
+            proposal.base_content_sha256 == document.content_sha256
+            and (
+                proposal.base_structured_head_sha256 is None
+                or proposal.base_structured_head_sha256 == live_structured_head
+            )
+        ),
         "claim_refs": _claim_refs_view(proposal.claim_refs_json),
         "created_at": proposal.created_at,
     }
+
+
+def _structured_head_for_document(store: TruthStore, document: Any) -> str | None:
+    snapshot = document.ydoc_snapshot_sha256
+    if snapshot is None:
+        return None
+    return ydoc_store.current_structured_head(
+        store,
+        document_id=document.id,
+        snapshot_sha256=snapshot,
+    )
 
 
 def _expression_view(
@@ -293,7 +318,7 @@ def cowork_doc_get(store_id: str, document_id: str) -> dict[str, Any]:
         open_props = proposals.open_proposals(
             store, document_id=document.id, conn=conn
         )
-        open_payload = [_proposal_view(item, document) for item in open_props]
+        open_payload = [_proposal_view(item, document, store) for item in open_props]
         expr_payload = [
             _expression_view(expression, conn, store)
             for expression in expressions.expressions_for_document(
@@ -361,6 +386,7 @@ def cowork_doc_propose_edit(
     _require_document_surface(store)
     document = documents.get_document(store, document_id)
     base = document.content_sha256 if base_doc_sha256 is None else base_doc_sha256
+    structured_base = _structured_head_for_document(store, document)
     all_records: list[Any] = []
     created_records: list[Any] = []
     for hunk in hunk_list:
@@ -375,6 +401,7 @@ def cowork_doc_propose_edit(
             store,
             document_id=document.id,
             base_content_sha256=base,
+            base_structured_head_sha256=structured_base,
             selector=selector,
             quote_exact=quote,
             replacement=replacement,
@@ -438,11 +465,13 @@ def cowork_doc_comment(
     _require_document_surface(store)
     document = documents.get_document(store, document_id)
     base = document.content_sha256 if base_doc_sha256 is None else base_doc_sha256
+    structured_base = _structured_head_for_document(store, document)
     proposal_id = new_id()
     record = proposals.propose_edit(
         store,
         document_id=document.id,
         base_content_sha256=base,
+        base_structured_head_sha256=structured_base,
         selector=selector,
         quote_exact=quote,
         replacement=None,

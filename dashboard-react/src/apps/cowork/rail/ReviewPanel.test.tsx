@@ -64,16 +64,16 @@ describe("ReviewPanel", () => {
     // Select the first suggestion, then accept it.
     await userEvent.click(screen.getByText(S1_TLDR));
     await userEvent.click(screen.getByRole("button", { name: "Accept" }));
-    expect(screen.getByText("Staged: Accept")).toBeVisible();
+    expect(screen.getByText("Selected: Accept")).toBeVisible();
 
-    const submit = screen.getByRole("button", { name: /Submit sitting/ });
-    expect(submit).toHaveTextContent("Submit sitting (1)");
+    const submit = screen.getByRole("button", { name: /Apply decisions/ });
+    expect(submit).toHaveTextContent("Apply decisions (1)");
     await userEvent.click(submit);
 
     // The accepted proposal leaves the open set and the sitting clears.
     await waitFor(() => expect(screen.queryByText(S1_TLDR)).toBeNull());
     expect(
-      screen.getByRole("button", { name: /Submit sitting/ }),
+      screen.getByRole("button", { name: /Apply decisions/ }),
     ).toBeDisabled();
   });
 

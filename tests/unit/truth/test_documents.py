@@ -165,7 +165,7 @@ def test_reimport_records_change_and_advances(document_store, register_document)
     assert kinds[-1] == "reimported"
 
 
-def test_advance_snapshot_prunes_prior_blob(document_store, register_document):
+def test_advance_snapshot_retains_prior_blob_for_history(document_store, register_document):
     store, _ = document_store
     from work_buddy.truth import ydoc_store
 
@@ -181,8 +181,9 @@ def test_advance_snapshot_prunes_prior_blob(document_store, register_document):
         at=LATER,
     )
     assert documents.get_document(store, document_id).ydoc_snapshot_sha256 == new_snapshot
-    # The now-unreferenced prior snapshot blob is pruned.
-    assert not prior_path.exists()
+    # Co-work v3 keeps historical snapshot bytes; pruning must consider the
+    # append-only version/history migration rather than current pointers alone.
+    assert prior_path.exists()
 
 
 def test_append_only_triggers_reject_mutation(document_store, register_document):

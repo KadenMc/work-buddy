@@ -1,41 +1,61 @@
-import { CoworkViewChrome, type CoworkProviderState } from "./chrome/CoworkViewChrome";
+import { CoworkViewChrome } from "./chrome/CoworkViewChrome";
 import type {
   StandardViewRuntimeConfiguration,
   StandardViewRuntimeContext,
 } from "../../dashboard/contributions/viewModules";
 import { LocalStoragePersonalizationRepository } from "../../dashboard/personalization/repository";
-import { InMemoryCoworkProvider } from "./providers/InMemoryCoworkProvider";
+import {
+  HttpCoworkProvider,
+  type CoworkLocationAdapter,
+} from "./providers/HttpCoworkProvider";
 
 export const hostContractVersion = 1 as const;
 
-/**
- * Co-work contributes the coarse document-session provider, the personalization repository
- * for its standard-grid view, and the App-owned view chrome. Dashboard Core mounts the widget
- * grid, hydrates the composite workspace card from this provider, persists the view's layout
- * through the personalization repository like any other standard view, and renders the chrome
- * above the toolbar. Supplying renderChrome also suppresses the raw provider-label text the
- * toolbar would otherwise show for Co-work.
- */
+type LocationAwareRuntimeContext = StandardViewRuntimeContext & {
+  readonly location?: CoworkLocationAdapter;
+};
+
+/** Temporary compatibility bridge while every standard view adopts UI-01. */
+const browserLocationAdapter = (initialSearch: string): CoworkLocationAdapter => {
+  let search = initialSearch;
+  const listeners = new Set<(next: string) => void>();
+  const publish = (): void => {
+    search = window.location.search;
+    for (const listener of listeners) listener(search);
+  };
+  window.addEventListener("popstate", publish);
+  return {
+    getSearch: () => search,
+    pushSearch: (next) => {
+      window.history.pushState({}, "", `${window.location.pathname}${next}${window.location.hash}`);
+      publish();
+    },
+    replaceSearch: (next) => {
+      window.history.replaceState({}, "", `${window.location.pathname}${next}${window.location.hash}`);
+      publish();
+    },
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+};
+
+/** Production Co-work runtime: HTTP lifecycle provider plus router-owned location. */
 export function createRuntime(
   context: StandardViewRuntimeContext,
 ): StandardViewRuntimeConfiguration {
-  // A store_id on the view URL scopes the session to a live, ledger-backed document. With no
-  // store scope the workspace is the local scratch document the editor persists in the browser.
-  // The chrome badge reflects that honest distinction and never says "demo data" (Ruling 1).
-  const providerState: CoworkProviderState =
-    new URLSearchParams(context.search).get("store_id") !== null ? "live" : "local";
-
+  const aware = context as LocationAwareRuntimeContext;
+  const location = aware.location ?? browserLocationAdapter(context.search);
   return {
-    provider: new InMemoryCoworkProvider(),
-    providerLabel: "Local Co-work document session",
-    personalizationRepository: new LocalStoragePersonalizationRepository(
-      context.storage,
-    ),
+    provider: new HttpCoworkProvider({
+      location,
+      storage: context.storage,
+    }),
+    providerLabel: "Co-work folder and document session",
+    personalizationRepository: new LocalStoragePersonalizationRepository(context.storage),
     renderChrome: (_snapshot, slots) => (
-      <CoworkViewChrome
-        providerState={providerState}
-        hostActions={slots.contextualActions}
-      />
+      <CoworkViewChrome hostActions={slots.contextualActions} />
     ),
   };
 }

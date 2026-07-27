@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 import sqlite3
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import date, datetime, time, timezone
 from enum import Enum
@@ -62,6 +64,14 @@ DEFAULT_INLINE_CONTENT_BYTES = 64 * 1024
 SQLITE_TIMEOUT_SECONDS = 10.0
 SQLITE_BUSY_TIMEOUT_MS = 10_000
 
+_HELD_MIGRATION_STORE_LOCKS: ContextVar[frozenset[str]] = ContextVar(
+    "truth_held_migration_store_locks",
+    default=frozenset(),
+)
+
+
+logger = logging.getLogger(__name__)
+
 EVIDENCE_KINDS = frozenset(
     {"document", "web", "chat", "utterance", "artifact", "import"}
 )
@@ -115,7 +125,10 @@ DOC_EVENT_KINDS = frozenset(
     {
         "registered",
         "imported",
+        "initialized",
+        "repaired",
         "materialized",
+        "snapshot_compacted",
         "drift_detected",
         "reimported",
         "retired",
@@ -124,6 +137,9 @@ DOC_EVENT_KINDS = frozenset(
     }
 )
 DOCUMENT_CLASSES = frozenset({"co_authored", "generated"})
+DOCUMENT_VERSION_KINDS = frozenset(
+    {"initial_import", "repaired", "materialized", "reimported", "snapshot_compacted"}
+)
 EXPRESSION_ROLES = frozenset({"quote", "paraphrase", "summary", "instantiation"})
 LINK_TARGETS: Mapping[str, frozenset[str]] = {
     "supports_span": frozenset({"evidence_span"}),
@@ -316,6 +332,20 @@ class DocumentRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class DocumentVersionRecord:
+    id: str
+    document_id: str
+    kind: str
+    projection_sha256: str
+    ydoc_snapshot_sha256: str
+    structured_head_sha256: str
+    created_at: str
+    actor_kind: str
+    actor_ref: str | None
+    detail: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class DocumentSpanRecord:
     id: str
     document_id: str
@@ -349,6 +379,7 @@ class ProposalRecord:
     id: str
     document_id: str
     base_content_sha256: str
+    base_structured_head_sha256: str | None
     selector_json: str
     quote_exact: str | None
     span_sha256: str
@@ -689,6 +720,11 @@ class TruthStore:
         # future-version store that this engine must refuse.
         paths.blobs.mkdir(parents=True, exist_ok=True)
         paths.export_dir.mkdir(parents=True, exist_ok=True)
+        # Runtime state is part of the canonical Co-work component layout even
+        # before the first bootstrap, Y.Doc update, or lock file is created.
+        # Creating the empty directory during explicit store setup keeps layout
+        # inspection deterministic; its contents remain ephemeral/export-free.
+        paths.runtime.mkdir(parents=True, exist_ok=True)
         if changed:
             store._run_on_commit()
         return cls.open(
@@ -833,25 +869,33 @@ class TruthStore:
             conn.close()
 
     @contextmanager
-    def write_transaction(
-        self,
-        conn: sqlite3.Connection | None = None,
-    ) -> Iterator[sqlite3.Connection]:
-        """Own one write transaction, or compose inside a supplied one.
+    def migration_write_lock(self, *, timeout: float = 30.0) -> Iterator[None]:
+        """Hold the external lock shared with project-store migration.
 
-        Only the store-owned outer context can run post-commit export and
-        observer actions. A supplied connection leaves commit ownership, and
-        any required post-commit work, with its caller.
+        The ContextVar makes nested engine transactions re-entrant in one
+        request while the underlying cross-process lock remains exclusive.
         """
-        if conn is not None:
-            self._validate_connection_target(conn)
-            if not conn.in_transaction:
-                raise InvariantViolation(
-                    "a supplied connection must already own a transaction"
-                )
-            yield conn
-            return
 
+        key = f"{self.paths.root.resolve()}::{self.store_id}"
+        held = _HELD_MIGRATION_STORE_LOCKS.get()
+        if key in held:
+            yield
+            return
+        from work_buddy.truth.locks import migration_store_lock
+
+        with migration_store_lock(
+            self.paths.root,
+            self.store_id,
+            timeout=timeout,
+        ):
+            token = _HELD_MIGRATION_STORE_LOCKS.set(held | {key})
+            try:
+                yield
+            finally:
+                _HELD_MIGRATION_STORE_LOCKS.reset(token)
+
+    @contextmanager
+    def _owned_write_transaction(self) -> Iterator[sqlite3.Connection]:
         owned = self._open_connection()
         committed = False
         created_redaction_recovery = False
@@ -875,6 +919,30 @@ class TruthStore:
             owned.close()
         if committed:
             self._run_on_commit(required=not created_redaction_recovery)
+
+    @contextmanager
+    def write_transaction(
+        self,
+        conn: sqlite3.Connection | None = None,
+    ) -> Iterator[sqlite3.Connection]:
+        """Own one externally locked write, or compose in a caller transaction.
+
+        Only the store-owned outer context can run post-commit export and
+        observer actions. A supplied connection leaves commit ownership, and
+        the external migration lock, with its caller.
+        """
+        if conn is not None:
+            self._validate_connection_target(conn)
+            if not conn.in_transaction:
+                raise InvariantViolation(
+                    "a supplied connection must already own a transaction"
+                )
+            yield conn
+            return
+
+        with self.migration_write_lock():
+            with self._owned_write_transaction() as owned:
+                yield owned
 
     _write_transaction = write_transaction
 
@@ -927,7 +995,9 @@ class TruthStore:
             self._publish_recovery_export()
             self._clear_redaction_recovery_paths(redaction_recoveries)
             return
-        self._publish_recovery_export()
+        self._publish_recovery_export(
+            allow_uncompacted_defer=not redaction_recoveries
+        )
         try:
             if self._on_commit is not None:
                 self._on_commit(self)
@@ -943,13 +1013,20 @@ class TruthStore:
                 "marker could not be cleared"
             ) from exc
 
-    def _publish_recovery_export(self) -> None:
+    def _publish_recovery_export(
+        self,
+        *,
+        allow_uncompacted_defer: bool = False,
+    ) -> None:
         """Publish the configured recovery export with privacy-safe failure."""
+
+        from work_buddy.truth.export import (
+            UncompactedDocumentError,
+            export_store,
+        )
 
         try:
             if self.profile.export_committed:
-                from work_buddy.truth.export import export_store
-
                 export_store(self)
         except Exception as exc:
             # The old export describes pre-commit state and can retain content
@@ -963,6 +1040,18 @@ class TruthStore:
                     "truth ledger commit succeeded but the required recovery "
                     "export failed and its stale predecessor could not be removed"
                 ) from cleanup_exc
+            if (
+                allow_uncompacted_defer
+                and isinstance(exc, UncompactedDocumentError)
+            ):
+                # A live Y.Doc update tail is authoritative but cannot yet be
+                # represented losslessly by the recovery export. Ordinary
+                # unrelated commits must still succeed: remove the now-stale
+                # projection and let the next compaction-backed commit rebuild
+                # it. Redaction commits never opt into this deferral, so their
+                # privacy-critical export failure remains visible.
+                logger.info("deferring Truth recovery export: %s", exc)
+                return
             raise PostCommitHookError(
                 "truth ledger commit succeeded but the post-commit hook failed; "
                 "the stale recovery export was removed"
@@ -1473,12 +1562,10 @@ class TruthStore:
         cleanup = self._open_connection()
         try:
             cleanup.execute("BEGIN IMMEDIATE")
-            count = cleanup.execute(
-                "SELECT COUNT(*) FROM evidence WHERE content_sha256 = ? "
-                "AND content_path IS NOT NULL",
-                (digest,),
-            ).fetchone()[0]
-            if int(count) == 0:
+            count = self.blob_reference_count(
+                digest, live_only=False, conn=cleanup
+            )
+            if count == 0:
                 self.resolve_blob_path(f"blobs/{digest}").unlink(missing_ok=True)
             cleanup.execute("COMMIT")
         except Exception:
@@ -1648,12 +1735,10 @@ class TruthStore:
             if not intent.is_file():
                 cleanup.execute("COMMIT")
                 return False
-            count = cleanup.execute(
-                "SELECT COUNT(*) FROM evidence WHERE content_sha256 = ? "
-                "AND content_path IS NOT NULL",
-                (normalized,),
-            ).fetchone()[0]
-            if int(count) == 0:
+            count = self.blob_reference_count(
+                normalized, live_only=False, conn=cleanup
+            )
+            if count == 0:
                 blob = self.resolve_blob_path(f"blobs/{normalized}")
                 existed = blob.exists()
                 blob.unlink(missing_ok=True)
@@ -1783,18 +1868,26 @@ class TruthStore:
         live_only: bool = True,
         conn: sqlite3.Connection | None = None,
     ) -> int:
-        """Count evidence rows that still reference one content blob."""
+        """Count every evidence/document/version reference to a content blob."""
         normalized = _valid_digest(digest, "content_sha256")
-        sql = (
+        evidence_sql = (
             "SELECT COUNT(*) FROM evidence WHERE content_sha256 = ? "
             "AND content_path IS NOT NULL"
         )
         if live_only:
-            sql += " AND redacted_at IS NULL"
+            evidence_sql += " AND redacted_at IS NULL"
+        sql = (
+            f"SELECT ({evidence_sql}) + "
+            "(SELECT COUNT(*) FROM documents WHERE content_sha256 = ? "
+            "OR ydoc_snapshot_sha256 = ?) + "
+            "(SELECT COUNT(*) FROM document_versions WHERE projection_sha256 = ? "
+            "OR ydoc_snapshot_sha256 = ?)"
+        )
+        params = (normalized,) * 5
         if conn is not None:
-            return int(conn.execute(sql, (normalized,)).fetchone()[0])
+            return int(conn.execute(sql, params).fetchone()[0])
         with self._read_connection() as read_conn:
-            return int(read_conn.execute(sql, (normalized,)).fetchone()[0])
+            return int(read_conn.execute(sql, params).fetchone()[0])
 
     def capture_evidence(
         self,
@@ -2518,6 +2611,52 @@ class TruthStore:
             ).fetchone(),
         )
 
+    def _insert_document_version_locked(
+        self,
+        conn: sqlite3.Connection,
+        record: DocumentVersionRecord,
+    ) -> DocumentVersionRecord:
+        self._require_transaction(conn)
+        if record.kind not in DOCUMENT_VERSION_KINDS:
+            raise InvariantViolation(
+                "document version kind must be one of "
+                f"{sorted(DOCUMENT_VERSION_KINDS)}"
+            )
+        conn.execute(
+            "INSERT INTO document_versions "
+            "(id, document_id, kind, projection_sha256, ydoc_snapshot_sha256, "
+            "structured_head_sha256, created_at, actor_kind, actor_ref, detail) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                record.id,
+                record.document_id,
+                record.kind,
+                record.projection_sha256,
+                record.ydoc_snapshot_sha256,
+                record.structured_head_sha256,
+                record.created_at,
+                record.actor_kind,
+                record.actor_ref,
+                record.detail,
+            ),
+        )
+        self._insert_ledger_record_locked(conn, "document_version", record.id)
+        return record
+
+    def _document_versions_locked(
+        self,
+        conn: sqlite3.Connection,
+        document_id: str,
+    ) -> tuple[DocumentVersionRecord, ...]:
+        return tuple(
+            DocumentVersionRecord(**dict(row))
+            for row in conn.execute(
+                "SELECT * FROM document_versions WHERE document_id = ? "
+                "ORDER BY created_at, rowid",
+                (document_id,),
+            )
+        )
+
     def _advance_document_pointers_locked(
         self,
         conn: sqlite3.Connection,
@@ -2644,15 +2783,17 @@ class TruthStore:
         self._require_transaction(conn)
         conn.execute(
             "INSERT INTO proposals "
-            "(id, document_id, base_content_sha256, selector_json, quote_exact, "
-            "span_sha256, replacement, rationale, tldr, claim_refs_json, "
+            "(id, document_id, base_content_sha256, base_structured_head_sha256, "
+            "selector_json, quote_exact, span_sha256, replacement, rationale, "
+            "tldr, claim_refs_json, "
             "canonical_sha256, dedup_key, expires_at, created_at, "
             "created_by_kind, created_by_ref, meta_json, redacted_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 record.id,
                 record.document_id,
                 record.base_content_sha256,
+                record.base_structured_head_sha256,
                 record.selector_json,
                 record.quote_exact,
                 record.span_sha256,

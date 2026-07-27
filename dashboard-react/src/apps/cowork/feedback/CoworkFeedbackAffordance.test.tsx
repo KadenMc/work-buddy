@@ -128,7 +128,10 @@ describe("CoworkFeedbackAffordance", () => {
     selectQuote(ed, "precise");
     const trigger = await screen.findByRole("button", { name: "Give feedback" });
     expect(trigger).toBeDisabled();
-    expect(trigger).toHaveAttribute("title", expect.stringMatching(/live scope/i));
+    expect(trigger).toHaveAttribute(
+      "title",
+      expect.stringMatching(/document saved in a folder/i),
+    );
 
     await userEvent.click(trigger);
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();

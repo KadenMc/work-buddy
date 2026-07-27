@@ -52,8 +52,9 @@ from work_buddy.truth.store import TruthStore
 
 
 FORMAT_NAME = "work-buddy.truth-ledger"
-FORMAT_VERSION = 3
+FORMAT_VERSION = 4
 OLDEST_FORMAT_VERSION = 1
+_IMPORT_STAGING_PREFIX = ".wbuddy-cowork-import-"
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _RECORD_ID_RE = re.compile(r"^[0-9a-f]{32}$")
@@ -61,6 +62,16 @@ _RECORD_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
 class TruthExportError(InvariantViolation):
     """A live store cannot be represented losslessly."""
+
+
+class UncompactedDocumentError(TruthExportError):
+    """A structured update tail must be compacted before explicit export."""
+
+    def __init__(self, document_id: str) -> None:
+        self.document_id = document_id
+        super().__init__(
+            f"uncompacted_document:{document_id}: compact the Y.Doc before export"
+        )
 
 
 class TruthImportError(InvariantViolation):
@@ -287,6 +298,21 @@ _RECORD_COLUMNS: Mapping[str, tuple[str, tuple[str, ...]]] = {
             "meta_json",
         ),
     ),
+    "document_version": (
+        "document_versions",
+        (
+            "id",
+            "document_id",
+            "kind",
+            "projection_sha256",
+            "ydoc_snapshot_sha256",
+            "structured_head_sha256",
+            "created_at",
+            "actor_kind",
+            "actor_ref",
+            "detail",
+        ),
+    ),
     "document_span": (
         "document_spans",
         (
@@ -324,6 +350,7 @@ _RECORD_COLUMNS: Mapping[str, tuple[str, tuple[str, ...]]] = {
             "id",
             "document_id",
             "base_content_sha256",
+            "base_structured_head_sha256",
             "selector_json",
             "quote_exact",
             "span_sha256",
@@ -386,6 +413,7 @@ _ID_KEY_TYPES = frozenset(
         "sweep",
         "sweep_finding",
         "document",
+        "document_version",
         "document_span",
         "expression",
         "proposal",
@@ -398,7 +426,10 @@ _DOC_EVENT_KINDS = frozenset(
     {
         "registered",
         "imported",
+        "initialized",
+        "repaired",
         "materialized",
+        "snapshot_compacted",
         "drift_detected",
         "reimported",
         "retired",
@@ -777,6 +808,29 @@ def _validate_record_values(item: _DataRecord) -> None:
         _timestamp(row["created_at"], "document.created_at")
         return
 
+    if record_type == "document_version":
+        if row["kind"] not in {
+            "initial_import",
+            "repaired",
+            "materialized",
+            "reimported",
+            "snapshot_compacted",
+        }:
+            raise TruthImportError("document version kind is invalid")
+        _digest(row["projection_sha256"], "document_version.projection_sha256")
+        _digest(
+            row["ydoc_snapshot_sha256"],
+            "document_version.ydoc_snapshot_sha256",
+        )
+        _digest(
+            row["structured_head_sha256"],
+            "document_version.structured_head_sha256",
+        )
+        if row["actor_kind"] not in VALID_ACTOR_KINDS:
+            raise TruthImportError("document version actor kind is invalid")
+        _timestamp(row["created_at"], "document_version.created_at")
+        return
+
     if record_type == "expression":
         if row["role"] not in _EXPRESSION_ROLES:
             raise TruthImportError("expression role is invalid")
@@ -801,6 +855,11 @@ def _validate_record_values(item: _DataRecord) -> None:
         _digest(row["canonical_sha256"], "proposal.canonical_sha256")
         _digest(row["dedup_key"], "proposal.dedup_key")
         _digest(row["base_content_sha256"], "proposal.base_content_sha256")
+        if row["base_structured_head_sha256"] is not None:
+            _digest(
+                row["base_structured_head_sha256"],
+                "proposal.base_structured_head_sha256",
+            )
         _digest(row["span_sha256"], "proposal.span_sha256")
         claim_refs = _json_value(row["claim_refs_json"], "proposal.claim_refs_json")
         if claim_refs is not None:
@@ -929,6 +988,10 @@ def _validate_foreign_refs(records: tuple[_DataRecord, ...]) -> None:
             require_prior(
                 "document", row["document_id"], item.seq, "document_span.document_id"
             )
+        elif item.record_type == "document_version":
+            require_prior(
+                "document", row["document_id"], item.seq, "document_version.document_id"
+            )
         elif item.record_type == "expression":
             require_prior(
                 "document_span",
@@ -998,6 +1061,9 @@ def _validate_bundle(bundle: _Bundle) -> StoreProfile:
         elif item.record_type == "document":
             if row["ydoc_snapshot_sha256"] is not None:
                 referenced_blobs.add(row["ydoc_snapshot_sha256"])
+        elif item.record_type == "document_version":
+            referenced_blobs.add(row["projection_sha256"])
+            referenced_blobs.add(row["ydoc_snapshot_sha256"])
     if referenced_blobs != set(blob_map):
         missing = sorted(referenced_blobs - set(blob_map))
         extra = sorted(set(blob_map) - referenced_blobs)
@@ -1091,6 +1157,13 @@ def _collect_export_bundle(
     try:
         if owns_transaction:
             export_conn.execute("BEGIN IMMEDIATE")
+        from work_buddy.truth import ydoc_store
+
+        for row in export_conn.execute(
+            "SELECT id FROM documents WHERE ydoc_snapshot_sha256 IS NOT NULL"
+        ):
+            if ydoc_store.update_tail_present(store, document_id=str(row["id"])):
+                raise UncompactedDocumentError(str(row["id"]))
         info_rows = export_conn.execute("SELECT * FROM store_info").fetchall()
         if len(info_rows) != 1:
             raise TruthExportError("store_info must contain exactly one row")
@@ -1164,6 +1237,21 @@ def _collect_export_bundle(
                         "live ydoc snapshot blob does not match ydoc_snapshot_sha256"
                     )
                 blobs[digest] = content
+            elif item.record_type == "document_version":
+                for field in ("projection_sha256", "ydoc_snapshot_sha256"):
+                    digest = str(item.record[field])
+                    path = store.resolve_blob_path("blobs/" + digest)
+                    try:
+                        content = path.read_bytes()
+                    except OSError as exc:
+                        raise TruthExportError(
+                            f"document version blob is unavailable: {path}"
+                        ) from exc
+                    if sha256_bytes(content) != digest:
+                        raise TruthExportError(
+                            f"document version blob does not match {field}"
+                        )
+                    blobs[digest] = content
         if owns_transaction:
             export_conn.execute("COMMIT")
     except Exception:
@@ -1244,19 +1332,25 @@ def export_store(
     # publication completes. Without this, an older post-commit hook can
     # collect seq N, pause, and overwrite a newer seq N+K export after the
     # newer writer has published it.
-    conn = store.connect()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        bundle = _collect_export_bundle(store, conn=conn)
-        payload = _serialize_bundle(bundle)
-        atomic_write_bytes(path, payload)
-        conn.execute("COMMIT")
-    except Exception:
-        if conn.in_transaction:
-            conn.execute("ROLLBACK")
-        raise
-    finally:
-        conn.close()
+    # The migration-store lock also serializes filesystem-only Y.Doc appends.
+    # Without it an export could observe no tail, pause, and publish after an
+    # append invalidated the artifact. Holding it through atomic publication
+    # makes the final ordering safe: export then append+unlink, or append then
+    # explicit export rejects the uncompacted tail.
+    with store.migration_write_lock():
+        conn = store.connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            bundle = _collect_export_bundle(store, conn=conn)
+            payload = _serialize_bundle(bundle)
+            atomic_write_bytes(path, payload)
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
     return ExportResult(
         path=path,
         sha256=sha256_bytes(payload),
@@ -1346,6 +1440,28 @@ def _parse_header(objects: list[dict[str, Any]]) -> int:
     return version
 
 
+def _upcast_records(
+    records: list[_DataRecord],
+    source_version: int,
+) -> list[_DataRecord]:
+    if source_version >= 4:
+        return records
+    upgraded: list[_DataRecord] = []
+    for item in records:
+        row = dict(item.record)
+        if item.record_type == "proposal":
+            row.setdefault("base_structured_head_sha256", None)
+        upgraded.append(
+            _DataRecord(
+                seq=item.seq,
+                record_type=item.record_type,
+                record_key=item.record_key,
+                record=row,
+            )
+        )
+    return upgraded
+
+
 def _parse_v1(objects: list[dict[str, Any]]) -> _Bundle:
     header = objects[0]
     footer = objects[-1]
@@ -1376,15 +1492,15 @@ def _parse_v1(objects: list[dict[str, Any]]) -> _Bundle:
         source_format_version=1,
         store_info=_require_mapping(header["store_info"], "store_info"),
         profile=_require_mapping(header["profile"], "profile"),
-        records=tuple(records),
+        records=tuple(_upcast_records(records, 1)),
         blobs=(),
     )
     _validate_bundle(bundle)
     return bundle
 
 
-def _parse_v2_or_v3(objects: list[dict[str, Any]], version: int) -> _Bundle:
-    # v3 framing is byte-identical to v2 (header line, per-record lines ordered
+def _parse_v2_plus(objects: list[dict[str, Any]], version: int) -> _Bundle:
+    # v4 framing is byte-identical to v2/v3 (header line, per-record lines ordered
     # by seq, blob section sorted by digest, hashed end footer). Only the record
     # registries grow, so one parser serves both. The stream is tagged with its
     # source format_version so an import reports the format it upcast from.
@@ -1462,7 +1578,7 @@ def _parse_v2_or_v3(objects: list[dict[str, Any]], version: int) -> _Bundle:
         source_format_version=version,
         store_info=_require_mapping(header["store_info"], "store_info"),
         profile=_require_mapping(header["profile"], "profile"),
-        records=tuple(records),
+        records=tuple(_upcast_records(records, version)),
         blobs=tuple(blobs),
     )
     _validate_bundle(bundle)
@@ -1475,7 +1591,7 @@ def _parse_bundle(source: str | Path | bytes | bytearray | memoryview) -> _Bundl
     bundle = (
         _parse_v1(objects)
         if version == 1
-        else _parse_v2_or_v3(objects, version)
+        else _parse_v2_plus(objects, version)
     )
     source_schema = int(bundle.store_info["schema_version"])
     if source_schema == SCHEMA_VERSION:
@@ -1503,6 +1619,31 @@ def _preflight_target(
 ) -> bool:
     if not paths.root.is_dir():
         raise TruthImportError("import target scope root must already exist")
+    from work_buddy.cowork.project_store import (
+        FolderLifecycleError,
+        _assert_managed_layout_safe,
+    )
+
+    try:
+        _assert_managed_layout_safe(paths.root)
+    except FolderLifecycleError as exc:
+        raise TruthImportError(
+            "the import Folder contains redirected or unsupported Work Buddy data"
+        ) from exc
+    if paths.sidecar.parent.exists() and not paths.sidecar.parent.is_dir():
+        raise TruthImportError(".wbuddy must be a directory")
+    if paths.sidecar.parent.exists():
+        from work_buddy.cowork.project_store import (
+            FolderLifecycleError,
+            read_manifest,
+        )
+
+        try:
+            read_manifest(paths.root)
+        except FolderLifecycleError as exc:
+            raise TruthImportError(
+                "the import Folder has an invalid .wbuddy/manifest.yaml"
+            ) from exc
     existed_empty = False
     if paths.sidecar.exists():
         if not paths.sidecar.is_dir():
@@ -1623,6 +1764,13 @@ def _build_staged_store(
     if result.path.read_bytes() != expected:
         raise TruthImportError("staged store does not reproduce the validated export")
     TruthStore.open(paths.sidecar)
+    from work_buddy.cowork.project_store import (
+        patch_cowork_manifest,
+        write_component_gitignore,
+    )
+
+    write_component_gitignore(paths.sidecar)
+    patch_cowork_manifest(paths.root, expected_sha256=None)
     return staged
 
 
@@ -1631,9 +1779,37 @@ def _remove_staging(container: Path, allowed_parent: Path) -> None:
         return
     resolved = container.resolve()
     parent = allowed_parent.resolve()
-    if resolved.parent != parent or not resolved.name.startswith(".wb-truth-import-"):
+    if resolved.parent != parent or not resolved.name.startswith(
+        _IMPORT_STAGING_PREFIX
+    ):
         raise RuntimeError("refusing to remove an unexpected import staging path")
     shutil.rmtree(resolved)
+
+
+def _canonical_import_target(target: str | Path) -> StorePaths:
+    candidate = Path(os.path.abspath(Path(target).expanduser()))
+    if candidate.name == "cowork" and candidate.parent.name == ".wbuddy":
+        root = candidate.parent.parent
+    else:
+        root = candidate
+    try:
+        root = root.resolve(strict=True)
+    except OSError as exc:
+        raise TruthImportError(
+            "import target scope root must already exist"
+        ) from exc
+    from work_buddy.cowork.project_store import (
+        FolderLifecycleError,
+        _assert_managed_layout_safe,
+    )
+
+    try:
+        _assert_managed_layout_safe(root)
+    except FolderLifecycleError as exc:
+        raise TruthImportError(
+            "the import Folder contains redirected or unsupported Work Buddy data"
+        ) from exc
+    return StorePaths.canonical(root)
 
 
 def import_store(
@@ -1645,32 +1821,112 @@ def import_store(
     """Preflight and atomically rebuild one empty target from JSONL."""
     bundle = _parse_bundle(source)
     profile = _validate_bundle(bundle)
-    target_paths = StorePaths.from_root(target)
+    target_paths = _canonical_import_target(target)
+    from work_buddy.truth.locks import folder_operation_locks
+
+    registry_db = getattr(registry, "db_path", None)
+    lock_data_root: Path | None = None
+    if registry_db is not None:
+        registry_parent = Path(registry_db).expanduser().resolve().parent
+        lock_data_root = (
+            registry_parent.parent
+            if registry_parent.name == "db"
+            else registry_parent
+        )
+    with folder_operation_locks(
+        target_paths.root,
+        data_root=lock_data_root,
+    ):
+        return _import_store_locked(
+            bundle,
+            profile,
+            target_paths,
+            registry=registry,
+        )
+
+
+def _import_store_locked(
+    bundle: _Bundle,
+    profile: StoreProfile,
+    target_paths: StorePaths,
+    *,
+    registry: StoreRegistry,
+) -> ImportResult:
+    """Publish an already validated bundle while holding Folder locks."""
+
     _preflight_target(target_paths, profile.store_id, registry)
 
     container = Path(
-        tempfile.mkdtemp(prefix=".wb-truth-import-", dir=target_paths.root)
+        tempfile.mkdtemp(prefix=_IMPORT_STAGING_PREFIX, dir=target_paths.root)
     )
     removed_empty_target = False
+    published_sidecar = False
+    published_wbuddy = False
+    manifest_snapshot = None
+    published_manifest: bytes | None = None
     try:
         staged = _build_staged_store(container, bundle, profile)
         staged_sidecar = staged.paths.sidecar.resolve()
-        if staged_sidecar.parent != container.resolve():
+        staged_wbuddy = staged_sidecar.parent
+        if staged_wbuddy.parent != container.resolve():
             raise TruthImportError("staged sidecar escaped its import container")
-        if target_paths.sidecar.exists():
-            if any(target_paths.sidecar.iterdir()):
-                raise TruthImportError("truth import target changed during import")
-            target_paths.sidecar.rmdir()
-            removed_empty_target = True
-        os.replace(staged_sidecar, target_paths.sidecar)
+        target_wbuddy = target_paths.sidecar.parent
+        from work_buddy.cowork.project_store import (
+            FolderLifecycleError,
+            _assert_managed_layout_safe,
+        )
+
+        try:
+            _assert_managed_layout_safe(target_paths.root)
+        except FolderLifecycleError as exc:
+            raise TruthImportError(
+                "the import Folder contains redirected or unsupported Work Buddy data"
+            ) from exc
+        if not target_wbuddy.exists():
+            os.replace(staged_wbuddy, target_wbuddy)
+            published_wbuddy = True
+        else:
+            from work_buddy.cowork.project_store import (
+                patch_cowork_manifest,
+                read_manifest,
+            )
+
+            manifest_snapshot = read_manifest(target_paths.root)
+            if target_paths.sidecar.exists():
+                if any(target_paths.sidecar.iterdir()):
+                    raise TruthImportError("truth import target changed during import")
+                target_paths.sidecar.rmdir()
+                removed_empty_target = True
+            os.replace(staged_sidecar, target_paths.sidecar)
+            published_sidecar = True
+            _, published_manifest = patch_cowork_manifest(
+                target_paths.root,
+                expected_sha256=manifest_snapshot.sha256,
+            )
+
+        from work_buddy.cowork.project_store import read_manifest
+
+        manifest = read_manifest(target_paths.root)
+        if not manifest.has_cowork:
+            raise TruthImportError(
+                "portable import did not publish a valid Co-work Folder manifest"
+            )
+        restored = TruthStore.open(target_paths.sidecar)
     except Exception:
+        if published_manifest is not None and manifest_snapshot is not None:
+            from work_buddy.cowork.project_store import _restore_manifest
+
+            _restore_manifest(manifest_snapshot, published_manifest)
+        if published_wbuddy and target_paths.sidecar.parent.exists():
+            shutil.rmtree(target_paths.sidecar.parent)
+        elif published_sidecar and target_paths.sidecar.exists():
+            shutil.rmtree(target_paths.sidecar)
         if removed_empty_target and not target_paths.sidecar.exists():
-            target_paths.sidecar.mkdir()
+            target_paths.sidecar.mkdir(parents=True)
         raise
     finally:
         _remove_staging(container, target_paths.root)
 
-    restored = TruthStore.open(target_paths.sidecar)
     return ImportResult(
         store=restored,
         source_format_version=bundle.source_format_version,
@@ -1689,6 +1945,7 @@ __all__ = [
     "StoreRegistry",
     "TruthExportError",
     "TruthImportError",
+    "UncompactedDocumentError",
     "export_store",
     "import_store",
 ]

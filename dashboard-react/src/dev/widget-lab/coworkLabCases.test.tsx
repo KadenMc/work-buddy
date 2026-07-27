@@ -63,7 +63,14 @@ describe("Co-work Widget Lab section", () => {
     render(<CoworkLabSection />);
     const stale = within(screen.getByTestId("cowork-lab-stale"));
     // The card badge and the mark-bar note both state the stale reason in text.
-    expect(stale.getByText("Stale base, reject or defer only")).toBeVisible();
+    expect(
+      stale.getByText("Based on an older version — reject or defer"),
+    ).toBeVisible();
+    expect(
+      stale.getByText(
+        "The document changed after this was proposed, so it can only be rejected or deferred.",
+      ),
+    ).toBeVisible();
     const markbar = within(screen.getByTestId("cowork-lab-markbar-stale"));
     expect(markbar.getByRole("button", { name: "Accept" })).toBeDisabled();
     expect(markbar.getByRole("button", { name: "Amend" })).toBeDisabled();

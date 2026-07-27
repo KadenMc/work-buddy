@@ -49,7 +49,7 @@ dev_notes: |-
 
   ## Truth-store specialization
 
-  `work_buddy/truth/migrations.py` subclasses `MigrationRunner` rather than using the shared runner unchanged. A scoped `.wb-truth/store.db` has dual version markers (`PRAGMA user_version` and `store_info.schema_version`), rejects unversioned partial schemas, and snapshots every existing version before its bump. The specialization preserves the shared transaction and downgrade guarantees while adding the permanent-identity and append-only-ledger contracts described in `architecture/truth`.
+  `work_buddy/truth/migrations.py` subclasses `MigrationRunner` rather than using the shared runner unchanged. A scoped Truth database at `.wbuddy/cowork/store.db` has dual version markers (`PRAGMA user_version` and `store_info.schema_version`), rejects unversioned partial schemas, and snapshots every existing version before its bump. The current Truth schema is v4. The specialization preserves the shared transaction and downgrade guarantees while adding the permanent-identity and append-only-ledger contracts described in `architecture/truth`.
 
   Released Truth schema fixtures are immutable. Add a new `tests/fixtures/truth/frozen_vN/` directory for a new release instead of regenerating an old fixture. Supported older recovery streams are upcast during staged import; durable ledger rows and record IDs are not rewritten in place to simulate a new format.
 ---
@@ -141,9 +141,19 @@ Settings schema readiness is cached once per resolved database path. This preser
 
 ## Scoped Truth stores
 
-Truth stores use a specialization of this migration framework because each `.wb-truth/store.db` is a portable, independently versioned ledger rather than a shared data-root database. A store migrates on open, refuses a future schema before any mutation or snapshot, and creates a pre-version snapshot before each version bump. `PRAGMA user_version` and the store's own schema marker must agree.
+Truth stores use a specialization of this migration framework because each
+sidecar database is a portable, independently versioned ledger rather than a
+shared data-root database. Stores live at `.wbuddy/cowork/store.db`. A store
+migrates on open, refuses a future schema before
+any mutation or snapshot, and creates a pre-version snapshot before each version
+bump. `PRAGMA user_version` and the store's own schema marker must agree.
 
-Schema evolution is additive with respect to durable history: ledger content, permanent store identity, record IDs, and `wb-truth:` references survive. Checked-in fixtures from every released schema provide the upgrade contract, while supported older JSONL recovery formats are upcast and rebuilt under the current engine in a staged store. See `architecture/truth` for the broader authority and portability contract.
+Schema evolution is additive with respect to durable history: ledger content,
+permanent store identity, record IDs, and `wb-truth:` references survive.
+Checked-in fixtures from every released schema provide the upgrade contract,
+while supported older JSONL recovery formats are upcast and rebuilt under the
+current engine in a staged store. See `architecture/truth` for the broader
+authority and portability contract.
 
 ## See also
 

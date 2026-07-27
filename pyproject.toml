@@ -26,6 +26,7 @@ dependencies = [
     "sentence-transformers>=5.3.0,<6",
     "einops>=0.8.2,<0.9",
     "pywinpty>=3.0.3,<4 ; sys_platform == 'win32'",
+    "pyside6-essentials>=6.8,<7 ; sys_platform == 'win32'",
     "ptyprocess>=0.7.0,<0.8 ; sys_platform != 'win32'",
     "httpx>=0.28.1,<0.29",
     "watchdog>=6.0.0,<7",

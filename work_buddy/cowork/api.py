@@ -22,18 +22,28 @@ from __future__ import annotations
 
 import json
 import logging
+from ipaddress import ip_address
+from urllib.parse import urlsplit
 
 from flask import Blueprint, Response, jsonify, request
 
-from work_buddy.cowork import conversations, feedback, sittings, transport
+from work_buddy.cowork import (
+    conversations,
+    feedback,
+    lifecycle_state,
+    readiness,
+    transport,
+)
+from work_buddy.cowork.paths import CoworkPathError, resolve_markdown_path
+from work_buddy.cowork.policy import document_surface_allowed
 from work_buddy.truth import documents, expressions, proposals
 from work_buddy.truth.anchors import CompositeSelector
 from work_buddy.truth.contracts import Actor, InvariantViolation
 from work_buddy.truth.events import emit_truth_event
 from work_buddy.truth.expressions import ensure_document_span
-from work_buddy.truth.identity import sha256_bytes, sha256_text
+from work_buddy.truth.identity import sha256_bytes
 from work_buddy.truth.registry import TruthStoreRegistry
-from work_buddy.truth.store import DOCUMENT_CLASSES, DocumentRecord, TruthStore
+from work_buddy.truth.store import DocumentRecord, TruthStore
 
 logger = logging.getLogger(__name__)
 
@@ -116,8 +126,8 @@ def _resolve_store(store_id: str | None):
         return None, _fail("store_id is required", 400)
     try:
         store = _open_store(identifier)
-    except Exception as exc:  # noqa: BLE001 - an unreachable store is a 404
-        return None, _fail(f"truth store is not reachable: {exc}", 404)
+    except Exception:  # noqa: BLE001 - internal registry details stay server-side
+        return None, _fail("That folder is not reachable by Co-work.", 404)
     return store, None
 
 
@@ -132,24 +142,47 @@ def _resolve_document(store: TruthStore, document_id: str):
 def _document_surface_or_403(store: TruthStore, *, feedback: bool = False):
     policy = store.profile.document_surface
     if not policy.enabled:
-        return _fail("document_surface is not enabled for this store", 403)
+        return _fail("Co-work documents are not enabled for this folder.", 403)
     if feedback and not policy.feedback_capture:
-        return _fail("feedback_capture is not enabled for this store", 403)
+        return _fail("Feedback is not enabled for this folder.", 403)
     return None
 
 
-def _emit(event_type: str, store_id: str, data: dict) -> None:
+def _emit(
+    event_type: str,
+    store_id: str,
+    data: dict,
+    *,
+    event_id: str | None = None,
+) -> None:
     try:
-        emit_truth_event(event_type, store_id=store_id, data=data)
+        emit_truth_event(
+            event_type,
+            store_id=store_id,
+            data=data,
+            event_id=event_id,
+        )
     except Exception:  # noqa: BLE001 - events are non-authoritative and best effort
         logger.warning("cowork event emit failed: %s", event_type)
 
 
 def _current_file_sha256(store: TruthStore, document: DocumentRecord) -> str | None:
-    target = store.paths.root / document.path
+    try:
+        target = resolve_markdown_path(store, document.path).path
+    except CoworkPathError:
+        return None
     if not target.is_file():
         return None
-    return sha256_bytes(target.read_bytes())
+    try:
+        return sha256_bytes(target.read_bytes())
+    except OSError:
+        return None
+
+
+def _drift_from_hash(document: DocumentRecord, current: str | None) -> str:
+    if current is None:
+        return "missing"
+    return "clean" if current == document.content_sha256 else "drifted"
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +211,12 @@ def _quote_anchor(selector_json: str) -> dict[str, str]:
     }
 
 
-def _open_proposal_entry(proposal, document: DocumentRecord) -> dict:
+def _open_proposal_entry(
+    proposal,
+    document: DocumentRecord,
+    *,
+    structured_head_sha256: str | None,
+) -> dict:
     refs = json.loads(proposal.claim_refs_json) if proposal.claim_refs_json else []
     return {
         "proposal_id": proposal.id,
@@ -190,8 +228,16 @@ def _open_proposal_entry(proposal, document: DocumentRecord) -> dict:
         "producer": _producer_view(proposal.meta_json),
         "epistemic_state": "ai_proposed",
         "base_doc_sha256": proposal.base_content_sha256,
+        "base_structured_head_sha256": proposal.base_structured_head_sha256,
         "canonical_sha256": proposal.canonical_sha256,
-        "base_ok": proposal.base_content_sha256 == document.content_sha256,
+        "base_ok": (
+            proposal.base_content_sha256 == document.content_sha256
+            and (
+                proposal.base_structured_head_sha256 is None
+                or proposal.base_structured_head_sha256
+                == structured_head_sha256
+            )
+        ),
         "status": "open",
         "fixes_ref": None,
         "claim_refs": refs,
@@ -248,36 +294,80 @@ def api_doc_list():
     gate = _document_surface_or_403(store)
     if gate:
         return gate
-    profile_filter = (request.args.get("profile") or "").strip()
+    document_class_filter = (
+        request.args.get("document_class") or request.args.get("profile") or ""
+    ).strip()
+    read_only = _is_read_only()
+    include_retired = request.args.get("include_retired") == "1"
     entries: list[dict] = []
+    repairable_count = 0
     with store._read_connection() as conn:
-        for document in documents.list_documents(store, conn=conn):
-            if profile_filter and document.document_class != profile_filter:
+        for document in documents.list_documents(
+            store, include_retired=include_retired, conn=conn
+        ):
+            if (
+                document_class_filter
+                and document.document_class != document_class_filter
+            ):
                 continue
             open_props = proposals.open_proposals(
                 store, document_id=document.id, conn=conn
             )
             events = store._document_events_locked(conn, document.id)
-            entries.append(
-                {
-                    "document_id": document.id,
-                    "path": document.path,
-                    "title": document.title or "",
-                    "profile": document.document_class,
-                    "current_file_sha256": _current_file_sha256(store, document),
-                    "last_materialized_sha256": document.content_sha256,
-                    "drift_state": documents.drift_state(
-                        store, document.id, conn=conn
-                    ),
-                    "open_proposal_count": len(open_props),
-                    "open_flag_count": sum(
-                        1 for item in open_props if item.replacement is None
-                    ),
-                    "updated_at": events[-1].at if events else document.created_at,
-                }
-            )
+            lifecycle = documents.current_lifecycle(store, document.id, conn=conn)
+            readiness_view = readiness.classify_document(
+                store, document, read_only=read_only
+            ).to_dict()
+            try:
+                resolve_markdown_path(store, document.path)
+            except CoworkPathError:
+                readiness_view.update(
+                    {
+                        "initialization_state": "corrupt",
+                        "disabled_reason": "invalid_path",
+                        "permissions": {
+                            "open": False,
+                            "edit": False,
+                            "materialize": False,
+                            "repair": False,
+                            "retire": bool(
+                                readiness_view["permissions"].get("retire")
+                            ),
+                        },
+                    }
+                )
+            if readiness_view["permissions"]["repair"]:
+                repairable_count += 1
+            current_file_sha256 = _current_file_sha256(store, document)
+            entry = {
+                "document_id": document.id,
+                "path": document.path,
+                "title": document.title or "",
+                "document_class": document.document_class,
+                "profile": document.document_class,
+                "lifecycle": lifecycle,
+                "current_file_sha256": current_file_sha256,
+                "last_materialized_sha256": document.content_sha256,
+                "drift_state": (
+                    "unknown"
+                    if readiness_view["disabled_reason"] == "invalid_path"
+                    else _drift_from_hash(document, current_file_sha256)
+                ),
+                "open_proposal_count": len(open_props),
+                "open_flag_count": sum(
+                    1 for item in open_props if item.replacement is None
+                ),
+                "updated_at": events[-1].at if events else document.created_at,
+            }
+            entry.update(readiness_view)
+            entries.append(entry)
     return jsonify(
-        {"store_id": store.store_id, "count": len(entries), "docs": entries}
+        {
+            "store_id": store.store_id,
+            "count": len(entries),
+            "docs": entries,
+            "repairable_count": repairable_count,
+        }
     )
 
 
@@ -303,8 +393,11 @@ def api_doc_get(document_id: str):
         ).fetchall()
         events = store._document_events_locked(conn, document.id)
     span_by_id = {row["id"]: row for row in span_rows}
-    state = documents.drift_state(store, document.id)
     current_file_sha256 = _current_file_sha256(store, document)
+    state = _drift_from_hash(document, current_file_sha256)
+    readiness_view = readiness.classify_document(
+        store, document, read_only=_is_read_only()
+    ).to_dict()
 
     payload = {
         "document_id": document.id,
@@ -312,6 +405,13 @@ def api_doc_get(document_id: str):
         "path": document.path,
         "title": document.title or "",
         "profile": document.document_class,
+        "document_class": document.document_class,
+        "lifecycle": documents.current_lifecycle(store, document.id),
+        "initialization_state": readiness_view["initialization_state"],
+        "structured_head_sha256": readiness_view["structured_head_sha256"],
+        "projection_blob_available": readiness_view["projection_blob_available"],
+        "permissions": readiness_view["permissions"],
+        "disabled_reason": readiness_view["disabled_reason"],
         "hashes": {
             "ydoc_snapshot_sha256": document.ydoc_snapshot_sha256,
             "last_materialized_sha256": document.content_sha256,
@@ -319,7 +419,14 @@ def api_doc_get(document_id: str):
         },
         "drift": {"state": state, "diff_available": False},
         "open_proposals": [
-            _open_proposal_entry(item, document) for item in open_props
+            _open_proposal_entry(
+                item,
+                document,
+                structured_head_sha256=readiness_view[
+                    "structured_head_sha256"
+                ],
+            )
+            for item in open_props
         ],
         "expressions": _expression_entries(expr_records, span_by_id),
         "provenance_spans": _provenance_spans(span_rows),
@@ -373,6 +480,12 @@ def api_doc_ydoc_push(document_id: str):
         return doc_error
     body = request.get_data(cache=False)
     base_sha256 = request.headers.get("X-WB-Base-Sha256") or None
+    base_structured_head_sha256 = (
+        request.headers.get("X-WB-Base-Ydoc-Sha256") or None
+    )
+    base_ydoc_generation = (
+        request.headers.get("X-WB-Base-Ydoc-Generation") or None
+    )
     compacted = request.headers.get("X-WB-Compacted-Snapshot-Sha256") or None
     actor = _actor_for_request()
     try:
@@ -385,6 +498,8 @@ def api_doc_ydoc_push(document_id: str):
                 actor,
                 body=body,
                 base_sha256=base_sha256,
+                base_structured_head_sha256=base_structured_head_sha256,
+                base_ydoc_generation=base_ydoc_generation,
                 compacted_snapshot_sha256=compacted,
             )
     except InvariantViolation as exc:
@@ -399,127 +514,21 @@ def api_doc_ydoc_push(document_id: str):
 
 @cowork_blueprint.post("/api/truth/doc/<document_id>/marks")
 def api_doc_marks(document_id: str):
-    blocked = _reject_read_only()
-    if blocked:
-        return blocked
-    store, error = _resolve_store(request.args.get("store_id"))
-    if error:
-        return error
-    gate = _document_surface_or_403(store)
-    if gate:
-        return gate
-    document, doc_error = _resolve_document(store, document_id)
-    if doc_error:
-        return doc_error
-    body = request.get_json(silent=True)
-    if not isinstance(body, dict):
-        return _fail("request body must be a JSON object", 400)
-    items = body.get("items")
-    if not isinstance(items, list) or not items:
-        return _fail("items must be a non-empty list", 400)
-    materialize = body.get("materialize")
-    if materialize is not None and not isinstance(materialize, dict):
-        return _fail("materialize must be an object or null", 400)
-    actor = _actor_for_request()
-
-    def _deliver_routing(verb: str, proposal_id: str, note: str | None):
-        # A redirect or endorse keeps the proposal open and routes the human's
-        # guidance into the document conversation for the proposing agent.
-        return conversations.deliver_decision(
-            document_id=document.id,
-            store_id=store.store_id,
-            verb=verb,
-            proposal_id=proposal_id,
-            note=note,
-        )
-
-    try:
-        from work_buddy.consent import user_initiated
-
-        with user_initiated("dashboard.cowork.marks"):
-            response, events = sittings.apply_sitting(
-                store,
-                document,
-                actor,
-                items=items,
-                materialize=materialize,
-                deliver_routing=_deliver_routing,
-            )
-    except sittings.MaterializeHashMismatch:
-        return jsonify({"ok": False, "error": "hash_mismatch"}), 409
-    except InvariantViolation as exc:
-        return _fail(str(exc), 400)
-    for event_type, data in events:
-        _emit(event_type, store.store_id, data)
-    return jsonify(response)
-
-
-# ---------------------------------------------------------------------------
-# R6 materialize.
-# ---------------------------------------------------------------------------
-
-
-@cowork_blueprint.post("/api/truth/doc/<document_id>/materialize")
-def api_doc_materialize(document_id: str):
-    blocked = _reject_read_only()
-    if blocked:
-        return blocked
-    store, error = _resolve_store(request.args.get("store_id"))
-    if error:
-        return error
-    gate = _document_surface_or_403(store)
-    if gate:
-        return gate
-    document, doc_error = _resolve_document(store, document_id)
-    if doc_error:
-        return doc_error
-    body = request.get_json(silent=True)
-    if not isinstance(body, dict):
-        return _fail("request body must be a JSON object", 400)
-    rendered = body.get("rendered_markdown")
-    structured_doc_sha256 = str(body.get("structured_doc_sha256") or "").strip().lower()
-    if not isinstance(rendered, str):
-        return _fail("rendered_markdown must be a string", 400)
-    # The one serializer is JavaScript and v1 has no Node runtime, so the client
-    # block-splices to markdown and the server verifies the structured-doc hash
-    # against the current Y.Doc snapshot, then writes through the engine (I14).
-    if structured_doc_sha256 != (document.ydoc_snapshot_sha256 or ""):
-        return jsonify({"ok": False, "error": "hash_mismatch"}), 409
-    actor = _actor_for_request()
-    new_file_sha256 = sha256_text(rendered)
-    try:
-        from work_buddy.consent import user_initiated
-
-        with user_initiated("dashboard.cowork.materialize"):
-            from work_buddy.artifacts.io import atomic_write_bytes
-
-            target = store.paths.root / document.path
-            target.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write_bytes(target, rendered.encode("utf-8"))
-            event = documents.record_materialization(
-                store,
-                document_id=document.id,
-                content_sha256=new_file_sha256,
-                actor=actor,
-            )
-    except InvariantViolation as exc:
-        return _fail(str(exc), 400)
-    _emit(
-        "truth.doc_materialized",
-        store.store_id,
-        {"document_id": document.id, "file_sha256": new_file_sha256},
-    )
-    return jsonify(
-        {
-            "ok": True,
-            "file_path": str(store.paths.root / document.path),
-            "new_file_sha256": new_file_sha256,
-            "front_matter_stamp": {
-                "document_id": document.id,
-                "content_sha256": new_file_sha256,
-                "materialized_at": event.at,
-            },
-        }
+    return (
+        jsonify(
+            {
+                "ok": False,
+                "error": {
+                    "code": "two_phase_sitting_required",
+                    "message": "Refresh Co-work before applying review decisions.",
+                    "details": {
+                        "prepare_route": f"/api/truth/doc/{document_id}/sitting/prepare"
+                    },
+                    "retryable": False,
+                },
+            }
+        ),
+        410,
     )
 
 
@@ -539,70 +548,53 @@ def api_doc_drift(document_id: str):
     document, doc_error = _resolve_document(store, document_id)
     if doc_error:
         return doc_error
-    current_file_sha256 = _current_file_sha256(store, document)
-    state = documents.drift_state(
-        store, document.id, current_file_sha256=current_file_sha256
+    state = lifecycle_state.inspect_lifecycle_state(store, document)
+    baseline = state.materialized_version
+    baseline_etag = (
+        f'"{document.content_sha256}"' if state.baseline_available else None
+    )
+    source_etag = (
+        None
+        if state.current_file_sha256 is None
+        else f'"{state.current_file_sha256}"'
     )
     return jsonify(
         {
-            "state": state,
+            "ok": True,
+            "state": state.drift_state,
             "last_materialized_sha256": document.content_sha256,
-            "current_file_sha256": current_file_sha256,
-            # A server-rendered redline needs the prior materialized text, which
-            # v1 does not retain (no server serializer, C3/I14). The client owns
-            # the live Y.Doc and renders redlines from it. The drift state and the
-            # reimport gate below are what block silent regeneration (I13).
+            "materialized_file_sha256": document.content_sha256,
+            "current_file_sha256": state.current_file_sha256,
+            "snapshot_sha256": document.ydoc_snapshot_sha256,
+            "structured_head_sha256": state.structured_head_sha256,
+            "materialized_snapshot_sha256": (
+                None if baseline is None else baseline.ydoc_snapshot_sha256
+            ),
+            "materialized_structured_head_sha256": (
+                None if baseline is None else baseline.structured_head_sha256
+            ),
+            "update_tail_present": state.update_tail_present,
+            "unmaterialized_structured_edits": state.unmaterialized_structured_edits,
+            "baseline": {
+                "available": state.baseline_available,
+                "sha256": document.content_sha256,
+                "etag": baseline_etag,
+                "source_url": f"/api/truth/doc/{document.id}/source?store_id={store.store_id}&version=materialized",
+            },
+            "source": {
+                "available": state.current_file_sha256 is not None,
+                "sha256": state.current_file_sha256,
+                "etag": source_etag,
+                "source_url": f"/api/truth/doc/{document.id}/source?store_id={store.store_id}&version=current",
+            },
             "diff": None,
-            "can_reimport": state == "drifted",
+            "diff_available": state.baseline_available
+            and state.current_file_sha256 is not None,
+            "can_reimport": state.drift_state == "drifted"
+            and not state.unmaterialized_structured_edits
+            and state.initialization_state == "ready",
         }
     )
-
-
-@cowork_blueprint.post("/api/truth/doc/<document_id>/reimport")
-def api_doc_reimport(document_id: str):
-    blocked = _reject_read_only()
-    if blocked:
-        return blocked
-    store, error = _resolve_store(request.args.get("store_id"))
-    if error:
-        return error
-    gate = _document_surface_or_403(store)
-    if gate:
-        return gate
-    document, doc_error = _resolve_document(store, document_id)
-    if doc_error:
-        return doc_error
-    body = request.get_json(silent=True)
-    if not isinstance(body, dict):
-        return _fail("request body must be a JSON object", 400)
-    if not isinstance(body.get("structured_doc"), dict):
-        return _fail("structured_doc must be the client-parsed document JSON", 400)
-    file_sha256 = str(body.get("file_sha256") or "").strip().lower()
-    if not file_sha256:
-        return _fail("file_sha256 is required", 400)
-    actor = _actor_for_request()
-    try:
-        from work_buddy.consent import user_initiated
-
-        # The client parses the file once (MarkdownManager.parse) and posts JSON,
-        # the server never HTML-parses. Out-of-band edits enter as an unattested
-        # reimport change set, never a silent overwrite (I13). The proposals of
-        # the change set are authored by the client via the propose caps.
-        with user_initiated("dashboard.cowork.reimport"):
-            event = documents.reimport_document(
-                store,
-                document_id=document.id,
-                content_sha256=file_sha256,
-                actor=actor,
-            )
-    except InvariantViolation as exc:
-        return _fail(str(exc), 400)
-    _emit(
-        "truth.doc_reimported",
-        store.store_id,
-        {"document_id": document.id, "change_set_id": event.id},
-    )
-    return jsonify({"ok": True, "change_set_id": event.id, "proposal_count": 0})
 
 
 # ---------------------------------------------------------------------------
@@ -624,6 +616,34 @@ def api_doc_feedback(document_id: str):
     document, doc_error = _resolve_document(store, document_id)
     if doc_error:
         return doc_error
+    if documents.current_lifecycle(store, document.id) != "active":
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": {
+                        "code": "document_retired",
+                        "message": "Feedback cannot be added to a retired document.",
+                        "details": {},
+                    },
+                }
+            ),
+            409,
+        )
+    if not document_surface_allowed(store, document):
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": {
+                        "code": "policy_forbidden",
+                        "message": "This document is not available in Co-work for this folder.",
+                        "details": {},
+                    },
+                }
+            ),
+            403,
+        )
     body = request.get_json(silent=True)
     if not isinstance(body, dict):
         return _fail("request body must be a JSON object", 400)
@@ -673,15 +693,19 @@ def api_doc_feedback(document_id: str):
 
 
 # ---------------------------------------------------------------------------
+# Lifecycle retirement (history retained; source file is never deleted).
+# ---------------------------------------------------------------------------
+
+
+
+
+# ---------------------------------------------------------------------------
 # R10 register.
 # ---------------------------------------------------------------------------
 
 
 @cowork_blueprint.post("/api/truth/doc/register")
 def api_doc_register():
-    blocked = _reject_read_only()
-    if blocked:
-        return blocked
     store, error = _resolve_store(request.args.get("store_id"))
     if error:
         return error
@@ -694,57 +718,94 @@ def api_doc_register():
     path = str(body.get("path") or "").strip()
     if not path:
         return _fail("path is required", 400)
-    title = body.get("title")
-    document_class = str(body.get("profile") or "").strip()
-    if document_class not in DOCUMENT_CLASSES:
-        return _fail(
-            f"profile must be one of {sorted(DOCUMENT_CLASSES)}", 400
-        )
-    allowed = store.profile.document_surface.allowed_document_classes
-    if allowed and document_class not in allowed:
-        return _fail(
-            f"document class {document_class!r} is not admitted by this store", 403
-        )
-    target = store.paths.root / path
-    if not target.is_file():
-        return _fail(f"file does not exist in scope: {path}", 404)
-    content_sha256 = sha256_bytes(target.read_bytes())
-    actor = _actor_for_request()
     try:
-        from work_buddy.consent import user_initiated
-
-        with user_initiated("dashboard.cowork.register"):
-            existing = None
-            with store._read_connection() as conn:
-                existing = store._get_document_by_path_locked(conn, path)
-            record = documents.register_document(
-                store,
-                path=path,
-                title=title,
-                document_class=document_class,
-                content_sha256=content_sha256,
-                actor=actor,
-            )
+        resolved = resolve_markdown_path(store, path)
+    except CoworkPathError as exc:
+        return jsonify(
+            {
+                "ok": False,
+                "error": {
+                    "code": "invalid_path",
+                    "message": str(exc),
+                    "field": "path",
+                    "retryable": False,
+                },
+            }
+        ), 422
+    with store._read_connection() as conn:
+        row = conn.execute(
+            "SELECT document_id FROM document_path_keys WHERE path_key = ?",
+            (resolved.path_key,),
+        ).fetchone()
+    if row is None:
+        # Legacy R10 is a read-only compatibility lookup. Fresh registration
+        # must use the exact two-phase bootstrap protocol so a document can
+        # never be published with missing structured state.
+        return jsonify(
+            {
+                "ok": False,
+                "error": {
+                    "code": "bootstrap_required",
+                    "message": (
+                        "This Markdown file must be registered through the "
+                        "two-phase Co-work bootstrap flow."
+                    ),
+                    "retryable": False,
+                    "details": {
+                        "path": resolved.normalized,
+                        "bootstrap_url": (
+                            "/api/truth/doc/bootstrap"
+                            f"?store_id={store.store_id}"
+                        ),
+                    },
+                },
+            }
+        ), 409
+    try:
+        record = documents.get_document(store, str(row["document_id"]))
     except InvariantViolation as exc:
-        return _fail(str(exc), 400)
-    imported = existing is None
-    if imported:
-        _emit(
-            "truth.doc_registered",
-            store.store_id,
-            {"document_id": record.id, "path": record.path},
+        return _fail(str(exc), 409)
+    state = readiness.classify_document(
+        store, record, read_only=_is_read_only()
+    )
+    if documents.current_lifecycle(store, record.id) == "retired":
+        return jsonify(
+            {
+                "ok": False,
+                "error": {
+                    "code": "retired_path",
+                    "message": "This Markdown path was removed from Co-work.",
+                    "retryable": False,
+                    "details": {"document_id": record.id},
+                },
+            }
+        ), 409
+    if state.initialization_state != "ready":
+        status = 422 if state.initialization_state in {"corrupt", "semantic_corrupt"} else 409
+        code = (
+            "corrupt_document"
+            if status == 422
+            else state.initialization_state
         )
-        _emit(
-            "truth.doc_imported",
-            store.store_id,
-            {"document_id": record.id, "sha256": record.content_sha256},
-        )
+        return jsonify(
+            {
+                "ok": False,
+                "error": {
+                    "code": code,
+                    "message": "The existing registration is not ready to open.",
+                    "retryable": False,
+                    "details": state.to_dict(),
+                },
+            }
+        ), status
+    current_file_sha256 = _current_file_sha256(store, record)
     return jsonify(
         {
             "ok": True,
             "document_id": record.id,
-            "imported": imported,
-            "current_file_sha256": content_sha256,
+            "imported": False,
+            "current_file_sha256": current_file_sha256,
+            "readiness": state.to_dict(),
         }
     )
 
@@ -754,9 +815,86 @@ def api_doc_register():
 # ---------------------------------------------------------------------------
 
 
+def _guard_cowork_host_access():
+    """Keep host-filesystem Co-work APIs local until the dashboard has auth."""
+
+    path = request.path
+    protected = (
+        path == "/api/truth/doc"
+        or path.startswith("/api/truth/doc/")
+        or path == "/api/truth/cowork"
+        or path.startswith("/api/truth/cowork/")
+    )
+    if not protected:
+        return None
+
+    # `tailscale serve` and similar products proxy remote requests to Flask from
+    # 127.0.0.1. Peer address alone is therefore not an authorization boundary.
+    # Fail closed on proxy markers and require the browser-visible Host itself to
+    # be local. A direct remote caller cannot bypass this with Host: localhost
+    # because its socket peer remains non-loopback.
+    proxy_markers = (
+        "forwarded",
+        "via",
+        "x-forwarded-for",
+        "x-forwarded-host",
+        "x-forwarded-proto",
+        "x-real-ip",
+    )
+    proxied = any(request.headers.get(name) for name in proxy_markers) or any(
+        name.lower().startswith("tailscale-") for name in request.headers.keys()
+    )
+    try:
+        peer_is_loopback = ip_address(request.remote_addr or "").is_loopback
+    except ValueError:
+        peer_is_loopback = False
+    try:
+        hostname = urlsplit(f"//{request.host}").hostname
+        normalized_host = "" if hostname is None else hostname.rstrip(".").lower()
+        host_is_loopback = normalized_host == "localhost" or ip_address(
+            normalized_host
+        ).is_loopback
+    except ValueError:
+        host_is_loopback = False
+    if peer_is_loopback and host_is_loopback and not proxied:
+        return None
+    return (
+        jsonify(
+            {
+                "ok": False,
+                "error": {
+                    "code": "cowork_local_only",
+                    "message": (
+                        "Co-work can access host files and is available only "
+                        "from this machine."
+                    ),
+                    "retryable": False,
+                },
+            }
+        ),
+        403,
+    )
+
+
 def register_routes(app):
     """Mount the co-work document blueprint onto a Flask app in one line."""
+    app.before_request(_guard_cowork_host_access)
     app.register_blueprint(cowork_blueprint)
+    from work_buddy.cowork.bootstrap_api import bootstrap_blueprint
+    from work_buddy.cowork.catalog_api import catalog_blueprint
+    from work_buddy.cowork.folder_api import cowork_folder_blueprint
+    from work_buddy.cowork.materialization_api import materialization_blueprint
+    from work_buddy.cowork.reimport_api import reimport_blueprint
+    from work_buddy.cowork.retirement_api import retirement_blueprint
+    from work_buddy.cowork.sitting_api import sitting_blueprint
+
+    app.register_blueprint(bootstrap_blueprint)
+    app.register_blueprint(catalog_blueprint)
+    app.register_blueprint(cowork_folder_blueprint)
+    app.register_blueprint(materialization_blueprint)
+    app.register_blueprint(reimport_blueprint)
+    app.register_blueprint(retirement_blueprint)
+    app.register_blueprint(sitting_blueprint)
     return app
 
 

@@ -1,12 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { InMemoryCoworkSittingTransport } from "../suggestions/sitting";
-import type { DecisionItem } from "../suggestions/types";
+import {
+  InMemoryCoworkSittingTransport,
+  type CoworkSittingTransport,
+} from "../suggestions/sitting";
 import type { SittingSubmission } from "../rail/provider";
-import type { DecisionApplier } from "./sittingSubmit";
 import { LiveReviewRailProvider } from "./LiveReviewRailProvider";
 import type { CoworkDocClient } from "./HttpCoworkDocClient";
 import type { R2DocPayload, R2Proposal } from "./types";
+import type { CoworkSittingWorkspace } from "./sittingWorkspace";
 
 const producer = {
   model: "research-agent",
@@ -56,23 +58,46 @@ const docClientReturning = (value: R2DocPayload): CoworkDocClient => ({
   fetchDoc: async () => value,
 });
 
-const applierRecording = () => {
-  const applied: DecisionItem[] = [];
-  const applier: DecisionApplier = { applyDecision: (item) => applied.push(item) };
-  return { applier, applied };
+const workspaceRecording = () => {
+  const events: string[] = [];
+  const workspace: CoworkSittingWorkspace = {
+    synchronize: async () => ({
+      expectedFileSha256: "f".repeat(64),
+      expectedStructuredHeadSha256: "h".repeat(64),
+      generation: 1,
+    }),
+    prepare: async (items, generation) => {
+      events.push(`prepared:${items.map((item) => item.proposal_id).join(",")}`);
+      return {
+        generation,
+        commit: {
+          snapshot: new Uint8Array([1]),
+          snapshot_sha256: "s".repeat(64),
+          rendered_markdown: "# materialized\n",
+          rendered_sha256: "m".repeat(64),
+        },
+        adopt: () => events.push("adopted"),
+        dispose: () => undefined,
+      };
+    },
+    isCurrent: () => true,
+    refreshFromServer: async () => undefined,
+  };
+  return { workspace, events };
 };
 
 const build = (options?: {
   readonly doc?: R2DocPayload;
-  readonly getAdapter?: () => DecisionApplier | null;
+  readonly getSittingWorkspace?: () => CoworkSittingWorkspace | null;
+  readonly sittingTransport?: CoworkSittingTransport;
 }) =>
   new LiveReviewRailProvider({
     docClient: docClientReturning(options?.doc ?? payload([proposal({})])),
     documentId: "doc-1",
     storeId: "store-1",
-    sittingTransport: new InMemoryCoworkSittingTransport(),
-    getAdapter: options?.getAdapter ?? (() => ({ applyDecision: () => {} })),
-    renderMaterialized: async () => "# materialized\n",
+    sittingTransport: options?.sittingTransport ?? new InMemoryCoworkSittingTransport(),
+    getSittingWorkspace:
+      options?.getSittingWorkspace ?? (() => workspaceRecording().workspace),
   });
 
 describe("LiveReviewRailProvider", () => {
@@ -123,9 +148,9 @@ describe("LiveReviewRailProvider", () => {
     expect(reload).toHaveBeenCalledTimes(1);
   });
 
-  it("submitSitting delegates to the sitting path through the adapter", async () => {
-    const { applier, applied } = applierRecording();
-    const provider = build({ getAdapter: () => applier });
+  it("submitSitting delegates through the prepared workspace", async () => {
+    const { workspace, events } = workspaceRecording();
+    const provider = build({ getSittingWorkspace: () => workspace });
     const submission: SittingSubmission = {
       baseDocSha256: "base-sha",
       proposalDecisions: [
@@ -136,12 +161,12 @@ describe("LiveReviewRailProvider", () => {
 
     const result = await provider.submitSitting(submission);
 
-    expect(applied.map((item) => item.proposal_id)).toEqual(["s1"]);
+    expect(events).toEqual(["prepared:s1", "adopted"]);
     expect(result.results[0]?.result).toBe("applied");
   });
 
-  it("throws when the editor adapter is not ready", async () => {
-    const provider = build({ getAdapter: () => null });
+  it("throws when the editor workspace is not ready", async () => {
+    const provider = build({ getSittingWorkspace: () => null });
     await expect(
       provider.submitSitting({
         baseDocSha256: "base-sha",
@@ -150,6 +175,37 @@ describe("LiveReviewRailProvider", () => {
         ],
         claimDecisions: [],
       }),
-    ).rejects.toThrow(/adapter is not ready/u);
+    ).rejects.toThrow(/editor is not ready/u);
   });
+
+  it.each(["claim-only", "mixed"] as const)(
+    "fails closed for %s live claim decisions before touching workspace or transport",
+    async (shape) => {
+      const getWorkspace = vi.fn(() => workspaceRecording().workspace);
+      const transport: CoworkSittingTransport = {
+        prepare: vi.fn(),
+        commit: vi.fn(),
+        cancel: vi.fn(),
+      };
+      const provider = build({
+        getSittingWorkspace: getWorkspace,
+        sittingTransport: transport,
+      });
+      await expect(
+        provider.submitSitting({
+          baseDocSha256: "base-sha",
+          proposalDecisions:
+            shape === "mixed"
+              ? [{ proposalId: "s1", verb: "confirm", canonicalSha256: "canon-s1" }]
+              : [],
+          claimDecisions: [
+            { claimId: "claim-1", verb: "confirm", canonicalSha256: "claim-sha" },
+          ],
+        }),
+      ).rejects.toThrow(/No sitting decisions were submitted/u);
+      expect(getWorkspace).not.toHaveBeenCalled();
+      expect(transport.prepare).not.toHaveBeenCalled();
+      expect(transport.commit).not.toHaveBeenCalled();
+    },
+  );
 });

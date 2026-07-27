@@ -5,8 +5,23 @@ import type { ViewProvider } from "../providers/ViewProvider";
 import type { ViewDefinition, ViewId, ViewModuleId, ViewSnapshot } from "./contracts";
 
 export interface StandardViewRuntimeContext {
+  /**
+   * The initial search string is retained for view modules that have not yet
+   * adopted the live location adapter. New modules should read and subscribe
+   * through `location` so query-only navigation does not recreate their
+   * durable runtime.
+   */
   readonly search: string;
   readonly storage: Storage;
+  readonly location: ViewLocationAdapter;
+}
+
+/** Router-backed query navigation available to durable App runtimes. */
+export interface ViewLocationAdapter {
+  getSearch(): string;
+  pushSearch(search: string): void;
+  replaceSearch(search: string): void;
+  subscribe(listener: (search: string) => void): () => void;
 }
 
 /** Host-owned controls which an App may place in its chrome without owning behavior. */

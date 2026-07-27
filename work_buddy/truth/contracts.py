@@ -77,24 +77,53 @@ class StorePaths:
     blobs: Path
     export_dir: Path
     claims_export: Path
+    runtime: Path
+
+    @classmethod
+    def from_sidecar(
+        cls,
+        sidecar: str | Path,
+        *,
+        root: str | Path | None = None,
+    ) -> "StorePaths":
+        """Build paths from an explicit canonical Co-work sidecar."""
+
+        sidecar_path = Path(sidecar).expanduser().resolve()
+        if root is None:
+            if (
+                sidecar_path.name == "cowork"
+                and sidecar_path.parent.name == ".wbuddy"
+            ):
+                scope_root = sidecar_path.parent.parent
+            else:
+                raise ValueError(
+                    "explicit Co-work sidecar must be .wbuddy/cowork"
+                )
+        else:
+            scope_root = Path(root).expanduser().resolve()
+        export_dir = sidecar_path / "export"
+        return cls(
+            root=scope_root,
+            sidecar=sidecar_path,
+            db=sidecar_path / "store.db",
+            config=sidecar_path / "store.yaml",
+            blobs=sidecar_path / "blobs",
+            export_dir=export_dir,
+            claims_export=export_dir / "claims.jsonl",
+            runtime=sidecar_path / "runtime",
+        )
+
+    @classmethod
+    def canonical(cls, root: str | Path) -> "StorePaths":
+        root_path = Path(root).expanduser().resolve()
+        return cls.from_sidecar(root_path / ".wbuddy" / "cowork", root=root_path)
 
     @classmethod
     def from_root(cls, root: str | Path) -> "StorePaths":
         root_path = Path(root).expanduser().resolve()
-        sidecar = (
-            root_path if root_path.name == ".wb-truth" else root_path / ".wb-truth"
-        )
-        scope_root = sidecar.parent
-        export_dir = sidecar / "export"
-        return cls(
-            root=scope_root,
-            sidecar=sidecar,
-            db=sidecar / "store.db",
-            config=sidecar / "store.yaml",
-            blobs=sidecar / "blobs",
-            export_dir=export_dir,
-            claims_export=export_dir / "claims.jsonl",
-        )
+        if root_path.name == "cowork" and root_path.parent.name == ".wbuddy":
+            return cls.from_sidecar(root_path)
+        return cls.canonical(root_path)
 
 
 AGENT_PRODUCER_META_KEYS = frozenset({"model", "harness", "surface", "session_id"})

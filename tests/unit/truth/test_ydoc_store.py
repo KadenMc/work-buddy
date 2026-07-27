@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import struct
+
 import pytest
 
 from work_buddy.truth import documents, ydoc_store
@@ -12,6 +15,13 @@ from work_buddy.truth.identity import sha256_bytes
 NOW = "2026-07-17T12:00:00.000+00:00"
 LATER = "2026-07-17T12:05:00.000+00:00"
 HUMAN = Actor("human", "reviewer-kaden")
+
+
+def _append_raw(path, payload: bytes) -> None:
+    with open(path, "ab") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
 
 
 def test_append_and_read_updates_round_trip(document_store, register_document):
@@ -41,6 +51,72 @@ def test_append_update_rejects_non_bytes(document_store, register_document):
     document_id, _, _ = register_document(store)
     with pytest.raises(InvariantViolation):
         ydoc_store.append_update(store, document_id=document_id, update="not bytes")
+
+
+def test_append_repairs_only_partial_final_header(document_store, register_document):
+    store, _ = document_store
+    document_id, _, _ = register_document(store)
+    ydoc_store.append_update(store, document_id=document_id, update=b"complete")
+    log = ydoc_store.runtime_dir(store, document_id) / "updates.log"
+    _append_raw(log, b"\x00\x00")
+
+    ydoc_store.append_update(store, document_id=document_id, update=b"retry")
+
+    batches, _ = ydoc_store.read_updates(store, document_id=document_id)
+    assert batches == (b"complete", b"retry")
+
+
+def test_cas_repairs_partial_payload_and_preserves_structured_head(
+    document_store, register_document
+):
+    store, _ = document_store
+    document_id, _, snapshot_sha = register_document(store)
+    initial_head = ydoc_store.current_structured_head(
+        store,
+        document_id=document_id,
+        snapshot_sha256=snapshot_sha,
+    )
+    _, first_head = ydoc_store.append_update_cas(
+        store,
+        document_id=document_id,
+        snapshot_sha256=snapshot_sha,
+        update=b"complete",
+        expected_structured_head_sha256=initial_head,
+    )
+    log = ydoc_store.runtime_dir(store, document_id) / "updates.log"
+    _append_raw(log, struct.pack(">I", 12) + b"partial")
+
+    _, repaired_head = ydoc_store.append_update_cas(
+        store,
+        document_id=document_id,
+        snapshot_sha256=snapshot_sha,
+        update=b"outbox-retry",
+        expected_structured_head_sha256=first_head,
+    )
+
+    batches, _ = ydoc_store.read_updates(store, document_id=document_id)
+    assert batches == (b"complete", b"outbox-retry")
+    snapshot = ydoc_store.read_snapshot(store, snapshot_sha256=snapshot_sha)
+    assert repaired_head == ydoc_store.structured_head_from_segments(
+        snapshot, batches
+    )
+
+
+def test_malformed_complete_frame_fails_closed_without_truncation(
+    document_store, register_document
+):
+    store, _ = document_store
+    document_id, _, _ = register_document(store)
+    ydoc_store.append_update(store, document_id=document_id, update=b"complete")
+    log = ydoc_store.runtime_dir(store, document_id) / "updates.log"
+    malformed = struct.pack(">I", ydoc_store.MAX_OPAQUE_SEGMENT_BYTES + 1)
+    _append_raw(log, malformed + b"later-bytes")
+    before = log.read_bytes()
+
+    with pytest.raises(ydoc_store.UpdateLogCorruption):
+        ydoc_store.append_update(store, document_id=document_id, update=b"retry")
+
+    assert log.read_bytes() == before
 
 
 def test_runtime_dir_is_created_under_sidecar(document_store, register_document):

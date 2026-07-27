@@ -194,7 +194,7 @@ describe("MarkBar edit verbs", () => {
         {...cbs}
       />,
     );
-    expect(screen.getByText(/Stale base/)).toBeVisible();
+    expect(screen.getByText(/document changed after this was proposed/i)).toBeVisible();
     expect(screen.getByRole("button", { name: "Accept" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Amend" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Redirect" })).toBeDisabled();

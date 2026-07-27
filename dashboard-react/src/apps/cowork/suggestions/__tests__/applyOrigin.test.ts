@@ -11,6 +11,7 @@ import {
   COWORK_APPLY_ORIGIN,
   isLocalHumanOrigin,
 } from "../../editor/applyOrigin";
+import { buildEditorExtensions } from "../../editor/extensions";
 import { editProposal } from "./support";
 
 /**
@@ -45,6 +46,18 @@ const mountCollab = (
   return { editor: ed, adapter };
 };
 
+const mountFullCoworkEditor = (
+  doc: Y.Doc,
+): { editor: Editor; adapter: WbTrackedChangesAdapterImpl } => {
+  const ed = new Editor({
+    element: document.createElement("div"),
+    extensions: buildEditorExtensions(doc),
+  });
+  const adapter = new WbTrackedChangesAdapterImpl({ doc });
+  adapter.attach(ed);
+  return { editor: ed, adapter };
+};
+
 describe("apply-origin discipline", () => {
   it("tags proposal ingestion with the apply-origin origin, never a human origin", () => {
     const doc = new Y.Doc();
@@ -66,6 +79,29 @@ describe("apply-origin discipline", () => {
     expect(origins.length).toBeGreaterThan(0);
     expect(origins.every((origin) => origin === COWORK_APPLY_ORIGIN)).toBe(true);
     // The persistence push filter would skip every one of these updates.
+    expect(origins.every((origin) => !isLocalHumanOrigin(origin))).toBe(true);
+  });
+
+  it("keeps proposal projection non-human with the complete Co-work extension stack", () => {
+    const doc = new Y.Doc();
+    const mounted = mountFullCoworkEditor(doc);
+    editor = mounted.editor;
+    editor.commands.setContent("<p>The quick brown fox</p>");
+
+    const origins: unknown[] = [];
+    doc.on("update", (_update: Uint8Array, origin: unknown) => {
+      origins.push(origin);
+    });
+
+    mounted.adapter.ingestProposal(
+      editProposal("prop-full", "quick", "slow", {
+        prefix: "The ",
+        suffix: " brown",
+      }),
+    );
+
+    expect(origins.length).toBeGreaterThan(0);
+    expect(origins.every((origin) => origin === COWORK_APPLY_ORIGIN)).toBe(true);
     expect(origins.every((origin) => !isLocalHumanOrigin(origin))).toBe(true);
   });
 

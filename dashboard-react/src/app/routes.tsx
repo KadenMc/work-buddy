@@ -1,7 +1,17 @@
-import { lazy, useMemo, type ComponentType } from "react";
+import {
+  lazy,
+  useEffect,
+  useMemo,
+  useRef,
+  type ComponentType,
+} from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 
 import type { ViewDefinition } from "../dashboard/contributions/contracts";
-import type { LoadedStandardWidgetViewModule } from "../dashboard/contributions/viewModules";
+import type {
+  LoadedStandardWidgetViewModule,
+  ViewLocationAdapter,
+} from "../dashboard/contributions/viewModules";
 import type { ContributionRegistry } from "../dashboard/contributions/registry";
 import { ViewHost } from "../dashboard/views/ViewHost";
 import { dashboardRegistry } from "./dashboardRegistry";
@@ -59,13 +69,57 @@ function StandardWidgetViewMount({
   definition,
   loaded,
 }: StandardWidgetViewMountProps) {
+  const routerLocation = useLocation();
+  const navigate = useNavigate();
+  const currentLocationRef = useRef(routerLocation);
+  const navigateRef = useRef(navigate);
+  const listenersRef = useRef(new Set<(search: string) => void>());
+  const adapterRef = useRef<ViewLocationAdapter | null>(null);
+
+  currentLocationRef.current = routerLocation;
+  navigateRef.current = navigate;
+
+  if (adapterRef.current === null) {
+    const navigateSearch = (search: string, replace: boolean) => {
+      const normalized = search.length === 0 || search.startsWith("?")
+        ? search
+        : `?${search}`;
+      const current = currentLocationRef.current;
+      void navigateRef.current(
+        {
+          pathname: current.pathname,
+          search: normalized,
+          hash: current.hash,
+        },
+        { replace },
+      );
+    };
+    adapterRef.current = {
+      getSearch: () => currentLocationRef.current.search,
+      pushSearch: (search) => navigateSearch(search, false),
+      replaceSearch: (search) => navigateSearch(search, true),
+      subscribe: (listener) => {
+        listenersRef.current.add(listener);
+        return () => listenersRef.current.delete(listener);
+      },
+    };
+  }
+
+  useEffect(() => {
+    for (const listener of listenersRef.current) {
+      listener(routerLocation.search);
+    }
+  }, [routerLocation.search]);
+
+  const locationAdapter = adapterRef.current;
   const runtime = useMemo(
     () =>
       loaded.createRuntime({
-        search: window.location.search,
+        search: locationAdapter.getSearch(),
         storage: window.localStorage,
+        location: locationAdapter,
       }),
-    [loaded],
+    [loaded, locationAdapter],
   );
   return (
     <ViewHost

@@ -169,7 +169,7 @@ export class WbTrackedChangesAdapterImpl implements WbTrackedChangesAdapter {
 
   /**
    * Commit-time application of one collected decision to the doc, run by the sitting
-   * client just before block-splice and the R5 POST. Accept keeps the inserted text and
+   * client just before the canonical materialize render and the R5 POST. Accept keeps the inserted text and
    * removes the marks, Reject removes the inserted text and restores the original, and the
    * routing verbs (redirect, defer, endorse) leave the marks in place so the proposal
    * stays open. edit_confirm accepts the tracked edit here, and its verbatim amend_content

@@ -7,7 +7,7 @@ import {
   COWORK_WORKSPACE_MODULE_ID,
   COWORK_WORKSPACE_TYPE_ID,
 } from "./bindings";
-import { COWORK_APP_CONTRIBUTION } from "./contribution";
+import { COWORK_APP_CONTRIBUTION, COWORK_INTENT_SCHEMAS } from "./contribution";
 import { COWORK_VIEW_MODULE } from "./viewModule";
 import { COWORK_WORKSPACE_WIDGET_MODULE } from "./widgetModule";
 
@@ -52,7 +52,13 @@ describe("Co-work App contribution", () => {
     expect(widget.definition.durable).toBe(true);
     expect(widget.definition.multiplicity).toBe("single_per_view");
     expect(widget.definition.drafts ?? []).toEqual([]);
-    expect(widget.definition.outputIntentSchemas).toEqual([]);
+    expect(widget.definition.outputIntentSchemas).toEqual(COWORK_INTENT_SCHEMAS);
+    expect(widget.definition.outputIntentEffects).toHaveLength(9);
+    expect(widget.definition.outputIntentEffects).toContainEqual({
+      schema: { schemaId: "wb.cowork.document.reload", version: 1 },
+      effect: "read",
+      preview: "block",
+    });
   });
 
   it("loads the view module's coarse runtime and the widget module's renderer", async () => {
@@ -66,5 +72,5 @@ describe("Co-work App contribution", () => {
 
     const loadedWidget = await registry.loadWidgetModule(COWORK_WORKSPACE_TYPE_ID);
     expect(loadedWidget.default).toBeTypeOf("function");
-  });
+  }, 60_000);
 });

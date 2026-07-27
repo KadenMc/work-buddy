@@ -63,6 +63,7 @@ def operation_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str
         return TruthEventEmission(f"event-{len(emitted)}", True)
 
     monkeypatch.setattr(truth_ops, "emit_truth_event", emit)
+    (tmp_path / "scope").mkdir()
     created = truth_ops.truth_store_create.__wrapped__(
         str(tmp_path / "scope"),
         _profile(),
@@ -176,14 +177,15 @@ def test_store_create_registration_failure_rolls_back_and_can_retry(
 
     monkeypatch.setattr(registry, "register", register_then_fail)
     root = tmp_path / "failed-scope"
+    root.mkdir()
     store_id = "1" * 32
     with pytest.raises(RuntimeError, match="forced registry failure"):
         truth_ops.truth_store_create.__wrapped__(
             str(root),
             _profile(store_id),
-        )
+    )
 
-    assert not (root / ".wb-truth").exists()
+    assert not (root / ".wbuddy").exists()
     assert registry.list_stores(refresh=False) == ()
     assert emitted == []
 
@@ -193,12 +195,13 @@ def test_store_create_registration_failure_rolls_back_and_can_retry(
         _profile(store_id),
     )
     assert retried["store"]["store_id"] == store_id
-    assert (root / ".wb-truth" / "store.db").is_file()
+    assert (root / ".wbuddy" / "cowork" / "store.db").is_file()
+    assert (root / ".wbuddy" / "manifest.yaml").is_file()
     assert [row.store_id for row in registry.list_stores(refresh=False)] == [store_id]
     assert emitted == ["truth.store_created"]
 
 
-def test_store_create_failure_never_deletes_a_preexisting_sidecar(
+def test_generic_store_create_rejects_partial_cowork_directory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -207,24 +210,23 @@ def test_store_create_failure_never_deletes_a_preexisting_sidecar(
     monkeypatch.setattr(
         truth_ops,
         "emit_truth_event",
-        lambda *args, **kwargs: pytest.fail("failed create must not emit"),
+        lambda *args, **kwargs: TruthEventEmission("event-create", True),
     )
-    root = tmp_path / "existing-scope"
-    sidecar = root / ".wb-truth"
-    sidecar.mkdir(parents=True)
-    sentinel = sidecar / "preexisting.txt"
-    sentinel.write_text("keep", encoding="utf-8")
-    store_id = "2" * 32
-    with pytest.raises(InvariantViolation, match="sidecar already exists"):
+    root = tmp_path / "ordinary-root"
+    partial_canonical = root / ".wbuddy" / "cowork"
+    partial_canonical.mkdir(parents=True)
+    sentinel = partial_canonical / "interrupted-setup"
+    sentinel.write_text("preserve", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="no longer available"):
         truth_ops.truth_store_create.__wrapped__(
             str(root),
-            _profile(store_id),
+            _profile("3" * 32),
         )
 
-    assert sentinel.read_text(encoding="utf-8") == "keep"
-    assert not (sidecar / "store.db").exists()
-    assert sorted(path.name for path in sidecar.iterdir()) == ["preexisting.txt"]
-    assert registry.list_stores(refresh=False) == ()
+    assert sentinel.read_text(encoding="utf-8") == "preserve"
+    assert not (partial_canonical / "store.db").exists()
+    assert not (partial_canonical / "store.yaml").exists()
 
 
 def test_agent_capture_validates_locator_and_forces_producer_identity(
@@ -678,6 +680,7 @@ def test_false_rejection_preserves_required_structured_fields(
 ) -> None:
     required_profile = _profile()
     required_profile["required_fields"] = {"fact": ["subject"]}
+    (tmp_path / "structured-scope").mkdir()
     created = truth_ops.truth_store_create.__wrapped__(
         str(tmp_path / "structured-scope"),
         required_profile,

@@ -13,10 +13,18 @@ export interface CoworkYdocPull {
   readonly snapshot: Uint8Array | null;
   /** Content hash of the snapshot blob when one leads the body (`X-WB-Snapshot-Sha256`). */
   readonly snapshotSha256: string | null;
+  /** Stable logical CRDT lineage (`X-WB-Ydoc-Generation`); compaction preserves it. */
+  readonly ydocGeneration: string;
   /** Update batches appended after the snapshot (full pull) or after the offset (slice). */
   readonly batches: readonly Uint8Array[];
   /** Latest content hash (`X-WB-Doc-Sha256`), the optimistic-concurrency base for a push. */
   readonly docSha256: string;
+  /** Canonical Y.Doc concurrency head (`X-WB-Ydoc-Head-Sha256`). */
+  readonly structuredHeadSha256?: string;
+  /** Markdown projection pointer (`X-WB-Projection-Sha256`). */
+  readonly projectionSha256?: string;
+  /** True when an old/out-of-epoch cursor forced a complete pull. */
+  readonly cursorReset?: boolean;
   /** Opaque cursor for the next pull (`X-WB-Next-Offset`). */
   readonly nextOffset: string;
 }
@@ -37,6 +45,10 @@ export interface CoworkYdocPushRequest {
   readonly batch: Uint8Array;
   /** The content hash the client based this batch on (`X-WB-Base-Sha256`). */
   readonly baseSha256: string;
+  /** Canonical structured concurrency base (`X-WB-Base-Ydoc-Sha256`). */
+  readonly baseStructuredHeadSha256?: string;
+  /** Logical CRDT lineage precondition (`X-WB-Base-Ydoc-Generation`). */
+  readonly baseYdocGeneration: string;
   /** Present when the client has just compacted; the server content-addresses the blob. */
   readonly compaction?: CoworkYdocCompaction;
 }
@@ -46,12 +58,17 @@ export type CoworkYdocPushResult =
       readonly ok: true;
       readonly applied: boolean;
       readonly docSha256: string;
+      readonly structuredHeadSha256?: string;
+      readonly projectionSha256?: string;
+      readonly ydocGeneration: string;
       readonly nextOffset: string;
     }
   | {
       readonly ok: false;
       readonly error: "stale_base";
       readonly serverDocSha256: string;
+      readonly serverStructuredHeadSha256?: string;
+      readonly serverYdocGeneration?: string;
     };
 
 export interface CoworkYdocTransport {

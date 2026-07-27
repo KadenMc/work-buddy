@@ -72,7 +72,10 @@ def test_truth_registry_is_a_vital_migrated_database(tmp_path: Path) -> None:
     _apply_migrations_inplace("truth_registry", restored)
     conn = sqlite3.connect(restored)
     try:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert (
+            conn.execute("PRAGMA user_version").fetchone()[0]
+            == TRUTH_REGISTRY_MIGRATIONS.target_version
+        )
         assert conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' "
             "AND name = 'truth_stores'"

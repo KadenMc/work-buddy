@@ -936,7 +936,10 @@ def test_migrate_all_reports_unreachable_rows(cli_store, monkeypatch, capsys):
             assert refresh is True
             return (
                 SimpleNamespace(path=cli_store.paths.sidecar, reachable=True),
-                SimpleNamespace(path=Path("Z:/missing/.wb-truth"), reachable=False),
+                SimpleNamespace(
+                    path=Path("Z:/missing/.wbuddy/cowork"),
+                    reachable=False,
+                ),
             )
 
         def touch(self, store):

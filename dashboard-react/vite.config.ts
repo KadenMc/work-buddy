@@ -1,6 +1,18 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
+const dashboardProxyTarget =
+  process.env.WB_DASHBOARD_PROXY_TARGET || "http://127.0.0.1:5127";
+
+const dashboardProxy = {
+  "/api": dashboardProxyTarget,
+  "/favicon.svg": dashboardProxyTarget,
+  "/app/favicon.svg": {
+    target: dashboardProxyTarget,
+    rewrite: () => "/favicon.svg",
+  },
+};
+
 // The Flask dashboard serves the built app same-origin at /app, with the
 // hashed build output under /app/assets/ (see the react_app routes in
 // work_buddy/dashboard/service.py). `base` makes the built index.html
@@ -68,19 +80,16 @@ export default defineConfig({
     // Honor an externally assigned port (preview harnesses set PORT);
     // fall back to Vite's default otherwise.
     port: Number(process.env.PORT) || 5173,
-    proxy: {
-      "/api": "http://127.0.0.1:5127",
-      // base "/app/" makes Vite rewrite the index.html favicon href to
-      // /app/favicon.svg in dev. The real logo is served by Flask at the
-      // root /favicon.svg (docs/logo.svg, the same asset the legacy
-      // dashboard uses), so map both dev URLs onto it. In production the
-      // built index.html keeps href="/favicon.svg" and hits that route
-      // directly, so this is a dev-only bridge.
-      "/favicon.svg": "http://127.0.0.1:5127",
-      "/app/favicon.svg": {
-        target: "http://127.0.0.1:5127",
-        rewrite: () => "/favicon.svg",
-      },
-    },
+    // base "/app/" makes Vite rewrite the index.html favicon href to
+    // /app/favicon.svg in dev. The real logo is served by Flask at the
+    // root /favicon.svg (docs/logo.svg, the same asset the legacy
+    // dashboard uses), so map both dev URLs onto it.
+    proxy: dashboardProxy,
+  },
+  preview: {
+    // The isolated Co-work lifecycle harness exercises the production build
+    // through Vite preview. Keep its same-origin API contract identical to
+    // development, including the explicit backend target override.
+    proxy: dashboardProxy,
   },
 });

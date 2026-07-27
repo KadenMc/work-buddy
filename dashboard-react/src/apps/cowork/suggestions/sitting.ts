@@ -1,80 +1,60 @@
+import { CoworkHttpError, normalizeCoworkError } from "../providers/errors";
 import { sha256Hex } from "../persistence/hashing";
 import type {
   DecisionItem,
-  MaterializePayload,
+  SittingDocumentCommit,
   SittingItemResult,
-  SittingRequest,
+  SittingPrepareBody,
+  SittingPrepared,
   SittingResponse,
 } from "./types";
 
-/**
- * The R5 sitting submission client (surface section 1.5), the ONLY decision path. The
- * client collects staged DecisionItems, optionally carries the block-spliced materialize
- * block, and POSTs the frozen R5 shape to /api/truth/doc/<id>/marks. The route mints the
- * gestures, the client mints nothing. The transport is a seam so a same-origin fetch and
- * an in-memory double are interchangeable, and the live route wires at the join.
- */
-
-export interface CoworkSittingRequest {
+export interface CoworkSittingPrepareRequest {
   readonly documentId: string;
   readonly storeId: string;
-  readonly body: SittingRequest;
+  readonly body: SittingPrepareBody;
+}
+
+export interface CoworkSittingCommitRequest {
+  readonly documentId: string;
+  readonly storeId: string;
+  readonly intentId: string;
+  readonly documentCommit: SittingDocumentCommit | null;
 }
 
 export interface CoworkSittingTransport {
-  submit(request: CoworkSittingRequest): Promise<SittingResponse>;
+  prepare(request: CoworkSittingPrepareRequest): Promise<SittingPrepared>;
+  commit(request: CoworkSittingCommitRequest): Promise<SittingResponse>;
+  cancel(documentId: string, storeId: string, intentId: string): Promise<void>;
 }
 
-/** Verbs that accept a tracked edit and so require the materialize block (surface 1.5). */
-const ACCEPT_VERBS = new Set<DecisionItem["verb"]>(["confirm", "edit_confirm"]);
-
-/**
- * Validate a staged sitting against the R5 per-verb rules before it is posted, so a
- * malformed item never reaches the route. amend_content is required for edit_confirm and
- * redirect_note for redirect, and the materialize block is present exactly when the
- * sitting contains any accept verb.
- */
-export const validateSitting = (
-  items: readonly DecisionItem[],
-  materialize: MaterializePayload | null,
-): void => {
+/** Validate fields whose requirements are knowable before the prepare request. */
+export const validateSitting = (items: readonly DecisionItem[]): void => {
+  if (items.length === 0) throw new Error("a sitting requires at least one decision");
   for (const item of items) {
-    if (item.verb === "edit_confirm" && (item.amend_content ?? "").length === 0) {
+    if (item.verb === "edit_confirm" && (item.amend_content ?? "").trim().length === 0) {
       throw new Error(`edit_confirm on ${item.proposal_id} requires amend_content`);
     }
-    if (item.verb === "redirect" && (item.redirect_note ?? "").length === 0) {
+    if (item.verb === "redirect" && (item.redirect_note ?? "").trim().length === 0) {
       throw new Error(`redirect on ${item.proposal_id} requires redirect_note`);
     }
-  }
-  const hasAccept = items.some((item) => ACCEPT_VERBS.has(item.verb));
-  if (hasAccept && materialize === null) {
-    throw new Error("a sitting containing an accept verb requires a materialize block");
-  }
-  if (!hasAccept && materialize !== null) {
-    throw new Error("a sitting with no accept verb must not carry a materialize block");
+    if (
+      item.verb === "reject_as_preference" &&
+      (item.preference_text ?? "").trim().length === 0 &&
+      (item.result_claim_id ?? "").trim().length === 0
+    ) {
+      throw new Error(
+        `reject_as_preference on ${item.proposal_id} requires preference_text or result_claim_id`,
+      );
+    }
   }
 };
 
-/**
- * Build the materialize block from the client-rendered Markdown, computing the content
- * hash so the server can verify rendered_markdown re-hashes to post_apply_content_sha256
- * (surface section 1.5, S5). The client owns the serialization (C3, no server serializer).
- */
-export const buildMaterializePayload = async (
-  renderedMarkdown: string,
-): Promise<MaterializePayload> => ({
+/** Retained as a small hashing utility for callers and compatibility tests. */
+export const buildMaterializePayload = async (renderedMarkdown: string) => ({
   rendered_markdown: renderedMarkdown,
   post_apply_content_sha256: await sha256Hex(new TextEncoder().encode(renderedMarkdown)),
 });
-
-export interface SubmitSittingParams {
-  readonly documentId: string;
-  readonly storeId: string;
-  /** Doc hash the whole sitting was composed against (advisory concurrency). */
-  readonly baseDocSha256: string;
-  readonly items: readonly DecisionItem[];
-  readonly materialize: MaterializePayload | null;
-}
 
 export class CoworkSittingClient {
   readonly #transport: CoworkSittingTransport;
@@ -83,27 +63,28 @@ export class CoworkSittingClient {
     this.#transport = transport;
   }
 
-  /** Validate, compose the frozen R5 body, and post it through the transport. */
-  async submit(params: SubmitSittingParams): Promise<SittingResponse> {
-    validateSitting(params.items, params.materialize);
-    const body: SittingRequest = {
-      base_doc_sha256: params.baseDocSha256,
-      items: [...params.items],
-      materialize: params.materialize,
-    };
-    return this.#transport.submit({
-      documentId: params.documentId,
-      storeId: params.storeId,
-      body,
-    });
+  async prepare(request: CoworkSittingPrepareRequest): Promise<SittingPrepared> {
+    validateSitting(request.body.items);
+    return this.#transport.prepare(request);
+  }
+
+  commit(request: CoworkSittingCommitRequest): Promise<SittingResponse> {
+    return this.#transport.commit(request);
+  }
+
+  cancel(documentId: string, storeId: string, intentId: string): Promise<void> {
+    return this.#transport.cancel(documentId, storeId, intentId);
   }
 }
 
-/**
- * Same-origin fetch transport for the live route (surface section 1.0, I18). Wired at the
- * join, not exercised by the unit tests. Routes call the engine library directly and the
- * button click is the consent boundary, so this posts JSON to the dashboard service.
- */
+const readJson = async (response: Response): Promise<unknown> => {
+  try {
+    return await response.json();
+  } catch {
+    return {};
+  }
+};
+
 export class HttpCoworkSittingTransport implements CoworkSittingTransport {
   readonly #fetch: typeof fetch;
 
@@ -111,97 +92,202 @@ export class HttpCoworkSittingTransport implements CoworkSittingTransport {
     this.#fetch = fetchImpl;
   }
 
-  async submit(request: CoworkSittingRequest): Promise<SittingResponse> {
-    const url = `/api/truth/doc/${encodeURIComponent(request.documentId)}/marks?store_id=${encodeURIComponent(request.storeId)}`;
-    const response = await this.#fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(request.body),
-    });
-    if (!response.ok) {
-      throw new Error(`sitting submission failed with status ${String(response.status)}`);
+  async #request(url: string, init: RequestInit): Promise<Record<string, unknown>> {
+    let response: Response;
+    try {
+      response = await this.#fetch(url, { credentials: "same-origin", ...init });
+    } catch (error) {
+      throw new CoworkHttpError(normalizeCoworkError(error));
     }
-    return (await response.json()) as SittingResponse;
+    const payload = await readJson(response);
+    if (!response.ok) {
+      throw new CoworkHttpError(normalizeCoworkError(payload, response.status));
+    }
+    return typeof payload === "object" && payload !== null
+      ? (payload as Record<string, unknown>)
+      : {};
+  }
+
+  async prepare(request: CoworkSittingPrepareRequest): Promise<SittingPrepared> {
+    return (await this.#request(
+      `/api/truth/doc/${encodeURIComponent(request.documentId)}/sitting/prepare?store_id=${encodeURIComponent(request.storeId)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request.body),
+      },
+    )) as unknown as SittingPrepared;
+  }
+
+  async commit(request: CoworkSittingCommitRequest): Promise<SittingResponse> {
+    const url = `/api/truth/doc/${encodeURIComponent(request.documentId)}/sitting/${encodeURIComponent(request.intentId)}/commit?store_id=${encodeURIComponent(request.storeId)}`;
+    if (request.documentCommit === null) {
+      return (await this.#request(url, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      })) as unknown as SittingResponse;
+    }
+    const form = new FormData();
+    form.append(
+      "metadata",
+      JSON.stringify({
+        snapshot_sha256: request.documentCommit.snapshot_sha256,
+        rendered_sha256: request.documentCommit.rendered_sha256,
+      }),
+    );
+    form.append(
+      "snapshot",
+      new Blob([request.documentCommit.snapshot as BlobPart], {
+        type: "application/octet-stream",
+      }),
+      "document.ydoc",
+    );
+    form.append(
+      "markdown",
+      new Blob([request.documentCommit.rendered_markdown], {
+        type: "text/markdown;charset=utf-8",
+      }),
+      "document.md",
+    );
+    return (await this.#request(url, { method: "PUT", body: form })) as unknown as SittingResponse;
+  }
+
+  async cancel(documentId: string, storeId: string, intentId: string): Promise<void> {
+    await this.#request(
+      `/api/truth/doc/${encodeURIComponent(documentId)}/sitting/${encodeURIComponent(intentId)}?store_id=${encodeURIComponent(storeId)}`,
+      { method: "DELETE" },
+    );
   }
 }
 
-/**
- * In-memory sitting transport double for tests and the offline shell. It records the last
- * request and synthesizes a response that maps each verb to its R5 result kind and fields
- * (surface section 1.5), so a test can assert both the request the client composed and the
- * response shape it handled. Ids listed as stale return rejected_stale_view with no
- * gesture, which flips `partial` true.
- */
+interface MemoryIntent {
+  readonly request: CoworkSittingPrepareRequest;
+  readonly prepared: SittingPrepared;
+  receipt: SittingResponse | null;
+  cancelled: boolean;
+}
+
+const resultFor = (item: DecisionItem, failed = false): SittingItemResult => ({
+  proposal_id: item.proposal_id,
+  verb: item.verb,
+  result: failed
+    ? "rejected_stale_view"
+    : item.verb === "redirect"
+      ? "kept_open_redirected"
+      : item.verb === "defer"
+        ? "kept_open_deferred"
+        : item.verb === "endorse"
+          ? "kept_open_endorsed"
+          : item.verb === "confirm" || item.verb === "edit_confirm"
+            ? "applied"
+            : "closed",
+  base_ok: !failed,
+  gesture_id: failed ? null : `gesture-${item.proposal_id}`,
+  negation_claim_id: null,
+  preference_claim_id: null,
+  new_proposal_id: null,
+  materialized: !failed && (item.verb === "confirm" || item.verb === "edit_confirm"),
+  error: failed ? "canonical_sha256 no longer matches the shown proposal" : null,
+});
+
+/** Deterministic two-phase test double with idempotent prepare and commit receipts. */
 export class InMemoryCoworkSittingTransport implements CoworkSittingTransport {
-  #lastRequest: CoworkSittingRequest | null = null;
-  readonly #staleProposalIds: ReadonlySet<string>;
+  readonly #failedProposalIds: ReadonlySet<string>;
+  readonly #byKey = new Map<string, MemoryIntent>();
+  readonly #byIntent = new Map<string, MemoryIntent>();
+  #lastPrepareRequest: CoworkSittingPrepareRequest | null = null;
+  #lastCommitRequest: CoworkSittingCommitRequest | null = null;
 
-  constructor(staleProposalIds: readonly string[] = []) {
-    this.#staleProposalIds = new Set(staleProposalIds);
+  constructor(failedProposalIds: readonly string[] = []) {
+    this.#failedProposalIds = new Set(failedProposalIds);
   }
 
-  get lastRequest(): CoworkSittingRequest | null {
-    return this.#lastRequest;
+  get lastPrepareRequest(): CoworkSittingPrepareRequest | null {
+    return this.#lastPrepareRequest;
   }
 
-  submit(request: CoworkSittingRequest): Promise<SittingResponse> {
-    this.#lastRequest = request;
-    const results = request.body.items.map((item) => this.#resultFor(item, request));
-    const partial = results.some((result) => result.result !== "applied" && result.gesture_id === null);
-    const materialize =
-      request.body.materialize === null
-        ? null
-        : {
-            file_path: `${request.documentId}.md`,
-            new_file_sha256: request.body.materialize.post_apply_content_sha256,
-          };
-    return Promise.resolve({ ok: true, partial, results, materialize });
+  get lastCommitRequest(): CoworkSittingCommitRequest | null {
+    return this.#lastCommitRequest;
   }
 
-  #resultFor(item: DecisionItem, request: CoworkSittingRequest): SittingItemResult {
-    const base: SittingItemResult = {
-      proposal_id: item.proposal_id,
-      verb: item.verb,
-      result: "closed",
-      base_ok: true,
-      gesture_id: `gesture-${item.proposal_id}`,
-      negation_claim_id: null,
-      preference_claim_id: null,
-      new_proposal_id: null,
-      materialized: false,
-      error: null,
+  async prepare(request: CoworkSittingPrepareRequest): Promise<SittingPrepared> {
+    this.#lastPrepareRequest = request;
+    const existing = this.#byKey.get(request.body.idempotency_key);
+    if (existing !== undefined) {
+      return existing.receipt === null
+        ? existing.prepared
+        : { ...existing.prepared, state: "committed", result: existing.receipt };
+    }
+    const admitted = request.body.items.filter(
+      (item) => !this.#failedProposalIds.has(item.proposal_id),
+    );
+    const failed = request.body.items
+      .filter((item) => this.#failedProposalIds.has(item.proposal_id))
+      .map((item) => resultFor(item, true));
+    const intentId = `sitting-${this.#byIntent.size + 1}`;
+    const prepared: SittingPrepared = {
+      ok: true,
+      intent_id: intentId,
+      state: "prepared",
+      expires_at: new Date(Date.now() + 15 * 60_000).toISOString(),
+      expected_file_sha256: request.body.expected_file_sha256,
+      expected_ydoc_head_sha256: request.body.expected_ydoc_head_sha256,
+      expected_snapshot_sha256: "a".repeat(64),
+      admitted_items: admitted,
+      failed_items: failed,
+      requires_document_commit: admitted.some(
+        (item) => item.verb === "confirm" || item.verb === "edit_confirm",
+      ),
     };
+    const intent: MemoryIntent = { request, prepared, receipt: null, cancelled: false };
+    this.#byKey.set(request.body.idempotency_key, intent);
+    this.#byIntent.set(intentId, intent);
+    return prepared;
+  }
 
-    if (this.#staleProposalIds.has(item.proposal_id)) {
-      return {
-        ...base,
-        result: "rejected_stale_view",
-        gesture_id: null,
-        error: "stale_view",
-      };
+  async commit(request: CoworkSittingCommitRequest): Promise<SittingResponse> {
+    this.#lastCommitRequest = request;
+    const intent = this.#byIntent.get(request.intentId);
+    if (intent === undefined || intent.cancelled) throw new Error("sitting intent unavailable");
+    if (intent.receipt !== null) return intent.receipt;
+    const prepared = intent.prepared;
+    if (prepared.requires_document_commit !== (request.documentCommit !== null)) {
+      throw new Error("sitting commit payload does not match the prepared intent");
     }
+    const results = intent.request.body.items.map((item) =>
+      resultFor(item, this.#failedProposalIds.has(item.proposal_id)),
+    );
+    const snapshotSha256 =
+      request.documentCommit?.snapshot_sha256 ?? prepared.expected_snapshot_sha256;
+    const receipt: SittingResponse = {
+      ok: true,
+      intent_id: request.intentId,
+      partial: prepared.failed_items.length > 0,
+      results,
+      materialize:
+        request.documentCommit === null
+          ? null
+          : {
+              new_file_sha256: request.documentCommit.rendered_sha256,
+              document_version_id: `version-${request.intentId}`,
+            },
+      structured_head_sha256: snapshotSha256,
+      snapshot_sha256: snapshotSha256,
+      routing_deliveries: prepared.admitted_items
+        .filter((item) => item.verb === "redirect" || item.verb === "endorse")
+        .map((item) => ({
+          verb: item.verb as "redirect" | "endorse",
+          proposal_id: item.proposal_id,
+          ...(item.redirect_note === undefined ? {} : { note: item.redirect_note }),
+        })),
+    };
+    intent.receipt = receipt;
+    return receipt;
+  }
 
-    switch (item.verb) {
-      case "confirm":
-      case "edit_confirm":
-        return {
-          ...base,
-          result: "applied",
-          materialized: request.body.materialize !== null,
-        };
-      case "reject_plain":
-      case "dismiss":
-        return base;
-      case "reject_as_false":
-        return { ...base, negation_claim_id: `negation-${item.proposal_id}` };
-      case "reject_as_preference":
-        return { ...base, preference_claim_id: `preference-${item.proposal_id}` };
-      case "redirect":
-        return { ...base, result: "kept_open_redirected" };
-      case "defer":
-        return { ...base, result: "kept_open_deferred" };
-      case "endorse":
-        return { ...base, result: "kept_open_endorsed" };
-    }
+  async cancel(_documentId: string, _storeId: string, intentId: string): Promise<void> {
+    const intent = this.#byIntent.get(intentId);
+    if (intent !== undefined && intent.receipt === null) intent.cancelled = true;
   }
 }

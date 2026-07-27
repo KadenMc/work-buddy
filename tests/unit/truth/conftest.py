@@ -51,7 +51,7 @@ def profile_writer() -> Callable[..., Path]:
     ) -> Path:
         from work_buddy.truth.identity import new_id
 
-        sidecar = root / ".wb-truth"
+        sidecar = root / ".wbuddy" / "cowork"
         sidecar.mkdir(parents=True, exist_ok=True)
         payload: dict[str, Any] = {
             "store_id": store_id or new_id(),
@@ -108,10 +108,10 @@ def _document_profile(store_id: str | None = None) -> dict[str, Any]:
 
 @pytest.fixture
 def document_store(truth_root: Path) -> tuple[Any, StorePaths]:
-    """A real v2 store with the document_surface profile enabled.
+    """A real schema-v4 store with the document_surface profile enabled.
 
-    Returns (store, StorePaths). The engine runs the _m002 migration, so the
-    store reports SCHEMA_VERSION 2 with the six co-work tables present.
+    Returns (store, StorePaths). Creation applies every current migration, including
+    document-version history and the Co-work lifecycle intent tables.
     """
     from work_buddy.truth.store import TruthStore
 

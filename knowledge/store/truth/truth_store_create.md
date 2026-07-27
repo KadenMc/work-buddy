@@ -1,7 +1,7 @@
 ---
 name: Truth Store Create
 kind: capability
-description: Create and register one scoped Truth store from a complete profile. A store id is minted when neither the request nor profile supplies one.
+description: Safely initialize and register one Folder's canonical .wbuddy/cowork Truth store from a complete profile. A store id is minted when neither the request nor profile supplies one.
 capability_name: truth_store_create
 category: truth
 op: op.wb.truth_store_create
@@ -9,7 +9,7 @@ schema_version: wb-capability/v1
 parameters:
   root:
     type: str
-    description: Project or scope root that will own the new .wb-truth sidecar. Creation refuses a pre-existing sidecar without mutating it.
+    description: Folder that will own .wbuddy/manifest.yaml and the canonical .wbuddy/cowork sidecar. Initialization refuses unsafe, nested, ambiguous, or pre-existing state without partial mutation.
     required: true
   profile:
     type: dict

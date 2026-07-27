@@ -39,6 +39,16 @@ export class ProposalIngestor {
     this.#anchored.clear();
   }
 
+  /**
+   * A committed sitting adopts a canonical clone with every ephemeral mark stripped. Forget
+   * both the previous pull and anchored ids; the immediate post-commit reload then projects
+   * only the proposals the ledger still reports as open.
+   */
+  resetProjection(): void {
+    this.#proposals = [];
+    this.#anchored.clear();
+  }
+
   /** Record the latest open-proposal set from a pull and project what can be anchored. */
   setProposals(proposals: readonly ProposalInput[]): void {
     this.#proposals = proposals;

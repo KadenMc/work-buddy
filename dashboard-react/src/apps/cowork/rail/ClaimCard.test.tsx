@@ -64,7 +64,7 @@ describe("ClaimCard", () => {
     renderCard({
       staged: { claimId: "cl1", verb: "challenge", canonicalSha256: "canon" },
     });
-    expect(screen.getByText("Staged: Challenge")).toBeVisible();
+    expect(screen.getByText("Selected: Challenge")).toBeVisible();
   });
 
   it("has no accessibility violations", async () => {

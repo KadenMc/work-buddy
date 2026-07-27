@@ -9,7 +9,6 @@ rendered from durable rows, and committed with one exact gesture.
 from __future__ import annotations
 
 import json
-import shutil
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
@@ -22,7 +21,7 @@ from work_buddy.consent import (
 )
 from work_buddy.mcp_server.op_registry import register_op
 from work_buddy.truth.anchors import CompositeSelector
-from work_buddy.truth.contracts import Actor, InvariantViolation, StorePaths
+from work_buddy.truth.contracts import Actor, InvariantViolation
 from work_buddy.truth.events import emit_truth_event
 from work_buddy.truth.identity import (
     canonical_claim_payload,
@@ -71,58 +70,6 @@ _IDENTITY_PLACEHOLDERS = frozenset(
 
 def _registry() -> TruthStoreRegistry:
     return TruthStoreRegistry()
-
-
-def _reserve_new_sidecar(paths: StorePaths) -> Path:
-    """Reserve an absent sidecar and return its unforgeable cleanup marker.
-
-    An existing path is never claimed by this invocation.  The marker lets a
-    failed create prove it still owns the directory before recursive cleanup.
-    """
-
-    try:
-        paths.sidecar.mkdir(parents=True, exist_ok=False)
-    except FileExistsError as exc:
-        raise InvariantViolation(
-            f"truth sidecar already exists: {paths.sidecar}"
-        ) from exc
-    marker = paths.sidecar / f".store-create-{new_id()}.pending"
-    try:
-        marker.touch(exist_ok=False)
-    except Exception as exc:
-        try:
-            paths.sidecar.rmdir()
-        except OSError as cleanup_exc:
-            raise InvariantViolation(
-                "truth sidecar reservation failed and cleanup was incomplete: "
-                f"{cleanup_exc}"
-            ) from exc
-        raise
-    return marker
-
-
-def _rollback_store_create(
-    registry: TruthStoreRegistry,
-    paths: StorePaths,
-    *,
-    marker: Path,
-) -> tuple[str, ...]:
-    """Compensate only state this invocation can prove it introduced."""
-
-    failures: list[str] = []
-    try:
-        registry.unregister(paths.sidecar)
-    except Exception as exc:
-        failures.append(f"registry cleanup failed: {exc}")
-    try:
-        if not marker.is_file():
-            raise InvariantViolation(
-                "sidecar ownership marker is missing; refusing recursive cleanup"
-            )
-        shutil.rmtree(paths.sidecar)
-    except Exception as exc:
-        failures.append(f"sidecar cleanup failed: {exc}")
-    return tuple(failures)
 
 
 def _serialize(value: Any) -> Any:
@@ -418,26 +365,26 @@ def truth_store_create(
     registry = _registry()
     if registry.get_by_store_id(requested) is not None:
         raise InvariantViolation(f"truth store identity is already registered: {requested}")
-    paths = StorePaths.from_root(root)
-    if registry.get_by_path(paths.sidecar, refresh=False) is not None:
-        raise InvariantViolation(f"truth store path is already registered: {paths.sidecar}")
-    marker = _reserve_new_sidecar(paths)
-    try:
-        store = TruthStore.create(root, values)
-        registered = registry.register(store)
-        marker.unlink()
-    except Exception as exc:
-        rollback_failures = _rollback_store_create(
-            registry,
-            paths,
-            marker=marker,
-        )
-        if rollback_failures:
-            detail = "; ".join(rollback_failures)
-            raise InvariantViolation(
-                f"truth store creation failed ({exc}); rollback incomplete: {detail}"
-            ) from exc
-        raise
+    from work_buddy.cowork.project_store import ProjectStoreManager
+
+    registry_parent = registry.db_path.parent
+    manager_data_root = (
+        registry_parent.parent if registry_parent.name == "db" else registry_parent
+    )
+    manager = ProjectStoreManager(data_root=manager_data_root)
+    inspection = manager.inspect(root, complete_scan=True)
+    if inspection.fingerprint is None:
+        raise InvariantViolation("Folder inspection did not produce a setup fingerprint")
+    store = manager.initialize(
+        root,
+        registry=registry,
+        inspection_fingerprint=inspection.fingerprint,
+        idempotency_key=f"truth-store-create:{requested}",
+        profile=values,
+    )
+    registered = registry.get_by_store_id(store.store_id, refresh=True)
+    if registered is None:
+        raise InvariantViolation("created Co-work store was not registered")
     emission = emit_truth_event(
         "truth.store_created",
         store_id=store.store_id,

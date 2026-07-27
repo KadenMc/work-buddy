@@ -215,7 +215,7 @@ def test_document_surface_round_trips_lossless_including_ydoc_blob(
 
     exported = export_store(source)
     objects = _objects(exported.path.read_bytes())
-    assert objects[0]["format_version"] == FORMAT_VERSION == 3
+    assert objects[0]["format_version"] == FORMAT_VERSION == 4
 
     record_types = {
         item["record_type"]
@@ -240,7 +240,7 @@ def test_document_surface_round_trips_lossless_including_ydoc_blob(
     imported = import_store(exported.path, target, registry=registry)
     restored = imported.store
 
-    assert imported.source_format_version == 3
+    assert imported.source_format_version == FORMAT_VERSION
     assert restored.store_id == source.store_id
     for table, order in DOC_TABLES.items():
         assert _table_rows(restored, table, order) == _table_rows(source, table, order)
@@ -390,6 +390,22 @@ def _repack(objects: list[dict[str, Any]]) -> bytes:
     footer["last_seq"] = data[-1]["seq"] if data else 0
     footer["stream_sha256"] = sha256_bytes(prefix)
     return prefix + _canonical_line(footer)
+
+
+def test_v3_stream_upcasts_proposal_structured_base_to_null(tmp_path: Path) -> None:
+    objects = _seeded_objects(tmp_path)
+    objects[0]["format_version"] = 3
+    objects[0]["store_info"]["schema_version"] = 2
+    proposal = next(item for item in objects if item["record_type"] == "proposal")
+    proposal["record"].pop("base_structured_head_sha256")
+
+    target = tmp_path / "v3-target"
+    target.mkdir()
+    imported = import_store(_repack(objects), target, registry=FakeRegistry())
+
+    assert imported.source_format_version == 3
+    row = _table_rows(imported.store, "proposals", "id")[0]
+    assert row["base_structured_head_sha256"] is None
 
 
 @pytest.mark.parametrize(

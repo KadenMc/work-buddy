@@ -122,24 +122,15 @@ export interface WbTrackedChangesAdapter {
 }
 
 /**
- * The R5 sitting wire shapes (surface section 1.5), the ONLY decision path. The client
- * collects DecisionItems, optionally applies accepted edits to its Y.Doc and posts the
- * rendered Markdown, and the route mints the gestures.
+ * The recoverable two-phase sitting wire shapes. Prepare validates and freezes the
+ * admissible decisions without mutating the ledger, Markdown, or Y.Doc. A document-changing
+ * sitting then commits a complete client-built snapshot plus its exact Markdown projection.
  */
-
-export interface MaterializePayload {
-  /** The block-spliced Markdown the client rendered after applying accepted edits. */
-  readonly rendered_markdown: string;
-  /** Lowercase hex SHA-256 of rendered_markdown, verified server-side. */
-  readonly post_apply_content_sha256: string;
-}
-
-export interface SittingRequest {
-  /** Doc hash the whole sitting was composed against (advisory concurrency). */
-  readonly base_doc_sha256: string;
+export interface SittingPrepareBody {
   readonly items: readonly DecisionItem[];
-  /** Present when the sitting contains any confirm / edit_confirm. */
-  readonly materialize: MaterializePayload | null;
+  readonly expected_file_sha256: string;
+  readonly expected_ydoc_head_sha256: string;
+  readonly idempotency_key: string;
 }
 
 export type SittingResultKind =
@@ -173,7 +164,39 @@ export interface SittingItemResult {
 
 export interface SittingResponse {
   readonly ok: true;
+  readonly intent_id: string;
   readonly partial: boolean;
   readonly results: readonly SittingItemResult[];
-  readonly materialize: { readonly file_path: string; readonly new_file_sha256: string } | null;
+  readonly materialize: {
+    readonly new_file_sha256: string;
+    readonly document_version_id: string;
+  } | null;
+  readonly structured_head_sha256: string;
+  readonly snapshot_sha256: string;
+  readonly routing_deliveries?: readonly {
+    readonly verb: "redirect" | "endorse";
+    readonly proposal_id: string;
+    readonly note?: string | null;
+  }[];
+}
+
+export interface SittingPrepared {
+  readonly ok: true;
+  readonly intent_id: string;
+  readonly state: "prepared" | "committed" | "cancelled";
+  readonly expires_at: string;
+  readonly expected_file_sha256: string;
+  readonly expected_ydoc_head_sha256: string;
+  readonly expected_snapshot_sha256: string;
+  readonly admitted_items: readonly DecisionItem[];
+  readonly failed_items: readonly SittingItemResult[];
+  readonly requires_document_commit: boolean;
+  readonly result?: SittingResponse;
+}
+
+export interface SittingDocumentCommit {
+  readonly snapshot: Uint8Array;
+  readonly snapshot_sha256: string;
+  readonly rendered_markdown: string;
+  readonly rendered_sha256: string;
 }

@@ -110,7 +110,7 @@ def _restore_checked_in_frozen_v1(
     assert manifest["store_id"] == FROZEN_STORE_ID
 
     root = tmp_path / "checked-in-frozen-v1"
-    sidecar = root / ".wb-truth"
+    sidecar = root / ".wbuddy" / "cowork"
     sidecar.mkdir(parents=True)
     conn = sqlite3.connect(str(sidecar / "store.db"))
     try:
@@ -154,7 +154,7 @@ def test_checked_in_frozen_v1_store_migrates_with_history_and_workload_intact(
 ) -> None:
     fixture = load_workload(fixture_path)
     root, manifest = _restore_checked_in_frozen_v1(tmp_path)
-    database = root / ".wb-truth" / "store.db"
+    database = root / ".wbuddy" / "cowork" / "store.db"
     assert _database_version(database) == 1
     frozen_history = _durable_history(database)
     assert frozen_history["store_info"] == (
@@ -211,7 +211,7 @@ def test_checked_in_frozen_v1_store_migrates_with_history_and_workload_intact(
     snapshot = upgraded.paths.db.with_name("store.pre-v1.db")
     assert snapshot.is_file()
     assert _database_version(snapshot) == 1
-    assert _database_version(upgraded.paths.db) == 2
+    assert _database_version(upgraded.paths.db) == truth_migrations.SCHEMA_VERSION
     assert _durable_history(snapshot) == frozen_history
 
     upgraded_history = _durable_history(upgraded.paths.db)
@@ -221,10 +221,15 @@ def test_checked_in_frozen_v1_store_migrates_with_history_and_workload_intact(
     assert (
         upgraded_history["migration_history"][:1] == frozen_history["migration_history"]
     )
-    assert [row[0] for row in upgraded_history["migration_history"]] == [1, 2]
+    assert [row[0] for row in upgraded_history["migration_history"]] == list(
+        range(1, truth_migrations.SCHEMA_VERSION + 1)
+    )
     assert upgraded.store_id == FROZEN_STORE_ID
     assert upgraded.get_claim(FROZEN_CLAIM_ID) is not None
-    assert b'"schema_version":2' in upgraded.paths.claims_export.read_bytes()
+    assert (
+        f'"schema_version":{truth_migrations.SCHEMA_VERSION}'.encode("ascii")
+        in upgraded.paths.claims_export.read_bytes()
+    )
     with upgraded.connect() as conn:
         names = {
             row[0]
@@ -250,7 +255,10 @@ def test_checked_in_frozen_v1_store_migrates_with_history_and_workload_intact(
     result = WorkloadRunner(upgraded, fixture).run()
 
     assert result.restored_store.store_id == FROZEN_STORE_ID
-    assert _database_version(result.restored_store.paths.db) == 2
+    assert (
+        _database_version(result.restored_store.paths.db)
+        == truth_migrations.SCHEMA_VERSION
+    )
     for surviving_store in (upgraded, result.restored_store):
         seed = surviving_store.get_claim(FROZEN_CLAIM_ID)
         assert seed is not None

@@ -6,16 +6,18 @@ live port is bound and the routes resolve stores exactly as in production.
 
 from __future__ import annotations
 
+import io
+import json
+import struct
+
 from work_buddy.cowork import api
-from work_buddy.truth import proposals
+from work_buddy.truth import documents, ydoc_store
 from work_buddy.truth.identity import sha256_bytes, sha256_text
 
 from .conftest import (
     DOC_QUOTE,
     DOC_REL,
     NOW,
-    gesture_actor_ref,
-    gesture_count,
     write_doc_file,
 )
 
@@ -24,33 +26,160 @@ def _url(path: str, store_id: str) -> str:
     return f"{path}?store_id={store_id}"
 
 
+def test_cowork_host_file_routes_reject_non_loopback_callers(client, store_ctx):
+    remote = {"REMOTE_ADDR": "100.64.0.42"}
+
+    folders = client.get(
+        "/api/truth/cowork/folders",
+        environ_overrides=remote,
+    )
+    documents = client.get(
+        _url("/api/truth/doc/list", store_ctx["store_id"]),
+        environ_overrides=remote,
+    )
+
+    for response in (folders, documents):
+        assert response.status_code == 403
+        assert response.get_json() == {
+            "ok": False,
+            "error": {
+                "code": "cowork_local_only",
+                "message": (
+                    "Co-work can access host files and is available only "
+                    "from this machine."
+                ),
+                "retryable": False,
+            },
+        }
+
+
+def test_cowork_host_file_routes_reject_loopback_reverse_proxies(client):
+    scenarios = (
+        {
+            "REMOTE_ADDR": "127.0.0.1",
+            "HTTP_HOST": "workstation.example.ts.net",
+        },
+        {
+            "REMOTE_ADDR": "127.0.0.1",
+            "HTTP_HOST": "localhost:5127",
+            "HTTP_TAILSCALE_USER_LOGIN": "reviewer@example.com",
+        },
+        {
+            "REMOTE_ADDR": "127.0.0.1",
+            "HTTP_HOST": "localhost:5127",
+            "HTTP_FORWARDED": "for=100.64.0.42",
+        },
+        {
+            "REMOTE_ADDR": "127.0.0.1",
+            "HTTP_HOST": "localhost:5127",
+            "HTTP_VIA": "1.1 proxy.example",
+        },
+        {
+            "REMOTE_ADDR": "127.0.0.1",
+            "HTTP_HOST": "localhost:5127",
+            "HTTP_X_FORWARDED_FOR": "100.64.0.42",
+        },
+        {
+            "REMOTE_ADDR": "127.0.0.1",
+            "HTTP_HOST": "localhost:5127",
+            "HTTP_X_FORWARDED_HOST": "workstation.example.ts.net",
+        },
+        {
+            "REMOTE_ADDR": "127.0.0.1",
+            "HTTP_HOST": "localhost:5127",
+            "HTTP_X_FORWARDED_PROTO": "https",
+        },
+        {
+            "REMOTE_ADDR": "127.0.0.1",
+            "HTTP_HOST": "localhost:5127",
+            "HTTP_X_REAL_IP": "100.64.0.42",
+        },
+    )
+
+    for environ in scenarios:
+        response = client.get(
+            "/api/truth/cowork/folders",
+            environ_overrides=environ,
+        )
+        assert response.status_code == 403
+        assert response.get_json()["error"]["code"] == "cowork_local_only"
+
+
+def test_cowork_host_file_routes_allow_direct_loopback_host(client, store_ctx):
+    response = client.get(
+        _url("/api/truth/doc/list", store_ctx["store_id"]),
+        environ_overrides={
+            "REMOTE_ADDR": "::1",
+            "HTTP_HOST": "[::1]:5127",
+        },
+    )
+
+    assert response.status_code == 200
+
+
+def _bootstrap_ready(client, store_ctx, *, path: str, key: str):
+    source = b"# Two-phase route fixture\n\nOriginal body.\n"
+    prepared_response = client.post(
+        _url("/api/truth/doc/bootstrap", store_ctx["store_id"]),
+        data={
+            "metadata": json.dumps(
+                {
+                    "mode": "create",
+                    "path": path,
+                    "idempotency_key": key,
+                }
+            ),
+            "source": (io.BytesIO(source), "source.md"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert prepared_response.status_code == 201
+    prepared = prepared_response.get_json()
+    snapshot = b"YDOC:" + source
+    committed = client.put(
+        _url(
+            f"/api/truth/doc/bootstrap/{prepared['bootstrap_id']}",
+            store_ctx["store_id"],
+        ),
+        data=snapshot,
+        content_type="application/octet-stream",
+        headers={
+            "X-WB-Source-Sha256": sha256_bytes(source),
+            "X-WB-Snapshot-Sha256": sha256_bytes(snapshot),
+            "X-WB-Ydoc-Schema": "cowork-yjs/v1",
+        },
+    )
+    assert committed.status_code == 200
+    return committed.get_json(), source
+
+
 # --- R10 register ----------------------------------------------------------
 
 
-def test_register_imports_then_is_idempotent(client, store_ctx):
+def test_legacy_register_requires_two_phase_bootstrap_for_fresh_path(client, store_ctx):
     write_doc_file(store_ctx["root"])
     body = {"path": DOC_REL, "title": "Throwaway fixture", "profile": "co_authored"}
-    first = client.post(
+    response = client.post(
         _url("/api/truth/doc/register", store_ctx["store_id"]), json=body
     )
-    assert first.status_code == 200
-    payload = first.get_json()
-    assert payload["ok"] is True
-    assert payload["imported"] is True
-    assert payload["document_id"]
-    second = client.post(
-        _url("/api/truth/doc/register", store_ctx["store_id"]), json=body
-    )
-    assert second.get_json()["imported"] is False
+    assert response.status_code == 409
+    assert response.get_json()["error"]["code"] == "bootstrap_required"
+    with store_ctx["store"]._read_connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 0
 
 
-def test_register_rejects_unknown_profile(client, store_ctx):
-    write_doc_file(store_ctx["root"])
+def test_legacy_register_is_read_only_lookup_for_ready_path(client, seeded):
     resp = client.post(
-        _url("/api/truth/doc/register", store_ctx["store_id"]),
-        json={"path": DOC_REL, "title": "x", "profile": "bogus"},
+        _url("/api/truth/doc/register", seeded["store_id"]),
+        # Legacy callers may still send profile/title; lookup never uses them
+        # to create or redefine the already-ready document.
+        json={"path": DOC_REL, "title": "ignored", "profile": "bogus"},
     )
-    assert resp.status_code == 400
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert payload["document_id"] == seeded["document"].id
+    assert payload["imported"] is False
+    assert payload["readiness"]["initialization_state"] == "ready"
 
 
 # --- R1 list / R2 get ------------------------------------------------------
@@ -101,6 +230,11 @@ def test_ydoc_pull_streams_octet_snapshot(client, seeded):
     assert resp.status_code == 200
     assert resp.mimetype == "application/octet-stream"
     assert resp.headers["X-WB-Snapshot-Sha256"] == seeded["snapshot_sha256"]
+    assert resp.headers["X-WB-Ydoc-Generation"] == (
+        documents.current_ydoc_generation(
+            seeded["store"], seeded["document"].id
+        )
+    )
     assert resp.headers["X-WB-Doc-Sha256"] == seeded["content_sha256"]
     # The framed body carries exactly the snapshot segment.
     assert seeded["snapshot_bytes"] in resp.data
@@ -112,7 +246,12 @@ def test_ydoc_push_appends_and_guards_stale_base(client, seeded):
         url,
         data=b"human-edit-batch",
         content_type="application/octet-stream",
-        headers={"X-WB-Base-Sha256": seeded["content_sha256"]},
+        headers={
+            "X-WB-Base-Sha256": seeded["content_sha256"],
+            "X-WB-Base-Ydoc-Generation": documents.current_ydoc_generation(
+                seeded["store"], seeded["document"].id
+            ),
+        },
     )
     assert ok.status_code == 200
     assert ok.get_json()["applied"] is True
@@ -120,154 +259,85 @@ def test_ydoc_push_appends_and_guards_stale_base(client, seeded):
         url,
         data=b"another-batch",
         content_type="application/octet-stream",
-        headers={"X-WB-Base-Sha256": "0" * 64},
+        headers={
+            "X-WB-Base-Sha256": "0" * 64,
+            "X-WB-Base-Ydoc-Generation": documents.current_ydoc_generation(
+                seeded["store"], seeded["document"].id
+            ),
+        },
     )
     assert stale.status_code == 409
     assert stale.get_json()["error"] == "stale_base"
 
 
-# --- R5 marks --------------------------------------------------------------
-
-
-def test_marks_confirm_writes_file_and_threads_identity(client, seeded, make_proposal):
-    proposal = make_proposal()
-    new_body = "# Throwaway fixture\n\nConfirmed revision.\n"
-    resp = client.post(
-        _url(f"/api/truth/doc/{seeded['document'].id}/marks", seeded["store_id"]),
-        json={
-            "base_doc_sha256": seeded["content_sha256"],
-            "items": [
-                {
-                    "proposal_id": proposal.id,
-                    "verb": "confirm",
-                    "canonical_sha256": proposal.canonical_sha256,
-                }
-            ],
-            "materialize": {
-                "rendered_markdown": new_body,
-                "post_apply_content_sha256": sha256_text(new_body),
-            },
-        },
-        headers={"X-WB-User-Ref": "alice-reviewer"},
-    )
-    assert resp.status_code == 200
-    payload = resp.get_json()
-    result = payload["results"][0]
-    assert result["result"] == "applied"
-    assert result["materialized"] is True
-    assert payload["materialize"]["new_file_sha256"] == sha256_text(new_body)
-    assert (seeded["root"] / seeded["rel"]).read_text(encoding="utf-8") == new_body
-    # The gesture carries the threaded dashboard user, never the MCP constant.
-    ref = gesture_actor_ref(seeded["store"], result["gesture_id"])
-    assert ref == "alice-reviewer"
-    assert ref != "work-buddy-user"
-
-
-def test_marks_redirect_routes_guidance_into_the_conversation(
-    client, seeded, make_proposal
+def test_ydoc_push_size_limits_return_typed_413_without_mutation(
+    client, seeded, monkeypatch
 ):
-    proposal = make_proposal()
-    resp = client.post(
-        _url(f"/api/truth/doc/{seeded['document'].id}/marks", seeded["store_id"]),
-        json={
-            "items": [
-                {
-                    "proposal_id": proposal.id,
-                    "verb": "redirect",
-                    "canonical_sha256": proposal.canonical_sha256,
-                    "redirect_note": "Cite the 2024 guideline before rewriting.",
-                }
-            ]
+    document = seeded["document"]
+    store = seeded["store"]
+    url = _url(f"/api/truth/doc/{document.id}/ydoc", seeded["store_id"])
+    head = ydoc_store.current_structured_head(
+        store,
+        document_id=document.id,
+        snapshot_sha256=seeded["snapshot_sha256"],
+    )
+    monkeypatch.setattr(ydoc_store, "MAX_OPAQUE_SEGMENT_BYTES", 8)
+
+    update = client.post(
+        url,
+        data=b"123456789",
+        content_type="application/octet-stream",
+        headers={
+            "X-WB-Base-Ydoc-Sha256": head,
+            "X-WB-Base-Ydoc-Generation": documents.current_ydoc_generation(
+                store, document.id
+            ),
         },
     )
-    assert resp.status_code == 200
-    result = resp.get_json()["results"][0]
-    assert result["result"] == "kept_open_redirected"
-    # The redirect note reaches the proposing agent as a message in the
-    # document's single conversation.
-    from work_buddy.cowork import conversations
-    from work_buddy.conversations.store import get_conversation_with_messages
+    assert update.status_code == 413
+    assert update.get_json()["error"]["code"] == "update_too_large"
 
-    binding = conversations.ensure_document_conversation(
-        document_id=seeded["document"].id,
-        store_id=seeded["store_id"],
+    oversized_snapshot = b"abcdefghi"
+    compacted = (
+        struct.pack(">I", 1)
+        + b"u"
+        + struct.pack(">I", len(oversized_snapshot))
+        + oversized_snapshot
     )
-    conversation = get_conversation_with_messages(binding.conversation_id)
-    assert conversation is not None
-    assert any(
-        "Cite the 2024 guideline before rewriting." in message["content"]
-        for message in conversation["messages"]
-    )
-
-
-def test_marks_partial_failure_is_flagged(client, seeded, make_proposal):
-    good = make_proposal(quote="Original sentence for co-work tests.", replacement="Good.")
-    stale = make_proposal(quote="Second target phrase.", replacement="Stale.")
-    resp = client.post(
-        _url(f"/api/truth/doc/{seeded['document'].id}/marks", seeded["store_id"]),
-        json={
-            "items": [
-                {
-                    "proposal_id": good.id,
-                    "verb": "reject_plain",
-                    "canonical_sha256": good.canonical_sha256,
-                },
-                {
-                    "proposal_id": stale.id,
-                    "verb": "reject_plain",
-                    "canonical_sha256": "0" * 64,
-                },
-            ]
+    snapshot = client.post(
+        url,
+        data=compacted,
+        content_type="application/octet-stream",
+        headers={
+            "X-WB-Base-Ydoc-Sha256": head,
+            "X-WB-Base-Ydoc-Generation": documents.current_ydoc_generation(
+                store, document.id
+            ),
+            "X-WB-Compacted-Snapshot-Sha256": sha256_bytes(
+                oversized_snapshot
+            ),
         },
     )
-    payload = resp.get_json()
-    assert payload["partial"] is True
-    results = {item["proposal_id"]: item for item in payload["results"]}
-    assert results[good.id]["result"] == "closed"
-    assert results[stale.id]["result"] == "rejected_stale_view"
-    assert gesture_count(seeded["store"]) == 1
+    assert snapshot.status_code == 413
+    assert snapshot.get_json()["error"]["code"] == "snapshot_too_large"
+
+    assert (
+        documents.get_document(store, document.id).ydoc_snapshot_sha256
+        == seeded["snapshot_sha256"]
+    )
+    assert ydoc_store.read_updates(store, document_id=document.id)[0] == ()
 
 
-def test_marks_materialize_hash_mismatch_is_409(client, seeded, make_proposal):
-    proposal = make_proposal()
+# --- R5 legacy marks -------------------------------------------------------
+
+
+def test_legacy_marks_requires_two_phase_sitting(client, seeded):
     resp = client.post(
         _url(f"/api/truth/doc/{seeded['document'].id}/marks", seeded["store_id"]),
-        json={
-            "items": [
-                {
-                    "proposal_id": proposal.id,
-                    "verb": "confirm",
-                    "canonical_sha256": proposal.canonical_sha256,
-                }
-            ],
-            "materialize": {
-                "rendered_markdown": "body",
-                "post_apply_content_sha256": "0" * 64,
-            },
-        },
+        json={"items": [{"proposal_id": "unsafe-one-shot-request"}]},
     )
-    assert resp.status_code == 409
-    assert resp.get_json()["error"] == "hash_mismatch"
-    # Nothing committed on the aborted sitting.
-    assert proposals.latest_proposal_status(seeded["store"], proposal.id).status == "open"
-
-
-def test_marks_read_only_is_rejected(client, seeded, make_proposal, monkeypatch):
-    monkeypatch.setattr(api, "_is_read_only", lambda: True)
-    proposal = make_proposal()
-    resp = client.post(
-        _url(f"/api/truth/doc/{seeded['document'].id}/marks", seeded["store_id"]),
-        json={
-            "items": [
-                {
-                    "proposal_id": proposal.id,
-                    "verb": "reject_plain",
-                    "canonical_sha256": proposal.canonical_sha256,
-                }
-            ]
-        },
-    )
-    assert resp.status_code == 403
+    assert resp.status_code == 410
+    assert resp.get_json()["error"]["code"] == "two_phase_sitting_required"
 
 
 # --- R6 materialize --------------------------------------------------------
@@ -278,57 +348,119 @@ def test_materialize_verifies_snapshot_hash(client, seeded):
         f"/api/truth/doc/{seeded['document'].id}/materialize", seeded["store_id"]
     )
     new_body = "# Throwaway fixture\n\nDirect materialize.\n"
+    structured_head = api.readiness.classify_document(
+        seeded["store"], seeded["document"]
+    ).structured_head_sha256
+    assert structured_head
+    mismatch = client.post(
+        url,
+        json={
+            "rendered_markdown": new_body,
+            "rendered_sha256": sha256_text(new_body),
+            "expected_file_sha256": seeded["content_sha256"],
+            "expected_ydoc_head_sha256": "0" * 64,
+            "snapshot_sha256": seeded["snapshot_sha256"],
+        },
+    )
+    assert mismatch.status_code == 409
+    assert mismatch.get_json()["error"]["code"] == "stale_structured_head"
     ok = client.post(
         url,
         json={
             "rendered_markdown": new_body,
-            "structured_doc_sha256": seeded["snapshot_sha256"],
+            "rendered_sha256": sha256_text(new_body),
+            "expected_file_sha256": seeded["content_sha256"],
+            "expected_ydoc_head_sha256": structured_head,
+            "snapshot_sha256": seeded["snapshot_sha256"],
         },
     )
     assert ok.status_code == 200
     payload = ok.get_json()
     assert payload["new_file_sha256"] == sha256_text(new_body)
     assert (seeded["root"] / seeded["rel"]).read_text(encoding="utf-8") == new_body
-    mismatch = client.post(
-        url,
-        json={"rendered_markdown": new_body, "structured_doc_sha256": "0" * 64},
-    )
-    assert mismatch.status_code == 409
-    assert mismatch.get_json()["error"] == "hash_mismatch"
 
 
 # --- R7 drift / R8 reimport ------------------------------------------------
 
 
-def test_drift_reports_out_of_band_edit(client, seeded):
-    url = _url(f"/api/truth/doc/{seeded['document'].id}/drift", seeded["store_id"])
+def test_drift_reports_out_of_band_edit(client, store_ctx):
+    ready, _source = _bootstrap_ready(
+        client,
+        store_ctx,
+        path="docs/drift-route.md",
+        key="drift-route-bootstrap-0001",
+    )
+    url = _url(
+        f"/api/truth/doc/{ready['document_id']}/drift", store_ctx["store_id"]
+    )
     clean = client.get(url).get_json()
     assert clean["state"] == "clean"
     assert clean["can_reimport"] is False
     # Edit the file out of band.
     drifted_body = "# Throwaway fixture\n\nEdited outside the editor.\n"
-    (seeded["root"] / seeded["rel"]).write_bytes(drifted_body.encode("utf-8"))
+    (store_ctx["root"] / "docs" / "drift-route.md").write_bytes(
+        drifted_body.encode("utf-8")
+    )
     drifted = client.get(url).get_json()
     assert drifted["state"] == "drifted"
     assert drifted["can_reimport"] is True
     assert drifted["current_file_sha256"] == sha256_bytes(drifted_body.encode("utf-8"))
 
 
-def test_reimport_records_change_set(client, seeded):
-    drifted_body = "# Throwaway fixture\n\nEdited outside the editor.\n"
-    (seeded["root"] / seeded["rel"]).write_bytes(drifted_body.encode("utf-8"))
-    file_sha256 = sha256_bytes(drifted_body.encode("utf-8"))
-    resp = client.post(
-        _url(f"/api/truth/doc/{seeded['document'].id}/reimport", seeded["store_id"]),
-        json={"structured_doc": {"type": "doc", "content": []}, "file_sha256": file_sha256},
+def test_reimport_records_change_set(client, store_ctx):
+    ready, _source = _bootstrap_ready(
+        client,
+        store_ctx,
+        path="docs/reimport-route.md",
+        key="reimport-route-bootstrap-0001",
     )
-    assert resp.status_code == 200
-    payload = resp.get_json()
-    assert payload["ok"] is True
-    assert payload["change_set_id"]
+    drifted_body = "# Throwaway fixture\n\nEdited outside the editor.\n"
+    (store_ctx["root"] / "docs" / "reimport-route.md").write_bytes(
+        drifted_body.encode("utf-8")
+    )
+    prepare = client.post(
+        _url(
+            f"/api/truth/doc/{ready['document_id']}/reimport",
+            store_ctx["store_id"],
+        ),
+        json={"idempotency_key": "reimport-route-0001"},
+    )
+    assert prepare.status_code == 201
+    intent = prepare.get_json()
+    source = client.get(
+        _url(
+            f"/api/truth/doc/{ready['document_id']}/reimport/"
+            f"{intent['intent_id']}/source",
+            store_ctx["store_id"],
+        )
+    )
+    assert source.status_code == 200
+    assert source.data == drifted_body.encode("utf-8")
+
+    replacement_snapshot = b"YDOC:" + drifted_body.encode("utf-8")
+    commit = client.put(
+        _url(
+            f"/api/truth/doc/{ready['document_id']}/reimport/"
+            f"{intent['intent_id']}/commit",
+            store_ctx["store_id"],
+        ),
+        data={
+            "metadata": json.dumps(
+                {"snapshot_sha256": sha256_bytes(replacement_snapshot)}
+            ),
+            "snapshot": (io.BytesIO(replacement_snapshot), "snapshot.bin"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert commit.status_code == 200
+    payload = commit.get_json()
+    assert payload["document_version_id"]
+    assert payload["source_sha256"] == sha256_bytes(drifted_body.encode("utf-8"))
     # The content pointer advanced, so the document reads clean again.
     drift = client.get(
-        _url(f"/api/truth/doc/{seeded['document'].id}/drift", seeded["store_id"])
+        _url(
+            f"/api/truth/doc/{ready['document_id']}/drift", store_ctx["store_id"]
+        )
     ).get_json()
     assert drift["state"] == "clean"
 
