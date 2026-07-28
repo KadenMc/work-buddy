@@ -277,8 +277,19 @@ export class InMemoryCoworkSittingTransport implements CoworkSittingTransport {
       routing_deliveries: prepared.admitted_items
         .filter((item) => item.verb === "redirect" || item.verb === "endorse")
         .map((item) => ({
+          delivery_id: `delivery-${request.intentId}-${item.proposal_id}`,
           verb: item.verb as "redirect" | "endorse",
           proposal_id: item.proposal_id,
+          delivered: true,
+          conversation_id: `conversation-${request.intentId}`,
+          message_id: `message-${request.intentId}-${item.proposal_id}`,
+          reason: null,
+          agent: {
+            status: "running" as const,
+            alive: true,
+            started: true,
+            error: null,
+          },
           ...(item.redirect_note === undefined ? {} : { note: item.redirect_note }),
         })),
     };

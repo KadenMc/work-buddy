@@ -27,27 +27,21 @@ const EMPTY_SNAPSHOT: CoworkChatAnnotationsSnapshot = {
 };
 
 /**
- * Resolve feedback span links onto transcript messages. R9 posts the feedback
- * verbatim as the user's message, so each capture matches the first not-yet
- * linked user message whose content equals its text, in registration order.
- * Order-preserving so repeated identical feedback lines each claim a distinct
- * message rather than colliding on the first.
+ * Resolve feedback span links onto transcript messages by R9's exact posted
+ * message id. Text is deliberately not used as identity: repeated identical
+ * notes and out-of-order responses must remain unambiguous.
  */
 export function resolveSpanLinks(
   messages: readonly ChatMessage[],
   feedback: readonly FeedbackCapture[],
 ): Map<string, ResolvedSpanLink> {
   const links = new Map<string, ResolvedSpanLink>();
-  const consumed = new Set<string>();
   for (const capture of feedback) {
     const match = messages.find(
       (message) =>
-        message.author === "user" &&
-        message.content === capture.text &&
-        !consumed.has(message.id),
+        message.author === "user" && message.id === capture.messageId,
     );
     if (match === undefined) continue;
-    consumed.add(match.id);
     links.set(match.id, {
       messageId: match.id,
       evidenceId: capture.evidenceId,
@@ -75,6 +69,17 @@ export class CoworkChatAnnotations {
       return;
     }
     this.feedbackList = [...this.feedbackList, capture];
+    this.recompute();
+    this.emit();
+  }
+
+  /**
+   * Replace feedback with the server's authoritative binding snapshot. Unlike
+   * append-only R9 adoption, hydration must also remove annotations that were
+   * redacted or otherwise omitted from a later truth-backed response.
+   */
+  replaceFeedback(captures: readonly FeedbackCapture[]): void {
+    this.feedbackList = [...captures];
     this.recompute();
     this.emit();
   }

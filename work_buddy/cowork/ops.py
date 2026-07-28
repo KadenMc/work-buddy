@@ -27,8 +27,15 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from contextlib import contextmanager
 from typing import Any
 
+from work_buddy.conversations.store import (
+    ConversationLeaseLost,
+    conversation_agent_write_guard,
+)
+from work_buddy.cowork import conversations, feedback
+from work_buddy.cowork.document_agent import document_agent_consumer
 from work_buddy.mcp_server.op_registry import register_op
 from work_buddy.truth import documents, expressions, proposals, ydoc_store
 from work_buddy.truth.anchors import CompositeSelector, parse_selector
@@ -89,6 +96,42 @@ def _require_document_surface(store: TruthStore) -> None:
         raise InvariantViolation(
             "store profile does not enable the document_surface block"
         )
+
+
+@contextmanager
+def _document_agent_write_fence(
+    *,
+    store_id: str,
+    document_id: str,
+    conversation_id: str | None,
+    consumer: str | None,
+    generation: str | None,
+):
+    """Bind an optional lease tuple to this exact store/document conversation."""
+    supplied = (conversation_id, consumer, generation)
+    if all(value is None for value in supplied):
+        yield
+        return
+    if any(value is None for value in supplied):
+        raise InvariantViolation(
+            "conversation_id, consumer, and generation must be provided together"
+        )
+    expected_consumer = document_agent_consumer(store_id, document_id)
+    bound_conversation = conversations.find_document_conversation(
+        document_id=document_id,
+        store_id=store_id,
+    )
+    if (
+        conversation_id != bound_conversation
+        or consumer != expected_consumer
+    ):
+        raise ConversationLeaseLost("lease_lost")
+    with conversation_agent_write_guard(
+        conversation_id,
+        consumer,
+        generation,
+    ):
+        yield
 
 
 # --------------------------------------------------------------------------
@@ -306,6 +349,10 @@ def cowork_doc_get(store_id: str, document_id: str) -> dict[str, Any]:
     """
     store = _open_store(store_id)
     _require_document_surface(store)
+    conversation_id = conversations.find_document_conversation(
+        document_id=document_id,
+        store_id=store.store_id,
+    )
     with store._read_connection() as conn:
         document = documents.get_document(store, document_id, conn=conn)
         current_file = _current_file_sha256(store, document.path)
@@ -325,6 +372,12 @@ def cowork_doc_get(store_id: str, document_id: str) -> dict[str, Any]:
                 store, document.id, conn=conn
             )
         ]
+        feedback_payload = feedback.feedback_items(
+            store,
+            document_id=document.id,
+            conversation_id=conversation_id,
+            conn=conn,
+        )
     return {
         "ok": True,
         "document_id": document.id,
@@ -340,6 +393,7 @@ def cowork_doc_get(store_id: str, document_id: str) -> dict[str, Any]:
         "drift": {"state": state, "diff_available": state == "drifted"},
         "open_proposals": open_payload,
         "expressions": expr_payload,
+        "feedback": feedback_payload,
     }
 
 
@@ -360,6 +414,9 @@ def cowork_doc_propose_edit(
     meta: Mapping[str, Any] | None = None,
     producer_call_id: str | None = None,
     agent_session_id: str | None = None,
+    conversation_id: str | None = None,
+    consumer: str | None = None,
+    generation: str | None = None,
 ) -> dict[str, Any]:
     """Open one edit proposal per hunk on a cowork doc.
 
@@ -382,13 +439,7 @@ def cowork_doc_propose_edit(
         raise InvariantViolation("hunks must contain at least one edit")
     if meta is not None and not isinstance(meta, Mapping):
         raise InvariantViolation("meta must be a mapping")
-    store = _open_store(store_id)
-    _require_document_surface(store)
-    document = documents.get_document(store, document_id)
-    base = document.content_sha256 if base_doc_sha256 is None else base_doc_sha256
-    structured_base = _structured_head_for_document(store, document)
-    all_records: list[Any] = []
-    created_records: list[Any] = []
+    prepared_hunks: list[tuple[CompositeSelector, str, str]] = []
     for hunk in hunk_list:
         if not isinstance(hunk, Mapping):
             raise InvariantViolation("each hunk must be a mapping")
@@ -396,47 +447,94 @@ def cowork_doc_propose_edit(
         replacement = hunk.get("replacement")
         if not isinstance(replacement, str) or not replacement.strip():
             raise InvariantViolation("each hunk requires a nonempty replacement")
-        proposal_id = new_id()
-        record = proposals.propose_edit(
-            store,
-            document_id=document.id,
-            base_content_sha256=base,
-            base_structured_head_sha256=structured_base,
-            selector=selector,
-            quote_exact=quote,
-            replacement=replacement,
-            rationale=rationale,
-            tldr=tldr,
-            claim_refs=claim_refs,
-            actor=actor,
-            proposal_id=proposal_id,
-        )
-        all_records.append(record)
-        if record.id == proposal_id:
-            created_records.append(record)
-    events = [
-        _serialize(
-            emit_truth_event(
-                "truth.doc_proposed",
-                store_id=store.store_id,
-                subject_kind="proposal",
-                subject_id=record.id,
-                data={
-                    "document_id": document.id,
-                    "proposal_id": record.id,
-                    "kind": "edit" if record.replacement is not None else "flag",
-                },
-            )
-        )
-        for record in created_records
-    ]
-    return {
-        "ok": True,
-        "document_id": document.id,
-        "created_count": len(created_records),
-        "proposals": [_serialize(record) for record in all_records],
-        "events": events,
-    }
+        prepared_hunks.append((selector, quote, replacement))
+    store = _open_store(store_id)
+    _require_document_surface(store)
+    try:
+        with _document_agent_write_fence(
+            store_id=store.store_id,
+            document_id=document_id,
+            conversation_id=conversation_id,
+            consumer=consumer,
+            generation=generation,
+        ):
+            with store.write_transaction() as truth_conn:
+                document = documents.get_document(
+                    store,
+                    document_id,
+                    conn=truth_conn,
+                )
+                if (
+                    documents.current_lifecycle(
+                        store,
+                        document.id,
+                        conn=truth_conn,
+                    )
+                    != "active"
+                ):
+                    raise InvariantViolation(
+                        "retired documents cannot receive Co-work proposals"
+                    )
+                base = (
+                    document.content_sha256
+                    if base_doc_sha256 is None
+                    else base_doc_sha256
+                )
+                structured_base = _structured_head_for_document(
+                    store,
+                    document,
+                )
+                all_records: list[Any] = []
+                created_records: list[Any] = []
+                for selector, quote, replacement in prepared_hunks:
+                    proposal_id = new_id()
+                    record = proposals.propose_edit(
+                        store,
+                        document_id=document.id,
+                        base_content_sha256=base,
+                        base_structured_head_sha256=structured_base,
+                        selector=selector,
+                        quote_exact=quote,
+                        replacement=replacement,
+                        rationale=rationale,
+                        tldr=tldr,
+                        claim_refs=claim_refs,
+                        actor=actor,
+                        proposal_id=proposal_id,
+                        conn=truth_conn,
+                    )
+                    all_records.append(record)
+                    if record.id == proposal_id:
+                        created_records.append(record)
+            events = [
+                _serialize(
+                    emit_truth_event(
+                        "truth.doc_proposed",
+                        store_id=store.store_id,
+                        subject_kind="proposal",
+                        subject_id=record.id,
+                        data={
+                            "document_id": document.id,
+                            "proposal_id": record.id,
+                            "kind": (
+                                "edit"
+                                if record.replacement is not None
+                                else "flag"
+                            ),
+                        },
+                    )
+                )
+                for record in created_records
+            ]
+            return {
+                "ok": True,
+                "document_id": document.id,
+                "created_count": len(created_records),
+                "proposals": [_serialize(record) for record in all_records],
+                "events": events,
+            }
+    except ConversationLeaseLost:
+        return {"ok": False, "status": "lease_lost"}
 
 
 def cowork_doc_comment(
@@ -450,6 +548,9 @@ def cowork_doc_comment(
     claim_refs: Sequence[Any] | None = None,
     producer_call_id: str | None = None,
     agent_session_id: str | None = None,
+    conversation_id: str | None = None,
+    consumer: str | None = None,
+    generation: str | None = None,
 ) -> dict[str, Any]:
     """Raise a quote-anchored flag on a cowork doc.
 
@@ -463,47 +564,65 @@ def cowork_doc_comment(
     selector, quote = _selector_from_anchor(quote_anchor)
     store = _open_store(store_id)
     _require_document_surface(store)
-    document = documents.get_document(store, document_id)
-    base = document.content_sha256 if base_doc_sha256 is None else base_doc_sha256
-    structured_base = _structured_head_for_document(store, document)
-    proposal_id = new_id()
-    record = proposals.propose_edit(
-        store,
-        document_id=document.id,
-        base_content_sha256=base,
-        base_structured_head_sha256=structured_base,
-        selector=selector,
-        quote_exact=quote,
-        replacement=None,
-        rationale=body,
-        tldr=tldr,
-        claim_refs=claim_refs,
-        actor=actor,
-        proposal_id=proposal_id,
-    )
-    created = record.id == proposal_id
-    event = None
-    if created:
-        event = _serialize(
-            emit_truth_event(
-                "truth.doc_proposed",
-                store_id=store.store_id,
-                subject_kind="proposal",
-                subject_id=record.id,
-                data={
-                    "document_id": document.id,
-                    "proposal_id": record.id,
-                    "kind": "flag",
-                },
+    try:
+        with _document_agent_write_fence(
+            store_id=store.store_id,
+            document_id=document_id,
+            conversation_id=conversation_id,
+            consumer=consumer,
+            generation=generation,
+        ):
+            document = documents.get_document(store, document_id)
+            if documents.current_lifecycle(store, document.id) != "active":
+                raise InvariantViolation(
+                    "retired documents cannot receive Co-work comments"
+                )
+            base = (
+                document.content_sha256
+                if base_doc_sha256 is None
+                else base_doc_sha256
             )
-        )
-    return {
-        "ok": True,
-        "document_id": document.id,
-        "created": created,
-        "proposal": _serialize(record),
-        "event": event,
-    }
+            structured_base = _structured_head_for_document(store, document)
+            proposal_id = new_id()
+            record = proposals.propose_edit(
+                store,
+                document_id=document.id,
+                base_content_sha256=base,
+                base_structured_head_sha256=structured_base,
+                selector=selector,
+                quote_exact=quote,
+                replacement=None,
+                rationale=body,
+                tldr=tldr,
+                claim_refs=claim_refs,
+                actor=actor,
+                proposal_id=proposal_id,
+            )
+            created = record.id == proposal_id
+            event = None
+            if created:
+                event = _serialize(
+                    emit_truth_event(
+                        "truth.doc_proposed",
+                        store_id=store.store_id,
+                        subject_kind="proposal",
+                        subject_id=record.id,
+                        data={
+                            "document_id": document.id,
+                            "proposal_id": record.id,
+                            "kind": "flag",
+                        },
+                    )
+                )
+            return {
+                "ok": True,
+                "document_id": document.id,
+                "created": created,
+                "proposal": _serialize(record),
+                "event": event,
+            }
+    except ConversationLeaseLost:
+        return {"ok": False, "status": "lease_lost"}
 
 
 def cowork_doc_expression_mark(

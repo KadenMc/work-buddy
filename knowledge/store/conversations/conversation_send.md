@@ -15,6 +15,17 @@ parameters:
     type: string
     description: Message content
     required: true
+  message_id:
+    type: string
+    description: Optional caller-stable idempotency key; the first accepted agent message wins on replay
+  consumer:
+    type: string
+    description: Optional persisted conversation consumer identity. Supply together with generation to fence a background driver's write to its live lease.
+  generation:
+    type: string
+    description: Optional live lease generation. Supply together with consumer; a stale or revoked generation returns lease_lost without sending.
+mutates_state: true
+retry_policy: manual
 tags:
 - conversations
 - conversation
@@ -28,3 +39,13 @@ aliases:
 parents:
 - conversations
 ---
+
+When `message_id` is supplied, it is scoped to this conversation and the agent
+role. The first successful send fixes the stored content; a retry with the same
+ID returns that existing message without overwriting it. Reusing the ID for a
+different conversation or role is rejected.
+
+`consumer` and `generation` form an optional lease fence for long-lived
+conversation drivers. They must be supplied together. The send and lease check
+share one transaction, so a stopped, rotated, or closed generation cannot emit
+a late message.

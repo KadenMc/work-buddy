@@ -104,6 +104,27 @@ describe("HttpChatConversationProvider", () => {
     await expect(provider.loadConversation("c1")).rejects.toThrow();
   });
 
+  it("rejects a payload for a different conversation", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({
+        ...conversation([]),
+        conversation: {
+          ...conversation([]).conversation,
+          conversation_id: "c2",
+        },
+      }),
+    );
+    const provider = new HttpChatConversationProvider({
+      conversationId: "c1",
+      fetchImpl,
+      pollIntervalMs: 0,
+    });
+
+    await expect(provider.loadConversation("c1")).rejects.toThrow(
+      /wrong conversation/i,
+    );
+  });
+
   it("posts a human turn to respond then reloads the next snapshot", async () => {
     const userMessage: RawMessage = {
       message_id: "u1",
@@ -145,6 +166,112 @@ describe("HttpChatConversationProvider", () => {
     expect(snapshot.messages.map((message) => message.content)).toEqual([
       "please tighten this",
       "On it.",
+    ]);
+  });
+
+  it("sends the exact pending-question id only for an explicit inline reply", async () => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        return jsonResponse({ responded: true, message_id: "reply-1" });
+      }
+      return jsonResponse(conversation([]));
+    });
+    const provider = new HttpChatConversationProvider({
+      conversationId: "c1",
+      fetchImpl,
+      pollIntervalMs: 0,
+    });
+
+    await provider.sendMessage("c1", {
+      value: "Use the shorter version.",
+      inReplyTo: "question-7",
+    });
+
+    const postCall = fetchImpl.mock.calls.find(
+      ([, init]) => (init as RequestInit | undefined)?.method === "POST",
+    );
+    expect(JSON.parse((postCall?.[1] as RequestInit).body as string)).toEqual({
+      value: "Use the shorter version.",
+      in_reply_to: "question-7",
+    });
+  });
+
+  it("treats a successful respond ack as delivered when the reload fails", async () => {
+    let initialLoaded = false;
+    let reloadAvailable = false;
+    const fetchImpl = vi.fn(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "POST") {
+          return jsonResponse({ sent: true, message_id: "user-ack-1" });
+        }
+        if (!initialLoaded) {
+          initialLoaded = true;
+          return jsonResponse(
+            conversation([
+              {
+                message_id: "agent-1",
+                role: "agent",
+                content: "What should change?",
+              },
+            ]),
+          );
+        }
+        if (reloadAvailable) {
+          return jsonResponse(
+            conversation([
+              {
+                message_id: "agent-1",
+                role: "agent",
+                content: "What should change?",
+              },
+              {
+                message_id: "user-ack-1",
+                role: "user",
+                content: "Make the claim measurable.",
+              },
+              {
+                message_id: "agent-2",
+                role: "agent",
+                content: "I’ll revise it.",
+              },
+            ]),
+          );
+        }
+        return jsonResponse(
+          { error: "temporarily unavailable" },
+          { status: 503 },
+        );
+      },
+    );
+    const provider = new HttpChatConversationProvider({
+      conversationId: "c1",
+      fetchImpl,
+      pollIntervalMs: 0,
+    });
+    await provider.loadConversation("c1");
+
+    const snapshot = await provider.sendMessage("c1", {
+      value: "Make the claim measurable.",
+    });
+
+    expect(snapshot.messages).toEqual([
+      expect.objectContaining({
+        id: "agent-1",
+        author: "assistant",
+      }),
+      expect.objectContaining({
+        id: "user-ack-1",
+        author: "user",
+        content: "Make the claim measurable.",
+      }),
+    ]);
+
+    reloadAvailable = true;
+    const reconciled = await provider.loadConversation("c1");
+    expect(reconciled.messages.map((message) => message.id)).toEqual([
+      "agent-1",
+      "user-ack-1",
+      "agent-2",
     ]);
   });
 

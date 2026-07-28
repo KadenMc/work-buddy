@@ -1,9 +1,11 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { DashboardHelpProvider } from "../../../dashboard/help";
 import { expectNoAccessibilityViolations } from "../../../test/setup";
+import type { ChatConversationProvider } from "../../../widget-library/chat";
+import { CoworkChatAnnotations } from "../chat";
 import {
   loadChatDraft,
   loadRailTab,
@@ -41,8 +43,19 @@ function renderRail(storage: Storage = new MemoryStorage()) {
     <CoworkRail
       documentId="demo-doc"
       reviewProvider={new InMemoryReviewProvider()}
-      chatProvider={createDemoChatProvider("conv-1")}
-      conversationId="conv-1"
+      chat={{
+        kind: "ready",
+        provider: createDemoChatProvider("conv-1"),
+        conversationId: "conv-1",
+        draftStorageId: "conv-1",
+        agent: {
+          status: "running",
+          alive: true,
+          started: true,
+          error: null,
+        },
+        onEnsureAgent: () => {},
+      }}
       storage={storage}
     />,
   );
@@ -75,14 +88,112 @@ describe("CoworkRail", () => {
     await waitFor(() => expect(loadRailTab(storage, "demo-doc")).toBe("review"));
   });
 
+  it("does not start an agent merely because the persisted Chat tab is restored", () => {
+    const storage = new MemoryStorage();
+    saveRailTab(storage, "demo-doc", "chat");
+    const onChatSelected = vi.fn();
+    render(
+      <CoworkRail
+        documentId="demo-doc"
+        reviewProvider={new InMemoryReviewProvider()}
+        chat={{
+          kind: "idle",
+          draftStorageId: "document:demo-doc",
+          onStart: vi.fn(),
+        }}
+        onChatSelected={onChatSelected}
+        storage={storage}
+      />,
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "Chat about this document" }),
+    ).toBeVisible();
+    expect(onChatSelected).not.toHaveBeenCalled();
+  });
+
+  it("starts from a current Chat-tab click, not from mounting the idle gate", async () => {
+    const onChatSelected = vi.fn();
+    render(
+      <CoworkRail
+        documentId="demo-doc"
+        reviewProvider={new InMemoryReviewProvider()}
+        chat={{
+          kind: "idle",
+          draftStorageId: "document:demo-doc",
+          onStart: vi.fn(),
+        }}
+        onChatSelected={onChatSelected}
+        storage={new MemoryStorage()}
+      />,
+    );
+
+    expect(onChatSelected).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("tab", { name: /Chat/ }));
+    expect(onChatSelected).toHaveBeenCalledOnce();
+  });
+
+  it("owns one rich-chat load and subscription instead of polling twice", async () => {
+    const provider: ChatConversationProvider = {
+      loadConversation: vi.fn(async () => ({
+        conversationId: "opaque-rich-chat",
+        status: "open" as const,
+        agentLiveness: "alive" as const,
+        messages: [],
+      })),
+      sendMessage: vi.fn(async () => ({
+        conversationId: "opaque-rich-chat",
+        status: "open" as const,
+        agentLiveness: "alive" as const,
+        messages: [],
+      })),
+      subscribe: vi.fn(() => () => {}),
+    };
+    render(
+      <CoworkRail
+        documentId="demo-doc"
+        reviewProvider={new InMemoryReviewProvider()}
+        chat={{
+          kind: "ready",
+          provider,
+          conversationId: "opaque-rich-chat",
+          draftStorageId: "document:demo-doc",
+          agent: {
+            status: "running",
+            alive: true,
+            started: false,
+            error: null,
+          },
+          onEnsureAgent: vi.fn(),
+        }}
+        chatAnnotations={new CoworkChatAnnotations()}
+        storage={new MemoryStorage()}
+      />,
+    );
+
+    await waitFor(() => expect(provider.loadConversation).toHaveBeenCalledOnce());
+    expect(provider.subscribe).toHaveBeenCalledOnce();
+  });
+
   it("gives the Review and Chat tabs their own hover help in help mode", () => {
     render(
       <DashboardHelpProvider enabled>
         <CoworkRail
           documentId="demo-doc"
           reviewProvider={new InMemoryReviewProvider()}
-          chatProvider={createDemoChatProvider("conv-1")}
-          conversationId="conv-1"
+          chat={{
+            kind: "ready",
+            provider: createDemoChatProvider("conv-1"),
+            conversationId: "conv-1",
+            draftStorageId: "conv-1",
+            agent: {
+              status: "running",
+              alive: true,
+              started: true,
+              error: null,
+            },
+            onEnsureAgent: () => {},
+          }}
           storage={new MemoryStorage()}
         />
       </DashboardHelpProvider>,

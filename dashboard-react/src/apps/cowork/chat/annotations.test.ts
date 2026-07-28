@@ -13,21 +13,29 @@ const userMessage = (id: string, content: string): ChatMessage => ({
 const capture = (
   overrides: Partial<FeedbackCapture> & Pick<FeedbackCapture, "text">,
 ): FeedbackCapture => ({
+  documentId: overrides.documentId ?? "doc-1",
+  storeId: overrides.storeId ?? "store-1",
   evidenceId: overrides.evidenceId ?? `ev-${overrides.text}`,
   spanId: overrides.spanId ?? `span-${overrides.text}`,
   conversationId: overrides.conversationId ?? "c1",
+  messageId: overrides.messageId ?? `message-${overrides.evidenceId ?? overrides.text}`,
   text: overrides.text,
   anchor: overrides.anchor,
 });
 
 describe("resolveSpanLinks", () => {
-  it("links a feedback capture onto the user message with its verbatim text", () => {
+  it("links a feedback capture onto its exact user message id", () => {
     const messages: ChatMessage[] = [
       { id: "a1", author: "assistant", content: "I proposed some edits." },
       userMessage("u1", "this claim is too strong"),
     ];
     const links = resolveSpanLinks(messages, [
-      capture({ text: "this claim is too strong", spanId: "span-9", evidenceId: "ev-9" }),
+      capture({
+        text: "this claim is too strong",
+        spanId: "span-9",
+        evidenceId: "ev-9",
+        messageId: "u1",
+      }),
     ]);
 
     expect(links.get("u1")).toMatchObject({
@@ -41,18 +49,30 @@ describe("resolveSpanLinks", () => {
     const messages: ChatMessage[] = [
       { id: "a1", author: "assistant", content: "echoed text" },
     ];
-    const links = resolveSpanLinks(messages, [capture({ text: "echoed text" })]);
+    const links = resolveSpanLinks(messages, [
+      capture({ text: "echoed text", messageId: "a1" }),
+    ]);
     expect(links.size).toBe(0);
   });
 
-  it("assigns distinct messages to repeated identical feedback in order", () => {
+  it("assigns repeated identical feedback by id despite out-of-order responses", () => {
     const messages: ChatMessage[] = [
       userMessage("u1", "same note"),
       userMessage("u2", "same note"),
     ];
     const links = resolveSpanLinks(messages, [
-      capture({ text: "same note", evidenceId: "ev-a", spanId: "span-a" }),
-      capture({ text: "same note", evidenceId: "ev-b", spanId: "span-b" }),
+      capture({
+        text: "same note",
+        evidenceId: "ev-b",
+        spanId: "span-b",
+        messageId: "u2",
+      }),
+      capture({
+        text: "same note",
+        evidenceId: "ev-a",
+        spanId: "span-a",
+        messageId: "u1",
+      }),
     ]);
 
     expect(links.get("u1")?.evidenceId).toBe("ev-a");
@@ -64,6 +84,7 @@ describe("resolveSpanLinks", () => {
     const links = resolveSpanLinks(messages, [
       capture({
         text: "fix this",
+        messageId: "u1",
         anchor: { exact: "the passage", prefix: "before ", suffix: " after" },
       }),
     ]);
@@ -82,6 +103,31 @@ describe("CoworkChatAnnotations", () => {
 
     expect(store.getSnapshot().feedback).toHaveLength(1);
     expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it("replaces hydrated feedback so redacted links do not stay stale", () => {
+    const store = new CoworkChatAnnotations();
+    store.annotateFeedback(
+      capture({
+        text: "old note",
+        evidenceId: "ev-old",
+        messageId: "message-old",
+      }),
+    );
+
+    store.replaceFeedback([
+      capture({
+        text: "current note",
+        evidenceId: "ev-current",
+        messageId: "message-current",
+      }),
+    ]);
+    expect(store.getSnapshot().feedback.map((entry) => entry.evidenceId)).toEqual([
+      "ev-current",
+    ]);
+
+    store.replaceFeedback([]);
+    expect(store.getSnapshot().feedback).toHaveLength(0);
   });
 
   it("appends routing deliveries with a stable id and notifies", () => {

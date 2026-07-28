@@ -72,6 +72,109 @@ describe("useChatConversation", () => {
     );
   });
 
+  it("coalesces overlapping poll invalidations into one follow-up load", async () => {
+    const firstRefresh = deferred<ChatConversationSnapshot>();
+    const secondRefresh = deferred<ChatConversationSnapshot>();
+    let invalidate: (() => void) | null = null;
+    let loadCount = 0;
+    const provider: ChatConversationProvider = {
+      loadConversation: vi.fn(() => {
+        loadCount += 1;
+        if (loadCount === 1) return Promise.resolve(emptySnapshot("c1"));
+        if (loadCount === 2) return firstRefresh.promise;
+        return secondRefresh.promise;
+      }),
+      sendMessage: vi.fn(),
+      subscribe: (_conversationId, listener) => {
+        invalidate = listener;
+        return () => {};
+      },
+    };
+    const { result } = renderHook(() =>
+      useChatConversation(provider, "c1"),
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    act(() => {
+      invalidate?.();
+      invalidate?.();
+    });
+    expect(provider.loadConversation).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      firstRefresh.resolve({
+        ...emptySnapshot("c1"),
+        messages: [{ id: "m1", author: "assistant", content: "first" }],
+      });
+      await firstRefresh.promise;
+    });
+    await waitFor(() =>
+      expect(provider.loadConversation).toHaveBeenCalledTimes(3),
+    );
+
+    await act(async () => {
+      secondRefresh.resolve({
+        ...emptySnapshot("c1"),
+        messages: [{ id: "m2", author: "assistant", content: "newest" }],
+      });
+      await secondRefresh.promise;
+    });
+    await waitFor(() =>
+      expect(result.current.snapshot?.messages[0]?.content).toBe("newest"),
+    );
+  });
+
+  it("does not let a poll started before send overwrite the sent snapshot", async () => {
+    const oldPoll = deferred<ChatConversationSnapshot>();
+    const pendingSend = deferred<ChatConversationSnapshot>();
+    const sentSnapshot: ChatConversationSnapshot = {
+      ...emptySnapshot("c1"),
+      messages: [{ id: "u1", author: "user", content: "new turn" }],
+    };
+    let invalidate: (() => void) | null = null;
+    let loadCount = 0;
+    const provider: ChatConversationProvider = {
+      loadConversation: vi.fn(() => {
+        loadCount += 1;
+        if (loadCount === 1) return Promise.resolve(emptySnapshot("c1"));
+        if (loadCount === 2) return oldPoll.promise;
+        return Promise.resolve(sentSnapshot);
+      }),
+      sendMessage: vi.fn(() => pendingSend.promise),
+      subscribe: (_conversationId, listener) => {
+        invalidate = listener;
+        return () => {};
+      },
+    };
+    const { result } = renderHook(() =>
+      useChatConversation(provider, "c1"),
+    );
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    act(() => invalidate?.());
+    let sendPromise!: Promise<void>;
+    act(() => {
+      sendPromise = result.current.send("new turn");
+    });
+    await act(async () => {
+      pendingSend.resolve(sentSnapshot);
+      await sendPromise;
+    });
+    expect(result.current.snapshot?.messages[0]?.content).toBe("new turn");
+
+    await act(async () => {
+      oldPoll.resolve({
+        ...emptySnapshot("c1"),
+        messages: [{ id: "old", author: "assistant", content: "stale" }],
+      });
+      await oldPoll.promise;
+    });
+    await waitFor(() =>
+      expect(provider.loadConversation).toHaveBeenCalledTimes(3),
+    );
+    expect(result.current.snapshot?.messages[0]?.content).toBe("new turn");
+  });
+
   it("records a send error and rethrows so a draft can be retained", async () => {
     const provider = new InMemoryChatProvider({
       conversationId: "c1",
@@ -188,5 +291,31 @@ describe("useChatConversation", () => {
     // error over conv-b.
     expect(result.current.sendError).toBeNull();
     expect(result.current.snapshot?.conversationId).toBe("conv-b");
+  });
+
+  it("rejects a saved send callback after the hook rebinds", async () => {
+    const provider: ChatConversationProvider = {
+      loadConversation: async (conversationId) => emptySnapshot(conversationId),
+      sendMessage: vi.fn(async (conversationId) =>
+        emptySnapshot(conversationId),
+      ),
+      subscribe: () => () => {},
+    };
+    const { result, rerender } = renderHook(
+      ({ conversationId }) => useChatConversation(provider, conversationId),
+      { initialProps: { conversationId: "conv-a" } },
+    );
+    await waitFor(() =>
+      expect(result.current.snapshot?.conversationId).toBe("conv-a"),
+    );
+    const staleSend = result.current.send;
+
+    rerender({ conversationId: "conv-b" });
+    await waitFor(() =>
+      expect(result.current.snapshot?.conversationId).toBe("conv-b"),
+    );
+
+    await expect(staleSend("wrong chat")).rejects.toThrow(/not ready/i);
+    expect(provider.sendMessage).not.toHaveBeenCalled();
   });
 });

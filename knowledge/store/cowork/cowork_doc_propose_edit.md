@@ -47,6 +47,18 @@ parameters:
     type: str
     description: Optional durable model call identifier.
     required: false
+  conversation_id:
+    type: str
+    description: Optional real document-conversation id. Supply with consumer and generation to fence a document agent's write.
+    required: false
+  consumer:
+    type: str
+    description: Optional document-agent consumer identity. Supply with conversation_id and generation; it must match this store and document.
+    required: false
+  generation:
+    type: str
+    description: Optional live document-agent lease generation. A stale, stopped, or revoked generation returns lease_lost without creating a proposal.
+    required: false
 mutates_state: true
 retry_policy: manual
 auto_retry: false
@@ -63,3 +75,9 @@ aliases:
 parents:
 - cowork
 ---
+
+Document agents supply `conversation_id`, `consumer`, and `generation`
+together. The capability verifies that the conversation is the real binding for
+this store and document, then holds that exact live lease while the proposal is
+created. Other callers may omit the complete tuple. Partial or mismatched tuples
+are rejected.

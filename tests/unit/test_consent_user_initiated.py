@@ -195,3 +195,41 @@ def test_after_block_gate_blocks_again() -> None:
 
     with pytest.raises(ConsentRequired):
         do_thing()  # blocks again
+
+
+def test_detached_agent_authorized_seam_is_click_scoped_without_grant_leak(
+    monkeypatch,
+) -> None:
+    """The Co-work spawn seam runs only inside the explicit UI boundary."""
+    from work_buddy.sidecar.dispatch import executor
+
+    calls: list[dict] = []
+
+    def _unchecked(**kwargs):
+        calls.append(dict(kwargs))
+        return {"status": "ok", "pid": 12345}
+
+    monkeypatch.setattr(
+        executor,
+        "_spawn_headless_agent_detached_unchecked",
+        _unchecked,
+    )
+    kwargs = {
+        "name": "throwaway-cowork-agent",
+        "prompt": "Bound throwaway prompt",
+        "max_budget_usd": 1.0,
+    }
+
+    with pytest.raises(ConsentRequired):
+        executor.spawn_headless_agent_detached_authorized(**kwargs)
+    assert calls == []
+
+    with user_initiated("dashboard.cowork.conversation_start"):
+        result = executor.spawn_headless_agent_detached_authorized(**kwargs)
+    assert result == {"status": "ok", "pid": 12345}
+    assert calls == [kwargs]
+
+    # The click authorized only that lexical block; no reusable grant leaked.
+    with pytest.raises(ConsentRequired):
+        executor.spawn_headless_agent_detached_authorized(**kwargs)
+    assert calls == [kwargs]

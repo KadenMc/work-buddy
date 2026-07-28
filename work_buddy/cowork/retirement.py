@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
 from work_buddy.cowork.lifecycle_state import inspect_lifecycle_state
+from work_buddy.cowork.lifecycle_lock import document_lifecycle_lock
 from work_buddy.cowork.policy import document_surface_allowed
 from work_buddy.truth import documents, ydoc_store
 from work_buddy.truth.contracts import Actor, InvariantViolation
@@ -213,6 +214,24 @@ def prepare_retirement(
 
 
 def commit_retirement(
+    store: TruthStore,
+    *,
+    document_id: str,
+    intent_id: str,
+    actor: Actor,
+) -> dict[str, Any]:
+    """Commit retirement while excluding conversation creation and feedback."""
+
+    with document_lifecycle_lock(store.store_id, document_id):
+        return _commit_retirement_locked(
+            store,
+            document_id=document_id,
+            intent_id=intent_id,
+            actor=actor,
+        )
+
+
+def _commit_retirement_locked(
     store: TruthStore,
     *,
     document_id: str,

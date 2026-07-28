@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -35,6 +36,7 @@ from work_buddy.conversations.store import (
     add_message,
     create_conversation,
     get_connection,
+    post_user_message,
 )
 from work_buddy.truth.contracts import InvariantViolation
 from work_buddy.truth.identity import truth_uri
@@ -49,6 +51,7 @@ _STORE_ID_KEY = "cowork_store_id"
 _KIND_KEY = "cowork_kind"
 _KIND_VALUE = "document_conversation"
 _DEFAULT_TITLE = "Co-work document conversation"
+_BINDING_LOCK = threading.RLock()
 
 # The two proposal decisions whose routing this module delivers. Redirect
 # carries a typed human note, endorse carries none (PRD section 6).
@@ -124,6 +127,30 @@ def _find_bound_conversation(
     return None
 
 
+def find_document_conversation(
+    *,
+    document_id: str,
+    store_id: str,
+    conn: sqlite3.Connection | None = None,
+) -> str | None:
+    """Read the real conversation id already bound to a document, if any.
+
+    This is the read-only half of the document-conversation contract. It never
+    creates a conversation and therefore is safe for GET/open/reload paths.
+    """
+    doc_id = _require_text(document_id, "document_id")
+    store_ref = _require_text(store_id, "store_id")
+    own_conn = conn is None
+    active = get_connection() if own_conn else conn
+    try:
+        return _find_bound_conversation(
+            active, document_id=doc_id, store_id=store_ref
+        )
+    finally:
+        if own_conn:
+            active.close()
+
+
 def ensure_document_conversation(
     *,
     document_id: str,
@@ -139,38 +166,50 @@ def ensure_document_conversation(
     """
     doc_id = _require_text(document_id, "document_id")
     store_ref = _require_text(store_id, "store_id")
-    own_conn = conn is None
-    active = get_connection() if own_conn else conn
-    try:
-        existing = _find_bound_conversation(
-            active, document_id=doc_id, store_id=store_ref
-        )
-        if existing is not None:
+    with _BINDING_LOCK:
+        own_conn = conn is None
+        active = get_connection() if own_conn else conn
+        try:
+            # Serialize the find-or-create decision across dashboard processes.
+            # ``create_conversation`` commits the insert on this connection; a
+            # competing BEGIN IMMEDIATE then observes the durable metadata row.
+            if own_conn:
+                active.execute("BEGIN IMMEDIATE")
+            existing = _find_bound_conversation(
+                active, document_id=doc_id, store_id=store_ref
+            )
+            if existing is not None:
+                if own_conn:
+                    active.commit()
+                return ConversationBinding(
+                    conversation_id=existing,
+                    document_id=doc_id,
+                    store_id=store_ref,
+                    created=False,
+                )
+            conversation = create_conversation(
+                title=title or _DEFAULT_TITLE,
+                source=CONVERSATION_SOURCE,
+                metadata={
+                    _DOCUMENT_ID_KEY: doc_id,
+                    _STORE_ID_KEY: store_ref,
+                    _KIND_KEY: _KIND_VALUE,
+                },
+                conn=active,
+            )
             return ConversationBinding(
-                conversation_id=existing,
+                conversation_id=conversation.conversation_id,
                 document_id=doc_id,
                 store_id=store_ref,
-                created=False,
+                created=True,
             )
-        conversation = create_conversation(
-            title=title or _DEFAULT_TITLE,
-            source=CONVERSATION_SOURCE,
-            metadata={
-                _DOCUMENT_ID_KEY: doc_id,
-                _STORE_ID_KEY: store_ref,
-                _KIND_KEY: _KIND_VALUE,
-            },
-            conn=active,
-        )
-        return ConversationBinding(
-            conversation_id=conversation.conversation_id,
-            document_id=doc_id,
-            store_id=store_ref,
-            created=True,
-        )
-    finally:
-        if own_conn:
-            active.close()
+        except Exception:
+            if own_conn and active.in_transaction:
+                active.rollback()
+            raise
+        finally:
+            if own_conn:
+                active.close()
 
 
 def post_feedback_message(
@@ -191,11 +230,9 @@ def post_feedback_message(
     own_conn = conn is None
     active = get_connection() if own_conn else conn
     try:
-        return add_message(
+        return post_user_message(
             conversation,
-            "user",
             text,
-            message_type="text",
             conn=active,
         )
     finally:
@@ -344,6 +381,7 @@ __all__ = [
     "PostedFeedback",
     "deliver_decision",
     "ensure_document_conversation",
+    "find_document_conversation",
     "feedback_poster",
     "post_feedback_message",
 ]

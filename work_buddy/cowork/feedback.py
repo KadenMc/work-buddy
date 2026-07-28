@@ -28,12 +28,14 @@ the real hook, tests inject a double.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from work_buddy.truth.anchors import CompositeSelector
+from work_buddy.cowork.lifecycle_lock import document_lifecycle_lock
 from work_buddy.cowork.policy import document_surface_allowed
+from work_buddy.truth.anchors import CompositeSelector, parse_selector
 from work_buddy.truth.contracts import Actor, InvariantViolation
 from work_buddy.truth.documents import current_lifecycle, get_document
 from work_buddy.truth.events import emit_truth_event
@@ -83,6 +85,105 @@ class FeedbackCapture:
     event_published: bool
 
 
+def _feedback_items_locked(
+    store: TruthStore,
+    *,
+    document_id: str,
+    conversation_id: str,
+    conn: Any,
+) -> list[dict[str, Any]]:
+    """Project durable feedback evidence for one exact document conversation."""
+    items: list[dict[str, Any]] = []
+    rows = conn.execute(
+        """SELECT id, content, meta_json, created_at
+           FROM evidence
+           WHERE kind = ? AND acquisition_method = ?
+             AND redacted_at IS NULL
+           ORDER BY created_at ASC, id ASC""",
+        (FEEDBACK_EVIDENCE_KIND, FEEDBACK_ACQUISITION_METHOD),
+    ).fetchall()
+    for row in rows:
+        try:
+            meta = json.loads(row["meta_json"]) if row["meta_json"] else {}
+        except (json.JSONDecodeError, TypeError):
+            continue
+        raw_feedback = meta.get("cowork_feedback") if isinstance(meta, Mapping) else None
+        if not isinstance(raw_feedback, Mapping):
+            continue
+        if (
+            raw_feedback.get("document_id") != document_id
+            or raw_feedback.get("conversation_id") != conversation_id
+        ):
+            continue
+        message_id = raw_feedback.get("message_id")
+        span_id = raw_feedback.get("document_span_id")
+        if not (
+            isinstance(message_id, str)
+            and message_id
+            and isinstance(span_id, str)
+            and span_id
+            and isinstance(row["content"], str)
+        ):
+            continue
+        span = store._get_document_span_locked(conn, span_id)
+        if span is None or span.document_id != document_id:
+            continue
+        try:
+            selector = parse_selector(span.selector_json)
+        except Exception:
+            continue
+        node_id_hint = raw_feedback.get("node_id_hint")
+        items.append(
+            {
+                "evidence_id": str(row["id"]),
+                "span_id": span_id,
+                "conversation_id": conversation_id,
+                "message_id": message_id,
+                "text": str(row["content"]),
+                "anchor": {
+                    "exact": selector.exact,
+                    "prefix": selector.prefix,
+                    "suffix": selector.suffix,
+                    "node_id_hint": (
+                        node_id_hint if isinstance(node_id_hint, str) else None
+                    ),
+                },
+            }
+        )
+    return items
+
+
+def feedback_items(
+    store: TruthStore,
+    *,
+    document_id: str,
+    conversation_id: str | None,
+    conn: Any | None = None,
+) -> list[dict[str, Any]]:
+    """Return unredacted feedback resolvable by its exact persisted message id.
+
+    The returned array is ordered by evidence creation time and id. Every item
+    carries its message id so callers can build an exact lookup without
+    conflating repeated feedback text attached to different selections.
+    """
+    if conversation_id is None:
+        return []
+    if conn is not None:
+        return _feedback_items_locked(
+            store,
+            document_id=document_id,
+            conversation_id=conversation_id,
+            conn=conn,
+        )
+    with store._read_connection() as read_conn:
+        return _feedback_items_locked(
+            store,
+            document_id=document_id,
+            conversation_id=conversation_id,
+            conn=read_conn,
+        )
+
+
 def _coerce_span(span: FeedbackSpan | Mapping[str, Any]) -> FeedbackSpan:
     if isinstance(span, FeedbackSpan):
         return span
@@ -128,6 +229,34 @@ def capture_feedback(
     lifecycle event. The trust class is assigned by the engine through the
     human-surface path, never set here.
     """
+    with document_lifecycle_lock(store.store_id, document_id):
+        return _capture_feedback_locked(
+            store,
+            document_id=document_id,
+            span=span,
+            verbatim_text=verbatim_text,
+            actor=actor,
+            post_message=post_message,
+            at=at,
+            registry=registry,
+            emit_event=emit_event,
+        )
+
+
+def _capture_feedback_locked(
+    store: TruthStore,
+    *,
+    document_id: str,
+    span: FeedbackSpan | Mapping[str, Any],
+    verbatim_text: str,
+    actor: Actor,
+    post_message: FeedbackPoster,
+    at: str | None,
+    registry: LocatorRegistry,
+    emit_event: EventEmitter,
+) -> FeedbackCapture:
+    """Implement feedback capture while the document lifecycle lock is held."""
+
     if not isinstance(verbatim_text, str) or not verbatim_text.strip():
         raise InvariantViolation("feedback text must be a nonempty string")
     if not isinstance(actor, Actor):
@@ -247,4 +376,5 @@ __all__ = [
     "FeedbackPosting",
     "FeedbackSpan",
     "capture_feedback",
+    "feedback_items",
 ]

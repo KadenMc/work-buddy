@@ -4613,7 +4613,32 @@ def api_conversation_get(conversation_id: str):
         if result is None:
             return jsonify({"error": "Conversation not found"}), 404
         if isinstance(result, dict) and isinstance(result.get("conversation"), dict):
-            result["conversation"]["agent_alive"] = is_alive(conversation_id)
+            conversation = result["conversation"]
+            metadata = conversation.get("metadata")
+            if (
+                conversation.get("source") == "cowork_document"
+                and isinstance(metadata, dict)
+                and isinstance(metadata.get("cowork_store_id"), str)
+                and isinstance(metadata.get("cowork_document_id"), str)
+            ):
+                from work_buddy.cowork.document_agent import (
+                    document_agent_consumer,
+                    inspect_document_agent,
+                )
+
+                consumer = document_agent_consumer(
+                    metadata["cowork_store_id"],
+                    metadata["cowork_document_id"],
+                )
+                status = inspect_document_agent(
+                    conversation_id,
+                    consumer=consumer,
+                )
+                conversation["agent_alive"] = status.alive
+                conversation["agent_status"] = status.status
+                conversation["agent_error"] = status.error
+            else:
+                conversation["agent_alive"] = is_alive(conversation_id)
         return jsonify(result)
     except Exception as exc:
         logger.error("Conversation get failed for %s: %s", conversation_id, exc)
@@ -4624,30 +4649,66 @@ def api_conversation_get(conversation_id: str):
 def api_conversation_respond(conversation_id: str):
     """User sends a message or responds to a pending question.
 
-    Expects: {"value": "user's text"}
+    Expects: {"value": "user's text", "in_reply_to": "question-id"?}
 
-    If there's a pending question, answers it. Otherwise adds a general
-    user message to the conversation.
+    An explicit reply is conversation-scoped and single-winner. A Co-work
+    composer turn without one remains an ordinary authored message and never
+    silently consumes an unrelated pending question. Other conversation sources
+    retain the latest-pending compatibility fallback.
     """
     blocked = _reject_read_only()
     if blocked:
         return blocked
     data = request.get_json(silent=True) or {}
     value = data.get("value", "")
+    in_reply_to = data.get("in_reply_to", data.get("inReplyTo"))
     if not value and value is not False:
         return jsonify({"error": "Missing 'value' in request body"}), 400
+    if in_reply_to is not None and (
+        not isinstance(in_reply_to, str) or not in_reply_to.strip()
+    ):
+        return jsonify({"error": "'in_reply_to' must be a nonempty string"}), 400
 
     try:
         from work_buddy.conversations.store import (
+            get_conversation,
+            post_user_message,
             respond_to_conversation,
-            add_message,
+            respond_to_message_with_user_message,
         )
-        # Try to answer a pending question first
-        msg = respond_to_conversation(conversation_id, str(value))
-        if msg is not None:
-            return jsonify({"responded": True, "message_id": msg.message_id})
-        # No pending question — add as a general user message
-        msg = add_message(conversation_id, "user", str(value))
+        conversation = get_conversation(conversation_id)
+        if conversation is None or conversation.status == "closed":
+            return jsonify({"error": "Conversation not found or closed"}), 404
+        if in_reply_to is not None:
+            msg = respond_to_message_with_user_message(
+                conversation_id,
+                in_reply_to,
+                str(value),
+            )
+            if msg is None:
+                return (
+                    jsonify(
+                        {
+                            "error": "That question is no longer awaiting a reply.",
+                            "code": "question_unavailable",
+                        }
+                    ),
+                    409,
+                )
+            return jsonify(
+                {
+                    "responded": True,
+                    "message_id": msg.message_id,
+                    "in_reply_to": in_reply_to,
+                }
+            )
+
+        # Compatibility for older chat consumers that do not send an exact id.
+        if conversation.source != "cowork_document":
+            msg = respond_to_conversation(conversation_id, str(value))
+            if msg is not None:
+                return jsonify({"responded": True, "message_id": msg.message_id})
+        msg = post_user_message(conversation_id, str(value))
         if msg is None:
             return jsonify({"error": "Conversation not found or closed"}), 404
         return jsonify({"sent": True, "message_id": msg.message_id})

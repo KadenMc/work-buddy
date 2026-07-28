@@ -271,6 +271,7 @@ def propose_edit(
     expires_at: str | None = None,
     at: str | None = None,
     proposal_id: str | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> ProposalRecord:
     """Append a quote-anchored edit (or a flag when replacement is None).
 
@@ -321,12 +322,28 @@ def propose_edit(
     created = _timestamp(at, "proposal created_at")
     expiry = None if expires_at is None else _timestamp(expires_at, "expires_at")
     meta_json = _producer_meta_json(actor)
-    with store.write_transaction() as conn:
-        if store._get_document_locked(conn, document_ref) is None:
+    with store.write_transaction(conn) as write_conn:
+        if store._get_document_locked(write_conn, document_ref) is None:
             raise InvariantViolation(f"document does not exist: {document_ref}")
+        # Lifecycle is checked inside the same truth-store write transaction as
+        # the proposal insert. A caller's earlier read can race retirement and
+        # is never sufficient authority to append work to a retired document.
+        from work_buddy.truth import documents
+
+        if (
+            documents.current_lifecycle(
+                store,
+                document_ref,
+                conn=write_conn,
+            )
+            != "active"
+        ):
+            raise InvariantViolation(
+                "retired documents cannot receive proposals"
+            )
         suppressing = _find_suppressing_proposal_locked(
             store,
-            conn,
+            write_conn,
             document_id=document_ref,
             dedup_key=dedup_key,
         )
@@ -355,9 +372,9 @@ def propose_edit(
             meta_json=meta_json,
             redacted_at=None,
         )
-        store._insert_proposal_locked(conn, record)
+        store._insert_proposal_locked(write_conn, record)
         store._insert_proposal_status_event_locked(
-            conn,
+            write_conn,
             proposal_id=identifier,
             status="open",
             decision=None,

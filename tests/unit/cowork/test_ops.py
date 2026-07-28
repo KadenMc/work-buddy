@@ -12,6 +12,9 @@ from pathlib import Path
 
 import pytest
 
+from work_buddy.conversations import store as conversation_store
+from work_buddy.cowork import conversations as cowork_conversations
+from work_buddy.cowork import feedback as cowork_feedback
 from work_buddy.mcp_server.op_registry import load_builtin_ops
 
 # Register the built-in ops first. The cowork surface reuses the truth-ops
@@ -67,6 +70,13 @@ def _make_store(
     *,
     document_surface: bool = True,
 ) -> dict[str, object]:
+    conversations_db = tmp_path / "throwaway-conversations.db"
+    monkeypatch.setattr(conversation_store, "_DB_PATH", conversations_db)
+    conversations_conn = conversation_store.get_connection()
+    try:
+        conversation_store._ensure_schema(conversations_conn)
+    finally:
+        conversations_conn.close()
     registry = TruthStoreRegistry(tmp_path / "registry.db")
     monkeypatch.setattr(cowork_ops, "_registry", lambda: registry)
     monkeypatch.setattr(
@@ -139,6 +149,27 @@ def _one_hunk(replacement: str = "Revised sentence") -> list[dict[str, object]]:
     return [{"quote_anchor": {"exact": QUOTE}, "replacement": replacement}]
 
 
+def _activate_document_lease(store_id: str, document_id: str, generation: str):
+    binding = cowork_conversations.ensure_document_conversation(
+        document_id=document_id,
+        store_id=store_id,
+    )
+    consumer = f"cowork-document:{store_id}:{document_id}"
+    claim = conversation_store.claim_agent_lease(
+        binding.conversation_id,
+        consumer,
+        generation,
+    )
+    assert claim is not None and claim["claimed"] is True
+    assert conversation_store.activate_agent_lease(
+        binding.conversation_id,
+        consumer,
+        generation,
+        92001,
+    )
+    return binding, consumer
+
+
 # --------------------------------------------------------------------------
 # Registration.
 # --------------------------------------------------------------------------
@@ -185,6 +216,54 @@ def test_list_and_get_report_document_and_open_layer(cowork: dict[str, object]) 
     assert got["hashes"]["current_file_sha256"] == content_sha
     assert got["open_proposals"] == []
     assert got["expressions"] == []
+    assert got["feedback"] == []
+
+
+def test_get_exposes_truth_backed_feedback_by_exact_message_id(
+    cowork: dict[str, object],
+) -> None:
+    store = cowork["store"]
+    store_id = str(cowork["store_id"])
+    doc_id, _ = _register_doc(store)
+    poster = cowork_conversations.feedback_poster(
+        document_id=doc_id,
+        store_id=store_id,
+    )
+    captured = cowork_feedback.capture_feedback(
+        store,
+        document_id=doc_id,
+        span=cowork_feedback.FeedbackSpan(
+            exact=QUOTE,
+            prefix="",
+            suffix=" for cowork ops tests.",
+            node_id_hint="throwaway-node",
+        ),
+        verbatim_text="Please tighten this.",
+        actor=HUMAN,
+        post_message=poster,
+        at=NOW,
+        emit_event=lambda *_args, **_kwargs: TruthEventEmission(
+            "feedback-event",
+            True,
+        ),
+    )
+
+    got = cowork_ops.cowork_doc_get(store_id, doc_id)
+    assert got["feedback"] == [
+        {
+            "evidence_id": captured.evidence_id,
+            "span_id": captured.document_span_id,
+            "conversation_id": captured.conversation_id,
+            "message_id": captured.message_id,
+            "text": "Please tighten this.",
+            "anchor": {
+                "exact": QUOTE,
+                "prefix": "",
+                "suffix": " for cowork ops tests.",
+                "node_id_hint": "throwaway-node",
+            },
+        }
+    ]
 
 
 def test_list_profile_filter_is_store_scoped(cowork: dict[str, object]) -> None:
@@ -246,6 +325,150 @@ def test_propose_edit_defaults_base_to_current_content(cowork: dict[str, object]
     assert got["open_proposals"][0]["base_ok"] is True
 
 
+def test_generation_rotation_between_receive_and_proposal_fences_stale_write(
+    cowork: dict[str, object],
+) -> None:
+    store_id = str(cowork["store_id"])
+    doc_id, _ = _register_doc(cowork["store"])
+    old_generation = "cowork-generation-old"
+    binding, consumer = _activate_document_lease(
+        store_id,
+        doc_id,
+        old_generation,
+    )
+    turn = conversation_store.post_user_message(
+        binding.conversation_id,
+        "Please revise this sentence.",
+    )
+    assert turn is not None
+    received = conversation_store.receive_user_message(
+        binding.conversation_id,
+        consumer,
+        old_generation,
+    )
+    assert received["message"]["message_id"] == turn.message_id
+
+    assert conversation_store.stop_agent_lease(
+        binding.conversation_id,
+        consumer,
+        old_generation,
+    )
+    new_generation = "cowork-generation-new"
+    claim = conversation_store.claim_agent_lease(
+        binding.conversation_id,
+        consumer,
+        new_generation,
+    )
+    assert claim is not None and claim["claimed"] is True
+    assert conversation_store.activate_agent_lease(
+        binding.conversation_id,
+        consumer,
+        new_generation,
+        92002,
+    )
+
+    stale = cowork_ops.cowork_doc_propose_edit(
+        store_id,
+        doc_id,
+        _one_hunk(),
+        "Stale generation must not write.",
+        "stale",
+        MODEL,
+        agent_session_id=SESSION_ID,
+        conversation_id=binding.conversation_id,
+        consumer=consumer,
+        generation=old_generation,
+    )
+    assert stale == {"ok": False, "status": "lease_lost"}
+    assert proposals.open_proposals(cowork["store"], document_id=doc_id) == ()
+
+    current = cowork_ops.cowork_doc_propose_edit(
+        store_id,
+        doc_id,
+        _one_hunk(),
+        "Current generation may propose.",
+        "current",
+        MODEL,
+        agent_session_id=SESSION_ID,
+        conversation_id=binding.conversation_id,
+        consumer=consumer,
+        generation=new_generation,
+    )
+    assert current["ok"] is True
+    assert current["created_count"] == 1
+
+
+def test_document_write_lease_cannot_be_reused_for_another_document(
+    cowork: dict[str, object],
+) -> None:
+    store_id = str(cowork["store_id"])
+    first_doc, _ = _register_doc(
+        cowork["store"],
+        path="docs/first-fenced.md",
+    )
+    second_doc, _ = _register_doc(
+        cowork["store"],
+        path="docs/second-fenced.md",
+    )
+    generation = "cowork-generation-bound"
+    binding, consumer = _activate_document_lease(
+        store_id,
+        first_doc,
+        generation,
+    )
+    result = cowork_ops.cowork_doc_comment(
+        store_id,
+        second_doc,
+        {"exact": QUOTE},
+        "Must not cross the document boundary.",
+        "wrong document",
+        MODEL,
+        agent_session_id=SESSION_ID,
+        conversation_id=binding.conversation_id,
+        consumer=consumer,
+        generation=generation,
+    )
+    assert result == {"ok": False, "status": "lease_lost"}
+    assert proposals.open_proposals(
+        cowork["store"],
+        document_id=second_doc,
+    ) == ()
+
+
+def test_propose_and_comment_reject_retired_document(
+    cowork: dict[str, object],
+) -> None:
+    store = cowork["store"]
+    store_id = str(cowork["store_id"])
+    doc_id, _ = _register_doc(store, path="docs/retired-ops.md")
+    documents.retire_document(
+        store,
+        document_id=doc_id,
+        actor=HUMAN,
+    )
+
+    with pytest.raises(InvariantViolation, match="retired documents"):
+        cowork_ops.cowork_doc_propose_edit(
+            store_id,
+            doc_id,
+            _one_hunk(),
+            "No longer active.",
+            "retired",
+            MODEL,
+            agent_session_id=SESSION_ID,
+        )
+    with pytest.raises(InvariantViolation, match="retired documents"):
+        cowork_ops.cowork_doc_comment(
+            store_id,
+            doc_id,
+            {"exact": QUOTE},
+            "No longer active.",
+            "retired",
+            MODEL,
+            agent_session_id=SESSION_ID,
+        )
+
+
 def test_propose_edit_enforces_claim_ref_role(cowork: dict[str, object]) -> None:
     store_id = str(cowork["store_id"])
     doc_id, _ = _register_doc(cowork["store"])
@@ -287,6 +510,27 @@ def test_propose_edit_validates_hunks_and_anchor(cowork: dict[str, object]) -> N
             store_id, doc_id, [{"quote_anchor": {"prefix": "x"}, "replacement": "y"}],
             "r", "t", MODEL, agent_session_id=SESSION_ID,
         )
+
+    with pytest.raises(InvariantViolation, match="nonempty replacement"):
+        cowork_ops.cowork_doc_propose_edit(
+            store_id,
+            doc_id,
+            [
+                {
+                    "quote_anchor": {"exact": QUOTE},
+                    "replacement": "Valid first replacement",
+                },
+                {
+                    "quote_anchor": {"exact": QUOTE},
+                    "replacement": "",
+                },
+            ],
+            "must be atomic",
+            "no partial proposal",
+            MODEL,
+            agent_session_id=SESSION_ID,
+        )
+    assert proposals.open_proposals(cowork["store"], document_id=doc_id) == ()
 
 
 # --------------------------------------------------------------------------

@@ -10,7 +10,9 @@ import io
 import json
 import struct
 
+from work_buddy.conversations import store as conversation_store
 from work_buddy.cowork import api
+from work_buddy.cowork import conversations, document_agent
 from work_buddy.truth import documents, ydoc_store
 from work_buddy.truth.identity import sha256_bytes, sha256_text
 
@@ -468,7 +470,93 @@ def test_reimport_records_change_set(client, store_ctx):
 # --- R9 feedback -----------------------------------------------------------
 
 
-def test_feedback_captures_user_authored_utterance(client, seeded):
+def test_conversation_get_is_read_only_and_post_lazily_creates_real_binding(
+    client,
+    seeded,
+    fake_document_agent,
+):
+    url = _url(
+        f"/api/truth/doc/{seeded['document'].id}/conversation",
+        seeded["store_id"],
+    )
+    conn = conversation_store.get_connection()
+    try:
+        before = {
+            "conversations": conn.execute(
+                "SELECT COUNT(*) FROM conversations"
+            ).fetchone()[0],
+            "leases": conn.execute(
+                "SELECT COUNT(*) FROM conversation_agent_leases"
+            ).fetchone()[0],
+        }
+    finally:
+        conn.close()
+
+    opened = client.get(url)
+    assert opened.status_code == 200
+    assert opened.get_json() == {
+        "ok": True,
+        "conversation_id": None,
+        "agent": {
+            "status": "not_started",
+            "alive": None,
+            "started": False,
+            "error": None,
+        },
+        "feedback": [],
+    }
+    conn = conversation_store.get_connection()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0] == before["conversations"]
+        assert conn.execute("SELECT COUNT(*) FROM conversation_agent_leases").fetchone()[0] == before["leases"]
+    finally:
+        conn.close()
+    assert fake_document_agent == []
+
+    started = client.post(url)
+    assert started.status_code == 200
+    payload = started.get_json()
+    assert payload["ok"] is True
+    assert payload["created"] is True
+    assert payload["conversation_id"]
+    assert payload["feedback"] == []
+    assert payload["agent"]["status"] == "running"
+    assert len(fake_document_agent) == 1
+    assert fake_document_agent[0]["conversation_id"] == payload["conversation_id"]
+
+    repeated = client.post(url).get_json()
+    assert repeated["conversation_id"] == payload["conversation_id"]
+    assert repeated["created"] is False
+
+
+def test_closed_document_conversation_cannot_spawn_again(
+    client,
+    seeded,
+    fake_document_agent,
+):
+    binding = conversations.ensure_document_conversation(
+        document_id=seeded["document"].id,
+        store_id=seeded["store_id"],
+    )
+    assert conversation_store.close_conversation(binding.conversation_id)
+    fake_document_agent.clear()
+
+    response = client.post(
+        _url(
+            f"/api/truth/doc/{seeded['document'].id}/conversation",
+            seeded["store_id"],
+        )
+    )
+    assert response.status_code == 409
+    assert response.get_json()["error"]["code"] == "conversation_closed"
+    assert fake_document_agent == []
+
+
+def test_feedback_captures_user_authored_utterance(
+    client,
+    seeded,
+    fake_document_agent,
+):
     resp = client.post(
         _url(f"/api/truth/doc/{seeded['document'].id}/feedback", seeded["store_id"]),
         json={
@@ -482,7 +570,11 @@ def test_feedback_captures_user_authored_utterance(client, seeded):
     # The conversation is resolved server-side (one per document), not echoed
     # from the request, and the verbatim feedback is posted into it.
     assert payload["conversation_id"]
+    assert payload["message_id"]
     assert payload["span_id"]
+    assert payload["agent"]["status"] == "running"
+    assert len(fake_document_agent) == 1
+    assert fake_document_agent[0]["feedback"].message_id == payload["message_id"]
     with seeded["store"].connect() as conn:
         row = conn.execute(
             "SELECT kind, trust_class, content FROM evidence WHERE id = ?",
@@ -499,6 +591,120 @@ def test_feedback_captures_user_authored_utterance(client, seeded):
         message["content"] == "This sentence needs a citation."
         for message in conversation["messages"]
     )
+
+
+def test_feedback_spawn_failure_keeps_authored_turn_and_returns_safe_status(
+    client,
+    seeded,
+    monkeypatch,
+):
+    def _raise(**_kwargs):
+        raise RuntimeError("C:\\private\\launcher --token raw-secret")
+
+    monkeypatch.setattr(document_agent, "ensure_document_agent", _raise)
+    response = client.post(
+        _url(f"/api/truth/doc/{seeded['document'].id}/feedback", seeded["store_id"]),
+        json={
+            "span": {"exact": DOC_QUOTE, "prefix": "", "suffix": ""},
+            "text": "Keep this feedback even if chat cannot start.",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["ok"] is True
+    assert payload["agent"] == {
+        "status": "spawn_failed",
+        "alive": False,
+        "started": False,
+        "error": "Chat couldn’t start. Try again.",
+    }
+    assert "secret" not in payload["agent"]["error"]
+    bundle = conversation_store.get_conversation_with_messages(
+        payload["conversation_id"]
+    )
+    assert bundle is not None
+    authored = [
+        item
+        for item in bundle["messages"]
+        if item["message_id"] == payload["message_id"]
+    ]
+    assert len(authored) == 1
+    assert authored[0]["role"] == "user"
+    assert authored[0]["content"] == (
+        "Keep this feedback even if chat cannot start."
+    )
+
+
+def test_repeated_identical_feedback_remains_keyed_to_distinct_truth_anchors(
+    client,
+    seeded,
+):
+    base = f"/api/truth/doc/{seeded['document'].id}"
+    identical = "Please tighten this."
+    first = client.post(
+        _url(f"{base}/feedback", seeded["store_id"]),
+        json={
+            "span": {
+                "exact": "Throwaway fixture",
+                "prefix": "# ",
+                "suffix": "\n\n",
+            },
+            "text": identical,
+        },
+    ).get_json()
+    second = client.post(
+        _url(f"{base}/feedback", seeded["store_id"]),
+        json={
+            "span": {
+                "exact": DOC_QUOTE,
+                "prefix": "\n\n",
+                "suffix": "\n",
+            },
+            "text": identical,
+        },
+    ).get_json()
+    assert first["message_id"] != second["message_id"]
+
+    binding = client.get(
+        _url(f"{base}/conversation", seeded["store_id"])
+    ).get_json()
+    by_message = {item["message_id"]: item for item in binding["feedback"]}
+    assert by_message[first["message_id"]]["text"] == identical
+    assert by_message[first["message_id"]]["anchor"] == {
+        "exact": "Throwaway fixture",
+        "prefix": "# ",
+        "suffix": "\n\n",
+        "node_id_hint": None,
+    }
+    assert by_message[second["message_id"]]["text"] == identical
+    assert by_message[second["message_id"]]["anchor"]["exact"] == DOC_QUOTE
+
+
+def test_start_after_another_tab_feedback_adopts_binding_and_annotations(
+    client,
+    seeded,
+):
+    base = f"/api/truth/doc/{seeded['document'].id}"
+    initial = client.get(
+        _url(f"{base}/conversation", seeded["store_id"])
+    ).get_json()
+    assert initial["conversation_id"] is None
+
+    captured = client.post(
+        _url(f"{base}/feedback", seeded["store_id"]),
+        json={
+            "span": {"exact": DOC_QUOTE, "prefix": "", "suffix": ""},
+            "text": "Feedback from another tab.",
+        },
+    ).get_json()
+    adopted = client.post(
+        _url(f"{base}/conversation", seeded["store_id"])
+    ).get_json()
+    assert adopted["created"] is False
+    assert adopted["conversation_id"] == captured["conversation_id"]
+    assert [item["message_id"] for item in adopted["feedback"]] == [
+        captured["message_id"]
+    ]
 
 
 def test_feedback_requires_document_surface_capture(client, store_ctx, tmp_path):

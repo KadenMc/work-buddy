@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from work_buddy.config import load_config
+from work_buddy.consent import requires_consent
 from work_buddy.logging_config import get_logger
 from work_buddy.sidecar.dispatch.models import AgentTarget, SpawnMode, SpawnResult
 from work_buddy.sidecar.scheduler.jobs import Job
@@ -379,39 +380,15 @@ def _build_headless_agent_argv(
     return cmd
 
 
-def spawn_headless_agent_detached(
+def _spawn_headless_agent_detached_unchecked(
     *,
     name: str,
     prompt: str,
     max_budget_usd: float | None = None,
 ) -> dict[str, Any]:
-    """Fire-and-forget headless ``claude --print`` spawn — returns immediately.
-
-    Sibling of ``_spawn_agent`` for callers that cannot block (e.g. Flask
-    request handlers). The agent process runs in the background, drives
-    whatever it was prompted to do (typically a long-lived
-    conversation_send/ask/close loop against a pre-created conversation),
-    and exits on its own. The caller gets back the PID so it can record
-    or surface it, but does not need to reap the process.
-
-    Persistent mode only — ephemeral fire-and-forget without persistence
-    would lose the session_id with no way to recover it. If the session
-    needs to be resumable, the caller pairs this with the conversation
-    record that holds the conversation_id.
-
-    Consent-gated on ``sidecar:agent_spawn``.
-    """
+    """Perform one detached spawn after the caller has established authority."""
     if not prompt:
         return {"status": "error", "error": "Empty prompt."}
-
-    if not _check_agent_spawn_consent():
-        return {
-            "status": "consent_required",
-            "error": (
-                f"Detached agent spawn for '{name}' requires consent. "
-                f"Grant '{AGENT_SPAWN_CONSENT_OP}' to enable."
-            ),
-        }
 
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if api_key:
@@ -468,6 +445,61 @@ def spawn_headless_agent_detached(
         return {"status": "error", "error": str(exc)}
 
     return {"status": "ok", "pid": proc.pid, "session_name": session_name}
+
+
+@requires_consent(
+    operation=AGENT_SPAWN_CONSENT_OP,
+    reason="Start a background agent for a user-opened conversation.",
+    risk="high",
+    consent_weight="high",
+    default_ttl=0,
+)
+def spawn_headless_agent_detached_authorized(
+    *,
+    name: str,
+    prompt: str,
+    max_budget_usd: float | None = None,
+) -> dict[str, Any]:
+    """Spawn through the standard consent decorator.
+
+    Explicit dashboard actions call this inside ``user_initiated`` so the click
+    is the narrowly scoped authority. Unlike the standing-grant seam, this path
+    never writes a reusable consent grant into the cache.
+    """
+    return _spawn_headless_agent_detached_unchecked(
+        name=name,
+        prompt=prompt,
+        max_budget_usd=max_budget_usd,
+    )
+
+
+def spawn_headless_agent_detached(
+    *,
+    name: str,
+    prompt: str,
+    max_budget_usd: float | None = None,
+) -> dict[str, Any]:
+    """Fire-and-forget detached spawn using the existing standing-grant check.
+
+    This preserves the existing scheduler and Jobs-help contract. New explicit
+    UI actions should use :func:`spawn_headless_agent_detached_authorized`
+    inside a ``user_initiated`` boundary instead of minting a cache grant.
+    """
+    if not prompt:
+        return {"status": "error", "error": "Empty prompt."}
+    if not _check_agent_spawn_consent():
+        return {
+            "status": "consent_required",
+            "error": (
+                f"Detached agent spawn for '{name}' requires consent. "
+                f"Grant '{AGENT_SPAWN_CONSENT_OP}' to enable."
+            ),
+        }
+    return _spawn_headless_agent_detached_unchecked(
+        name=name,
+        prompt=prompt,
+        max_budget_usd=max_budget_usd,
+    )
 
 
 def _spawn_agent(

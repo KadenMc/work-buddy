@@ -10,6 +10,8 @@ capabilities:
 - conversations/conversation_send
 - conversations/conversation_ask
 - conversations/conversation_poll
+- conversations/conversation_receive
+- conversations/conversation_ack
 - conversations/conversation_close
 - conversations/conversation_list
 tags:
@@ -38,6 +40,8 @@ mcp__work-buddy__wb_run("conversation_create", {"title": "...", "message": "..."
 mcp__work-buddy__wb_run("conversation_send", {"conversation_id": "...", "message": "..."})
 mcp__work-buddy__wb_run("conversation_ask", {"conversation_id": "...", "question": "...", "response_type": "boolean"})
 mcp__work-buddy__wb_run("conversation_poll", {"conversation_id": "..."})
+mcp__work-buddy__wb_run("conversation_receive", {"conversation_id": "...", "consumer": "...", "generation": "...", "timeout_seconds": 110})
+mcp__work-buddy__wb_run("conversation_ack", {"conversation_id": "...", "consumer": "...", "generation": "...", "message_id": "..."})
 mcp__work-buddy__wb_run("conversation_close", {"conversation_id": "..."})
 mcp__work-buddy__wb_run("conversation_list")
 
@@ -61,6 +65,15 @@ mcp__work-buddy__wb_run("conversation_list")
 - conversation_create opens the chat sidebar on the dashboard automatically
 - conversation_ask with timeout_seconds blocks until response (max 110s)
 - conversation_poll checks the latest question without sending a new message
+- conversation_receive is for a leased long-running driver: it returns the
+  oldest unacknowledged user turn without advancing the durable cursor
+- conversation_ack advances that cursor only over the exact delivered message;
+  call it after the turn's reply and side effects succeed
+- a leased driver must pass the same `consumer` and `generation` to
+  conversation_send and conversation_ask; this fences late writes after a
+  restart or close
+- a `lease_lost` result from receive, acknowledge, send, or ask means a newer
+  driver owns the conversation; stop immediately
 - Sidebar auto-polls every 3s for new messages
 
 ## Naming note

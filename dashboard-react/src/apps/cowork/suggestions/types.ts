@@ -174,9 +174,25 @@ export interface SittingResponse {
   readonly structured_head_sha256: string;
   readonly snapshot_sha256: string;
   readonly routing_deliveries?: readonly {
+    readonly delivery_id: string;
     readonly verb: "redirect" | "endorse";
     readonly proposal_id: string;
     readonly note?: string | null;
+    /**
+     * True only after the routing note is durably present in the document
+     * conversation. Omitted by older receipts, which the UI treats as queued
+     * rather than claiming that delivery succeeded.
+     */
+    readonly delivered?: boolean;
+    readonly conversation_id?: string | null;
+    readonly message_id?: string | null;
+    readonly reason?: string | null;
+    readonly agent?: {
+      readonly status: "not_started" | "running" | "stopped" | "spawn_failed";
+      readonly alive: boolean | null;
+      readonly started: boolean;
+      readonly error: string | null;
+    };
   }[];
 }
 

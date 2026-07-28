@@ -24,16 +24,29 @@ def _register() -> None:
     import os
     import time
     import urllib.request
+    from contextlib import nullcontext
     from work_buddy.conversations.store import (
+        ConversationLeaseLost,
         create_conversation as _create_conversation,
         get_conversation as _get_conversation,
         get_conversation_with_messages as _get_conv_msgs,
         add_message as _add_msg,
+        send_agent_message_idempotent as _send_agent_idempotent,
         get_pending_question as _get_pending,
         respond_to_conversation as _respond_conv,
+        receive_user_message as _receive_user,
+        ack_user_message as _ack_user,
         close_conversation as _close_conversation,
         list_conversations as _list_conversations,
+        conversation_agent_write_guard as _agent_write_guard,
     )
+
+    def _write_fence(conversation_id, consumer, generation):
+        if consumer is None and generation is None:
+            return nullcontext(None)
+        if consumer is None or generation is None:
+            raise ValueError("consumer and generation must be provided together")
+        return _agent_write_guard(conversation_id, consumer, generation)
 
     def _notify_conversation_created(
         conversation_id: str, title: str, body: str = "",
@@ -86,8 +99,41 @@ def _register() -> None:
         _notify_conversation_created(conv.conversation_id, title, message)
         return result
 
-    def conversation_send(conversation_id: str, message: str) -> dict:
-        msg = _add_msg(conversation_id, "agent", message)
+    def conversation_send(
+        conversation_id: str,
+        message: str,
+        message_id: str | None = None,
+        consumer: str | None = None,
+        generation: str | None = None,
+    ) -> dict:
+        try:
+            with _write_fence(
+                conversation_id,
+                consumer,
+                generation,
+            ) as lease_conn:
+                if message_id is None:
+                    msg = _add_msg(
+                        conversation_id,
+                        "agent",
+                        message,
+                        conn=lease_conn,
+                    )
+                    created = msg is not None
+                else:
+                    msg, created = _send_agent_idempotent(
+                        conversation_id,
+                        message,
+                        message_id,
+                        conn=lease_conn,
+                    )
+        except ConversationLeaseLost:
+            return {
+                "status": "lease_lost",
+                "conversation_id": conversation_id,
+            }
+        except ValueError as exc:
+            return {"status": "invalid_request", "error": str(exc)}
         if msg is None:
             return {
                 "error": f"Conversation not found or closed: {conversation_id}",
@@ -96,6 +142,8 @@ def _register() -> None:
         return {
             "message_id": msg.message_id,
             "conversation_id": conversation_id,
+            "created": created,
+            "replayed": not created,
         }
 
     def conversation_ask(
@@ -104,6 +152,8 @@ def _register() -> None:
         response_type: str = "freeform",
         choices: list | None = None,
         timeout_seconds: int | None = None,
+        consumer: str | None = None,
+        generation: str | None = None,
     ) -> dict:
         choice_dicts = None
         if choices:
@@ -114,12 +164,28 @@ def _register() -> None:
                 elif isinstance(c, dict):
                     choice_dicts.append(c)
 
-        msg = _add_msg(
-            conversation_id, "agent", question,
-            message_type="question",
-            response_type=response_type,
-            choices=choice_dicts,
-        )
+        try:
+            with _write_fence(
+                conversation_id,
+                consumer,
+                generation,
+            ) as lease_conn:
+                msg = _add_msg(
+                    conversation_id,
+                    "agent",
+                    question,
+                    message_type="question",
+                    response_type=response_type,
+                    choices=choice_dicts,
+                    conn=lease_conn,
+                )
+        except ConversationLeaseLost:
+            return {
+                "status": "lease_lost",
+                "conversation_id": conversation_id,
+            }
+        except ValueError as exc:
+            return {"status": "invalid_request", "error": str(exc)}
         if msg is None:
             return {
                 "error": f"Conversation not found or closed: {conversation_id}",
@@ -198,6 +264,34 @@ def _register() -> None:
 
         return {"status": "timeout", "waited_seconds": timeout_seconds}
 
+    def conversation_receive(
+        conversation_id: str,
+        consumer: str,
+        generation: str,
+        timeout_seconds: int | None = None,
+    ) -> dict:
+        """Receive the oldest unacked user turn for one leased consumer."""
+        return _receive_user(
+            conversation_id,
+            consumer,
+            generation,
+            timeout_seconds=0 if timeout_seconds is None else timeout_seconds,
+        )
+
+    def conversation_ack(
+        conversation_id: str,
+        consumer: str,
+        generation: str,
+        message_id: str,
+    ) -> dict:
+        """Acknowledge exactly the currently delivered oldest user turn."""
+        return _ack_user(
+            conversation_id,
+            consumer,
+            generation,
+            message_id,
+        )
+
     def conversation_close(conversation_id: str) -> dict:
         ok = _close_conversation(conversation_id)
         if not ok:
@@ -231,6 +325,8 @@ def _register() -> None:
     register_op("op.wb.conversation_send", conversation_send)
     register_op("op.wb.conversation_ask", conversation_ask)
     register_op("op.wb.conversation_poll", conversation_poll)
+    register_op("op.wb.conversation_receive", conversation_receive)
+    register_op("op.wb.conversation_ack", conversation_ack)
     register_op("op.wb.conversation_close", conversation_close)
     register_op("op.wb.conversation_list", conversation_list)
 

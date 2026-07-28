@@ -10,6 +10,7 @@ from work_buddy.truth import documents, proposals
 from work_buddy.truth.contracts import (
     Actor,
     GestureError,
+    InvariantViolation,
     TransitionError,
 )
 from work_buddy.truth.identity import sha256_text
@@ -86,6 +87,30 @@ def test_propose_opens_with_initial_status(document_store, register_document):
     assert latest.status == "open"
     assert latest.decision is None
     assert proposal.replacement == "144 queries"
+
+
+def test_proposal_insert_transaction_rechecks_retired_lifecycle(
+    document_store,
+    register_document,
+):
+    store, _ = document_store
+    document_id, base, _ = register_document(store)
+    # Model the stale caller read: it observed active before retirement won.
+    assert documents.current_lifecycle(store, document_id) == "active"
+    documents.retire_document(
+        store,
+        document_id=document_id,
+        actor=HUMAN,
+        at=LATER,
+    )
+
+    with pytest.raises(
+        InvariantViolation,
+        match="retired documents cannot receive proposals",
+    ):
+        _propose(store, document_id, base)
+    with store._read_connection() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM proposals").fetchone()[0] == 0
 
 
 def test_distinct_proposals_have_distinct_canonical_hashes(

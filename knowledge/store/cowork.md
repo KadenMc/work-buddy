@@ -2,7 +2,7 @@
 name: Co-work
 kind: concept
 description: The human-and-agent surface for living documents, organized around ordinary folders with durable editing, explicit file writes, and proposal review.
-summary: A user opens an ordinary folder, Co-work inspects it without mutation, and a one-time confirmation discloses the .wbuddy support data before setup. An invariant toolbar owns New, New from Markdown, folder selection, document selection, and explicit folder closing. The launcher and document picker show only the active folder's registered documents while a folder is open, and only browser-local documents when no folder is open; every row states its location. Co-work restores the selected folder and document from the URL, keeps structured editing state durable through an offline-capable outbox, writes Markdown only through an explicit human action, detects outside file changes before overwrite, and routes agent contributions through human-reviewed proposals.
+summary: A user opens an ordinary folder, Co-work inspects it without mutation, and a one-time confirmation discloses the .wbuddy support data before setup. An invariant toolbar owns New, New from Markdown, folder selection, document selection, and explicit folder closing. The launcher and document picker show only the active folder's registered documents while a folder is open, and only browser-local documents when no folder is open; every row states its location. Co-work restores the selected folder and document from the URL, keeps structured editing state durable through an offline-capable outbox, binds each document to one durable conversation with exact feedback anchors, writes Markdown only through an explicit human action, detects outside file changes before overwrite, and routes agent contributions through human-reviewed proposals.
 tags:
 - cowork
 - documents
@@ -25,6 +25,10 @@ dev_notes: |
   Native folder, Markdown-file, and destination-folder picker availability are distinct server capabilities and must remain distinct through the client model. Permission and availability checks are repeated at intent dispatch boundaries, not left to disabled controls alone. In read-only mode, ordinary folder setup is informational and cannot initialize. A browser-local document remains local when the dashboard is read-only, its active folder denies create, or it has no folder and folder selection is unavailable.
 
   `wb.cowork.folder.close@1` is a dedicated navigation intent. It is not the folder-selection `cancel` action: cancel restores the context that existed before a transient picker or inspection, while **Close folder** deliberately clears the active folder and catalog. A registered session must pass the device-durability leave barrier first; an active browser-local document is folder-independent and remains open. Closing never unregisters a folder, retires a document, mutates `.wbuddy`, or changes Markdown.
+
+  A document conversation ID is opaque and server-issued. GET binding inspection is read-only; only explicit Chat activation, feedback submission, or a routing decision may create the binding and ensure its driver. The driver receives durable user turns through a generation-scoped lease/cursor inbox and acknowledges each message only after handling it. Driver writes, questions, proposals, and comments carry the same generation fence so a stopped, restarted, or retired generation cannot mutate the document.
+
+  Document lifecycle operations span the folder's Truth/Ydoc databases and the house conversations database. They therefore acquire the cross-process per-store-and-document lifecycle lock before either side: start, feedback, and sitting routing hold it from active-state validation through their conversation effects, while retirement holds it through Truth commit and conversation close/lease revocation. Keep database work in the order lifecycle lock → Truth/Ydoc → conversations; never introduce the inverse nesting.
 ---
 
 # Co-work
@@ -188,6 +192,40 @@ been consumed. If another tab retires the active document, catalog
 reconciliation first makes local edits device-durable and then revokes the
 writable session. Recovery and quarantine paths fail closed when persisted
 state cannot be validated.
+
+## Conversation and feedback
+
+Every registered document has at most one durable conversation binding. The
+binding ID is an opaque server-issued identifier; the dashboard never derives
+one from the document or folder ID. Opening or reloading a document performs a
+read-only binding lookup and does not start an agent. The first explicit Chat
+action, selected-text feedback submission, redirect, or endorsement can create
+the binding and ensure one document agent.
+
+Selected-text feedback is saved verbatim as human-authored evidence, anchored to
+the exact document passage, and posted as an ordinary user turn in that same
+conversation. The response returns the real conversation and message IDs so the
+chat can attach the anchor to the exact transcript message, including when two
+feedback notes contain identical text. If agent startup fails after persistence,
+the feedback remains visible and the user can explicitly restart Chat; the
+dashboard does not claim that the authored feedback failed or silently retry it.
+
+The document agent consumes a durable, ordered inbox and acknowledges a user
+turn only after processing it. Restarting creates a new generation and fences
+the old one from sending messages, asking questions, proposing edits, or adding
+comments. Ordinary composer messages never answer a pending structured question
+implicitly; a structured response names the exact question it answers.
+
+Redirect and endorsement notices distinguish three outcomes: saved and sent to
+a running agent, saved in Chat but awaiting restart, or not saved. A review
+gesture can remain committed even if its follow-up chat delivery fails, so the
+dashboard reports the conversation write and agent state returned by the server
+rather than inferring success from the gesture itself.
+
+Retiring a document closes its bound conversation and revokes the active driver
+lease. Conversation start, feedback, routing, and retirement share one
+cross-process document lifecycle boundary, preventing a late binding or agent
+from appearing after retirement.
 
 ## Human and agent authority
 

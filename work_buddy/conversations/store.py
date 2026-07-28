@@ -20,7 +20,9 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -33,6 +35,11 @@ from work_buddy.paths import data_dir
 
 _DB_PATH = data_dir("agents") / "conversations.db"
 _LEGACY_DB_PATH = data_dir("agents") / "threads.db"
+_AGENT_STARTING_GRACE_SECONDS = 20.0
+
+
+class ConversationLeaseLost(RuntimeError):
+    """The supplied consumer generation no longer owns an open conversation."""
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +162,30 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_conversations_status
             ON conversations(status);
+
+        CREATE TABLE IF NOT EXISTS conversation_consumer_cursors (
+            conversation_id TEXT NOT NULL,
+            consumer        TEXT NOT NULL,
+            last_created_at  TEXT NOT NULL DEFAULT '',
+            last_message_id  TEXT NOT NULL DEFAULT '',
+            updated_at       TEXT NOT NULL,
+            PRIMARY KEY (conversation_id, consumer),
+            FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS conversation_agent_leases (
+            conversation_id TEXT NOT NULL,
+            consumer        TEXT NOT NULL,
+            generation      TEXT NOT NULL,
+            status          TEXT NOT NULL,
+            pid             INTEGER,
+            started_at      TEXT NOT NULL,
+            heartbeat_at    TEXT,
+            updated_at      TEXT NOT NULL,
+            error           TEXT,
+            PRIMARY KEY (conversation_id, consumer),
+            FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id)
+        );
         """
     )
 
@@ -356,8 +387,12 @@ def list_conversations(
 def close_conversation(
     conversation_id: str, conn: sqlite3.Connection | None = None
 ) -> bool:
-    """Close a conversation. Marks all pending messages as 'sent'.
-    Returns False if conversation not found."""
+    """Close a conversation and revoke every persisted consumer lease.
+
+    Pending questions become ordinary transcript entries. A detached consumer
+    that is currently long-polling loses its generation on the next receive or
+    acknowledge call and must exit.
+    """
     own_conn = conn is None
     if own_conn:
         conn = get_connection()
@@ -373,6 +408,12 @@ def close_conversation(
         conn.execute(
             "UPDATE messages SET status = 'sent' WHERE conversation_id = ? AND status = 'pending'",
             (conversation_id,),
+        )
+        conn.execute(
+            """UPDATE conversation_agent_leases
+               SET status = 'stopped', updated_at = ?
+               WHERE conversation_id = ? AND status != 'stopped'""",
+            (now, conversation_id),
         )
         conn.commit()
         logger.info("Closed conversation %s", conversation_id)
@@ -469,6 +510,775 @@ def add_message(
         )
         conn.commit()
         return msg
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def send_agent_message_idempotent(
+    conversation_id: str,
+    content: str,
+    message_id: str,
+    conn: sqlite3.Connection | None = None,
+) -> tuple[ConversationMessage | None, bool]:
+    """Send one caller-keyed agent message with first-writer-wins semantics.
+
+    A replay in the same conversation and agent role returns the original row
+    regardless of the retry's regenerated wording. The original content is
+    never overwritten. Reusing the key across a conversation or role boundary
+    remains an integrity error.
+    """
+    if not isinstance(message_id, str) or not message_id.strip():
+        raise ValueError("message_id must be a nonempty string")
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
+        conn.execute("BEGIN IMMEDIATE")
+    try:
+        conversation = get_conversation(conversation_id, conn=conn)
+        if conversation is None or conversation.status == "closed":
+            if own_conn:
+                conn.rollback()
+            return None, False
+
+        now = _now()
+        candidate = ConversationMessage(
+            message_id=message_id,
+            conversation_id=conversation_id,
+            role="agent",
+            content=content,
+            created_at=now,
+            message_type="text",
+            response_type="none",
+            status="sent",
+        )
+        cursor = conn.execute(
+            """INSERT OR IGNORE INTO messages
+               (message_id, conversation_id, role, content, created_at,
+                message_type, response_type, choices, response, status)
+               VALUES (?, ?, 'agent', ?, ?, 'text', 'none', NULL, NULL, 'sent')""",
+            (message_id, conversation_id, content, now),
+        )
+        if cursor.rowcount == 1:
+            conn.execute(
+                "UPDATE conversations SET updated_at = ? WHERE conversation_id = ?",
+                (now, conversation_id),
+            )
+            conn.commit()
+            return candidate, True
+
+        row = conn.execute(
+            "SELECT * FROM messages WHERE message_id = ?",
+            (message_id,),
+        ).fetchone()
+        if row is None:
+            raise sqlite3.IntegrityError(
+                "agent message insert was ignored unexpectedly"
+            )
+        existing = ConversationMessage.from_row(dict(row))
+        if (
+            existing.conversation_id != conversation_id
+            or existing.role != "agent"
+        ):
+            raise sqlite3.IntegrityError(
+                "message_id was reused across a conversation or role boundary"
+            )
+        conn.commit()
+        return existing, False
+    except Exception:
+        if own_conn and conn.in_transaction:
+            conn.rollback()
+        raise
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def _insert_user_message_locked(
+    conn: sqlite3.Connection,
+    *,
+    conversation_id: str,
+    content: str,
+    message_id: str | None = None,
+) -> tuple[ConversationMessage, bool]:
+    """Insert one display-visible user message on an active write transaction."""
+    now = _now()
+    user_msg = ConversationMessage(
+        message_id=message_id or _new_id(),
+        conversation_id=conversation_id,
+        role="user",
+        content=content,
+        created_at=now,
+        message_type="text",
+        status="sent",
+    )
+    cursor = conn.execute(
+        """INSERT OR IGNORE INTO messages
+           (message_id, conversation_id, role, content, created_at,
+            message_type, response_type, choices, response, status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            user_msg.message_id,
+            user_msg.conversation_id,
+            user_msg.role,
+            user_msg.content,
+            user_msg.created_at,
+            user_msg.message_type,
+            "none",
+            None,
+            None,
+            user_msg.status,
+        ),
+    )
+    if cursor.rowcount != 0:
+        return user_msg, True
+
+    row = conn.execute(
+        "SELECT * FROM messages WHERE message_id = ?", (user_msg.message_id,)
+    ).fetchone()
+    if row is None:
+        raise sqlite3.IntegrityError("user message insert was ignored unexpectedly")
+    existing = ConversationMessage.from_row(dict(row))
+    if (
+        existing.conversation_id != user_msg.conversation_id
+        or existing.role != "user"
+        or existing.content != user_msg.content
+        or existing.message_type != "text"
+    ):
+        raise sqlite3.IntegrityError(
+            "message_id was reused for different user message content"
+        )
+    return existing, False
+
+
+def respond_to_message_with_user_message(
+    conversation_id: str,
+    message_id: str,
+    response: str,
+    conn: sqlite3.Connection | None = None,
+    *,
+    user_message_id: str | None = None,
+) -> ConversationMessage | None:
+    """Answer one exact pending question and return its single user message.
+
+    Both identifiers are part of the predicate, so a message id from another
+    conversation cannot be answered accidentally. ``status = 'pending'`` is
+    repeated on the update, making the operation single-winner even if two
+    callers race to answer the same question.
+    """
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
+        conn.execute("BEGIN IMMEDIATE")
+    try:
+        conversation = get_conversation(conversation_id, conn=conn)
+        if conversation is None or conversation.status == "closed":
+            if own_conn:
+                conn.rollback()
+            return None
+        question = conn.execute(
+            """SELECT * FROM messages
+               WHERE message_id = ? AND conversation_id = ? AND status = 'pending'""",
+            (message_id, conversation_id),
+        ).fetchone()
+        if question is None:
+            if own_conn:
+                conn.rollback()
+            return None
+
+        user_msg, inserted = _insert_user_message_locked(
+            conn,
+            conversation_id=conversation_id,
+            content=response,
+            message_id=user_message_id,
+        )
+        if not inserted:
+            # A replay of the same user-message id is already durable. It must
+            # not consume a newer pending question as a side effect.
+            if own_conn:
+                conn.commit()
+            return user_msg
+
+        updated = conn.execute(
+            """UPDATE messages
+               SET response = ?, status = 'answered'
+               WHERE message_id = ? AND conversation_id = ? AND status = 'pending'""",
+            (response, message_id, conversation_id),
+        )
+        if updated.rowcount != 1:
+            raise sqlite3.IntegrityError(
+                "pending conversation question was answered concurrently"
+            )
+        conn.execute(
+            "UPDATE conversations SET updated_at = ? WHERE conversation_id = ?",
+            (user_msg.created_at, conversation_id),
+        )
+        conn.commit()
+        return user_msg
+    except Exception:
+        if own_conn and conn.in_transaction:
+            conn.rollback()
+        raise
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def post_user_message(
+    conversation_id: str,
+    content: str,
+    conn: sqlite3.Connection | None = None,
+    *,
+    message_id: str | None = None,
+) -> ConversationMessage | None:
+    """Append one ordinary user turn without consuming a pending question."""
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
+        conn.execute("BEGIN IMMEDIATE")
+    try:
+        conversation = get_conversation(conversation_id, conn=conn)
+        if conversation is None or conversation.status == "closed":
+            if own_conn:
+                conn.rollback()
+            return None
+
+        user_msg, inserted = _insert_user_message_locked(
+            conn,
+            conversation_id=conversation_id,
+            content=content,
+            message_id=message_id,
+        )
+        if inserted:
+            conn.execute(
+                "UPDATE conversations SET updated_at = ? WHERE conversation_id = ?",
+                (user_msg.created_at, conversation_id),
+            )
+        conn.commit()
+        return user_msg
+    except Exception:
+        if own_conn and conn.in_transaction:
+            conn.rollback()
+        raise
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def _timestamp_age_seconds(value: object, *, now: datetime) -> float | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return max(0.0, (now - parsed.astimezone(timezone.utc)).total_seconds())
+    except (TypeError, ValueError):
+        return None
+
+
+def get_agent_lease(
+    conversation_id: str,
+    consumer: str,
+    conn: sqlite3.Connection | None = None,
+) -> dict[str, Any] | None:
+    """Return one persisted conversation-agent lease without mutating it."""
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
+    try:
+        row = conn.execute(
+            """SELECT conversation_id, consumer, generation, status, pid,
+                      started_at, heartbeat_at, updated_at, error
+               FROM conversation_agent_leases
+               WHERE conversation_id = ? AND consumer = ?""",
+            (conversation_id, consumer),
+        ).fetchone()
+        return None if row is None else dict(row)
+    finally:
+        if own_conn:
+            conn.close()
+
+
+@contextmanager
+def conversation_agent_write_guard(
+    conversation_id: str,
+    consumer: str,
+    generation: str,
+    *,
+    starting_grace_seconds: float = _AGENT_STARTING_GRACE_SECONDS,
+):
+    """Hold the exact running lease while a dependent mutation commits.
+
+    The immediate transaction is intentionally kept open across the caller's
+    write. Lease rotation and conversation close use the same conversations DB,
+    so either they win first and this guard reports ``lease_lost``, or this
+    guarded mutation finishes before they can rotate the generation.
+    """
+    if not all(
+        isinstance(value, str) and value.strip()
+        for value in (conversation_id, consumer, generation)
+    ):
+        raise ValueError(
+            "conversation_id, consumer, and generation must be nonempty strings"
+        )
+    conn = get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """SELECT lease.status, lease.started_at
+               FROM conversation_agent_leases AS lease
+               JOIN conversations AS conversation
+                 ON conversation.conversation_id = lease.conversation_id
+               WHERE lease.conversation_id = ?
+                 AND lease.consumer = ?
+                 AND lease.generation = ?
+                 AND lease.status IN ('starting', 'running')
+                 AND conversation.status = 'open'""",
+            (conversation_id, consumer, generation),
+        ).fetchone()
+        current_now = datetime.now(timezone.utc)
+        starting_age = (
+            None
+            if row is None or row["status"] != "starting"
+            else _timestamp_age_seconds(row["started_at"], now=current_now)
+        )
+        if row is None or (
+            row["status"] == "starting"
+            and (
+                starting_age is None
+                or starting_age > starting_grace_seconds
+            )
+        ):
+            conn.rollback()
+            raise ConversationLeaseLost("lease_lost")
+        now = _now()
+        conn.execute(
+            """UPDATE conversation_agent_leases
+               SET heartbeat_at = ?, updated_at = ?
+               WHERE conversation_id = ? AND consumer = ?
+                 AND generation = ? AND status IN ('starting', 'running')""",
+            (now, now, conversation_id, consumer, generation),
+        )
+        yield conn
+        if conn.in_transaction:
+            conn.commit()
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def claim_agent_lease(
+    conversation_id: str,
+    consumer: str,
+    generation: str,
+    *,
+    starting_grace_seconds: float = 20.0,
+    heartbeat_ttl_seconds: float = 150.0,
+    now: datetime | None = None,
+    conn: sqlite3.Connection | None = None,
+) -> dict[str, Any] | None:
+    """Atomically claim a new generation unless a recent one still owns it.
+
+    ``claimed`` in the returned mapping tells the caller whether it owns the
+    one spawn attempt. A fresh ``starting`` generation and a ``running`` lease
+    with a recent heartbeat are reused across concurrent dashboard requests.
+    """
+    if not conversation_id or not consumer or not generation:
+        raise ValueError("conversation_id, consumer, and generation are required")
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
+        conn.execute("BEGIN IMMEDIATE")
+    current_now = now or datetime.now(timezone.utc)
+    now_text = current_now.isoformat()
+    try:
+        conversation = get_conversation(conversation_id, conn=conn)
+        if conversation is None or conversation.status == "closed":
+            if own_conn:
+                conn.rollback()
+            return None
+        existing = get_agent_lease(conversation_id, consumer, conn=conn)
+        reusable = False
+        if existing is not None and existing["status"] == "starting":
+            age = _timestamp_age_seconds(existing["started_at"], now=current_now)
+            reusable = age is not None and age <= starting_grace_seconds
+        elif existing is not None and existing["status"] == "running":
+            reference = existing["heartbeat_at"] or existing["started_at"]
+            ttl = (
+                heartbeat_ttl_seconds
+                if existing["heartbeat_at"]
+                else starting_grace_seconds
+            )
+            age = _timestamp_age_seconds(reference, now=current_now)
+            reusable = age is not None and age <= ttl
+        if reusable:
+            existing["claimed"] = False
+            if own_conn:
+                conn.commit()
+            return existing
+
+        conn.execute(
+            """INSERT INTO conversation_agent_leases
+                   (conversation_id, consumer, generation, status, pid,
+                    started_at, heartbeat_at, updated_at, error)
+               VALUES (?, ?, ?, 'starting', NULL, ?, NULL, ?, NULL)
+               ON CONFLICT(conversation_id, consumer) DO UPDATE SET
+                   generation = excluded.generation,
+                   status = 'starting',
+                   pid = NULL,
+                   started_at = excluded.started_at,
+                   heartbeat_at = NULL,
+                   updated_at = excluded.updated_at,
+                   error = NULL""",
+            (conversation_id, consumer, generation, now_text, now_text),
+        )
+        if own_conn:
+            conn.commit()
+        return {
+            "conversation_id": conversation_id,
+            "consumer": consumer,
+            "generation": generation,
+            "status": "starting",
+            "pid": None,
+            "started_at": now_text,
+            "heartbeat_at": None,
+            "updated_at": now_text,
+            "error": None,
+            "claimed": True,
+        }
+    except Exception:
+        if own_conn and conn.in_transaction:
+            conn.rollback()
+        raise
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def activate_agent_lease(
+    conversation_id: str,
+    consumer: str,
+    generation: str,
+    pid: int,
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> bool:
+    """Attach the spawned PID only if this generation still owns the lease."""
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
+        conn.execute("BEGIN IMMEDIATE")
+    try:
+        now = _now()
+        cursor = conn.execute(
+            """UPDATE conversation_agent_leases
+               SET status = 'running', pid = ?, heartbeat_at = ?,
+                   updated_at = ?, error = NULL
+               WHERE conversation_id = ? AND consumer = ?
+                 AND generation = ? AND status = 'starting'""",
+            (pid, now, now, conversation_id, consumer, generation),
+        )
+        conn.commit()
+        return cursor.rowcount == 1
+    except Exception:
+        if own_conn and conn.in_transaction:
+            conn.rollback()
+        raise
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def fail_agent_lease(
+    conversation_id: str,
+    consumer: str,
+    generation: str,
+    *,
+    error: str,
+    conn: sqlite3.Connection | None = None,
+) -> bool:
+    """Record one sanitized spawn failure for the owning generation."""
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
+        conn.execute("BEGIN IMMEDIATE")
+    try:
+        now = _now()
+        cursor = conn.execute(
+            """UPDATE conversation_agent_leases
+               SET status = 'spawn_failed', pid = NULL, updated_at = ?, error = ?
+               WHERE conversation_id = ? AND consumer = ? AND generation = ?""",
+            (now, error, conversation_id, consumer, generation),
+        )
+        conn.commit()
+        return cursor.rowcount == 1
+    except Exception:
+        if own_conn and conn.in_transaction:
+            conn.rollback()
+        raise
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def stop_agent_lease(
+    conversation_id: str,
+    consumer: str,
+    generation: str,
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> bool:
+    """Mark a dead/stale generation stopped without touching a successor."""
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
+        conn.execute("BEGIN IMMEDIATE")
+    try:
+        now = _now()
+        cursor = conn.execute(
+            """UPDATE conversation_agent_leases
+               SET status = 'stopped', updated_at = ?
+               WHERE conversation_id = ? AND consumer = ? AND generation = ?""",
+            (now, conversation_id, consumer, generation),
+        )
+        conn.commit()
+        return cursor.rowcount == 1
+    except Exception:
+        if own_conn and conn.in_transaction:
+            conn.rollback()
+        raise
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def _touch_agent_lease(
+    conn: sqlite3.Connection,
+    *,
+    conversation_id: str,
+    consumer: str,
+    generation: str,
+) -> bool:
+    lease = conn.execute(
+        """SELECT lease.status, lease.started_at
+           FROM conversation_agent_leases AS lease
+           JOIN conversations AS conversation
+             ON conversation.conversation_id = lease.conversation_id
+           WHERE lease.conversation_id = ? AND lease.consumer = ?
+             AND lease.generation = ?
+             AND lease.status IN ('starting', 'running')
+             AND conversation.status = 'open'""",
+        (conversation_id, consumer, generation),
+    ).fetchone()
+    if lease is None:
+        return False
+    if lease["status"] == "starting":
+        age = _timestamp_age_seconds(
+            lease["started_at"],
+            now=datetime.now(timezone.utc),
+        )
+        if age is None or age > _AGENT_STARTING_GRACE_SECONDS:
+            return False
+    now = _now()
+    cursor = conn.execute(
+        """UPDATE conversation_agent_leases
+           SET heartbeat_at = ?, updated_at = ?
+           WHERE conversation_id = ? AND consumer = ? AND generation = ?
+             AND status IN ('starting', 'running')""",
+        (now, now, conversation_id, consumer, generation),
+    )
+    return cursor.rowcount == 1
+
+
+def _next_user_message(
+    conn: sqlite3.Connection,
+    *,
+    conversation_id: str,
+    consumer: str,
+) -> sqlite3.Row | None:
+    cursor = conn.execute(
+        """SELECT last_created_at, last_message_id
+           FROM conversation_consumer_cursors
+           WHERE conversation_id = ? AND consumer = ?""",
+        (conversation_id, consumer),
+    ).fetchone()
+    last_created_at = "" if cursor is None else str(cursor["last_created_at"])
+    last_message_id = "" if cursor is None else str(cursor["last_message_id"])
+    return conn.execute(
+        """SELECT * FROM messages
+           WHERE conversation_id = ? AND role = 'user'
+             AND (
+                 created_at > ?
+                 OR (created_at = ? AND message_id > ?)
+             )
+           ORDER BY created_at ASC, message_id ASC
+           LIMIT 1""",
+        (
+            conversation_id,
+            last_created_at,
+            last_created_at,
+            last_message_id,
+        ),
+    ).fetchone()
+
+
+def receive_user_message(
+    conversation_id: str,
+    consumer: str,
+    generation: str,
+    *,
+    timeout_seconds: float = 0,
+    poll_interval_seconds: float = 0.5,
+) -> dict[str, Any]:
+    """Return the oldest unacked user turn without advancing its cursor.
+
+    Long-polling opens short-lived connections and sleeps outside transactions.
+    Every pass heartbeats the exact persisted generation, so a rotated lease
+    immediately loses access and cannot consume a successor's inbox.
+    """
+    bounded_timeout = max(0.0, min(float(timeout_seconds), 110.0))
+    deadline = time.monotonic() + bounded_timeout
+    last_heartbeat = 0.0
+    while True:
+        conn = get_connection()
+        try:
+            monotonic_now = time.monotonic()
+            if monotonic_now - last_heartbeat >= 10.0:
+                if not _touch_agent_lease(
+                    conn,
+                    conversation_id=conversation_id,
+                    consumer=consumer,
+                    generation=generation,
+                ):
+                    conn.rollback()
+                    return {"status": "lease_lost"}
+                conn.commit()
+                last_heartbeat = monotonic_now
+            else:
+                lease = conn.execute(
+                    """SELECT lease.status, lease.started_at
+                       FROM conversation_agent_leases AS lease
+                       JOIN conversations AS conversation
+                         ON conversation.conversation_id = lease.conversation_id
+                       WHERE lease.conversation_id = ? AND lease.consumer = ?
+                         AND lease.generation = ?
+                         AND lease.status IN ('starting', 'running')
+                         AND conversation.status = 'open'""",
+                    (conversation_id, consumer, generation),
+                ).fetchone()
+                starting_age = (
+                    None
+                    if lease is None or lease["status"] != "starting"
+                    else _timestamp_age_seconds(
+                        lease["started_at"],
+                        now=datetime.now(timezone.utc),
+                    )
+                )
+                if lease is None or (
+                    lease["status"] == "starting"
+                    and (
+                        starting_age is None
+                        or starting_age > _AGENT_STARTING_GRACE_SECONDS
+                    )
+                ):
+                    return {"status": "lease_lost"}
+            row = _next_user_message(
+                conn,
+                conversation_id=conversation_id,
+                consumer=consumer,
+            )
+            if row is not None:
+                return {
+                    "status": "message",
+                    "message": ConversationMessage.from_row(dict(row)).to_dict(),
+                }
+        finally:
+            conn.close()
+        if time.monotonic() >= deadline:
+            return {"status": "timeout" if bounded_timeout > 0 else "empty"}
+        time.sleep(
+            min(
+                max(0.01, poll_interval_seconds),
+                max(0.0, deadline - time.monotonic()),
+            )
+        )
+
+
+def ack_user_message(
+    conversation_id: str,
+    consumer: str,
+    generation: str,
+    message_id: str,
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> dict[str, Any]:
+    """Advance a consumer cursor only over its exact current oldest message."""
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
+        conn.execute("BEGIN IMMEDIATE")
+    try:
+        if not _touch_agent_lease(
+            conn,
+            conversation_id=conversation_id,
+            consumer=consumer,
+            generation=generation,
+        ):
+            if own_conn:
+                conn.rollback()
+            return {"status": "lease_lost", "acked": False}
+        current = conn.execute(
+            """SELECT last_created_at, last_message_id
+               FROM conversation_consumer_cursors
+               WHERE conversation_id = ? AND consumer = ?""",
+            (conversation_id, consumer),
+        ).fetchone()
+        if current is not None and str(current["last_message_id"]) == message_id:
+            conn.commit()
+            return {"status": "acked", "acked": True, "message_id": message_id}
+
+        next_row = _next_user_message(
+            conn,
+            conversation_id=conversation_id,
+            consumer=consumer,
+        )
+        if next_row is None:
+            conn.commit()
+            return {"status": "empty", "acked": False}
+        if str(next_row["message_id"]) != message_id:
+            conn.commit()
+            return {
+                "status": "out_of_order",
+                "acked": False,
+                "next_message_id": str(next_row["message_id"]),
+            }
+        now = _now()
+        conn.execute(
+            """INSERT INTO conversation_consumer_cursors
+                   (conversation_id, consumer, last_created_at, last_message_id, updated_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(conversation_id, consumer) DO UPDATE SET
+                   last_created_at = excluded.last_created_at,
+                   last_message_id = excluded.last_message_id,
+                   updated_at = excluded.updated_at""",
+            (
+                conversation_id,
+                consumer,
+                str(next_row["created_at"]),
+                str(next_row["message_id"]),
+                now,
+            ),
+        )
+        conn.commit()
+        return {"status": "acked", "acked": True, "message_id": message_id}
+    except Exception:
+        if own_conn and conn.in_transaction:
+            conn.rollback()
+        raise
     finally:
         if own_conn:
             conn.close()

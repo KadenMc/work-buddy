@@ -34,7 +34,6 @@ import {
 } from "../suggestions/sitting";
 import { createWbTrackedChangesAdapter } from "../suggestions/adapter";
 import { resolveQuoteAnchor } from "../suggestions/anchor";
-import type { ChatConversationProvider } from "../../../widget-library/chat";
 import type {
   FeedbackCapture,
   RoutingDeliveryInput,
@@ -50,7 +49,6 @@ import {
 } from "./HttpCoworkDocClient";
 import { LiveReviewRailProvider } from "./LiveReviewRailProvider";
 import { ProposalIngestor } from "./proposalIngestor";
-import { resolveCoworkChatProvider } from "./chatProvider";
 import type { CoworkEditorReadyContext } from "./CoworkBridgeEditor";
 import type { CoworkSittingWorkspace } from "./sittingWorkspace";
 
@@ -66,9 +64,6 @@ export interface CoworkLiveHealth {
 export interface UseCoworkBridgeOptions {
   readonly documentId: string;
   readonly storeId: string;
-  readonly conversationId: string;
-  /** True in demo / widget-lab / test mode, so the chat fixture is used deliberately. */
-  readonly chatFixture?: boolean;
   readonly seedMarkdown?: string;
   readonly readOnly?: boolean;
   readonly onSyncStatus?: (status: CoworkSyncStatus) => void;
@@ -128,7 +123,6 @@ export interface CoworkBridgeEditorMountProps {
 
 export interface CoworkBridge {
   readonly reviewProvider: LiveReviewRailProvider;
-  readonly chatProvider: ChatConversationProvider;
   readonly anchorRects: AnchorRectSource;
   readonly editorProps: CoworkBridgeEditorMountProps;
   /** Ref callback for the rail region, the anchor-rect coordinate root lives inside it. */
@@ -161,8 +155,6 @@ export const useCoworkBridge = (
   const {
     documentId,
     storeId,
-    conversationId,
-    chatFixture = false,
     seedMarkdown = DEFAULT_BRIDGE_SEED_MARKDOWN,
     readOnly = false,
     onSyncStatus,
@@ -237,11 +229,6 @@ export const useCoworkBridge = (
     // doubles for a fresh document, which is exactly when the whole bridge should rebuild.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [documentId, storeId]);
-
-  const chatProvider = useMemo(
-    () => resolveCoworkChatProvider({ conversationId, fixture: chatFixture }),
-    [conversationId, chatFixture],
-  );
 
   // Drive ingestion and the health strip from the provider's single pull.
   useEffect(() => {
@@ -353,7 +340,6 @@ export const useCoworkBridge = (
 
   return {
     reviewProvider: core.reviewProvider,
-    chatProvider,
     anchorRects: core.anchorRects,
     editorProps,
     railRef,

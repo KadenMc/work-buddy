@@ -13,6 +13,7 @@ from typing import Any, Callable
 
 import pytest
 
+from work_buddy.cowork import document_agent
 from work_buddy.truth import documents, proposals, ydoc_store
 from work_buddy.truth.anchors import CompositeSelector
 from work_buddy.truth.contracts import Actor
@@ -38,6 +39,29 @@ AGENT = Actor(
 DOC_REL = "docs/throwaway-fixture.md"
 DOC_BODY = "# Throwaway fixture\n\nOriginal sentence for co-work tests.\n"
 DOC_QUOTE = "Original sentence for co-work tests."
+
+
+@pytest.fixture(autouse=True)
+def fake_document_agent(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """Never let a Co-work route test launch a real background model process.
+
+    Route tests exercise the lifecycle boundary through this deterministic
+    module seam. Tests that need a failure or stopped state may replace the
+    seam again locally.
+    """
+    calls: list[dict[str, Any]] = []
+
+    def _ensure(**kwargs: Any) -> document_agent.DocumentAgentStatus:
+        calls.append(dict(kwargs))
+        return document_agent.DocumentAgentStatus(
+            status="running",
+            alive=True,
+            started=True,
+            error=None,
+        )
+
+    monkeypatch.setattr(document_agent, "ensure_document_agent", _ensure)
+    return calls
 
 
 def _profile(store_id: str | None = None) -> dict[str, Any]:

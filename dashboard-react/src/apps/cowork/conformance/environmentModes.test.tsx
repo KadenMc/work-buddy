@@ -68,8 +68,19 @@ function renderRail() {
       <CoworkRail
         documentId="demo-doc"
         reviewProvider={new InMemoryReviewProvider()}
-        chatProvider={createDemoChatProvider("conv-env")}
-        conversationId="conv-env"
+        chat={{
+          kind: "ready",
+          provider: createDemoChatProvider("conv-env"),
+          conversationId: "conv-env",
+          draftStorageId: "conv-env",
+          agent: {
+            status: "running",
+            alive: true,
+            started: true,
+            error: null,
+          },
+          onEnsureAgent: () => {},
+        }}
         storage={new MemoryStorage()}
       />
     </ThemeProvider>,

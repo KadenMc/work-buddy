@@ -24,6 +24,15 @@ parameters:
   timeout_seconds:
     type: integer
     description: Block and wait for response (max 110s)
+  consumer:
+    type: string
+    description: Optional persisted conversation consumer identity. Supply together with generation to fence a background driver's question to its live lease.
+  generation:
+    type: string
+    description: Optional live lease generation. Supply together with consumer; a stale or revoked generation returns lease_lost without asking.
+mutates_state: true
+retry_policy: manual
+auto_retry: false
 tags:
 - conversations
 - conversation
@@ -36,3 +45,8 @@ aliases:
 parents:
 - conversations
 ---
+
+`consumer` and `generation` form an optional lease fence for long-lived
+conversation drivers. They must be supplied together. The question and lease
+check share one transaction, so a stopped, rotated, or closed generation cannot
+ask a late question.

@@ -92,7 +92,8 @@ describe("CoworkFeedbackAffordance", () => {
     const capture = onCaptured.mock.calls[0][0] as FeedbackCapture;
     expect(capture.evidenceId).toBe("ev-doc-1");
     expect(capture.spanId).toBe("span-doc-1");
-    expect(capture.conversationId).toBe("cowork-doc-doc-1");
+    expect(capture.messageId).toBe("feedback-message-doc-1");
+    expect(capture.conversationId).toBe("server-feedback-conversation-doc-1");
     expect(capture.text).toBe("  make this measurable  ");
     expect(capture.anchor?.exact).toBe("precise");
 

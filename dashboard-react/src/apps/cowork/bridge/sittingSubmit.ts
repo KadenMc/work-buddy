@@ -49,14 +49,25 @@ export const routingDeliveriesFrom = (
   response: SittingResponse,
 ): RoutingDeliveryInput[] => {
   if (response.routing_deliveries !== undefined) {
-    return response.routing_deliveries.map((delivery) => ({
-      verb: delivery.verb,
-      proposalId: delivery.proposal_id,
-      state: "delivered",
-      ...(delivery.note === undefined || delivery.note === null
-        ? {}
-        : { note: delivery.note }),
-    }));
+    return response.routing_deliveries.map((delivery) => {
+      const state =
+        delivery.delivered === false
+          ? "failed"
+          : delivery.delivered === true && delivery.agent?.status === "running"
+            ? "delivered"
+            : "queued";
+      return {
+        verb: delivery.verb,
+        proposalId: delivery.proposal_id,
+        state,
+        ...(delivery.note === undefined || delivery.note === null
+          ? {}
+          : { note: delivery.note }),
+        ...(delivery.reason === undefined || delivery.reason === null
+          ? {}
+          : { reason: delivery.reason }),
+      };
+    });
   }
   const noteByProposal = new Map(
     submitted.map((decision) => [decision.proposalId, decision.redirectNote]),
@@ -72,7 +83,9 @@ export const routingDeliveriesFrom = (
       {
         verb: result.verb,
         proposalId: result.proposal_id,
-        state: delivered ? "delivered" : "failed",
+        // A legacy receipt confirms only the sitting result, not conversation
+        // persistence or a running document agent.
+        state: delivered ? "queued" : "failed",
         ...(note === undefined ? {} : { note }),
         ...(delivered || result.error === null ? {} : { reason: result.error }),
       },
