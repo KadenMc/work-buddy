@@ -177,6 +177,47 @@ def _latest_action_proposal(thread_id: str) -> dict[str, Any] | None:
     return None
 
 
+def _record_failure(
+    thread_id: str,
+    *,
+    error: str,
+    capability: str | None,
+) -> None:
+    """Record a pre-dispatch failure and move the Thread out of EXECUTING."""
+    store.append_event(ThreadEvent(
+        thread_id=thread_id,
+        kind=KIND_EXECUTION_FINISHED,
+        actor=ACTOR_AGENT,
+        data={
+            "capability_name": capability,
+            "success": False,
+            "result": None,
+            "error": error,
+        },
+        parent_event_id=store.latest_event_id(thread_id),
+    ))
+    store.update_thread_state(
+        thread_id,
+        parent_event_id=store.latest_event_id(thread_id),
+    )
+    try:
+        engine.transition(
+            thread_id,
+            TRIG_EXECUTION_FAILED,
+            data={
+                "success": False,
+                "error": error,
+                "capability_name": capability,
+            },
+            parent_event_id=store.latest_event_id(thread_id),
+            fire_side_effects=True,
+        )
+    except engine.InvalidTransition:
+        logger.warning(
+            "execution_runner: failure trigger rejected for %s", thread_id,
+        )
+
+
 def _bind_runtime_parameters(
     *,
     capability_name: str,
