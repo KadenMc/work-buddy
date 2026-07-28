@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { ChatMessage } from "../../../widget-library/chat";
-import { CoworkChatAnnotations, resolveSpanLinks } from "./annotations";
+import {
+  CoworkChatAnnotations,
+  resolveSpanLink,
+  resolveSpanLinks,
+} from "./annotations";
 import type { FeedbackCapture } from "./contracts";
 
 const userMessage = (id: string, content: string): ChatMessage => ({
@@ -89,6 +93,32 @@ describe("resolveSpanLinks", () => {
       }),
     ]);
     expect(links.get("u1")?.target.anchor?.exact).toBe("the passage");
+  });
+
+  it("resolves repeated feedback by exact message id", () => {
+    const feedback = [
+      capture({
+        text: "same note",
+        evidenceId: "evidence-1",
+        spanId: "span-1",
+        messageId: "message-1",
+        anchor: { exact: "first passage" },
+      }),
+      capture({
+        text: "same note",
+        evidenceId: "evidence-2",
+        spanId: "span-2",
+        messageId: "message-2",
+        anchor: { exact: "second passage" },
+      }),
+    ];
+
+    expect(
+      resolveSpanLink(userMessage("message-2", "same note"), feedback)?.target,
+    ).toEqual({
+      spanId: "span-2",
+      anchor: { exact: "second passage" },
+    });
   });
 });
 

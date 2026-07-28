@@ -34,4 +34,18 @@ export {
 } from "./useChatConversation";
 export { ChatMessageList, type ChatMessageListProps } from "./ChatMessageList";
 export { ChatComposer, type ChatComposerProps } from "./ChatComposer";
-export { ChatPanel, type ChatPanelProps } from "./ChatPanel";
+export {
+  ChatPanel,
+  ChatPanelState,
+  type ChatInputRecovery,
+  type ChatInputRecoveryAction,
+  type ChatPanelProps,
+  type ChatPanelStateKind,
+  type ChatPanelStateProps,
+} from "./ChatPanel";
+export {
+  ConversationChat,
+  type ChatInputRecoveryResolver,
+  type ConversationChatProps,
+  type ConversationChatState,
+} from "./ConversationChat";

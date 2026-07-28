@@ -15,6 +15,7 @@ import {
   useDashboardHelpEnabled,
   type HelpContent,
 } from "../../../dashboard/help";
+import { createHttpChatProvider } from "../../../dashboard/conversations";
 import type {
   CoworkDocumentSummary,
   CoworkDriftState,
@@ -29,7 +30,6 @@ import type {
 import { CoworkBridgeEditor, useCoworkBridge } from "../bridge";
 import {
   CoworkChatAnnotations,
-  createHttpChatProvider,
   useDocumentConversationBinding,
   type CoworkDocumentConversationBindingClient,
   type FeedbackCapture,

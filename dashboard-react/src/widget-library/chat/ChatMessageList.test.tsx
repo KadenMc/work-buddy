@@ -200,6 +200,78 @@ describe("ChatMessageList", () => {
     expect(onRespond).toHaveBeenCalledWith("true", "q1");
   });
 
+  it("renders additive message accessories before questions and an appendix after messages", () => {
+    render(
+      <ChatMessageList
+        messages={[
+          {
+            id: "q1",
+            author: "assistant",
+            content: "Proceed?",
+            pending: true,
+            question: { responseType: "boolean" },
+          },
+        ]}
+        renderMessageAccessory={(message) => (
+          <span data-testid={`accessory-${message.id}`}>Message accessory</span>
+        )}
+        transcriptAppendix={<div data-testid="appendix">Transcript appendix</div>}
+        onRespond={vi.fn()}
+      />,
+    );
+
+    const content = screen.getByText("Proceed?");
+    const accessory = screen.getByTestId("accessory-q1");
+    const choices = screen.getByRole("button", { name: "Yes" }).parentElement!;
+    const message = content.closest(".wb-chat-msg")!;
+    const appendix = screen.getByTestId("appendix");
+    expect(content.compareDocumentPosition(accessory)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    expect(accessory.compareDocumentPosition(choices)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    expect(message.compareDocumentPosition(appendix)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+  });
+
+  it("disables every structured response without dropping its question identity", async () => {
+    const onRespond = vi.fn();
+    render(
+      <ChatMessageList
+        messages={[
+          {
+            id: "q-boolean",
+            author: "assistant",
+            content: "Proceed?",
+            pending: true,
+            question: { responseType: "boolean" },
+          },
+          {
+            id: "q-choice",
+            author: "assistant",
+            content: "Which?",
+            pending: true,
+            question: {
+              responseType: "choice",
+              choices: [{ key: "a", label: "Option A" }],
+            },
+          },
+        ]}
+        onRespond={onRespond}
+        responsesDisabled
+      />,
+    );
+
+    for (const name of ["Yes", "No", "Option A"]) {
+      const response = screen.getByRole("button", { name });
+      expect(response).toBeDisabled();
+      await userEvent.click(response);
+    }
+    expect(onRespond).not.toHaveBeenCalled();
+  });
+
   it("shows the typing indicator and the agent-stopped notice", () => {
     const { rerender } = render(
       <ChatMessageList
@@ -216,7 +288,22 @@ describe("ChatMessageList", () => {
         agentActivity="stopped"
       />,
     );
-    expect(screen.getByText(/Agent stopped responding/)).toBeInTheDocument();
+    expect(
+      screen.getByText("Chat paused. Your messages are still here."),
+    ).toBeInTheDocument();
+  });
+
+  it("allows a host recovery state to suppress the passive stopped notice", () => {
+    render(
+      <ChatMessageList
+        messages={[msg("m1", "working", "assistant")]}
+        agentActivity="stopped"
+        showStoppedNotice={false}
+      />,
+    );
+    expect(
+      screen.queryByText("Chat paused. Your messages are still here."),
+    ).toBeNull();
   });
 
   it("has no accessibility violations", async () => {
@@ -227,6 +314,8 @@ describe("ChatMessageList", () => {
           msg("m2", "two", "assistant"),
         ]}
         agentActivity="thinking"
+        renderMessageAccessory={() => <button type="button">Open source</button>}
+        transcriptAppendix={<div role="status">One delivery notice</div>}
       />,
     );
     await expectNoAccessibilityViolations(container);

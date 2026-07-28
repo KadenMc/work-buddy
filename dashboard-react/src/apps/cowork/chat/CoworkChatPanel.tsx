@@ -1,60 +1,62 @@
-// The Co-work Chat tab surface. It binds the live document-conversation
-// transport (or any ChatConversationProvider) through the house
-// useChatConversation hook, overlays the document linkage from the annotations
-// store, and renders the transcript with the feedback span-link affordance and
-// routing-note delivery status. It is the richer alternative to the plain house
-// ChatPanel: the surface mounts it in place of the demo chat, and the scroll-to
-// seam arrives as a callback prop so this module never imports the editor.
+// The thin Co-work adapter around the dashboard's reusable ConversationChat.
+// It maps document-specific feedback, routing, and agent lifecycle state into
+// the shared surface's narrow extension seams. Message structure, unread state,
+// loading, retries, questions, and composer behavior remain shared.
 
-import { useEffect, useMemo, useSyncExternalStore } from "react";
-
-import { Button, InlineAlert } from "../../../ui";
 import {
-  ChatComposer,
-  deriveAgentActivity,
-  useChatConversation,
+  useCallback,
+  useMemo,
+  useSyncExternalStore,
+} from "react";
+
+import {
+  ConversationChat,
   type ChatConversationProvider,
+  type ChatInputRecovery,
   type ChatMessage,
+  type ConversationChatState,
 } from "../../../widget-library/chat";
-import { CoworkChatAnnotations } from "./annotations";
-import { resolveSpanLinks } from "./annotations";
-import { CoworkChatTranscript } from "./CoworkChatTranscript";
+import {
+  CoworkChatAnnotations,
+  resolveSpanLink,
+} from "./annotations";
+import {
+  CoworkPassageAction,
+  CoworkRoutingNotices,
+} from "./CoworkChatExtensions";
 import type { ScrollAnchorTarget } from "./contracts";
 import type { CoworkDocumentAgent } from "./documentConversationBinding";
 import "./styles.css";
 
 export interface CoworkChatPanelProps {
-  /** The conversation transport, the live HttpChatConversationProvider in v1. */
+  /** The reusable house-conversation transport. */
   readonly provider: ChatConversationProvider;
   readonly conversationId: string;
   /**
-   * The document linkage store. The feedback entry point and the submit path
-   * write to it. When omitted an empty store is created, so the panel renders a
-   * plain transcript with no span links or routing notices.
+   * The document linkage store. Feedback and sitting routing write to it. When
+   * omitted the shared surface renders with no Co-work message accessories.
    */
   readonly annotations?: CoworkChatAnnotations;
-  /** The scroll-to-passage seam, wired by the surface. Not an editor import. */
+  /** The passage seam, wired by the workspace without importing editor code. */
   readonly onScrollToAnchor?: (target: ScrollAnchorTarget) => void;
   readonly title?: string;
   readonly composerPlaceholder?: string;
   readonly noMessagesLabel?: string;
-  /** Seed the composer once, e.g. from a retained unsent draft (route guard). */
+  /** Seed the conversation-scoped composer from the retained document draft. */
   readonly composerInitialValue?: string;
-  /** Observe the live composer draft, empty after a successful send. */
+  /** Observe the live draft, including the empty value after acknowledged send. */
   readonly onComposerDraftChange?: (value: string) => void;
-  /** Server-owned state of the agent bound to this conversation. */
+  /** Server-owned state of the document agent bound to this conversation. */
   readonly agent?: CoworkDocumentAgent;
-  /** A restart is in flight; the transcript stays visible while it completes. */
+  /** A start or restart request is in flight. */
   readonly ensuringAgent?: boolean;
-  /** A failed restart, shown without unmounting the existing transcript. */
+  /** A failed start or restart request. */
   readonly ensureError?: string | null;
-  /** Present-user-intent restart/start action for a stopped or unavailable agent. */
+  /** Present-user-intent start or restart action. */
   readonly onEnsureAgent?: () => void;
-  /** Let the owning rail derive unread state without mounting a second chat hook. */
+  /** Let the owning rail derive unread state without mounting another hook. */
   readonly onMessagesChange?: (messages: readonly ChatMessage[]) => void;
 }
-
-const EMPTY_MESSAGES: readonly ChatMessage[] = [];
 
 export function CoworkChatPanel({
   provider,
@@ -72,160 +74,117 @@ export function CoworkChatPanel({
   onEnsureAgent,
   onMessagesChange,
 }: CoworkChatPanelProps) {
-  const chat = useChatConversation(provider, conversationId);
   const store = useMemo(
     () => annotations ?? new CoworkChatAnnotations(),
     [annotations],
   );
   const linkage = useSyncExternalStore(store.subscribe, store.getSnapshot);
 
-  const messages = chat.snapshot?.messages ?? EMPTY_MESSAGES;
-  useEffect(() => onMessagesChange?.(messages), [messages, onMessagesChange]);
-  const spanLinks = useMemo(
-    () => resolveSpanLinks(messages, linkage.feedback),
-    [messages, linkage.feedback],
-  );
-  const agentActivity =
-    chat.snapshot !== null ? deriveAgentActivity(chat.snapshot) : "idle";
-  const closed = chat.snapshot?.status === "closed";
-  const agentStartFailed = agent?.status === "spawn_failed";
-  const agentNotStarted = agent?.status === "not_started";
-  const agentStopped =
-    agent?.status === "stopped" ||
-    (!agentStartFailed &&
-      !agentNotStarted &&
-      agentActivity === "stopped");
-  const agentNeedsRecovery =
-    agentStartFailed || agentStopped || agentNotStarted;
-  const recoveryTitle = ensuringAgent
-    ? agentStartFailed
-      ? "Trying again…"
-      : agentNotStarted
-        ? "Starting chat…"
-        : "Restarting chat…"
-    : agentStartFailed
-      ? "Chat couldn’t start."
-      : agentNotStarted
-        ? "Chat isn’t started."
-        : "Chat paused.";
-  const rawRecoveryError = ensureError ?? agent?.error;
-  const recoveryError =
-    rawRecoveryError === "Chat couldn’t start. Try again."
-      ? null
-      : rawRecoveryError;
-  const recoveryDetail = ensuringAgent
-    ? "Your messages are still here."
-    : recoveryError ??
-      (agentStartFailed
-        ? "Try again when you’re ready."
-        : agentNotStarted
-          ? "Start when you’re ready."
-          : "Your messages are still here. Restart chat to keep going.");
-  const recoveryAction = ensuringAgent
-    ? agentStartFailed
-      ? "Trying again…"
-      : agentNotStarted
-        ? "Starting…"
-        : "Restarting…"
-    : agentStartFailed
-      ? "Try again"
-      : agentNotStarted
-        ? "Start chat"
-        : "Restart chat";
-
-  const renderBody = () => {
-    if (chat.status === "loading") {
+  const renderMessageAccessory = useCallback(
+    (message: ChatMessage) => {
+      if (onScrollToAnchor === undefined) return null;
+      const link = resolveSpanLink(message, linkage.feedback);
+      if (link === null) return null;
       return (
-        <div className="wb-chat-state" role="status">
-          <span className="wb-spinner" aria-hidden="true" />
-          <h3 className="wb-chat-state__title">Loading chat</h3>
-          <p>Checking for earlier messages.</p>
-        </div>
-      );
-    }
-    if (chat.status === "error") {
-      return (
-        <div className="wb-chat-state" role="alert">
-          <h3 className="wb-chat-state__title">Chat could not load</h3>
-          <p>{chat.error ?? "Try again to load chat."}</p>
-          <Button
-            variant="secondary"
-            className="wb-chat-state__action"
-            onClick={chat.retry}
-          >
-            Retry
-          </Button>
-        </div>
-      );
-    }
-
-    return (
-      <>
-        <CoworkChatTranscript
-          messages={messages}
-          label={title}
-          agentActivity={agentActivity}
-          showStoppedNotice={false}
-          spanLinks={spanLinks}
-          routing={linkage.routing}
-          onScrollToAnchor={onScrollToAnchor}
-          onRespond={(value, inReplyTo) => {
-            // A failed inline answer surfaces through the composer error the
-            // hook records before rethrowing. The catch prevents an unhandled
-            // rejection on this path.
-            void Promise.resolve(chat.send(value, inReplyTo)).catch(() => {});
-          }}
-          onDismissRouting={(id) => store.dismissRoutingDelivery(id)}
-          emptyLabel={noMessagesLabel}
+        <CoworkPassageAction
+          link={link}
+          onActivate={onScrollToAnchor}
         />
-        {closed ? (
-          <InlineAlert
-            tone="info"
-            role="status"
-            className="wb-chat-panel__read-only"
-          >
-            <strong>Read-only:</strong> This conversation is closed.
-          </InlineAlert>
-        ) : agentNeedsRecovery ? (
-          <InlineAlert
-            tone={agentStopped || agentStartFailed ? "warning" : "info"}
-            role="status"
-            className="wb-chat-panel__read-only"
-          >
-            <strong>{recoveryTitle}</strong>{" "}
-            {recoveryDetail}
-            {onEnsureAgent !== undefined ? (
-              <Button
-                variant="secondary"
-                className="wb-chat-state__action"
-                onClick={onEnsureAgent}
-                disabled={ensuringAgent}
-              >
-                {recoveryAction}
-              </Button>
-            ) : null}
-          </InlineAlert>
-        ) : (
-          <ChatComposer
-            onSend={(value) => chat.send(value)}
-            sending={chat.sending}
-            placeholder={composerPlaceholder}
-            errorMessage={chat.sendError ?? undefined}
-            initialValue={composerInitialValue}
-            onDraftChange={onComposerDraftChange}
-          />
-        )}
-      </>
-    );
-  };
+      );
+    },
+    [linkage.feedback, onScrollToAnchor],
+  );
+
+  const resolveInputRecovery = useCallback(
+    (state: ConversationChatState): ChatInputRecovery | undefined => {
+      const startFailed = agent?.status === "spawn_failed";
+      const notStarted = agent?.status === "not_started";
+      const stopped =
+        agent?.status === "stopped" ||
+        (!startFailed &&
+          !notStarted &&
+          state.agentActivity === "stopped");
+      if (!startFailed && !notStarted && !stopped) return undefined;
+
+      const titleText = ensuringAgent
+        ? startFailed
+          ? "Trying again…"
+          : notStarted
+            ? "Starting chat…"
+            : "Restarting chat…"
+        : startFailed
+          ? "Chat couldn’t start."
+          : notStarted
+            ? "Chat hasn’t started."
+            : "Chat paused.";
+      const rawError = ensureError ?? agent?.error;
+      const detail =
+        ensuringAgent
+          ? "Your messages are still here."
+          : rawError === "Chat couldn’t start. Try again."
+            ? "Try again."
+            : rawError ??
+              (startFailed
+                ? "Try again."
+                : notStarted
+                  ? "Start chat to ask about this document."
+                  : "Your messages are still here.");
+      const actionLabel = ensuringAgent
+        ? startFailed
+          ? "Trying again…"
+          : notStarted
+            ? "Starting…"
+            : "Restarting…"
+        : startFailed
+          ? "Try again"
+          : notStarted
+            ? "Start chat"
+            : "Restart chat";
+
+      return {
+        tone: stopped || startFailed ? "warning" : "info",
+        title: titleText,
+        detail,
+        ...(onEnsureAgent === undefined
+          ? {}
+          : {
+              action: {
+                label: actionLabel,
+                onAction: onEnsureAgent,
+                pending: ensuringAgent,
+              },
+            }),
+      };
+    },
+    [
+      agent?.error,
+      agent?.status,
+      ensureError,
+      ensuringAgent,
+      onEnsureAgent,
+    ],
+  );
 
   return (
-    <section className="wb-chat-panel" aria-label={title}>
-      <header className="wb-chat-panel__header">
-        <h2 className="wb-chat-panel__title">{title}</h2>
-      </header>
-      {renderBody()}
-    </section>
+    <ConversationChat
+      provider={provider}
+      conversationId={conversationId}
+      title={title}
+      composerPlaceholder={composerPlaceholder}
+      noMessagesLabel={noMessagesLabel}
+      initialValue={composerInitialValue}
+      onDraftChange={onComposerDraftChange}
+      onMessagesChange={onMessagesChange}
+      renderMessageAccessory={renderMessageAccessory}
+      transcriptAppendix={
+        <CoworkRoutingNotices
+          deliveries={linkage.routing}
+          onDismiss={(id) => store.dismissRoutingDelivery(id)}
+        />
+      }
+      inputRecovery={resolveInputRecovery}
+      readOnlyReason="This chat is closed."
+    />
   );
 }
 

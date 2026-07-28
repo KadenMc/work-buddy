@@ -1,6 +1,10 @@
 import type { ReactNode } from "react";
 
-import { Button, InlineAlert } from "../../ui";
+import {
+  Button,
+  InlineAlert,
+  type InlineAlertTone,
+} from "../../ui";
 import { ChatComposer } from "./ChatComposer";
 import { ChatMessageList } from "./ChatMessageList";
 import type {
@@ -9,6 +13,75 @@ import type {
   ChatPanelStatus,
 } from "./contracts";
 import "./styles.css";
+
+/**
+ * A recoverable input state that keeps the transcript readable while replacing
+ * the composer with an explanation and, when available, one explicit action.
+ */
+export interface ChatInputRecoveryAction {
+  readonly label: string;
+  readonly onAction: () => void;
+  readonly pending?: boolean;
+}
+
+export interface ChatInputRecovery {
+  readonly tone: InlineAlertTone;
+  readonly title: string;
+  readonly detail: ReactNode;
+  readonly action?: ChatInputRecoveryAction;
+}
+
+export type ChatPanelStateKind = "loading" | "empty" | "error";
+
+export interface ChatPanelStateProps {
+  /** Accessible name for the complete panel. */
+  readonly label?: string;
+  readonly kind: ChatPanelStateKind;
+  readonly title: string;
+  readonly detail?: ReactNode;
+  readonly action?: ChatInputRecoveryAction;
+  readonly header?: ReactNode;
+}
+
+/**
+ * Canonical full-panel state for a chat whose conversation is not yet ready.
+ * Hosts map their lifecycle into this primitive instead of recreating panel
+ * markup or depending on the chat package's private CSS classes.
+ */
+export function ChatPanelState({
+  label = "Conversation",
+  kind,
+  title,
+  detail,
+  action,
+  header,
+}: ChatPanelStateProps) {
+  return (
+    <section className="wb-chat-panel" aria-label={label}>
+      {header}
+      <div
+        className="wb-chat-state"
+        role={kind === "error" ? "alert" : "status"}
+      >
+        {kind === "loading" ? (
+          <span className="wb-spinner" aria-hidden="true" />
+        ) : null}
+        <h3 className="wb-chat-state__title">{title}</h3>
+        {detail === undefined ? null : <p>{detail}</p>}
+        {action === undefined ? null : (
+          <Button
+            variant="secondary"
+            className="wb-chat-state__action"
+            onClick={action.onAction}
+            disabled={action.pending === true}
+          >
+            {action.label}
+          </Button>
+        )}
+      </div>
+    </section>
+  );
+}
 
 export interface ChatPanelProps {
   /** Host presentation state, mirroring the dashboard host-state contract. */
@@ -19,6 +92,14 @@ export interface ChatPanelProps {
   /** Header slot. Overrides the default title bar when provided. */
   readonly header?: ReactNode;
   readonly agentActivity?: ChatAgentActivity;
+  /** Additive content rendered inside each message after its canonical text. */
+  readonly renderMessageAccessory?: (message: ChatMessage) => ReactNode;
+  /** Additive content rendered after all canonical messages in the scroller. */
+  readonly transcriptAppendix?: ReactNode;
+  /** Extra host-level reason to disable structured question responses. */
+  readonly responsesDisabled?: boolean;
+  /** Whether the shared passive stopped-agent notice should be rendered. */
+  readonly showStoppedNotice?: boolean;
   /**
    * Send intent for freeform messages and inline question answers. Inline
    * answers pass the answered question's message id as inReplyTo.
@@ -28,6 +109,8 @@ export interface ChatPanelProps {
   readonly sendErrorMessage?: string;
   readonly composerDisabled?: boolean;
   readonly composerPlaceholder?: string;
+  /** Recoverable state shown in the input region instead of the composer. */
+  readonly inputRecovery?: ChatInputRecovery;
   /** Seed the composer draft once on mount, e.g. from a retained unsent draft. */
   readonly initialValue?: string;
   /**
@@ -56,16 +139,16 @@ interface StateCopy {
 }
 
 const LOADING_COPY: StateCopy = {
-  title: "Loading conversation",
-  message: "Work Buddy is preparing this conversation.",
+  title: "Loading chat",
+  message: "Loading messages.",
 };
 const EMPTY_COPY: StateCopy = {
-  title: "No conversation",
-  message: "There is no conversation to show yet.",
+  title: "No chat yet",
+  message: "Start a conversation to see messages here.",
 };
 const ERROR_COPY: StateCopy = {
-  title: "Conversation could not load",
-  message: "Try again to reload this conversation.",
+  title: "Chat couldn’t load",
+  message: "Try again.",
 };
 
 export function ChatPanel({
@@ -74,11 +157,16 @@ export function ChatPanel({
   title,
   header,
   agentActivity = "idle",
+  renderMessageAccessory,
+  transcriptAppendix,
+  responsesDisabled = false,
+  showStoppedNotice = true,
   onSend,
   sending = false,
   sendErrorMessage,
   composerDisabled = false,
   composerPlaceholder,
+  inputRecovery,
   initialValue,
   onDraftChange,
   readOnlyReason,
@@ -90,6 +178,14 @@ export function ChatPanel({
   noMessagesLabel,
 }: ChatPanelProps) {
   const label = title ?? "Conversation";
+  const readOnly = status === "read-only";
+  const structuredResponsesDisabled =
+    responsesDisabled ||
+    readOnly ||
+    agentActivity === "stopped" ||
+    inputRecovery !== undefined ||
+    composerDisabled ||
+    sending;
 
   const renderHeader = () => {
     if (header !== undefined) {
@@ -110,6 +206,8 @@ export function ChatPanel({
       messages={messages}
       label={label}
       agentActivity={agentActivity}
+      renderMessageAccessory={renderMessageAccessory}
+      transcriptAppendix={transcriptAppendix}
       onRespond={
         onSend === undefined
           ? undefined
@@ -120,6 +218,10 @@ export function ChatPanel({
               void Promise.resolve(onSend(value, inReplyTo)).catch(() => {});
             }
       }
+      responsesDisabled={structuredResponsesDisabled}
+      showStoppedNotice={
+        showStoppedNotice && !readOnly && inputRecovery === undefined
+      }
       initialUnreadFromMessageId={initialUnreadFromMessageId}
       onReachLatest={onReachLatest}
       emptyLabel={noMessagesLabel}
@@ -127,43 +229,7 @@ export function ChatPanel({
   );
 
   const renderBody = () => {
-    if (status === "loading") {
-      return (
-        <div className="wb-chat-state" role="status">
-          <span className="wb-spinner" aria-hidden="true" />
-          <h3 className="wb-chat-state__title">{LOADING_COPY.title}</h3>
-          <p>{LOADING_COPY.message}</p>
-        </div>
-      );
-    }
-    if (status === "empty") {
-      return (
-        <div className="wb-chat-state" role="status">
-          <h3 className="wb-chat-state__title">{EMPTY_COPY.title}</h3>
-          <p>{emptyMessage ?? EMPTY_COPY.message}</p>
-        </div>
-      );
-    }
-    if (status === "error") {
-      return (
-        <div className="wb-chat-state" role="alert">
-          <h3 className="wb-chat-state__title">{ERROR_COPY.title}</h3>
-          <p>{errorMessage ?? ERROR_COPY.message}</p>
-          {onRetry !== undefined ? (
-            <Button
-              variant="secondary"
-              className="wb-chat-state__action"
-              onClick={onRetry}
-            >
-              Retry
-            </Button>
-          ) : null}
-        </div>
-      );
-    }
-
     // "ready" and "read-only" both render the transcript.
-    const readOnly = status === "read-only";
     return (
       <>
         {renderTranscript()}
@@ -175,6 +241,25 @@ export function ChatPanel({
           >
             <strong>Read-only:</strong>{" "}
             {readOnlyReason ?? "Replies are currently disabled."}
+          </InlineAlert>
+        ) : inputRecovery !== undefined ? (
+          <InlineAlert
+            tone={inputRecovery.tone}
+            role="status"
+            className="wb-chat-panel__read-only"
+          >
+            <strong>{inputRecovery.title}</strong>{" "}
+            {inputRecovery.detail}
+            {inputRecovery.action !== undefined ? (
+              <Button
+                variant="secondary"
+                className="wb-chat-state__action"
+                onClick={inputRecovery.action.onAction}
+                disabled={inputRecovery.action.pending === true}
+              >
+                {inputRecovery.action.label}
+              </Button>
+            ) : null}
           </InlineAlert>
         ) : onSend !== undefined ? (
           <ChatComposer
@@ -190,6 +275,35 @@ export function ChatPanel({
       </>
     );
   };
+
+  if (status === "loading" || status === "empty" || status === "error") {
+    const copy =
+      status === "loading"
+        ? LOADING_COPY
+        : status === "empty"
+          ? EMPTY_COPY
+          : ERROR_COPY;
+    return (
+      <ChatPanelState
+        label={label}
+        kind={status}
+        title={copy.title}
+        detail={
+          status === "empty"
+            ? emptyMessage ?? copy.message
+            : status === "error"
+              ? errorMessage ?? copy.message
+              : copy.message
+        }
+        action={
+          status === "error" && onRetry !== undefined
+            ? { label: "Retry", onAction: onRetry }
+            : undefined
+        }
+        header={renderHeader()}
+      />
+    );
+  }
 
   return (
     <section className="wb-chat-panel" aria-label={label}>

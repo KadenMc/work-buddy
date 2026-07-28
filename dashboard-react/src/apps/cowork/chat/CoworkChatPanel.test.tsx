@@ -2,10 +2,10 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
+import { HttpChatConversationProvider } from "../../../dashboard/conversations";
 import { expectNoAccessibilityViolations } from "../../../test/setup";
 import { CoworkChatAnnotations } from "./annotations";
 import { CoworkChatPanel } from "./CoworkChatPanel";
-import { HttpChatConversationProvider } from "./HttpChatConversationProvider";
 
 function jsonResponse(
   body: unknown,
@@ -24,6 +24,9 @@ interface RawMessage {
   readonly message_id: string;
   readonly role: string;
   readonly content: string;
+  readonly message_type?: string;
+  readonly status?: string;
+  readonly response_type?: string;
 }
 
 function conversation(
@@ -82,7 +85,7 @@ describe("CoworkChatPanel", () => {
 
     await screen.findByText("make this precise");
     expect(
-      screen.queryByRole("button", { name: /Jump to the passage/ }),
+      screen.queryByRole("button", { name: /Jump to passage:/ }),
     ).not.toBeInTheDocument();
 
     // The feedback entry point: R9 returned, the surface records it here.
@@ -100,7 +103,7 @@ describe("CoworkChatPanel", () => {
     });
 
     const jump = await screen.findByRole("button", {
-      name: /Jump to the passage/,
+      name: /Jump to passage:/,
     });
     await userEvent.click(jump);
     expect(onScrollToAnchor).toHaveBeenCalledWith({
@@ -209,7 +212,7 @@ describe("CoworkChatPanel", () => {
     render(<CoworkChatPanel provider={provider(fetchImpl)} conversationId="c1" />);
 
     expect(
-      await screen.findByText(/This conversation is closed/),
+      await screen.findByText(/This chat is closed/),
     ).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Send" }),
@@ -316,6 +319,42 @@ describe("CoworkChatPanel", () => {
     ).toBeDisabled();
   });
 
+  it("disables structured answers while the document agent needs recovery", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(
+        conversation([
+          {
+            message_id: "question-1",
+            role: "agent",
+            content: "Continue?",
+            message_type: "question",
+            status: "pending",
+            response_type: "boolean",
+          },
+        ]),
+      ),
+    ) as unknown as typeof fetch;
+
+    render(
+      <CoworkChatPanel
+        provider={provider(fetchImpl)}
+        conversationId="c1"
+        agent={{
+          status: "stopped",
+          alive: false,
+          started: false,
+          error: null,
+        }}
+        onEnsureAgent={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("Continue?")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Yes" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "No" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Restart chat" })).toBeEnabled();
+  });
+
   it("keeps the transcript visible when a restart request fails", async () => {
     const fetchImpl = vi.fn(async () =>
       jsonResponse(
@@ -361,7 +400,7 @@ describe("CoworkChatPanel", () => {
 
     render(<CoworkChatPanel provider={provider(fetchImpl)} conversationId="c1" />);
 
-    await screen.findByText(/Chat could not load/);
+    await screen.findByText(/Chat couldn’t load/);
     await userEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(await screen.findByText("recovered")).toBeInTheDocument();
   });

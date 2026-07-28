@@ -1,14 +1,12 @@
 /**
- * The Chat-tab provider seam. The Chat tab reuses the house conversation machinery through
- * the ChatConversationProvider seam, and the live document-conversation provider is built in
- * chat/ over the house conversation HTTP surface (GET /api/conversations/<id>,
- * POST .../respond, the 3s poll). The fixture path keeps the deterministic demo provider for
- * widget-lab and the tests, and the live path uses chat/'s createHttpChatProvider so the
- * whole surface reaches the live conversation through this one function.
+ * The Chat-tab provider seam. The Chat tab reuses the house conversation
+ * machinery through ChatConversationProvider. The neutral dashboard adapter
+ * owns the live HTTP transport; this module only chooses between that adapter
+ * and Co-work's deterministic fixture.
  */
 
+import { createHttpChatProvider } from "../../../dashboard/conversations";
 import type { ChatConversationProvider } from "../../../widget-library/chat";
-import { createHttpChatProvider } from "../chat";
 import { createDemoChatProvider } from "../rail/chatFixture";
 
 export interface CoworkChatProviderOptions {
@@ -18,8 +16,7 @@ export interface CoworkChatProviderOptions {
 }
 
 /**
- * Resolve the Chat-tab provider for one document conversation. The demo provider backs the
- * fixture path and, until the live provider export exists in chat/, the live path too.
+ * Resolve the Chat-tab provider for one document conversation.
  */
 export const resolveCoworkChatProvider = (
   options: CoworkChatProviderOptions,

@@ -27,6 +27,25 @@ const EMPTY_SNAPSHOT: CoworkChatAnnotationsSnapshot = {
 };
 
 /**
+ * Resolve one canonical transcript message to its exact feedback capture. The
+ * server message id is the only identity key; matching message text would
+ * conflate repeated feedback.
+ */
+export function resolveSpanLink(
+  message: ChatMessage,
+  feedback: readonly FeedbackCapture[],
+): ResolvedSpanLink | null {
+  if (message.author !== "user") return null;
+  const capture = feedback.find((entry) => entry.messageId === message.id);
+  if (capture === undefined) return null;
+  return {
+    messageId: message.id,
+    evidenceId: capture.evidenceId,
+    target: { spanId: capture.spanId, anchor: capture.anchor },
+  };
+}
+
+/**
  * Resolve feedback span links onto transcript messages by R9's exact posted
  * message id. Text is deliberately not used as identity: repeated identical
  * notes and out-of-order responses must remain unambiguous.
@@ -36,17 +55,9 @@ export function resolveSpanLinks(
   feedback: readonly FeedbackCapture[],
 ): Map<string, ResolvedSpanLink> {
   const links = new Map<string, ResolvedSpanLink>();
-  for (const capture of feedback) {
-    const match = messages.find(
-      (message) =>
-        message.author === "user" && message.id === capture.messageId,
-    );
-    if (match === undefined) continue;
-    links.set(match.id, {
-      messageId: match.id,
-      evidenceId: capture.evidenceId,
-      target: { spanId: capture.spanId, anchor: capture.anchor },
-    });
+  for (const message of messages) {
+    const link = resolveSpanLink(message, feedback);
+    if (link !== null) links.set(message.id, link);
   }
   return links;
 }
