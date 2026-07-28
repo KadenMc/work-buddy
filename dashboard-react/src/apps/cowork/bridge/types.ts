@@ -2,7 +2,7 @@
  * The R2 doc-open wire shapes (C1 surface section 1.3), as the dashboard service returns
  * them over `GET /api/truth/doc/<document_id>?store_id=`. These mirror the frozen payload
  * field-for-field in snake_case, so the pure mapper in reviewMapping.ts can translate them
- * into the rail's JSON-compatible ReviewRailData plus the suggestion adapter's ProposalInput
+ * into the rail's JSON-compatible ReviewRailData plus the shared proposal-catalog shape
  * without any HTTP knowledge. The wire names win here (the field-name alias table, section
  * 1.0b): `base_doc_sha256` and `model_source` are the surface spellings.
  */
@@ -53,6 +53,7 @@ export interface R2Expression {
   readonly span_id: string;
   readonly node_id_hint: string | null;
   readonly quote: string;
+  readonly quote_anchor?: R2QuoteAnchor;
   readonly claim_ref: string;
   readonly claim_status:
     | "confirmed"
@@ -67,6 +68,7 @@ export interface R2Expression {
 export interface R2ProvenanceSpan {
   readonly span_id: string;
   readonly quote: string;
+  readonly quote_anchor?: R2QuoteAnchor;
   readonly trust_state: "human" | "ai_confirmed" | "ai_proposed";
   readonly producer: R2Producer | null;
   readonly approval_gesture_id: string | null;

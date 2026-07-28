@@ -48,6 +48,66 @@ def test_confirm_applies_and_materializes(seeded, make_proposal):
     assert "truth.doc_proposal_applied" in kinds
 
 
+def test_confirm_deletion_applies_and_materializes_removed_text(
+    seeded, make_proposal
+):
+    store = seeded["store"]
+    document = seeded["document"]
+    proposal = make_proposal(replacement="")
+    new_body = "# Throwaway fixture\n\n"
+
+    response, events = sittings.apply_sitting(
+        store,
+        document,
+        HUMAN,
+        items=[
+            {
+                "proposal_id": proposal.id,
+                "verb": "confirm",
+                "canonical_sha256": proposal.canonical_sha256,
+            }
+        ],
+        materialize=_materialize_block(new_body),
+        at=NOW,
+    )
+
+    result = response["results"][0]
+    assert result["result"] == "applied"
+    assert result["materialized"] is True
+    assert proposals.get_proposal(store, proposal.id).replacement == ""
+    assert (seeded["root"] / seeded["rel"]).read_text(encoding="utf-8") == new_body
+    assert "truth.doc_materialized" in [event_type for event_type, _ in events]
+
+
+def test_edit_confirm_empty_amendment_materializes_deletion(seeded, make_proposal):
+    store = seeded["store"]
+    document = seeded["document"]
+    proposal = make_proposal(replacement="A proposed rewrite.")
+    new_body = "# Throwaway fixture\n\n"
+
+    response, events = sittings.apply_sitting(
+        store,
+        document,
+        HUMAN,
+        items=[
+            {
+                "proposal_id": proposal.id,
+                "verb": "edit_confirm",
+                "canonical_sha256": proposal.canonical_sha256,
+                "amend_content": "",
+            }
+        ],
+        materialize=_materialize_block(new_body),
+        at=NOW,
+    )
+
+    result = response["results"][0]
+    assert result["result"] == "applied"
+    assert result["materialized"] is True
+    assert (seeded["root"] / seeded["rel"]).read_text(encoding="utf-8") == new_body
+    assert "truth.doc_materialized" in [event_type for event_type, _ in events]
+
+
 def test_n_marks_mint_n_gestures_with_distinct_hashes(seeded, make_proposal):
     store = seeded["store"]
     document = seeded["document"]

@@ -93,6 +93,7 @@ export interface ReviewExpression {
   readonly spanId: string;
   readonly nodeIdHint: string | null;
   readonly quote: string;
+  readonly quoteAnchor?: QuoteAnchor;
   readonly claimRef: string;
   readonly claimStatus: ExpressionClaimStatus | null;
   readonly claimKind: string | null;
@@ -105,6 +106,7 @@ export type TrustState = "human" | "ai_confirmed" | "ai_proposed";
 export interface ProvenanceSpan {
   readonly spanId: string;
   readonly quote: string;
+  readonly quoteAnchor?: QuoteAnchor;
   readonly trustState: TrustState;
   readonly producer: ProposalProducer | null;
   readonly approvalGestureId: string | null;

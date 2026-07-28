@@ -138,6 +138,55 @@ def test_sitting_prepare_is_pure_and_commit_is_atomic_and_idempotent(store_ctx):
     assert _gesture_count(store) == 1
 
 
+def test_sitting_edit_confirm_admits_and_commits_empty_deletion(store_ctx):
+    store = store_ctx["store"]
+    document, _source, _ = _ready(
+        store_ctx,
+        key="lifecycle-ready-amended-deletion",
+    )
+    old_head = ydoc_store.current_structured_head(
+        store,
+        document_id=document.id,
+        snapshot_sha256=document.ydoc_snapshot_sha256,
+    )
+    proposal = _proposal(store, document, old_head)
+    intent, created = sitting_lifecycle.prepare_sitting(
+        store,
+        document_id=document.id,
+        actor=HUMAN,
+        items=[
+            {
+                "proposal_id": proposal.id,
+                "verb": "edit_confirm",
+                "canonical_sha256": proposal.canonical_sha256,
+                "amend_content": "",
+            }
+        ],
+        expected_file_sha256=document.content_sha256,
+        expected_structured_head_sha256=old_head,
+        idempotency_key="sitting-amended-deletion-0001",
+    )
+
+    assert created is True
+    assert intent.admitted[0]["item"]["amend_content"] == ""
+    assert intent.failed == ()
+    rendered = b"# Lifecycle\n\n"
+    new_snapshot = b"YDOC:" + rendered
+    receipt, _ = sitting_lifecycle.commit_sitting(
+        store,
+        document_id=document.id,
+        intent_id=intent.id,
+        actor=HUMAN,
+        snapshot=new_snapshot,
+        snapshot_sha256=sha256_bytes(new_snapshot),
+        rendered_markdown=rendered.decode(),
+        rendered_sha256=sha256_bytes(rendered),
+    )
+
+    assert receipt["results"][0]["result"] == "applied"
+    assert (store_ctx["root"] / document.path).read_bytes() == rendered
+
+
 def test_sitting_file_race_leaves_ledger_and_structured_state_unchanged(store_ctx):
     store = store_ctx["store"]
     document, _source, _ = _ready(store_ctx, key="lifecycle-ready-race")

@@ -20,8 +20,9 @@ import {
   buildEditorExtensions,
   stopCapturingLoadTimeIds,
 } from "../editor/extensions";
+import { assertCanonicalCoworkEditorState } from "../editor/canonicalState";
 import { importCoworkMarkdown } from "../editor/markdownImport";
-import type { WbTrackedChangesAdapter } from "../suggestions/types";
+import type { ProposalInput } from "../suggestions/types";
 import type { CoworkApiError, CoworkDriftState } from "../contracts";
 import { isLocalHumanOrigin } from "../editor/applyOrigin";
 import { serializeCoworkEditorMarkdown } from "../editor/serializeCoworkMarkdown";
@@ -53,7 +54,7 @@ import {
   registeredSessionDurabilityKey,
 } from "../session/CoworkSessionDurability";
 
-/** What the host reports up once the editor is mounted and the adapter attached. */
+/** What the host reports up once the canonical editor is mounted. */
 export interface CoworkEditorReadyContext {
   readonly editor: Editor;
   /** The ProseMirror DOM root, the coordinate source for the anchor-rect measurements. */
@@ -61,15 +62,13 @@ export interface CoworkEditorReadyContext {
 }
 
 export interface CoworkBridgeEditorProps {
-  /** The shared local Y.Doc the adapter is bound to (apply-origin tagging, section 1.4). */
+  /** The canonical collaborative document. Open proposals never mutate it. */
   readonly document: Y.Doc;
-  /** The tracked-change adapter, attached to the editor here and shared with the bridge. */
-  readonly adapter: WbTrackedChangesAdapter;
   /** The Yjs transport (HttpCoworkYdocTransport live, in-memory in tests). */
   readonly transport: CoworkYdocTransport;
   /** Markdown seeded into a brand-new document exactly once, on an empty fragment. */
   readonly seedMarkdown: string;
-  /** Fired once the editor is mounted and the adapter attached. */
+  /** Fired once the editor is mounted. */
   readonly onReady?: (context: CoworkEditorReadyContext) => void;
   /** Fired when the editor is about to unmount, so the bridge can drop its editor refs. */
   readonly onTeardown?: () => void;
@@ -97,7 +96,9 @@ export interface CoworkBridgeEditorProps {
   ) => void;
   readonly onMaterialized?: (receipt: CoworkMaterializeReceipt) => void;
   readonly onSittingWorkspace?: (workspace: CoworkSittingWorkspace | null) => void;
-  readonly onSittingProjectionAdopted?: () => void;
+  /** Latest authoritative R2 proposals, used only on the isolated sitting clone. */
+  readonly getProposalCatalog?: () => readonly ProposalInput[];
+  readonly onSittingServerRefreshed?: () => void;
 }
 
 interface MountedProps extends CoworkBridgeEditorProps {
@@ -105,17 +106,17 @@ interface MountedProps extends CoworkBridgeEditorProps {
   readonly seedWhenEmpty: boolean;
 }
 
+export { assertCanonicalCoworkEditorState } from "../editor/canonicalState";
+
 /**
  * The mounted live editor. It follows the same load-order the demo pane proved (SP-2): the
  * Y.Doc is hydrated from the transport before mount (the parent gates on that), the editor
  * binds to it, persistence starts pushing local human edits, a brand-new document is seeded
- * once, and the load-time id mint is fenced out of the undo stack. On top of the demo pane it
- * attaches the tracked-change adapter to the editor and reports the ready context up, so the
- * bridge can ingest proposals and measure anchor geometry.
+ * once, and the load-time id mint is fenced out of the undo stack. It reports the ready
+ * context so the bridge can project view-only review decorations and measure anchor geometry.
  */
 function MountedBridgeEditor({
   document,
-  adapter,
   persistence,
   seedMarkdown,
   seedWhenEmpty,
@@ -167,24 +168,21 @@ function MountedBridgeEditor({
   useEffect(() => {
     if (editor === null || boundRef.current) return;
     boundRef.current = true;
-    // Attach the adapter before seeding, so the tracked-change layer is ready the moment the
-    // first proposal is ingested. Persistence starts before seeding so a brand-new document's
-    // seed is pushed through R4 as its first human-origin update (SP-2 load-order).
-    adapter.attach(editor);
+    // Persistence starts before seeding so a brand-new document's seed is
+    // pushed through R4 as its first human-origin update (SP-2 load-order).
     persistence.start();
     if (seedWhenEmpty) {
       editor.commands.setContent(seedContent);
     }
     stopCapturingLoadTimeIds(editor);
     onReadyRef.current?.({ editor, dom: editor.view.dom as HTMLElement });
-  }, [editor, adapter, persistence, seedContent, seedWhenEmpty]);
+  }, [editor, persistence, seedContent, seedWhenEmpty]);
 
   useEffect(() => {
     return () => {
       onTeardownRef.current?.();
-      adapter.detach();
     };
-  }, [adapter]);
+  }, []);
 
   return (
     <>
@@ -205,8 +203,8 @@ function MountedBridgeEditor({
 /**
  * The live editor region of the Co-work surface. It owns its Yjs persistence controller,
  * hydrates the shared Y.Doc from the transport BEFORE mounting the editor, and gates the
- * mount by conditionally rendering (never useEditor(null), F5.4). The Y.Doc and the adapter
- * are passed in by the bridge so the review provider's submit path shares the same adapter.
+ * mount by conditionally rendering (never useEditor(null), F5.4). Pending review state is
+ * projected into ProseMirror decorations and never attached to this live Y.Doc.
  */
 export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
   const [persistence] = useState(
@@ -457,6 +455,7 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
             await persistence.retry();
           }
           await persistence.flush();
+          assertCanonicalCoworkEditorState(editor);
           const compacted = await persistence.compact();
           const renderedMarkdown = serializeCoworkEditorMarkdown(editor, props.document);
           const renderedSha256 = await sha256Hex(
@@ -519,6 +518,11 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
           await persistence.retry();
         }
         await persistence.flush();
+        const editor = editorRef.current;
+        if (editor === null) {
+          throw new Error("The document is still loading. Try again in a moment.");
+        }
+        assertCanonicalCoworkEditorState(editor);
         const fileSha256 = expectedFileSha256.current;
         if (fileSha256 === null || fileSha256.length === 0) {
           throw new Error(
@@ -527,11 +531,9 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
         }
         return {
           expectedFileSha256: fileSha256,
-          // The live Y.Doc also contains ephemeral proposal projection marks. A sitting
-          // must never compact that view into canonical state merely to learn its head.
-          // flush() has already persisted every human-origin update, so this is the exact
-          // server head against which prepare should CAS. The isolated commit snapshot is
-          // the only sitting-time compaction boundary and strips all remaining open marks.
+          // Pending proposals never enter the live Y.Doc. flush() has persisted every
+          // human-origin update, so this is the exact server head against which prepare
+          // should compare-and-swap.
           expectedStructuredHeadSha256: persistence.docSha256,
           generation: editGeneration.current,
         };
@@ -548,17 +550,45 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
         return prepareCoworkSittingDocument(
           props.document,
           admittedItems,
+          props.getProposalCatalog?.() ?? [],
           generation,
-          props.onSittingProjectionAdopted,
         );
       },
       isCurrent: (generation) => editGeneration.current === generation,
-      refreshFromServer: async () => {
+      refreshFromServer: async (response, generation) => {
         await persistence.pullSince();
-        props.onSittingProjectionAdopted?.();
+        if (persistence.docSha256 !== response.structured_head_sha256) {
+          throw new Error(
+            "Co-work could not verify the structured document committed by this sitting.",
+          );
+        }
+        if (response.materialize !== null) {
+          expectedFileSha256.current = response.materialize.new_file_sha256;
+          retryAttempt.current = null;
+          publishMaterializationState(
+            editGeneration.current === generation
+              ? {
+                  kind: "up_to_date",
+                  fileSha256: response.materialize.new_file_sha256,
+                }
+              : {
+                  kind: "unsaved",
+                  fileSha256: response.materialize.new_file_sha256,
+                },
+          );
+        }
+        const editor = editorRef.current;
+        if (editor !== null) assertCanonicalCoworkEditorState(editor);
+        props.onSittingServerRefreshed?.();
       },
     }),
-    [persistence, props.document, props.onSittingProjectionAdopted],
+    [
+      persistence,
+      props.document,
+      props.getProposalCatalog,
+      props.onSittingServerRefreshed,
+      publishMaterializationState,
+    ],
   );
 
   useEffect(() => {

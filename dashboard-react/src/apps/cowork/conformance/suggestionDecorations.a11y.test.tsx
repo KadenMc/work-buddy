@@ -1,11 +1,9 @@
 /**
- * Dashboard-citizenship proof (PRD I18) for the in-editor suggestion decorations.
- * A live editor ingests one insertion and one deletion proposal through the
- * WbTrackedChangesAdapter, so the rendered `ins` / `del` decorations are the real
- * tracked-change marks, not a rail-side stand-in. The proof asserts axe is clean
- * and that each decoration carries a redundant non-colour signal (the semantic
- * element plus `data-wb-suggestion` and `data-epistemic`), so meaning survives
- * forced-colors where the tint is replaced by a system colour (SP-6 G3).
+ * Accessibility coverage for the isolated compatibility transform. The production
+ * collaborative editor renders authoritative ledger state through
+ * CoworkLedgerDecorations; it never attaches this adapter or stores these marks.
+ * This proof keeps the legacy transform's semantic `ins` / `del` output accessible
+ * for migration and recovery fixtures.
  */
 
 import { Editor } from "@tiptap/core";
@@ -16,9 +14,9 @@ import { expectNoAccessibilityViolations } from "../../../test/setup";
 import {
   buildSuggestionSchemaExtensions,
   CoworkSuggestChanges,
-  createWbTrackedChangesAdapter,
   type ProposalInput,
 } from "../suggestions";
+import { createWbTrackedChangesAdapter } from "../suggestions/adapter";
 
 const CONTENT = "<p>The quick brown fox jumps over the lazy dog.</p>";
 
@@ -83,11 +81,13 @@ describe("Co-work suggestion decorations accessibility", () => {
     host = null;
   });
 
-  it("renders tracked-change marks with a non-colour encoding and clears axe", async () => {
+  it("renders tracked-change marks, including an empty replacement as a visible deletion", async () => {
     const container = mountEditorWithSuggestions();
 
     const insertion = container.querySelector('[data-wb-suggestion="insertion"]');
-    const deletion = container.querySelector('[data-wb-suggestion="deletion"]');
+    const deletion = container.querySelector(
+      '[data-wb-suggestion="deletion"][data-wb-anchor-id="del-1"]',
+    );
     expect(insertion).not.toBeNull();
     expect(deletion).not.toBeNull();
 
@@ -96,6 +96,10 @@ describe("Co-work suggestion decorations accessibility", () => {
     expect(insertion?.tagName.toLowerCase()).toBe("ins");
     expect(deletion?.tagName.toLowerCase()).toBe("del");
     expect(insertion?.getAttribute("data-epistemic")).toBe("ai_proposed");
+    expect(deletion).toHaveTextContent("lazy");
+    expect(deletion).toHaveAttribute("data-wb-anchor-kind", "proposal");
+    expect(deletion).toHaveAttribute("data-wb-anchor-id", "del-1");
+    expect(deletion).not.toHaveClass("wb-cowork-flag-mark");
 
     await expectNoAccessibilityViolations(container);
   });

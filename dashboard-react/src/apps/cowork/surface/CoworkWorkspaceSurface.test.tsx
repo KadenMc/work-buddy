@@ -1121,6 +1121,24 @@ describe("CoworkWorkspaceWidget live mode", () => {
   });
 
   it("hydrates persisted feedback span links on reload by exact message id", async () => {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn((query: string) => ({
+        matches: query === "(max-width: 760px)",
+        media: query,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(() => true),
+      })),
+    );
+    const frameSpy = vi
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation((callback) =>
+        window.setTimeout(() => callback(performance.now()), 0),
+      );
     saveRailTab(window.localStorage, "live-doc", "chat");
     const persistedFeedback = {
       evidence_id: "feedback-evidence-1",
@@ -1129,9 +1147,9 @@ describe("CoworkWorkspaceWidget live mode", () => {
       message_id: "feedback-message-1",
       text: "Use a measurable claim.",
       anchor: {
-        exact: "very effective",
+        exact: "editor pane",
         prefix: "This is ",
-        suffix: " today.",
+        suffix: ".",
         node_id_hint: null,
       },
     };
@@ -1179,20 +1197,39 @@ describe("CoworkWorkspaceWidget live mode", () => {
       noopEmit,
       firstFetch as unknown as typeof fetch,
     );
+    const firstPaneTabs = screen.getByRole("tablist", {
+      name: "Co-work panes",
+    });
+    await userEvent.click(
+      within(firstPaneTabs).getByRole("tab", { name: "Chat" }),
+    );
     expect(
       await screen.findByRole("button", {
-        name: 'Jump to the passage "very effective"',
+        name: 'Jump to the passage "editor pane"',
       }),
     ).toBeVisible();
     first.unmount();
 
     const reloadFetch = feedbackFetch();
     renderLive(noopEmit, reloadFetch as unknown as typeof fetch);
+    const paneTabs = screen.getByRole("tablist", { name: "Co-work panes" });
+    const editorTab = within(paneTabs).getByRole("tab", { name: "Editor" });
+    const chatTab = within(paneTabs).getByRole("tab", { name: "Chat" });
+    await userEvent.click(chatTab);
+    const jump = await screen.findByRole("button", {
+      name: 'Jump to the passage "editor pane"',
+    });
+    expect(jump).toBeVisible();
+    expect(chatTab).toHaveAttribute("aria-selected", "true");
+    const framesBeforeJump = frameSpy.mock.calls.length;
+    await userEvent.click(jump);
+    await waitFor(() => expect(editorTab).toHaveAttribute("aria-selected", "true"));
+    await waitFor(() => expect(editorTab).toHaveFocus());
+    expect(screen.getByText("That passage could not be found.")).toBeInTheDocument();
     expect(
-      await screen.findByRole("button", {
-        name: 'Jump to the passage "very effective"',
-      }),
-    ).toBeVisible();
+      document.querySelector('[data-wb-anchor-id="feedback:feedback-span-1"]'),
+    ).toBeNull();
+    expect(frameSpy.mock.calls.length).toBeGreaterThan(framesBeforeJump);
     expect(
       reloadFetch.mock.calls.filter(
         ([input, init]) =>
@@ -1788,12 +1825,12 @@ describe("CoworkWorkspaceWidget live mode", () => {
     });
     await user.click(screen.getByText("Name the review rail."));
     await user.click(screen.getByRole("button", { name: "Accept" }));
-    expect(screen.getByText("Selected: Accept")).toBeVisible();
+    expect(screen.getByText("Decision: Accept")).toBeVisible();
 
     await user.click(editorTab);
     expect(editorTab).toHaveAttribute("aria-selected", "true");
     await user.click(reviewTab);
-    expect(screen.getByText("Selected: Accept")).toBeVisible();
+    expect(screen.getByText("Decision: Accept")).toBeVisible();
 
     reviewTab.focus();
     await user.keyboard("{End}");

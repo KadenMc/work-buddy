@@ -17,7 +17,7 @@ parameters:
     required: true
   hunks:
     type: list
-    description: "One or more edits, each a mapping of {quote_anchor:{exact,prefix,suffix}, replacement, node_id_hint?}. The quote anchor is resolved by the kernel anchor resolver, never by node id."
+    description: "One or more edits, each a mapping of {quote_anchor:{exact,prefix,suffix}, replacement, node_id_hint?}. Set replacement to the empty string to delete the anchored text. Missing, non-string, and whitespace-only replacements are invalid; meaningful leading and trailing whitespace on a nonempty replacement is preserved. The quote anchor is resolved by the kernel anchor resolver, never by node id."
     required: true
   rationale:
     type: str
@@ -37,7 +37,7 @@ parameters:
     required: false
   claim_refs:
     type: list
-    description: "Optional. A list of {claim, role} where claim is a local claim id or a wb-truth URI and role is one of quote, paraphrase, summary, or instantiation, defaulting to instantiation. Accepting mints one expression per ref carrying that ref's role."
+    description: "Optional for non-deletion edits. A list of {claim, role} where claim is a local claim id or a wb-truth URI and role is one of quote, paraphrase, summary, or instantiation, defaulting to instantiation. Accepting mints one expression per ref carrying that ref's role. A batch containing a deletion cannot carry claim refs because deleted text leaves no passage to express them."
     required: false
   meta:
     type: dict
@@ -81,3 +81,7 @@ together. The capability verifies that the conversation is the real binding for
 this store and document, then holds that exact live lease while the proposal is
 created. Other callers may omit the complete tuple. Partial or mismatched tuples
 are rejected.
+
+`replacement: ""` is the explicit tracked-deletion contract. It remains an edit
+through proposal retrieval, review, and acceptance; `replacement: null` is
+reserved for flags created through `cowork_doc_comment`.

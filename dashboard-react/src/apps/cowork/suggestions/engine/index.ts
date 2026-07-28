@@ -7,7 +7,7 @@
  * 1. Import specifiers. Bare prosemirror-* imports rewritten to @tiptap/pm/* subpaths
  *    and relative .js extensions dropped for the dashboard-react bundler resolution.
  * 2. getSuggestionMarks re-exported from ./utils, so the adapter can resolve the three
- *    live suggestion mark types from a schema through the vendored barrel.
+ *    compatibility suggestion mark types from an isolated transform schema.
  */
 
 export {

@@ -8,24 +8,22 @@ import {
 } from "./marks";
 
 /**
- * The registration seam the editor bundle consumes at the join (owned here so
- * src/apps/cowork/editor/** stays untouched, C1 build note). The join spreads these
- * extensions into the editor set and swaps StarterKit's code_block for CoworkCodeBlock
- * (StarterKit codeBlock: false) so the code-block schema admits suggestion marks.
+ * Compatibility schema retained for isolated transform tests and fail-closed recovery of
+ * legacy documents. Live pending proposals render through CoworkLedgerDecorations and
+ * never mint these marks in the collaborative Y.Doc.
  *
- * The suggestion marks are editor-runtime schema, NOT Markdown schema, so they are added
- * to the editor extensions only and never to the DOM-free MarkdownManager. They carry no
- * serializer, and accept / reject resolves them before materialization.
+ * These marks are never part of Markdown serialization. Their presence in canonical
+ * state is treated as contamination by explicit Save and sitting preparation.
  */
 
-/** The three live suggestion marks, for a schema that must resolve getSuggestionMarks. */
+/** The three compatibility suggestion marks used by isolated engine transforms. */
 export const buildSuggestionSchemaExtensions = (): AnyExtension[] => [
   SuggestionInsertion,
   SuggestionDeletion,
   SuggestionModification,
 ];
 
-/** The full suggestion extension set: the three marks plus the decoration plugin. */
+/** The compatibility transform extension set: three marks plus the engine plugin. */
 export const buildSuggestionExtensions = (): AnyExtension[] => [
   ...buildSuggestionSchemaExtensions(),
   CoworkSuggestChanges,
@@ -50,11 +48,6 @@ export {
   suggestAtomInsertion,
 } from "./atomTracking";
 export type { AtomSuggestionKind, AtomSuggestionSpec } from "./atomTracking";
-export {
-  WbTrackedChangesAdapterImpl,
-  createWbTrackedChangesAdapter,
-} from "./adapter";
-export type { WbTrackedChangesAdapterOptions } from "./adapter";
 export { resolveQuoteAnchor, buildTextIndex } from "./anchor";
 export { readSuggestionAttrs, stampAttribution } from "./attribution";
 export {
@@ -83,5 +76,4 @@ export type {
   SittingResultKind,
   SittingVerb,
   WbSuggestionAttrs,
-  WbTrackedChangesAdapter,
 } from "./types";

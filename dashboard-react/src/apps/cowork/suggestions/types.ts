@@ -26,7 +26,7 @@ export interface WbSuggestionAttrs {
   epistemic: EpistemicState;
 }
 
-/** One ledger proposal as delivered by R2 doc-get, the ingestion input. */
+/** One ledger proposal as delivered by R2 doc-get. */
 export interface ProposalInput {
   proposal_id: string;
   kind: "edit" | "flag";
@@ -84,17 +84,22 @@ export interface AdapterEvents {
 }
 
 export interface WbTrackedChangesAdapter {
-  /** Bind to a mounted editor. Import and ingest run with engine tracking OFF (SP-1). */
+  /** Bind only to an isolated compatibility editor; never to the live collaborative one. */
   attach(editor: Editor): void;
   detach(): void;
 
   /**
-   * Project a ledger proposal into the LOCAL, ephemeral suggestion layer. Resolves
-   * quoteAnchor to (from,to), builds a replace tr, runs transformToSuggestionTransaction
-   * with generateId = () => proposal_id, and dispatches under the apply-origin tag. Never
-   * pushed to the server Y.Doc (surface section 1.4).
+   * Isolated-engine helper retained for suggestion transform tests and migration recovery.
+   * It mutates its bound document and MUST NOT be attached to the live collaborative Y.Doc.
+   * Production proposal rendering uses CoworkLedgerDecorations instead.
    */
   ingestProposal(p: ProposalInput): { anchored: boolean };
+
+  /**
+   * Retract an ephemeral projection that is no longer present in the authoritative
+   * R2 open-proposal set. This restores pre-proposal content without deciding it.
+   */
+  retractProposalProjection(proposal_id: string): void;
 
   /**
    * Re-anchor-by-quote fallback: on drift, relocate by quote plus context. If the anchor
@@ -115,7 +120,7 @@ export interface WbTrackedChangesAdapter {
   /** Walk open suggestion groups by id. Display re-derives from the ledger. */
   listOpen(): string[];
 
-  /** Apply an engine-accepted content change as an apply-origin foreign update (SP-2 6). */
+  /** Isolated transform/migration helper. Never apply to the live collaborative Y.Doc. */
   applyServerUpdate(update: Uint8Array): void;
 
   on<K extends keyof AdapterEvents>(ev: K, cb: (p: AdapterEvents[K]) => void): () => void;

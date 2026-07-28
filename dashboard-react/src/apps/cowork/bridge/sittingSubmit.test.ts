@@ -87,13 +87,12 @@ const workspace = (events: string[]): CoworkSittingWorkspace => ({
         rendered_markdown: "# committed\n",
         rendered_sha256: "m".repeat(64),
       },
-      adopt: () => events.push("adopted"),
       dispose: () => events.push("disposed"),
     };
   },
   isCurrent: () => true,
-  refreshFromServer: async () => {
-    events.push("refreshed");
+  refreshFromServer: async (response, generation) => {
+    events.push(`refreshed:${response.intent_id}:${generation}`);
   },
 });
 
@@ -127,14 +126,14 @@ describe("submitCoworkSitting two-phase choreography", () => {
     expect(events).toEqual([
       "prepared:accepted",
       "server-committed",
-      "adopted",
+      "refreshed:intent-1:4",
       "disposed",
     ]);
     expect(result.partial).toBe(true);
     expect(result.results[1]?.result).toBe("rejected_stale_view");
   });
 
-  it("does not adopt on commit failure and preserves a stable retry key", async () => {
+  it("does not refresh on commit failure and preserves a stable retry key", async () => {
     const events: string[] = [];
     const keys: string[] = [];
     const item = toDecisionItem(staged("p1"));
@@ -180,7 +179,7 @@ describe("submitCoworkSitting two-phase choreography", () => {
       transport,
       idempotencyKeyFor: () => "stable-key",
     });
-    expect(events).toEqual(["refreshed"]);
+    expect(events).toEqual(["refreshed:intent-1:4"]);
     expect(transport.commit).not.toHaveBeenCalled();
   });
 

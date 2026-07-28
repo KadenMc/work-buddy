@@ -119,7 +119,7 @@ export function ProposalCard({
 
       {staged !== undefined ? (
         <p className="wb-cowork-rail__card-badge is-staged" role="status">
-          Selected: {PROPOSAL_VERB_LABEL[staged.verb]}
+          Decision: {PROPOSAL_VERB_LABEL[staged.verb]}
         </p>
       ) : null}
     </li>

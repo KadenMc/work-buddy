@@ -313,6 +313,51 @@ def test_propose_edit_opens_a_proposal_and_emits(cowork: dict[str, object]) -> N
     assert cowork["emitted"][-1][1]["data"]["kind"] == "edit"
 
 
+def test_propose_edit_opens_deletion_as_an_edit(cowork: dict[str, object]) -> None:
+    store_id = str(cowork["store_id"])
+    doc_id, _ = _register_doc(cowork["store"])
+
+    result = cowork_ops.cowork_doc_propose_edit(
+        store_id,
+        doc_id,
+        _one_hunk(""),
+        "This sentence should be removed.",
+        "Remove the sentence",
+        MODEL,
+        agent_session_id=SESSION_ID,
+    )
+
+    assert result["created_count"] == 1
+    assert result["proposals"][0]["replacement"] == ""
+    open_proposal = cowork_ops.cowork_doc_get(store_id, doc_id)["open_proposals"][0]
+    assert open_proposal["kind"] == "edit"
+    assert open_proposal["replacement"] == ""
+    assert cowork["emitted"][-1][1]["data"]["kind"] == "edit"
+
+
+def test_propose_edit_preserves_meaningful_edge_whitespace(
+    cowork: dict[str, object],
+) -> None:
+    store_id = str(cowork["store_id"])
+    doc_id, _ = _register_doc(cowork["store"])
+    replacement = " \nRevised sentence.\n "
+
+    result = cowork_ops.cowork_doc_propose_edit(
+        store_id,
+        doc_id,
+        _one_hunk(replacement),
+        "Preserve intentional spacing.",
+        "Revise with spacing",
+        MODEL,
+        agent_session_id=SESSION_ID,
+    )
+
+    assert result["proposals"][0]["replacement"] == replacement
+    assert proposals.open_proposals(
+        cowork["store"], document_id=doc_id
+    )[0].replacement == replacement
+
+
 def test_propose_edit_defaults_base_to_current_content(cowork: dict[str, object]) -> None:
     store_id = str(cowork["store_id"])
     doc_id, content_sha = _register_doc(cowork["store"])
@@ -500,9 +545,29 @@ def test_propose_edit_validates_hunks_and_anchor(cowork: dict[str, object]) -> N
         cowork_ops.cowork_doc_propose_edit(
             store_id, doc_id, [], "r", "t", MODEL, agent_session_id=SESSION_ID
         )
-    with pytest.raises(InvariantViolation, match="nonempty replacement"):
+    with pytest.raises(InvariantViolation, match="replacement must be a string"):
         cowork_ops.cowork_doc_propose_edit(
             store_id, doc_id, [{"quote_anchor": {"exact": QUOTE}}], "r", "t", MODEL,
+            agent_session_id=SESSION_ID,
+        )
+    with pytest.raises(InvariantViolation, match="replacement must be a string"):
+        cowork_ops.cowork_doc_propose_edit(
+            store_id,
+            doc_id,
+            [{"quote_anchor": {"exact": QUOTE}, "replacement": 42}],
+            "r",
+            "t",
+            MODEL,
+            agent_session_id=SESSION_ID,
+        )
+    with pytest.raises(InvariantViolation, match="whitespace-only"):
+        cowork_ops.cowork_doc_propose_edit(
+            store_id,
+            doc_id,
+            [{"quote_anchor": {"exact": QUOTE}, "replacement": " \n\t"}],
+            "r",
+            "t",
+            MODEL,
             agent_session_id=SESSION_ID,
         )
     with pytest.raises(InvariantViolation, match="exact quote"):
@@ -511,7 +576,39 @@ def test_propose_edit_validates_hunks_and_anchor(cowork: dict[str, object]) -> N
             "r", "t", MODEL, agent_session_id=SESSION_ID,
         )
 
-    with pytest.raises(InvariantViolation, match="nonempty replacement"):
+    with pytest.raises(InvariantViolation, match="whitespace-only"):
+        cowork_ops.cowork_doc_propose_edit(
+            store_id,
+            doc_id,
+            [
+                {
+                    "quote_anchor": {"exact": QUOTE},
+                    "replacement": "Valid first replacement",
+                },
+                {
+                    "quote_anchor": {"exact": QUOTE},
+                    "replacement": "   ",
+                },
+            ],
+            "must be atomic",
+            "no partial proposal",
+            MODEL,
+            agent_session_id=SESSION_ID,
+        )
+    assert proposals.open_proposals(cowork["store"], document_id=doc_id) == ()
+
+
+def test_propose_edit_rejects_claim_refs_on_deletion_atomically(
+    cowork: dict[str, object],
+) -> None:
+    store_id = str(cowork["store_id"])
+    doc_id, _ = _register_doc(cowork["store"])
+    claim = _seed_claim(cowork["store"])
+
+    with pytest.raises(
+        InvariantViolation,
+        match="deletion proposals cannot carry claim_refs",
+    ):
         cowork_ops.cowork_doc_propose_edit(
             store_id,
             doc_id,
@@ -528,8 +625,10 @@ def test_propose_edit_validates_hunks_and_anchor(cowork: dict[str, object]) -> N
             "must be atomic",
             "no partial proposal",
             MODEL,
+            claim_refs=[{"claim": claim.id, "role": "summary"}],
             agent_session_id=SESSION_ID,
         )
+
     assert proposals.open_proposals(cowork["store"], document_id=doc_id) == ()
 
 
@@ -627,6 +726,8 @@ def test_expression_mark_mints_expression_with_role(cowork: dict[str, object]) -
     )
     assert result["ok"] is True
     assert result["expression"]["role"] == "paraphrase"
+    assert result["document_span"]["author_kind"] == "unknown"
+    assert result["document_span"]["author_ref"] is None
 
     store = cowork["registry"].open_store(store_id)
     expr_rows = expressions.expressions_for_document(store, doc_id)

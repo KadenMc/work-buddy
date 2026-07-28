@@ -11,7 +11,7 @@ import { useEffect } from "react";
 import { ClaimCard } from "./ClaimCard";
 import { ProposalCard } from "./ProposalCard";
 import type { StagedClaimDecision, StagedDecision } from "./contracts";
-import { groupOf, type RailItem } from "./items";
+import { groupOf, railItemKey, type RailItem } from "./items";
 import type { RailSelectionKind } from "./store";
 
 /** The queue navigation binding. Defaults to j previous, k next (inverted). */
@@ -29,9 +29,11 @@ export interface QueueViewProps {
   readonly claimDecisions: Readonly<Record<string, StagedClaimDecision>>;
   readonly inspectSpanByClaim: ReadonlyMap<string, string>;
   readonly bindings?: QueueBindings;
+  /** Whether this visible Review surface may handle its window-level shortcuts. */
+  readonly keyboardNavigationEnabled?: boolean;
   onNavigate(delta: number): void;
   onSelect(id: string, kind: RailSelectionKind): void;
-  onScrollToAnchor?(id: string): void;
+  onScrollToAnchor?(id: string, kind: RailSelectionKind): void;
   onInspect(spanId: string): void;
 }
 
@@ -52,12 +54,16 @@ function itemLabel(item: RailItem): string {
       ? "Flag"
       : item.proposal.changeType === "deletion"
         ? "Deletion"
-        : "Insertion";
+        : item.proposal.changeType === "modification"
+          ? "Modification"
+          : "Insertion";
   return `${noun}, ${item.proposal.tldr}`;
 }
 
 export function QueueView(props: QueueViewProps) {
   const bindings = props.bindings ?? DEFAULT_QUEUE_BINDINGS;
+  const keyboardNavigationEnabled =
+    props.keyboardNavigationEnabled ?? true;
   const total = props.items.length;
   const clampedIndex = Math.min(props.index, Math.max(0, total - 1));
   const focused = props.items[clampedIndex];
@@ -66,6 +72,7 @@ export function QueueView(props: QueueViewProps) {
   ).length;
 
   useEffect(() => {
+    if (!keyboardNavigationEnabled) return undefined;
     const handler = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       const tag = target?.tagName;
@@ -84,7 +91,12 @@ export function QueueView(props: QueueViewProps) {
     return () => {
       window.removeEventListener("keydown", handler);
     };
-  }, [bindings.prev, bindings.next, props]);
+  }, [
+    bindings.prev,
+    bindings.next,
+    keyboardNavigationEnabled,
+    props.onNavigate,
+  ]);
 
   if (focused === undefined) {
     return (
@@ -97,7 +109,7 @@ export function QueueView(props: QueueViewProps) {
   const scrollTo =
     props.onScrollToAnchor === undefined
       ? undefined
-      : () => props.onScrollToAnchor?.(focused.id);
+      : () => props.onScrollToAnchor?.(focused.id, focused.kind);
 
   return (
     <div className="wb-cowork-rail__queue">
@@ -117,7 +129,7 @@ export function QueueView(props: QueueViewProps) {
         >
           {props.items.map((item, position) => (
             <li
-              key={item.id}
+              key={railItemKey(item)}
               className="wb-cowork-rail__progress-seg"
               data-state={
                 position === clampedIndex
@@ -179,7 +191,7 @@ export function QueueView(props: QueueViewProps) {
               props.claimDecisions,
             );
             return (
-              <li key={item.id}>
+              <li key={railItemKey(item)}>
                 <button
                   type="button"
                   className="wb-cowork-rail__allitems-row"

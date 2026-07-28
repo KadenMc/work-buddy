@@ -29,6 +29,12 @@ dev_notes: |
   A document conversation ID is opaque and server-issued. GET binding inspection is read-only; only explicit Chat activation, feedback submission, or a routing decision may create the binding and ensure its driver. The driver receives durable user turns through a generation-scoped lease/cursor inbox and acknowledges each message only after handling it. Driver writes, questions, proposals, and comments carry the same generation fence so a stopped, restarted, or retired generation cannot mutate the document.
 
   Document lifecycle operations span the folder's Truth/Ydoc databases and the house conversations database. They therefore acquire the cross-process per-store-and-document lifecycle lock before either side: start, feedback, and sitting routing hold it from active-state validation through their conversation effects, while retirement holds it through Truth commit and conversation close/lease revocation. Keep database work in the order lifecycle lock → Truth/Ydoc → conversations; never introduce the inverse nesting.
+
+  Editor annotations are a runtime-only ProseMirror decoration projection derived from the same R2 document snapshot as the Review rail. They must never enter the schema, Yjs state, Markdown, undo history, or outbound persistence. Proposal and claim anchors are kind-qualified so identical raw IDs cannot collide. Review focus changes only the active treatment; rail filters never remove the underlying editor annotations. Chat passage highlighting is also view state and must preserve the editor selection and the user's current focus.
+
+  Origin filtering is not persistence isolation: a later human Yjs update can causally depend on an earlier filtered struct. Never project a pending proposal into the live collaborative Y.Doc, even under a non-human origin. Sitting materialization starts from a clean clone of the canonical structured head, joins admitted decisions to the authoritative proposal catalog by ID and canonical hash, resolves every materializing anchor against that initial clone, rejects missing, mismatched, unresolved, duplicate, or overlapping edits, and applies confirmed changes in reverse document order. Explicit Save fails closed if tracked-suggestion schema artifacts somehow appear in the live document.
+
+  Successful and response-recovery sitting paths do not adopt the prepared clone directly. They pull the authoritative committed state, verify its structured head, advance the current Markdown file hash, and then refresh the review projection. The canonical-state guard runs before preparation and after the server refresh. If a human edit advances the local generation while the sitting is in flight, the new file baseline is retained but the editor remains unsaved rather than falsely claiming to be current.
 ---
 
 # Co-work
@@ -210,6 +216,10 @@ feedback notes contain identical text. If agent startup fails after persistence,
 the feedback remains visible and the user can explicitly restart Chat; the
 dashboard does not claim that the authored feedback failed or silently retry it.
 
+**Jump to passage** reveals the editor on a narrow screen, scrolls the anchored
+quote into view, and briefly highlights it without replacing the editor's
+selection or taking keyboard focus.
+
 The document agent consumes a durable, ordered inbox and acknowledges a user
 turn only after processing it. Restarting creates a new generation and fences
 the old one from sending messages, asking questions, proposing edits, or adding
@@ -236,9 +246,31 @@ open proposal, never a decision. Accept, amend, reject, redirect, endorse, and
 defer are human gestures collected on the dashboard, because an agent cannot
 approve its own content.
 
+A proposal with `replacement: ""` is an explicit tracked deletion of its exact
+anchor. A flag keeps `replacement: null` and raises a concern without changing
+text; agents must not use flags as a deletion workaround. Nonempty replacements
+preserve their meaningful edge whitespace. Deletions cannot carry claim
+references, because accepted deletion leaves no passage from which to mint an
+expression.
+
+The editor keeps every unresolved review annotation visible independently of
+the active Review filter. These are view-only decorations, not hidden edits to
+the document. Insertions and replacements show their proposed text beside the
+anchored original; deletions show the original as translucent danger text with
+a strikethrough. Flags, expressions or claims, and confirmed agent provenance
+have distinct visual and non-colour treatments, and a flag remains a warning
+underline rather than looking like removed text. Selecting a Review card or
+moving through Queue scrolls to and strongly emphasizes only its
+kind-qualified anchor. An explicit passage affordance also flashes that anchor.
+
 The review rail groups proposals into a sitting so the user can decide them in
-context. The document's Markdown file is written through the materialization
-engine, never directly by an agent, and the claims a document expresses live in
-the folder's scoped Truth ledger through expression links. Internally, the
-engine still uses terms such as scope root, store ID, and Truth store; the
-dashboard consistently calls the thing the user selected a **folder**.
+context. Accepting or amending a proposal applies only the admitted,
+hash-matched proposal payload to an isolated clone of the canonical structured
+document before that sitting is committed; unresolved review display never
+mutates the live collaborative document. Explicit **Save** also refuses to
+compact a live document containing tracked-suggestion artifacts. The document's
+Markdown file is written through the materialization engine, never directly by
+an agent, and the claims a document expresses live in the folder's scoped Truth
+ledger through expression links. Internally, the engine still uses terms such
+as scope root, store ID, and Truth store; the dashboard consistently calls the
+thing the user selected a **folder**.

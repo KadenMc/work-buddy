@@ -7,6 +7,7 @@ hydration responsibility and must never be fabricated here.
 
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import dataclass
 from typing import Any
 
@@ -54,10 +55,11 @@ def classify_document(
     *,
     read_only: bool = False,
     semantic_corrupt: bool = False,
+    conn: sqlite3.Connection | None = None,
 ) -> DocumentReadiness:
     """Classify one document without writing files, rows, or runtime state."""
 
-    lifecycle = documents.current_lifecycle(store, document.id)
+    lifecycle = documents.current_lifecycle(store, document.id, conn=conn)
     projection_available = _projection_blob_available(
         store, document.content_sha256
     )

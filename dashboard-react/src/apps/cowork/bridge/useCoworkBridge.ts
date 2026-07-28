@@ -1,15 +1,15 @@
 /**
  * The wiring hook the Co-work surface uses in live mode. It assembles the whole live bridge
- * once per (documentId, storeId): a shared Y.Doc, the tracked-change adapter bound to it, the
- * Yjs transport, the R2 doc client, the live review provider, the ingestor, the anchor-rect
- * source, and the sitting transport. The rail and the editor then share ONE adapter and ONE
- * pull, so cards and marks stay in agreement.
+ * once per (documentId, storeId): a canonical Y.Doc, the Yjs transport, the R2 doc client,
+ * the live review provider, the view-only decoration projector, the anchor-rect source, and
+ * the sitting transport. The rail and editor consume ONE pull, so cards and decorations stay
+ * in agreement without proposal structs entering the collaborative document.
  *
  * Data flow. The review provider's single R2 pull feeds the rail cards (its load return) and
- * the editor marks (its onProposals emission, consumed by the ingestor) and the health strip
- * (its onData emission). The editor mounts through CoworkBridgeEditor and reports its ready
- * context up (onReady), which attaches the ingestor to the adapter, records the DOM root for
- * the anchor measurements, and re-ingests whatever the pull already delivered.
+ * the editor decorations and health strip (its onData emission), while its ProposalInput
+ * channel is retained as the authoritative sitting catalog. The editor mounts through
+ * CoworkBridgeEditor and reports its ready context up so the projector and geometry source
+ * can attach.
  *
  * Every transport is injectable so the whole bridge is testable with in-memory doubles, and
  * defaults to the same-origin HTTP realizations for the live surface.
@@ -32,8 +32,7 @@ import {
   HttpCoworkSittingTransport,
   type CoworkSittingTransport,
 } from "../suggestions/sitting";
-import { createWbTrackedChangesAdapter } from "../suggestions/adapter";
-import { resolveQuoteAnchor } from "../suggestions/anchor";
+import type { ProposalInput } from "../suggestions/types";
 import type {
   FeedbackCapture,
   RoutingDeliveryInput,
@@ -47,8 +46,9 @@ import {
   HttpCoworkDocClient,
   type CoworkDocClient,
 } from "./HttpCoworkDocClient";
+import { CoworkPassageHighlighter } from "./CoworkPassageHighlighter";
 import { LiveReviewRailProvider } from "./LiveReviewRailProvider";
-import { ProposalIngestor } from "./proposalIngestor";
+import { LedgerDecorationProjector } from "./ledgerDecorationProjector";
 import type { CoworkEditorReadyContext } from "./CoworkBridgeEditor";
 import type { CoworkSittingWorkspace } from "./sittingWorkspace";
 
@@ -94,7 +94,6 @@ export interface UseCoworkBridgeOptions {
 
 export interface CoworkBridgeEditorMountProps {
   readonly document: Y.Doc;
-  readonly adapter: ReturnType<typeof createWbTrackedChangesAdapter>;
   readonly transport: CoworkYdocTransport;
   readonly seedMarkdown: string;
   readonly onReady: (context: CoworkEditorReadyContext) => void;
@@ -118,7 +117,8 @@ export interface CoworkBridgeEditorMountProps {
   ) => void;
   readonly onMaterialized?: (receipt: CoworkMaterializeReceipt) => void;
   readonly onSittingWorkspace?: (workspace: CoworkSittingWorkspace | null) => void;
-  readonly onSittingProjectionAdopted?: () => void;
+  readonly getProposalCatalog: () => readonly ProposalInput[];
+  readonly onSittingServerRefreshed?: () => void;
 }
 
 export interface CoworkBridge {
@@ -136,7 +136,7 @@ export interface CoworkBridge {
    * because mapping a bare span id to a position needs the expression payload the doc-open
    * pull does not deliver in v1.
    */
-  readonly scrollToSpanAnchor: (target: ScrollAnchorTarget) => void;
+  readonly scrollToSpanAnchor: (target: ScrollAnchorTarget) => boolean;
 }
 
 /** Find the aligned card-list inside the rail region, the anchor-rect coordinate root. */
@@ -177,6 +177,7 @@ export const useCoworkBridge = (
   const railRegionRef = useRef<HTMLElement | null>(null);
   const editorReadyRef = useRef(false);
   const sittingWorkspaceRef = useRef<CoworkSittingWorkspace | null>(null);
+  const proposalCatalogRef = useRef<readonly ProposalInput[]>([]);
   const [health, setHealth] = useState<CoworkLiveHealth | null>(null);
 
   // Kept in a ref so the review provider stays stable per (documentId, storeId) while always
@@ -192,8 +193,10 @@ export const useCoworkBridge = (
 
   const core = useMemo(() => {
     const doc = new Y.Doc();
-    const adapter = createWbTrackedChangesAdapter({ doc });
-    const ingestor = new ProposalIngestor();
+    const ledgerProjector = new LedgerDecorationProjector();
+    const passageHighlighter = new CoworkPassageHighlighter({
+      getEditor: () => editorRef.current,
+    });
 
     const resolvedDocClient =
       docClient ?? new HttpCoworkDocClient({ documentId, storeId });
@@ -213,14 +216,14 @@ export const useCoworkBridge = (
 
     const anchorRects = new DomAnchorRectSource({
       getEditorRoot: () => editorDomRef.current,
+      getEditor: () => editorRef.current,
       getRailRoot: () => resolveRailRoot(railRegionRef.current),
-      adapter,
     });
 
     return {
       doc,
-      adapter,
-      ingestor,
+      ledgerProjector,
+      passageHighlighter,
       reviewProvider,
       anchorRects,
       ydocTransport: resolvedYdocTransport,
@@ -230,15 +233,20 @@ export const useCoworkBridge = (
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [documentId, storeId]);
 
-  // Drive ingestion and the health strip from the provider's single pull.
+  // Drive the view-only editor projection, sitting catalog, and health strip
+  // from the provider's single authoritative pull.
   useEffect(() => {
+    proposalCatalogRef.current = [];
     const stopProposals = core.reviewProvider.onProposals((proposals) => {
-      core.ingestor.setProposals(proposals);
+      proposalCatalogRef.current = proposals;
     });
     const stopData = core.reviewProvider.onData((data: ReviewRailData) => {
       setHealth({ title: data.title, drift: data.drift });
+      core.ledgerProjector.setData(data);
+      core.anchorRects.refresh();
     });
     return () => {
+      proposalCatalogRef.current = [];
       stopProposals();
       stopData();
     };
@@ -246,7 +254,8 @@ export const useCoworkBridge = (
 
   useEffect(
     () => () => {
-      core.ingestor.detach();
+      core.ledgerProjector.detach();
+      core.passageHighlighter.dispose();
       // The editor and rail unsubscribe during the same unmount. Defer final destruction so
       // their cleanups can detach observers from an intact document first.
       queueMicrotask(() => core.doc.destroy());
@@ -257,20 +266,22 @@ export const useCoworkBridge = (
   const editorProps = useMemo<CoworkBridgeEditorMountProps>(
     () => ({
       document: core.doc,
-      adapter: core.adapter,
       transport: core.ydocTransport,
       seedMarkdown,
       onReady: ({ editor, dom }) => {
         editorRef.current = editor;
         editorDomRef.current = dom;
         editorReadyRef.current = true;
-        core.ingestor.attach(core.adapter);
+        core.ledgerProjector.attach(editor);
+        core.anchorRects.attachEditor(editor);
       },
       onTeardown: () => {
+        core.passageHighlighter.clear();
+        core.anchorRects.detachEditor();
         editorReadyRef.current = false;
         editorRef.current = null;
         editorDomRef.current = null;
-        core.ingestor.detach();
+        core.ledgerProjector.detach();
       },
       documentId,
       storeId,
@@ -292,8 +303,9 @@ export const useCoworkBridge = (
       onSittingWorkspace: (workspace) => {
         sittingWorkspaceRef.current = workspace;
       },
-      onSittingProjectionAdopted: () => {
-        core.ingestor.resetProjection();
+      getProposalCatalog: () => proposalCatalogRef.current,
+      onSittingServerRefreshed: () => {
+        core.ledgerProjector.clear();
       },
     }),
     [
@@ -323,19 +335,9 @@ export const useCoworkBridge = (
 
   const scrollToSpanAnchor = useMemo(
     () =>
-      (target: ScrollAnchorTarget): void => {
-        const editor = editorRef.current;
-        const anchor = target.anchor;
-        if (editor === null || anchor === undefined) return;
-        const range = resolveQuoteAnchor(editor.state.doc, {
-          exact: anchor.exact,
-          prefix: anchor.prefix ?? "",
-          suffix: anchor.suffix ?? "",
-        });
-        if (range === null) return;
-        editor.chain().setTextSelection(range).scrollIntoView().run();
-      },
-    [],
+      (target: ScrollAnchorTarget): boolean =>
+        core.passageHighlighter.show(target),
+    [core],
   );
 
   return {

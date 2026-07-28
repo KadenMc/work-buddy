@@ -1189,8 +1189,8 @@ test.describe.serial("Co-work live lifecycle", () => {
     });
     await expect(proposal).toBeVisible({ timeout: 30_000 });
     // Give proposal projection and persistence scheduling a bounded quiet window. Merely
-    // displaying tracked-change marks must not create a durable Y.Doc write or advance the
-    // server head: only a human edit may enter the outbox before sitting commit.
+    // displaying view-only decorations must not create a durable Y.Doc write or advance
+    // the server head: only a human edit may enter the outbox before sitting commit.
     await page.waitForTimeout(1_500);
     const outboxKey = `${ordinaryStoreId}:${importedDocumentId}`;
     const proposalOpenOutbox = await readBrowserOutbox(page, outboxKey);
@@ -1236,7 +1236,7 @@ test.describe.serial("Co-work live lifecycle", () => {
     canonical.destroy();
     await proposal.locator(".wb-cowork-rail__card-select").click();
     await page.getByRole("button", { name: "Accept", exact: true }).click();
-    await expect(proposal).toContainText("Selected: Accept");
+    await expect(proposal).toContainText("Decision: Accept");
     await page.getByRole("button", { name: "Apply decisions (1)" }).click();
     await expect
       .poll(

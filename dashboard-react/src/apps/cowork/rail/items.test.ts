@@ -2,12 +2,26 @@ import { describe, expect, it } from "vitest";
 
 import { demoReviewData } from "./InMemoryReviewProvider";
 import {
+  claimRefMatchesId,
   filterCounts,
   groupOf,
   matchesFilter,
   orderedItems,
   visibleItems,
 } from "./items";
+
+describe("claimRefMatchesId", () => {
+  it("matches local and canonical URI refs without accepting substrings", () => {
+    expect(claimRefMatchesId("claim-1", "claim-1")).toBe(true);
+    expect(
+      claimRefMatchesId("wb-truth://store/claim/claim-1", "claim-1"),
+    ).toBe(true);
+    expect(claimRefMatchesId("not-claim-1", "claim-1")).toBe(false);
+    expect(
+      claimRefMatchesId("wb-truth://store/claim/not-claim-1", "claim-1"),
+    ).toBe(false);
+  });
+});
 
 describe("review item derivation", () => {
   it("orders proposals and claims by document order", () => {

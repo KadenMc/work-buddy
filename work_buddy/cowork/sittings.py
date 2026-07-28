@@ -125,6 +125,19 @@ def _stale_view(proposal_id: str, verb: str, base_ok: bool) -> ItemOutcome:
     return ItemOutcome(result=entry)
 
 
+def _amend_content_error(item: dict[str, Any]) -> str | None:
+    """Validate an amendment while preserving empty-string deletion semantics."""
+    value = item.get("amend_content")
+    if not isinstance(value, str):
+        return "edit_confirm requires amend_content"
+    if value and not value.strip():
+        return (
+            "amend_content cannot be whitespace-only; "
+            "use an empty string for deletion"
+        )
+    return None
+
+
 def _dispatch(
     store: TruthStore,
     proposal: Any,
@@ -344,8 +357,10 @@ def decide_one(
     precheck = _precheck_inputs(proposal, verb)
     if precheck is not None:
         return _error(proposal_id, verb, base_ok, precheck)
-    if verb == "edit_confirm" and not str(item.get("amend_content") or "").strip():
-        return _error(proposal_id, verb, base_ok, "edit_confirm requires amend_content")
+    if verb == "edit_confirm":
+        amend_error = _amend_content_error(item)
+        if amend_error is not None:
+            return _error(proposal_id, verb, base_ok, amend_error)
     if verb == "redirect" and not str(item.get("redirect_note") or "").strip():
         return _error(proposal_id, verb, base_ok, "redirect requires redirect_note")
     if verb == "reject_as_false" and not proposal.claim_refs_json and not str(

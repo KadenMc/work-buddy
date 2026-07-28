@@ -87,7 +87,7 @@ describe("ProposalCard", () => {
     renderCard({
       staged: { proposalId: "p1", verb: "confirm", canonicalSha256: "c" },
     });
-    expect(screen.getByText("Selected: Accept")).toBeVisible();
+    expect(screen.getByText("Decision: Accept")).toBeVisible();
   });
 
   it("selects on click and reflects selection with aria-pressed", async () => {

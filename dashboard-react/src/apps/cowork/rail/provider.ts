@@ -13,6 +13,7 @@ import type {
   StagedClaimDecision,
   StagedDecision,
 } from "./contracts";
+import type { RailSelectionKind } from "./store";
 
 /** Tear down a subscription registered through the provider. */
 export type ReviewUnsubscribe = () => void;
@@ -45,23 +46,47 @@ export interface ReviewRailProvider {
   submitSitting(submission: SittingSubmission): Promise<SittingResult>;
 }
 
+/** How an explicit Review affordance should move attention in the editor. */
+export interface AnchorFocusOptions {
+  /** Bring the anchor into view. */
+  readonly scroll?: boolean;
+  /** Briefly flash the anchor in addition to its persistent focused treatment. */
+  readonly flash?: boolean;
+}
+
 /**
  * The anchor-rect seam for the aligned-stream layout. The editor owns the live
  * ProseMirror decorations, so it is the only source that can report where a
- * proposal's anchor currently sits. The rail measures card heights itself and
+ * a review item's anchor currently sits. The rail measures card heights itself and
  * asks this seam for anchor tops, then resolves overlaps outside the React
  * render cycle (audit A12, perf contract). When no source is wired the stream
  * degrades to a document-order list with scroll-to-and-highlight on select.
  */
 export interface AnchorRectSource {
   /**
-   * The top offset and height of a proposal's anchor, in the same coordinate
+   * The top offset and height of a namespace-qualified review anchor, in the same coordinate
    * space as the rail scroll container, or null when the anchor is not
    * currently laid out (off-screen, lost, or the editor is not mounted).
    */
-  anchorRect(proposalId: string): { readonly top: number; readonly height: number } | null;
+  anchorRect(
+    id: string,
+    kind: RailSelectionKind,
+  ): { readonly top: number; readonly height: number } | null;
   /** Bring a proposal's anchor into view and flash it (the degrade path). */
   scrollToAnchor(proposalId: string): void;
+  /**
+   * Persistently emphasize the selected Review target. The kind is part of the
+   * identity: claim ids and proposal ids occupy separate namespaces. Filtering
+   * the rail never removes editor annotations; it can only move or clear this
+   * focused treatment.
+   */
+  focusAnchor(
+    id: string,
+    kind: RailSelectionKind,
+    options?: AnchorFocusOptions,
+  ): void;
+  /** Clear only the focused treatment, never the underlying annotations. */
+  clearFocusedAnchor(): void;
   /**
    * Register a listener fired whenever anchor geometry may have changed (editor
    * scroll, resize, or a decoration rebuild). Returns an unsubscribe.

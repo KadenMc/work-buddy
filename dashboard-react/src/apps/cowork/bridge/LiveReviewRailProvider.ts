@@ -1,14 +1,14 @@
 /**
  * The live ReviewRailProvider. It replaces InMemoryReviewProvider in the surface: load()
- * pulls R2 once, and that single pull feeds BOTH the rail cards (the
- * ReviewRailData it returns) AND the editor marks (the ProposalInput list it emits to the
- * ingestor), so the card set and the mark set are two projections of one array and can never
- * disagree. submitSitting drives the sitting through the adapter and R5 (sittingSubmit.ts).
+ * pulls R2 once, and that authoritative snapshot feeds BOTH the rail cards and the
+ * editor's view-only decoration projection, so the two surfaces cannot disagree.
+ * submitSitting validates admitted decisions, prepares any content change on an isolated
+ * canonical clone, and commits through R5.
  *
  * The rail talks to this only through the frozen ReviewRailProvider seam (load / subscribe /
- * submitSitting). The extra onProposals / onData subscriptions are the bridge's ingestion and
- * health channels, consumed by the surface, not by the rail. A late subscriber immediately
- * receives the last pull, so the editor ingests even when it mounts after the first load.
+ * submitSitting). The extra onProposals / onData subscriptions are the bridge's decoration
+ * and health channels, consumed by the surface, not by the rail. A late subscriber
+ * immediately receives the last pull, so the editor projects it even when mounting later.
  *
  * The SSE nudge (section 1.11) is React-context-bound, so it stays out of this class: the
  * surface listens for the doc-scoped truth.doc_* events and calls invalidate(), which fans
@@ -30,7 +30,7 @@ import { mapR2ToReview } from "./reviewMapping";
 import { submitCoworkSitting } from "./sittingSubmit";
 import type { CoworkSittingWorkspace } from "./sittingWorkspace";
 
-/** Called with the ingestion inputs each time a pull resolves. */
+/** Called with authoritative proposal inputs each time a pull resolves. */
 export type ProposalsListener = (proposals: readonly ProposalInput[]) => void;
 /** Called with the rail data each time a pull resolves (health-strip channel). */
 export type ReviewDataListener = (data: ReviewRailData) => void;
@@ -55,14 +55,32 @@ export class LiveReviewRailProvider implements ReviewRailProvider {
   #lastProposals: readonly ProposalInput[] | null = null;
   #lastData: ReviewRailData | null = null;
   #pendingKey: { readonly fingerprint: string; readonly key: string } | null = null;
+  #loadSequence = 0;
+  #latestLoad: Promise<ReviewRailData> | null = null;
 
   constructor(options: LiveReviewRailProviderOptions) {
     this.#options = options;
   }
 
-  async load(): Promise<ReviewRailData> {
+  load(): Promise<ReviewRailData> {
+    const sequence = ++this.#loadSequence;
+    const pending = this.#performLoad(sequence);
+    this.#latestLoad = pending;
+    return pending;
+  }
+
+  async #performLoad(sequence: number): Promise<ReviewRailData> {
     const payload = await this.#options.docClient.fetchDoc();
     const mapped = mapR2ToReview(payload);
+
+    // Multiple SSE nudges can overlap. A slower, older pull must never publish
+    // either before or after a newer pull. Join the newest in-flight request,
+    // so listeners and every caller observe one authoritative snapshot.
+    if (sequence !== this.#loadSequence) {
+      if (this.#latestLoad !== null) return this.#latestLoad;
+      if (this.#lastData !== null) return this.#lastData;
+    }
+
     this.#lastProposals = mapped.proposalInputs;
     this.#lastData = mapped.railData;
     for (const listener of this.#proposalsListeners) listener(mapped.proposalInputs);
@@ -117,7 +135,7 @@ export class LiveReviewRailProvider implements ReviewRailProvider {
     return key;
   }
 
-  /** The ingestion channel. A late subscriber immediately gets the last pull. */
+  /** The authoritative proposal-catalog channel. A late subscriber gets the last pull. */
   onProposals(listener: ProposalsListener): ReviewUnsubscribe {
     this.#proposalsListeners.add(listener);
     if (this.#lastProposals !== null) listener(this.#lastProposals);

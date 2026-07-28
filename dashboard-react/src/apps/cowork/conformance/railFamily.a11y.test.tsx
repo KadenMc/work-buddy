@@ -206,6 +206,7 @@ describe("CoworkRail family accessibility", () => {
       <StreamView
         items={items}
         selectedId={null}
+        selectedKind={null}
         decisions={{}}
         claimDecisions={{}}
         inspectSpanByClaim={new Map()}

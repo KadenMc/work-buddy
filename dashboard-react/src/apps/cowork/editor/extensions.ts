@@ -17,6 +17,7 @@ import {
   buildSuggestionExtensions,
 } from "../suggestions";
 import { CoworkSlashMenu } from "../menus";
+import { CoworkLedgerDecorations } from "./ledgerDecorations";
 
 /**
  * The Collaboration fragment field is fixed to `default` in the document-surface
@@ -87,9 +88,10 @@ export const buildSchemaExtensions = (): AnyExtension[] => [
  * admits the tracked-change layer, so it swaps StarterKit's code_block and horizontal_rule
  * for the cowork variants that carry suggestion marks and atom-suggestion attrs
  * (CoworkCodeBlock, CoworkHorizontalRule, CoworkImage, SP-1 fork deltas 4 and 5), and
- * spreads the three suggestion marks plus the decoration plugin (buildSuggestionExtensions).
- * The suggestion layer is display-only and never serialized, so it is added here and never
- * to the MarkdownManager (surface build note). On top it binds the single Collaboration
+ * spreads the three suggestion marks plus their compatibility plugin
+ * (buildSuggestionExtensions). Live proposals use the separate runtime-only
+ * CoworkLedgerDecorations layer; the marks remain in the editor schema only for isolated
+ * transformation and legacy recovery, and stay out of the MarkdownManager. On top it binds the single Collaboration
  * binding to the passed local Y.Doc on the `default` fragment (replacing history), the
  * Markdown storage extension (the one Markdown parse/serialize integration point), and
  * UniqueID with the block allowlist and `filterTransaction: (tr) => !isChangeOrigin(tr)` so
@@ -118,6 +120,7 @@ export const buildEditorExtensions = (document: Y.Doc): AnyExtension[] => [
   WbProvenanceTint,
   WbExpressionMark,
   ...buildSuggestionExtensions(),
+  CoworkLedgerDecorations,
   Markdown,
   Collaboration.configure({
     document,

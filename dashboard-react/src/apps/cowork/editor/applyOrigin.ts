@@ -6,15 +6,16 @@ import type { Transaction } from "@tiptap/pm/state";
 /**
  * The dedicated non-undo apply-origin tag (SP-2 load-order point 6, C3 v1 realization).
  *
- * Every mutation of the Y.Doc that is NOT a live human keystroke carries this origin:
- * proposal ingestion (local-only, never persisted), an accepted edit applied as the
- * client's own local transaction, and update batches pulled from the server. Because
- * the Collaboration undo manager only tracks the editor's own origin, an apply-origin
- * mutation stays OUT of the local undo stack, and the ProseMirror transaction it
- * produces reads as `isChangeOrigin(tr) === true`, so UniqueID does not re-mint ids on
- * it. Display state re-derives from the ledger every render, so a stray undo that
- * resurrects a mark self-corrects on the next paint. Never let an accept ride the
- * local undo stack.
+ * Foreign updates applied to the live collaborative Y.Doc, plus mutations made inside
+ * an isolated materialization or migration document, carry this origin. Because the
+ * Collaboration undo manager only tracks the editor's own origin, those mutations stay
+ * OUT of the local undo stack. Their ProseMirror transactions also read as
+ * `isChangeOrigin(tr) === true`, so UniqueID does not re-mint ids on them.
+ *
+ * Origin filtering is not persistence isolation. A later human edit can causally depend
+ * on any prior Yjs mutation even when that prior update was filtered from the outbox.
+ * Pending review items therefore render as ProseMirror decorations and MUST NOT mutate
+ * the live Y.Doc. Accepted decisions materialize only in a clean canonical clone.
  *
  * The constant is a unique frozen object so no other origin can collide with it.
  */
@@ -31,9 +32,10 @@ export const applyForeignUpdate = (doc: Y.Doc, update: Uint8Array): void => {
 };
 
 /**
- * Run a local, ledger-derived mutation (an accepted edit, a projected suggestion) inside
- * one Yjs transaction tagged with the apply-origin origin. This is the v1 accept path
- * (C3): the client mutates its OWN Y.Doc, because the server mints no Yjs bytes.
+ * Run a non-human mutation inside one Yjs transaction tagged with the apply-origin
+ * origin. On Co-work's review path this helper is restricted to isolated materialization
+ * and migration documents. It MUST NOT project pending review items into the live
+ * collaborative Y.Doc.
  */
 export const applyWithOrigin = (doc: Y.Doc, mutate: () => void): void => {
   doc.transact(mutate, COWORK_APPLY_ORIGIN);

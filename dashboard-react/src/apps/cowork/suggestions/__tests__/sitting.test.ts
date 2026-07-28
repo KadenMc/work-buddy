@@ -21,6 +21,12 @@ describe("two-phase Co-work sitting transport", () => {
     expect(() => validateSitting([{ ...decision(), verb: "edit_confirm" }])).toThrow(
       /amend_content/,
     );
+    expect(() =>
+      validateSitting([{ ...decision(), verb: "edit_confirm", amend_content: "" }]),
+    ).not.toThrow();
+    expect(() =>
+      validateSitting([{ ...decision(), verb: "edit_confirm", amend_content: "   " }]),
+    ).toThrow(/whitespace-only/);
     expect(() => validateSitting([{ ...decision(), verb: "redirect" }])).toThrow(
       /redirect_note/,
     );

@@ -10,7 +10,13 @@
 import { ClaimCard } from "./ClaimCard";
 import { ProposalCard } from "./ProposalCard";
 import type { StagedClaimDecision, StagedDecision } from "./contracts";
-import { groupOf, type RailGroup, type RailItem } from "./items";
+import {
+  groupOf,
+  isSelectedItem,
+  railItemKey,
+  type RailGroup,
+  type RailItem,
+} from "./items";
 import type { AnchorRectSource } from "./provider";
 import type { RailSelectionKind } from "./store";
 import { useAlignedStream } from "./useAlignedStream";
@@ -18,6 +24,7 @@ import { useAlignedStream } from "./useAlignedStream";
 export interface StreamViewProps {
   readonly items: readonly RailItem[];
   readonly selectedId: string | null;
+  readonly selectedKind: RailSelectionKind | null;
   readonly decisions: Readonly<Record<string, StagedDecision>>;
   readonly claimDecisions: Readonly<Record<string, StagedClaimDecision>>;
   /** Claim id to inspector span id, for the claim inspect affordance. */
@@ -26,7 +33,7 @@ export interface StreamViewProps {
   readonly grouped: boolean;
   readonly anchorRects?: AnchorRectSource;
   onSelect(id: string, kind: RailSelectionKind): void;
-  onScrollToAnchor?(id: string): void;
+  onScrollToAnchor?(id: string, kind: RailSelectionKind): void;
   onInspect(spanId: string): void;
 }
 
@@ -41,23 +48,27 @@ const GROUP_ORDER: readonly RailGroup[] = ["suggestions", "flags", "claims"];
 export function StreamView(props: StreamViewProps) {
   const controller = useAlignedStream({
     anchorRects: props.anchorRects,
-    ids: props.items.map((item) => item.id),
+    anchors: props.items.map((item) => ({ id: item.id, kind: item.kind })),
   });
 
   const renderCard = (item: RailItem) => {
     const cardRef = controller.aligned
-      ? controller.registerCard(item.id)
+      ? controller.registerCard(item.id, item.kind)
       : undefined;
     const scrollTo =
       props.onScrollToAnchor === undefined
         ? undefined
-        : () => props.onScrollToAnchor?.(item.id);
+        : () => props.onScrollToAnchor?.(item.id, item.kind);
     if (item.kind === "claim") {
       return (
         <ClaimCard
-          key={item.id}
+          key={railItemKey(item)}
           claim={item.claim}
-          selected={props.selectedId === item.id}
+          selected={isSelectedItem(
+            item,
+            props.selectedId,
+            props.selectedKind,
+          )}
           staged={props.claimDecisions[item.id]}
           onSelect={() => props.onSelect(item.id, "claim")}
           inspectSpanId={props.inspectSpanByClaim.get(item.id)}
@@ -69,9 +80,13 @@ export function StreamView(props: StreamViewProps) {
     }
     return (
       <ProposalCard
-        key={item.id}
+        key={railItemKey(item)}
         proposal={item.proposal}
-        selected={props.selectedId === item.id}
+        selected={isSelectedItem(
+          item,
+          props.selectedId,
+          props.selectedKind,
+        )}
         staged={props.decisions[item.id]}
         onSelect={() => props.onSelect(item.id, "proposal")}
         onScrollToAnchor={scrollTo}

@@ -7,7 +7,7 @@
  * persistence, and a dirty sitting arms the route-change guard.
  */
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Inspector } from "./Inspector";
 import { FilterLens } from "./FilterLens";
@@ -21,13 +21,14 @@ import type {
 } from "./contracts";
 import { useDraftPersistence, useUnsavedChangesGuard } from "./dirty";
 import {
+  claimRefMatchesId,
   filterCounts,
-  orderedItems,
+  isSelectedItem,
   visibleItems,
   type RailItem,
 } from "./items";
 import type { AnchorRectSource, ReviewRailProvider } from "./provider";
-import { isDirty, type RailStore } from "./store";
+import { isDirty, type RailSelectionKind, type RailStore } from "./store";
 import { useIsNarrow } from "./useIsNarrow";
 import { useReviewData } from "./useReviewData";
 import { useRailState } from "./useRailState";
@@ -40,6 +41,8 @@ export interface ReviewPanelProps {
   readonly storage?: Storage;
   readonly anchorRects?: AnchorRectSource;
   readonly queueBindings?: QueueBindings;
+  /** Whether Review is currently visible and may handle global shortcuts. */
+  readonly active?: boolean;
   /** Force the grouped narrow fallback. Otherwise a container query decides. */
   readonly narrow?: boolean;
   onSubmitted?(): void;
@@ -51,10 +54,16 @@ export function ReviewPanel(props: ReviewPanelProps) {
   const { data, status, reload } = useReviewData(props.provider);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const pendingRevealRef = useRef<{
+    readonly source: AnchorRectSource;
+    readonly id: string;
+    readonly kind: RailSelectionKind;
+  } | null>(null);
 
   const filter = useRailState(store, (state) => state.filter);
   const mode = useRailState(store, (state) => state.mode);
   const selectedId = useRailState(store, (state) => state.selectedId);
+  const selectedKind = useRailState(store, (state) => state.selectedKind);
   const queueIndex = useRailState(store, (state) => state.queueIndex);
   const decisions = useRailState(store, (state) => state.decisions);
   const claimDecisions = useRailState(store, (state) => state.claimDecisions);
@@ -67,10 +76,6 @@ export function ReviewPanel(props: ReviewPanelProps) {
   useDraftPersistence(store, props.documentId, storage);
   useUnsavedChangesGuard(store, dirty);
 
-  const allItems = useMemo(
-    () => (data === null ? [] : orderedItems(data)),
-    [data],
-  );
   const visible = useMemo(
     () => (data === null ? [] : visibleItems(data, filter)),
     [data, filter],
@@ -79,17 +84,12 @@ export function ReviewPanel(props: ReviewPanelProps) {
     () => (data === null ? { all: 0, suggestions: 0, flags: 0, claims: 0 } : filterCounts(data)),
     [data],
   );
-  const byId = useMemo(() => {
-    const map = new Map<string, RailItem>();
-    for (const item of allItems) map.set(item.id, item);
-    return map;
-  }, [allItems]);
   const spanByClaim = useMemo(() => {
     const map = new Map<string, string>();
     if (data === null) return map;
     for (const claim of data.claims) {
       const expression = data.expressions.find((candidate) =>
-        candidate.claimRef.includes(claim.claimId),
+        claimRefMatchesId(candidate.claimRef, claim.claimId),
       );
       if (expression !== undefined) map.set(claim.claimId, expression.spanId);
     }
@@ -97,6 +97,76 @@ export function ReviewPanel(props: ReviewPanelProps) {
   }, [data]);
 
   const clampedIndex = Math.min(queueIndex, Math.max(0, visible.length - 1));
+  const selectedVisibleItem =
+    selectedId === null || selectedKind === null
+      ? undefined
+      : visible.find((item) =>
+          isSelectedItem(item, selectedId, selectedKind),
+        );
+  const targetItem: RailItem | undefined =
+    mode === "queue" ? visible[clampedIndex] : selectedVisibleItem;
+  const targetId = targetItem?.id ?? null;
+  const targetKind = targetItem?.kind ?? null;
+
+  /*
+   * Selection is a kind-qualified rail concern, but the editor owns its visual
+   * treatment. Keep the focused decoration in sync without ever hiding the
+   * underlying annotations when the card lens changes.
+   */
+  useEffect(() => {
+    const source = props.anchorRects;
+    if (source === undefined) return;
+    if (targetId === null || targetKind === null) {
+      pendingRevealRef.current = null;
+      source.clearFocusedAnchor();
+      return;
+    }
+    const pending = pendingRevealRef.current;
+    const flash =
+      pending?.source === source &&
+      pending.id === targetId &&
+      pending.kind === targetKind;
+    pendingRevealRef.current = null;
+    source.focusAnchor(
+      targetId,
+      targetKind,
+      flash ? { scroll: true, flash: true } : { scroll: true },
+    );
+  }, [props.anchorRects, targetId, targetKind]);
+
+  useEffect(
+    () => () => {
+      props.anchorRects?.clearFocusedAnchor();
+    },
+    [props.anchorRects],
+  );
+
+  /*
+   * Queue focus is itself the selection. In stream mode, a filter or refresh
+   * that removes the selected card clears the stale selection and MarkBar.
+   */
+  useEffect(() => {
+    if (data === null) return;
+    if (targetItem === undefined) {
+      if (selectedId !== null || selectedKind !== null) store.clearSelection();
+      return;
+    }
+    if (
+      mode === "queue" &&
+      !isSelectedItem(targetItem, selectedId, selectedKind)
+    ) {
+      store.select(targetItem.id, targetItem.kind);
+    }
+  }, [
+    data,
+    mode,
+    selectedId,
+    selectedKind,
+    store,
+    targetId,
+    targetKind,
+    targetItem,
+  ]);
 
   const advanceToNextUndecided = useCallback(
     (fromIndex: number) => {
@@ -147,11 +217,31 @@ export function ReviewPanel(props: ReviewPanelProps) {
     [clampedIndex, visible, store],
   );
 
-  const scrollToAnchor = useMemo(() => {
+  const revealAnchor = useMemo(() => {
     const source = props.anchorRects;
     if (source === undefined) return undefined;
-    return (id: string) => source.scrollToAnchor(id);
+    return (id: string, kind: RailSelectionKind) =>
+      source.focusAnchor(id, kind, { scroll: true, flash: true });
   }, [props.anchorRects]);
+
+  const selectAndRevealAnchor = useMemo(() => {
+    const source = props.anchorRects;
+    if (source === undefined) return undefined;
+    return (id: string, kind: RailSelectionKind) => {
+      const current = store.getState();
+      if (current.selectedId === id && current.selectedKind === kind) {
+        source.focusAnchor(id, kind, { scroll: true, flash: true });
+        return;
+      }
+      /*
+       * Select first so the card, MarkBar, and editor target agree. The
+       * selection effect consumes this marker and performs one flashing focus,
+       * instead of immediately replacing the flash with its normal focus.
+       */
+      pendingRevealRef.current = { source, id, kind };
+      store.select(id, kind);
+    };
+  }, [props.anchorRects, store]);
 
   const submit = useCallback(async () => {
     if (data === null || submitting) return;
@@ -201,13 +291,6 @@ export function ReviewPanel(props: ReviewPanelProps) {
       </div>
     );
   }
-
-  const targetItem: RailItem | undefined =
-    mode === "queue"
-      ? visible[clampedIndex]
-      : selectedId !== null
-        ? byId.get(selectedId)
-        : undefined;
 
   const markTarget: MarkBarTarget | undefined =
     targetItem === undefined
@@ -277,13 +360,14 @@ export function ReviewPanel(props: ReviewPanelProps) {
           <StreamView
             items={visible}
             selectedId={selectedId}
+            selectedKind={selectedKind}
             decisions={decisions}
             claimDecisions={claimDecisions}
             inspectSpanByClaim={spanByClaim}
             grouped={narrow}
             anchorRects={props.anchorRects}
             onSelect={(id, kind) => store.select(id, kind)}
-            onScrollToAnchor={scrollToAnchor}
+            onScrollToAnchor={selectAndRevealAnchor}
             onInspect={(spanId) => store.openInspector(spanId)}
           />
         ) : (
@@ -294,9 +378,10 @@ export function ReviewPanel(props: ReviewPanelProps) {
             claimDecisions={claimDecisions}
             inspectSpanByClaim={spanByClaim}
             bindings={props.queueBindings}
+            keyboardNavigationEnabled={props.active ?? true}
             onNavigate={navigate}
             onSelect={(id, kind) => store.select(id, kind)}
-            onScrollToAnchor={scrollToAnchor}
+            onScrollToAnchor={revealAnchor}
             onInspect={(spanId) => store.openInspector(spanId)}
           />
         )}

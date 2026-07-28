@@ -92,11 +92,6 @@ export const routingDeliveriesFrom = (
     ];
   });
 };
-const needsLocalAdoption = (items: readonly DecisionItem[]): boolean =>
-  items.some(
-    (item) => item.verb !== "redirect" && item.verb !== "defer" && item.verb !== "endorse",
-  );
-
 export interface SubmitCoworkSittingParams {
   readonly documentId: string;
   readonly storeId: string;
@@ -109,10 +104,11 @@ export interface SubmitCoworkSittingParams {
 }
 
 /**
- * Prepare against a synchronized head, transform an isolated clone using only server-admitted
- * items, commit it, and adopt it into the live editor only after HTTP 200. A lost response is
- * recoverable by repeating prepare with the same idempotency key; a committed prepare receipt
- * refreshes the live document from the server instead of replaying decisions.
+ * Prepare against a synchronized head, transform an isolated clone using only
+ * server-admitted items, commit it, then pull the authoritative committed state and
+ * advance the editor's persistence heads. A lost response is recoverable by repeating
+ * prepare with the same idempotency key; a committed prepare receipt follows the same
+ * refresh path instead of replaying decisions.
  */
 export const submitCoworkSitting = async (
   params: SubmitCoworkSittingParams,
@@ -143,7 +139,7 @@ export const submitCoworkSitting = async (
   });
 
   if (prepared.state === "committed" && prepared.result !== undefined) {
-    await params.workspace.refreshFromServer();
+    await params.workspace.refreshFromServer(prepared.result, preflight.generation);
     for (const delivery of routingDeliveriesFrom(
       params.submission.proposalDecisions,
       prepared.result,
@@ -158,7 +154,7 @@ export const submitCoworkSitting = async (
     | Awaited<ReturnType<CoworkSittingWorkspace["prepare"]>>
     | null = null;
   try {
-    if (prepared.requires_document_commit || needsLocalAdoption(prepared.admitted_items)) {
+    if (prepared.requires_document_commit) {
       staged = await params.workspace.prepare(prepared.admitted_items, preflight.generation);
     }
     if (!params.workspace.isCurrent(preflight.generation)) {
@@ -180,7 +176,7 @@ export const submitCoworkSitting = async (
     ) {
       throw new Error("The committed Co-work snapshot did not match the prepared document.");
     }
-    staged?.adopt();
+    await params.workspace.refreshFromServer(response, preflight.generation);
     for (const delivery of routingDeliveriesFrom(
       params.submission.proposalDecisions,
       response,

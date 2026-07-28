@@ -1,9 +1,9 @@
 /**
  * The pure R2-to-rail mapper. It is the single source of truth translation the bridge runs
- * once per pull, producing BOTH the rail's ReviewRailData (the margin cards) and the
- * suggestion adapter's ProposalInput list (the editor marks) from the SAME R2 payload, so
- * cards and marks can never disagree (the one-source-of-truth rule). No HTTP, no DOM, no
- * React: a pure function over the frozen R2 shape (section 1.3).
+ * once per pull, producing BOTH the rail's ReviewRailData and the ProposalInput catalog
+ * used by view-only editor decorations and isolated sitting materialization. Both derive
+ * from the SAME R2 payload, so review cards and editor annotations cannot disagree. No
+ * HTTP, DOM, or React: this is a pure function over the frozen R2 shape.
  *
  * The rail carries three display-only fields R2 does not: `changeType` (derived from the
  * quote and replacement so the card can label and colour itself), `anchorLabel` (a short
@@ -33,7 +33,7 @@ import type {
   R2ProvenanceSpan,
 } from "./types";
 
-/** The two projections one pull yields: the rail cards and the editor ingestion inputs. */
+/** The two projections one pull yields: rail cards and the authoritative proposal catalog. */
 export interface MappedReview {
   readonly railData: ReviewRailData;
   readonly proposalInputs: readonly ProposalInput[];
@@ -86,6 +86,12 @@ const mapExpression = (expression: R2Expression): ReviewExpression => ({
   spanId: expression.span_id,
   nodeIdHint: expression.node_id_hint,
   quote: expression.quote,
+  quoteAnchor:
+    expression.quote_anchor ?? {
+      exact: expression.quote,
+      prefix: "",
+      suffix: "",
+    },
   claimRef: expression.claim_ref,
   claimStatus: expression.claim_status,
   claimKind: expression.claim_kind,
@@ -94,6 +100,12 @@ const mapExpression = (expression: R2Expression): ReviewExpression => ({
 const mapProvenanceSpan = (span: R2ProvenanceSpan): ProvenanceSpan => ({
   spanId: span.span_id,
   quote: span.quote,
+  quoteAnchor:
+    span.quote_anchor ?? {
+      exact: span.quote,
+      prefix: "",
+      suffix: "",
+    },
   trustState: span.trust_state as TrustState,
   producer: span.producer === null ? null : mapProducer(span.producer),
   approvalGestureId: span.approval_gesture_id,
@@ -127,7 +139,7 @@ export const mapProposal = (
   };
 };
 
-/** Map one R2 proposal to the suggestion adapter's ingestion input. */
+/** Map one R2 proposal to the shared decoration and sitting-catalog shape. */
 export const mapProposalInput = (proposal: R2Proposal): ProposalInput => ({
   proposal_id: proposal.proposal_id,
   kind: proposal.kind,
@@ -155,8 +167,8 @@ const mapDrift = (payload: R2DocPayload): RailDriftHealth => {
 
 /**
  * The one mapping the bridge runs per pull. It projects the R2 payload into the rail data
- * and the ingestion inputs together, so the card set and the ingested proposal set are
- * derived from one array in one pass. The claims tab stays empty here: R2 carries the
+ * and proposal catalog together, so the card set, decorations, and sitting inputs derive
+ * from one array in one pass. The claims tab stays empty here: R2 carries the
  * expression and provenance read layers but not the full claim-review payloads (proposition,
  * receipts), which ride the kernel claim reads, so a live claims tab is a separate pull the
  * bridge does not perform in v1.

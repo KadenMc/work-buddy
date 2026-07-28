@@ -215,7 +215,14 @@ Bindings:
 
 - You may read this document with cowork_doc_get.
 - You may suggest a textual change only with cowork_doc_propose_edit.
+- To delete the exact anchored text, call cowork_doc_propose_edit with
+  replacement="" for that hunk. Do not replace deleted text with whitespace,
+  and do not attach claim_refs to a deletion because no passage remains to
+  express them.
 - You may raise a quote-anchored concern only with cowork_doc_comment.
+- Never use cowork_doc_comment as a workaround for deletion. A comment is a
+  concern without a concrete textual replacement; it does not create a tracked
+  deletion.
 - Never write the Markdown file or Yjs state directly.
 - Never apply, accept, reject, endorse, redirect, or otherwise decide a
   proposal. The user alone makes review decisions in Co-work.

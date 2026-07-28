@@ -56,10 +56,14 @@ const NETWORK_BATCH_IDLE_MS = 250;
 
 /**
  * Binds a local Y.Doc to a Co-work document transport (R3 pull / R4 push, C3 opaque
- * blobs). It realizes the apply-origin persistence discipline (section 1.4): pulled
- * snapshots and batches are applied under the apply-origin tag so they never enter the
- * local undo stack, and ONLY local human-origin updates are pushed through R4. Proposal
- * ingestion and accept mutations are apply-origin too, so they are never persisted here.
+ * blobs). Pulled snapshots and batches are applied under the apply-origin tag so they
+ * never enter the local undo stack, and ONLY local human-origin updates are pushed
+ * through R4.
+ *
+ * This filter is not a sandbox for local proposal mutations: a later human update can
+ * causally depend on filtered Yjs structs. Pending review items therefore never enter
+ * this live Y.Doc. They are view-only ProseMirror decorations, and sitting
+ * materialization happens in a clean canonical clone before an explicit commit.
  *
  * The load-order contract (SP-2) is strict: `await hydrate()`, then `start()` observing,
  * then mount the editor. Starting observation before Tiptap binds ensures any structural
@@ -399,8 +403,9 @@ export class CoworkYdocPersistence {
   }
 
   readonly #onUpdate = (update: Uint8Array, origin: unknown): void => {
-    // R4 carries HUMAN DIRECT EDITS ONLY. Apply-origin updates (proposal ingestion,
-    // accepts, pulled batches) are never pushed (section 1.4 apply-origin discipline).
+    // R4 carries HUMAN DIRECT EDITS ONLY. Foreign pulls and isolated transformation
+    // updates are non-human. Pending review projection must never rely on this filter:
+    // it is view-only and does not mutate this live Y.Doc at all.
     if (!isLocalHumanOrigin(origin)) return;
     const batch = new Uint8Array(update);
     this.#setStatus("saving");

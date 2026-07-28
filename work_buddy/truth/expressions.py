@@ -96,6 +96,7 @@ def _ensure_document_span_locked(
     author_kind: str | None = None,
     author_ref: str | None = None,
     at: str | None = None,
+    reuse_existing: bool = True,
 ) -> DocumentSpanRecord:
     """Anchor (or reuse by span_sha256) a document span on a shared transaction."""
     document_ref = _valid_record_id(document_id, "document_id")
@@ -111,7 +112,7 @@ def _ensure_document_span_locked(
         document_id=document_ref,
         span_sha256=span_sha256,
     )
-    if existing is not None:
+    if existing is not None and reuse_existing:
         return existing
     record = DocumentSpanRecord(
         id=_record_id(None, "document span id"),
