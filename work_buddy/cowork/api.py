@@ -30,6 +30,7 @@ from urllib.parse import urlsplit
 
 from flask import Blueprint, Response, jsonify, request
 
+from work_buddy.conversations import execution as conversation_execution
 from work_buddy.cowork import (
     conversations,
     document_agent,
@@ -551,6 +552,295 @@ def _conversation_spawn_failure() -> document_agent.DocumentAgentStatus:
     )
 
 
+def _execution_selection_from_state(
+    state: conversation_execution.ConversationExecution,
+):
+    from work_buddy.agent_execution.models import AgentExecutionSelection
+
+    return AgentExecutionSelection(
+        provider_id=state.provider_id,
+        model_id=state.model_id,
+        provider_label=state.provider_label,
+        model_label=state.model_label,
+    )
+
+
+def _project_execution(conversation_id: str | None):
+    from work_buddy.agent_execution.registry import default_selection
+
+    return conversation_execution.projected_execution(
+        conversation_id,
+        default_selection().to_dict(),
+    )
+
+
+def _pin_projected_execution(conversation_id: str):
+    """Return the conversation target, pinning the default on first start."""
+    state = _project_execution(conversation_id)
+    if state.persisted:
+        return state
+    return conversation_execution.set_execution(
+        conversation_id,
+        state.to_dict(),
+        expected_revision=None,
+    )
+
+
+def _conversation_status(conversation_id: str) -> str | None:
+    """Read lifecycle state without parsing unrelated conversation metadata."""
+    from work_buddy.conversations.store import get_connection
+
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT status FROM conversations WHERE conversation_id = ?",
+            (conversation_id,),
+        ).fetchone()
+        return None if row is None else str(row["status"])
+    finally:
+        conn.close()
+
+
+def _execution_snapshot(
+    conversation_id: str | None,
+    *,
+    refresh_catalog: bool = False,
+) -> dict[str, object]:
+    """Project the picker catalog plus the conversation's durable selection."""
+    from work_buddy.agent_execution.registry import get_catalog
+
+    state = _project_execution(conversation_id)
+    catalog = get_catalog(refresh=refresh_catalog)
+    providers = [provider.to_dict() for provider in catalog.providers]
+
+    selected_provider = next(
+        (
+            provider
+            for provider in providers
+            if provider.get("id") == state.provider_id
+        ),
+        None,
+    )
+    if selected_provider is None:
+        providers.append(
+            {
+                "id": state.provider_id,
+                "label": state.provider_label,
+                "available": False,
+                "availability": "unavailable",
+                "auth_mode": "",
+                "models": [
+                    {
+                        "id": state.model_id,
+                        "label": state.model_label,
+                        "available": False,
+                        "description": "",
+                        "unavailable_reason": (
+                            "This saved execution provider is no longer available."
+                        ),
+                        "is_default": False,
+                    }
+                ],
+                "unavailable_reason": (
+                    "This saved execution provider is no longer available."
+                ),
+            }
+        )
+    else:
+        models = selected_provider.get("models")
+        model_list = models if isinstance(models, list) else []
+        if not any(
+            model.get("id") == state.model_id
+            for model in model_list
+            if isinstance(model, dict)
+        ):
+            model_list.append(
+                {
+                    "id": state.model_id,
+                    "label": state.model_label,
+                    "available": False,
+                    "description": "",
+                    "unavailable_reason": (
+                        "This saved model is no longer available."
+                    ),
+                    "is_default": False,
+                }
+            )
+            selected_provider["models"] = model_list
+
+    selection = state.to_dict()
+    selection["revision"] = state.revision or ""
+    return {
+        "selection": selection,
+        "providers": providers,
+        "read_only": _is_read_only(),
+    }
+
+
+def _unreadable_execution_snapshot() -> dict[str, object]:
+    """Represent known-corrupt authority after a user action already committed."""
+    reason = "This chat’s saved provider and model choice couldn’t be read."
+    provider_id = "execution-unavailable"
+    model_id = "saved-selection-unreadable"
+    return {
+        "selection": {
+            "schema_version": 1,
+            "provider_id": provider_id,
+            "model_id": model_id,
+            "provider_label": "Unavailable",
+            "model_label": "Saved selection couldn’t be read",
+            "revision": "",
+            "persisted": False,
+        },
+        "providers": [
+            {
+                "id": provider_id,
+                "label": "Unavailable",
+                "available": False,
+                "availability": "unavailable",
+                "auth_mode": "",
+                "description": "",
+                "models": [
+                    {
+                        "id": model_id,
+                        "label": "Saved selection couldn’t be read",
+                        "available": False,
+                        "description": "",
+                        "unavailable_reason": reason,
+                        "is_default": False,
+                    }
+                ],
+                "unavailable_reason": reason,
+            }
+        ],
+        "read_only": True,
+        "error": {
+            "code": "execution_selection_corrupt",
+            "message": reason,
+        },
+    }
+
+
+def _execution_snapshot_after_committed_action(
+    conversation_id: str,
+) -> dict[str, object]:
+    """Never obscure a durable user action with a later projection failure."""
+    try:
+        return _execution_snapshot(conversation_id)
+    except conversation_execution.ConversationExecutionCorrupt:
+        return _unreadable_execution_snapshot()
+
+
+def _requested_execution(
+    body: object,
+    *,
+    require_expected_revision: bool,
+):
+    """Validate one UI-supplied pair and return trusted labels plus its CAS."""
+    from work_buddy.agent_execution.models import AgentExecutionSelection
+    from work_buddy.agent_execution.registry import validate_selection
+
+    if not isinstance(body, dict):
+        if require_expected_revision:
+            raise ValueError("A provider and model are required.")
+        return None
+    nested = body.get("execution")
+    source = nested if isinstance(nested, dict) else body
+    provider_id = source.get("provider_id")
+    model_id = source.get("model_id")
+    if provider_id is None and model_id is None and not require_expected_revision:
+        return None
+    if not isinstance(provider_id, str) or not provider_id.strip():
+        raise ValueError("provider_id is required")
+    if not isinstance(model_id, str) or not model_id.strip():
+        raise ValueError("model_id is required")
+    if require_expected_revision and "expected_revision" not in source:
+        raise ValueError("expected_revision is required")
+    raw_revision = source.get("expected_revision")
+    if raw_revision in (None, ""):
+        expected_revision = None
+    elif isinstance(raw_revision, str):
+        expected_revision = raw_revision
+    else:
+        raise ValueError("expected_revision must be a string")
+    trusted = validate_selection(
+        AgentExecutionSelection(
+            provider_id=provider_id.strip(),
+            model_id=model_id.strip(),
+        ),
+        refresh=True,
+    )
+    return trusted, expected_revision
+
+
+def _execution_error(
+    exc: Exception,
+    *,
+    status: int | None = None,
+    code: str | None = None,
+    retryable: bool | None = None,
+    conversation_id: str | None = None,
+    agent: document_agent.DocumentAgentStatus | None = None,
+):
+    from work_buddy.agent_execution.models import AgentExecutionError
+
+    if isinstance(exc, conversation_execution.ConversationExecutionConflict):
+        default_code = "execution_selection_changed"
+        message = "The model choice changed in another window. Reload and try again."
+        default_status = 409
+    elif isinstance(exc, conversation_execution.ConversationExecutionCorrupt):
+        default_code = "execution_selection_corrupt"
+        message = "This chat's saved provider and model choice could not be read."
+        default_status = 409
+    elif isinstance(exc, AgentExecutionError):
+        default_code = exc.error_code
+        message = str(exc)
+        default_status = 409
+    elif isinstance(exc, ValueError):
+        default_code = "invalid_execution_selection"
+        message = str(exc)
+        default_status = 400
+    else:
+        default_code = "execution_unavailable"
+        message = "That provider or model is unavailable right now."
+        default_status = 409
+    response_status = default_status if status is None else status
+    response_code = default_code if code is None else code
+    if isinstance(exc, conversation_execution.ConversationExecutionCorrupt):
+        response_retryable = False
+    elif retryable is None:
+        response_retryable = (
+            isinstance(
+                exc,
+                conversation_execution.ConversationExecutionConflict,
+            )
+            or response_status >= 500
+        )
+    else:
+        response_retryable = retryable
+    payload: dict[str, object] = {
+        "ok": False,
+        "error": {
+            "code": response_code,
+            "message": message,
+            "details": {},
+            "retryable": response_retryable,
+        },
+    }
+    if (
+        conversation_id is not None
+        and isinstance(
+            exc,
+            conversation_execution.ConversationExecutionConflict,
+        )
+    ):
+        payload["conversation_id"] = conversation_id
+        payload["execution"] = _execution_snapshot(conversation_id)
+        if agent is not None:
+            payload["agent"] = agent.to_dict()
+    return jsonify(payload), response_status
+
+
 @cowork_blueprint.get("/api/truth/doc/<document_id>/conversation")
 def api_doc_conversation_get(document_id: str):
     """Read the existing real binding and persisted driver status, without writes."""
@@ -566,10 +856,13 @@ def api_doc_conversation_get(document_id: str):
     if not document_surface_allowed(store, document):
         return _fail("This document is not available in Co-work for this folder.", 403)
 
-    conversation_id = conversations.find_document_conversation(
-        document_id=document.id,
-        store_id=store.store_id,
-    )
+    try:
+        conversation_id = conversations.find_document_conversation(
+            document_id=document.id,
+            store_id=store.store_id,
+        )
+    except conversation_execution.ConversationExecutionCorrupt as exc:
+        return _execution_error(exc)
     consumer = (
         None
         if conversation_id is None
@@ -584,12 +877,26 @@ def api_doc_conversation_get(document_id: str):
         document_id=document.id,
         conversation_id=conversation_id,
     )
+    try:
+        execution_snapshot = _execution_snapshot(
+            conversation_id,
+            refresh_catalog=(
+                request.args.get("refresh_execution") == "1"
+            ),
+        )
+    except conversation_execution.ConversationExecutionCorrupt as exc:
+        return _execution_error(
+            exc,
+            conversation_id=conversation_id,
+            agent=agent_status,
+        )
     return jsonify(
         {
             "ok": True,
             "conversation_id": conversation_id,
             "agent": agent_status.to_dict(),
             "feedback": feedback_payload,
+            "execution": execution_snapshot,
         }
     )
 
@@ -606,9 +913,17 @@ def api_doc_conversation_ensure(document_id: str):
     gate = _document_surface_or_403(store)
     if gate:
         return gate
+    try:
+        requested_execution = _requested_execution(
+            request.get_json(silent=True),
+            require_expected_revision=False,
+        )
+    except Exception as exc:
+        return _execution_error(exc)
 
     from work_buddy.consent import user_initiated
 
+    binding = None
     try:
         # This lock is the cross-database lifecycle boundary.  It is acquired
         # before reading the Truth document and held through conversation bind
@@ -632,13 +947,10 @@ def api_doc_conversation_ensure(document_id: str):
                     document_id=document.id,
                     store_id=store.store_id,
                 )
-                from work_buddy.conversations.store import get_conversation
+                from work_buddy.conversations.store import get_agent_lease
 
-                bound_conversation = get_conversation(binding.conversation_id)
-                if (
-                    bound_conversation is None
-                    or bound_conversation.status == "closed"
-                ):
+                bound_status = _conversation_status(binding.conversation_id)
+                if bound_status is None or bound_status == "closed":
                     return (
                         jsonify(
                             {
@@ -657,10 +969,74 @@ def api_doc_conversation_ensure(document_id: str):
                         409,
                     )
                 try:
+                    if requested_execution is None:
+                        execution_state = _pin_projected_execution(
+                            binding.conversation_id
+                        )
+                    else:
+                        selected, expected_revision = requested_execution
+                        current_execution = _project_execution(
+                            binding.conversation_id
+                        )
+                        consumer = document_agent.document_agent_consumer(
+                            store.store_id,
+                            document.id,
+                        )
+                        selection_changed = (
+                            current_execution.provider_id
+                            != selected.provider_id
+                            or current_execution.model_id != selected.model_id
+                        )
+                        if (
+                            selection_changed
+                            and get_agent_lease(
+                                binding.conversation_id,
+                                consumer,
+                            )
+                            is not None
+                        ):
+                            return (
+                                jsonify(
+                                    {
+                                        "ok": False,
+                                        "error": {
+                                            "code": "execution_switch_required",
+                                            "message": (
+                                                "Choose the provider and model "
+                                                "with Run with before restarting "
+                                                "chat."
+                                            ),
+                                            "details": {},
+                                            "retryable": False,
+                                        },
+                                        "conversation_id": (
+                                            binding.conversation_id
+                                        ),
+                                        "execution": _execution_snapshot(
+                                            binding.conversation_id
+                                        ),
+                                    }
+                                ),
+                                409,
+                            )
+                        execution_state = conversation_execution.set_execution(
+                            binding.conversation_id,
+                            selected.to_dict(),
+                            expected_revision=expected_revision,
+                        )
+                except Exception as exc:
+                    return _execution_error(
+                        exc,
+                        conversation_id=binding.conversation_id,
+                    )
+                try:
                     agent_status = document_agent.ensure_document_agent(
                         store_id=store.store_id,
                         document_id=document.id,
                         conversation_id=binding.conversation_id,
+                        execution=_execution_selection_from_state(
+                            execution_state
+                        ),
                     )
                 except Exception:
                     logger.exception(
@@ -676,6 +1052,13 @@ def api_doc_conversation_ensure(document_id: str):
                     document_id=document.id,
                     conversation_id=binding.conversation_id,
                 )
+    except conversation_execution.ConversationExecutionCorrupt as exc:
+        return _execution_error(
+            exc,
+            conversation_id=(
+                None if binding is None else binding.conversation_id
+            ),
+        )
     except InvariantViolation as exc:
         return _fail(str(exc), 400)
     return jsonify(
@@ -685,6 +1068,152 @@ def api_doc_conversation_ensure(document_id: str):
             "created": binding.created,
             "agent": agent_status.to_dict(),
             "feedback": feedback_payload,
+            "execution": _execution_snapshot(binding.conversation_id),
+        }
+    )
+
+
+@cowork_blueprint.patch("/api/truth/doc/<document_id>/conversation/execution")
+def api_doc_conversation_execution(document_id: str):
+    """Select one provider/model pair and restart only an existing driver."""
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    store, error = _resolve_store(request.args.get("store_id"))
+    if error:
+        return error
+    gate = _document_surface_or_403(store)
+    if gate:
+        return gate
+    try:
+        selected, expected_revision = _requested_execution(
+            request.get_json(silent=True),
+            require_expected_revision=True,
+        )
+    except Exception as exc:
+        return _execution_error(exc)
+
+    from work_buddy.consent import user_initiated
+    from work_buddy.conversations.store import get_agent_lease
+
+    binding = None
+    try:
+        with lifecycle_lock.document_lifecycle_lock(store.store_id, document_id):
+            document, doc_error = _resolve_document(store, document_id)
+            if doc_error:
+                return doc_error
+            if documents.current_lifecycle(store, document.id) != "active":
+                return _fail(
+                    "The model cannot be changed for a retired document.",
+                    409,
+                )
+            if not document_surface_allowed(store, document):
+                return _fail(
+                    "This document is not available in Co-work for this folder.",
+                    403,
+                )
+            with user_initiated("dashboard.cowork.execution_select"):
+                binding = conversations.ensure_document_conversation(
+                    document_id=document.id,
+                    store_id=store.store_id,
+                )
+                bound_status = _conversation_status(binding.conversation_id)
+                if bound_status is None or bound_status == "closed":
+                    return _execution_error(
+                        ValueError(
+                            "This document's conversation is closed and "
+                            "cannot change models."
+                        ),
+                        status=409,
+                        code="conversation_closed",
+                        retryable=False,
+                        conversation_id=binding.conversation_id,
+                    )
+                current = _project_execution(binding.conversation_id)
+                changed = (
+                    current.provider_id != selected.provider_id
+                    or current.model_id != selected.model_id
+                )
+                if changed and current.revision != expected_revision:
+                    raise conversation_execution.ConversationExecutionConflict(
+                        "execution_selection_changed"
+                    )
+                consumer = document_agent.document_agent_consumer(
+                    store.store_id,
+                    document.id,
+                )
+                previous_lease = get_agent_lease(
+                    binding.conversation_id,
+                    consumer,
+                )
+                should_restart = (
+                    changed
+                    and previous_lease is not None
+                    and previous_lease.get("status") in {"starting", "running"}
+                )
+                if should_restart:
+                    document_agent.fence_document_agent(
+                        conversation_id=binding.conversation_id,
+                        consumer=consumer,
+                    )
+                execution_state = conversation_execution.set_execution(
+                    binding.conversation_id,
+                    selected.to_dict(),
+                    expected_revision=expected_revision,
+                )
+                if should_restart:
+                    try:
+                        agent_status = document_agent.ensure_document_agent(
+                            store_id=store.store_id,
+                            document_id=document.id,
+                            conversation_id=binding.conversation_id,
+                            execution=_execution_selection_from_state(
+                                execution_state
+                            ),
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Document-agent restart failed after execution "
+                            "selection: store=%s document=%s conversation=%s",
+                            store.store_id,
+                            document.id,
+                            binding.conversation_id,
+                        )
+                        agent_status = _conversation_spawn_failure()
+                else:
+                    agent_status = document_agent.inspect_document_agent(
+                        binding.conversation_id,
+                        consumer=consumer,
+                    )
+    except conversation_execution.ConversationExecutionConflict as exc:
+        conflict_agent = document_agent.inspect_document_agent(
+            binding.conversation_id,
+            consumer=document_agent.document_agent_consumer(
+                store.store_id,
+                document.id,
+            ),
+        )
+        return _execution_error(
+            exc,
+            conversation_id=binding.conversation_id,
+            agent=conflict_agent,
+        )
+    except conversation_execution.ConversationExecutionCorrupt as exc:
+        return _execution_error(
+            exc,
+            conversation_id=(
+                None if binding is None else binding.conversation_id
+            ),
+        )
+    except InvariantViolation as exc:
+        return _fail(str(exc), 400)
+    return jsonify(
+        {
+            "ok": True,
+            "conversation_id": binding.conversation_id,
+            "created": binding.created,
+            "execution": _execution_snapshot(binding.conversation_id),
+            "agent": agent_status.to_dict(),
         }
     )
 
@@ -946,10 +1475,16 @@ def api_doc_feedback(document_id: str):
                     post_message=poster,
                 )
                 try:
+                    execution_state = _pin_projected_execution(
+                        capture.conversation_id
+                    )
                     agent_status = document_agent.ensure_document_agent(
                         store_id=store.store_id,
                         document_id=document.id,
                         conversation_id=capture.conversation_id,
+                        execution=_execution_selection_from_state(
+                            execution_state
+                        ),
                         feedback=document_agent.FeedbackPromptContext(
                             text=text,
                             exact=feedback_span["exact"],
@@ -980,6 +1515,9 @@ def api_doc_feedback(document_id: str):
             "conversation_id": capture.conversation_id,
             "message_id": capture.message_id,
             "agent": agent_status.to_dict(),
+            "execution": _execution_snapshot_after_committed_action(
+                capture.conversation_id
+            ),
         }
     )
 

@@ -15,7 +15,16 @@ import {
   useDashboardHelpEnabled,
   type HelpContent,
 } from "../../../dashboard/help";
-import { createHttpChatProvider } from "../../../dashboard/conversations";
+import {
+  createHttpChatExecutionProfileProvider,
+  createHttpChatProvider,
+} from "../../../dashboard/conversations";
+import {
+  useChatExecutionProfile,
+  type ChatExecutionSelectionCandidate,
+  type ChatExecutionSelectionInput,
+  type ChatExecutionSwitchConfirmation,
+} from "../../../widget-library/chat";
 import type {
   CoworkDocumentSummary,
   CoworkDriftState,
@@ -30,8 +39,11 @@ import type {
 import { CoworkBridgeEditor, useCoworkBridge } from "../bridge";
 import {
   CoworkChatAnnotations,
+  coworkConversationEndpoint,
+  coworkConversationExecutionEndpoint,
   useDocumentConversationBinding,
   type CoworkDocumentConversationBindingClient,
+  type CoworkDocumentAgentStatus,
   type FeedbackCapture,
   type ScrollAnchorTarget,
 } from "../chat";
@@ -72,6 +84,19 @@ const DRIFT_LABEL: Record<string, string> = {
   drifted: "Drifted from file",
   missing: "File missing",
 };
+
+export const coworkExecutionSwitchConfirmation = (
+  agentStatus: CoworkDocumentAgentStatus,
+  { providerLabel, modelLabel }: ChatExecutionSelectionCandidate,
+): ChatExecutionSwitchConfirmation | null =>
+  agentStatus === "running"
+    ? {
+        title: `Switch to ${providerLabel} · ${modelLabel}?`,
+        description:
+          "This restarts the assistant with the new model. Your messages and draft stay here.",
+        confirmLabel: "Switch",
+      }
+    : null;
 
 /**
  * Hover-help for the three Co-work regions, surfaced when app-shell help mode is on. The
@@ -482,6 +507,52 @@ export function CoworkLiveWorkspace({
   useEffect(() => {
     annotations.replaceFeedback(conversation.feedback);
   }, [annotations, conversation.feedback]);
+  const adoptExecutionRef = useRef(conversation.adoptExecution);
+  adoptExecutionRef.current = conversation.adoptExecution;
+  const executionProvider = useMemo(
+    () => {
+      const providerWorkspaceIdentity = workspaceIdentity;
+      return createHttpChatExecutionProfileProvider({
+        targetId: workspaceIdentity,
+        loadUrl: coworkConversationEndpoint(documentId, storeId),
+        selectUrl: coworkConversationExecutionEndpoint(documentId, storeId),
+        onEnvelope: (envelope) => {
+          if (
+            workspaceIdentityRef.current !== providerWorkspaceIdentity
+          ) {
+            return;
+          }
+          adoptExecutionRef.current(
+            documentId,
+            storeId,
+            envelope.execution,
+            envelope.agent,
+          );
+        },
+      });
+    },
+    [documentId, storeId, workspaceIdentity],
+  );
+  useEffect(() => {
+    if (conversation.execution !== undefined) {
+      executionProvider.replaceSnapshot(conversation.execution);
+    }
+  }, [conversation.execution, executionProvider]);
+  const chatExecution = useChatExecutionProfile(
+    conversation.execution === undefined ? null : executionProvider,
+    workspaceIdentity,
+  );
+  const presentedChatExecution = useMemo(() => {
+    if (chatExecution === undefined) return undefined;
+    return {
+      ...chatExecution,
+      confirmSelection: (candidate: ChatExecutionSelectionCandidate) =>
+        coworkExecutionSwitchConfirmation(
+          conversation.agent.status,
+          candidate,
+        ),
+    };
+  }, [chatExecution, conversation.agent.status]);
   const chatDraftStorageId = `document:${storeId}:${documentId}`;
   const chatProvider = useMemo(
     () =>
@@ -492,25 +563,17 @@ export function CoworkLiveWorkspace({
         : null,
     [conversation.conversationId, conversation.phase],
   );
+  const selectedExecution: ChatExecutionSelectionInput | undefined =
+    chatExecution?.snapshot === null || chatExecution?.snapshot === undefined
+      ? undefined
+      : {
+          providerId: chatExecution.snapshot.selection.providerId,
+          modelId: chatExecution.snapshot.selection.modelId,
+          expectedRevision: chatExecution.snapshot.selection.revision,
+        };
   const ensureConversation = useCallback((): void => {
-    void conversation.ensure();
-  }, [conversation.ensure]);
-  const activateChat = useCallback((): void => {
-    if (
-      conversation.phase === "ensuring" ||
-      conversation.ensuring ||
-      (conversation.phase === "ready" &&
-        conversation.agent.status === "running")
-    ) {
-      return;
-    }
-    void conversation.ensure();
-  }, [
-    conversation.agent.status,
-    conversation.ensure,
-    conversation.ensuring,
-    conversation.phase,
-  ]);
+    void conversation.ensure(selectedExecution);
+  }, [conversation.ensure, selectedExecution]);
   const chat: CoworkRailChat = useMemo(() => {
     if (
       conversation.phase === "ready" &&
@@ -568,9 +631,8 @@ export function CoworkLiveWorkspace({
     (pane: CoworkWorkspacePane): void => {
       setActivePane(pane);
       if (pane !== "editor") railStore.setTab(pane);
-      if (pane === "chat") activateChat();
     },
-    [activateChat, railStore],
+    [railStore],
   );
   useEffect(
     () =>
@@ -593,7 +655,21 @@ export function CoworkLiveWorkspace({
     onMaterializationState,
     onMaterializationController,
     onMaterialized,
-    onRoutingDelivery: (delivery) => annotations.annotateRoutingDelivery(delivery),
+    onRoutingDelivery: (delivery) => {
+      annotations.annotateRoutingDelivery(delivery);
+      if (
+        delivery.conversationId !== undefined &&
+        delivery.execution !== undefined
+      ) {
+        conversation.adoptExecution(
+          documentId,
+          storeId,
+          delivery.execution,
+          delivery.agent,
+          delivery.conversationId,
+        );
+      }
+    },
     // The last link of the feedback loop: R9 landed, so record the span-linked message on
     // the Chat tab and switch the rail to Chat so the human sees the feedback land.
     ...(feedbackCapture
@@ -703,11 +779,11 @@ export function CoworkLiveWorkspace({
           documentId={documentId}
           reviewProvider={bridge.reviewProvider}
           chat={chat}
-          onChatSelected={activateChat}
           anchorRects={bridge.anchorRects}
           store={railStore}
           queueBindings={navBinding}
           chatAnnotations={annotations}
+          chatExecution={presentedChatExecution}
           onScrollToChatAnchor={scrollToChatAnchor}
           narrow={narrowWorkspace}
           reviewVisible={

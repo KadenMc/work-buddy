@@ -10,6 +10,7 @@ import type {
   ChatConversationSnapshot,
   ChatConversationStatus,
   ChatMessage,
+  ChatMessageProducer,
   ChatQuestion,
   ChatResponseType,
   RawChatConversationPayload,
@@ -45,6 +46,35 @@ function toResponseType(raw: string | undefined): ChatResponseType {
   return "freeform";
 }
 
+function optionalProducer(raw: RawChatMessage): ChatMessageProducer | undefined {
+  const producer = raw.producer;
+  if (producer === undefined || producer === null) return undefined;
+  const providerId =
+    typeof producer.provider_id === "string" && producer.provider_id.length > 0
+      ? producer.provider_id
+      : undefined;
+  const modelId =
+    typeof producer.model_id === "string" && producer.model_id.length > 0
+      ? producer.model_id
+      : undefined;
+  const providerLabel =
+    typeof producer.provider_label === "string" &&
+    producer.provider_label.length > 0
+      ? producer.provider_label
+      : providerId;
+  const modelLabel =
+    typeof producer.model_label === "string" && producer.model_label.length > 0
+      ? producer.model_label
+      : modelId;
+  if (providerLabel === undefined || modelLabel === undefined) return undefined;
+  return {
+    providerId,
+    modelId,
+    providerLabel,
+    modelLabel,
+  };
+}
+
 function toMessage(raw: RawChatMessage, index: number): ChatMessage {
   const pending = raw.status === "pending" && raw.message_type === "question";
   let question: ChatQuestion | undefined;
@@ -72,6 +102,7 @@ function toMessage(raw: RawChatMessage, index: number): ChatMessage {
     createdAt: raw.created_at,
     pending,
     question,
+    producer: optionalProducer(raw),
   };
 }
 

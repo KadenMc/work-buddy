@@ -594,6 +594,21 @@ def test_invoke_injects_session_and_binds_authorization():
     }
 
 
+def test_invoke_overrides_caller_asserted_agent_session_id():
+    from work_buddy.mcp_server.tools.gateway import _invoke_with_session
+
+    def operation(*, agent_session_id: str | None = None):
+        return agent_session_id
+
+    result = _invoke_with_session(
+        operation,
+        "trusted-transport-session",
+        agent_session_id="caller-forged-session",
+    )
+
+    assert result == "trusted-transport-session"
+
+
 def test_reload_generations_share_one_consumed_authorization():
     import importlib
     import sys

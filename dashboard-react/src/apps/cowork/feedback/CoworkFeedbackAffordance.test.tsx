@@ -94,6 +94,7 @@ describe("CoworkFeedbackAffordance", () => {
     expect(capture.spanId).toBe("span-doc-1");
     expect(capture.messageId).toBe("feedback-message-doc-1");
     expect(capture.conversationId).toBe("server-feedback-conversation-doc-1");
+    expect(capture.execution?.selection.revision).toBe("execution-doc-1");
     expect(capture.text).toBe("  make this measurable  ");
     expect(capture.anchor?.exact).toBe("precise");
 

@@ -183,7 +183,7 @@ def test_force_kill_windows_uses_taskkill_slash_F(monkeypatch):
         return _R()
 
     monkeypatch.setattr(compat.subprocess, "run", fake_run)
-    compat._force_kill_pid(12345)
+    assert compat._force_kill_pid(12345) is True
 
     assert len(recorded) == 1
     cmd = recorded[0]
@@ -203,7 +203,7 @@ def test_force_kill_unix_uses_sigkill(monkeypatch):
         killed.append((pid, sig))
 
     monkeypatch.setattr(compat.os, "kill", fake_kill)
-    compat._force_kill_pid(12345)
+    assert compat._force_kill_pid(12345) is True
 
     expected_sig = getattr(signal, "SIGKILL", signal.SIGTERM)
     assert killed == [(12345, expected_sig)]
@@ -217,8 +217,23 @@ def test_force_kill_tolerates_dead_process(monkeypatch):
         raise ProcessLookupError
 
     monkeypatch.setattr(compat.os, "kill", fake_kill)
-    # Should not raise
-    compat._force_kill_pid(12345)
+    assert compat._force_kill_pid(12345) is True
+
+
+def test_force_kill_windows_reports_taskkill_nonzero(monkeypatch):
+    """A rejected taskkill request must not be reported as successful."""
+    monkeypatch.setattr(compat, "IS_WINDOWS", True)
+
+    class _Result:
+        returncode = 5
+
+    monkeypatch.setattr(
+        compat.subprocess,
+        "run",
+        lambda *_args, **_kwargs: _Result(),
+    )
+
+    assert compat._force_kill_pid(12345) is False
 
 
 # ---------------------------------------------------------------------------

@@ -31,6 +31,7 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from work_buddy.conversations.execution import ConversationExecutionCorrupt
 from work_buddy.conversations.models import ConversationMessage
 from work_buddy.conversations.store import (
     add_message,
@@ -56,6 +57,10 @@ _BINDING_LOCK = threading.RLock()
 # The two proposal decisions whose routing this module delivers. Redirect
 # carries a typed human note, endorse carries none (PRD section 6).
 ROUTING_VERBS = frozenset({"redirect", "endorse"})
+
+
+class ConversationBindingCorrupt(ConversationExecutionCorrupt):
+    """A Co-work conversation row cannot be safely matched to its document."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,10 +120,14 @@ def _find_bound_conversation(
         raw_meta = row["metadata"]
         try:
             meta = json.loads(raw_meta) if raw_meta else {}
-        except (TypeError, ValueError):
-            continue
+        except (TypeError, ValueError) as exc:
+            raise ConversationBindingCorrupt(
+                "Saved Co-work conversation metadata is invalid"
+            ) from exc
         if not isinstance(meta, dict):
-            continue
+            raise ConversationBindingCorrupt(
+                "Saved Co-work conversation metadata is invalid"
+            )
         if (
             meta.get(_DOCUMENT_ID_KEY) == document_id
             and meta.get(_STORE_ID_KEY) == store_id

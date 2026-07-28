@@ -1,8 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import type {
+  ChatExecutionSelectionInput,
+  ChatExecutionSnapshot,
+} from "../../../widget-library/chat";
 import type { FeedbackCapture } from "./contracts";
 import {
   HttpCoworkDocumentConversationBindingClient,
+  CoworkDocumentConversationBindingError,
+  normalizeCoworkDocumentAgent,
   type CoworkDocumentAgent,
   type CoworkDocumentConversationBinding,
   type CoworkDocumentConversationBindingClient,
@@ -20,6 +26,7 @@ export interface CoworkConversationBindingState {
   readonly conversationId: string | null;
   readonly agent: CoworkDocumentAgent;
   readonly feedback: readonly FeedbackCapture[];
+  readonly execution?: ChatExecutionSnapshot;
   /** True while a user-authorized start/restart POST is in flight. */
   readonly ensuring: boolean;
   readonly error: string | null;
@@ -28,9 +35,17 @@ export interface CoworkConversationBindingState {
 export interface UseDocumentConversationBindingResult
   extends CoworkConversationBindingState {
   /** Present-user-intent mutation: ensure the binding and start/restart its agent. */
-  ensure(): Promise<void>;
+  ensure(execution?: ChatExecutionSelectionInput): Promise<void>;
   /** Adopt the authoritative binding returned by a successful feedback POST. */
   adoptFeedback(capture: FeedbackCapture): void;
+  /** Adopt an execution PATCH and its atomically returned agent state. */
+  adoptExecution(
+    sourceDocumentId: string,
+    sourceStoreId: string,
+    snapshot: ChatExecutionSnapshot,
+    agent?: unknown,
+    conversationId?: string,
+  ): void;
 }
 
 const NOT_STARTED_AGENT: CoworkDocumentAgent = {
@@ -45,6 +60,7 @@ const initialState = (): CoworkConversationBindingState => ({
   conversationId: null,
   agent: NOT_STARTED_AGENT,
   feedback: [],
+  execution: undefined,
   ensuring: false,
   error: null,
 });
@@ -61,6 +77,7 @@ const stateFromBinding = (
   conversationId: binding.conversationId,
   agent: binding.agent,
   feedback: binding.feedback,
+  execution: binding.execution,
   ensuring: false,
   error: null,
 });
@@ -127,61 +144,74 @@ export function useDocumentConversationBinding({
       });
   }, [documentId, identity, resolvedClient, storeId]);
 
-  const ensure = useCallback((): Promise<void> => {
-    if (ensureInFlight.current !== null) return ensureInFlight.current;
-    const expectedIdentity = identity;
-    const sequence = ++requestSequence.current;
-    stateIdentityRef.current = expectedIdentity;
-    setState((current) => ({
-      ...current,
-      // Keep an existing transcript mounted while its agent restarts. Only a
-      // first-ever start uses the full-pane ensuring gate.
-      phase: current.conversationId === null ? "ensuring" : "ready",
-      ensuring: true,
-      error: null,
-    }));
-    const pending = resolvedClient
-      .ensure(documentId, storeId)
-      .then((binding) => {
-        if (
-          identityRef.current !== expectedIdentity ||
-          requestSequence.current !== sequence
-        ) {
-          return;
-        }
-        if (binding.conversationId === null) {
-          throw new Error("The server did not return a document conversation.");
-        }
-        setState(stateFromBinding(binding));
-      })
-      .catch((error: unknown) => {
-        if (
-          identityRef.current !== expectedIdentity ||
-          requestSequence.current !== sequence
-        ) {
-          return;
-        }
-        setState((current) => ({
-          // A restart failure must not throw away an already loaded transcript.
-          phase: current.conversationId === null ? "error" : "ready",
-          conversationId: current.conversationId,
-          agent: current.agent,
-          feedback: current.feedback,
-          ensuring: false,
-          error: errorText(error),
-        }));
-      })
-      .finally(() => {
-        if (
-          identityRef.current === expectedIdentity &&
-          ensureInFlight.current === pending
-        ) {
-          ensureInFlight.current = null;
-        }
-      });
-    ensureInFlight.current = pending;
-    return pending;
-  }, [documentId, identity, resolvedClient, storeId]);
+  const ensure = useCallback(
+    (execution?: ChatExecutionSelectionInput): Promise<void> => {
+      if (ensureInFlight.current !== null) return ensureInFlight.current;
+      const expectedIdentity = identity;
+      const sequence = ++requestSequence.current;
+      stateIdentityRef.current = expectedIdentity;
+      setState((current) => ({
+        ...current,
+        // Keep an existing transcript mounted while its agent restarts. Only a
+        // first-ever start uses the full-pane ensuring gate.
+        phase: current.conversationId === null ? "ensuring" : "ready",
+        ensuring: true,
+        error: null,
+      }));
+      const pending = (
+        execution === undefined
+          ? resolvedClient.ensure(documentId, storeId)
+          : resolvedClient.ensure(documentId, storeId, execution)
+      )
+        .then((binding) => {
+          if (
+            identityRef.current !== expectedIdentity ||
+            requestSequence.current !== sequence
+          ) {
+            return;
+          }
+          if (binding.conversationId === null) {
+            throw new Error(
+              "The server did not return a document conversation.",
+            );
+          }
+          setState(stateFromBinding(binding));
+        })
+        .catch((error: unknown) => {
+          if (
+            identityRef.current !== expectedIdentity ||
+            requestSequence.current !== sequence
+          ) {
+            return;
+          }
+          setState((current) => ({
+            // A restart failure must not throw away an already loaded transcript.
+            phase: current.conversationId === null ? "error" : "ready",
+            conversationId: current.conversationId,
+            agent: current.agent,
+            feedback: current.feedback,
+            execution:
+              error instanceof CoworkDocumentConversationBindingError &&
+              error.authoritativeExecution !== undefined
+                ? error.authoritativeExecution
+                : current.execution,
+            ensuring: false,
+            error: errorText(error),
+          }));
+        })
+        .finally(() => {
+          if (
+            identityRef.current === expectedIdentity &&
+            ensureInFlight.current === pending
+          ) {
+            ensureInFlight.current = null;
+          }
+        });
+      ensureInFlight.current = pending;
+      return pending;
+    },
+    [documentId, identity, resolvedClient, storeId],
+  );
 
   const adoptFeedback = useCallback(
     (capture: FeedbackCapture): void => {
@@ -220,7 +250,58 @@ export function useDocumentConversationBinding({
             ),
             capture,
           ],
+          execution: capture.execution ?? current.execution,
           ensuring: false,
+          error: null,
+        };
+      });
+    },
+    [documentId, identity, storeId],
+  );
+
+  const adoptExecution = useCallback(
+    (
+      sourceDocumentId: string,
+      sourceStoreId: string,
+      snapshot: ChatExecutionSnapshot,
+      agent?: unknown,
+      conversationId?: string,
+    ): void => {
+      if (
+        identityRef.current !== identity ||
+        sourceDocumentId !== documentId ||
+        sourceStoreId !== storeId
+      ) {
+        return;
+      }
+      requestSequence.current += 1;
+      ensureInFlight.current = null;
+      stateIdentityRef.current = identity;
+      setState((current) => {
+        if (
+          conversationId !== undefined &&
+          current.conversationId !== null &&
+          current.conversationId !== conversationId
+        ) {
+          return {
+            ...current,
+            phase: "error",
+            error:
+              "The document conversation changed unexpectedly. Reload before continuing.",
+          };
+        }
+        const nextConversationId =
+          conversationId ?? current.conversationId;
+        return {
+          ...current,
+          phase:
+            nextConversationId === null ? current.phase : "ready",
+          conversationId: nextConversationId,
+          execution: snapshot,
+          agent:
+            agent === undefined
+              ? current.agent
+              : normalizeCoworkDocumentAgent({ agent }),
           error: null,
         };
       });
@@ -230,5 +311,5 @@ export function useDocumentConversationBinding({
 
   const visibleState =
     stateIdentityRef.current === identity ? state : initialState();
-  return { ...visibleState, ensure, adoptFeedback };
+  return { ...visibleState, ensure, adoptFeedback, adoptExecution };
 }

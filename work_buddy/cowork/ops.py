@@ -106,8 +106,23 @@ def _document_agent_write_fence(
     conversation_id: str | None,
     consumer: str | None,
     generation: str | None,
+    agent_session_id: str | None,
 ):
     """Bind an optional lease tuple to this exact store/document conversation."""
+    from work_buddy.cowork.execution_identity import (
+        cowork_generation_from_session,
+    )
+
+    session_generation = cowork_generation_from_session(agent_session_id)
+    if session_generation is not None:
+        if (
+            conversation_id is None
+            or consumer is None
+            or generation is None
+        ):
+            raise ConversationLeaseLost("lease_lost")
+        if generation != session_generation:
+            raise ConversationLeaseLost("lease_lost")
     supplied = (conversation_id, consumer, generation)
     if all(value is None for value in supplied):
         yield
@@ -339,7 +354,11 @@ def cowork_doc_list(store_id: str, profile: str | None = None) -> dict[str, Any]
     }
 
 
-def cowork_doc_get(store_id: str, document_id: str) -> dict[str, Any]:
+def cowork_doc_get(
+    store_id: str,
+    document_id: str,
+    agent_session_id: str | None = None,
+) -> dict[str, Any]:
     """Read one cowork doc's content-meta, open proposals, expressions, and drift.
 
     Content itself rides the binary Y.Doc transport, so this carries meta plus
@@ -353,31 +372,68 @@ def cowork_doc_get(store_id: str, document_id: str) -> dict[str, Any]:
         document_id=document_id,
         store_id=store.store_id,
     )
-    with store._read_connection() as conn:
-        document = documents.get_document(store, document_id, conn=conn)
-        current_file = _current_file_sha256(store, document.path)
-        state = documents.drift_state(
-            store,
-            document.id,
-            current_file_sha256=current_file,
-            conn=conn,
-        )
-        open_props = proposals.open_proposals(
-            store, document_id=document.id, conn=conn
-        )
-        open_payload = [_proposal_view(item, document, store) for item in open_props]
-        expr_payload = [
-            _expression_view(expression, conn, store)
-            for expression in expressions.expressions_for_document(
-                store, document.id, conn=conn
-            )
-        ]
-        feedback_payload = feedback.feedback_items(
-            store,
-            document_id=document.id,
-            conversation_id=conversation_id,
-            conn=conn,
-        )
+    from work_buddy.cowork.execution_identity import (
+        cowork_generation_from_session,
+    )
+
+    session_generation = cowork_generation_from_session(agent_session_id)
+    consumer = (
+        document_agent_consumer(store.store_id, document_id)
+        if session_generation is not None
+        else None
+    )
+    try:
+        with _document_agent_write_fence(
+            store_id=store.store_id,
+            document_id=document_id,
+            conversation_id=(
+                conversation_id
+                if session_generation is not None
+                else None
+            ),
+            consumer=consumer,
+            generation=session_generation,
+            agent_session_id=agent_session_id,
+        ):
+            with store._read_connection() as conn:
+                document = documents.get_document(
+                    store,
+                    document_id,
+                    conn=conn,
+                )
+                current_file = _current_file_sha256(store, document.path)
+                state = documents.drift_state(
+                    store,
+                    document.id,
+                    current_file_sha256=current_file,
+                    conn=conn,
+                )
+                open_props = proposals.open_proposals(
+                    store, document_id=document.id, conn=conn
+                )
+                open_payload = [
+                    _proposal_view(item, document, store)
+                    for item in open_props
+                ]
+                expr_payload = [
+                    _expression_view(expression, conn, store)
+                    for expression in expressions.expressions_for_document(
+                        store, document.id, conn=conn
+                    )
+                ]
+                feedback_payload = feedback.feedback_items(
+                    store,
+                    document_id=document.id,
+                    conversation_id=conversation_id,
+                    conn=conn,
+                )
+    except ConversationLeaseLost:
+        return {
+            "ok": False,
+            "status": "lease_lost",
+            "document_id": document_id,
+            "store_id": store.store_id,
+        }
     return {
         "ok": True,
         "document_id": document.id,
@@ -477,6 +533,7 @@ def cowork_doc_propose_edit(
             conversation_id=conversation_id,
             consumer=consumer,
             generation=generation,
+            agent_session_id=agent_session_id,
         ):
             with store.write_transaction() as truth_conn:
                 document = documents.get_document(
@@ -591,6 +648,7 @@ def cowork_doc_comment(
             conversation_id=conversation_id,
             consumer=consumer,
             generation=generation,
+            agent_session_id=agent_session_id,
         ):
             document = documents.get_document(store, document_id)
             if documents.current_lifecycle(store, document.id) != "active":

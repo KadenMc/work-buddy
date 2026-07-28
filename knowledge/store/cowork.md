@@ -28,6 +28,10 @@ dev_notes: |
 
   A document conversation ID is opaque and server-issued. GET binding inspection is read-only; only explicit Chat activation, feedback submission, or a routing decision may create the binding and ensure its driver. The driver receives durable user turns through a generation-scoped lease/cursor inbox and acknowledges each message only after handling it. Driver writes, questions, proposals, and comments carry the same generation fence so a stopped, restarted, or retired generation cannot mutate the document.
 
+  The provider/model selection is durable conversation authority, not browser settings. The first explicit start pins the projected server default. A live change is one revision-checked atomic pair and restarts only the document driver; transcript, draft, binding, and document state remain. Copy producer attribution from the exact active lease, never from request fields or the conversation's current selection.
+
+  On a changed selection, raw lease status is the fencing authority: any persisted `starting` or `running` lease must be stopped before the new selection is launched even if a stale heartbeat or failed liveness probe projects it as stopped. The write guard accepts raw active leases, so using only presentation status would leave the old generation authorized.
+
   `CoworkChatPanel` is a thin domain adapter over the canonical `widget-library/chat` `ConversationChat` surface. Co-work owns exact server-message-id-to-passage resolution, **Jump to passage**, routing notices, document-agent recovery mapping, document-scoped draft observation, and the surrounding editor/rail orchestration. Before a binding exists, the rail maps its document lifecycle into the shared `ChatPanelState`; it does not recreate the panel shell. Co-work must not fork canonical message rendering, question controls, composer behavior, loading/retry, or activity state. Co-work remains one cohesive durable Dashboard Core widget; the embedded reusable conversation surface is not a separately placeable widget instance.
 
   Document lifecycle operations span the folder's Truth/Ydoc databases and the house conversations database. They therefore acquire the cross-process per-store-and-document lifecycle lock before either side: start, feedback, and sitting routing hold it from active-state validation through their conversation effects, while retirement holds it through Truth commit and conversation close/lease revocation. Keep database work in the order lifecycle lock → Truth/Ydoc → conversations; never introduce the inverse nesting.
@@ -210,6 +214,22 @@ read-only binding lookup and does not start an agent. The first explicit Chat
 action, selected-text feedback submission, redirect, or endorsement can create
 the binding and ensure one document agent.
 
+The Chat header's optional **Run with** picker selects one provider/model pair
+for that durable conversation. Claude Code uses the user's signed-in Claude
+account; Codex uses the user's ChatGPT account through the official Codex
+runtime. Provider and model availability is server-discovered. The picker does
+not imply API billing, store a browser-only preference, or silently fall back to
+another provider.
+
+Before the conversation exists, the picker shows the server default without
+creating anything. The first explicit Chat start pins that validated pair.
+Changing an active conversation asks for confirmation, then restarts only the
+assistant driver. The messages and unsent draft stay. The selection is
+revisioned so two open surfaces cannot silently overwrite each other, and
+assistant messages retain the provider/model that actually produced them.
+Read-only documents may inspect the saved selection but cannot change it or
+start a new Chat driver.
+
 Selected-text feedback is saved verbatim as human-authored evidence, anchored to
 the exact document passage, and posted as an ordinary user turn in that same
 conversation. The response returns the real conversation and message IDs so the
@@ -227,6 +247,12 @@ turn only after processing it. Restarting creates a new generation and fences
 the old one from sending messages, asking questions, proposing edits, or adding
 comments. Ordinary composer messages never answer a pending structured question
 implicitly; a structured response names the exact question it answers.
+
+The driver runs outside the selected folder and receives document authority only
+through a generation-scoped, server-enforced MCP session. Neither provider gets
+the folder path or project instructions through its working directory, command
+arguments, or prompt. See `architecture/agent-execution` for provider isolation,
+catalog, persistence, and process-ownership details.
 
 Redirect and endorsement notices distinguish three outcomes: saved and sent to
 a running agent, saved in Chat but awaiting restart, or not saved. A review

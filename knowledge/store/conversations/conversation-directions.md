@@ -72,6 +72,9 @@ mcp__work-buddy__wb_run("conversation_list")
 - a leased driver must pass the same `consumer` and `generation` to
   conversation_send and conversation_ask; this fences late writes after a
   restart or close
+- when the lease carries a validated execution snapshot, assistant messages
+  receive their provider/model producer provenance from that exact lease; a
+  caller cannot assert or override it
 - a `lease_lost` result from receive, acknowledge, send, or ask means a newer
   driver owns the conversation; stop immediately
 - Sidebar auto-polls every 3s for new messages

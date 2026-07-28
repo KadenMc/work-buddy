@@ -349,23 +349,168 @@ def test_live_pid_has_headroom_for_long_in_flight_work(
     assert stale.alive is False
 
 
+def test_stale_live_generation_is_terminated_before_retry(
+    document_agent_store,
+    monkeypatch,
+) -> None:
+    conversation = _conversation()
+    consumer = document_agent.document_agent_consumer("store-a", "doc-a")
+    generation = "generation-stale"
+    claimed = conversation_store.claim_agent_lease(
+        conversation.conversation_id,
+        consumer,
+        generation,
+    )
+    assert claimed is not None and claimed["claimed"] is True
+    assert conversation_store.activate_agent_lease(
+        conversation.conversation_id,
+        consumer,
+        generation,
+        61001,
+    )
+    stale_at = (datetime.now().astimezone() - timedelta(minutes=20)).isoformat()
+    conn = conversation_store.get_connection()
+    try:
+        conn.execute(
+            """UPDATE conversation_agent_leases
+               SET started_at = ?, heartbeat_at = ?, updated_at = ?
+               WHERE conversation_id = ? AND consumer = ?""",
+            (
+                stale_at,
+                stale_at,
+                stale_at,
+                conversation.conversation_id,
+                consumer,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    terminated: list[int] = []
+    monkeypatch.setattr(
+        document_agent,
+        "_terminate_spawned_driver",
+        lambda pid, **_kwargs: terminated.append(pid),
+    )
+    status = document_agent.ensure_document_agent(
+        store_id="store-a",
+        document_id="doc-a",
+        conversation_id=conversation.conversation_id,
+        process_alive=lambda _pid: True,
+        register_agent=lambda *_args: None,
+        spawn_agent=lambda **_kwargs: {"status": "ok", "pid": 61002},
+    )
+
+    assert status.status == "running"
+    assert terminated == [61001]
+
+
+def test_activation_failure_terminates_newly_spawned_process(
+    document_agent_store,
+    monkeypatch,
+) -> None:
+    conversation = _conversation()
+    terminated: list[int] = []
+    monkeypatch.setattr(
+        document_agent,
+        "activate_agent_lease",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(
+        document_agent,
+        "_terminate_spawned_driver",
+        lambda pid, **_kwargs: terminated.append(pid),
+    )
+
+    status = document_agent.ensure_document_agent(
+        store_id="store-a",
+        document_id="doc-a",
+        conversation_id=conversation.conversation_id,
+        process_alive=lambda _pid: True,
+        register_agent=lambda *_args: None,
+        spawn_agent=lambda **_kwargs: {"status": "ok", "pid": 62001},
+    )
+
+    assert status.status == "stopped"
+    assert terminated == [62001]
+
+
+def test_process_check_error_fences_and_terminates_before_retry(
+    document_agent_store,
+    monkeypatch,
+) -> None:
+    conversation = _conversation()
+    consumer = document_agent.document_agent_consumer("store-a", "doc-a")
+    generation = "generation-check-error"
+    claimed = conversation_store.claim_agent_lease(
+        conversation.conversation_id,
+        consumer,
+        generation,
+    )
+    assert claimed is not None and claimed["claimed"] is True
+    assert conversation_store.activate_agent_lease(
+        conversation.conversation_id,
+        consumer,
+        generation,
+        63001,
+    )
+    checks = 0
+
+    def process_alive(_pid: int) -> bool:
+        nonlocal checks
+        checks += 1
+        if checks == 1:
+            raise OSError("transient process lookup failure")
+        return True
+
+    terminated: list[int] = []
+    monkeypatch.setattr(
+        document_agent,
+        "_terminate_spawned_driver",
+        lambda pid, **_kwargs: terminated.append(pid),
+    )
+    status = document_agent.ensure_document_agent(
+        store_id="store-a",
+        document_id="doc-a",
+        conversation_id=conversation.conversation_id,
+        process_alive=process_alive,
+        register_agent=lambda *_args: None,
+        spawn_agent=lambda **_kwargs: {"status": "ok", "pid": 63002},
+    )
+
+    assert status.status == "running"
+    assert terminated == [63001]
+
+
 def test_spawn_session_uses_explicit_model_and_authorized_executor(
     document_agent_store,
     monkeypatch,
 ) -> None:
     observed: dict[str, Any] = {}
 
-    def _authorized(**kwargs):
-        observed.update(kwargs)
-        return {"status": "ok", "pid": 70123}
-
-    from work_buddy.sidecar.dispatch import executor
-
-    monkeypatch.setattr(
-        executor,
-        "spawn_headless_agent_detached_authorized",
-        _authorized,
+    from work_buddy.agent_execution.models import (
+        AgentExecutionSelection,
+        AgentSpawnOutcome,
     )
+    from work_buddy.agent_execution import registry
+
+    selection = AgentExecutionSelection(
+        provider_id="claude-code",
+        model_id="configured-model",
+        provider_label="Claude Code",
+        model_label="Configured model",
+    )
+
+    def _start_detached(request):
+        observed["request"] = request
+        return AgentSpawnOutcome(
+            status="ok",
+            selection=request.selection,
+            pid=70123,
+        )
+
+    monkeypatch.setattr(registry, "start_detached", _start_detached)
     result = document_agent.spawn_document_agent_session(
         store_id="store-a",
         document_id="doc-a",
@@ -373,9 +518,14 @@ def test_spawn_session_uses_explicit_model_and_authorized_executor(
         consumer="cowork-document:store-a:doc-a",
         generation="generation-a",
         producer_model="configured-model",
+        execution=selection,
         history_loader=lambda _conversation_id: {"messages": []},
     )
-    assert result == {"status": "ok", "pid": 70123}
-    assert observed["name"].startswith("cowork-doc-a-conversation-a")
-    assert "producer_model: configured-model" in observed["prompt"]
-    assert observed["max_budget_usd"] == 2.0
+    assert result["status"] == "ok"
+    assert result["pid"] == 70123
+    request = observed["request"]
+    assert request.name.startswith("cowork-doc-a-conversation-a")
+    assert "producer_model: configured-model" in request.prompt
+    assert request.max_budget_usd == 2.0
+    assert request.selection == selection
+    assert request.session_id == "generation-a-cowork"

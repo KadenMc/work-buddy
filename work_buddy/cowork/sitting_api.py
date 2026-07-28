@@ -88,6 +88,12 @@ def _reconcile_routing_deliveries(
         ]
         return {**receipt, "routing_deliveries": enriched}
 
+    from work_buddy.cowork.api import (
+        _execution_selection_from_state,
+        _execution_snapshot_after_committed_action,
+        _pin_projected_execution,
+    )
+
     enriched: list[dict[str, Any]] = []
     for descriptor in descriptors:
         try:
@@ -126,10 +132,14 @@ def _reconcile_routing_deliveries(
             continue
 
         try:
+            execution_state = _pin_projected_execution(
+                status.conversation_id
+            )
             agent_status = document_agent.ensure_document_agent(
                 store_id=store.store_id,
                 document_id=document_id,
                 conversation_id=status.conversation_id,
+                execution=_execution_selection_from_state(execution_state),
             )
         except Exception:
             logger.exception(
@@ -149,6 +159,9 @@ def _reconcile_routing_deliveries(
                 "message_id": status.message_id,
                 "reason": None,
                 "agent": agent_status.to_dict(),
+                "execution": _execution_snapshot_after_committed_action(
+                    status.conversation_id
+                ),
             }
         )
     return {**receipt, "routing_deliveries": enriched}

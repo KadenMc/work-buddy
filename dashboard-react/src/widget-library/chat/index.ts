@@ -6,8 +6,15 @@ export type {
   ChatConversationProvider,
   ChatConversationSnapshot,
   ChatConversationStatus,
+  ChatExecutionModelOption,
+  ChatExecutionProfileProvider,
+  ChatExecutionProviderOption,
+  ChatExecutionSelection,
+  ChatExecutionSelectionInput,
+  ChatExecutionSnapshot,
   ChatInvalidationListener,
   ChatMessage,
+  ChatMessageProducer,
   ChatPanelStatus,
   ChatQuestion,
   ChatResponseType,
@@ -16,6 +23,7 @@ export type {
   RawChatConversation,
   RawChatConversationPayload,
   RawChatMessage,
+  RawChatMessageProducer,
 } from "./contracts";
 export {
   deriveAgentActivity,
@@ -34,6 +42,20 @@ export {
 } from "./useChatConversation";
 export { ChatMessageList, type ChatMessageListProps } from "./ChatMessageList";
 export { ChatComposer, type ChatComposerProps } from "./ChatComposer";
+export {
+  ChatExecutionPicker,
+  type ChatExecutionPickerProps,
+} from "./ChatExecutionPicker";
+export {
+  ChatExecutionSelectionError,
+  isCurrentExecutionAvailable,
+  useChatExecutionProfile,
+  type ChatExecutionConfirmSelection,
+  type ChatExecutionControl,
+  type ChatExecutionLoadStatus,
+  type ChatExecutionSelectionCandidate,
+  type ChatExecutionSwitchConfirmation,
+} from "./useChatExecutionProfile";
 export {
   ChatPanel,
   ChatPanelState,

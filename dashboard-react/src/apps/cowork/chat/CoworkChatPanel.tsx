@@ -12,6 +12,7 @@ import {
 import {
   ConversationChat,
   type ChatConversationProvider,
+  type ChatExecutionControl,
   type ChatInputRecovery,
   type ChatMessage,
   type ConversationChatState,
@@ -56,6 +57,8 @@ export interface CoworkChatPanelProps {
   readonly onEnsureAgent?: () => void;
   /** Let the owning rail derive unread state without mounting another hook. */
   readonly onMessagesChange?: (messages: readonly ChatMessage[]) => void;
+  /** Generic provider/model selection owned by the shared Chat surface. */
+  readonly execution?: ChatExecutionControl;
 }
 
 export function CoworkChatPanel({
@@ -73,6 +76,7 @@ export function CoworkChatPanel({
   ensureError,
   onEnsureAgent,
   onMessagesChange,
+  execution,
 }: CoworkChatPanelProps) {
   const store = useMemo(
     () => annotations ?? new CoworkChatAnnotations(),
@@ -152,6 +156,7 @@ export function CoworkChatPanel({
                 label: actionLabel,
                 onAction: onEnsureAgent,
                 pending: ensuringAgent,
+                requiresExecution: true,
               },
             }),
       };
@@ -184,6 +189,7 @@ export function CoworkChatPanel({
       }
       inputRecovery={resolveInputRecovery}
       readOnlyReason="This chat is closed."
+      execution={execution}
     />
   );
 }

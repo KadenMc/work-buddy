@@ -64,6 +64,24 @@ def test_acl_bound_session_is_detectable():
     assert session_acl.get_session_acl(sid) is None
 
 
+def test_cowork_execution_session_has_non_overridable_builtin_acl():
+    sid = "generation-abc-cowork"
+    acl = session_acl.get_session_acl(sid)
+    assert acl is not None
+    assert "cowork_doc_get" in acl
+    assert "conversation_send" in acl
+    assert "task_toggle" not in acl
+    assert "wb_init" not in acl
+
+    session_acl.set_session_acl(
+        sid,
+        ["cowork_doc_get", "task_toggle"],
+    )
+    assert session_acl.get_session_acl(sid) == frozenset(
+        {"cowork_doc_get"}
+    )
+
+
 # ---------------------------------------------------------------------------
 # Fail-closed behavior when session cannot be resolved
 # ---------------------------------------------------------------------------

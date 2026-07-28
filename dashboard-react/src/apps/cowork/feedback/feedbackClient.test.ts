@@ -15,6 +15,30 @@ const jsonResponse = (
     json: async () => body,
   }) as unknown as Response;
 
+const rawExecution = {
+  selection: {
+    provider_id: "codex",
+    model_id: "gpt-5.6-sol",
+    provider_label: "Codex",
+    model_label: "GPT-5.6 Sol",
+    revision: "execution:feedback",
+  },
+  providers: [
+    {
+      id: "codex",
+      label: "Codex",
+      available: true,
+      models: [
+        {
+          id: "gpt-5.6-sol",
+          label: "GPT-5.6 Sol",
+          available: true,
+        },
+      ],
+    },
+  ],
+} as const;
+
 describe("HttpCoworkFeedbackTransport", () => {
   it("POSTs the R9 route with the store_id query and the span-plus-text body", async () => {
     const fetchImpl = vi.fn(async () =>
@@ -30,6 +54,7 @@ describe("HttpCoworkFeedbackTransport", () => {
           started: true,
           error: null,
         },
+        execution: rawExecution,
       }),
     );
     const transport = new HttpCoworkFeedbackTransport(
@@ -53,6 +78,11 @@ describe("HttpCoworkFeedbackTransport", () => {
     expect(response.message_id).toBe("message-1");
     expect(response.conversation_id).toBe("c-1");
     expect(response.agent.status).toBe("running");
+    expect(response.execution.selection).toMatchObject({
+      providerId: "codex",
+      modelId: "gpt-5.6-sol",
+      revision: "execution:feedback",
+    });
 
     const [url, init] = fetchImpl.mock.calls[0] as unknown as [
       string,
@@ -189,6 +219,29 @@ describe("InMemoryCoworkFeedbackTransport", () => {
         alive: true,
         started: true,
         error: null,
+      },
+      execution: {
+        selection: {
+          providerId: "claude-code",
+          modelId: "sonnet",
+          providerLabel: "Claude Code",
+          modelLabel: "Sonnet",
+          revision: "execution-d1",
+        },
+        providers: [
+          {
+            id: "claude-code",
+            label: "Claude Code",
+            available: true,
+            models: [
+              {
+                id: "sonnet",
+                label: "Sonnet",
+                available: true,
+              },
+            ],
+          },
+        ],
       },
     });
     expect(transport.lastRequest?.text).toBe("note");

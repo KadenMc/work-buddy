@@ -145,6 +145,34 @@ def _require_init(ctx: Context) -> dict | None:
         ),
     })
 
+
+def _reject_constrained_top_level(
+    ctx: Context,
+    tool_name: str,
+) -> dict[str, Any] | None:
+    """Deny top-level gateway tools that bypass the capability ACL.
+
+    Constrained callers may initialize, discover their filtered capability
+    surface, and dispatch those capabilities through ``wb_run``. Workflow and
+    operation-result tools are not capability-dispatched, so allowing them
+    would bypass that whitelist and could expose or mutate another session's
+    state.
+    """
+    from work_buddy.mcp_server.session_acl import get_session_acl
+
+    session_id = _resolve_session(ctx)
+    if get_session_acl(session_id) is None:
+        return None
+    return _prepare(
+        {
+            "error": (
+                f"{tool_name} is not permitted for this constrained "
+                "execution session."
+            ),
+            "denied_by": "session_acl",
+        }
+    )
+
 # ---------------------------------------------------------------------------
 # Operation log — durable records for retry / observability
 # ---------------------------------------------------------------------------
@@ -430,7 +458,7 @@ def _invoke_with_session(
     from contextlib import ExitStack
 
     call_kwargs = dict(kwargs)
-    if session_id and "agent_session_id" not in call_kwargs:
+    if session_id:
         try:
             parameter = inspect.signature(callable_).parameters.get(
                 "agent_session_id"
@@ -441,6 +469,8 @@ def _invoke_with_session(
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
             inspect.Parameter.KEYWORD_ONLY,
         ):
+            # Session identity is transport-owned. Never let capability params
+            # override the server-resolved MCP connection identity.
             call_kwargs["agent_session_id"] = session_id
 
     authorization_contexts: list[tuple[Any, Any | None]] = []
@@ -1501,6 +1531,22 @@ def register_tools(mcp: FastMCP) -> None:
                 "error": "session_id is required. Pass your WORK_BUDDY_SESSION_ID.",
             })
         session_id = session_id.strip()
+        from work_buddy.mcp_server.session_acl import get_session_acl
+
+        _auto_init_from_header(ctx)
+        current_sid = _resolve_session(ctx)
+        if (
+            current_sid is not None
+            and current_sid != session_id
+            and get_session_acl(current_sid) is not None
+        ):
+            return _prepare({
+                "error": (
+                    "wb_init is not permitted to rebind this constrained "
+                    "execution session."
+                ),
+                "denied_by": "session_acl",
+            })
         _register_session(ctx, session_id)
 
         # Ensure the agent session directory exists
@@ -1652,12 +1698,19 @@ def register_tools(mcp: FastMCP) -> None:
             # ACL check would be silently bypassed.
             _auto_init_from_header(ctx)
             current_sid = _resolve_session(ctx)
-            if current_sid is not None and get_session_acl(current_sid) is not None:
+            sid = parsed_params.get("session_id", "")
+            if not sid or not str(sid).strip():
+                return _prepare({"error": "session_id is required. Pass your WORK_BUDDY_SESSION_ID."})
+            sid = str(sid).strip()
+            if (
+                current_sid is not None
+                and current_sid != sid
+                and get_session_acl(current_sid) is not None
+            ):
                 return _prepare({
                     "error": (
-                        "wb_init is not permitted for ACL-scoped sessions. "
-                        "The caller set a capability whitelist on this "
-                        "session; re-initialization would escape the ACL."
+                        "wb_init is not permitted to rebind this constrained "
+                        "execution session."
                     ),
                     "denied_by": "session_acl",
                     "hint": (
@@ -1667,10 +1720,6 @@ def register_tools(mcp: FastMCP) -> None:
                         "opened inside an llm_with_tools run by mistake."
                     ),
                 })
-            sid = parsed_params.get("session_id", "")
-            if not sid or not str(sid).strip():
-                return _prepare({"error": "session_id is required. Pass your WORK_BUDDY_SESSION_ID."})
-            sid = str(sid).strip()
             _register_session(ctx, sid)
             from work_buddy.mcp_server.activity_ledger import record_init
             record_init(sid)
@@ -2610,6 +2659,9 @@ def register_tools(mcp: FastMCP) -> None:
         gate = _require_init(ctx)
         if gate:
             return gate
+        denied = _reject_constrained_top_level(ctx, "wb_advance")
+        if denied:
+            return denied
         parsed_result = _parse_params(step_result)
         _t0 = _time.monotonic()
         result = await asyncio.to_thread(
@@ -2644,6 +2696,9 @@ def register_tools(mcp: FastMCP) -> None:
         gate = _require_init(ctx)
         if gate:
             return gate
+        denied = _reject_constrained_top_level(ctx, "wb_status")
+        if denied:
+            return denied
         if operation_id:
             record = _load_operation(operation_id)
             if record is None:
@@ -2683,6 +2738,9 @@ def register_tools(mcp: FastMCP) -> None:
         gate = _require_init(ctx)
         if gate:
             return gate
+        denied = _reject_constrained_top_level(ctx, "wb_step_result")
+        if denied:
+            return denied
         result = await asyncio.to_thread(
             _conductor().get_step_result, workflow_run_id, step_id, key,
         )
@@ -2709,6 +2767,9 @@ def register_tools(mcp: FastMCP) -> None:
         gate = _require_init(ctx)
         if gate:
             return gate
+        denied = _reject_constrained_top_level(ctx, "wb_capability_result")
+        if denied:
+            return denied
         result = await asyncio.to_thread(
             _capability_result_payload, operation_id, key,
         )

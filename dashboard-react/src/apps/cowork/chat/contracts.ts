@@ -7,6 +7,7 @@
 // of the shared ChatMessage.
 
 import type { CoworkDocumentAgent } from "./documentConversationBinding";
+import type { ChatExecutionSnapshot } from "../../../widget-library/chat";
 
 /**
  * A quote anchor as the R9 feedback route and kernel anchors.py address it. The
@@ -38,6 +39,12 @@ export interface FeedbackCapture {
   readonly messageId: string;
   /** Agent state returned by R9 after its user-authorized ensure attempt. */
   readonly agent?: CoworkDocumentAgent;
+  /**
+   * The exact execution selection/revision returned by the same R9
+   * transaction. Present on live captures so a first feedback turn cannot
+   * leave the picker holding the earlier unpinned revision.
+   */
+  readonly execution?: ChatExecutionSnapshot;
   /** The verbatim feedback text, exactly as R9 posted it as the user message. */
   readonly text: string;
   /** The document span the feedback was anchored to, for the scroll-to seam. */
@@ -73,6 +80,12 @@ export interface RoutingDeliveryInput {
   readonly note?: string;
   /** A short, user-safe reason when persistence or agent startup was incomplete. */
   readonly reason?: string;
+  /** Server-issued document conversation that received the routing note. */
+  readonly conversationId?: string;
+  /** Agent state returned by the same sitting transaction. */
+  readonly agent?: CoworkDocumentAgent;
+  /** Exact execution choice/revision returned by the same transaction. */
+  readonly execution?: ChatExecutionSnapshot;
 }
 
 /** A stored routing delivery: an input plus the store-assigned notice id. */

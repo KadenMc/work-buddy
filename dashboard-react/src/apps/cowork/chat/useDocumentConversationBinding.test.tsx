@@ -1,10 +1,12 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
+import type { ChatExecutionSnapshot } from "../../../widget-library/chat";
 import type { FeedbackCapture } from "./contracts";
-import type {
-  CoworkDocumentConversationBinding,
-  CoworkDocumentConversationBindingClient,
+import {
+  CoworkDocumentConversationBindingError,
+  type CoworkDocumentConversationBinding,
+  type CoworkDocumentConversationBindingClient,
 } from "./documentConversationBinding";
 import { useDocumentConversationBinding } from "./useDocumentConversationBinding";
 
@@ -20,6 +22,34 @@ const runningBinding = (
     error: null,
   },
   feedback: [],
+});
+
+const execution = (
+  providerId: string,
+  modelId: string,
+  revision: string,
+): ChatExecutionSnapshot => ({
+  selection: {
+    providerId,
+    modelId,
+    providerLabel: providerId === "codex" ? "Codex" : "Claude Code",
+    modelLabel: modelId === "gpt-5.6" ? "GPT-5.6" : "Sonnet",
+    revision,
+  },
+  providers: [
+    {
+      id: "claude-code",
+      label: "Claude Code",
+      available: true,
+      models: [{ id: "sonnet", label: "Sonnet", available: true }],
+    },
+    {
+      id: "codex",
+      label: "Codex",
+      available: true,
+      models: [{ id: "gpt-5.6", label: "GPT-5.6", available: true }],
+    },
+  ],
 });
 
 describe("useDocumentConversationBinding", () => {
@@ -150,6 +180,57 @@ describe("useDocumentConversationBinding", () => {
     expect(result.current.error).toBe("The network is unavailable.");
   });
 
+  it("adopts the newer execution revision from a failed start before retry", async () => {
+    const currentExecution = execution(
+      "claude-code",
+      "sonnet",
+      "revision:stale",
+    );
+    const authoritative = execution(
+      "codex",
+      "gpt-5.6",
+      "revision:new",
+    );
+    const client: CoworkDocumentConversationBindingClient = {
+      load: vi.fn(async () => ({
+        ...runningBinding("unused"),
+        conversationId: null,
+        execution: currentExecution,
+      })),
+      ensure: vi.fn(async () => {
+        throw new CoworkDocumentConversationBindingError(
+          "The model choice changed elsewhere.",
+          authoritative,
+        );
+      }),
+    };
+    const { result } = renderHook(() =>
+      useDocumentConversationBinding({
+        documentId: "doc-1",
+        storeId: "store-1",
+        client,
+      }),
+    );
+    await waitFor(() => expect(result.current.phase).toBe("idle"));
+
+    await act(() =>
+      result.current.ensure({
+        providerId: "claude-code",
+        modelId: "sonnet",
+        expectedRevision: "revision:stale",
+      }),
+    );
+
+    expect(result.current.execution?.selection).toMatchObject({
+      providerId: "codex",
+      modelId: "gpt-5.6",
+      revision: "revision:new",
+    });
+    expect(result.current.error).toBe(
+      "The model choice changed elsewhere.",
+    );
+  });
+
   it("adopts R9's real id and rejects a cross-conversation rebind", async () => {
     const client: CoworkDocumentConversationBindingClient = {
       load: vi.fn(async () => ({
@@ -174,11 +255,21 @@ describe("useDocumentConversationBinding", () => {
       conversationId: "opaque-feedback-54",
       messageId: "feedback-message-1",
       agent: runningBinding("ignored").agent,
+      execution: execution(
+        "codex",
+        "gpt-5.6",
+        "revision:feedback",
+      ),
       text: "Tighten this.",
     };
 
     act(() => result.current.adoptFeedback(capture));
     expect(result.current.conversationId).toBe("opaque-feedback-54");
+    expect(result.current.execution?.selection).toMatchObject({
+      providerId: "codex",
+      modelId: "gpt-5.6",
+      revision: "revision:feedback",
+    });
 
     act(() =>
       result.current.adoptFeedback({
@@ -189,6 +280,118 @@ describe("useDocumentConversationBinding", () => {
     expect(result.current.conversationId).toBe("opaque-feedback-54");
     expect(result.current.phase).toBe("error");
     expect(result.current.error).toMatch(/changed unexpectedly/i);
+  });
+
+  it("rejects an execution envelope from the previously open document", async () => {
+    const client: CoworkDocumentConversationBindingClient = {
+      load: vi.fn(async (documentId) => ({
+        ...runningBinding(`conversation:${documentId}`),
+        execution: execution(
+          "claude-code",
+          "sonnet",
+          `revision:${documentId}`,
+        ),
+      })),
+      ensure: vi.fn(),
+    };
+    const { result, rerender } = renderHook(
+      ({
+        documentId,
+        storeId,
+      }: {
+        documentId: string;
+        storeId: string;
+      }) =>
+        useDocumentConversationBinding({
+          documentId,
+          storeId,
+          client,
+        }),
+      {
+        initialProps: {
+          documentId: "doc-old",
+          storeId: "store-old",
+        },
+      },
+    );
+    await waitFor(() =>
+      expect(result.current.execution?.selection.revision).toBe(
+        "revision:doc-old",
+      ),
+    );
+
+    rerender({ documentId: "doc-new", storeId: "store-new" });
+    await waitFor(() =>
+      expect(result.current.execution?.selection.revision).toBe(
+        "revision:doc-new",
+      ),
+    );
+
+    act(() =>
+      result.current.adoptExecution(
+        "doc-old",
+        "store-old",
+        execution("codex", "gpt-5.6", "revision:late-old"),
+      ),
+    );
+    expect(result.current.execution?.selection).toMatchObject({
+      providerId: "claude-code",
+      modelId: "sonnet",
+      revision: "revision:doc-new",
+    });
+  });
+
+  it("does not let a slow initial load overwrite a sitting-adopted binding", async () => {
+    let resolveLoad!: (
+      value: CoworkDocumentConversationBinding,
+    ) => void;
+    const pendingLoad = new Promise<CoworkDocumentConversationBinding>(
+      (resolve) => {
+        resolveLoad = resolve;
+      },
+    );
+    const client: CoworkDocumentConversationBindingClient = {
+      load: vi.fn(() => pendingLoad),
+      ensure: vi.fn(),
+    };
+    const { result } = renderHook(() =>
+      useDocumentConversationBinding({
+        documentId: "doc-1",
+        storeId: "store-1",
+        client,
+      }),
+    );
+
+    act(() =>
+      result.current.adoptExecution(
+        "doc-1",
+        "store-1",
+        execution("codex", "gpt-5.6", "revision:sitting"),
+        runningBinding("ignored").agent,
+        "conversation-from-sitting",
+      ),
+    );
+    expect(result.current.conversationId).toBe("conversation-from-sitting");
+
+    await act(async () => {
+      resolveLoad({
+        ...runningBinding("unused"),
+        conversationId: null,
+        execution: execution(
+          "claude-code",
+          "sonnet",
+          "revision:old-load",
+        ),
+      });
+      await pendingLoad;
+    });
+
+    expect(result.current.conversationId).toBe("conversation-from-sitting");
+    expect(result.current.execution?.selection).toMatchObject({
+      providerId: "codex",
+      modelId: "gpt-5.6",
+      revision: "revision:sitting",
+    });
   });
 
   it("does not let a superseded ensure clear a newer retry", async () => {

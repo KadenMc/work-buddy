@@ -29,6 +29,7 @@ class ConversationMessage:
         choices: For choice questions — [{key, label, description?}].
         response: User's answer (filled when user responds).
         status: "sent" | "pending" (awaiting response) | "answered".
+        producer: Trusted execution provenance for an agent-authored message.
     """
 
     message_id: str = ""
@@ -41,6 +42,7 @@ class ConversationMessage:
     choices: list[dict] | None = None
     response: str | None = None
     status: str = "sent"
+    producer: dict[str, Any] | None = None
 
     def is_question(self) -> bool:
         return self.message_type == "question"
@@ -60,6 +62,7 @@ class ConversationMessage:
             "choices": self.choices,
             "response": self.response,
             "status": self.status,
+            "producer": self.producer,
         }
 
     @classmethod
@@ -70,6 +73,14 @@ class ConversationMessage:
         choices = row.get("choices")
         if isinstance(choices, str) and choices:
             choices = json.loads(choices)
+        producer = row.get("producer")
+        if isinstance(producer, str) and producer:
+            try:
+                producer = json.loads(producer)
+            except (TypeError, ValueError):
+                producer = None
+        if not isinstance(producer, dict):
+            producer = None
         return cls(
             message_id=row["message_id"],
             conversation_id=row["conversation_id"],
@@ -81,6 +92,7 @@ class ConversationMessage:
             choices=choices,
             response=row.get("response"),
             status=row.get("status", "sent"),
+            producer=producer,
         )
 
 

@@ -20,6 +20,8 @@ import {
   type CoworkDocumentAgent,
   type CoworkDocumentAgentStatus,
 } from "../chat/documentConversationBinding";
+import { normalizeChatExecutionSnapshot } from "../../../dashboard/conversations";
+import type { ChatExecutionSnapshot } from "../../../widget-library/chat";
 import {
   CoworkHttpError,
   normalizeCoworkError,
@@ -49,6 +51,7 @@ export interface CoworkFeedbackResponse {
   readonly message_id: string;
   readonly conversation_id: string;
   readonly agent: CoworkDocumentAgent;
+  readonly execution: ChatExecutionSnapshot;
 }
 
 /** The seam the affordance depends on, satisfied by fetch or an in-memory double. */
@@ -81,7 +84,12 @@ const requiredString = (
 const normalizeFeedbackResponse = (
   value: unknown,
 ): CoworkFeedbackResponse => {
-  if (!isRecord(value) || value.ok !== true || !isRecord(value.agent)) {
+  if (
+    !isRecord(value) ||
+    value.ok !== true ||
+    !isRecord(value.agent) ||
+    !isRecord(value.execution)
+  ) {
     throw new Error(RECONCILIATION_ERROR);
   }
   const evidenceId = requiredString(value, "evidence_id");
@@ -108,6 +116,7 @@ const normalizeFeedbackResponse = (
     message_id: messageId,
     conversation_id: conversationId,
     agent: normalizeCoworkDocumentAgent({ agent: rawAgent }),
+    execution: normalizeChatExecutionSnapshot(value.execution),
   };
 };
 
@@ -196,6 +205,29 @@ export class InMemoryCoworkFeedbackTransport implements CoworkFeedbackTransport 
         alive: true,
         started: true,
         error: null,
+      },
+      execution: {
+        selection: {
+          providerId: "claude-code",
+          modelId: "sonnet",
+          providerLabel: "Claude Code",
+          modelLabel: "Sonnet",
+          revision: `execution-${request.documentId}`,
+        },
+        providers: [
+          {
+            id: "claude-code",
+            label: "Claude Code",
+            available: true,
+            models: [
+              {
+                id: "sonnet",
+                label: "Sonnet",
+                available: true,
+              },
+            ],
+          },
+        ],
       },
     });
   }
