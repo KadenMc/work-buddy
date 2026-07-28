@@ -616,7 +616,7 @@ test.describe.serial("Co-work live lifecycle", () => {
       .filter({ hasText: feedback });
     await expect(
       feedbackMessage.getByRole("button", {
-        name: `Jump to the passage "${quote}"`,
+        name: `Jump to passage: "${quote}"`,
       }),
     ).toBeVisible();
     const expectedConversationPath =
@@ -688,7 +688,7 @@ test.describe.serial("Co-work live lifecycle", () => {
     await expect(page.getByText(reply, { exact: true })).toBeVisible();
     await expect(
       page.getByRole("button", {
-        name: `Jump to the passage "${quote}"`,
+        name: `Jump to passage: "${quote}"`,
       }),
     ).toBeVisible();
     expect(conversationStarts).toHaveLength(startsBeforeReload);
@@ -775,7 +775,7 @@ test.describe.serial("Co-work live lifecycle", () => {
       .filter({ hasText: feedback });
     await expect(
       failedFeedbackMessage.getByRole("button", {
-        name: `Jump to the passage "${quote}"`,
+        name: `Jump to passage: "${quote}"`,
       }),
     ).toBeVisible();
     await expect(

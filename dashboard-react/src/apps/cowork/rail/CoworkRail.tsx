@@ -1,22 +1,17 @@
 /**
  * The Review | Chat rail (section 5.1). This is the mount seam the view frame
  * wires in place of the rail placeholder: it owns the two tabs, the Review panel
- * (section 5.5, variant-A-hybrid), and the Chat panel. Chat reuses the house
- * conversation machinery wholesale through ChatPanel (mode pane, one
- * conversation per document), so no new chat infrastructure is added here.
+ * (section 5.5, variant-A-hybrid), and the Chat panel. Every ready Chat path
+ * uses the shared ConversationChat surface through a thin Co-work adapter.
  */
 
 import { useEffect, useState } from "react";
 
 import { HelpTarget, type HelpContent } from "../../../dashboard/help";
-import { Button } from "../../../ui";
 import {
-  ChatPanel,
-  deriveAgentActivity,
-  useChatConversation,
   type ChatConversationProvider,
   type ChatMessage,
-  type ChatPanelStatus,
+  ChatPanelState,
 } from "../../../widget-library/chat";
 import {
   CoworkChatPanel,
@@ -51,8 +46,6 @@ const CHAT_TAB_HELP: HelpContent = {
     "Ask a question, leave feedback on a highlighted passage, and read the agent's replies without leaving the document.",
 };
 
-const EMPTY_CHAT_MESSAGES: readonly ChatMessage[] = [];
-
 export interface CoworkRailProps {
   readonly documentId: string;
   readonly reviewProvider: ReviewRailProvider;
@@ -70,11 +63,7 @@ export interface CoworkRailProps {
   readonly reviewVisible?: boolean;
   /** Narrow workspace peer tabs own Review / Chat selection when false. */
   readonly showTabs?: boolean;
-  /**
-   * The document linkage store for the Chat tab. When supplied the tab renders the richer
-   * Co-work chat panel (feedback span links and routing-note delivery status) instead of the
-   * plain house chat panel, so the demo and test paths keep the plain panel by omitting it.
-   */
+  /** Optional document linkage for passage accessories and routing notices. */
   readonly chatAnnotations?: CoworkChatAnnotations;
   /** The scroll-to-passage seam for a feedback span link, wired by the surface. */
   readonly onScrollToChatAnchor?: (target: ScrollAnchorTarget) => void;
@@ -113,104 +102,44 @@ export type CoworkRailChat =
       readonly onRetry: () => void;
     };
 
-function CoworkConversationGate({ chat }: { readonly chat: Exclude<CoworkRailChat, { kind: "ready" }> }) {
+function CoworkConversationGate({
+  chat,
+}: {
+  readonly chat: Exclude<CoworkRailChat, { kind: "ready" }>;
+}) {
   if (chat.kind === "loading" || chat.kind === "ensuring") {
     return (
-      <section className="wb-chat-panel" aria-label="Chat about this document">
-        <div className="wb-chat-state" role="status">
-          <span className="wb-spinner" aria-hidden="true" />
-          <h3 className="wb-chat-state__title">
-            {chat.kind === "loading"
-              ? "Loading chat"
-              : "Starting chat"}
-          </h3>
-          <p>
-            {chat.kind === "loading"
-              ? "Checking for earlier messages."
-              : "This may take a moment."}
-          </p>
-        </div>
-      </section>
+      <ChatPanelState
+        label="Chat about this document"
+        kind="loading"
+        title={chat.kind === "loading" ? "Loading chat…" : "Starting chat…"}
+        detail={
+          chat.kind === "loading" ? "Checking for messages." : undefined
+        }
+      />
     );
   }
   if (chat.kind === "idle") {
     return (
-      <section className="wb-chat-panel" aria-label="Chat about this document">
-        <div className="wb-chat-state" role="status">
-          <h3 className="wb-chat-state__title">Chat about this document</h3>
-          <p>Start chat when you’re ready.</p>
-          <Button
-            variant="secondary"
-            className="wb-chat-state__action"
-            onClick={chat.onStart}
-          >
-            Start chat
-          </Button>
-        </div>
-      </section>
+      <ChatPanelState
+        label="Chat about this document"
+        kind="empty"
+        title="Chat hasn’t started."
+        detail="Start chat to ask about this document."
+        action={{ label: "Start chat", onAction: chat.onStart }}
+      />
     );
   }
   return (
-    <section className="wb-chat-panel" aria-label="Chat about this document">
-      <div className="wb-chat-state" role="alert">
-        <h3 className="wb-chat-state__title">
-          Chat could not connect
-        </h3>
-        <p>{chat.error}</p>
-        <Button
-          variant="secondary"
-          className="wb-chat-state__action"
-          onClick={chat.onRetry}
-        >
-          {chat.action === "restart" ? "Restart chat" : "Start chat"}
-        </Button>
-      </div>
-    </section>
-  );
-}
-
-function PlainCoworkChat({
-  chat,
-  storage,
-  onMessages,
-}: {
-  readonly chat: Extract<CoworkRailChat, { kind: "ready" }>;
-  readonly storage: Storage;
-  readonly onMessages: (messages: readonly ChatMessage[]) => void;
-}) {
-  const conversation = useChatConversation(chat.provider, chat.conversationId);
-  const messages = conversation.snapshot?.messages ?? EMPTY_CHAT_MESSAGES;
-  useEffect(() => onMessages(messages), [messages, onMessages]);
-  const status: ChatPanelStatus =
-    conversation.status === "loading"
-      ? "loading"
-      : conversation.status === "error"
-        ? "error"
-        : conversation.snapshot?.status === "closed"
-          ? "read-only"
-          : "ready";
-  const agentActivity =
-    conversation.snapshot !== null
-      ? deriveAgentActivity(conversation.snapshot)
-      : "idle";
-  return (
-    <ChatPanel
-      title="Chat about this document"
-      status={status}
-      messages={messages}
-      agentActivity={agentActivity}
-      onSend={(value) => conversation.send(value)}
-      sending={conversation.sending}
-      sendErrorMessage={conversation.sendError ?? undefined}
-      errorMessage={conversation.error ?? undefined}
-      onRetry={conversation.retry}
-      noMessagesLabel="No messages yet. Ask anything about this document."
-      initialValue={
-        loadChatDraft(storage, chat.draftStorageId) ?? undefined
-      }
-      onDraftChange={(text) =>
-        saveChatDraft(storage, chat.draftStorageId, text)
-      }
+    <ChatPanelState
+      label="Chat about this document"
+      kind="error"
+      title="Chat couldn’t connect."
+      detail={chat.error}
+      action={{
+        label: chat.action === "restart" ? "Restart chat" : "Start chat",
+        onAction: chat.onRetry,
+      }}
     />
   );
 }
@@ -326,7 +255,7 @@ export function CoworkRail(props: CoworkRailProps) {
       >
         {props.chat.kind !== "ready" ? (
           <CoworkConversationGate chat={props.chat} />
-        ) : props.chatAnnotations !== undefined ? (
+        ) : (
           <CoworkChatPanel
             provider={props.chat.provider}
             conversationId={props.chat.conversationId}
@@ -350,12 +279,6 @@ export function CoworkRail(props: CoworkRailProps) {
                 text,
               )
             }
-          />
-        ) : (
-          <PlainCoworkChat
-            chat={props.chat}
-            storage={props.storage ?? window.localStorage}
-            onMessages={setMessages}
           />
         )}
       </div>

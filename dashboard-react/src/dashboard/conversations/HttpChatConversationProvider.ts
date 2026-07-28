@@ -1,16 +1,14 @@
-// The live document-conversation transport. It implements the house
-// ChatConversationProvider seam over the same conversation HTTP surface the
-// legacy chat sidebar drives: GET /api/conversations/<id> for the snapshot,
-// POST .../respond for a human turn, and a 3s poll loop for the invalidation
-// signal (the house conversation cadence). It replaces createDemoChatProvider
-// as the seam the surface wires in, and it re-uses normalizeConversationPayload
-// so the mirroring of conversation_* semantics stays in the one tested place.
+// The React dashboard's live house-conversation transport. It implements the
+// transport-agnostic ChatConversationProvider seam over the same HTTP surface
+// the legacy chat sidebar drives: GET /api/conversations/<id> for the snapshot,
+// POST .../respond for a human turn, and a 3s poll loop for invalidation. It
+// reuses normalizeConversationPayload so conversation_* mapping stays in one
+// tested place.
 //
 // One instance binds one conversation, exactly like InMemoryChatProvider, so a
 // call for another conversation id is a programming error rather than a silent
-// cross-load. The provider performs the only I/O in this module and holds no
-// document linkage: feedback span links and routing deliveries live in the
-// annotations store beside it.
+// cross-load. The provider performs the only I/O in this module. App-specific
+// linkage belongs beside each consumer, not in this adapter.
 
 import {
   normalizeConversationPayload,
@@ -20,7 +18,7 @@ import {
   type ChatSendInput,
   type ChatUnsubscribe,
   type RawChatConversationPayload,
-} from "../../../widget-library/chat";
+} from "../../widget-library/chat";
 
 /** The house conversation poll cadence (chat_sidebar and the tabs poll loop). */
 const DEFAULT_POLL_INTERVAL_MS = 3000;
@@ -151,8 +149,8 @@ export class HttpChatConversationProvider implements ChatConversationProvider {
     const response = await this.fetcher()(this.endpoint("/respond"), {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
-      // Co-work replies carry the exact pending-question message id. A plain
-      // composer turn omits it and therefore remains an ordinary user message.
+      // Structured replies carry the exact pending-question message id. A
+      // plain composer turn omits it and remains an ordinary user message.
       body: JSON.stringify({
         value: input.value,
         ...(input.inReplyTo === undefined
@@ -249,7 +247,7 @@ export class HttpChatConversationProvider implements ChatConversationProvider {
   }
 }
 
-/** Build the live document-conversation provider for one conversation. */
+/** Build the live dashboard provider for one house conversation. */
 export function createHttpChatProvider(
   config: HttpChatConfig,
 ): HttpChatConversationProvider {

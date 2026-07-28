@@ -21,8 +21,20 @@ export interface ChatMessageListProps {
   readonly label?: string;
   /** Drives the typing indicator and agent-stopped notice. */
   readonly agentActivity?: ChatAgentActivity;
+  /**
+   * Additive, feature-owned content rendered after a message's canonical text
+   * and before its built-in structured-response controls. The shared
+   * transcript retains ownership of author, content, timestamp, and questions.
+   */
+  readonly renderMessageAccessory?: (message: ChatMessage) => ReactNode;
+  /** Additive feature-owned content rendered after all canonical messages. */
+  readonly transcriptAppendix?: ReactNode;
   /** Inline answer handler for pending boolean and choice questions. */
   readonly onRespond?: (value: string, inReplyTo?: string) => void;
+  /** Disable every built-in boolean and choice response control. */
+  readonly responsesDisabled?: boolean;
+  /** Whether the shared passive stopped-agent notice should be rendered. */
+  readonly showStoppedNotice?: boolean;
   /**
    * Seed the unread boundary on mount. Messages from this id onward start
    * unread and the view opens locked at that boundary rather than the bottom.
@@ -57,7 +69,11 @@ export function ChatMessageList({
   messages,
   label,
   agentActivity = "idle",
+  renderMessageAccessory,
+  transcriptAppendix,
   onRespond,
+  responsesDisabled = false,
+  showStoppedNotice = true,
   initialUnreadFromMessageId,
   onReachLatest,
   emptyLabel = "No messages yet.",
@@ -145,6 +161,7 @@ export function ChatMessageList({
             size="small"
             className="wb-chat-choice"
             onClick={() => onRespond("true", message.id)}
+            disabled={responsesDisabled}
           >
             Yes
           </Button>
@@ -153,6 +170,7 @@ export function ChatMessageList({
             size="small"
             className="wb-chat-choice"
             onClick={() => onRespond("false", message.id)}
+            disabled={responsesDisabled}
           >
             No
           </Button>
@@ -169,6 +187,7 @@ export function ChatMessageList({
               size="small"
               className="wb-chat-choice"
               onClick={() => onRespond(choice.key, message.id)}
+              disabled={responsesDisabled}
             >
               {choice.label}
             </Button>
@@ -215,6 +234,7 @@ export function ChatMessageList({
                     {authorName(message)}:
                   </span>
                   <span className="wb-chat-msg__content">{message.content}</span>
+                  {renderMessageAccessory?.(message)}
                   {renderAffordances(message)}
                 </div>
                 {message.createdAt !== undefined ? (
@@ -226,6 +246,7 @@ export function ChatMessageList({
             </Fragment>
           ))
         )}
+        {transcriptAppendix}
       </div>
 
       {agentActivity === "thinking" ? (
@@ -239,11 +260,10 @@ export function ChatMessageList({
         </div>
       ) : null}
 
-      {agentActivity === "stopped" ? (
+      {agentActivity === "stopped" && showStoppedNotice ? (
         <InlineAlert tone="danger" role="status" className="wb-chat-stopped">
           <span aria-hidden="true">■ </span>
-          Agent stopped responding. Close this chat and start a new one to
-          continue.
+          Chat paused. Your messages are still here.
         </InlineAlert>
       ) : null}
 

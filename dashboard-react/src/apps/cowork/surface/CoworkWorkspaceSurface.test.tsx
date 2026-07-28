@@ -1205,7 +1205,7 @@ describe("CoworkWorkspaceWidget live mode", () => {
     );
     expect(
       await screen.findByRole("button", {
-        name: 'Jump to the passage "editor pane"',
+        name: 'Jump to passage: "editor pane"',
       }),
     ).toBeVisible();
     first.unmount();
@@ -1217,7 +1217,7 @@ describe("CoworkWorkspaceWidget live mode", () => {
     const chatTab = within(paneTabs).getByRole("tab", { name: "Chat" });
     await userEvent.click(chatTab);
     const jump = await screen.findByRole("button", {
-      name: 'Jump to the passage "editor pane"',
+      name: 'Jump to passage: "editor pane"',
     });
     expect(jump).toBeVisible();
     expect(chatTab).toHaveAttribute("aria-selected", "true");

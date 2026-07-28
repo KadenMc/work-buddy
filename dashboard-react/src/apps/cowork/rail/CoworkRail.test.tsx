@@ -107,7 +107,7 @@ describe("CoworkRail", () => {
     );
 
     expect(
-      screen.getByRole("heading", { name: "Chat about this document" }),
+      screen.getByRole("heading", { name: "Chat hasn’t started." }),
     ).toBeVisible();
     expect(onChatSelected).not.toHaveBeenCalled();
   });
