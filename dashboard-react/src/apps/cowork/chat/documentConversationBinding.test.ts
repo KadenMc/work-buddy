@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  CoworkDocumentConversationBindingError,
   HttpCoworkDocumentConversationBindingClient,
   normalizeCoworkDocumentAgent,
 } from "./documentConversationBinding";
@@ -126,6 +127,102 @@ describe("HttpCoworkDocumentConversationBindingClient", () => {
     expect(binding.conversationId).toBe("server-issued-a4e9");
     expect(binding.created).toBe(true);
     expect(binding.agent.started).toBe(true);
+  });
+
+  it("starts with the selected provider/model pair in the same POST", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({
+        ok: true,
+        conversation_id: "server-issued-codex",
+        created: true,
+        agent: { ...RUNNING_AGENT, started: true },
+      }),
+    );
+    const client = new HttpCoworkDocumentConversationBindingClient(
+      fetchImpl as unknown as typeof fetch,
+    );
+
+    await client.ensure("doc-1", "store-1", {
+      providerId: "codex",
+      modelId: "gpt-5.6",
+      expectedRevision: "",
+    });
+
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "/api/truth/doc/doc-1/conversation?store_id=store-1",
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          provider_id: "codex",
+          model_id: "gpt-5.6",
+          expected_revision: "",
+        }),
+      },
+    );
+  });
+
+  it("preserves authoritative execution from a start conflict", async () => {
+    const client = new HttpCoworkDocumentConversationBindingClient(
+      vi.fn(async () =>
+        jsonResponse(
+          {
+            ok: false,
+            error: {
+              code: "execution_selection_changed",
+              message: "The model choice changed elsewhere.",
+            },
+            execution: {
+              selection: {
+                provider_id: "codex",
+                model_id: "gpt-5.6",
+                provider_label: "Codex",
+                model_label: "GPT-5.6",
+                revision: "revision:new",
+              },
+              providers: [
+                {
+                  id: "codex",
+                  label: "Codex",
+                  available: true,
+                  models: [
+                    {
+                      id: "gpt-5.6",
+                      label: "GPT-5.6",
+                      available: true,
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+          409,
+        ),
+      ) as unknown as typeof fetch,
+    );
+
+    const caught = await client
+      .ensure("doc-1", "store-1", {
+        providerId: "claude-code",
+        modelId: "sonnet",
+        expectedRevision: "revision:stale",
+      })
+      .catch((error: unknown) => error);
+
+    expect(caught).toBeInstanceOf(
+      CoworkDocumentConversationBindingError,
+    );
+    expect(
+      (caught as CoworkDocumentConversationBindingError)
+        .authoritativeExecution?.selection,
+    ).toMatchObject({
+      providerId: "codex",
+      modelId: "gpt-5.6",
+      revision: "revision:new",
+    });
   });
 
   it("fails closed on a malformed success payload", async () => {

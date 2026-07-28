@@ -285,6 +285,61 @@ describe("routingDeliveriesFrom", () => {
     ]);
   });
 
+  it("carries the authoritative conversation execution returned by the sitting", () => {
+    expect(
+      routingDeliveriesFrom(
+        [],
+        routingReceipt({
+          ...baseDelivery,
+          delivered: true,
+          conversation_id: "conversation-1",
+          message_id: "message-1",
+          agent: {
+            status: "running",
+            alive: true,
+            started: true,
+            error: null,
+          },
+          execution: {
+            selection: {
+              provider_id: "codex",
+              model_id: "gpt-5.6-sol",
+              provider_label: "Codex",
+              model_label: "GPT-5.6 Sol",
+              revision: "execution:sitting",
+            },
+            providers: [
+              {
+                id: "codex",
+                label: "Codex",
+                available: true,
+                models: [
+                  {
+                    id: "gpt-5.6-sol",
+                    label: "GPT-5.6 Sol",
+                    available: true,
+                  },
+                ],
+              },
+            ],
+          },
+        }),
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        conversationId: "conversation-1",
+        agent: expect.objectContaining({ status: "running" }),
+        execution: expect.objectContaining({
+          selection: expect.objectContaining({
+            providerId: "codex",
+            modelId: "gpt-5.6-sol",
+            revision: "execution:sitting",
+          }),
+        }),
+      }),
+    ]);
+  });
+
   it("reports failed when the routing note was not saved", () => {
     expect(
       routingDeliveriesFrom(

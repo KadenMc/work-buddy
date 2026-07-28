@@ -27,8 +27,12 @@ See ``dispatch/models.py`` for the full spawn type model.
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
+import threading
 import time
+import uuid
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -50,6 +54,15 @@ AGENT_SPAWN_CONSENT_OP = "sidecar:agent_spawn"
 # Session name prefix for daemon-spawned agents.
 # Phase C (routing) uses this to distinguish daemon agents from user sessions.
 DAEMON_SESSION_PREFIX = "daemon:"
+
+# Detached Co-work drivers are terminated only through the exact ``Popen``
+# handle that created them. A persisted PID alone is not sufficient proof of
+# ownership because operating systems can reuse PIDs after a process exits.
+_OWNED_DETACHED_PROCESSES: dict[tuple[int, str], subprocess.Popen] = {}
+_OWNED_DETACHED_PROCESSES_LOCK = threading.RLock()
+_DETACHED_STDIN_TIMEOUT_SECONDS = 10.0
+_DETACHED_TERMINATION_VERIFY_TIMEOUT_SECONDS = 1.0
+_DETACHED_TERMINATION_RETRY_SECONDS = 1.0
 
 
 def execute_job(job: Job) -> dict[str, Any]:
@@ -350,11 +363,12 @@ def _resolve_spawn_mode(mode_str: str) -> SpawnMode:
 
 def _build_headless_agent_argv(
     *,
-    prompt: str,
+    prompt: str | None,
     session_name: str,
     model: str,
     max_budget_usd: float,
     persistent: bool,
+    extra_args: Sequence[str] = (),
 ) -> list[str]:
     """Build the ``claude --print`` argv for a headless agent spawn.
 
@@ -367,6 +381,7 @@ def _build_headless_agent_argv(
     # Note: Do NOT use --bare — it disables OAuth/keychain, causing auth failure.
     cmd = [
         "claude",
+        *extra_args,
         "--print",
         "--model", model,
         "--output-format", "json",
@@ -376,8 +391,381 @@ def _build_headless_agent_argv(
     ]
     if not persistent:
         cmd.append("--no-session-persistence")
-    cmd.append(prompt)
+    if prompt is not None:
+        cmd.append(prompt)
     return cmd
+
+
+def _spawn_detached_process_unchecked(
+    *,
+    name: str,
+    argv: Sequence[str],
+    cwd: str | Path,
+    env: Mapping[str, str] | None = None,
+    stdin_text: str | None = None,
+    session_name: str = "",
+    missing_executable_error: str = "Agent runtime is not installed.",
+    spawn_error: str = "Agent process could not start.",
+) -> dict[str, Any]:
+    """Start one fixed-argv background process without a command shell.
+
+    This is the provider-neutral process boundary used by Co-work execution
+    providers.  Provider registries construct and validate ``argv``; browser
+    requests never supply executable paths or flags directly.
+
+    ``stdin_text`` exists so workers can receive a potentially large private
+    brief without putting it in the OS process list.  The write is completed
+    before this function returns, while the worker remains detached.
+    """
+
+    command = tuple(argv)
+    if not command or any(not isinstance(arg, str) or "\x00" in arg for arg in command):
+        return {
+            "status": "error",
+            "error_code": "invalid_spawn_request",
+            "error": "Agent process request was invalid.",
+        }
+
+    logger.info(
+        "Spawning detached process: name='%s', executable='%s', argc=%d",
+        name,
+        Path(command[0]).name,
+        len(command),
+    )
+    try:
+        from work_buddy.compat import subprocess_creation_flags
+
+        proc = subprocess.Popen(
+            list(command),
+            stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            cwd=str(cwd),
+            env=dict(env) if env is not None else None,
+            creationflags=subprocess_creation_flags(),
+            start_new_session=os.name != "nt",
+            close_fds=True,
+            shell=False,
+            text=stdin_text is not None,
+            encoding="utf-8" if stdin_text is not None else None,
+        )
+    except FileNotFoundError:
+        logger.error(
+            "Detached process executable was not found: name='%s'", name
+        )
+        return {
+            "status": "error",
+            "error_code": "runtime_not_installed",
+            "error": missing_executable_error,
+        }
+    except Exception as exc:
+        logger.error(
+            "Detached process spawn failed: name='%s', error_type=%s",
+            name,
+            type(exc).__name__,
+            exc_info=True,
+        )
+        return {
+            "status": "error",
+            "error_code": "spawn_failed",
+            "error": spawn_error,
+        }
+
+    owner_token = session_name.strip() or uuid.uuid4().hex
+    with _OWNED_DETACHED_PROCESSES_LOCK:
+        _OWNED_DETACHED_PROCESSES[(proc.pid, owner_token)] = proc
+    # Start the natural-exit reaper before prompt delivery. Delivery can time
+    # out while its writer thread is still blocked; that failure path must
+    # retain a way to observe and clean up the exact owned process.
+    _start_detached_process_reaper(proc, owner_token)
+
+    if stdin_text is not None and proc.stdin is not None:
+        delivered, timed_out = _deliver_detached_stdin(
+            proc,
+            stdin_text,
+            timeout_seconds=_DETACHED_STDIN_TIMEOUT_SECONDS,
+        )
+        if not delivered:
+            terminated = _terminate_owned_process_handle(proc, owner_token)
+            if not terminated:
+                _start_detached_termination_retrier(proc, owner_token)
+            logger.error(
+                "Detached process rejected its input: name='%s'", name
+            )
+            return {
+                "status": "error",
+                "error_code": (
+                    "spawn_input_timeout"
+                    if timed_out
+                    else "spawn_input_failed"
+                ),
+                "error": spawn_error,
+            }
+
+    return {
+        "status": "ok",
+        "pid": proc.pid,
+        "session_name": session_name,
+        "process_owner": owner_token,
+    }
+
+
+def _deliver_detached_stdin(
+    proc: subprocess.Popen,
+    stdin_text: str,
+    *,
+    timeout_seconds: float,
+) -> tuple[bool, bool]:
+    """Write a private prompt through stdin without blocking the request forever."""
+
+    completed = threading.Event()
+    failed = threading.Event()
+
+    def _write() -> None:
+        try:
+            if proc.stdin is None:
+                failed.set()
+                return
+            proc.stdin.write(stdin_text)
+            proc.stdin.close()
+        except (BrokenPipeError, OSError, ValueError):
+            failed.set()
+        finally:
+            completed.set()
+
+    writer = threading.Thread(
+        target=_write,
+        name=f"detached-stdin-{proc.pid}",
+        daemon=True,
+    )
+    writer.start()
+    if not completed.wait(max(0.0, timeout_seconds)):
+        return False, True
+    return not failed.is_set(), False
+
+
+def _owned_detached_process(
+    pid: int,
+    owner_token: str,
+) -> subprocess.Popen | None:
+    with _OWNED_DETACHED_PROCESSES_LOCK:
+        return _OWNED_DETACHED_PROCESSES.get((pid, owner_token))
+
+
+def _forget_owned_detached_process(
+    pid: int,
+    owner_token: str,
+    proc: subprocess.Popen | None = None,
+) -> None:
+    with _OWNED_DETACHED_PROCESSES_LOCK:
+        key = (pid, owner_token)
+        current = _OWNED_DETACHED_PROCESSES.get(key)
+        if proc is None or current is proc:
+            _OWNED_DETACHED_PROCESSES.pop(key, None)
+
+
+def _start_detached_process_reaper(
+    proc: subprocess.Popen,
+    owner_token: str,
+) -> threading.Thread | None:
+    """Release the exact owned process handle after natural worker exit."""
+
+    wait = getattr(proc, "wait", None)
+    if not callable(wait):
+        return None
+
+    def _reap() -> None:
+        try:
+            wait()
+        except (OSError, ValueError):
+            return
+        _forget_owned_detached_process(proc.pid, owner_token, proc)
+
+    reaper = threading.Thread(
+        target=_reap,
+        name=f"detached-reaper-{proc.pid}",
+        daemon=True,
+    )
+    reaper.start()
+    return reaper
+
+
+def _start_detached_termination_retrier(
+    proc: subprocess.Popen,
+    owner_token: str,
+) -> threading.Thread:
+    """Retry cleanup when a worker's private prompt was not delivered.
+
+    A timed-out stdin writer may unblock later and let the worker consume the
+    prompt. The caller has already received a failed spawn result, so this
+    runtime retains the exact process handle and retries termination until the
+    process exits or another exact-owner path removes that handle.
+    """
+
+    def _retry() -> None:
+        while _owned_detached_process(proc.pid, owner_token) is proc:
+            if _terminate_owned_process_handle(proc, owner_token):
+                return
+            time.sleep(_DETACHED_TERMINATION_RETRY_SECONDS)
+
+    retrier = threading.Thread(
+        target=_retry,
+        name=f"detached-termination-retry-{proc.pid}",
+        daemon=True,
+    )
+    retrier.start()
+    return retrier
+
+
+def _terminate_owned_process_handle(
+    proc: subprocess.Popen,
+    owner_token: str,
+) -> bool:
+    """Terminate one process proven to have been spawned by this runtime."""
+
+    pid = proc.pid
+    try:
+        return_code = proc.poll()
+    except (OSError, ValueError):
+        return_code = None
+    if return_code is not None:
+        _forget_owned_detached_process(pid, owner_token, proc)
+        return True
+
+    if os.name == "nt":
+        try:
+            from work_buddy.compat import _force_kill_pid
+
+            kill_requested = _force_kill_pid(pid)
+        except (ProcessLookupError, PermissionError, OSError):
+            kill_requested = False
+
+        # A nonzero taskkill result can race with natural process exit. Poll
+        # the exact owned handle once before deciding whether ownership must
+        # remain available for a retry.
+        if not kill_requested:
+            try:
+                exited = proc.poll() is not None
+            except (OSError, ValueError):
+                exited = False
+            if exited:
+                _forget_owned_detached_process(pid, owner_token, proc)
+            return exited
+
+        # taskkill returning zero means the request was accepted, not that
+        # this Popen handle has necessarily observed exit. Wait briefly and
+        # only forget the handle once termination is confirmed.
+        try:
+            proc.wait(timeout=_DETACHED_TERMINATION_VERIFY_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            return False
+        except (OSError, TypeError, ValueError):
+            try:
+                if proc.poll() is None:
+                    return False
+            except (OSError, ValueError):
+                return False
+        _forget_owned_detached_process(pid, owner_token, proc)
+        return True
+
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        try:
+            exited = proc.poll() is not None
+        except (OSError, ValueError):
+            exited = False
+        if exited:
+            _forget_owned_detached_process(pid, owner_token, proc)
+        return exited
+    except (PermissionError, OSError):
+        return False
+
+    # A delivered signal is not proof that the child exited. Keep the exact
+    # handle registered when it ignores SIGTERM so a later retry can still
+    # terminate it without relying on a potentially recycled PID.
+    try:
+        proc.wait(timeout=_DETACHED_TERMINATION_VERIFY_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        return False
+    except (OSError, TypeError, ValueError):
+        try:
+            if proc.poll() is None:
+                return False
+        except (OSError, ValueError):
+            return False
+    _forget_owned_detached_process(pid, owner_token, proc)
+    return True
+
+
+@requires_consent(
+    operation=AGENT_SPAWN_CONSENT_OP,
+    reason="Start a background agent for a user-opened conversation.",
+    risk="high",
+    consent_weight="high",
+    default_ttl=0,
+)
+def spawn_detached_process_authorized(
+    *,
+    name: str,
+    argv: Sequence[str],
+    cwd: str | Path,
+    env: Mapping[str, str] | None = None,
+    stdin_text: str | None = None,
+    session_name: str = "",
+    missing_executable_error: str = "Agent runtime is not installed.",
+    spawn_error: str = "Agent process could not start.",
+) -> dict[str, Any]:
+    """Consent-gated provider-neutral detached process launch."""
+
+    return _spawn_detached_process_unchecked(
+        name=name,
+        argv=argv,
+        cwd=cwd,
+        env=env,
+        stdin_text=stdin_text,
+        session_name=session_name,
+        missing_executable_error=missing_executable_error,
+        spawn_error=spawn_error,
+    )
+
+
+def terminate_detached_process(
+    pid: int,
+    *,
+    owner_token: str,
+) -> bool:
+    """Best-effort termination for a backend-owned detached driver PID.
+
+    Callers obtain ``pid`` from the persisted agent lease after fencing that
+    lease generation. A matching live ``Popen`` handle in this runtime is also
+    required before any signal is sent, preventing PID-reuse mistakes.
+
+    Windows delegates to Work Buddy's ``taskkill /F /T`` implementation so
+    the SDK worker and its pinned App Server child are terminated together.
+    """
+
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        return False
+    if pid == os.getpid():
+        logger.error("Refusing to terminate the current sidecar process")
+        return False
+    normalized_owner = str(owner_token or "").strip()
+    if not normalized_owner:
+        return False
+    proc = _owned_detached_process(pid, normalized_owner)
+    if proc is not None:
+        return _terminate_owned_process_handle(proc, normalized_owner)
+
+    from work_buddy.utils.process import is_process_alive
+
+    if not is_process_alive(pid):
+        return True
+    logger.warning(
+        "Refusing to terminate unowned detached PID: pid=%s",
+        pid,
+    )
+    return False
 
 
 def _spawn_headless_agent_detached_unchecked(

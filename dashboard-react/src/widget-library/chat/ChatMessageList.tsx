@@ -237,9 +237,25 @@ export function ChatMessageList({
                   {renderMessageAccessory?.(message)}
                   {renderAffordances(message)}
                 </div>
-                {message.createdAt !== undefined ? (
-                  <span className="wb-chat-msg__time">
-                    {formatTime(message.createdAt)}
+                {message.createdAt !== undefined ||
+                (message.author === "assistant" &&
+                  message.producer !== undefined) ? (
+                  <span className="wb-chat-msg__meta">
+                    {message.createdAt !== undefined ? (
+                      <span className="wb-chat-msg__time">
+                        {formatTime(message.createdAt)}
+                      </span>
+                    ) : null}
+                    {message.author === "assistant" &&
+                    message.producer !== undefined ? (
+                      <span
+                        className="wb-chat-msg__producer"
+                        aria-label={`Produced by ${message.producer.providerLabel}, ${message.producer.modelLabel}`}
+                      >
+                        {message.producer.providerLabel} ·{" "}
+                        {message.producer.modelLabel}
+                      </span>
+                    ) : null}
                   </span>
                 ) : null}
               </div>

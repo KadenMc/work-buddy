@@ -236,19 +236,26 @@ def kill_process_on_port(port: int, *, wait_seconds: float = 5.0) -> bool:
     return False
 
 
-def _force_kill_pid(pid: int) -> None:
-    """Force-terminate a process using the most reliable method per OS."""
+def _force_kill_pid(pid: int) -> bool:
+    """Force-terminate a process using the most reliable method per OS.
+
+    Returns ``True`` when the force-kill request succeeded or the process was
+    already gone. Returns ``False`` when the operating system rejected the
+    request or the helper could not be invoked. Callers that own a process
+    handle should still verify that handle exited before releasing ownership.
+    """
     if IS_WINDOWS:
         try:
             # taskkill /F works cross-process on Windows where os.kill
             # often silently fails. /T kills the process tree so any
             # children spawned by the orphan also go.
-            subprocess.run(
+            completed = subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(pid)],
                 capture_output=True, timeout=5, check=False,
             )
         except Exception:
-            pass
+            return False
+        return completed.returncode == 0
     else:
         import signal
         # SIGKILL doesn't exist on Windows; on Unix it does. Use
@@ -257,8 +264,11 @@ def _force_kill_pid(pid: int) -> None:
         sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
         try:
             os.kill(pid, sigkill)
-        except (OSError, ProcessLookupError):
-            pass
+        except ProcessLookupError:
+            return True
+        except OSError:
+            return False
+        return True
 
 
 def _is_port_listening(port: int, *, timeout: float = 0.1) -> bool:

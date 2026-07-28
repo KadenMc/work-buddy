@@ -4,7 +4,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import { DashboardHelpProvider } from "../../../dashboard/help";
 import { expectNoAccessibilityViolations } from "../../../test/setup";
-import type { ChatConversationProvider } from "../../../widget-library/chat";
+import type {
+  ChatConversationProvider,
+  ChatExecutionControl,
+} from "../../../widget-library/chat";
 import { CoworkChatAnnotations } from "../chat";
 import {
   loadChatDraft,
@@ -62,6 +65,41 @@ function renderRail(storage: Storage = new MemoryStorage()) {
 }
 
 const S1_TLDR = "Add the vault content hash to the cache key.";
+
+const chatExecution = (
+  select: ChatExecutionControl["select"] = vi.fn(async () => {}),
+): ChatExecutionControl => ({
+  snapshot: {
+    selection: {
+      providerId: "claude-code",
+      modelId: "sonnet",
+      providerLabel: "Claude Code",
+      modelLabel: "Sonnet",
+      revision: "",
+    },
+    providers: [
+      {
+        id: "claude-code",
+        label: "Claude Code",
+        available: true,
+        models: [{ id: "sonnet", label: "Sonnet", available: true }],
+      },
+      {
+        id: "codex",
+        label: "Codex",
+        available: true,
+        models: [{ id: "gpt-5.6", label: "GPT-5.6", available: true }],
+      },
+    ],
+  },
+  status: "ready",
+  selecting: false,
+  error: null,
+  announcement: null,
+  currentAvailable: true,
+  select,
+  retry: vi.fn(),
+});
 
 describe("CoworkRail", () => {
   it("frames the Review and Chat tabs with Review active", async () => {
@@ -131,6 +169,69 @@ describe("CoworkRail", () => {
     expect(onChatSelected).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole("tab", { name: /Chat/ }));
     expect(onChatSelected).toHaveBeenCalledOnce();
+  });
+
+  it("lets the user choose the execution pair before explicitly starting chat", async () => {
+    const select = vi.fn(async () => {});
+    const onStart = vi.fn();
+    render(
+      <CoworkRail
+        documentId="demo-doc"
+        reviewProvider={new InMemoryReviewProvider()}
+        chat={{
+          kind: "idle",
+          draftStorageId: "document:demo-doc",
+          onStart,
+        }}
+        chatExecution={chatExecution(select)}
+        storage={new MemoryStorage()}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole("tab", { name: /Chat/ }));
+    await userEvent.click(
+      screen.getByRole("button", {
+        name: "Run with Claude Code · Sonnet",
+      }),
+    );
+    await userEvent.click(
+      screen.getByRole("option", { name: "Codex, GPT-5.6" }),
+    );
+
+    expect(select).toHaveBeenCalledWith("codex", "gpt-5.6");
+    expect(onStart).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Start chat" }));
+    expect(onStart).toHaveBeenCalledOnce();
+  });
+
+  it("does not start an idle chat from a server read-only execution profile", () => {
+    const onStart = vi.fn();
+    const execution = chatExecution();
+    render(
+      <CoworkRail
+        documentId="demo-doc"
+        reviewProvider={new InMemoryReviewProvider()}
+        chat={{
+          kind: "idle",
+          draftStorageId: "document:demo-doc",
+          onStart,
+        }}
+        chatExecution={{
+          ...execution,
+          snapshot: {
+            ...execution.snapshot!,
+            readOnly: true,
+          },
+        }}
+        initialTab="chat"
+        storage={new MemoryStorage()}
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: "Start chat" }),
+    ).toBeDisabled();
+    expect(onStart).not.toHaveBeenCalled();
   });
 
   it("does not let a hidden Queue consume shortcuts from Chat", async () => {

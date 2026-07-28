@@ -9,6 +9,11 @@
  */
 
 import type { FeedbackCapture } from "./contracts";
+import { normalizeChatExecutionSnapshot } from "../../../dashboard/conversations";
+import type {
+  ChatExecutionSelectionInput,
+  ChatExecutionSnapshot,
+} from "../../../widget-library/chat";
 
 export type CoworkDocumentAgentStatus =
   | "not_started"
@@ -29,6 +34,8 @@ export interface CoworkDocumentConversationBinding {
   readonly agent: CoworkDocumentAgent;
   /** Persisted span annotations for feedback already in this conversation. */
   readonly feedback: readonly FeedbackCapture[];
+  /** Server-authoritative provider/model selection and catalog, when supported. */
+  readonly execution?: ChatExecutionSnapshot;
 }
 
 export interface CoworkDocumentConversationBindingClient {
@@ -39,7 +46,19 @@ export interface CoworkDocumentConversationBindingClient {
   ensure(
     documentId: string,
     storeId: string,
+    execution?: ChatExecutionSelectionInput,
   ): Promise<CoworkDocumentConversationBinding>;
+}
+
+/** A failed binding mutation that still carried newer server authority. */
+export class CoworkDocumentConversationBindingError extends Error {
+  constructor(
+    message: string,
+    readonly authoritativeExecution?: ChatExecutionSnapshot,
+  ) {
+    super(message);
+    this.name = "CoworkDocumentConversationBindingError";
+  }
 }
 
 interface RawBindingPayload {
@@ -50,6 +69,7 @@ interface RawBindingPayload {
   readonly agent_status?: unknown;
   readonly agent_error?: unknown;
   readonly feedback?: unknown;
+  readonly execution?: unknown;
   readonly error?: unknown;
 }
 
@@ -132,6 +152,10 @@ const normalizeBinding = (
     created: payload.created === true,
     agent: normalizeCoworkDocumentAgent(payload),
     feedback,
+    execution:
+      payload.execution === undefined
+        ? undefined
+        : normalizeChatExecutionSnapshot(payload.execution),
   };
 };
 
@@ -218,8 +242,19 @@ const readJson = async (response: Response): Promise<RawBindingPayload> => {
   }
 };
 
-const endpoint = (documentId: string, storeId: string): string =>
+export const coworkConversationEndpoint = (
+  documentId: string,
+  storeId: string,
+): string =>
   `/api/truth/doc/${encodeURIComponent(documentId)}/conversation?store_id=${encodeURIComponent(storeId)}`;
+
+export const coworkConversationExecutionEndpoint = (
+  documentId: string,
+  storeId: string,
+): string => {
+  const query = new URLSearchParams({ store_id: storeId });
+  return `/api/truth/doc/${encodeURIComponent(documentId)}/conversation/execution?${query}`;
+};
 
 export class HttpCoworkDocumentConversationBindingClient
   implements CoworkDocumentConversationBindingClient
@@ -240,26 +275,56 @@ export class HttpCoworkDocumentConversationBindingClient
   ensure(
     documentId: string,
     storeId: string,
+    execution?: ChatExecutionSelectionInput,
   ): Promise<CoworkDocumentConversationBinding> {
-    return this.#request(documentId, storeId, "POST");
+    return this.#request(documentId, storeId, "POST", execution);
   }
 
   async #request(
     documentId: string,
     storeId: string,
     method: "GET" | "POST",
+    execution?: ChatExecutionSelectionInput,
   ): Promise<CoworkDocumentConversationBinding> {
-    const response = await this.#fetch(endpoint(documentId, storeId), {
-      method,
-      headers: { Accept: "application/json" },
-    });
+    const response = await this.#fetch(
+      coworkConversationEndpoint(documentId, storeId),
+      {
+        method,
+        headers: {
+          Accept: "application/json",
+          ...(execution === undefined
+            ? {}
+            : { "Content-Type": "application/json" }),
+        },
+        ...(execution === undefined
+          ? {}
+          : {
+              body: JSON.stringify({
+                provider_id: execution.providerId,
+                model_id: execution.modelId,
+                expected_revision: execution.expectedRevision,
+              }),
+            }),
+      },
+    );
     const payload = await readJson(response);
     if (!response.ok || payload.ok !== true) {
-      throw new Error(
+      let authoritativeExecution: ChatExecutionSnapshot | undefined;
+      if (payload.execution !== undefined) {
+        try {
+          authoritativeExecution = normalizeChatExecutionSnapshot(
+            payload.execution,
+          );
+        } catch {
+          authoritativeExecution = undefined;
+        }
+      }
+      throw new CoworkDocumentConversationBindingError(
         errorMessage(payload.error) ??
           (method === "GET"
             ? "Chat could not be loaded."
             : "Chat couldn’t start. Try again."),
+        authoritativeExecution,
       );
     }
     if (!isRecord(payload.agent)) {

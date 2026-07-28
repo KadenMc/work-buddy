@@ -7,6 +7,8 @@ import {
 import { TextArea, TextField } from "react-aria-components";
 
 import { Button, InlineAlert, Spinner } from "../../ui";
+import { ChatExecutionPicker } from "./ChatExecutionPicker";
+import type { ChatExecutionControl } from "./useChatExecutionProfile";
 import "./styles.css";
 
 /** Cap the auto-grown textarea height so a long draft scrolls within itself. */
@@ -35,6 +37,8 @@ export interface ChatComposerProps {
    * an unsaved-work guard. The composer still owns the text state.
    */
   onDraftChange?(value: string): void;
+  /** Optional server-authoritative provider/model selection for this chat. */
+  readonly execution?: ChatExecutionControl;
 }
 
 export function ChatComposer({
@@ -46,12 +50,21 @@ export function ChatComposer({
   errorMessage,
   initialValue = "",
   onDraftChange,
+  execution,
 }: ChatComposerProps) {
   const [draft, setDraft] = useState(initialValue);
   const [busy, setBusy] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const isSending = sending || busy;
-  const canSend = !disabled && !isSending && draft.trim().length > 0;
+  const effectiveDisabled =
+    disabled || execution?.snapshot?.readOnly === true;
+  const executionBlocksSend =
+    execution?.selecting === true;
+  const canSend =
+    !effectiveDisabled &&
+    !isSending &&
+    !executionBlocksSend &&
+    draft.trim().length > 0;
 
   const grow = (element: HTMLTextAreaElement | null) => {
     if (element === null) return;
@@ -62,7 +75,14 @@ export function ChatComposer({
 
   const submit = async () => {
     const value = draft.trim();
-    if (value.length === 0 || disabled || isSending) return;
+    if (
+      value.length === 0 ||
+      effectiveDisabled ||
+      isSending ||
+      executionBlocksSend
+    ) {
+      return;
+    }
     setBusy(true);
     try {
       await onSend(value);
@@ -102,12 +122,12 @@ export function ChatComposer({
           {errorMessage}
         </InlineAlert>
       ) : null}
-      <div className="wb-chat-composer__row">
+      <div className="wb-chat-composer__shell">
         <TextField
           className="wb-chat-composer__field"
           aria-label={label}
           value={draft}
-          isDisabled={disabled}
+          isDisabled={effectiveDisabled}
           onChange={(value) => {
             setDraft(value);
             onDraftChange?.(value);
@@ -122,14 +142,24 @@ export function ChatComposer({
             onKeyDown={handleKeyDown}
           />
         </TextField>
-        <Button
-          type="submit"
-          variant="primary"
-          className="wb-chat-composer__send"
-          disabled={!canSend}
-        >
-          {isSending ? <Spinner label="Sending message" /> : "Send"}
-        </Button>
+        <div className="wb-chat-composer__footer">
+          {execution === undefined ? (
+            <span className="wb-chat-composer__footer-spacer" />
+          ) : (
+            <ChatExecutionPicker
+              control={execution}
+              disabled={effectiveDisabled || isSending}
+            />
+          )}
+          <Button
+            type="submit"
+            variant="primary"
+            className="wb-chat-composer__send"
+            disabled={!canSend}
+          >
+            {isSending ? <Spinner label="Sending message" /> : "Send"}
+          </Button>
+        </div>
       </div>
     </form>
   );

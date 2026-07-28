@@ -10,6 +10,7 @@ import { useEffect, useState } from "react";
 import { HelpTarget, type HelpContent } from "../../../dashboard/help";
 import {
   type ChatConversationProvider,
+  type ChatExecutionControl,
   type ChatMessage,
   ChatPanelState,
 } from "../../../widget-library/chat";
@@ -67,6 +68,8 @@ export interface CoworkRailProps {
   readonly chatAnnotations?: CoworkChatAnnotations;
   /** The scroll-to-passage seam for a feedback span link, wired by the surface. */
   readonly onScrollToChatAnchor?: (target: ScrollAnchorTarget) => void;
+  /** Shared provider/model selection, available before a conversation starts. */
+  readonly chatExecution?: ChatExecutionControl;
 }
 
 export type CoworkRailChat =
@@ -104,8 +107,10 @@ export type CoworkRailChat =
 
 function CoworkConversationGate({
   chat,
+  execution,
 }: {
   readonly chat: Exclude<CoworkRailChat, { kind: "ready" }>;
+  readonly execution?: ChatExecutionControl;
 }) {
   if (chat.kind === "loading" || chat.kind === "ensuring") {
     return (
@@ -116,6 +121,8 @@ function CoworkConversationGate({
         detail={
           chat.kind === "loading" ? "Checking for messages." : undefined
         }
+        execution={execution}
+        executionDisabled
       />
     );
   }
@@ -126,7 +133,12 @@ function CoworkConversationGate({
         kind="empty"
         title="Chat hasn’t started."
         detail="Start chat to ask about this document."
-        action={{ label: "Start chat", onAction: chat.onStart }}
+        action={{
+          label: "Start chat",
+          onAction: chat.onStart,
+          requiresExecution: true,
+        }}
+        execution={execution}
       />
     );
   }
@@ -139,7 +151,9 @@ function CoworkConversationGate({
       action={{
         label: chat.action === "restart" ? "Restart chat" : "Start chat",
         onAction: chat.onRetry,
+        requiresExecution: true,
       }}
+      execution={execution}
     />
   );
 }
@@ -254,7 +268,10 @@ export function CoworkRail(props: CoworkRailProps) {
         hidden={tab !== "chat"}
       >
         {props.chat.kind !== "ready" ? (
-          <CoworkConversationGate chat={props.chat} />
+          <CoworkConversationGate
+            chat={props.chat}
+            execution={props.chatExecution}
+          />
         ) : (
           <CoworkChatPanel
             provider={props.chat.provider}
@@ -266,6 +283,7 @@ export function CoworkRail(props: CoworkRailProps) {
             ensureError={props.chat.ensureError}
             onEnsureAgent={props.chat.onEnsureAgent}
             onMessagesChange={setMessages}
+            execution={props.chatExecution}
             composerInitialValue={
               loadChatDraft(
                 props.storage ?? window.localStorage,

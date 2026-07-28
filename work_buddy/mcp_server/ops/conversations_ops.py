@@ -40,13 +40,91 @@ def _register() -> None:
         list_conversations as _list_conversations,
         conversation_agent_write_guard as _agent_write_guard,
     )
+    from work_buddy.conversations.execution import (
+        producer_for_lease as _producer_for_lease,
+    )
 
-    def _write_fence(conversation_id, consumer, generation):
+    def _write_fence(
+        conversation_id,
+        consumer,
+        generation,
+        agent_session_id,
+    ):
+        from work_buddy.cowork.execution_identity import (
+            cowork_generation_from_session,
+        )
+
+        session_generation = cowork_generation_from_session(
+            agent_session_id
+        )
+        if session_generation is not None:
+            if consumer is None or generation is None:
+                raise ValueError(
+                    "Co-work execution requires consumer and generation"
+                )
+            if generation != session_generation:
+                raise ConversationLeaseLost("lease_lost")
         if consumer is None and generation is None:
             return nullcontext(None)
         if consumer is None or generation is None:
             raise ValueError("consumer and generation must be provided together")
         return _agent_write_guard(conversation_id, consumer, generation)
+
+    def _trusted_producer(
+        conversation_id,
+        consumer,
+        generation,
+        lease_conn,
+        agent_session_id,
+    ):
+        producer = None
+        if consumer is not None and generation is not None and lease_conn is not None:
+            producer = _producer_for_lease(
+                conversation_id=conversation_id,
+                consumer=consumer,
+                generation=generation,
+                conn=lease_conn,
+            )
+        from work_buddy.cowork.execution_identity import (
+            cowork_generation_from_session,
+        )
+
+        if (
+            cowork_generation_from_session(agent_session_id) is not None
+            and producer is None
+        ):
+            raise ConversationLeaseLost("lease_lost")
+        return producer
+
+    def _verify_cowork_read_scope(
+        conversation_id,
+        consumer,
+        generation,
+        agent_session_id,
+    ) -> None:
+        """Bind hosted Co-work reads to their exact active lease."""
+
+        from work_buddy.cowork.execution_identity import (
+            cowork_generation_from_session,
+        )
+
+        session_generation = cowork_generation_from_session(
+            agent_session_id
+        )
+        if session_generation is None:
+            return
+        if consumer is None or generation is None:
+            raise ValueError(
+                "Co-work execution requires consumer and generation"
+            )
+        if generation != session_generation:
+            raise ConversationLeaseLost("lease_lost")
+        with _agent_write_guard(
+            conversation_id,
+            consumer,
+            generation,
+        ):
+            pass
 
     def _notify_conversation_created(
         conversation_id: str, title: str, body: str = "",
@@ -105,19 +183,29 @@ def _register() -> None:
         message_id: str | None = None,
         consumer: str | None = None,
         generation: str | None = None,
+        agent_session_id: str | None = None,
     ) -> dict:
         try:
             with _write_fence(
                 conversation_id,
                 consumer,
                 generation,
+                agent_session_id,
             ) as lease_conn:
+                producer = _trusted_producer(
+                    conversation_id,
+                    consumer,
+                    generation,
+                    lease_conn,
+                    agent_session_id,
+                )
                 if message_id is None:
                     msg = _add_msg(
                         conversation_id,
                         "agent",
                         message,
                         conn=lease_conn,
+                        producer=producer,
                     )
                     created = msg is not None
                 else:
@@ -126,6 +214,7 @@ def _register() -> None:
                         message,
                         message_id,
                         conn=lease_conn,
+                        producer=producer,
                     )
         except ConversationLeaseLost:
             return {
@@ -154,6 +243,7 @@ def _register() -> None:
         timeout_seconds: int | None = None,
         consumer: str | None = None,
         generation: str | None = None,
+        agent_session_id: str | None = None,
     ) -> dict:
         choice_dicts = None
         if choices:
@@ -169,7 +259,15 @@ def _register() -> None:
                 conversation_id,
                 consumer,
                 generation,
+                agent_session_id,
             ) as lease_conn:
+                producer = _trusted_producer(
+                    conversation_id,
+                    consumer,
+                    generation,
+                    lease_conn,
+                    agent_session_id,
+                )
                 msg = _add_msg(
                     conversation_id,
                     "agent",
@@ -178,6 +276,7 @@ def _register() -> None:
                     response_type=response_type,
                     choices=choice_dicts,
                     conn=lease_conn,
+                    producer=producer,
                 )
         except ConversationLeaseLost:
             return {
@@ -201,9 +300,32 @@ def _register() -> None:
             timeout_seconds = min(timeout_seconds, 110)
             deadline = time.time() + timeout_seconds
             while time.time() < deadline:
-                pending = _get_pending(conversation_id)
+                try:
+                    with _write_fence(
+                        conversation_id,
+                        consumer,
+                        generation,
+                        agent_session_id,
+                    ) as lease_conn:
+                        pending = _get_pending(
+                            conversation_id,
+                            conn=lease_conn,
+                        )
+                        data = (
+                            _get_conv_msgs(
+                                conversation_id,
+                                conn=lease_conn,
+                            )
+                            if pending is None
+                            or pending.status == "answered"
+                            else None
+                        )
+                except ConversationLeaseLost:
+                    return {
+                        "status": "lease_lost",
+                        "conversation_id": conversation_id,
+                    }
                 if pending is None or pending.status == "answered":
-                    data = _get_conv_msgs(conversation_id)
                     if data:
                         for m in reversed(data["messages"]):
                             if m.get("message_id") == msg.message_id:
@@ -220,10 +342,41 @@ def _register() -> None:
     def conversation_poll(
         conversation_id: str,
         timeout_seconds: int | None = None,
+        consumer: str | None = None,
+        generation: str | None = None,
+        agent_session_id: str | None = None,
     ) -> dict:
-        pending = _get_pending(conversation_id)
+        def _scoped_snapshot():
+            with _write_fence(
+                conversation_id,
+                consumer,
+                generation,
+                agent_session_id,
+            ) as lease_conn:
+                pending_question = _get_pending(
+                    conversation_id,
+                    conn=lease_conn,
+                )
+                conversation_data = (
+                    _get_conv_msgs(
+                        conversation_id,
+                        conn=lease_conn,
+                    )
+                    if pending_question is None
+                    else None
+                )
+                return pending_question, conversation_data
+
+        try:
+            pending, data = _scoped_snapshot()
+        except ConversationLeaseLost:
+            return {
+                "status": "lease_lost",
+                "conversation_id": conversation_id,
+            }
+        except ValueError as exc:
+            return {"status": "invalid_request", "error": str(exc)}
         if pending is None:
-            data = _get_conv_msgs(conversation_id)
             if not data:
                 return {"error": f"Conversation not found: {conversation_id}"}
             answered = [m for m in data["messages"]
@@ -247,9 +400,14 @@ def _register() -> None:
         timeout_seconds = min(timeout_seconds, 110)
         deadline = time.time() + timeout_seconds
         while time.time() < deadline:
-            p = _get_pending(conversation_id)
+            try:
+                p, data = _scoped_snapshot()
+            except ConversationLeaseLost:
+                return {
+                    "status": "lease_lost",
+                    "conversation_id": conversation_id,
+                }
             if p is None:
-                data = _get_conv_msgs(conversation_id)
                 if data:
                     answered = [m for m in data["messages"]
                                 if m.get("message_id") == pending.message_id]
@@ -269,8 +427,23 @@ def _register() -> None:
         consumer: str,
         generation: str,
         timeout_seconds: int | None = None,
+        agent_session_id: str | None = None,
     ) -> dict:
         """Receive the oldest unacked user turn for one leased consumer."""
+        try:
+            _verify_cowork_read_scope(
+                conversation_id,
+                consumer,
+                generation,
+                agent_session_id,
+            )
+        except ConversationLeaseLost:
+            return {
+                "status": "lease_lost",
+                "conversation_id": conversation_id,
+            }
+        except ValueError as exc:
+            return {"status": "invalid_request", "error": str(exc)}
         return _receive_user(
             conversation_id,
             consumer,
@@ -283,8 +456,23 @@ def _register() -> None:
         consumer: str,
         generation: str,
         message_id: str,
+        agent_session_id: str | None = None,
     ) -> dict:
         """Acknowledge exactly the currently delivered oldest user turn."""
+        try:
+            _verify_cowork_read_scope(
+                conversation_id,
+                consumer,
+                generation,
+                agent_session_id,
+            )
+        except ConversationLeaseLost:
+            return {
+                "status": "lease_lost",
+                "conversation_id": conversation_id,
+            }
+        except ValueError as exc:
+            return {"status": "invalid_request", "error": str(exc)}
         return _ack_user(
             conversation_id,
             consumer,

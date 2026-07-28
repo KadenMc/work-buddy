@@ -35,6 +35,30 @@ from typing import Any, Iterable
 
 
 _SESSION_ACL: dict[str, frozenset[str]] = {}
+_COWORK_EXECUTION_CAPABILITIES = frozenset(
+    {
+        "cowork_doc_get",
+        "cowork_doc_propose_edit",
+        "cowork_doc_comment",
+        "conversation_send",
+        "conversation_ask",
+        "conversation_poll",
+        "conversation_receive",
+        "conversation_ack",
+    }
+)
+
+
+def _builtin_session_acl(session_id: str | None) -> frozenset[str] | None:
+    """Return the non-overridable least-authority ACL for hosted Co-work."""
+
+    from work_buddy.cowork.execution_identity import (
+        cowork_generation_from_session,
+    )
+
+    if cowork_generation_from_session(session_id) is None:
+        return None
+    return _COWORK_EXECUTION_CAPABILITIES
 
 
 def set_session_acl(session_id: str, allowed_capabilities: Iterable[str]) -> None:
@@ -60,7 +84,13 @@ def get_session_acl(session_id: str | None) -> frozenset[str] | None:
     """
     if not session_id:
         return None
-    return _SESSION_ACL.get(session_id)
+    configured = _SESSION_ACL.get(session_id)
+    builtin = _builtin_session_acl(session_id)
+    if builtin is None:
+        return configured
+    if configured is None:
+        return builtin
+    return builtin.intersection(configured)
 
 
 def any_acl_registered() -> bool:

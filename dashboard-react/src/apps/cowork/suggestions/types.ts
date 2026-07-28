@@ -198,6 +198,8 @@ export interface SittingResponse {
       readonly started: boolean;
       readonly error: string | null;
     };
+    /** Server-authoritative execution projection for the ensured driver. */
+    readonly execution?: unknown;
   }[];
 }
 

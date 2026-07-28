@@ -61,6 +61,79 @@ def fake_document_agent(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]
         )
 
     monkeypatch.setattr(document_agent, "ensure_document_agent", _ensure)
+    from work_buddy.agent_execution import registry as execution_registry
+    from work_buddy.agent_execution.models import (
+        AgentExecutionCatalog,
+        AgentExecutionSelection,
+        ModelDescriptor,
+        ProviderAvailability,
+        ProviderDescriptor,
+        UnknownModelError,
+        UnknownProviderError,
+    )
+
+    default = AgentExecutionSelection(
+        provider_id="claude-code",
+        model_id="sonnet",
+        provider_label="Claude Code",
+        model_label="Sonnet",
+    )
+    catalog = AgentExecutionCatalog(
+        providers=(
+            ProviderDescriptor(
+                id="claude-code",
+                label="Claude Code",
+                availability=ProviderAvailability.READY,
+                auth_mode="claude_account",
+                models=(
+                    ModelDescriptor(id="sonnet", label="Sonnet", is_default=True),
+                    ModelDescriptor(id="opus", label="Opus"),
+                ),
+            ),
+            ProviderDescriptor(
+                id="codex",
+                label="Codex",
+                availability=ProviderAvailability.READY,
+                auth_mode="chatgpt_account",
+                models=(
+                    ModelDescriptor(
+                        id="gpt-5.6-sol",
+                        label="GPT-5.6 Sol",
+                        is_default=True,
+                    ),
+                ),
+            ),
+        ),
+        default_selection=default,
+    )
+
+    def _validate(selection, *, refresh=False):
+        del refresh
+        for provider in catalog.providers:
+            if provider.id != selection.provider_id:
+                continue
+            for model in provider.models:
+                if model.id == selection.model_id:
+                    return AgentExecutionSelection(
+                        provider_id=provider.id,
+                        model_id=model.id,
+                        provider_label=provider.label,
+                        model_label=model.label,
+                    )
+            raise UnknownModelError(
+                f"Unknown model for {provider.label}: {selection.model_id}"
+            )
+        raise UnknownProviderError(
+            f"Unknown agent execution provider: {selection.provider_id}"
+        )
+
+    monkeypatch.setattr(execution_registry, "default_selection", lambda: default)
+    monkeypatch.setattr(
+        execution_registry,
+        "get_catalog",
+        lambda **_kwargs: catalog,
+    )
+    monkeypatch.setattr(execution_registry, "validate_selection", _validate)
     return calls
 
 

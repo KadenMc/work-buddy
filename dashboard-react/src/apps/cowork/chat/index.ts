@@ -15,6 +15,8 @@ export {
 
 export {
   HttpCoworkDocumentConversationBindingClient,
+  coworkConversationEndpoint,
+  coworkConversationExecutionEndpoint,
   normalizeCoworkDocumentAgent,
   type CoworkDocumentAgent,
   type CoworkDocumentAgentStatus,

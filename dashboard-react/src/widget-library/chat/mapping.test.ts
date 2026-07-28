@@ -50,6 +50,12 @@ describe("normalizeConversationPayload", () => {
           message_id: "m-2",
           role: "agent",
           content: "Pick one",
+          producer: {
+            provider_id: "codex",
+            model_id: "gpt-5.6",
+            provider_label: "Codex",
+            model_label: "GPT-5.6",
+          },
           message_type: "question",
           status: "pending",
           response_type: "choice",
@@ -85,6 +91,12 @@ describe("normalizeConversationPayload", () => {
           { key: "a", label: "Option A" },
           { key: "b", label: "Option B" },
         ],
+      },
+      producer: {
+        providerId: "codex",
+        modelId: "gpt-5.6",
+        providerLabel: "Codex",
+        modelLabel: "GPT-5.6",
       },
     });
   });

@@ -185,6 +185,7 @@ export function CoworkFeedbackAffordance({
         messageId: response.message_id,
         conversationId: response.conversation_id,
         agent: response.agent,
+        execution: response.execution,
         text,
         anchor: {
           exact: draft.anchor.exact,

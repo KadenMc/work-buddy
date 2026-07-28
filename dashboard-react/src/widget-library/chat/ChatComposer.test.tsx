@@ -4,6 +4,34 @@ import { describe, expect, it, vi } from "vitest";
 
 import { expectNoAccessibilityViolations } from "../../test/setup";
 import { ChatComposer } from "./ChatComposer";
+import type { ChatExecutionControl } from "./useChatExecutionProfile";
+
+const changingExecution = (): ChatExecutionControl => ({
+  snapshot: {
+    selection: {
+      providerId: "claude-code",
+      modelId: "sonnet",
+      providerLabel: "Claude Code",
+      modelLabel: "Sonnet",
+      revision: "execution:1",
+    },
+    providers: [
+      {
+        id: "claude-code",
+        label: "Claude Code",
+        available: true,
+        models: [{ id: "sonnet", label: "Sonnet", available: true }],
+      },
+    ],
+  },
+  status: "ready",
+  selecting: true,
+  error: null,
+  announcement: null,
+  currentAvailable: true,
+  select: vi.fn(async () => {}),
+  retry: vi.fn(),
+});
 
 describe("ChatComposer", () => {
   it("enables Send only with content and submits the trimmed value", async () => {
@@ -77,6 +105,47 @@ describe("ChatComposer", () => {
     render(<ChatComposer onSend={vi.fn()} sending />);
     expect(screen.getByText("Sending message")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Sending message/ })).toBeDisabled();
+  });
+
+  it("retains a draft and blocks Enter while the execution pair is changing", async () => {
+    const onSend = vi.fn();
+    render(
+      <ChatComposer
+        onSend={onSend}
+        execution={changingExecution()}
+      />,
+    );
+    const input = screen.getByRole("textbox", { name: "Message" });
+
+    await userEvent.type(input, "keep this draft{Enter}");
+
+    expect(input).toHaveValue("keep this draft");
+    expect(onSend).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+  });
+
+  it("still delivers to a running conversation when catalog probing is unavailable", async () => {
+    const onSend = vi.fn().mockResolvedValue(undefined);
+    render(
+      <ChatComposer
+        onSend={onSend}
+        execution={{
+          ...changingExecution(),
+          status: "error",
+          selecting: false,
+          currentAvailable: false,
+        }}
+      />,
+    );
+
+    await userEvent.type(
+      screen.getByRole("textbox", { name: "Message" }),
+      "keep the durable turn{Enter}",
+    );
+
+    await waitFor(() =>
+      expect(onSend).toHaveBeenCalledWith("keep the durable turn"),
+    );
   });
 
   it("surfaces the inline send error and stays accessible", async () => {

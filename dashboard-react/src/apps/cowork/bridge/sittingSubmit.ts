@@ -1,4 +1,5 @@
 import type { RoutingDeliveryInput } from "../chat";
+import { normalizeChatExecutionSnapshot } from "../../../dashboard/conversations";
 import type {
   SittingItemResult as RailSittingItemResult,
   SittingResult as RailSittingResult,
@@ -56,6 +57,14 @@ export const routingDeliveriesFrom = (
           : delivery.delivered === true && delivery.agent?.status === "running"
             ? "delivered"
             : "queued";
+      let execution: RoutingDeliveryInput["execution"];
+      if (delivery.execution !== undefined) {
+        try {
+          execution = normalizeChatExecutionSnapshot(delivery.execution);
+        } catch {
+          execution = undefined;
+        }
+      }
       return {
         verb: delivery.verb,
         proposalId: delivery.proposal_id,
@@ -66,6 +75,18 @@ export const routingDeliveriesFrom = (
         ...(delivery.reason === undefined || delivery.reason === null
           ? {}
           : { reason: delivery.reason }),
+        ...(execution === undefined
+          ? {}
+          : {
+              execution,
+              ...(delivery.conversation_id === undefined ||
+              delivery.conversation_id === null
+                ? {}
+                : { conversationId: delivery.conversation_id }),
+              ...(delivery.agent === undefined
+                ? {}
+                : { agent: delivery.agent }),
+            }),
       };
     });
   }

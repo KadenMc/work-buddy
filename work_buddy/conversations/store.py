@@ -25,7 +25,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from work_buddy.conversations.models import Conversation, ConversationMessage
 
@@ -154,6 +154,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             choices         TEXT,
             response        TEXT,
             status          TEXT NOT NULL DEFAULT 'sent',
+            producer        TEXT,
             FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id)
         );
 
@@ -183,11 +184,35 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             heartbeat_at    TEXT,
             updated_at      TEXT NOT NULL,
             error           TEXT,
+            execution_json  TEXT,
             PRIMARY KEY (conversation_id, consumer),
             FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id)
         );
         """
     )
+    _ensure_column(conn, "messages", "producer", "producer TEXT")
+    _ensure_column(
+        conn,
+        "conversation_agent_leases",
+        "execution_json",
+        "execution_json TEXT",
+    )
+    conn.commit()
+
+
+def _ensure_column(
+    conn: sqlite3.Connection,
+    table: str,
+    column: str,
+    declaration: str,
+) -> None:
+    """Add one optional column to an existing SQLite table, idempotently."""
+    columns = {
+        str(row["name"])
+        for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+    }
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {declaration}")
 
 
 def _maybe_migrate_legacy_db() -> None:
@@ -436,6 +461,7 @@ def add_message(
     choices: list[dict] | None = None,
     conn: sqlite3.Connection | None = None,
     message_id: str | None = None,
+    producer: Mapping[str, Any] | None = None,
 ) -> ConversationMessage | None:
     """Add a message to a conversation. Returns the message, or None if
     conversation not found.
@@ -468,12 +494,13 @@ def add_message(
             response_type=response_type,
             choices=choices,
             status=status,
+            producer=dict(producer) if producer is not None else None,
         )
         cursor = conn.execute(
             """INSERT OR IGNORE INTO messages
                (message_id, conversation_id, role, content, created_at,
-                message_type, response_type, choices, response, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                message_type, response_type, choices, response, status, producer)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 msg.message_id,
                 msg.conversation_id,
@@ -485,6 +512,7 @@ def add_message(
                 json.dumps(choices) if choices else None,
                 None,
                 msg.status,
+                json.dumps(msg.producer) if msg.producer is not None else None,
             ),
         )
         if cursor.rowcount == 0:
@@ -520,6 +548,7 @@ def send_agent_message_idempotent(
     content: str,
     message_id: str,
     conn: sqlite3.Connection | None = None,
+    producer: Mapping[str, Any] | None = None,
 ) -> tuple[ConversationMessage | None, bool]:
     """Send one caller-keyed agent message with first-writer-wins semantics.
 
@@ -551,13 +580,22 @@ def send_agent_message_idempotent(
             message_type="text",
             response_type="none",
             status="sent",
+            producer=dict(producer) if producer is not None else None,
         )
         cursor = conn.execute(
             """INSERT OR IGNORE INTO messages
                (message_id, conversation_id, role, content, created_at,
-                message_type, response_type, choices, response, status)
-               VALUES (?, ?, 'agent', ?, ?, 'text', 'none', NULL, NULL, 'sent')""",
-            (message_id, conversation_id, content, now),
+                message_type, response_type, choices, response, status, producer)
+               VALUES (?, ?, 'agent', ?, ?, 'text', 'none', NULL, NULL, 'sent', ?)""",
+            (
+                message_id,
+                conversation_id,
+                content,
+                now,
+                json.dumps(candidate.producer)
+                if candidate.producer is not None
+                else None,
+            ),
         )
         if cursor.rowcount == 1:
             conn.execute(
@@ -789,12 +827,25 @@ def get_agent_lease(
     try:
         row = conn.execute(
             """SELECT conversation_id, consumer, generation, status, pid,
-                      started_at, heartbeat_at, updated_at, error
+                      started_at, heartbeat_at, updated_at, error,
+                      execution_json
                FROM conversation_agent_leases
                WHERE conversation_id = ? AND consumer = ?""",
             (conversation_id, consumer),
         ).fetchone()
-        return None if row is None else dict(row)
+        if row is None:
+            return None
+        result = dict(row)
+        raw_execution = result.pop("execution_json", None)
+        if isinstance(raw_execution, str) and raw_execution:
+            try:
+                execution = json.loads(raw_execution)
+            except (TypeError, ValueError):
+                execution = None
+        else:
+            execution = None
+        result["execution"] = execution if isinstance(execution, dict) else None
+        return result
     finally:
         if own_conn:
             conn.close()
@@ -880,6 +931,7 @@ def claim_agent_lease(
     heartbeat_ttl_seconds: float = 150.0,
     now: datetime | None = None,
     conn: sqlite3.Connection | None = None,
+    execution: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Atomically claim a new generation unless a recent one still owns it.
 
@@ -915,6 +967,16 @@ def claim_agent_lease(
             )
             age = _timestamp_age_seconds(reference, now=current_now)
             reusable = age is not None and age <= ttl
+        requested_execution = (
+            dict(execution) if execution is not None else None
+        )
+        if (
+            reusable
+            and requested_execution is not None
+            and existing is not None
+            and existing.get("execution") != requested_execution
+        ):
+            reusable = False
         if reusable:
             existing["claimed"] = False
             if own_conn:
@@ -924,8 +986,8 @@ def claim_agent_lease(
         conn.execute(
             """INSERT INTO conversation_agent_leases
                    (conversation_id, consumer, generation, status, pid,
-                    started_at, heartbeat_at, updated_at, error)
-               VALUES (?, ?, ?, 'starting', NULL, ?, NULL, ?, NULL)
+                    started_at, heartbeat_at, updated_at, error, execution_json)
+               VALUES (?, ?, ?, 'starting', NULL, ?, NULL, ?, NULL, ?)
                ON CONFLICT(conversation_id, consumer) DO UPDATE SET
                    generation = excluded.generation,
                    status = 'starting',
@@ -933,8 +995,18 @@ def claim_agent_lease(
                    started_at = excluded.started_at,
                    heartbeat_at = NULL,
                    updated_at = excluded.updated_at,
-                   error = NULL""",
-            (conversation_id, consumer, generation, now_text, now_text),
+                   error = NULL,
+                   execution_json = excluded.execution_json""",
+            (
+                conversation_id,
+                consumer,
+                generation,
+                now_text,
+                now_text,
+                json.dumps(requested_execution)
+                if requested_execution is not None
+                else None,
+            ),
         )
         if own_conn:
             conn.commit()
@@ -948,6 +1020,7 @@ def claim_agent_lease(
             "heartbeat_at": None,
             "updated_at": now_text,
             "error": None,
+            "execution": requested_execution,
             "claimed": True,
         }
     except Exception:
@@ -1146,6 +1219,11 @@ def receive_user_message(
     while True:
         conn = get_connection()
         try:
+            # Couple lease validation and message selection in one short
+            # transaction. A generation fence either commits first and this
+            # pass returns lease_lost, or waits until this read completes; an
+            # old process can never observe a turn committed after revocation.
+            conn.execute("BEGIN IMMEDIATE")
             monotonic_now = time.monotonic()
             if monotonic_now - last_heartbeat >= 10.0:
                 if not _touch_agent_lease(
@@ -1156,7 +1234,6 @@ def receive_user_message(
                 ):
                     conn.rollback()
                     return {"status": "lease_lost"}
-                conn.commit()
                 last_heartbeat = monotonic_now
             else:
                 lease = conn.execute(
@@ -1185,12 +1262,14 @@ def receive_user_message(
                         or starting_age > _AGENT_STARTING_GRACE_SECONDS
                     )
                 ):
+                    conn.rollback()
                     return {"status": "lease_lost"}
             row = _next_user_message(
                 conn,
                 conversation_id=conversation_id,
                 consumer=consumer,
             )
+            conn.commit()
             if row is not None:
                 return {
                     "status": "message",

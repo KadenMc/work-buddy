@@ -219,6 +219,41 @@ def test_list_and_get_report_document_and_open_layer(cowork: dict[str, object]) 
     assert got["feedback"] == []
 
 
+def test_cowork_execution_session_cannot_read_another_document(
+    cowork: dict[str, object],
+) -> None:
+    store_id = str(cowork["store_id"])
+    own_doc_id, _ = _register_doc(cowork["store"])
+    other_doc_id, _ = _register_doc(
+        cowork["store"],
+        path="docs/other.md",
+        body="# Other\n\nOther document.\n",
+    )
+    own_generation = "generation-own"
+    other_generation = "generation-other"
+    _activate_document_lease(store_id, own_doc_id, own_generation)
+    _activate_document_lease(store_id, other_doc_id, other_generation)
+
+    own = cowork_ops.cowork_doc_get(
+        store_id,
+        own_doc_id,
+        agent_session_id=f"{own_generation}-cowork",
+    )
+    other = cowork_ops.cowork_doc_get(
+        store_id,
+        other_doc_id,
+        agent_session_id=f"{own_generation}-cowork",
+    )
+
+    assert own["ok"] is True
+    assert other == {
+        "ok": False,
+        "status": "lease_lost",
+        "document_id": other_doc_id,
+        "store_id": store_id,
+    }
+
+
 def test_get_exposes_truth_backed_feedback_by_exact_message_id(
     cowork: dict[str, object],
 ) -> None:
@@ -630,6 +665,35 @@ def test_propose_edit_rejects_claim_refs_on_deletion_atomically(
         )
 
     assert proposals.open_proposals(cowork["store"], document_id=doc_id) == ()
+
+
+def test_cowork_execution_session_cannot_omit_its_document_write_fence(
+    cowork: dict[str, object],
+) -> None:
+    store_id = str(cowork["store_id"])
+    doc_id, _ = _register_doc(cowork["store"])
+    generation = "generation-bound"
+    _binding, _consumer = _activate_document_lease(
+        store_id,
+        doc_id,
+        generation,
+    )
+
+    result = cowork_ops.cowork_doc_propose_edit(
+        store_id,
+        doc_id,
+        _one_hunk(),
+        "reason",
+        "tldr",
+        MODEL,
+        agent_session_id=f"{generation}-cowork",
+    )
+
+    assert result == {"ok": False, "status": "lease_lost"}
+    assert proposals.open_proposals(
+        cowork["store"],
+        document_id=doc_id,
+    ) == ()
 
 
 # --------------------------------------------------------------------------

@@ -20,7 +20,10 @@ import { saveRailTab } from "../guards";
 import CoworkWorkspaceWidget, {
   reimportReceiptMatchesDocument,
 } from "../widget/CoworkWorkspaceWidget";
-import { resolveFixtureMode } from "./CoworkWorkspaceSurface";
+import {
+  coworkExecutionSwitchConfirmation,
+  resolveFixtureMode,
+} from "./CoworkWorkspaceSurface";
 
 /**
  * The composite workspace card is a normal grid widget now, so the tests drive its renderer
@@ -85,6 +88,32 @@ const renderWorkspace = (
   render(
     workspaceElement(input, emit),
   );
+
+describe("Co-work execution switch impact", () => {
+  const candidate = {
+    providerId: "codex",
+    modelId: "gpt-5.6",
+    providerLabel: "Codex",
+    modelLabel: "GPT-5.6",
+  } as const;
+
+  it("confirms only when switching would restart an active agent", () => {
+    expect(
+      coworkExecutionSwitchConfirmation("not_started", candidate),
+    ).toBeNull();
+    expect(
+      coworkExecutionSwitchConfirmation("stopped", candidate),
+    ).toBeNull();
+    expect(
+      coworkExecutionSwitchConfirmation("running", candidate),
+    ).toEqual({
+      title: "Switch to Codex · GPT-5.6?",
+      description:
+        "This restarts the assistant with the new model. Your messages and draft stay here.",
+      confirmLabel: "Switch",
+    });
+  });
+});
 
 describe("CoworkWorkspaceWidget default (empty) mode", () => {
   const originalUrl = window.location.href;
@@ -926,6 +955,39 @@ const LIVE_AGENT = {
   error: null,
 } as const;
 
+const executionPayload = (
+  providerId = "claude-code",
+  modelId = "sonnet",
+  revision = "",
+) => ({
+  selection: {
+    provider_id: providerId,
+    model_id: modelId,
+    provider_label: providerId === "codex" ? "Codex" : "Claude Code",
+    model_label: modelId === "gpt-5.6" ? "GPT-5.6" : "Sonnet",
+    revision,
+  },
+  providers: [
+    {
+      id: "claude-code",
+      label: "Claude Code",
+      available: true,
+      availability: "ready",
+      auth_mode: "subscription",
+      models: [{ id: "sonnet", label: "Sonnet", available: true }],
+    },
+    {
+      id: "codex",
+      label: "Codex",
+      available: true,
+      availability: "ready",
+      auth_mode: "chatgpt",
+      models: [{ id: "gpt-5.6", label: "GPT-5.6", available: true }],
+    },
+  ],
+  read_only: false,
+});
+
 const liveConversationPayload = () => ({
   conversation: {
     conversation_id: LIVE_CONVERSATION_ID,
@@ -1240,7 +1302,7 @@ describe("CoworkWorkspaceWidget live mode", () => {
     saveRailTab(window.localStorage, "live-doc", "review");
   });
 
-  it("ensures on a current Chat click, then loads only the returned opaque id", async () => {
+  it("starts only from the explicit Chat action, then loads the returned opaque id", async () => {
     const baseFetch = liveFetch();
     const ensuredId = "server-issued-after-click-72";
     const fetchImpl = vi.fn(
@@ -1305,6 +1367,16 @@ describe("CoworkWorkspaceWidget live mode", () => {
     ).toBe(false);
 
     await userEvent.click(screen.getByRole("tab", { name: /Chat/ }));
+    expect(
+      fetchImpl.mock.calls.some(
+        ([input, init]) =>
+          String(input).includes("/conversation?store_id=live-store") &&
+          init?.method === "POST",
+      ),
+    ).toBe(false);
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Start chat" }),
+    );
     expect(await screen.findByText("Chat started from this click.")).toBeVisible();
     expect(
       fetchImpl.mock.calls.some(
@@ -1323,6 +1395,134 @@ describe("CoworkWorkspaceWidget live mode", () => {
         String(input).includes("/api/conversations/cowork-doc-"),
       ),
     ).toBe(false);
+    saveRailTab(window.localStorage, "live-doc", "review");
+  });
+
+  it("selects before first start and POSTs that confirmed pair and revision", async () => {
+    const baseFetch = liveFetch();
+    const startedConversationId = "server-issued-codex-chat";
+    const patchBodies: unknown[] = [];
+    const postBodies: unknown[] = [];
+    let execution = executionPayload();
+    const fetchImpl = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        const url = String(input);
+        const method = (init?.method ?? "GET").toUpperCase();
+        if (
+          url.includes(
+            "/api/truth/doc/live-doc/conversation/execution?store_id=live-store",
+          )
+        ) {
+          patchBodies.push(JSON.parse(String(init?.body)));
+          execution = executionPayload(
+            "codex",
+            "gpt-5.6",
+            "execution:codex",
+          );
+          return jsonResponse({
+            ok: true,
+            execution,
+            agent: {
+              status: "not_started",
+              alive: null,
+              started: false,
+              error: null,
+            },
+          });
+        }
+        if (
+          url.includes(
+            "/api/truth/doc/live-doc/conversation?store_id=live-store",
+          )
+        ) {
+          if (method === "POST") {
+            postBodies.push(JSON.parse(String(init?.body)));
+            return jsonResponse({
+              ok: true,
+              conversation_id: startedConversationId,
+              created: false,
+              execution,
+              agent: { ...LIVE_AGENT, started: true },
+            });
+          }
+          return jsonResponse({
+            ok: true,
+            conversation_id: null,
+            created: false,
+            execution,
+            agent: {
+              status: "not_started",
+              alive: null,
+              started: false,
+              error: null,
+            },
+          });
+        }
+        if (url === `/api/conversations/${startedConversationId}`) {
+          return jsonResponse({
+            conversation: {
+              conversation_id: startedConversationId,
+              title: "Chat about this document",
+              status: "open",
+              agent_alive: true,
+            },
+            messages: [
+              {
+                message_id: "codex-ready",
+                role: "agent",
+                content: "Codex chat is ready.",
+                producer: {
+                  provider_id: "codex",
+                  model_id: "gpt-5.6",
+                  provider_label: "Codex",
+                  model_label: "GPT-5.6",
+                },
+              },
+            ],
+          });
+        }
+        return baseFetch(input, init);
+      },
+    );
+    renderLive(noopEmit, fetchImpl as unknown as typeof fetch);
+
+    await userEvent.click(screen.getByRole("tab", { name: /Chat/ }));
+    const trigger = await screen.findByRole("button", {
+      name: "Run with Claude Code · Sonnet",
+    });
+    await userEvent.click(trigger);
+    await userEvent.click(
+      screen.getByRole("option", { name: "Codex, GPT-5.6" }),
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", {
+          name: "Run with Codex · GPT-5.6",
+        }),
+      ).toBeVisible(),
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(patchBodies).toEqual([
+      {
+        provider_id: "codex",
+        model_id: "gpt-5.6",
+        expected_revision: "",
+      },
+    ]);
+
+    await userEvent.click(screen.getByRole("button", { name: "Start chat" }));
+    expect(await screen.findByText("Codex chat is ready.")).toBeVisible();
+    expect(postBodies).toEqual([
+      {
+        provider_id: "codex",
+        model_id: "gpt-5.6",
+        expected_revision: "execution:codex",
+      },
+    ]);
+    expect(
+      screen.getByLabelText("Produced by Codex, GPT-5.6"),
+    ).toBeVisible();
     saveRailTab(window.localStorage, "live-doc", "review");
   });
 

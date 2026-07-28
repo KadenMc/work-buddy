@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import struct
 
 from work_buddy.conversations import store as conversation_store
+from work_buddy.conversations.execution import EXECUTION_METADATA_KEY
 from work_buddy.cowork import api
 from work_buddy.cowork import conversations, document_agent
 from work_buddy.truth import documents, expressions, proposals, ydoc_store
@@ -883,17 +885,29 @@ def test_conversation_get_is_read_only_and_post_lazily_creates_real_binding(
 
     opened = client.get(url)
     assert opened.status_code == 200
-    assert opened.get_json() == {
-        "ok": True,
-        "conversation_id": None,
-        "agent": {
-            "status": "not_started",
-            "alive": None,
-            "started": False,
-            "error": None,
-        },
-        "feedback": [],
+    opened_payload = opened.get_json()
+    assert opened_payload["ok"] is True
+    assert opened_payload["conversation_id"] is None
+    assert opened_payload["agent"] == {
+        "status": "not_started",
+        "alive": None,
+        "started": False,
+        "error": None,
     }
+    assert opened_payload["feedback"] == []
+    assert opened_payload["execution"]["selection"] == {
+        "schema_version": 1,
+        "provider_id": "claude-code",
+        "model_id": "sonnet",
+        "provider_label": "Claude Code",
+        "model_label": "Sonnet",
+        "revision": "",
+        "persisted": False,
+    }
+    assert [provider["id"] for provider in opened_payload["execution"]["providers"]] == [
+        "claude-code",
+        "codex",
+    ]
     conn = conversation_store.get_connection()
     try:
         assert conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0] == before["conversations"]
@@ -910,12 +924,45 @@ def test_conversation_get_is_read_only_and_post_lazily_creates_real_binding(
     assert payload["conversation_id"]
     assert payload["feedback"] == []
     assert payload["agent"]["status"] == "running"
+    assert payload["execution"]["selection"]["persisted"] is True
+    assert payload["execution"]["selection"]["revision"]
     assert len(fake_document_agent) == 1
     assert fake_document_agent[0]["conversation_id"] == payload["conversation_id"]
+    assert fake_document_agent[0]["execution"].provider_id == "claude-code"
 
     repeated = client.post(url).get_json()
     assert repeated["conversation_id"] == payload["conversation_id"]
     assert repeated["created"] is False
+
+
+def test_conversation_catalog_refresh_is_explicit(
+    client,
+    seeded,
+    monkeypatch,
+):
+    from work_buddy.agent_execution import registry as execution_registry
+
+    original = execution_registry.get_catalog
+    refreshes: list[bool] = []
+
+    def _recording_catalog(*, refresh: bool = False):
+        refreshes.append(refresh)
+        return original(refresh=refresh)
+
+    monkeypatch.setattr(
+        execution_registry,
+        "get_catalog",
+        _recording_catalog,
+    )
+    base = _url(
+        f"/api/truth/doc/{seeded['document'].id}/conversation",
+        seeded["store_id"],
+    )
+
+    assert client.get(base).status_code == 200
+    assert client.get(f"{base}&refresh_execution=1").status_code == 200
+
+    assert refreshes == [False, True]
 
 
 def test_closed_document_conversation_cannot_spawn_again(
@@ -939,6 +986,423 @@ def test_closed_document_conversation_cannot_spawn_again(
     assert response.status_code == 409
     assert response.get_json()["error"]["code"] == "conversation_closed"
     assert fake_document_agent == []
+
+
+def test_closed_document_conversation_cannot_change_execution(
+    client,
+    seeded,
+    fake_document_agent,
+):
+    binding = conversations.ensure_document_conversation(
+        document_id=seeded["document"].id,
+        store_id=seeded["store_id"],
+    )
+    assert conversation_store.close_conversation(binding.conversation_id)
+    fake_document_agent.clear()
+
+    response = client.patch(
+        _url(
+            (
+                f"/api/truth/doc/{seeded['document'].id}"
+                "/conversation/execution"
+            ),
+            seeded["store_id"],
+        ),
+        json={
+            "provider_id": "codex",
+            "model_id": "gpt-5.6-sol",
+            "expected_revision": "",
+        },
+    )
+
+    assert response.status_code == 409
+    payload = response.get_json()
+    assert payload["error"] == {
+        "code": "conversation_closed",
+        "message": (
+            "This document's conversation is closed and cannot change models."
+        ),
+        "details": {},
+        "retryable": False,
+    }
+    assert fake_document_agent == []
+
+
+def test_execution_picker_can_select_before_chat_starts(
+    client,
+    seeded,
+    fake_document_agent,
+):
+    base = f"/api/truth/doc/{seeded['document'].id}/conversation"
+    selected = client.patch(
+        _url(f"{base}/execution", seeded["store_id"]),
+        json={
+            "provider_id": "codex",
+            "model_id": "gpt-5.6-sol",
+            "expected_revision": "",
+        },
+    )
+    assert selected.status_code == 200
+    payload = selected.get_json()
+    assert payload["created"] is True
+    assert payload["agent"]["status"] == "not_started"
+    assert payload["execution"]["selection"]["provider_id"] == "codex"
+    assert payload["execution"]["selection"]["model_id"] == "gpt-5.6-sol"
+    assert payload["execution"]["selection"]["revision"]
+    assert fake_document_agent == []
+
+    opened = client.get(_url(base, seeded["store_id"])).get_json()
+    assert opened["conversation_id"] == payload["conversation_id"]
+    assert opened["execution"]["selection"]["provider_id"] == "codex"
+
+    started = client.post(_url(base, seeded["store_id"]))
+    assert started.status_code == 200
+    assert len(fake_document_agent) == 1
+    assert fake_document_agent[0]["execution"].provider_id == "codex"
+    assert fake_document_agent[0]["execution"].model_id == "gpt-5.6-sol"
+
+
+def test_execution_picker_same_pair_retry_is_idempotent_after_response_loss(
+    client,
+    seeded,
+    fake_document_agent,
+):
+    base = f"/api/truth/doc/{seeded['document'].id}/conversation"
+    request_body = {
+        "provider_id": "codex",
+        "model_id": "gpt-5.6-sol",
+        "expected_revision": "",
+    }
+    selected = client.patch(
+        _url(f"{base}/execution", seeded["store_id"]),
+        json=request_body,
+    )
+    assert selected.status_code == 200
+    selected_payload = selected.get_json()
+    revision = selected_payload["execution"]["selection"]["revision"]
+    assert revision
+
+    replayed = client.patch(
+        _url(f"{base}/execution", seeded["store_id"]),
+        json=request_body,
+    )
+
+    assert replayed.status_code == 200
+    replayed_payload = replayed.get_json()
+    assert replayed_payload["execution"]["selection"]["revision"] == revision
+    assert replayed_payload["execution"]["selection"]["provider_id"] == "codex"
+    assert replayed_payload["execution"]["selection"]["model_id"] == "gpt-5.6-sol"
+    assert replayed_payload["agent"]["status"] == "not_started"
+    assert fake_document_agent == []
+
+
+def test_execution_routes_fail_closed_for_a_corrupt_saved_selection(
+    client,
+    seeded,
+    fake_document_agent,
+):
+    binding = conversations.ensure_document_conversation(
+        document_id=seeded["document"].id,
+        store_id=seeded["store_id"],
+    )
+    conn = conversation_store.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT metadata FROM conversations WHERE conversation_id = ?",
+            (binding.conversation_id,),
+        ).fetchone()
+        assert row is not None
+        metadata = json.loads(row["metadata"])
+        metadata[EXECUTION_METADATA_KEY] = {"schema_version": 999}
+        conn.execute(
+            "UPDATE conversations SET metadata = ? WHERE conversation_id = ?",
+            (json.dumps(metadata), binding.conversation_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    base = f"/api/truth/doc/{seeded['document'].id}/conversation"
+    responses = (
+        client.get(_url(base, seeded["store_id"])),
+        client.patch(
+            _url(f"{base}/execution", seeded["store_id"]),
+            json={
+                "provider_id": "codex",
+                "model_id": "gpt-5.6-sol",
+                "expected_revision": "",
+            },
+        ),
+        client.post(_url(base, seeded["store_id"])),
+    )
+
+    for response in responses:
+        assert response.status_code == 409
+        assert response.get_json()["error"] == {
+            "code": "execution_selection_corrupt",
+            "message": (
+                "This chat's saved provider and model choice could not be read."
+            ),
+            "details": {},
+            "retryable": False,
+        }
+    assert fake_document_agent == []
+
+
+def test_execution_routes_fail_closed_for_malformed_conversation_metadata(
+    client,
+    seeded,
+):
+    binding = conversations.ensure_document_conversation(
+        document_id=seeded["document"].id,
+        store_id=seeded["store_id"],
+    )
+    conn = conversation_store.get_connection()
+    try:
+        conn.execute(
+            "UPDATE conversations SET metadata = ? WHERE conversation_id = ?",
+            ('{"broken"', binding.conversation_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    base = f"/api/truth/doc/{seeded['document'].id}/conversation"
+    responses = (
+        client.get(_url(base, seeded["store_id"])),
+        client.post(_url(base, seeded["store_id"])),
+        client.patch(
+            _url(f"{base}/execution", seeded["store_id"]),
+            json={
+                "provider_id": "codex",
+                "model_id": "gpt-5.6-sol",
+                "expected_revision": "",
+            },
+        ),
+    )
+
+    for response in responses:
+        assert response.status_code == 409
+        assert response.get_json()["error"] == {
+            "code": "execution_selection_corrupt",
+            "message": (
+                "This chat's saved provider and model choice could not be read."
+            ),
+            "details": {},
+            "retryable": False,
+        }
+    conn = conversation_store.get_connection()
+    try:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM conversations WHERE source = ?",
+            (conversations.CONVERSATION_SOURCE,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert count == 1
+
+
+def test_execution_switch_fences_existing_generation_and_restarts(
+    client,
+    seeded,
+    fake_document_agent,
+):
+    base = f"/api/truth/doc/{seeded['document'].id}/conversation"
+    started = client.post(_url(base, seeded["store_id"])).get_json()
+    conversation_id = started["conversation_id"]
+    revision = started["execution"]["selection"]["revision"]
+    consumer = document_agent.document_agent_consumer(
+        seeded["store_id"],
+        seeded["document"].id,
+    )
+    lease = conversation_store.claim_agent_lease(
+        conversation_id,
+        consumer,
+        "generation-before-switch",
+        execution={
+            "schema_version": 1,
+            "provider_id": "claude-code",
+            "model_id": "sonnet",
+            "provider_label": "Claude Code",
+            "model_label": "Sonnet",
+        },
+    )
+    assert lease is not None and lease["claimed"] is True
+    fake_document_agent.clear()
+
+    switched = client.patch(
+        _url(f"{base}/execution", seeded["store_id"]),
+        json={
+            "provider_id": "codex",
+            "model_id": "gpt-5.6-sol",
+            "expected_revision": revision,
+        },
+    )
+    assert switched.status_code == 200
+    payload = switched.get_json()
+    assert payload["execution"]["selection"]["provider_id"] == "codex"
+    assert len(fake_document_agent) == 1
+    assert fake_document_agent[0]["execution"].provider_id == "codex"
+    fenced = conversation_store.get_agent_lease(conversation_id, consumer)
+    assert fenced is not None
+    assert fenced["status"] == "stopped"
+
+
+def test_execution_switch_fences_raw_running_lease_even_when_projection_is_stale(
+    client,
+    seeded,
+    fake_document_agent,
+    monkeypatch,
+):
+    base = f"/api/truth/doc/{seeded['document'].id}/conversation"
+    started = client.post(_url(base, seeded["store_id"])).get_json()
+    conversation_id = started["conversation_id"]
+    revision = started["execution"]["selection"]["revision"]
+    consumer = document_agent.document_agent_consumer(
+        seeded["store_id"],
+        seeded["document"].id,
+    )
+    generation = "stale-heartbeat-before-switch"
+    lease = conversation_store.claim_agent_lease(
+        conversation_id,
+        consumer,
+        generation,
+        execution={
+            "schema_version": 1,
+            "provider_id": "claude-code",
+            "model_id": "sonnet",
+            "provider_label": "Claude Code",
+            "model_label": "Sonnet",
+        },
+    )
+    assert lease is not None and lease["claimed"] is True
+    assert conversation_store.activate_agent_lease(
+        conversation_id,
+        consumer,
+        generation,
+        os.getpid(),
+    )
+    conn = conversation_store.get_connection()
+    try:
+        conn.execute(
+            """UPDATE conversation_agent_leases
+               SET heartbeat_at = ?, updated_at = ?
+               WHERE conversation_id = ? AND consumer = ?""",
+            (
+                "2000-01-01T00:00:00+00:00",
+                "2000-01-01T00:00:00+00:00",
+                conversation_id,
+                consumer,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    assert (
+        document_agent.inspect_document_agent(
+            conversation_id,
+            consumer=consumer,
+        ).status
+        == "stopped"
+    )
+    fake_document_agent.clear()
+    observed = {}
+    restarted_generation = "generation-after-switch"
+
+    def _restart(**kwargs):
+        observed["before_restart"] = conversation_store.get_agent_lease(
+            conversation_id,
+            consumer,
+        )
+        selection = kwargs["execution"]
+        claimed = conversation_store.claim_agent_lease(
+            conversation_id,
+            consumer,
+            restarted_generation,
+            execution={
+                "schema_version": 1,
+                **selection.to_dict(),
+            },
+        )
+        fake_document_agent.append(dict(kwargs))
+        assert claimed is not None and claimed["claimed"] is True
+        return document_agent.DocumentAgentStatus(
+            status="running",
+            alive=None,
+            started=True,
+            error=None,
+        )
+
+    monkeypatch.setattr(document_agent, "ensure_document_agent", _restart)
+
+    switched = client.patch(
+        _url(f"{base}/execution", seeded["store_id"]),
+        json={
+            "provider_id": "codex",
+            "model_id": "gpt-5.6-sol",
+            "expected_revision": revision,
+        },
+    )
+
+    assert switched.status_code == 200
+    assert switched.get_json()["execution"]["selection"]["provider_id"] == "codex"
+    assert len(fake_document_agent) == 1
+    assert fake_document_agent[0]["execution"].provider_id == "codex"
+    assert observed["before_restart"]["status"] == "stopped"
+    assert observed["before_restart"]["generation"] == generation
+    restarted = conversation_store.get_agent_lease(conversation_id, consumer)
+    assert restarted is not None
+    assert restarted["status"] == "starting"
+    assert restarted["generation"] == restarted_generation
+    assert restarted["execution"]["provider_id"] == "codex"
+
+
+def test_execution_picker_rejects_stale_revision_without_fencing(
+    client,
+    seeded,
+):
+    base = f"/api/truth/doc/{seeded['document'].id}/conversation"
+    started = client.post(_url(base, seeded["store_id"])).get_json()
+    response = client.patch(
+        _url(f"{base}/execution", seeded["store_id"]),
+        json={
+            "provider_id": "codex",
+            "model_id": "gpt-5.6-sol",
+            "expected_revision": "stale-revision",
+        },
+    )
+    assert response.status_code == 409
+    payload = response.get_json()
+    assert payload["error"]["code"] == "execution_selection_changed"
+    assert (
+        payload["execution"]["selection"]["revision"]
+        == started["execution"]["selection"]["revision"]
+    )
+    assert payload["execution"]["selection"]["provider_id"] == "claude-code"
+    assert payload["agent"]["status"] == "not_started"
+    opened = client.get(_url(base, seeded["store_id"])).get_json()
+    assert (
+        opened["execution"]["selection"]["revision"]
+        == started["execution"]["selection"]["revision"]
+    )
+    assert opened["execution"]["selection"]["provider_id"] == "claude-code"
+
+
+def test_execution_picker_rejects_unknown_model(
+    client,
+    seeded,
+):
+    base = f"/api/truth/doc/{seeded['document'].id}/conversation"
+    response = client.patch(
+        _url(f"{base}/execution", seeded["store_id"]),
+        json={
+            "provider_id": "codex",
+            "model_id": "invented-model",
+            "expected_revision": "",
+        },
+    )
+    assert response.status_code == 409
+    assert response.get_json()["error"]["code"] == "unknown_model"
 
 
 def test_feedback_captures_user_authored_utterance(
@@ -1021,6 +1485,68 @@ def test_feedback_spawn_failure_keeps_authored_turn_and_returns_safe_status(
     assert authored[0]["role"] == "user"
     assert authored[0]["content"] == (
         "Keep this feedback even if chat cannot start."
+    )
+
+
+def test_feedback_keeps_authored_turn_when_saved_execution_is_corrupt(
+    client,
+    seeded,
+    fake_document_agent,
+):
+    binding = conversations.ensure_document_conversation(
+        document_id=seeded["document"].id,
+        store_id=seeded["store_id"],
+    )
+    conn = conversation_store.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT metadata FROM conversations WHERE conversation_id = ?",
+            (binding.conversation_id,),
+        ).fetchone()
+        assert row is not None
+        metadata = json.loads(row["metadata"])
+        metadata[EXECUTION_METADATA_KEY] = {"schema_version": 999}
+        conn.execute(
+            "UPDATE conversations SET metadata = ? WHERE conversation_id = ?",
+            (json.dumps(metadata), binding.conversation_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    response = client.post(
+        _url(
+            f"/api/truth/doc/{seeded['document'].id}/feedback",
+            seeded["store_id"],
+        ),
+        json={
+            "span": {"exact": DOC_QUOTE, "prefix": "", "suffix": ""},
+            "text": "Keep this even though the model choice is unreadable.",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["ok"] is True
+    assert payload["agent"]["status"] == "spawn_failed"
+    assert payload["execution"]["read_only"] is True
+    assert payload["execution"]["error"]["code"] == (
+        "execution_selection_corrupt"
+    )
+    assert payload["execution"]["selection"]["provider_id"] == (
+        "execution-unavailable"
+    )
+    assert fake_document_agent == []
+    bundle = conversation_store.get_conversation_with_messages(
+        binding.conversation_id
+    )
+    assert bundle is not None
+    assert any(
+        item["message_id"] == payload["message_id"]
+        and item["role"] == "user"
+        and item["content"]
+        == "Keep this even though the model choice is unreadable."
+        for item in bundle["messages"]
     )
 
 

@@ -17,8 +17,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from work_buddy.config import load_config
-from work_buddy.conversations.agents import register
+from work_buddy.agent_execution.models import AgentExecutionSelection
+from work_buddy.conversations.agents import register, unregister
+from work_buddy.cowork.execution_identity import cowork_execution_session_id
 from work_buddy.conversations.store import (
     activate_agent_lease,
     claim_agent_lease,
@@ -100,16 +101,6 @@ def _age_seconds(value: object, *, now: datetime) -> float | None:
         return max(0.0, (now - parsed.astimezone(timezone.utc)).total_seconds())
     except (TypeError, ValueError):
         return None
-
-
-def _configured_spawn_model() -> str:
-    configured = (
-        load_config()
-        .get("sidecar", {})
-        .get("agent_spawn", {})
-        .get("model", "sonnet")
-    )
-    return configured if isinstance(configured, str) and configured.strip() else "sonnet"
 
 
 def _bounded_history(messages: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -203,9 +194,10 @@ Bindings:
    exact conversation message_id. Pass producer_model={producer_model!r},
    conversation_id={conversation_id!r}, consumer={consumer!r}, and
    generation={generation!r} to every proposal/comment call.
-4. First call conversation_poll without a timeout only to inspect whether a
-   legacy structured boolean/choice question is pending. Do not add a greeting
-   or duplicate structured question.
+4. First call conversation_poll without a timeout, passing the bound
+   conversation_id, consumer, and generation, only to inspect whether a legacy
+   structured boolean/choice question is pending. Do not add a greeting or
+   duplicate structured question.
 5. Receive authored user turns only with conversation_receive, always passing
    conversation_id={conversation_id!r}, consumer={consumer!r}, and
    generation={generation!r}. It returns the oldest unacked user turn and
@@ -389,6 +381,7 @@ def spawn_document_agent_session(
     generation: str,
     feedback: FeedbackPromptContext | None = None,
     producer_model: str | None = None,
+    execution: AgentExecutionSelection | None = None,
     history_loader: HistoryLoader = get_conversation_with_messages,
 ) -> Mapping[str, Any]:
     """Build the prompt and perform one authorized detached spawn attempt.
@@ -397,11 +390,17 @@ def spawn_document_agent_session(
     decorated with ``requires_consent``; the explicit POST/feedback route calls
     it from a ``user_initiated`` boundary, making that one click the authority.
     """
-    from work_buddy.sidecar.dispatch.executor import (
-        spawn_headless_agent_detached_authorized,
+    from work_buddy.agent_execution.models import (
+        AgentSpawnRequest,
+        default_working_directory,
+    )
+    from work_buddy.agent_execution.registry import (
+        default_selection,
+        start_detached,
     )
 
-    model = producer_model or _configured_spawn_model()
+    selected = execution or default_selection()
+    model = producer_model or f"{selected.provider_id}:{selected.model_id}"
     bundle = history_loader(conversation_id)
     raw_messages = [] if bundle is None else bundle.get("messages", [])
     messages = raw_messages if isinstance(raw_messages, list) else []
@@ -416,11 +415,42 @@ def spawn_document_agent_session(
         feedback=feedback,
     )
     safe_document = re.sub(r"[^A-Za-z0-9_-]", "-", document_id)[:24] or "document"
-    return spawn_headless_agent_detached_authorized(
+    session_id = cowork_execution_session_id(generation)
+    try:
+        from work_buddy.truth.registry import TruthStoreRegistry
+
+        working_directory = (
+            TruthStoreRegistry()
+            .open_store(store_id)
+            .paths.root.resolve()
+        )
+    except Exception:
+        logger.warning(
+            "Co-work folder root could not be resolved for agent identity: "
+            "store=%s",
+            store_id,
+        )
+        working_directory = default_working_directory()
+    spawn_request = AgentSpawnRequest(
         name=f"cowork-{safe_document}-{conversation_id}",
         prompt=prompt,
+        selection=selected,
+        session_id=session_id,
+        working_directory=working_directory,
         max_budget_usd=_DEFAULT_BUDGET_USD,
     )
+    from work_buddy.agent_session import update_manifest
+
+    update_manifest(
+        session_id=session_id,
+        harness_id=selected.provider_id,
+        native_session_id=session_id,
+        model=model,
+        surface="cowork",
+        workspace=str(spawn_request.working_directory.resolve()),
+    )
+    outcome = start_detached(spawn_request)
+    return outcome.to_dict()
 
 
 def _safe_spawn_error(result: Mapping[str, Any]) -> str:
@@ -434,17 +464,59 @@ def _safe_spawn_error(result: Mapping[str, Any]) -> str:
     return _SAFE_AGENT_ERROR
 
 
+def _terminate_spawned_driver(
+    pid: int,
+    *,
+    conversation_id: str,
+    generation: str,
+) -> None:
+    """Terminate only a process handle owned by this server runtime."""
+
+    try:
+        from work_buddy.sidecar.dispatch.executor import (
+            terminate_detached_process,
+        )
+
+        if not terminate_detached_process(
+            pid,
+            owner_token=cowork_execution_session_id(generation),
+        ):
+            logger.warning(
+                "Document-agent process was fenced but not owned by this "
+                "runtime: conversation=%s pid=%s",
+                conversation_id,
+                pid,
+            )
+    except Exception:
+        logger.warning(
+            "Document-agent termination failed after fencing: "
+            "conversation=%s pid=%s",
+            conversation_id,
+            pid,
+            exc_info=True,
+        )
+
+
 def ensure_document_agent(
     *,
     store_id: str,
     document_id: str,
     conversation_id: str,
     feedback: FeedbackPromptContext | None = None,
+    execution: AgentExecutionSelection | None = None,
     process_alive: ProcessAliveCheck = _process_is_alive,
     register_agent: RegisterAgent = register,
     spawn_agent: SpawnAgent = spawn_document_agent_session,
 ) -> DocumentAgentStatus:
     """Idempotently claim, spawn, and persist one generation-scoped driver."""
+    if execution is None:
+        from work_buddy.agent_execution.registry import default_selection
+
+        execution = default_selection()
+    execution_snapshot = {
+        "schema_version": 1,
+        **execution.to_dict(),
+    }
     with _SPAWN_LOCK:
         consumer = document_agent_consumer(store_id, document_id)
         current = inspect_document_agent(
@@ -452,9 +524,25 @@ def ensure_document_agent(
             consumer=consumer,
             process_alive=process_alive,
         )
-        if current.alive is True:
-            return current
         existing = get_agent_lease(conversation_id, consumer)
+        if (
+            current.alive is True
+            and existing is not None
+            and existing.get("execution") == execution_snapshot
+        ):
+            return current
+        if current.alive is True and existing is not None:
+            fence_document_agent(
+                conversation_id=conversation_id,
+                consumer=consumer,
+            )
+            current = DocumentAgentStatus(
+                status="stopped",
+                alive=False,
+                started=False,
+                error=None,
+            )
+            existing = get_agent_lease(conversation_id, consumer)
         if (
             current.status == "stopped"
             and existing is not None
@@ -465,6 +553,17 @@ def ensure_document_agent(
                 consumer,
                 str(existing["generation"]),
             )
+            old_pid = existing.get("pid")
+            if (
+                isinstance(old_pid, int)
+                and not isinstance(old_pid, bool)
+                and old_pid > 0
+            ):
+                _terminate_spawned_driver(
+                    old_pid,
+                    conversation_id=conversation_id,
+                    generation=str(existing["generation"]),
+                )
 
         generation = uuid.uuid4().hex
         lease = claim_agent_lease(
@@ -473,6 +572,7 @@ def ensure_document_agent(
             generation,
             starting_grace_seconds=_STARTING_GRACE_SECONDS,
             heartbeat_ttl_seconds=_HEARTBEAT_TTL_SECONDS,
+            execution=execution_snapshot,
         )
         if lease is None:
             return DocumentAgentStatus(
@@ -496,6 +596,7 @@ def ensure_document_agent(
                 consumer=consumer,
                 generation=generation,
                 feedback=feedback,
+                execution=execution,
             )
         except Exception:
             logger.warning(
@@ -558,6 +659,11 @@ def ensure_document_agent(
                 "Document-agent lease rotated before activation: conversation=%s",
                 conversation_id,
             )
+            _terminate_spawned_driver(
+                pid,
+                conversation_id=conversation_id,
+                generation=generation,
+            )
             return DocumentAgentStatus(
                 status="stopped",
                 alive=False,
@@ -576,6 +682,16 @@ def ensure_document_agent(
         try:
             alive = process_alive(pid)
         except Exception:
+            stop_agent_lease(
+                conversation_id,
+                consumer,
+                generation,
+            )
+            _terminate_spawned_driver(
+                pid,
+                conversation_id=conversation_id,
+                generation=generation,
+            )
             return DocumentAgentStatus(
                 status="stopped",
                 alive=None,
@@ -589,6 +705,11 @@ def ensure_document_agent(
                 generation,
                 error=_SAFE_AGENT_EXITED,
             )
+            _terminate_spawned_driver(
+                pid,
+                conversation_id=conversation_id,
+                generation=generation,
+            )
             return DocumentAgentStatus(
                 status="spawn_failed",
                 alive=False,
@@ -600,12 +721,49 @@ def ensure_document_agent(
         )
 
 
+def fence_document_agent(
+    *,
+    conversation_id: str,
+    consumer: str,
+) -> bool:
+    """Fence and best-effort terminate the lease-owned detached driver.
+
+    The persisted generation is stopped before process termination, so even a
+    process that outlives the best-effort kill can no longer mutate the
+    conversation or document through generation-fenced capabilities.
+    """
+    with _SPAWN_LOCK:
+        lease = get_agent_lease(conversation_id, consumer)
+        if lease is None:
+            return False
+        generation = lease.get("generation")
+        if not isinstance(generation, str) or not generation:
+            return False
+        fenced = stop_agent_lease(
+            conversation_id,
+            consumer,
+            generation,
+        )
+        if not fenced:
+            return False
+        unregister(conversation_id)
+        pid = lease.get("pid")
+        if isinstance(pid, int) and not isinstance(pid, bool) and pid > 0:
+            _terminate_spawned_driver(
+                pid,
+                conversation_id=conversation_id,
+                generation=generation,
+            )
+        return True
+
+
 __all__ = [
     "DocumentAgentStatus",
     "FeedbackPromptContext",
     "build_document_agent_prompt",
     "document_agent_consumer",
     "ensure_document_agent",
+    "fence_document_agent",
     "inspect_document_agent",
     "spawn_document_agent_session",
 ]

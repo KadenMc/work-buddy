@@ -6,12 +6,14 @@ import {
   type InlineAlertTone,
 } from "../../ui";
 import { ChatComposer } from "./ChatComposer";
+import { ChatExecutionPicker } from "./ChatExecutionPicker";
 import { ChatMessageList } from "./ChatMessageList";
 import type {
   ChatAgentActivity,
   ChatMessage,
   ChatPanelStatus,
 } from "./contracts";
+import type { ChatExecutionControl } from "./useChatExecutionProfile";
 import "./styles.css";
 
 /**
@@ -22,6 +24,8 @@ export interface ChatInputRecoveryAction {
   readonly label: string;
   readonly onAction: () => void;
   readonly pending?: boolean;
+  /** Opt in when this host action launches or replaces the selected runtime. */
+  readonly requiresExecution?: boolean;
 }
 
 export interface ChatInputRecovery {
@@ -41,6 +45,8 @@ export interface ChatPanelStateProps {
   readonly detail?: ReactNode;
   readonly action?: ChatInputRecoveryAction;
   readonly header?: ReactNode;
+  readonly execution?: ChatExecutionControl;
+  readonly executionDisabled?: boolean;
 }
 
 /**
@@ -55,25 +61,44 @@ export function ChatPanelState({
   detail,
   action,
   header,
+  execution,
+  executionDisabled = false,
 }: ChatPanelStateProps) {
   return (
     <section className="wb-chat-panel" aria-label={label}>
       {header}
-      <div
-        className="wb-chat-state"
-        role={kind === "error" ? "alert" : "status"}
-      >
-        {kind === "loading" ? (
-          <span className="wb-spinner" aria-hidden="true" />
-        ) : null}
-        <h3 className="wb-chat-state__title">{title}</h3>
-        {detail === undefined ? null : <p>{detail}</p>}
+      <div className="wb-chat-state">
+        <div
+          className="wb-chat-state__copy"
+          role={kind === "error" ? "alert" : "status"}
+        >
+          {kind === "loading" ? (
+            <span className="wb-spinner" aria-hidden="true" />
+          ) : null}
+          <h3 className="wb-chat-state__title">{title}</h3>
+          {detail === undefined ? null : <p>{detail}</p>}
+        </div>
+        {execution === undefined ? null : (
+          <ChatExecutionPicker
+            control={execution}
+            disabled={executionDisabled}
+            className="wb-chat-state__execution"
+          />
+        )}
         {action === undefined ? null : (
           <Button
             variant="secondary"
             className="wb-chat-state__action"
             onClick={action.onAction}
-            disabled={action.pending === true}
+            disabled={
+              action.pending === true ||
+              (action.requiresExecution === true &&
+                execution !== undefined &&
+                (execution.status !== "ready" ||
+                  execution.selecting ||
+                  !execution.currentAvailable ||
+                  execution.snapshot?.readOnly === true))
+            }
           >
             {action.label}
           </Button>
@@ -131,6 +156,8 @@ export interface ChatPanelProps {
   readonly onReachLatest?: () => void;
   /** Empty-transcript copy inside a ready conversation. */
   readonly noMessagesLabel?: string;
+  /** Server-authoritative provider/model selection for the next agent turn. */
+  readonly execution?: ChatExecutionControl;
 }
 
 interface StateCopy {
@@ -176,15 +203,18 @@ export function ChatPanel({
   initialUnreadFromMessageId,
   onReachLatest,
   noMessagesLabel,
+  execution,
 }: ChatPanelProps) {
   const label = title ?? "Conversation";
-  const readOnly = status === "read-only";
+  const readOnly =
+    status === "read-only" || execution?.snapshot?.readOnly === true;
   const structuredResponsesDisabled =
     responsesDisabled ||
     readOnly ||
     agentActivity === "stopped" ||
     inputRecovery !== undefined ||
     composerDisabled ||
+    execution?.selecting === true ||
     sending;
 
   const renderHeader = () => {
@@ -234,33 +264,57 @@ export function ChatPanel({
       <>
         {renderTranscript()}
         {readOnly ? (
-          <InlineAlert
-            tone="info"
-            role="status"
-            className="wb-chat-panel__read-only"
-          >
-            <strong>Read-only:</strong>{" "}
-            {readOnlyReason ?? "Replies are currently disabled."}
-          </InlineAlert>
+          <div className="wb-chat-panel__input-region">
+            {execution === undefined ? null : (
+              <ChatExecutionPicker control={execution} readOnly />
+            )}
+            <InlineAlert
+              tone="info"
+              role="status"
+              className="wb-chat-panel__read-only"
+            >
+              <strong>Read-only:</strong>{" "}
+              {readOnlyReason ?? "Replies are currently disabled."}
+            </InlineAlert>
+          </div>
         ) : inputRecovery !== undefined ? (
-          <InlineAlert
-            tone={inputRecovery.tone}
-            role="status"
-            className="wb-chat-panel__read-only"
-          >
-            <strong>{inputRecovery.title}</strong>{" "}
-            {inputRecovery.detail}
-            {inputRecovery.action !== undefined ? (
-              <Button
-                variant="secondary"
-                className="wb-chat-state__action"
-                onClick={inputRecovery.action.onAction}
-                disabled={inputRecovery.action.pending === true}
-              >
-                {inputRecovery.action.label}
-              </Button>
-            ) : null}
-          </InlineAlert>
+          <div className="wb-chat-panel__input-region">
+            {execution === undefined ? null : (
+              <ChatExecutionPicker
+                control={execution}
+                disabled={
+                  sending ||
+                  agentActivity === "thinking" ||
+                  inputRecovery.action?.pending === true
+                }
+              />
+            )}
+            <InlineAlert
+              tone={inputRecovery.tone}
+              role="status"
+              className="wb-chat-panel__read-only"
+            >
+              <strong>{inputRecovery.title}</strong>{" "}
+              {inputRecovery.detail}
+              {inputRecovery.action !== undefined ? (
+                <Button
+                  variant="secondary"
+                  className="wb-chat-state__action"
+                  onClick={inputRecovery.action.onAction}
+                  disabled={
+                    inputRecovery.action.pending === true ||
+                    (inputRecovery.action.requiresExecution === true &&
+                      execution !== undefined &&
+                      (execution.status !== "ready" ||
+                        execution.selecting ||
+                        !execution.currentAvailable))
+                  }
+                >
+                  {inputRecovery.action.label}
+                </Button>
+              ) : null}
+            </InlineAlert>
+          </div>
         ) : onSend !== undefined ? (
           <ChatComposer
             onSend={onSend}
@@ -270,8 +324,11 @@ export function ChatPanel({
             errorMessage={sendErrorMessage}
             initialValue={initialValue}
             onDraftChange={onDraftChange}
+            execution={execution}
           />
-        ) : null}
+        ) : execution === undefined ? null : (
+          <ChatExecutionPicker control={execution} />
+        )}
       </>
     );
   };
@@ -301,6 +358,8 @@ export function ChatPanel({
             : undefined
         }
         header={renderHeader()}
+        execution={execution}
+        executionDisabled={sending || agentActivity === "thinking"}
       />
     );
   }

@@ -43,6 +43,20 @@ export interface ChatMessage {
   readonly pending?: boolean;
   /** Present when the message is a structured question, drives inline answers. */
   readonly question?: ChatQuestion;
+  /**
+   * Server-verified execution provenance for an assistant turn. This is
+   * recorded when the message is produced, so a later model switch does not
+   * rewrite the history shown beside an earlier reply.
+   */
+  readonly producer?: ChatMessageProducer;
+}
+
+/** Exact provider/model that produced one durable assistant message. */
+export interface ChatMessageProducer {
+  readonly providerId?: string;
+  readonly modelId?: string;
+  readonly providerLabel: string;
+  readonly modelLabel: string;
 }
 
 /** Whether the conversation still accepts input. */
@@ -103,6 +117,71 @@ export interface ChatConversationProvider {
   ): ChatUnsubscribe;
 }
 
+/** One selectable model advertised by an execution provider. */
+export interface ChatExecutionModelOption {
+  readonly id: string;
+  readonly label: string;
+  readonly available: boolean;
+  readonly description?: string;
+  readonly unavailableReason?: string;
+}
+
+/**
+ * An authentication and runtime route such as Claude Code or Codex. Direct API
+ * transports are deliberately separate provider entries.
+ */
+export interface ChatExecutionProviderOption {
+  readonly id: string;
+  readonly label: string;
+  readonly available: boolean;
+  readonly authMode?: string;
+  readonly description?: string;
+  readonly unavailableReason?: string;
+  readonly models: readonly ChatExecutionModelOption[];
+}
+
+/** The server-confirmed atomic provider/model pair for one execution target. */
+export interface ChatExecutionSelection {
+  readonly providerId: string;
+  readonly modelId: string;
+  readonly providerLabel: string;
+  readonly modelLabel: string;
+  readonly revision: string;
+}
+
+/** Atomic selection mutation with optimistic-concurrency protection. */
+export interface ChatExecutionSelectionInput {
+  readonly providerId: string;
+  readonly modelId: string;
+  readonly expectedRevision: string;
+}
+
+/** Point-in-time execution selection and the catalog it was validated against. */
+export interface ChatExecutionSnapshot {
+  readonly selection: ChatExecutionSelection;
+  readonly providers: readonly ChatExecutionProviderOption[];
+  /** A read-only target remains inspectable but cannot change its selection. */
+  readonly readOnly?: boolean;
+}
+
+/**
+ * Transport-neutral execution profile seam. It stays separate from the
+ * transcript provider so message delivery does not acquire model mechanics.
+ */
+export interface ChatExecutionProfileProvider {
+  load(targetId: string): Promise<ChatExecutionSnapshot>;
+  select(
+    targetId: string,
+    selection: ChatExecutionSelectionInput,
+  ): Promise<ChatExecutionSnapshot>;
+  /** Drop transport-side discovery caches before the next explicit reload. */
+  refresh?(targetId: string): void;
+  subscribe(
+    targetId: string,
+    onInvalidate: ChatInvalidationListener,
+  ): ChatUnsubscribe;
+}
+
 /**
  * Derived activity signal for the transcript. "thinking" shows the typing
  * indicator, "stopped" shows the agent-stopped notice, "idle" shows neither.
@@ -143,6 +222,14 @@ export interface RawChatMessage {
   readonly status?: string;
   readonly response_type?: string;
   readonly choices?: readonly RawChatChoice[];
+  readonly producer?: RawChatMessageProducer;
+}
+
+export interface RawChatMessageProducer {
+  readonly provider_id?: unknown;
+  readonly model_id?: unknown;
+  readonly provider_label?: unknown;
+  readonly model_label?: unknown;
 }
 
 export interface RawChatConversation {

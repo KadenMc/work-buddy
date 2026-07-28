@@ -57,6 +57,30 @@ describe("ChatMessageList", () => {
     expect(screen.getByText("Nothing yet.")).toBeInTheDocument();
   });
 
+  it("shows immutable producer metadata beside an assistant turn", () => {
+    render(
+      <ChatMessageList
+        messages={[
+          {
+            id: "m1",
+            author: "assistant",
+            content: "Generated reply",
+            producer: {
+              providerId: "codex",
+              modelId: "gpt-5.6",
+              providerLabel: "Codex",
+              modelLabel: "GPT-5.6",
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(
+      screen.getByLabelText("Produced by Codex, GPT-5.6"),
+    ).toHaveTextContent("Codex · GPT-5.6");
+  });
+
   it("autoscrolls to the newest message while pinned to the bottom", () => {
     const initial = [msg("m1", "one", "assistant")];
     const { rerender } = render(<ChatMessageList messages={initial} />);

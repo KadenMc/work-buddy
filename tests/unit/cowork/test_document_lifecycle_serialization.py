@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Callable
@@ -10,6 +11,7 @@ from typing import Callable
 import pytest
 
 from work_buddy.conversations import store as conversation_store
+from work_buddy.conversations import execution as conversation_execution
 from work_buddy.cowork import (
     api,
     bootstrap,
@@ -410,6 +412,16 @@ def test_routing_commit_reports_durable_delivery_agent_status_and_reconciles_pre
             "started": True,
             "error": None,
         },
+        "execution": delivery["execution"],
+    }
+    assert delivery["execution"]["selection"] == {
+        "provider_id": "claude-code",
+        "model_id": "sonnet",
+        "provider_label": "Claude Code",
+        "model_label": "Sonnet",
+        "revision": delivery["execution"]["selection"]["revision"],
+        "schema_version": 1,
+        "persisted": True,
     }
     assert delivery["delivery_id"]
     assert delivery["conversation_id"]
@@ -419,6 +431,8 @@ def test_routing_commit_reports_durable_delivery_agent_status_and_reconciles_pre
         fake_document_agent[0]["conversation_id"]
         == delivery["conversation_id"]
     )
+    assert fake_document_agent[0]["execution"].provider_id == "claude-code"
+    assert fake_document_agent[0]["execution"].model_id == "sonnet"
 
     # A lost commit response is recovered through repeated prepare. The
     # deterministic delivery id is replayed, not duplicated, and its real
@@ -436,6 +450,7 @@ def test_routing_commit_reports_durable_delivery_agent_status_and_reconciles_pre
     assert replay["conversation_id"] == delivery["conversation_id"]
     assert replay["message_id"] == delivery["message_id"]
     assert replay["agent"]["status"] == "running"
+    assert replay["execution"]["selection"] == delivery["execution"]["selection"]
     conn = conversation_store.get_connection()
     try:
         assert (
@@ -447,6 +462,53 @@ def test_routing_commit_reports_durable_delivery_agent_status_and_reconciles_pre
         )
     finally:
         conn.close()
+
+
+def test_routing_commit_preserves_the_conversation_pinned_execution(
+    store_ctx,
+    client,
+    fake_document_agent,
+):
+    store = store_ctx["store"]
+    document = _ready(
+        store_ctx,
+        path="docs/routing-delivery-codex.md",
+        key="routing-delivery-codex-bootstrap-0001",
+    )
+    binding = conversations.ensure_document_conversation(
+        document_id=document.id,
+        store_id=store.store_id,
+    )
+    pinned = conversation_execution.set_execution(
+        binding.conversation_id,
+        {
+            "provider_id": "codex",
+            "model_id": "gpt-5.6",
+            "provider_label": "Codex",
+            "model_label": "GPT-5.6",
+        },
+    )
+    _proposal, _prepare_body, sitting_id = _prepare_redirect_sitting(
+        client,
+        store,
+        document,
+        key="routing-delivery-codex-sitting-0001",
+    )
+
+    response = client.put(
+        f"/api/truth/doc/{document.id}/sitting/{sitting_id}/commit"
+        f"?store_id={store.store_id}",
+        json={},
+    )
+
+    assert response.status_code == 200
+    delivery = response.get_json()["routing_deliveries"][0]
+    assert delivery["execution"]["selection"]["provider_id"] == "codex"
+    assert delivery["execution"]["selection"]["model_id"] == "gpt-5.6"
+    assert delivery["execution"]["selection"]["revision"] == pinned.revision
+    assert len(fake_document_agent) == 1
+    assert fake_document_agent[0]["execution"].provider_id == "codex"
+    assert fake_document_agent[0]["execution"].model_id == "gpt-5.6"
 
 
 def test_routing_write_failure_is_truthful_without_undoing_sitting(
@@ -534,3 +596,84 @@ def test_routing_spawn_failure_keeps_delivery_and_returns_safe_agent_status(
         "error": "Chat couldn’t start. Try again.",
     }
     assert "secret" not in delivery["agent"]["error"]
+
+
+def test_routing_commit_keeps_delivery_when_saved_execution_is_corrupt(
+    store_ctx,
+    client,
+    fake_document_agent,
+):
+    store = store_ctx["store"]
+    document = _ready(
+        store_ctx,
+        path="docs/routing-corrupt-execution.md",
+        key="routing-corrupt-execution-bootstrap-0001",
+    )
+    binding = conversations.ensure_document_conversation(
+        document_id=document.id,
+        store_id=store.store_id,
+    )
+    proposal, _prepare_body, sitting_id = _prepare_redirect_sitting(
+        client,
+        store,
+        document,
+        key="routing-corrupt-execution-sitting-0001",
+    )
+    conn = conversation_store.get_connection()
+    try:
+        row = conn.execute(
+            "SELECT metadata FROM conversations WHERE conversation_id = ?",
+            (binding.conversation_id,),
+        ).fetchone()
+        assert row is not None
+        metadata = json.loads(row["metadata"])
+        metadata[conversation_execution.EXECUTION_METADATA_KEY] = {
+            "schema_version": True,
+            "provider_id": "claude-code",
+            "model_id": "sonnet",
+            "provider_label": "Claude Code",
+            "model_label": "Sonnet",
+            "revision": "invalid-bool-schema",
+        }
+        conn.execute(
+            "UPDATE conversations SET metadata = ? WHERE conversation_id = ?",
+            (json.dumps(metadata), binding.conversation_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    response = client.put(
+        f"/api/truth/doc/{document.id}/sitting/{sitting_id}/commit"
+        f"?store_id={store.store_id}",
+        json={},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["results"][0]["result"] == "kept_open_redirected"
+    delivery = payload["routing_deliveries"][0]
+    assert delivery["proposal_id"] == proposal.id
+    assert delivery["delivered"] is True
+    assert delivery["conversation_id"] == binding.conversation_id
+    assert delivery["message_id"] == delivery["delivery_id"]
+    assert delivery["agent"]["status"] == "spawn_failed"
+    assert delivery["execution"]["read_only"] is True
+    assert delivery["execution"]["error"]["code"] == (
+        "execution_selection_corrupt"
+    )
+    assert delivery["execution"]["selection"]["model_id"] == (
+        "saved-selection-unreadable"
+    )
+    assert fake_document_agent == []
+    conn = conversation_store.get_connection()
+    try:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE message_id = ?",
+                (delivery["delivery_id"],),
+            ).fetchone()[0]
+            == 1
+        )
+    finally:
+        conn.close()

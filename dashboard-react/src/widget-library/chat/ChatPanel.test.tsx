@@ -10,6 +10,7 @@ import {
   type ChatPanelProps,
 } from "./ChatPanel";
 import type { ChatMessage } from "./contracts";
+import type { ChatExecutionControl } from "./useChatExecutionProfile";
 
 const messages: ChatMessage[] = [
   { id: "m1", author: "user", content: "Hi" },
@@ -23,6 +24,36 @@ const pendingQuestion: ChatMessage = {
   pending: true,
   question: { responseType: "boolean" },
 };
+
+const executionControl = (
+  overrides: Partial<ChatExecutionControl> = {},
+): ChatExecutionControl => ({
+  snapshot: {
+    selection: {
+      providerId: "claude-code",
+      modelId: "sonnet",
+      providerLabel: "Claude Code",
+      modelLabel: "Sonnet",
+      revision: "execution:1",
+    },
+    providers: [
+      {
+        id: "claude-code",
+        label: "Claude Code",
+        available: true,
+        models: [{ id: "sonnet", label: "Sonnet", available: true }],
+      },
+    ],
+  },
+  status: "ready",
+  selecting: false,
+  error: null,
+  announcement: null,
+  currentAvailable: true,
+  select: vi.fn(async () => {}),
+  retry: vi.fn(),
+  ...overrides,
+});
 
 describe("ChatPanel", () => {
   it("renders the title header, transcript, and composer when ready", () => {
@@ -96,6 +127,27 @@ describe("ChatPanel", () => {
     expect(onRetry).toHaveBeenCalledTimes(1);
   });
 
+  it("does not couple a generic transcript retry to model discovery", async () => {
+    const onRetry = vi.fn();
+    render(
+      <ChatPanel
+        status="error"
+        messages={[]}
+        onRetry={onRetry}
+        execution={executionControl({
+          status: "error",
+          currentAvailable: false,
+          error: "Model discovery is offline.",
+        })}
+      />,
+    );
+
+    const retry = screen.getByRole("button", { name: "Retry" });
+    expect(retry).toBeEnabled();
+    await userEvent.click(retry);
+    expect(onRetry).toHaveBeenCalledOnce();
+  });
+
   it("offers one reusable pre-conversation state and action", async () => {
     const onStart = vi.fn();
     render(
@@ -115,6 +167,54 @@ describe("ChatPanel", () => {
     expect(onStart).toHaveBeenCalledOnce();
   });
 
+  it("lets a host opt a launch action into execution availability", () => {
+    render(
+      <ChatPanelState
+        kind="empty"
+        title="Chat hasn’t started."
+        action={{
+          label: "Start chat",
+          onAction: vi.fn(),
+          requiresExecution: true,
+        }}
+        execution={executionControl({
+          status: "error",
+          currentAvailable: false,
+        })}
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: "Start chat" }),
+    ).toBeDisabled();
+  });
+
+  it("disables an execution-required action for a server read-only profile", () => {
+    const execution = executionControl();
+    render(
+      <ChatPanelState
+        kind="empty"
+        title="Chat hasn’t started."
+        action={{
+          label: "Start chat",
+          onAction: vi.fn(),
+          requiresExecution: true,
+        }}
+        execution={{
+          ...execution,
+          snapshot: {
+            ...execution.snapshot!,
+            readOnly: true,
+          },
+        }}
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: "Start chat" }),
+    ).toBeDisabled();
+  });
+
   it("keeps the transcript readable but replaces the composer when read-only", () => {
     render(
       <ChatPanel
@@ -128,6 +228,28 @@ describe("ChatPanel", () => {
     expect(screen.getByRole("log", { name: "Archived" })).toBeInTheDocument();
     expect(screen.getByText("This conversation is closed.")).toBeInTheDocument();
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+  });
+
+  it("honors server-authoritative execution read-only state", () => {
+    render(
+      <ChatPanel
+        title="Archived"
+        messages={messages}
+        onSend={vi.fn()}
+        execution={executionControl({
+          snapshot: {
+            ...executionControl().snapshot!,
+            readOnly: true,
+          },
+        })}
+      />,
+    );
+
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(screen.getByText(/Read-only:/)).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: /Run with/ }),
+    ).not.toBeInTheDocument();
   });
 
   it("wires the composer send intent", async () => {
@@ -286,10 +408,16 @@ describe("ChatPanel", () => {
             pending: true,
           },
         }}
+        execution={executionControl()}
       />,
     );
     expect(
       screen.getByRole("button", { name: "Restarting…" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", {
+        name: "Run with Claude Code · Sonnet",
+      }),
     ).toBeDisabled();
   });
 
