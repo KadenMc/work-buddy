@@ -1,18 +1,17 @@
 import { Mark, mergeAttributes } from "@tiptap/core";
 
 /**
- * The three live tracked-change marks (insertion, deletion, modification), authored as
- * Tiptap Mark wrappers so the running schema exposes schema.marks.insertion and the
- * vendored engine's getSuggestionMarks resolves them (SP-1 fork delta 1). They mirror the
- * vendored MarkSpec shape but carry the forked attribution attrs and the paste-forgery
- * posture directly.
+ * Compatibility tracked-change marks (insertion, deletion, modification) retained for
+ * isolated transforms and migration recovery. Production pending review state is rendered
+ * from the ledger with CoworkLedgerDecorations and never mints these marks in the live
+ * collaborative document.
  *
  * The engine grouping key is `id`, which the adapter injects with the kernel proposal_id
  * through generateId, so the mark id IS the proposal_id. `producer` and `epistemic` are
  * the forked attribution attrs, stamped onto the tracked range after ingestion so
  * provenance survives acceptance (I11). Every mark declares parseHTML: () => [], so no
  * suggestion mark is reconstructible from clipboard or imported HTML (gate condition 2,
- * PRD risk A3), and all suggestion display re-derives from the ledger every render (I12).
+ * PRD risk A3).
  */
 
 const idAttribute = {
@@ -22,7 +21,11 @@ const idAttribute = {
     renderHTML: (attributes: Record<string, unknown>) =>
       attributes["id"] === null || attributes["id"] === undefined
         ? {}
-        : { "data-id": JSON.stringify(attributes["id"]) },
+        : {
+            "data-id": JSON.stringify(attributes["id"]),
+            "data-wb-anchor-kind": "proposal",
+            "data-wb-anchor-id": String(attributes["id"]),
+          },
   },
 };
 

@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MutableRefObject,
+  type ReactNode,
+} from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 
 import { useOptionalDashboardEvents } from "../../../dashboard/events/DashboardEventProvider";
@@ -25,6 +33,7 @@ import {
   useDocumentConversationBinding,
   type CoworkDocumentConversationBindingClient,
   type FeedbackCapture,
+  type ScrollAnchorTarget,
 } from "../chat";
 import {
   CoworkEditorPane,
@@ -127,9 +136,11 @@ const useNarrowWorkspace = (): boolean => {
 function CoworkPaneTabs({
   active,
   onChange,
+  editorTabRef,
 }: {
   readonly active: CoworkWorkspacePane;
   readonly onChange: (pane: CoworkWorkspacePane) => void;
+  readonly editorTabRef?: MutableRefObject<HTMLButtonElement | null>;
 }) {
   const panes: readonly CoworkWorkspacePane[] = ["editor", "review", "chat"];
   const refs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -146,6 +157,9 @@ function CoworkPaneTabs({
           key={pane}
           ref={(element) => {
             refs.current[index] = element;
+            if (pane === "editor" && editorTabRef !== undefined) {
+              editorTabRef.current = element;
+            }
           }}
           type="button"
           role="tab"
@@ -403,10 +417,10 @@ export function CoworkScratchWorkspace({
 }
 
 /**
- * Live mode (the default on a ledger-backed scope). The bridge shares one Y.Doc, one adapter,
- * and one R2 pull across the editor and the rail, so cards and marks agree. A doc-scoped
- * SSE nudge reloads the review layer, and the aligned stream measures the editor's suggestion
- * marks through the anchor-rect source.
+ * Live mode (the default on a ledger-backed folder). The bridge shares one canonical Y.Doc
+ * and one R2 pull across the editor and rail, so cards and view-only decorations agree. A
+ * doc-scoped SSE nudge reloads the review layer, and the aligned stream measures generalized
+ * decoration anchors through the anchor-rect source.
  */
 export function CoworkLiveWorkspace({
   documentId,
@@ -548,6 +562,8 @@ export function CoworkLiveWorkspace({
   ]);
   const narrowWorkspace = useNarrowWorkspace();
   const [activePane, setActivePane] = useState<CoworkWorkspacePane>("editor");
+  const editorPaneTabRef = useRef<HTMLButtonElement | null>(null);
+  const [passageAnnouncement, setPassageAnnouncement] = useState("");
   const selectPane = useCallback(
     (pane: CoworkWorkspacePane): void => {
       setActivePane(pane);
@@ -596,6 +612,30 @@ export function CoworkLiveWorkspace({
         }
       : {}),
   });
+  const scrollToChatAnchor = useCallback(
+    (target: ScrollAnchorTarget): void => {
+      const announceResult = (found: boolean): void => {
+        setPassageAnnouncement(
+          found
+            ? "Passage highlighted in editor."
+            : "That passage could not be found.",
+        );
+      };
+      if (!narrowWorkspace) {
+        announceResult(bridge.scrollToSpanAnchor(target));
+        return;
+      }
+      // The editor is hidden while Chat owns the narrow workspace. Reveal it first so the
+      // bridge can scroll the rendered passage decoration instead of a hidden ProseMirror DOM.
+      // Move focus to the visible pane tab too: the triggering Chat control becomes inert.
+      setActivePane("editor");
+      window.requestAnimationFrame(() => {
+        editorPaneTabRef.current?.focus();
+        announceResult(bridge.scrollToSpanAnchor(target));
+      });
+    },
+    [bridge.scrollToSpanAnchor, narrowWorkspace],
+  );
 
   // The union route-change guard (guards/routeGuard): a staged-but-unsubmitted sitting or an
   // unsent chat draft warns before a browser-level navigation. Read at event time, so it sees
@@ -640,9 +680,22 @@ export function CoworkLiveWorkspace({
       narrow={narrowWorkspace}
       activePane={activePane}
       paneTabs={
-        narrowWorkspace ? (
-          <CoworkPaneTabs active={activePane} onChange={selectPane} />
-        ) : null
+        <>
+          {narrowWorkspace ? (
+            <CoworkPaneTabs
+              active={activePane}
+              onChange={selectPane}
+              editorTabRef={editorPaneTabRef}
+            />
+          ) : null}
+          <p
+            className="wb-visually-hidden"
+            role="status"
+            aria-live="polite"
+          >
+            {passageAnnouncement}
+          </p>
+        </>
       }
       editor={<CoworkBridgeEditor {...bridge.editorProps} />}
       rail={
@@ -655,8 +708,11 @@ export function CoworkLiveWorkspace({
           store={railStore}
           queueBindings={navBinding}
           chatAnnotations={annotations}
-          onScrollToChatAnchor={bridge.scrollToSpanAnchor}
+          onScrollToChatAnchor={scrollToChatAnchor}
           narrow={narrowWorkspace}
+          reviewVisible={
+            !narrowWorkspace || activePane === "review"
+          }
           showTabs={!narrowWorkspace}
         />
       }

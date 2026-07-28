@@ -5,14 +5,13 @@
  *
  * Modifications in this file:
  * 1. Import specifiers rewritten to @tiptap/pm/* and relative .js extensions dropped.
- * 2. Remote-Yjs guard completion (SP-1 fork delta, C1 surface section 3). The upstream
+ * 2. Remote-Yjs guard completion. The upstream
  *    guard read the raw "y-sync$" transaction meta by string, which does not match the
  *    Tiptap Collaboration plugin key. The guard now consults the canonical
  *    isChangeOrigin predicate from @tiptap/extension-collaboration, which is true for
- *    every ySync-applied transaction, so a remote batch, a Yjs undo/redo, AND a local
- *    apply-origin mutation (the Co-work accept path) all pass through untracked. The
- *    running editor keeps suggest mode disabled and ingests proposals programmatically,
- *    so this guard is the defensive floor rather than the live-typing path.
+ *    every ySync-applied transaction, so a remote batch, Yjs undo/redo, and an isolated
+ *    apply-origin transform all pass through untracked. The live editor keeps suggest
+ *    mode disabled and renders pending review state as ProseMirror decorations.
  * 3. One inline comment had its em-dash normalized to satisfy the house style rule.
  */
 

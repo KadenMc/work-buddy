@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from work_buddy.truth import lifecycle as _lifecycle
+from work_buddy.truth.anchors import CompositeSelector
 from work_buddy.truth.contracts import (
     Actor,
     GestureError,
@@ -83,6 +84,22 @@ class ProposalDecisionResult:
 
 def _normalize_quote(quote: str) -> str:
     return " ".join(quote.split())
+
+
+def _require_replacement(value: Any) -> str:
+    """Validate an edit replacement without altering meaningful whitespace.
+
+    The empty string is the explicit deletion sentinel. Nonempty replacements
+    must contain at least one non-whitespace character, but their leading and
+    trailing whitespace is part of the proposed edit and must survive exactly.
+    """
+    if not isinstance(value, str):
+        raise InvariantViolation("replacement must be a string")
+    if value and not value.strip():
+        raise InvariantViolation(
+            "replacement cannot be whitespace-only; use an empty string for deletion"
+        )
+    return value
 
 
 def _normalize_claim_refs(
@@ -154,12 +171,19 @@ def proposal_dedup_key(
     quote_exact: str,
     replacement: str | None,
 ) -> str:
-    """Compute the (document, normalized quote, replacement hash) suppression key."""
+    """Compute the live-proposal suppression key.
+
+    Flags and nonempty edits retain their original key shape. Deletions add an
+    explicit discriminator so ``replacement=None`` (flag) and
+    ``replacement=""`` (deletion) cannot suppress one another.
+    """
     payload = {
         "document_id": document_id,
         "quote": _normalize_quote(quote_exact),
         "replacement_sha256": sha256_text(replacement or ""),
     }
+    if replacement == "":
+        payload["replacement_kind"] = "deletion"
     return sha256_text(canonical_json(payload))
 
 
@@ -278,7 +302,9 @@ def propose_edit(
     Dedup-suppressed and stale-base-gated, agent producer identity enforced,
     returning the live match on a suppressed duplicate. claim_refs is the ONE
     frozen shape (S2/S7): a list of {claim, role}, role defaulting to
-    instantiation, stored verbatim and carried through to accept-minting.
+    instantiation, stored verbatim and carried through to accept-minting. An
+    empty replacement is an explicit deletion and cannot carry claim refs.
+    Nonempty replacement whitespace is preserved exactly.
     """
     document_ref = _valid_record_id(document_id, "document_id")
     base_digest = _valid_digest(base_content_sha256, "base_content_sha256")
@@ -290,14 +316,19 @@ def propose_edit(
         )
     )
     quote = _require_text(quote_exact, "quote_exact")
-    replacement_value = None if replacement is None else _require_text(
-        replacement, "replacement"
+    replacement_value = (
+        None if replacement is None else _require_replacement(replacement)
     )
     rationale_value = None if rationale is None else _require_text(
         rationale, "rationale"
     )
     tldr_value = None if tldr is None else _require_text(tldr, "tldr")
     normalized_refs = _normalize_claim_refs(claim_refs)
+    if replacement_value == "" and normalized_refs:
+        raise InvariantViolation(
+            "deletion proposals cannot carry claim_refs because no passage "
+            "remains to express them"
+        )
     from work_buddy.truth.expressions import _serialize_selector_value
 
     selector_json = _serialize_selector_value(selector)
@@ -546,7 +577,7 @@ def accept_proposal(
         if decision == "edit_confirm":
             if amended_replacement is None:
                 raise TransitionError("edit_confirm (amend) requires amended_replacement")
-            amended = _require_text(amended_replacement, "amended_replacement")
+            amended = _require_replacement(amended_replacement)
             note = f"amended_replacement_sha256:{sha256_text(amended)}"
         else:
             if amended_replacement is not None:
@@ -595,14 +626,34 @@ def _mint_expressions_locked(
     )
     if not refs:
         return ()
+    if proposal.replacement == "":
+        raise InvariantViolation(
+            "deletion proposals cannot carry claim_refs because no passage "
+            "remains to express them"
+        )
+    original_selector = CompositeSelector.from_json(proposal.selector_json)
+    accepted_selector = CompositeSelector(
+        exact=proposal.replacement,
+        prefix=original_selector.prefix,
+        suffix=original_selector.suffix,
+    )
+    authored_by_agent = (
+        proposal.created_by_kind == "agent_run"
+        and bool(str(proposal.created_by_ref or "").strip())
+    )
     span = _ensure_document_span_locked(
         store,
         conn,
         document_id=proposal.document_id,
-        selector=json.loads(proposal.selector_json),
-        quote_exact=proposal.replacement or proposal.quote_exact,
+        selector=accepted_selector,
+        quote_exact=proposal.replacement,
         actor=actor,
+        author_kind="agent_run" if authored_by_agent else "unknown",
+        author_ref=proposal.created_by_ref if authored_by_agent else None,
         at=at,
+        # An accepted edit needs its own durable authorship/acceptance row even
+        # if an identical quote was previously anchored for another purpose.
+        reuse_existing=False,
     )
     minted: list[ExpressionRecord] = []
     for ref in refs:

@@ -32,8 +32,15 @@ export interface CoworkSittingTransport {
 export const validateSitting = (items: readonly DecisionItem[]): void => {
   if (items.length === 0) throw new Error("a sitting requires at least one decision");
   for (const item of items) {
-    if (item.verb === "edit_confirm" && (item.amend_content ?? "").trim().length === 0) {
-      throw new Error(`edit_confirm on ${item.proposal_id} requires amend_content`);
+    if (item.verb === "edit_confirm") {
+      if (item.amend_content === undefined) {
+        throw new Error(`edit_confirm on ${item.proposal_id} requires amend_content`);
+      }
+      if (item.amend_content.length > 0 && item.amend_content.trim().length === 0) {
+        throw new Error(
+          `amend_content on ${item.proposal_id} cannot be whitespace-only; use an empty string for deletion`,
+        );
+      }
     }
     if (item.verb === "redirect" && (item.redirect_note ?? "").trim().length === 0) {
       throw new Error(`redirect on ${item.proposal_id} requires redirect_note`);

@@ -1,8 +1,13 @@
+import { Editor } from "@tiptap/core";
+import StarterKit from "@tiptap/starter-kit";
 import { describe, expect, it, vi } from "vitest";
 import { renderHook } from "@testing-library/react";
 
+import {
+  CoworkLedgerDecorations,
+  projectCoworkLedgerDecorations,
+} from "../editor/ledgerDecorations";
 import { useAlignedStream } from "../rail/useAlignedStream";
-import type { AdapterEvents, WbTrackedChangesAdapter } from "../suggestions/types";
 import { DomAnchorRectSource } from "./DomAnchorRectSource";
 
 const rect = (top: number, bottom: number): DOMRect =>
@@ -26,26 +31,28 @@ const markElement = (id: string, top: number, bottom: number): HTMLElement => {
   return element;
 };
 
+const ledgerElement = (
+  id: string,
+  kind: "proposal" | "claim",
+  top: number,
+  bottom: number,
+): HTMLElement => {
+  const element = document.createElement("span");
+  if (kind === "claim") {
+    element.setAttribute("data-wb-claim-ids", JSON.stringify([id]));
+  } else {
+    element.setAttribute("data-wb-anchor-kind", kind);
+    element.setAttribute("data-wb-anchor-id", id);
+  }
+  element.getBoundingClientRect = () => rect(top, bottom);
+  return element;
+};
+
 const railRoot = (top: number, scrollTop = 0): HTMLElement => {
   const element = document.createElement("ul");
   element.getBoundingClientRect = () => rect(top, top + 400);
   Object.defineProperty(element, "scrollTop", { value: scrollTop, configurable: true });
   return element;
-};
-
-/** A minimal adapter double exposing only the geometry-change event surface. */
-const fakeAdapter = () => {
-  const listeners = new Map<keyof AdapterEvents, Set<() => void>>();
-  const on = (ev: keyof AdapterEvents, cb: () => void) => {
-    const set = listeners.get(ev) ?? new Set();
-    set.add(cb);
-    listeners.set(ev, set);
-    return () => set.delete(cb);
-  };
-  const fire = (ev: keyof AdapterEvents) => {
-    for (const cb of listeners.get(ev) ?? []) cb();
-  };
-  return { adapter: { on } as unknown as WbTrackedChangesAdapter, fire };
 };
 
 describe("DomAnchorRectSource", () => {
@@ -60,7 +67,7 @@ describe("DomAnchorRectSource", () => {
     });
 
     // top = markTop(120) - railTop(80) + scrollTop(10) = 50, height = 20.
-    expect(source.anchorRect("s1")).toEqual({ top: 50, height: 20 });
+    expect(source.anchorRect("s1", "proposal")).toEqual({ top: 50, height: 20 });
   });
 
   it("unions the rects of a multi-node mark", () => {
@@ -74,17 +81,38 @@ describe("DomAnchorRectSource", () => {
     });
 
     // top = min(100,130) - 0 = 100, height = max(120,160) - min(100,130) = 60.
-    expect(source.anchorRect("s1")).toEqual({ top: 100, height: 60 });
+    expect(source.anchorRect("s1", "proposal")).toEqual({ top: 100, height: 60 });
   });
 
-  it("degrades to null for a proposal with no rendered mark (a flag)", () => {
+  it("keeps claim and proposal geometry separate when their raw ids collide", () => {
+    const editorRoot = document.createElement("div");
+    editorRoot.append(
+      ledgerElement("same-id", "proposal", 100, 120),
+      ledgerElement("same-id", "claim", 220, 250),
+    );
+    const source = new DomAnchorRectSource({
+      getEditorRoot: () => editorRoot,
+      getRailRoot: () => railRoot(0),
+    });
+
+    expect(source.anchorRect("same-id", "proposal")).toEqual({
+      top: 100,
+      height: 20,
+    });
+    expect(source.anchorRect("same-id", "claim")).toEqual({
+      top: 220,
+      height: 30,
+    });
+  });
+
+  it("degrades to null for an unresolved proposal anchor", () => {
     const editorRoot = document.createElement("div");
     editorRoot.append(markElement("s1", 100, 120));
     const source = new DomAnchorRectSource({
       getEditorRoot: () => editorRoot,
       getRailRoot: () => railRoot(0),
     });
-    expect(source.anchorRect("f1")).toBeNull();
+    expect(source.anchorRect("f1", "proposal")).toBeNull();
   });
 
   it("degrades to null when the editor is not mounted", () => {
@@ -92,7 +120,7 @@ describe("DomAnchorRectSource", () => {
       getEditorRoot: () => null,
       getRailRoot: () => railRoot(0),
     });
-    expect(source.anchorRect("s1")).toBeNull();
+    expect(source.anchorRect("s1", "proposal")).toBeNull();
   });
 
   it("degrades to null when the rail coordinate root is absent", () => {
@@ -102,7 +130,7 @@ describe("DomAnchorRectSource", () => {
       getEditorRoot: () => editorRoot,
       getRailRoot: () => null,
     });
-    expect(source.anchorRect("s1")).toBeNull();
+    expect(source.anchorRect("s1", "proposal")).toBeNull();
   });
 
   it("scrolls a mark into view and flashes it on the degrade path", () => {
@@ -119,29 +147,125 @@ describe("DomAnchorRectSource", () => {
     source.scrollToAnchor("s1");
 
     expect(scrollIntoView).toHaveBeenCalledOnce();
-    expect(mark.classList.contains("wb-cowork-suggestion--flash")).toBe(true);
+    expect(mark.classList.contains("wb-cowork-anchor--flash")).toBe(true);
   });
 
-  it("fires a geometry change on a decoration rebuild and on resize", () => {
-    const { adapter, fire } = fakeAdapter();
+  it("persists focus on only the requested namespace and clears it explicitly", () => {
+    const editorRoot = document.createElement("div");
+    const proposal = ledgerElement("same-id", "proposal", 100, 120);
+    const claim = ledgerElement("same-id", "claim", 220, 250);
+    editorRoot.append(proposal, claim);
+    const source = new DomAnchorRectSource({
+      getEditorRoot: () => editorRoot,
+      getRailRoot: () => railRoot(0),
+    });
+
+    source.focusAnchor("same-id", "claim");
+    expect(claim).toHaveClass("wb-cowork-anchor--active");
+    expect(proposal).not.toHaveClass("wb-cowork-anchor--active");
+
+    source.clearFocusedAnchor();
+    expect(claim).not.toHaveClass("wb-cowork-anchor--active");
+  });
+
+  it("fires a geometry change on resize", () => {
     const source = new DomAnchorRectSource({
       getEditorRoot: () => document.createElement("div"),
       getRailRoot: () => railRoot(0),
-      adapter,
     });
 
     const onChange = vi.fn();
     const unsubscribe = source.subscribe(onChange);
 
-    fire("proposals:changed");
-    expect(onChange).toHaveBeenCalledTimes(1);
-
     window.dispatchEvent(new Event("resize"));
-    expect(onChange).toHaveBeenCalledTimes(2);
+    expect(onChange).toHaveBeenCalledTimes(1);
 
     unsubscribe();
     window.dispatchEvent(new Event("resize"));
-    expect(onChange).toHaveBeenCalledTimes(2);
+    expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  it("replays pre-mount focus and reports later editor transactions", () => {
+    let editor: Editor | null = null;
+    const source = new DomAnchorRectSource({
+      getEditorRoot: () => editor?.view.dom ?? null,
+      getEditor: () => editor,
+      getRailRoot: () => railRoot(0),
+    });
+    const onChange = vi.fn();
+    const unsubscribe = source.subscribe(onChange);
+
+    source.focusAnchor("flag-1", "proposal", { scroll: false });
+    editor = new Editor({
+      element: document.createElement("div"),
+      content: "<p>Flagged phrase.</p>",
+      extensions: [
+        StarterKit.configure({ undoRedo: false }),
+        CoworkLedgerDecorations,
+      ],
+    });
+    projectCoworkLedgerDecorations(editor, {
+      edits: [],
+      flags: [
+        {
+          proposalId: "flag-1",
+          quoteAnchor: {
+            exact: "Flagged phrase",
+            prefix: "",
+            suffix: ".",
+          },
+        },
+      ],
+      expressions: [],
+      claims: [],
+      provenance: [],
+    });
+
+    source.attachEditor(editor);
+    expect(
+      editor.view.dom.querySelector(
+        '[data-wb-anchor-id="flag-1"]',
+      ),
+    ).toHaveClass("wb-cowork-anchor--active");
+    const afterAttach = onChange.mock.calls.length;
+
+    editor.view.dispatch(editor.state.tr.insertText("Intro ", 1));
+    expect(onChange.mock.calls.length).toBeGreaterThan(afterAttach);
+
+    source.detachEditor();
+    editor.destroy();
+    editor = new Editor({
+      element: document.createElement("div"),
+      content: "<p>Flagged phrase.</p>",
+      extensions: [
+        StarterKit.configure({ undoRedo: false }),
+        CoworkLedgerDecorations,
+      ],
+    });
+    projectCoworkLedgerDecorations(editor, {
+      edits: [],
+      flags: [
+        {
+          proposalId: "flag-1",
+          quoteAnchor: {
+            exact: "Flagged phrase",
+            prefix: "",
+            suffix: ".",
+          },
+        },
+      ],
+      expressions: [],
+      claims: [],
+      provenance: [],
+    });
+    source.attachEditor(editor);
+    expect(
+      editor.view.dom.querySelector('[data-wb-anchor-id="flag-1"]'),
+    ).toHaveClass("wb-cowork-anchor--active");
+
+    source.detachEditor();
+    unsubscribe();
+    editor.destroy();
   });
 });
 
@@ -152,12 +276,18 @@ describe("useAlignedStream activation with the source", () => {
       getRailRoot: () => null,
     });
     const withSource = renderHook(() =>
-      useAlignedStream({ anchorRects: source, ids: ["s1"] }),
+      useAlignedStream({
+        anchorRects: source,
+        anchors: [{ id: "s1", kind: "proposal" }],
+      }),
     );
     expect(withSource.result.current.aligned).toBe(true);
 
     const withoutSource = renderHook(() =>
-      useAlignedStream({ anchorRects: undefined, ids: ["s1"] }),
+      useAlignedStream({
+        anchorRects: undefined,
+        anchors: [{ id: "s1", kind: "proposal" }],
+      }),
     );
     expect(withoutSource.result.current.aligned).toBe(false);
   });

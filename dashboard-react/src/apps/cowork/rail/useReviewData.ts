@@ -32,6 +32,7 @@ export function useReviewData(
   const [error, setError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
   const activeRef = useRef<object>({});
+  const requestSequenceRef = useRef(0);
 
   useEffect(() => {
     const active = {};
@@ -40,6 +41,7 @@ export function useReviewData(
     const isCurrent = () => !cancelled && activeRef.current === active;
 
     const load = (showLoading: boolean) => {
+      const requestSequence = ++requestSequenceRef.current;
       if (showLoading) {
         setStatus("loading");
         setError(null);
@@ -47,13 +49,23 @@ export function useReviewData(
       provider
         .load()
         .then((next) => {
-          if (!isCurrent()) return;
+          if (
+            !isCurrent() ||
+            requestSequence !== requestSequenceRef.current
+          ) {
+            return;
+          }
           setData(next);
           setStatus("ready");
           setError(null);
         })
         .catch((cause) => {
-          if (!isCurrent()) return;
+          if (
+            !isCurrent() ||
+            requestSequence !== requestSequenceRef.current
+          ) {
+            return;
+          }
           if (showLoading) {
             setStatus("error");
             setError(messageOf(cause));

@@ -13,12 +13,17 @@ import struct
 from work_buddy.conversations import store as conversation_store
 from work_buddy.cowork import api
 from work_buddy.cowork import conversations, document_agent
-from work_buddy.truth import documents, ydoc_store
-from work_buddy.truth.identity import sha256_bytes, sha256_text
+from work_buddy.truth import documents, expressions, proposals, ydoc_store
+from work_buddy.truth.anchors import CompositeSelector
+from work_buddy.truth.contracts import Actor
+from work_buddy.truth.identity import new_id, sha256_bytes, sha256_text, truth_uri
+from work_buddy.truth.lifecycle import TruthLifecycle
 
 from .conftest import (
+    AGENT,
     DOC_QUOTE,
     DOC_REL,
+    HUMAN,
     NOW,
     write_doc_file,
 )
@@ -215,6 +220,390 @@ def test_get_returns_open_proposals_and_hashes(client, seeded, make_proposal):
     assert entry["base_ok"] is True
     assert entry["quote_anchor"]["exact"] == DOC_QUOTE
     assert entry["kind"] == "edit"
+
+
+def test_get_returns_empty_replacement_as_deletion_edit(
+    client, seeded, make_proposal
+):
+    proposal = make_proposal(replacement="")
+
+    resp = client.get(
+        _url(f"/api/truth/doc/{seeded['document'].id}", seeded["store_id"])
+    )
+
+    assert resp.status_code == 200
+    entry = resp.get_json()["open_proposals"][0]
+    assert entry["proposal_id"] == proposal.id
+    assert entry["kind"] == "edit"
+    assert entry["replacement"] == ""
+
+
+def test_get_reads_r2_ledger_projection_from_one_explicit_snapshot(
+    client,
+    seeded,
+    monkeypatch,
+):
+    store = seeded["store"]
+    claim = store.propose_claim(
+        proposition="Snapshot transaction fixture.",
+        claim_kind="fact",
+        actor=AGENT,
+        created_at=NOW,
+        status_at=NOW,
+    ).claim
+    span = expressions.ensure_document_span(
+        store,
+        document_id=seeded["document"].id,
+        selector=CompositeSelector(exact=DOC_QUOTE),
+        quote_exact=DOC_QUOTE,
+        actor=HUMAN,
+        at=NOW,
+    )
+    expressions.mark_expression(
+        store,
+        document_span_id=span.id,
+        claim_ref=claim.id,
+        role="instantiation",
+        actor=HUMAN,
+        at=NOW,
+    )
+    connection_ids: set[int] = set()
+    observed: set[str] = set()
+
+    def record(name, conn):
+        assert conn is not None
+        assert conn.in_transaction is True
+        connection_ids.add(id(conn))
+        observed.add(name)
+
+    original_get_document = api.documents.get_document
+    original_open_proposals = api.proposals.open_proposals
+    original_expressions = api.expressions.expressions_for_document
+    original_claim_states = api.queries.resolve_claim_states
+    original_lifecycle = api.documents.current_lifecycle
+    original_readiness = api.readiness.classify_document
+    original_events = type(seeded["store"])._document_events_locked
+
+    def tracked_get_document(store, document_id, *, conn=None):
+        record("document", conn)
+        return original_get_document(store, document_id, conn=conn)
+
+    def tracked_open_proposals(store, *, document_id, conn=None):
+        record("proposals", conn)
+        return original_open_proposals(
+            store,
+            document_id=document_id,
+            conn=conn,
+        )
+
+    def tracked_expressions(store, document_id, *, conn=None):
+        record("expressions", conn)
+        return original_expressions(store, document_id, conn=conn)
+
+    def tracked_claim_states(store, *, belief_at=None, conn=None):
+        record("claim_states", conn)
+        return original_claim_states(
+            store,
+            belief_at=belief_at,
+            conn=conn,
+        )
+
+    def tracked_lifecycle(store, document_id, *, conn=None):
+        record("lifecycle", conn)
+        return original_lifecycle(store, document_id, conn=conn)
+
+    def tracked_readiness(store, document, **kwargs):
+        record("readiness", kwargs.get("conn"))
+        return original_readiness(store, document, **kwargs)
+
+    def tracked_events(store, conn, document_id):
+        record("events", conn)
+        return original_events(store, conn, document_id)
+
+    monkeypatch.setattr(api.documents, "get_document", tracked_get_document)
+    monkeypatch.setattr(api.proposals, "open_proposals", tracked_open_proposals)
+    monkeypatch.setattr(
+        api.expressions,
+        "expressions_for_document",
+        tracked_expressions,
+    )
+    monkeypatch.setattr(api.queries, "resolve_claim_states", tracked_claim_states)
+    monkeypatch.setattr(api.documents, "current_lifecycle", tracked_lifecycle)
+    monkeypatch.setattr(api.readiness, "classify_document", tracked_readiness)
+    monkeypatch.setattr(
+        type(seeded["store"]),
+        "_document_events_locked",
+        tracked_events,
+    )
+
+    response = client.get(
+        _url(
+            f"/api/truth/doc/{seeded['document'].id}",
+            seeded["store_id"],
+        )
+    )
+
+    assert response.status_code == 200
+    assert observed == {
+        "document",
+        "proposals",
+        "expressions",
+        "claim_states",
+        "lifecycle",
+        "readiness",
+        "events",
+    }
+    assert len(connection_ids) == 1
+
+
+def test_get_projects_expression_claim_status_and_kind(client, seeded):
+    store = seeded["store"]
+    document = seeded["document"]
+    lifecycle = TruthLifecycle(store)
+    confirmed = store.propose_claim(
+        proposition="The document contains a test sentence.",
+        claim_kind="fact",
+        actor=AGENT,
+        created_at=NOW,
+        status_at=NOW,
+    ).claim
+    needs_review = store.propose_claim(
+        proposition="The test sentence should remain.",
+        claim_kind="preference",
+        actor=AGENT,
+        created_at=NOW,
+        status_at=NOW,
+    ).claim
+
+    for selector, claim_ref in (
+        (
+            CompositeSelector(
+                exact=DOC_QUOTE,
+                prefix="Original body: ",
+                suffix=" End.",
+            ),
+            confirmed.id,
+        ),
+        (
+            CompositeSelector(
+                exact="Throwaway fixture",
+                prefix="Title: ",
+                suffix=".",
+            ),
+            truth_uri(store.store_id, "claim", needs_review.id),
+        ),
+    ):
+        span = expressions.ensure_document_span(
+            store,
+            document_id=document.id,
+            selector=selector,
+            quote_exact=selector.exact,
+            actor=HUMAN,
+            at=NOW,
+        )
+        expressions.mark_expression(
+            store,
+            document_span_id=span.id,
+            claim_ref=claim_ref,
+            role="instantiation",
+            actor=HUMAN,
+            at=NOW,
+        )
+
+    for claim in (confirmed, needs_review):
+        gesture = lifecycle.mint_gesture(
+            subject_ref=claim.id,
+            actor=HUMAN,
+            surface="dashboard",
+            kind="confirm",
+            displayed_payload_sha256=claim.canonical_sha256,
+            at="2026-07-17T12:01:00.000+00:00",
+        )
+        lifecycle.confirm_claim(
+            claim_id=claim.id,
+            gesture_id=gesture.id,
+            actor=HUMAN,
+            expected_context_sha256=None,
+            observed_at="2026-07-17T12:01:00.000+00:00",
+            at="2026-07-17T12:01:00.000+00:00",
+        )
+
+    lifecycle.mark_needs_review(
+        claim_id=needs_review.id,
+        actor=Actor("system", "cowork-route-test"),
+        basis_kind="sweep",
+        basis_ref=new_id(),
+        at="2026-07-17T12:02:00.000+00:00",
+    )
+
+    resp = client.get(
+        _url(f"/api/truth/doc/{document.id}", seeded["store_id"])
+    )
+
+    assert resp.status_code == 200
+    by_ref = {
+        entry["claim_ref"]: entry for entry in resp.get_json()["expressions"]
+    }
+    assert by_ref[confirmed.id]["claim_status"] == "confirmed"
+    assert by_ref[confirmed.id]["claim_kind"] == "fact"
+    assert by_ref[confirmed.id]["quote_anchor"] == {
+        "exact": DOC_QUOTE,
+        "prefix": "Original body: ",
+        "suffix": " End.",
+    }
+    needs_review_ref = truth_uri(store.store_id, "claim", needs_review.id)
+    assert by_ref[needs_review_ref]["claim_status"] == "needs_review"
+    assert by_ref[needs_review_ref]["claim_kind"] == "preference"
+    assert by_ref[needs_review_ref]["quote_anchor"] == {
+        "exact": "Throwaway fixture",
+        "prefix": "Title: ",
+        "suffix": ".",
+    }
+
+
+def test_get_emits_ai_confirmed_only_for_human_accepted_agent_span(
+    client,
+    seeded,
+    make_proposal,
+):
+    store = seeded["store"]
+    document = seeded["document"]
+    agent_only = expressions.ensure_document_span(
+        store,
+        document_id=document.id,
+        selector=CompositeSelector(
+            exact="Agent-marked existing prose",
+            prefix="Before ",
+            suffix=" after",
+        ),
+        quote_exact="Agent-marked existing prose",
+        actor=AGENT,
+        author_kind="agent_run",
+        author_ref=AGENT.ref,
+        at=NOW,
+    )
+    claim = store.propose_claim(
+        proposition="The accepted replacement states the result.",
+        claim_kind="fact",
+        actor=AGENT,
+        created_at=NOW,
+        status_at=NOW,
+    ).claim
+    proposal = make_proposal(
+        replacement="Human-approved agent prose.",
+        claim_refs=[{"claim": claim.id, "role": "instantiation"}],
+    )
+    accepted_at = "2026-07-17T12:03:00.000+00:00"
+    gesture = TruthLifecycle(store).mint_gesture(
+        subject_ref=proposal.id,
+        actor=HUMAN,
+        surface="dashboard",
+        kind="confirm",
+        displayed_payload_sha256=proposal.canonical_sha256,
+        at=accepted_at,
+    )
+    decision = proposals.accept_proposal(
+        store,
+        proposal_id=proposal.id,
+        gesture_id=gesture.id,
+        actor=HUMAN,
+        observed_at=accepted_at,
+        at=accepted_at,
+    )
+    accepted_span_id = decision.expressions[0].document_span_id
+
+    with store._read_connection() as conn:
+        accepted_span = store._get_document_span_locked(conn, accepted_span_id)
+    assert accepted_span is not None
+    assert accepted_span.author_kind == "agent_run"
+    assert accepted_span.author_ref == AGENT.ref
+    assert accepted_span.created_by_kind == "human"
+    assert accepted_span.created_by_ref == HUMAN.ref
+
+    response = client.get(
+        _url(f"/api/truth/doc/{document.id}", seeded["store_id"])
+    )
+
+    assert response.status_code == 200
+    provenance = {
+        entry["span_id"]: entry
+        for entry in response.get_json()["provenance_spans"]
+    }
+    assert agent_only.id not in provenance
+    assert provenance[accepted_span_id] == {
+        "span_id": accepted_span_id,
+        "quote": "Human-approved agent prose.",
+        "quote_anchor": {
+            "exact": "Human-approved agent prose.",
+            "prefix": "",
+            "suffix": "",
+        },
+        "trust_state": "ai_confirmed",
+        "producer": None,
+        "approval_gesture_id": None,
+    }
+
+
+def test_get_leaves_unresolvable_expression_claim_metadata_empty(client, seeded):
+    store = seeded["store"]
+    document = seeded["document"]
+    span = expressions.ensure_document_span(
+        store,
+        document_id=document.id,
+        selector=CompositeSelector(exact=DOC_QUOTE),
+        quote_exact=DOC_QUOTE,
+        actor=HUMAN,
+        at=NOW,
+    )
+    refs = (
+        ("uri", truth_uri(new_id(), "claim", new_id())),
+        ("uri", "not-a-wb-truth-uri"),
+        ("local", new_id()),
+    )
+    # These rows model legacy/import corruption that the normal write path
+    # correctly refuses. Bypass only the post-commit export validator so the
+    # read route can prove it degrades safely instead of raising.
+    conn = store.connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        for claim_ref_kind, claim_ref in refs:
+            expression_id = new_id()
+            conn.execute(
+                "INSERT INTO expressions (id, document_span_id, claim_ref_kind, "
+                "claim_ref, role, claim_canonical_sha256, span_sha256, "
+                "created_at, created_by_kind, created_by_ref) "
+                "VALUES (?, ?, ?, ?, 'instantiation', ?, ?, ?, 'human', ?)",
+                (
+                    expression_id,
+                    span.id,
+                    claim_ref_kind,
+                    claim_ref,
+                    sha256_text(f"unresolvable:{claim_ref}"),
+                    span.span_sha256,
+                    NOW,
+                    HUMAN.ref,
+                ),
+            )
+            conn.execute(
+                "INSERT INTO ledger_records (record_type, record_key) "
+                "VALUES ('expression', ?)",
+                (expression_id,),
+            )
+        conn.execute("COMMIT")
+    finally:
+        conn.close()
+
+    resp = client.get(
+        _url(f"/api/truth/doc/{document.id}", seeded["store_id"])
+    )
+
+    assert resp.status_code == 200
+    by_ref = {
+        entry["claim_ref"]: entry for entry in resp.get_json()["expressions"]
+    }
+    for _kind, claim_ref in refs:
+        assert by_ref[claim_ref]["claim_status"] is None
+        assert by_ref[claim_ref]["claim_kind"] is None
 
 
 def test_get_unknown_document_is_404(client, seeded):

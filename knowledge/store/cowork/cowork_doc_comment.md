@@ -1,7 +1,7 @@
 ---
 name: Cowork Doc Comment
 kind: capability
-description: Raise a quote-anchored flag (a proposal with no replacement) on a cowork doc.
+description: "Raise a quote-anchored concern as a flag (`replacement: null`) on a cowork doc; flags are not deletion edits."
 capability_name: cowork_doc_comment
 category: cowork
 op: op.wb.cowork_doc_comment
@@ -77,3 +77,8 @@ together. The capability verifies that the conversation is the real binding for
 this store and document, then holds that exact live lease while the flag is
 created. Other callers may omit the complete tuple. Partial or mismatched tuples
 are rejected.
+
+Use this capability when the concern has no concrete text replacement. To
+propose deleting the anchored passage, use `cowork_doc_propose_edit` with an
+empty-string replacement instead; a flag does not produce tracked deletion
+markup.

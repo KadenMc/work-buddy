@@ -180,6 +180,7 @@ export function CoworkLabSection() {
           <StreamView
             items={items}
             selectedId={null}
+            selectedKind={null}
             decisions={{}}
             claimDecisions={{}}
             inspectSpanByClaim={new Map()}

@@ -981,6 +981,87 @@
 }
 
 /*
+ * Ledger-derived editor annotations. Every treatment has a non-colour shape:
+ * insertion is a solid underline, deletion is a strike, modification is dotted,
+ * flags are wavy, expressions are dashed, and confirmed provenance has a rule +
+ * check stamp. The decoration plugin owns these classes; none serialize to Yjs
+ * or Markdown.
+ */
+.wb-cowork-ledger-decoration,
+.wb-cowork-suggestion {
+  border-radius: var(--wb-radius-sm);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.wb-cowork-suggestion--insertion {
+  background: color-mix(
+    in srgb,
+    var(--wb-color-status-success) 18%,
+    transparent
+  );
+  text-decoration-line: underline;
+  text-decoration-style: solid;
+  text-decoration-color: var(--wb-color-status-success);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 2px;
+}
+
+.wb-cowork-suggestion--deletion {
+  background: color-mix(
+    in srgb,
+    var(--wb-color-status-danger) 16%,
+    transparent
+  );
+  text-decoration-line: line-through;
+  text-decoration-style: solid;
+  text-decoration-color: var(--wb-color-status-danger);
+  text-decoration-thickness: 2px;
+}
+
+.wb-cowork-suggestion--modification {
+  background: color-mix(
+    in srgb,
+    var(--wb-color-status-warning) 18%,
+    transparent
+  );
+  text-decoration-line: underline;
+  text-decoration-style: dotted;
+  text-decoration-color: var(--wb-color-status-warning);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
+.wb-cowork-suggestion-widget {
+  white-space: pre-wrap;
+  user-select: none;
+  pointer-events: none;
+}
+
+.wb-cowork-flag-mark {
+  background: color-mix(
+    in srgb,
+    var(--wb-color-status-warning) 14%,
+    transparent
+  );
+  text-decoration-line: underline;
+  text-decoration-style: wavy;
+  text-decoration-color: var(--wb-color-status-warning);
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 3px;
+}
+
+/* Expression claim-chip: a violet dashed underline, read-path only. */
+.wb-cowork-expression-mark,
+.wb-cowork-claim-anchor {
+  text-decoration-line: underline;
+  text-decoration-style: dashed;
+  text-decoration-color: var(--wb-color-data-4);
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 3px;
+}
+
+/*
  * State 2 provenance tint: an AI-written, human-confirmed span. Accent token plus a
  * left rule and a stamp, so the signal is not carried by color alone.
  */
@@ -996,16 +1077,28 @@
   color: var(--wb-color-accent);
 }
 
-/* Expression claim-chip: a violet dashed underline, read-path only. */
-.wb-cowork-expression-mark {
-  text-decoration: underline dashed var(--wb-color-data-4);
-  text-underline-offset: 2px;
+/*
+ * Review focus is persistent until selection moves or clears. Chat passage
+ * highlighting is transient and never becomes the editor's active text selection.
+ */
+.wb-cowork-anchor--active {
+  outline: 2px solid var(--wb-color-focus-ring);
+  outline-offset: 2px;
+}
+
+.wb-cowork-passage-highlight {
+  background: var(--wb-color-selection);
+  box-shadow: inset 0 -2px 0 var(--wb-color-focus-ring);
 }
 
 @media (prefers-reduced-motion: reduce) {
   .wb-cowork__rail-tab,
   .wb-cowork__rail-separator::before {
     transition: none;
+  }
+  .wb-cowork-anchor--flash,
+  .wb-cowork-passage-highlight {
+    animation: none;
   }
 }
 
@@ -1027,7 +1120,26 @@
   .wb-cowork-provenance-tint {
     border-inline-start: 2px solid CanvasText;
   }
-  .wb-cowork-expression-mark {
+  .wb-cowork-expression-mark,
+  .wb-cowork-claim-anchor {
     text-decoration: underline dashed CanvasText;
+  }
+  .wb-cowork-suggestion--insertion {
+    text-decoration: underline solid LinkText;
+  }
+  .wb-cowork-suggestion--deletion {
+    text-decoration: line-through solid CanvasText;
+  }
+  .wb-cowork-suggestion--modification {
+    text-decoration: underline dotted Highlight;
+  }
+  .wb-cowork-flag-mark {
+    text-decoration: underline wavy Highlight;
+  }
+  .wb-cowork-anchor--active,
+  .wb-cowork-passage-highlight {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+    box-shadow: none;
   }
 }

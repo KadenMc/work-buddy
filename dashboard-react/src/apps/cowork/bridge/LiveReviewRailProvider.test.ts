@@ -58,6 +58,14 @@ const docClientReturning = (value: R2DocPayload): CoworkDocClient => ({
   fetchDoc: async () => value,
 });
 
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+};
+
 const workspaceRecording = () => {
   const events: string[] = [];
   const workspace: CoworkSittingWorkspace = {
@@ -76,12 +84,13 @@ const workspaceRecording = () => {
           rendered_markdown: "# materialized\n",
           rendered_sha256: "m".repeat(64),
         },
-        adopt: () => events.push("adopted"),
         dispose: () => undefined,
       };
     },
     isCurrent: () => true,
-    refreshFromServer: async () => undefined,
+    refreshFromServer: async () => {
+      events.push("refreshed");
+    },
   };
   return { workspace, events };
 };
@@ -109,7 +118,7 @@ describe("LiveReviewRailProvider", () => {
     expect(data.drift.currentFileSha256).toBe("filesha");
   });
 
-  it("emits the same pull to the ingestion and health channels", async () => {
+  it("emits the same pull to the proposal and health channels", async () => {
     const provider = build({
       doc: payload([proposal({ proposal_id: "s1" }), proposal({ proposal_id: "s2" })]),
     });
@@ -140,6 +149,76 @@ describe("LiveReviewRailProvider", () => {
     expect(late).toHaveBeenCalledTimes(1);
   });
 
+  it("does not let an older overlapping pull overwrite a newer review snapshot", async () => {
+    const older = deferred<R2DocPayload>();
+    const newer = deferred<R2DocPayload>();
+    const fetchDoc = vi
+      .fn<() => Promise<R2DocPayload>>()
+      .mockReturnValueOnce(older.promise)
+      .mockReturnValueOnce(newer.promise);
+    const provider = new LiveReviewRailProvider({
+      docClient: { fetchDoc },
+      documentId: "doc-1",
+      storeId: "store-1",
+      sittingTransport: new InMemoryCoworkSittingTransport(),
+      getSittingWorkspace: () => workspaceRecording().workspace,
+    });
+    const proposals = vi.fn();
+    provider.onProposals(proposals);
+
+    const first = provider.load();
+    const second = provider.load();
+    newer.resolve(payload([proposal({ proposal_id: "newer" })]));
+    await expect(second).resolves.toMatchObject({
+      proposals: [expect.objectContaining({ proposalId: "newer" })],
+    });
+    older.resolve(payload([proposal({ proposal_id: "older" })]));
+    await expect(first).resolves.toMatchObject({
+      proposals: [expect.objectContaining({ proposalId: "newer" })],
+    });
+
+    expect(proposals).toHaveBeenCalledTimes(1);
+    expect(proposals.mock.calls[0]?.[0]).toEqual([
+      expect.objectContaining({ proposal_id: "newer" }),
+    ]);
+  });
+
+  it("does not publish an older pull that resolves before the newer pull", async () => {
+    const older = deferred<R2DocPayload>();
+    const newer = deferred<R2DocPayload>();
+    const fetchDoc = vi
+      .fn<() => Promise<R2DocPayload>>()
+      .mockReturnValueOnce(older.promise)
+      .mockReturnValueOnce(newer.promise);
+    const provider = new LiveReviewRailProvider({
+      docClient: { fetchDoc },
+      documentId: "doc-1",
+      storeId: "store-1",
+      sittingTransport: new InMemoryCoworkSittingTransport(),
+      getSittingWorkspace: () => workspaceRecording().workspace,
+    });
+    const proposals = vi.fn();
+    provider.onProposals(proposals);
+
+    const first = provider.load();
+    const second = provider.load();
+    older.resolve(payload([proposal({ proposal_id: "older" })]));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(proposals).not.toHaveBeenCalled();
+
+    newer.resolve(payload([proposal({ proposal_id: "newer" })]));
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      expect.objectContaining({
+        proposals: [expect.objectContaining({ proposalId: "newer" })],
+      }),
+      expect.objectContaining({
+        proposals: [expect.objectContaining({ proposalId: "newer" })],
+      }),
+    ]);
+    expect(proposals).toHaveBeenCalledTimes(1);
+  });
+
   it("fans an invalidation out to the rail's reload listeners", async () => {
     const provider = build();
     const reload = vi.fn();
@@ -161,7 +240,7 @@ describe("LiveReviewRailProvider", () => {
 
     const result = await provider.submitSitting(submission);
 
-    expect(events).toEqual(["prepared:s1", "adopted"]);
+    expect(events).toEqual(["prepared:s1", "refreshed"]);
     expect(result.results[0]?.result).toBe("applied");
   });
 

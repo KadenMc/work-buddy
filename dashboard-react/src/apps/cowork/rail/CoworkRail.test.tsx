@@ -133,6 +133,19 @@ describe("CoworkRail", () => {
     expect(onChatSelected).toHaveBeenCalledOnce();
   });
 
+  it("does not let a hidden Queue consume shortcuts from Chat", async () => {
+    renderRail();
+    await waitFor(() => expect(screen.getByText(S1_TLDR)).toBeVisible());
+    await userEvent.click(screen.getByRole("button", { name: "Queue" }));
+    expect(screen.getByText("Item 1")).toBeVisible();
+
+    await userEvent.click(screen.getByRole("tab", { name: /Chat/ }));
+    await userEvent.keyboard("k");
+    await userEvent.click(screen.getByRole("tab", { name: "Review" }));
+
+    expect(screen.getByText("Item 1")).toBeVisible();
+  });
+
   it("owns one rich-chat load and subscription instead of polling twice", async () => {
     const provider: ChatConversationProvider = {
       loadConversation: vi.fn(async () => ({
@@ -258,13 +271,13 @@ describe("CoworkRail", () => {
     await waitFor(() => expect(screen.getByText(S1_TLDR)).toBeVisible());
     await userEvent.click(screen.getByText(S1_TLDR));
     await userEvent.click(screen.getByRole("button", { name: "Accept" }));
-    expect(screen.getByText("Selected: Accept")).toBeVisible();
+    expect(screen.getByText("Decision: Accept")).toBeVisible();
 
     first.unmount();
 
     // A fresh rail with a fresh store, but the same storage, restores the draft.
     renderRail(storage);
-    await waitFor(() => expect(screen.getByText("Selected: Accept")).toBeVisible());
+    await waitFor(() => expect(screen.getByText("Decision: Accept")).toBeVisible());
   });
 
   it("has no accessibility violations on the Review composition", async () => {

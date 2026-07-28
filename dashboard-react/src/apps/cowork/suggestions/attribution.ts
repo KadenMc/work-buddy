@@ -8,11 +8,11 @@ import type { EpistemicState, WbSuggestionAttrs } from "./types";
  * The vendored engine's step handlers create suggestion marks carrying only the grouping
  * `id`, which the adapter injects with the kernel proposal_id through generateId. This
  * module threads the forked attribution attrs (producer, epistemic) onto that same
- * tracked range after ingestion, so provenance survives acceptance (I11, SP-1 delta 2)
- * without patching every mark-creation site inside the engine.
+ * tracked range in isolated compatibility transforms without patching every
+ * mark-creation site inside the engine.
  */
 
-/** Read the adapter-facing attribution view from a live suggestion mark. */
+/** Read attribution from an isolated compatibility suggestion mark. */
 export const readSuggestionAttrs = (mark: Mark): WbSuggestionAttrs => ({
   proposal_id: String(mark.attrs["id"]),
   producer: mark.attrs["producer"] === null ? "" : String(mark.attrs["producer"]),

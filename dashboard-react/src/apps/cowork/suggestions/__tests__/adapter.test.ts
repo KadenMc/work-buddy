@@ -116,6 +116,48 @@ describe("WbTrackedChangesAdapter accept and reject per id", () => {
     expect((editor as Editor).getText()).toContain("quick");
     expect((editor as Editor).getText()).not.toContain("slow");
   });
+
+  it("materializes edit_confirm from marks with the human amendment", () => {
+    const ingestingAdapter = attach("<p>The quick brown fox</p>");
+    ingestingAdapter.ingestProposal(
+      editProposal("prop-1", "quick", "slow", { prefix: "The " }),
+    );
+
+    // Sitting materialization constructs a fresh adapter around a clone that contains
+    // the projected marks but not the original adapter's in-memory proposal cache.
+    const sittingAdapter = new WbTrackedChangesAdapterImpl();
+    sittingAdapter.attach(editor as Editor);
+    sittingAdapter.applyDecision({
+      proposal_id: "prop-1",
+      verb: "edit_confirm",
+      canonical_sha256: "canonical-prop-1",
+      amend_content: "swift",
+    });
+
+    expect(markSummary(editor as Editor)).toEqual([]);
+    expect((editor as Editor).getText()).toContain("The swift brown fox");
+    expect((editor as Editor).getText()).not.toContain("quick");
+    expect((editor as Editor).getText()).not.toContain("slow");
+  });
+
+  it("materializes an empty edit_confirm amendment as deletion", () => {
+    const ingestingAdapter = attach("<p>The quick brown fox</p>");
+    ingestingAdapter.ingestProposal(
+      editProposal("prop-1", "quick ", "slow ", { prefix: "The " }),
+    );
+
+    const sittingAdapter = new WbTrackedChangesAdapterImpl();
+    sittingAdapter.attach(editor as Editor);
+    sittingAdapter.applyDecision({
+      proposal_id: "prop-1",
+      verb: "edit_confirm",
+      canonical_sha256: "canonical-prop-1",
+      amend_content: "",
+    });
+
+    expect(markSummary(editor as Editor)).toEqual([]);
+    expect((editor as Editor).getText()).toBe("The brown fox");
+  });
 });
 
 describe("WbTrackedChangesAdapter overlap behavior", () => {

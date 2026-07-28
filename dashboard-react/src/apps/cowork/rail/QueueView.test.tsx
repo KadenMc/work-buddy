@@ -46,6 +46,19 @@ describe("QueueView", () => {
     expect(props.onNavigate).toHaveBeenLastCalledWith(1);
   });
 
+  it("does not handle queue shortcuts while Review is hidden", async () => {
+    const props = baseProps();
+    render(
+      <QueueView
+        {...props}
+        index={1}
+        keyboardNavigationEnabled={false}
+      />,
+    );
+    await userEvent.keyboard("kj");
+    expect(props.onNavigate).not.toHaveBeenCalled();
+  });
+
   it("lists every item and marks decided ones", () => {
     const props = baseProps();
     render(
@@ -60,6 +73,33 @@ describe("QueueView", () => {
     // The focused item (index 0) reads "now", the decided s3 reads "decided".
     expect(screen.getByText("now")).toBeVisible();
     expect(screen.getByText("decided")).toBeVisible();
+  });
+
+  it("names modification proposals accurately in the all-items list", () => {
+    const first = items[0];
+    if (first === undefined || first.kind === "claim") {
+      throw new Error("The first demo item must be a proposal.");
+    }
+    const modificationItems = [
+      {
+        ...first,
+        proposal: {
+          ...first.proposal,
+          changeType: "modification" as const,
+          tldr: "Clarify the cache key.",
+        },
+      },
+      ...items.slice(1),
+    ];
+    render(
+      <QueueView
+        {...baseProps()}
+        items={modificationItems}
+      />,
+    );
+    expect(
+      screen.getByText("Modification, Clarify the cache key."),
+    ).toBeVisible();
   });
 
   it("jumps to a clicked all-items row by a relative delta", async () => {

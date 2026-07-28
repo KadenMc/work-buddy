@@ -104,7 +104,7 @@ describe("deriveAnchorLabel", () => {
 });
 
 describe("mapR2ToReview", () => {
-  it("projects one payload into rail cards and ingestion inputs from one array", () => {
+  it("projects one payload into rail cards and proposal inputs from one array", () => {
     const mapped = mapR2ToReview(
       payload([
         proposal({ proposal_id: "s1" }),
@@ -156,7 +156,7 @@ describe("mapR2ToReview", () => {
     ]);
   });
 
-  it("maps the ingestion input attribution from the producer session", () => {
+  it("maps proposal attribution from the producer session", () => {
     const mapped = mapR2ToReview(payload([proposal({ proposal_id: "s1" })]));
     expect(mapped.proposalInputs[0].attrs).toEqual({
       proposal_id: "s1",

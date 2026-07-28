@@ -422,9 +422,13 @@ def cowork_doc_propose_edit(
 
     Each hunk is ``{quote_anchor:{exact,prefix,suffix}, replacement,
     node_id_hint?}``, and the shared ``rationale``, ``tldr``, and ``claim_refs``
-    describe the edit. ``claim_refs`` is the one frozen shape, a list of
-    ``{claim, role}`` with role defaulting to instantiation, carried through so
-    accepting mints one expression per ref. A missing ``base_doc_sha256``
+    describe the edit. An empty replacement explicitly deletes the anchored
+    text; a missing, non-string, or whitespace-only replacement is invalid.
+    Nonempty replacements retain their leading and trailing whitespace exactly.
+    ``claim_refs`` is the one frozen shape, a list of ``{claim, role}`` with role
+    defaulting to instantiation, carried through so accepting mints one
+    expression per ref. A batch containing a deletion cannot carry claim refs,
+    because no passage remains to express them. A missing ``base_doc_sha256``
     defaults to the current document content, so a proposal is never
     accidentally stale at creation. ``meta`` is accepted and type-validated for
     forward compatibility. A v1 proposal row persists only producer identity, so
@@ -445,9 +449,25 @@ def cowork_doc_propose_edit(
             raise InvariantViolation("each hunk must be a mapping")
         selector, quote = _selector_from_anchor(hunk.get("quote_anchor"))
         replacement = hunk.get("replacement")
-        if not isinstance(replacement, str) or not replacement.strip():
-            raise InvariantViolation("each hunk requires a nonempty replacement")
+        if not isinstance(replacement, str):
+            raise InvariantViolation(
+                "each hunk replacement must be a string; "
+                "use an empty string for deletion"
+            )
+        if replacement and not replacement.strip():
+            raise InvariantViolation(
+                "each hunk replacement cannot be whitespace-only; "
+                "use an empty string for deletion"
+            )
         prepared_hunks.append((selector, quote, replacement))
+    contains_deletion = any(
+        replacement == "" for _, _, replacement in prepared_hunks
+    )
+    if claim_refs and contains_deletion:
+        raise InvariantViolation(
+            "deletion proposals cannot carry claim_refs because no passage "
+            "remains to express them"
+        )
     store = _open_store(store_id)
     _require_document_surface(store)
     try:
@@ -660,6 +680,10 @@ def cowork_doc_expression_mark(
         selector=selector,
         quote_exact=quote,
         actor=actor,
+        # This operation links a claim to prose that already exists. The
+        # agent discovered the expression; it did not author the passage.
+        author_kind="unknown",
+        author_ref=None,
     )
     expression = expressions.mark_expression(
         store,

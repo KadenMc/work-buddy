@@ -26,6 +26,25 @@ export type RailItem =
 /** The kind of typed group an item belongs to. */
 export type RailGroup = "suggestions" | "flags" | "claims";
 
+/** Stable UI identity across the separate proposal and claim id namespaces. */
+export function railItemKey(item: RailItem): string {
+  return `${item.kind}:${item.id}`;
+}
+
+/** Whether an item is the exact kind-qualified rail selection. */
+export function isSelectedItem(
+  item: RailItem,
+  selectedId: string | null,
+  selectedKind: RailItem["kind"] | null,
+): boolean {
+  return item.id === selectedId && item.kind === selectedKind;
+}
+
+/** Match the two canonical R2 claim-reference shapes without substring collisions. */
+export function claimRefMatchesId(claimRef: string, claimId: string): boolean {
+  return claimRef === claimId || claimRef.endsWith(`/claim/${claimId}`);
+}
+
 export function groupOf(item: RailItem): RailGroup {
   if (item.kind === "claim") return "claims";
   return item.proposal.kind === "flag" ? "flags" : "suggestions";

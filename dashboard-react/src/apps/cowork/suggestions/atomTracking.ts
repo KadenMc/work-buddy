@@ -15,9 +15,9 @@ import type { EpistemicState } from "./types";
  * resolution, and it is exercised directly against a node position. Automatic routing from
  * a quote-anchored ProposalInput to this path is deferred to the S2 wave, because an atom
  * carries no text and so has no quote to anchor, which needs the node_id_hint or a
- * position-based anchor the ingestProposal text path does not have (C1 surface section 3
- * pre-routing note, gate condition 3). The adapter exposes ingestAtomSuggestion for a
- * caller that already holds the atom position.
+ * position-based anchor the compatibility text transform does not have. The isolated
+ * adapter exposes ingestAtomSuggestion for a test or migration caller that already holds
+ * the atom position.
  */
 
 export const WB_ATOM_SUGGESTION_ATTR = "wbSuggestion";
@@ -56,7 +56,15 @@ const suggestionNodeAttr = {
       attributes[WB_ATOM_SUGGESTION_ATTR] === null ||
       attributes[WB_ATOM_SUGGESTION_ATTR] === undefined
         ? {}
-        : { "data-wb-atom-suggestion": JSON.stringify(attributes[WB_ATOM_SUGGESTION_ATTR]) },
+        : {
+            "data-wb-atom-suggestion": JSON.stringify(
+              attributes[WB_ATOM_SUGGESTION_ATTR],
+            ),
+            "data-wb-anchor-kind": "proposal",
+            "data-wb-anchor-id": String(
+              (attributes[WB_ATOM_SUGGESTION_ATTR] as AtomSuggestionValue).id,
+            ),
+          },
   },
 };
 

@@ -7,13 +7,14 @@ from pathlib import Path
 import pytest
 
 from work_buddy.truth import documents, proposals
+from work_buddy.truth.anchors import CompositeSelector
 from work_buddy.truth.contracts import (
     Actor,
     GestureError,
     InvariantViolation,
     TransitionError,
 )
-from work_buddy.truth.identity import sha256_text
+from work_buddy.truth.identity import canonical_json, sha256_text
 
 
 NOW = "2026-07-17T12:00:00.000+00:00"
@@ -131,6 +132,73 @@ def test_dedup_suppresses_live_duplicate(document_store, register_document):
     assert duplicate.id == first.id
 
 
+def test_deletion_is_distinct_from_flag_and_suppresses_only_deletions(
+    document_store, register_document
+):
+    store, _ = document_store
+    document_id, base, _ = register_document(store)
+
+    flag = _propose(store, document_id, base, replacement=None)
+    deletion = _propose(store, document_id, base, replacement="")
+
+    assert flag.id != deletion.id
+    assert flag.dedup_key != deletion.dedup_key
+    assert _propose(store, document_id, base, replacement=None).id == flag.id
+    assert _propose(store, document_id, base, replacement="").id == deletion.id
+
+
+def test_replacement_validation_preserves_edit_whitespace_and_allows_deletion(
+    document_store, register_document
+):
+    store, _ = document_store
+    document_id, base, _ = register_document(store)
+
+    replacement = " \nRevised passage.\n "
+    edit = _propose(store, document_id, base, replacement=replacement)
+    deletion = _propose(
+        store,
+        document_id,
+        base,
+        quote="another passage",
+        replacement="",
+    )
+
+    assert edit.replacement == replacement
+    assert deletion.replacement == ""
+
+    for invalid in (123, "   ", "\n\t"):
+        with pytest.raises(InvariantViolation, match="replacement"):
+            _propose(
+                store,
+                document_id,
+                base,
+                quote=f"invalid {invalid!r}",
+                replacement=invalid,
+            )
+
+
+def test_deletion_rejects_claim_refs_without_inserting(
+    document_store, register_document
+):
+    store, _ = document_store
+    document_id, base, _ = register_document(store)
+    claim = _claim(store)
+
+    with pytest.raises(
+        InvariantViolation,
+        match="deletion proposals cannot carry claim_refs",
+    ):
+        _propose(
+            store,
+            document_id,
+            base,
+            replacement="",
+            claim_refs=[{"claim": claim.id, "role": "paraphrase"}],
+        )
+
+    assert proposals.open_proposals(store, document_id=document_id) == ()
+
+
 def test_dedup_allows_repropose_after_expiry(document_store, register_document):
     store, _ = document_store
     document_id, base, _ = register_document(store)
@@ -167,6 +235,46 @@ def test_accept_confirm_applies_and_mints_expression(
     assert result.status_event.decision == "confirm"
     assert len(result.expressions) == 1
     assert result.expressions[0].role == "paraphrase"
+    with store._read_connection() as conn:
+        span = store._get_document_span_locked(
+            conn,
+            result.expressions[0].document_span_id,
+        )
+    assert span is not None
+    assert span.quote_exact == "144 queries"
+    assert span.author_kind == "agent_run"
+    assert span.author_ref == AGENT.ref
+    assert span.created_by_kind == "human"
+    assert span.created_by_ref == HUMAN.ref
+    accepted_anchor = CompositeSelector.from_json(span.selector_json)
+    assert accepted_anchor == CompositeSelector(
+        exact="144 queries",
+        prefix="is ",
+        suffix=".",
+    )
+
+
+def test_accept_confirm_applies_deletion_without_minting_expression(
+    document_store, register_document, mint_proposal_gesture
+):
+    store, _ = document_store
+    document_id, base, _ = register_document(store)
+    proposal = _propose(store, document_id, base, replacement="")
+    gesture = mint_proposal_gesture(store, proposal, kind="confirm")
+
+    result = proposals.accept_proposal(
+        store,
+        proposal_id=proposal.id,
+        gesture_id=gesture.id,
+        actor=HUMAN,
+        observed_at=LATER,
+        at=LATER,
+    )
+
+    assert result.status_event.status == "applied"
+    assert result.status_event.decision == "confirm"
+    assert result.proposal.replacement == ""
+    assert result.expressions == ()
 
 
 def test_edit_confirm_applies_without_minting(
@@ -190,6 +298,32 @@ def test_edit_confirm_applies_without_minting(
     )
     assert result.status_event.status == "applied"
     assert result.status_event.decision == "edit_confirm"
+    assert result.expressions == ()
+
+
+def test_edit_confirm_accepts_empty_replacement_as_deletion(
+    document_store, register_document, mint_proposal_gesture
+):
+    store, _ = document_store
+    document_id, base, _ = register_document(store)
+    proposal = _propose(store, document_id, base)
+    gesture = mint_proposal_gesture(store, proposal, kind="edit_confirm")
+
+    result = proposals.accept_proposal(
+        store,
+        proposal_id=proposal.id,
+        gesture_id=gesture.id,
+        actor=HUMAN,
+        amended_replacement="",
+        observed_at=LATER,
+        at=LATER,
+    )
+
+    assert result.status_event.status == "applied"
+    assert result.status_event.decision == "edit_confirm"
+    assert result.status_event.note == (
+        f"amended_replacement_sha256:{sha256_text('')}"
+    )
     assert result.expressions == ()
 
 
@@ -712,3 +846,35 @@ def test_canonical_and_dedup_helpers_are_pure():
     assert key == proposals.proposal_dedup_key(
         document_id="d" * 32, quote_exact="120 queries", replacement="144 queries"
     )
+
+
+def test_dedup_helper_preserves_legacy_flag_and_nonempty_edit_keys():
+    document_id = "d" * 32
+    quote = "120 queries"
+
+    def legacy_key(replacement):
+        return sha256_text(
+            canonical_json(
+                {
+                    "document_id": document_id,
+                    "quote": quote,
+                    "replacement_sha256": sha256_text(replacement or ""),
+                }
+            )
+        )
+
+    assert proposals.proposal_dedup_key(
+        document_id=document_id,
+        quote_exact=quote,
+        replacement=None,
+    ) == legacy_key(None)
+    assert proposals.proposal_dedup_key(
+        document_id=document_id,
+        quote_exact=quote,
+        replacement="144 queries",
+    ) == legacy_key("144 queries")
+    assert proposals.proposal_dedup_key(
+        document_id=document_id,
+        quote_exact=quote,
+        replacement="",
+    ) != legacy_key(None)

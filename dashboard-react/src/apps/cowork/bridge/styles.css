@@ -1,27 +1,45 @@
 /*
- * Bridge-owned styling for the scroll-to-and-highlight affordance (the aligned-stream
- * degrade path). scrollToAnchor adds this class to a suggestion mark to flash it into
- * notice. It consumes Theme Contract v1 semantic tokens only (section 5.4), carries a
- * non-color encoding under forced-colors, and honors reduced-motion (SP-6 G3, PRD section 7).
+ * Bridge-owned motion for editor navigation cues. Review focus can flash an
+ * existing ledger anchor and Chat can highlight an arbitrary quote range. Both
+ * consume Theme Contract v1 tokens, preserve the underlying annotation shape,
+ * and degrade to a static outline for reduced motion and forced colors.
  */
 
-.wb-cowork-suggestion--flash {
+.wb-cowork-anchor--flash {
   animation: wb-cowork-anchor-flash 1200ms ease-out;
   border-radius: var(--wb-radius-sm, 3px);
 }
 
 @keyframes wb-cowork-anchor-flash {
   from {
-    background-color: var(--wb-color-accent-soft);
+    box-shadow: 0 0 0 3px var(--wb-color-focus-ring);
   }
   to {
-    background-color: transparent;
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+.wb-cowork-passage-highlight {
+  animation: wb-cowork-passage-highlight 1200ms ease-out;
+}
+
+@keyframes wb-cowork-passage-highlight {
+  from {
+    background: color-mix(
+      in srgb,
+      var(--wb-color-focus-ring) 36%,
+      var(--wb-color-selection)
+    );
+  }
+  to {
+    background: var(--wb-color-selection);
   }
 }
 
 /* Reduced motion: hold a brief static outline instead of the fading animation. */
 @media (prefers-reduced-motion: reduce) {
-  .wb-cowork-suggestion--flash {
+  .wb-cowork-anchor--flash,
+  .wb-cowork-passage-highlight {
     animation: none;
     outline: 2px solid var(--wb-color-focus-ring);
     outline-offset: 1px;
@@ -30,7 +48,8 @@
 
 /* Forced colors: the animation is invisible, so keep a system-color outline. */
 @media (forced-colors: active) {
-  .wb-cowork-suggestion--flash {
+  .wb-cowork-anchor--flash,
+  .wb-cowork-passage-highlight {
     outline: 2px solid Highlight;
     outline-offset: 1px;
   }

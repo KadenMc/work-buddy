@@ -14,6 +14,7 @@ function baseProps() {
   return {
     items,
     selectedId: null,
+    selectedKind: null,
     decisions: {},
     claimDecisions: {},
     inspectSpanByClaim: emptySpanMap,

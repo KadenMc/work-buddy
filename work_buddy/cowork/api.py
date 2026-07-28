@@ -22,6 +22,9 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from ipaddress import ip_address
 from urllib.parse import urlsplit
 
@@ -38,12 +41,12 @@ from work_buddy.cowork import (
 )
 from work_buddy.cowork.paths import CoworkPathError, resolve_markdown_path
 from work_buddy.cowork.policy import document_surface_allowed
-from work_buddy.truth import documents, expressions, proposals
+from work_buddy.truth import documents, expressions, proposals, queries
 from work_buddy.truth.anchors import CompositeSelector
 from work_buddy.truth.contracts import Actor, InvariantViolation
 from work_buddy.truth.events import emit_truth_event
 from work_buddy.truth.expressions import ensure_document_span
-from work_buddy.truth.identity import sha256_bytes
+from work_buddy.truth.identity import parse_truth_uri, sha256_bytes
 from work_buddy.truth.registry import TruthStoreRegistry
 from work_buddy.truth.store import DocumentRecord, TruthStore
 
@@ -55,12 +58,6 @@ cowork_blueprint = Blueprint("cowork", __name__)
 # dashboard surface must NOT reuse it: a real dashboard user threads through
 # instead (I17). Kept here only to document the boundary it must not cross.
 _MCP_HUMAN_REF = "work-buddy-user"
-
-# Provenance trust state derives from durable span authorship: a human-authored
-# span is human content, an agent-authored span reached durability only through
-# acceptance, so it is confirmed. Proposed content is not yet a durable span.
-_TRUST_BY_AUTHOR = {"human": "human", "agent_run": "ai_confirmed"}
-
 
 # ---------------------------------------------------------------------------
 # Store resolution, identity, gating, and small response helpers.
@@ -133,12 +130,32 @@ def _resolve_store(store_id: str | None):
     return store, None
 
 
-def _resolve_document(store: TruthStore, document_id: str):
+def _resolve_document(
+    store: TruthStore,
+    document_id: str,
+    *,
+    conn: sqlite3.Connection | None = None,
+):
     try:
-        document = documents.get_document(store, document_id)
+        document = documents.get_document(store, document_id, conn=conn)
     except InvariantViolation:
         return None, _fail("document does not exist", 404)
     return document, None
+
+
+@contextmanager
+def _read_snapshot_transaction(
+    store: TruthStore,
+) -> Iterator[sqlite3.Connection]:
+    """Hold one explicit SQLite snapshot across an R2 ledger projection."""
+
+    with store._read_connection() as conn:
+        conn.execute("BEGIN")
+        try:
+            yield conn
+        finally:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
 
 
 def _document_surface_or_403(store: TruthStore, *, feedback: bool = False):
@@ -247,19 +264,62 @@ def _open_proposal_entry(
     }
 
 
-def _expression_entries(expr_records, span_by_id) -> list[dict]:
+_EXPRESSION_CLAIM_STATUSES = frozenset(
+    {"confirmed", "needs_review", "proposed", "rejected"}
+)
+
+
+def _local_expression_claim_id(store: TruthStore, expression) -> str | None:
+    if expression.claim_ref_kind == "local":
+        return expression.claim_ref
+    try:
+        parsed = parse_truth_uri(expression.claim_ref)
+    except ValueError:
+        return None
+    if parsed.kind != "claim" or parsed.store_id != store.store_id:
+        return None
+    return parsed.record_id
+
+
+def _expression_entries(
+    store: TruthStore,
+    expr_records,
+    span_by_id,
+    claim_states,
+) -> list[dict]:
+    if not expr_records:
+        return []
+    state_by_id = {state.claim.id: state for state in claim_states}
     entries: list[dict] = []
     for expression in expr_records:
         span = span_by_id.get(expression.document_span_id)
+        quote = (span["quote_exact"] if span else "") or ""
+        quote_anchor = (
+            _quote_anchor(span["selector_json"])
+            if span is not None
+            else {"exact": quote, "prefix": "", "suffix": ""}
+        )
+        local_claim_id = _local_expression_claim_id(store, expression)
+        claim_state = (
+            None if local_claim_id is None else state_by_id.get(local_claim_id)
+        )
+        claim_status = None if claim_state is None else claim_state.status
         entries.append(
             {
                 "expression_id": expression.id,
                 "span_id": expression.document_span_id,
                 "node_id_hint": None,
-                "quote": (span["quote_exact"] if span else "") or "",
+                "quote": quote,
+                "quote_anchor": quote_anchor,
                 "claim_ref": expression.claim_ref,
-                "claim_status": None,
-                "claim_kind": None,
+                "claim_status": (
+                    claim_status
+                    if claim_status in _EXPRESSION_CLAIM_STATUSES
+                    else None
+                ),
+                "claim_kind": (
+                    None if claim_state is None else claim_state.claim.claim_kind
+                ),
             }
         )
     return entries
@@ -268,13 +328,27 @@ def _expression_entries(expr_records, span_by_id) -> list[dict]:
 def _provenance_spans(span_rows) -> list[dict]:
     spans: list[dict] = []
     for row in span_rows:
-        trust_state = _TRUST_BY_AUTHOR.get(row["author_kind"])
+        author_kind = row["author_kind"]
+        if author_kind == "human":
+            trust_state = "human"
+        elif (
+            author_kind == "agent_run"
+            and str(row["author_ref"] or "").strip()
+            and row["created_by_kind"] == "human"
+        ):
+            # Agent authorship alone is not confirmation. Accepted proposal
+            # spans carry the proposing agent as author while the human who
+            # accepted them remains the durable row creator.
+            trust_state = "ai_confirmed"
+        else:
+            trust_state = None
         if trust_state is None:
             continue
         spans.append(
             {
                 "span_id": row["id"],
                 "quote": row["quote_exact"] or "",
+                "quote_anchor": _quote_anchor(row["selector_json"]),
                 "trust_state": trust_state,
                 "producer": None,
                 "approval_gesture_id": None,
@@ -381,25 +455,46 @@ def api_doc_get(document_id: str):
     gate = _document_surface_or_403(store)
     if gate:
         return gate
-    document, doc_error = _resolve_document(store, document_id)
-    if doc_error:
-        return doc_error
-
-    open_props = proposals.open_proposals(store, document_id=document.id)
-    expr_records = expressions.expressions_for_document(store, document.id)
-    with store._read_connection() as conn:
+    with _read_snapshot_transaction(store) as conn:
+        document, doc_error = _resolve_document(store, document_id, conn=conn)
+        if doc_error:
+            return doc_error
+        open_props = proposals.open_proposals(
+            store,
+            document_id=document.id,
+            conn=conn,
+        )
+        expr_records = expressions.expressions_for_document(
+            store,
+            document.id,
+            conn=conn,
+        )
         span_rows = conn.execute(
-            "SELECT id, quote_exact, author_kind FROM document_spans "
+            "SELECT id, selector_json, quote_exact, author_kind, author_ref, "
+            "created_by_kind, created_by_ref FROM document_spans "
             "WHERE document_id = ? ORDER BY created_at, id",
             (document.id,),
         ).fetchall()
         events = store._document_events_locked(conn, document.id)
+        claim_states = (
+            queries.resolve_claim_states(store, conn=conn)
+            if expr_records
+            else ()
+        )
+        lifecycle = documents.current_lifecycle(
+            store,
+            document.id,
+            conn=conn,
+        )
+        readiness_view = readiness.classify_document(
+            store,
+            document,
+            read_only=_is_read_only(),
+            conn=conn,
+        ).to_dict()
     span_by_id = {row["id"]: row for row in span_rows}
     current_file_sha256 = _current_file_sha256(store, document)
     state = _drift_from_hash(document, current_file_sha256)
-    readiness_view = readiness.classify_document(
-        store, document, read_only=_is_read_only()
-    ).to_dict()
 
     payload = {
         "document_id": document.id,
@@ -408,7 +503,7 @@ def api_doc_get(document_id: str):
         "title": document.title or "",
         "profile": document.document_class,
         "document_class": document.document_class,
-        "lifecycle": documents.current_lifecycle(store, document.id),
+        "lifecycle": lifecycle,
         "initialization_state": readiness_view["initialization_state"],
         "structured_head_sha256": readiness_view["structured_head_sha256"],
         "projection_blob_available": readiness_view["projection_blob_available"],
@@ -430,7 +525,12 @@ def api_doc_get(document_id: str):
             )
             for item in open_props
         ],
-        "expressions": _expression_entries(expr_records, span_by_id),
+        "expressions": _expression_entries(
+            store,
+            expr_records,
+            span_by_id,
+            claim_states,
+        ),
         "provenance_spans": _provenance_spans(span_rows),
         "events_cursor": events[-1].id if events else "",
     }

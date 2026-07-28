@@ -188,8 +188,10 @@ def _admit_item(
     precheck = sittings._precheck_inputs(proposal, verb)
     if precheck is not None:
         return None, _item_error(proposal_id, verb, precheck, base_ok=base_ok)
-    if verb == "edit_confirm" and not str(item.get("amend_content") or "").strip():
-        return None, _item_error(proposal_id, verb, "edit_confirm requires amend_content", base_ok=base_ok)
+    if verb == "edit_confirm":
+        amend_error = sittings._amend_content_error(item)
+        if amend_error is not None:
+            return None, _item_error(proposal_id, verb, amend_error, base_ok=base_ok)
     if verb == "redirect" and not str(item.get("redirect_note") or "").strip():
         return None, _item_error(proposal_id, verb, "redirect requires redirect_note", base_ok=base_ok)
     if verb == "reject_as_false" and not proposal.claim_refs_json and not str(item.get("negation_text") or "").strip():

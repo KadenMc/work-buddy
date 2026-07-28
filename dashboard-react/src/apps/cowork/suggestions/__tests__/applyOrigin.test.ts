@@ -15,11 +15,10 @@ import { buildEditorExtensions } from "../../editor/extensions";
 import { editProposal } from "./support";
 
 /**
- * The apply-origin tagging path (C1 surface section 1.4, SP-2 point 6). A projected
- * proposal and an accepted edit must reach the Y.Doc under the apply-origin tag, so the
- * persistence layer never pushes them (human-direct edits only) and they stay off the
- * local undo stack. This exercises the real collaborative binding, where the adapter is
- * given the Y.Doc it wraps its dispatch against.
+ * Isolated-engine coverage for apply-origin tagging. These tests deliberately mutate
+ * disposable Y.Docs to retain migration and transform behavior. Production pending
+ * proposals are ProseMirror decorations and accepted decisions materialize in a clean
+ * canonical clone. Origin filtering alone is not safe isolation for a live Y.Doc.
  */
 
 let editor: Editor | undefined;
@@ -59,7 +58,7 @@ const mountFullCoworkEditor = (
 };
 
 describe("apply-origin discipline", () => {
-  it("tags proposal ingestion with the apply-origin origin, never a human origin", () => {
+  it("tags isolated proposal ingestion with the apply-origin origin", () => {
     const doc = new Y.Doc();
     const mounted = mountCollab(doc);
     editor = mounted.editor;
@@ -78,11 +77,12 @@ describe("apply-origin discipline", () => {
 
     expect(origins.length).toBeGreaterThan(0);
     expect(origins.every((origin) => origin === COWORK_APPLY_ORIGIN)).toBe(true);
-    // The persistence push filter would skip every one of these updates.
+    // This classification is useful in an isolated transform, but is not permission to
+    // perform the same mutation against the live collaborative document.
     expect(origins.every((origin) => !isLocalHumanOrigin(origin))).toBe(true);
   });
 
-  it("keeps proposal projection non-human with the complete Co-work extension stack", () => {
+  it("keeps isolated projection non-human with the complete extension stack", () => {
     const doc = new Y.Doc();
     const mounted = mountFullCoworkEditor(doc);
     editor = mounted.editor;
@@ -105,7 +105,7 @@ describe("apply-origin discipline", () => {
     expect(origins.every((origin) => !isLocalHumanOrigin(origin))).toBe(true);
   });
 
-  it("tags an accepted edit with the apply-origin origin", () => {
+  it("tags an isolated accepted edit with the apply-origin origin", () => {
     const doc = new Y.Doc();
     const mounted = mountCollab(doc);
     editor = mounted.editor;
@@ -128,6 +128,55 @@ describe("apply-origin discipline", () => {
     expect(origins.length).toBeGreaterThan(0);
     expect(origins.every((origin) => origin === COWORK_APPLY_ORIGIN)).toBe(true);
     expect(editor.getText()).toContain("slow");
+  });
+
+  it("tags an isolated amended deletion with apply-origin", () => {
+    const doc = new Y.Doc();
+    const mounted = mountCollab(doc);
+    editor = mounted.editor;
+    editor.commands.setContent("<p>The quick brown fox</p>");
+    mounted.adapter.ingestProposal(
+      editProposal("prop-1", "quick ", "slow ", { prefix: "The " }),
+    );
+
+    const origins: unknown[] = [];
+    doc.on("update", (_update: Uint8Array, origin: unknown) => {
+      origins.push(origin);
+    });
+
+    mounted.adapter.applyDecision({
+      proposal_id: "prop-1",
+      verb: "edit_confirm",
+      canonical_sha256: "canonical-prop-1",
+      amend_content: "",
+    });
+
+    expect(origins.length).toBeGreaterThan(0);
+    expect(origins.every((origin) => origin === COWORK_APPLY_ORIGIN)).toBe(true);
+    expect(origins.every((origin) => !isLocalHumanOrigin(origin))).toBe(true);
+    expect(editor.getText()).toBe("The brown fox");
+  });
+
+  it("tags isolated projection retraction with apply-origin", () => {
+    const doc = new Y.Doc();
+    const mounted = mountCollab(doc);
+    editor = mounted.editor;
+    editor.commands.setContent("<p>The quick brown fox</p>");
+    mounted.adapter.ingestProposal(
+      editProposal("prop-1", "quick", "slow", { prefix: "The ", suffix: " brown" }),
+    );
+
+    const origins: unknown[] = [];
+    doc.on("update", (_update: Uint8Array, origin: unknown) => {
+      origins.push(origin);
+    });
+
+    mounted.adapter.retractProposalProjection("prop-1");
+
+    expect(origins.length).toBeGreaterThan(0);
+    expect(origins.every((origin) => origin === COWORK_APPLY_ORIGIN)).toBe(true);
+    expect(origins.every((origin) => !isLocalHumanOrigin(origin))).toBe(true);
+    expect(editor.getText()).toBe("The quick brown fox");
   });
 
   it("applies a foreign server update through the apply-origin helper", () => {

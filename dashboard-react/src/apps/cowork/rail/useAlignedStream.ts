@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 
 import type { AnchorRectSource } from "./provider";
+import type { RailSelectionKind } from "./store";
 import {
   computeAlignedLayout,
   placementsEqual,
@@ -24,8 +25,8 @@ import {
 export interface UseAlignedStreamOptions {
   /** The editor anchor-rect seam. Absent means the degrade path (normal flow). */
   readonly anchorRects?: AnchorRectSource;
-  /** Proposal ids in document order. */
-  readonly ids: readonly string[];
+  /** Namespace-qualified review anchors in document order. */
+  readonly anchors: readonly AlignedAnchorIdentity[];
   /** Minimum vertical gap between stacked cards. */
   readonly gap?: number;
 }
@@ -33,11 +34,22 @@ export interface UseAlignedStreamOptions {
 export interface AlignedStreamController {
   /** True when per-anchor alignment is active. */
   readonly aligned: boolean;
-  /** Ref callback to register a card element by proposal id. */
-  registerCard(id: string): (element: HTMLElement | null) => void;
+  /** Ref callback to register a card element by namespace-qualified review identity. */
+  registerCard(
+    id: string,
+    kind: RailSelectionKind,
+  ): (element: HTMLElement | null) => void;
   /** Ref callback for the scroll container the cards are positioned within. */
   registerContainer(element: HTMLElement | null): void;
 }
+
+export interface AlignedAnchorIdentity {
+  readonly id: string;
+  readonly kind: RailSelectionKind;
+}
+
+const alignmentKey = (anchor: AlignedAnchorIdentity): string =>
+  `${anchor.kind}:${anchor.id}`;
 
 function schedule(callback: () => void): number {
   if (typeof requestAnimationFrame === "function") {
@@ -56,7 +68,7 @@ function cancel(handle: number): void {
 export function useAlignedStream(
   options: UseAlignedStreamOptions,
 ): AlignedStreamController {
-  const { anchorRects, ids, gap } = options;
+  const { anchorRects, anchors, gap } = options;
   const aligned = anchorRects !== undefined;
 
   const cardsRef = useRef(new Map<string, HTMLElement>());
@@ -65,8 +77,23 @@ export function useAlignedStream(
   const frameRef = useRef(0);
   // The id order is read imperatively during measurement, so keep it current
   // without re-subscribing the geometry listeners on every render.
-  const idsRef = useRef<readonly string[]>(ids);
-  idsRef.current = ids;
+  const anchorsRef = useRef<readonly AlignedAnchorIdentity[]>(anchors);
+  anchorsRef.current = anchors;
+
+  const clearPlacementStyles = useCallback(() => {
+    for (const element of cardsRef.current.values()) {
+      element.style.removeProperty("position");
+      element.style.removeProperty("inset-inline-start");
+      element.style.removeProperty("inset-inline-end");
+      element.style.removeProperty("top");
+      element.style.removeProperty("transform");
+    }
+    const container = containerRef.current;
+    if (container !== null) {
+      container.style.removeProperty("position");
+      container.style.removeProperty("min-block-size");
+    }
+  }, []);
 
   const measure = useCallback(() => {
     const source = anchorRects;
@@ -74,16 +101,31 @@ export function useAlignedStream(
     if (source === undefined || container === null) return;
 
     const inputs: AlignInput[] = [];
-    for (const id of idsRef.current) {
-      const element = cardsRef.current.get(id);
+    let unresolved = false;
+    for (const anchor of anchorsRef.current) {
+      const key = alignmentKey(anchor);
+      const element = cardsRef.current.get(key);
       if (element === undefined) continue;
-      const rect = source.anchorRect(id);
-      if (rect === null) continue;
-      inputs.push({ id, anchorTop: rect.top, height: element.offsetHeight });
+      const rect = source.anchorRect(anchor.id, anchor.kind);
+      if (rect === null) {
+        unresolved = true;
+        continue;
+      }
+      inputs.push({ id: key, anchorTop: rect.top, height: element.offsetHeight });
+    }
+
+    // Mixing absolutely positioned cards with normal-flow cards lets the two
+    // groups overlap, and retaining an old transform lies after an anchor is
+    // lost. If any rendered card cannot resolve, degrade the whole stream.
+    if (unresolved) {
+      clearPlacementStyles();
+      lastPlacementRef.current = [];
+      return;
     }
 
     const placements = computeAlignedLayout(inputs, { gap });
     if (placementsEqual(placements, lastPlacementRef.current)) return;
+    clearPlacementStyles();
     lastPlacementRef.current = placements;
 
     container.style.position = "relative";
@@ -99,7 +141,7 @@ export function useAlignedStream(
       maxBottom = Math.max(maxBottom, placement.top + element.offsetHeight);
     }
     container.style.minBlockSize = `${maxBottom}px`;
-  }, [anchorRects, gap]);
+  }, [anchorRects, clearPlacementStyles, gap]);
 
   const requestMeasure = useCallback(() => {
     cancel(frameRef.current);
@@ -121,16 +163,31 @@ export function useAlignedStream(
       cancel(frameRef.current);
       unsubscribe();
       observer?.disconnect();
+      clearPlacementStyles();
+      lastPlacementRef.current = [];
     };
-  }, [aligned, anchorRects, requestMeasure, ids]);
+  }, [
+    aligned,
+    anchorRects,
+    requestMeasure,
+    anchors,
+    clearPlacementStyles,
+  ]);
 
   const registerCard = useCallback(
-    (id: string) => (element: HTMLElement | null) => {
+    (id: string, kind: RailSelectionKind) => (element: HTMLElement | null) => {
+      const key = alignmentKey({ id, kind });
       if (element === null) {
-        cardsRef.current.delete(id);
+        const previous = cardsRef.current.get(key);
+        previous?.style.removeProperty("position");
+        previous?.style.removeProperty("inset-inline-start");
+        previous?.style.removeProperty("inset-inline-end");
+        previous?.style.removeProperty("top");
+        previous?.style.removeProperty("transform");
+        cardsRef.current.delete(key);
         return;
       }
-      cardsRef.current.set(id, element);
+      cardsRef.current.set(key, element);
       if (aligned) requestMeasure();
     },
     [aligned, requestMeasure],
@@ -138,6 +195,10 @@ export function useAlignedStream(
 
   const registerContainer = useCallback(
     (element: HTMLElement | null) => {
+      if (element === null && containerRef.current !== null) {
+        containerRef.current.style.removeProperty("position");
+        containerRef.current.style.removeProperty("min-block-size");
+      }
       containerRef.current = element;
       if (aligned) requestMeasure();
     },

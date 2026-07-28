@@ -7,6 +7,7 @@ import {
   applySuggestion,
   getSuggestionMarks,
   revertSuggestion,
+  suggestChangesKey,
   transformToSuggestionTransaction,
 } from "./engine";
 import { resolveQuoteAnchor } from "./anchor";
@@ -29,26 +30,69 @@ import type {
 
 export interface WbTrackedChangesAdapterOptions {
   /**
-   * The live Y.Doc bound to the editor's Collaboration extension. Required for the
-   * apply-origin discipline (ingestion, accepts) and for applyServerUpdate. It MUST be
-   * the same doc the editor is bound to, so a nested Yjs transaction keeps the
-   * apply-origin tag. Omitted only for non-collaborative engine-behavior tests.
+   * An isolated disposable Y.Doc bound to the adapter's editor. Supplying one preserves
+   * apply-origin classification for transform/migration tests. It MUST NOT be the live
+   * collaborative document; origin filtering cannot prevent later causal dependencies.
    */
   readonly doc?: Y.Doc;
 }
 
 /**
- * The WbTrackedChangesAdapter (C1 surface section 3), the seam between the ledger and the
- * vendored suggest-changes engine. The ledger is truth and the marks are a projection, so
- * a proposal projects into the LOCAL editor as an ephemeral suggestion layer that never
- * reaches the server Y.Doc (surface section 1.4). Every mutation this adapter makes is
- * tagged through the applyOrigin helpers, so it stays off the local undo stack and the
- * persistence layer never pushes it.
+ * Resolve an edit proposal back to its original quoted range, then replace that range
+ * with the human-authored amendment in the same skipped suggestion transaction. This
+ * deliberately derives its target from the deletion mark rather than the adapter's
+ * in-memory proposal cache: the isolated sitting clone contains the marks but has a
+ * freshly constructed adapter.
+ */
+const amendSuggestion = (suggestionId: string, replacement: string): Command => {
+  return (state, dispatch) => {
+    const { deletion } = getSuggestionMarks(state.schema);
+    let from: number | null = null;
+    let to: number | null = null;
+
+    state.doc.descendants((node, pos) => {
+      if (!node.isText) return true;
+      const mark = deletion.isInSet(node.marks);
+      if (!mark || String(mark.attrs["id"]) !== suggestionId) {
+        return true;
+      }
+      from = from === null ? pos : Math.min(from, pos);
+      to = to === null ? pos + node.nodeSize : Math.max(to, pos + node.nodeSize);
+      return true;
+    });
+
+    if (from === null || to === null) return false;
+
+    return revertSuggestion(suggestionId)(state, (tr) => {
+      const amendedFrom = tr.mapping.map(from as number, -1);
+      const amendedTo = tr.mapping.map(to as number, 1);
+      if (replacement.length === 0) {
+        tr.delete(amendedFrom, amendedTo);
+      } else {
+        tr.replaceWith(
+          amendedFrom,
+          amendedTo,
+          state.schema.text(replacement),
+        );
+      }
+      tr.setMeta(suggestChangesKey, { skip: true });
+      dispatch?.(tr);
+    });
+  };
+};
+
+/**
+ * The WbTrackedChangesAdapter is the contained seam around the vendored transform engine.
+ * Its projection methods mutate the bound document and are therefore restricted to isolated
+ * test/migration documents. The live collaborative editor renders proposals through
+ * CoworkLedgerDecorations and never attaches this adapter. Apply-origin still keeps these
+ * isolated transformations out of local undo; origin filtering alone is not persistence
+ * isolation.
  *
- * Ingestion is transaction-level (transformToSuggestionTransaction with generateId set to
- * the kernel proposal_id), decisions are collected per id for the R5 sitting, and drift is
- * handled by re-anchoring on the quote. The adapter never mints a gesture, the R5 route
- * does.
+ * The isolated compatibility transform is transaction-level
+ * (transformToSuggestionTransaction with
+ * generateId set to the kernel proposal_id), and drift is handled by re-anchoring on the
+ * quote. The production R5 path does not consult this adapter.
  */
 export class WbTrackedChangesAdapterImpl implements WbTrackedChangesAdapter {
   readonly #events = new AdapterEventBus();
@@ -168,24 +212,36 @@ export class WbTrackedChangesAdapterImpl implements WbTrackedChangesAdapter {
   }
 
   /**
-   * Commit-time application of one collected decision to the doc, run by the sitting
-   * client just before the canonical materialize render and the R5 POST. Accept keeps the inserted text and
-   * removes the marks, Reject removes the inserted text and restores the original, and the
-   * routing verbs (redirect, defer, endorse) leave the marks in place so the proposal
-   * stays open. edit_confirm accepts the tracked edit here, and its verbatim amend_content
-   * is applied during materialization. The engine op runs under the apply-origin tag, so
-   * the accepted content stays off the local undo stack (surface section 1.4, SP-2 6).
+   * Resolve one decision inside an isolated compatibility document. Production sittings
+   * do not call this method: they validate the authoritative proposal catalog and apply
+   * decisions directly to a clean clone. This method remains only for transform and
+   * migration tests.
    */
   applyDecision(item: DecisionItem): void {
     const editor = this.#editor;
     if (editor === null) return;
+
+    if (item.verb === "edit_confirm") {
+      if (item.amend_content === undefined) {
+        throw new Error(`edit_confirm on ${item.proposal_id} requires amend_content`);
+      }
+      const amended = this.#applyCommandApplyOrigin(
+        amendSuggestion(item.proposal_id, item.amend_content),
+      );
+      if (!amended) {
+        throw new Error(
+          `Could not materialize amendment for proposal ${item.proposal_id}`,
+        );
+      }
+      this.#events.emit("proposals:changed", { open: this.listOpen() });
+      return;
+    }
 
     // Each accept / reject runs both the mark path and the atom node-attribute path for the
     // same id. A proposal is one or the other, so the path that finds nothing is a no-op.
     let commands: Command[] = [];
     switch (item.verb) {
       case "confirm":
-      case "edit_confirm":
         commands = [applySuggestion(item.proposal_id), acceptAtomSuggestion(item.proposal_id)];
         break;
       case "reject_plain":
@@ -203,6 +259,26 @@ export class WbTrackedChangesAdapterImpl implements WbTrackedChangesAdapter {
     if (commands.length === 0) return;
 
     this.#applyCommandsApplyOrigin(commands);
+    this.#events.emit("proposals:changed", { open: this.listOpen() });
+  }
+
+  /**
+   * Remove an ephemeral proposal projection because the authoritative R2 open set no
+   * longer contains it. Retraction restores the canonical pre-proposal content and never
+   * mints a human decision or a persistence-eligible Yjs update.
+   */
+  retractProposalProjection(proposalId: string): void {
+    if (this.#editor !== null) {
+      this.#applyCommandsApplyOrigin([
+        revertSuggestion(proposalId),
+        revertAtomSuggestion(proposalId),
+      ]);
+    }
+    this.#ingested.delete(proposalId);
+    const cleared = this.#staged.delete(proposalId);
+    if (cleared) {
+      this.#events.emit("decision:cleared", { proposal_id: proposalId });
+    }
     this.#events.emit("proposals:changed", { open: this.listOpen() });
   }
 
@@ -247,6 +323,24 @@ export class WbTrackedChangesAdapterImpl implements WbTrackedChangesAdapter {
     } else {
       editor.view.dispatch(tr);
     }
+  }
+
+  /** Run one engine command under apply-origin and report whether it found its target. */
+  #applyCommandApplyOrigin(command: Command): boolean {
+    const editor = this.#editor;
+    if (editor === null) return false;
+    let handled = false;
+    const run = (): void => {
+      handled = command(editor.state, (tr) => {
+        editor.view.dispatch(tr);
+      });
+    };
+    if (this.#doc !== undefined) {
+      applyWithOrigin(this.#doc, run);
+    } else {
+      run();
+    }
+    return handled;
   }
 
   /** Run engine commands in sequence, all dispatched under one apply-origin transaction. */

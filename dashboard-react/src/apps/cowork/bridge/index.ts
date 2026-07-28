@@ -1,7 +1,8 @@
 /**
  * The live review bridge. It turns the Co-work surface from demo-backed to ledger-backed:
- * proposals flow R2 -> editor marks + rail cards -> sitting -> R5. The surface consumes
- * useCoworkBridge in live mode and the demo providers behind the fixture switch.
+ * one R2 snapshot feeds editor decorations and rail cards, while accepted sitting
+ * decisions materialize on an isolated canonical clone before R5. The surface consumes
+ * useCoworkBridge in live mode and demo providers behind the fixture switch.
  */
 
 export {
@@ -32,14 +33,12 @@ export {
   DomAnchorRectSource,
   type DomAnchorRectSourceOptions,
 } from "./DomAnchorRectSource";
-export { ProposalIngestor } from "./proposalIngestor";
 export {
   submitCoworkSitting,
   toDecisionItem,
   toRailSittingResult,
   type SubmitCoworkSittingParams,
 } from "./sittingSubmit";
-export { createEditorMaterializeRenderer } from "./materialize";
 export {
   resolveCoworkChatProvider,
   type CoworkChatProviderOptions,

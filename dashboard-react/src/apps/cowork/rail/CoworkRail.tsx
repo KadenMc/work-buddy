@@ -66,6 +66,8 @@ export interface CoworkRailProps {
   readonly queueBindings?: QueueBindings;
   readonly narrow?: boolean;
   readonly initialTab?: RailTab;
+  /** Whether the containing workspace currently exposes the Review pane. */
+  readonly reviewVisible?: boolean;
   /** Narrow workspace peer tabs own Review / Chat selection when false. */
   readonly showTabs?: boolean;
   /**
@@ -306,6 +308,7 @@ export function CoworkRail(props: CoworkRailProps) {
           storage={props.storage}
           anchorRects={props.anchorRects}
           queueBindings={props.queueBindings}
+          active={tab === "review" && props.reviewVisible !== false}
           narrow={props.narrow}
         />
       </div>
