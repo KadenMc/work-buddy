@@ -11,6 +11,7 @@ from typing import Any, Mapping
 from work_buddy.cowork import materialization, sittings
 from work_buddy.cowork.lifecycle_state import inspect_lifecycle_state
 from work_buddy.cowork.policy import document_surface_allowed
+from work_buddy.cowork.verify_coordination import record_review_application
 from work_buddy.truth import documents, proposals, ydoc_store
 from work_buddy.truth.contracts import Actor, InvariantViolation
 from work_buddy.truth.identity import canonical_json, new_id, sha256_text
@@ -497,6 +498,19 @@ def commit_sitting(
                 raise SittingError("intent_not_committable", "sitting intent changed before commit", status=409)
             results, events = _commit_decisions(
                 store, document, actor, current_intent, conn, at=str(projection_receipt["materialized_at"])
+            )
+            record_review_application(
+                store,
+                application_id=current_intent.id,
+                document_id=document.id,
+                applied_proposal_ids=[
+                    str(result["proposal_id"])
+                    for result in results
+                    if result.get("result") == "applied"
+                ],
+                committed_at=str(projection_receipt["materialized_at"]),
+                actor=actor,
+                conn=conn,
             )
             event_records = _event_records(intent.id, events)
             additions = {

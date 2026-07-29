@@ -3,6 +3,7 @@ import {
   useState,
   type FormEvent,
   type KeyboardEvent,
+  type ReactNode,
 } from "react";
 import { TextArea, TextField } from "react-aria-components";
 
@@ -39,6 +40,8 @@ export interface ChatComposerProps {
   onDraftChange?(value: string): void;
   /** Optional server-authoritative provider/model selection for this chat. */
   readonly execution?: ChatExecutionControl;
+  /** Additive host context controls rendered beside the shared composer. */
+  readonly accessory?: ReactNode;
 }
 
 export function ChatComposer({
@@ -51,6 +54,7 @@ export function ChatComposer({
   initialValue = "",
   onDraftChange,
   execution,
+  accessory,
 }: ChatComposerProps) {
   const [draft, setDraft] = useState(initialValue);
   const [busy, setBusy] = useState(false);
@@ -122,6 +126,7 @@ export function ChatComposer({
           {errorMessage}
         </InlineAlert>
       ) : null}
+      {accessory}
       <div className="wb-chat-composer__shell">
         <TextField
           className="wb-chat-composer__field"

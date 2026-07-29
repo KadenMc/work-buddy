@@ -1,5 +1,9 @@
 import { Button, InlineAlert } from "../../../ui";
 import type {
+  ChatActionSnapshotContext,
+  ChatAuthorRole,
+} from "../../../widget-library/chat";
+import type {
   ResolvedSpanLink,
   RoutingDelivery,
   ScrollAnchorTarget,
@@ -38,6 +42,48 @@ export function CoworkPassageAction({
       >
         Jump to passage
       </Button>
+    </div>
+  );
+}
+
+export function CoworkActionSnapshotProvenance({
+  context,
+  author,
+}: {
+  readonly context: ChatActionSnapshotContext;
+  readonly author: ChatAuthorRole;
+}) {
+  const words =
+    context.targetWordCount === undefined
+      ? ""
+      : ` · ${context.targetWordCount.toLocaleString()} words`;
+  let prefix = "Working on";
+  if (
+    author === "assistant" &&
+    context.consumption?.fetchOutcome === "unavailable"
+  ) {
+    prefix =
+      context.discussion !== undefined
+        ? "Couldn’t open Co-think context"
+        : "Couldn’t open Working on";
+  } else if (context.discussion !== undefined) {
+    prefix = "Discussing Co-think";
+  } else if (author === "assistant" && context.consumption !== undefined) {
+    prefix = "Used Working on";
+  }
+  return (
+    <div
+      className="wb-cowork-chat-msg__context"
+      aria-label={`Frozen document context: ${context.targetLabel}`}
+      title={`Action snapshot ${context.actionSnapshotId}`}
+    >
+      <span className="wb-cowork-chat-msg__context-label">
+        {prefix}: {context.targetLabel}
+        {words}
+      </span>
+      <span className="wb-cowork-chat-msg__context-version">
+        Frozen version · {context.actionSnapshotId.slice(0, 8)}
+      </span>
     </div>
   );
 }

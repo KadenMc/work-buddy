@@ -36,6 +36,8 @@ def _register() -> None:
         respond_to_conversation as _respond_conv,
         receive_user_message as _receive_user,
         ack_user_message as _ack_user,
+        bind_action_snapshot_reply as _bind_action_snapshot_reply,
+        targeted_reply_context as _targeted_reply_context,
         close_conversation as _close_conversation,
         list_conversations as _list_conversations,
         conversation_agent_write_guard as _agent_write_guard,
@@ -183,6 +185,7 @@ def _register() -> None:
         message_id: str | None = None,
         consumer: str | None = None,
         generation: str | None = None,
+        consumption_receipt_id: str | None = None,
         agent_session_id: str | None = None,
     ) -> dict:
         try:
@@ -199,6 +202,27 @@ def _register() -> None:
                     lease_conn,
                     agent_session_id,
                 )
+                if (
+                    consumption_receipt_id is not None
+                    and message_id is None
+                ):
+                    raise ValueError(
+                        "a targeted reply requires a caller-stable message_id"
+                    )
+                reply_context = (
+                    None
+                    if lease_conn is None
+                    or consumer is None
+                    or generation is None
+                    else _targeted_reply_context(
+                        conversation_id,
+                        consumer,
+                        generation,
+                        message_id or "__unkeyed_reply__",
+                        consumption_receipt_id,
+                        conn=lease_conn,
+                    )
+                )
                 if message_id is None:
                     msg = _add_msg(
                         conversation_id,
@@ -206,6 +230,7 @@ def _register() -> None:
                         message,
                         conn=lease_conn,
                         producer=producer,
+                        context=reply_context,
                     )
                     created = msg is not None
                 else:
@@ -215,6 +240,37 @@ def _register() -> None:
                         message_id,
                         conn=lease_conn,
                         producer=producer,
+                        context=reply_context,
+                    )
+                if (
+                    msg is not None
+                    and consumption_receipt_id is not None
+                    and lease_conn is not None
+                ):
+                    persisted_receipt_id = None
+                    if isinstance(reply_context, dict):
+                        persisted_consumption = reply_context.get("consumption")
+                        if isinstance(persisted_consumption, dict):
+                            candidate_receipt_id = persisted_consumption.get(
+                                "receipt_id"
+                            )
+                            if isinstance(candidate_receipt_id, str):
+                                persisted_receipt_id = candidate_receipt_id
+                    if (
+                        persisted_receipt_id is not None
+                        and persisted_receipt_id != consumption_receipt_id
+                    ):
+                        # Reconcile the predecessor receipt if its reply
+                        # committed immediately before a generation restart.
+                        _bind_action_snapshot_reply(
+                            persisted_receipt_id,
+                            msg.message_id,
+                            conn=lease_conn,
+                        )
+                    _bind_action_snapshot_reply(
+                        consumption_receipt_id,
+                        msg.message_id,
+                        conn=lease_conn,
                     )
         except ConversationLeaseLost:
             return {
@@ -456,9 +512,11 @@ def _register() -> None:
         consumer: str,
         generation: str,
         message_id: str,
+        action_snapshot_id: str | None = None,
+        consumption_receipt_id: str | None = None,
         agent_session_id: str | None = None,
     ) -> dict:
-        """Acknowledge exactly the currently delivered oldest user turn."""
+        """Acknowledge the exact turn and any attached action snapshot."""
         try:
             _verify_cowork_read_scope(
                 conversation_id,
@@ -478,6 +536,8 @@ def _register() -> None:
             consumer,
             generation,
             message_id,
+            action_snapshot_id=action_snapshot_id,
+            consumption_receipt_id=consumption_receipt_id,
         )
 
     def conversation_close(conversation_id: str) -> dict:

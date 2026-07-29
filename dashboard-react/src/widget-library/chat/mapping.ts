@@ -4,6 +4,7 @@
 // conversation_* semantics lives in one tested place.
 
 import type {
+  ChatActionSnapshotContext,
   ChatAgentActivity,
   ChatAgentLiveness,
   ChatAuthorRole,
@@ -75,6 +76,92 @@ function optionalProducer(raw: RawChatMessage): ChatMessageProducer | undefined 
   };
 }
 
+function optionalActionContext(
+  raw: RawChatMessage,
+): ChatActionSnapshotContext | undefined {
+  const context = raw.context;
+  if (
+    context?.kind !== "action_snapshot" ||
+    typeof context.action_snapshot_id !== "string" ||
+    typeof context.store_id !== "string" ||
+    typeof context.document_id !== "string" ||
+    (context.target_kind !== "document" &&
+      context.target_kind !== "text_quote") ||
+    typeof context.target_label !== "string" ||
+    typeof context.target_text_sha256 !== "string" ||
+    typeof context.projection_sha256 !== "string" ||
+    typeof context.captured_at !== "string"
+  ) {
+    return undefined;
+  }
+  const consumption =
+    typeof context.consumption === "object" &&
+    context.consumption !== null &&
+    "receipt_id" in context.consumption &&
+    typeof context.consumption.receipt_id === "string" &&
+    "user_message_id" in context.consumption &&
+    typeof context.consumption.user_message_id === "string" &&
+    "fetched_at" in context.consumption &&
+    typeof context.consumption.fetched_at === "string"
+      ? {
+          receiptId: context.consumption.receipt_id,
+          userMessageId: context.consumption.user_message_id,
+          fetchedAt: context.consumption.fetched_at,
+          fetchOutcome:
+            "fetch_outcome" in context.consumption &&
+            context.consumption.fetch_outcome === "unavailable"
+              ? ("unavailable" as const)
+              : ("available" as const),
+          unavailableCode:
+            "unavailable_code" in context.consumption &&
+            typeof context.consumption.unavailable_code === "string"
+              ? context.consumption.unavailable_code
+              : undefined,
+        }
+      : undefined;
+  const discussion =
+    typeof context.discussion === "object" &&
+    context.discussion !== null &&
+    "kind" in context.discussion &&
+    context.discussion.kind === "cothink_item" &&
+    "item_id" in context.discussion &&
+    typeof context.discussion.item_id === "string" &&
+    "canonical_sha256" in context.discussion &&
+    typeof context.discussion.canonical_sha256 === "string" &&
+    "content" in context.discussion &&
+    typeof context.discussion.content === "string" &&
+    "rationale" in context.discussion &&
+    typeof context.discussion.rationale === "string" &&
+    "non_evidential" in context.discussion &&
+    context.discussion.non_evidential === true
+      ? {
+          kind: "cothink_item" as const,
+          itemId: context.discussion.item_id,
+          canonicalSha256: context.discussion.canonical_sha256,
+          content: context.discussion.content,
+          rationale: context.discussion.rationale,
+          nonEvidential: true as const,
+        }
+      : undefined;
+  return {
+    kind: "action_snapshot",
+    actionSnapshotId: context.action_snapshot_id,
+    storeId: context.store_id,
+    documentId: context.document_id,
+    targetKind: context.target_kind,
+    targetLabel: context.target_label,
+    targetWordCount:
+      typeof context.target_word_count === "number"
+        ? context.target_word_count
+        : undefined,
+    targetTextSha256: context.target_text_sha256,
+    projectionSha256: context.projection_sha256,
+    capturedAt: context.captured_at,
+    consumption,
+    discussion,
+  };
+}
+
 function toMessage(raw: RawChatMessage, index: number): ChatMessage {
   const pending = raw.status === "pending" && raw.message_type === "question";
   let question: ChatQuestion | undefined;
@@ -103,6 +190,7 @@ function toMessage(raw: RawChatMessage, index: number): ChatMessage {
     pending,
     question,
     producer: optionalProducer(raw),
+    context: optionalActionContext(raw),
   };
 }
 

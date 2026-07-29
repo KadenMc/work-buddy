@@ -28,6 +28,358 @@
   border: 0;
 }
 
+/* ---------- Verify + Co-think attention layer ---------- */
+
+.wb-cowork-verify-setup {
+  margin: var(--wb-space-3) var(--wb-space-4) 0;
+  border: 1px solid var(--wb-color-border-subtle);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-surface-raised);
+}
+
+.wb-cowork-verify-setup > summary {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--wb-space-3);
+  padding: var(--wb-space-3);
+  cursor: pointer;
+  color: var(--wb-color-text-strong);
+  font-weight: var(--wb-font-weight-semibold);
+}
+
+.wb-cowork-verify-setup__count,
+.wb-cowork-verify-criterion__meta,
+.wb-cowork-verify-criterion__authority,
+.wb-cowork-verify-setup__intro,
+.wb-cowork-verify-setup__notice {
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-xs);
+}
+
+.wb-cowork-verify-setup__count {
+  font-weight: var(--wb-font-weight-regular);
+}
+
+.wb-cowork-verify-setup__body {
+  display: grid;
+  gap: var(--wb-space-3);
+  padding: 0 var(--wb-space-3) var(--wb-space-3);
+}
+
+.wb-cowork-verify-setup__body p {
+  margin: 0;
+}
+
+.wb-cowork-verify-setup__coordination {
+  display: grid;
+  gap: var(--wb-space-1);
+  padding: var(--wb-space-3);
+  border-inline-start: 3px solid var(--wb-color-status-info);
+  background: var(--wb-color-surface-inset);
+  font-size: var(--wb-font-size-xs);
+}
+
+.wb-cowork-verify-setup__coordination p {
+  color: var(--wb-color-text-secondary);
+}
+
+.wb-cowork-verify-setup__criteria {
+  display: grid;
+  gap: var(--wb-space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.wb-cowork-verify-criterion {
+  display: grid;
+  gap: var(--wb-space-2);
+  padding: var(--wb-space-3);
+  border: 1px solid var(--wb-color-border-subtle);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-surface-workspace);
+}
+
+.wb-cowork-verify-criterion > p {
+  font-size: var(--wb-font-size-sm);
+}
+
+.wb-cowork-verify-criterion__heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: var(--wb-space-3);
+}
+
+.wb-cowork-verify-criterion__heading > div {
+  display: grid;
+  gap: var(--wb-space-1);
+}
+
+.wb-cowork-verify-criterion__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--wb-space-2);
+  min-block-size: var(--wb-target-size);
+  font-size: var(--wb-font-size-xs);
+  font-weight: var(--wb-font-weight-medium);
+}
+
+.wb-cowork-verify-criterion__toggle input {
+  inline-size: 1rem;
+  block-size: 1rem;
+}
+
+.wb-cowork-verify-check {
+  padding-block-start: var(--wb-space-2);
+  border-block-start: 1px solid var(--wb-color-border-subtle);
+  font-size: var(--wb-font-size-xs);
+}
+
+.wb-cowork-verify-check > summary {
+  cursor: pointer;
+  color: var(--wb-color-text-secondary);
+  font-weight: var(--wb-font-weight-medium);
+}
+
+.wb-cowork-verify-check dl {
+  display: grid;
+  gap: var(--wb-space-2);
+}
+
+.wb-cowork-verify-check dl div {
+  display: grid;
+  grid-template-columns: minmax(5.5rem, 0.7fr) 1.3fr;
+  gap: var(--wb-space-2);
+}
+
+.wb-cowork-verify-check dt {
+  color: var(--wb-color-text-secondary);
+}
+
+.wb-cowork-verify-check dd {
+  margin: 0;
+}
+
+.wb-cowork-verify-check ul {
+  margin-block: var(--wb-space-2) 0;
+  padding-inline-start: var(--wb-space-5);
+}
+
+.wb-cowork-verify-setup__error {
+  color: var(--wb-color-status-danger);
+  font-size: var(--wb-font-size-xs);
+}
+
+.wb-cowork-verify-draft,
+.wb-cowork-verify-draft form {
+  display: grid;
+  gap: var(--wb-space-2);
+}
+
+.wb-cowork-verify-draft > p {
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-xs);
+}
+
+.wb-cowork-verify-draft label {
+  display: grid;
+  gap: var(--wb-space-1);
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-xs);
+}
+
+.wb-cowork-verify-draft :is(input, textarea) {
+  inline-size: 100%;
+  padding: var(--wb-space-2);
+  border: 1px solid var(--wb-color-border-default);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-surface-workspace);
+  color: var(--wb-color-text-primary);
+  font: inherit;
+}
+
+.wb-cowork-verify-draft textarea {
+  min-block-size: 4rem;
+  resize: vertical;
+}
+
+.wb-cowork-verify-setup > summary:focus-visible,
+.wb-cowork-verify-check > summary:focus-visible,
+.wb-cowork-verify-criterion__toggle input:focus-visible {
+  outline: none;
+  box-shadow: var(--wb-shadow-focus);
+}
+
+.wb-cowork-attention {
+  display: grid;
+  gap: var(--wb-space-3);
+  padding: var(--wb-space-3) var(--wb-space-4);
+  border-block-end: 1px solid var(--wb-color-border-subtle);
+}
+
+.wb-cowork-verify-history {
+  padding: var(--wb-space-2) var(--wb-space-3);
+  border: 1px solid var(--wb-color-border-subtle);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-surface-raised);
+}
+
+.wb-cowork-verify-history > summary {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--wb-space-3);
+  cursor: pointer;
+  font-weight: var(--wb-font-weight-medium);
+}
+
+.wb-cowork-verify-history__summary {
+  color: var(--wb-color-text-secondary);
+  font-weight: var(--wb-font-weight-regular);
+}
+
+.wb-cowork-verify-history__list {
+  display: grid;
+  gap: var(--wb-space-2);
+  margin: var(--wb-space-3) 0 0;
+  padding-inline-start: var(--wb-space-5);
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-sm);
+}
+
+.wb-cowork-verify-history__inspection {
+  display: grid;
+  gap: var(--wb-space-2);
+  margin-block-start: var(--wb-space-2);
+  padding: var(--wb-space-3);
+  border: 1px solid var(--wb-color-border-subtle);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-surface-inset);
+  font-size: var(--wb-font-size-xs);
+}
+
+.wb-cowork-verify-history__inspection :is(p, ul) {
+  margin: 0;
+}
+
+.wb-cowork-verify-history__list li {
+  display: grid;
+  grid-template-columns: minmax(5.5rem, auto) 1fr;
+  gap: var(--wb-space-1) var(--wb-space-3);
+}
+
+.wb-cowork-verify-history__status {
+  color: var(--wb-color-text-strong);
+  font-weight: var(--wb-font-weight-medium);
+}
+
+.wb-cowork-attention-card {
+  display: grid;
+  gap: var(--wb-space-2);
+  padding: var(--wb-space-3);
+  border: 1px solid var(--wb-color-border-subtle);
+  border-inline-start: 3px solid var(--wb-color-status-info);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-surface-raised);
+}
+
+.wb-cowork-attention-card--cothink {
+  border-inline-start-style: dashed;
+}
+
+.wb-cowork-attention-card[data-result-kind="nonconforming"] {
+  border-inline-start-color: var(--wb-color-status-warning);
+}
+
+.wb-cowork-attention-card[data-result-kind="inconclusive"] {
+  border-inline-start-style: dotted;
+}
+
+.wb-cowork-attention-card header,
+.wb-cowork-attention-card p,
+.wb-cowork-attention-card blockquote,
+.wb-cowork-attention-card h3 {
+  margin: 0;
+}
+
+.wb-cowork-attention-card h3 {
+  font-size: var(--wb-font-size-md);
+}
+
+.wb-cowork-attention-card__eyebrow {
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-xs);
+  font-weight: var(--wb-font-weight-semibold);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.wb-cowork-attention-card__criterion {
+  font-weight: var(--wb-font-weight-medium);
+}
+
+.wb-cowork-attention-card blockquote {
+  padding: var(--wb-space-2) var(--wb-space-3);
+  border-inline-start: 2px solid var(--wb-color-border-strong);
+  color: var(--wb-color-text-secondary);
+}
+
+.wb-cowork-attention-card__facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--wb-space-2);
+  margin: 0;
+  font-size: var(--wb-font-size-xs);
+}
+
+.wb-cowork-attention-card__facts div {
+  min-inline-size: 0;
+}
+
+.wb-cowork-attention-card__facts dt {
+  color: var(--wb-color-text-secondary);
+}
+
+.wb-cowork-attention-card__facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.wb-cowork-attention-card__rationale,
+.wb-cowork-attention-card__version {
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-sm);
+}
+
+.wb-cowork-attention-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--wb-space-2);
+}
+
+.wb-cowork-attention-card__actions button {
+  min-block-size: var(--wb-target-size);
+  padding: var(--wb-space-1) var(--wb-space-3);
+  border: 1px solid var(--wb-color-border-strong);
+  border-radius: var(--wb-radius-control);
+  background: transparent;
+  color: var(--wb-color-text-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.wb-cowork-attention-card__actions button:focus-visible,
+.wb-cowork-verify-history > summary:focus-visible {
+  outline: none;
+  box-shadow: var(--wb-shadow-focus);
+}
+
+@media (max-width: 28rem) {
+  .wb-cowork-attention-card__facts {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* ---------- tabs ---------- */
 /*
  * Underline tablist. The selected tab carries the accent underline as its forced-colors cue

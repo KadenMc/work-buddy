@@ -7,6 +7,12 @@
  * them without any shape change. No HTTP wiring lives here.
  */
 
+import type {
+  CoworkActionTargetChoice,
+  CoworkCanonicalTargetSelector,
+  CoworkDocumentTargetReference,
+} from "../targets";
+
 /** Ledger-canonical trust state for a rendered proposal (PRD section 7 tri-state). */
 export type CoworkEpistemicState = "ai_proposed" | "ai_confirmed" | "human";
 
@@ -148,6 +154,293 @@ export interface ReviewClaim {
   readonly documentOrder: number;
 }
 
+/** Capability negotiation for the additive Co-work Verify + Co-think contract. */
+export interface CoworkVerifyCapability {
+  readonly enabled: boolean;
+  readonly contractVersion: number;
+  readonly canRun: boolean;
+  readonly canConfigure: boolean;
+  readonly canCothink: boolean;
+  readonly disabledReason: string | null;
+}
+
+export interface VerifyActor {
+  readonly kind: string;
+  readonly ref: string | null;
+  readonly meta: Readonly<Record<string, unknown>> | null;
+}
+
+export interface VerificationCheck {
+  readonly id: string;
+  readonly stableKey: string;
+  readonly version: number;
+  readonly title: string;
+  readonly mechanism: string;
+  readonly executorRef: string;
+  readonly limitations: readonly string[];
+  readonly definitionOrigin: string;
+  readonly author: VerifyActor;
+  readonly dataSharingClass: string;
+  readonly externalEgress: boolean | null;
+  readonly dataSharingBasis: string;
+  readonly availability: "available" | "unavailable";
+  readonly unavailableReason: string | null;
+  readonly executionLocation: string | null;
+  readonly bindingId: string;
+  readonly selected: boolean;
+  readonly configuration: Readonly<Record<string, unknown>>;
+}
+
+export interface VerificationCriterion {
+  readonly id: string;
+  readonly stableKey: string;
+  readonly version: number;
+  readonly title: string;
+  readonly description: string;
+  readonly kind: string;
+  readonly definitionOrigin: string;
+  readonly author: VerifyActor;
+  readonly activationId: string | null;
+  readonly enabled: boolean;
+  readonly required: boolean;
+  readonly locked: boolean;
+  readonly activationOrigin: string | null;
+  readonly authorizedBy: VerifyActor | null;
+  readonly operationalState:
+    | "active"
+    | "inactive"
+    | "unavailable"
+    | "blocked_required_check";
+  readonly availableCheckCount: number;
+  readonly totalCheckCount: number;
+  readonly checks: readonly VerificationCheck[];
+  readonly issues: readonly Readonly<Record<string, unknown>>[];
+}
+
+/** The effective future-run setup for one document. */
+export interface VerificationConfiguration {
+  readonly schema: string;
+  readonly documentId: string;
+  readonly coordination: {
+    readonly required: boolean;
+    readonly selection: string;
+    readonly contentBoundary: string;
+    readonly egressClass: string;
+    readonly externalEgress: boolean;
+    readonly costCeilingUsdPerWorker: number;
+    readonly separateReviserForFindings: boolean;
+    readonly pattern: string;
+    readonly baseWorkerCalls: number;
+    readonly maximumWorkerCalls: number;
+  } | null;
+  readonly criteria: readonly VerificationCriterion[];
+}
+
+export interface VerifyCriterionDraftInput {
+  readonly title: string;
+  readonly description: string;
+  readonly evaluationInstructions: string;
+  readonly limitations: readonly string[];
+}
+
+export type EvaluationRunStatus =
+  | "prepared"
+  | "queued"
+  | "running"
+  | "completed"
+  | "completed_with_failures"
+  | "failed"
+  | "cancelled";
+
+export type EvaluationResultKind =
+  | "conforming"
+  | "nonconforming"
+  | "inconclusive"
+  | "review_comment";
+
+export type EvaluationDisposition =
+  | "surface_result"
+  | "retain_without_interrupting"
+  | "surface_proposal"
+  | "suggest_cothink"
+  | "defer_until_boundary"
+  | "escalate";
+
+/** One durable run summary. Quiet runs remain inspectable here. */
+export interface EvaluationRunSummary {
+  readonly runId: string;
+  readonly status: EvaluationRunStatus;
+  readonly purpose: string;
+  readonly targetLabel: string;
+  readonly coverageLabel: string;
+  readonly currentVersion: boolean;
+  readonly resultCount: number;
+  readonly surfacedResultCount: number;
+  readonly coordinationStatus: "pending" | "completed" | "unavailable";
+  readonly providerLabel: string | null;
+  readonly providerId: string | null;
+  readonly modelLabel: string | null;
+  readonly modelId: string | null;
+  readonly createdAt: string;
+  readonly finishedAt: string | null;
+}
+
+/** Safe run detail: immutable typed records only, never raw worker prose. */
+export interface VerifyRunInspection {
+  readonly schema: string;
+  readonly runId: string;
+  readonly action: {
+    readonly actionSnapshotId: string;
+    readonly structuredHeadSha256: string;
+    readonly targetKind: string;
+    readonly contextBoundary: Readonly<Record<string, unknown>>;
+    readonly egressBoundary: Readonly<Record<string, unknown>>;
+  };
+  readonly plan: {
+    readonly planSnapshotId: string;
+    readonly canonicalSha256: string;
+    readonly definition: Readonly<Record<string, unknown>>;
+  };
+  readonly checks: readonly {
+    readonly checkExecutionId: string;
+    readonly status: string;
+    readonly mechanism: string;
+    readonly definition: {
+      readonly stableKey: string;
+      readonly version: number;
+      readonly title: string;
+      readonly limitations: readonly string[];
+    };
+  }[];
+  readonly results: readonly {
+    readonly evaluationResultId: string;
+    readonly kind: string;
+    readonly message: string;
+    readonly dispositions: readonly {
+      readonly decision: string;
+      readonly rationale: string;
+      readonly policySnapshotSha256: string | null;
+    }[];
+    readonly lineage: readonly {
+      readonly relation: string;
+      readonly targetKind: string;
+      readonly targetRef: string;
+    }[];
+  }[];
+  readonly coordination: readonly {
+    readonly jobId: string;
+    readonly role: string;
+    readonly status: string;
+    readonly provider: string;
+    readonly model: string;
+    readonly egressClass: string;
+    readonly costCeilingUsd: number;
+    readonly error: string | null;
+  }[];
+}
+
+/** An immutable normalized observation that a coordinator chose to surface. */
+export interface EvaluationResult {
+  readonly resultId: string;
+  readonly runId: string;
+  readonly kind: EvaluationResultKind;
+  readonly criterionLabel: string;
+  readonly criterionStatement: string;
+  readonly checkLabel: string;
+  readonly methodLabel: string;
+  readonly explanation: string;
+  readonly quoteAnchor: QuoteAnchor | null;
+  readonly coverageLabel: string;
+  readonly limitations: readonly string[];
+  readonly currentVersion: boolean;
+  readonly disposition: EvaluationDisposition;
+  readonly canonicalSha256: string;
+  readonly proposalIds: readonly string[];
+  readonly createdAt: string;
+}
+
+export type CothinkItemStatus = "open" | "parked" | "dismissed";
+
+/**
+ * A Co-think contribution is deliberately non-evidential. It therefore has no
+ * pass/fail, severity, confidence, or proposal decision fields.
+ */
+export interface CothinkItem {
+  readonly itemId: string;
+  readonly subtype: "alternative_perspective";
+  readonly content: string;
+  readonly rationale: string;
+  readonly targetLabel: string;
+  readonly quoteAnchor: QuoteAnchor | null;
+  readonly status: CothinkItemStatus;
+  readonly currentVersion: boolean;
+  readonly canonicalSha256: string;
+  readonly createdAt: string;
+}
+
+export interface CothinkOutcome {
+  readonly outcomeId: string;
+  readonly status:
+    | "running"
+    | "completed_with_item"
+    | "completed_no_useful_item"
+    | "unavailable";
+  readonly rationale: string;
+  readonly targetLabel: string;
+  readonly currentVersion: boolean;
+  readonly providerId: string;
+  readonly modelId: string;
+  readonly createdAt: string;
+  readonly finishedAt: string | null;
+}
+
+export type VerificationRecheckStatus =
+  | "pending_capture"
+  | "user_action_required"
+  | "fulfilled";
+
+/**
+ * Restart-surviving intent derived from a committed sitting. A scoped intent
+ * is runnable only with its exact original Yjs target reference; the client
+ * must never substitute the current selection or the whole document.
+ */
+export interface VerificationRecheckIntent {
+  readonly intentId: string;
+  readonly sittingId: string;
+  readonly sourceRunId: string;
+  readonly proposalIds: readonly string[];
+  readonly pendingProposalIds: readonly string[];
+  readonly fulfilledByRunIds: readonly string[];
+  readonly committedAt: string;
+  readonly status: VerificationRecheckStatus;
+  readonly userGoal: string;
+  readonly protectedIntent: string;
+  readonly originalActionTarget: {
+    readonly actionSnapshotId: string;
+    readonly source: CoworkActionTargetChoice | null;
+    readonly label: string | null;
+    readonly kind: "document" | "text_quote";
+    readonly selector: CoworkCanonicalTargetSelector;
+    readonly targetTextSha256: string;
+    readonly targetReference: CoworkDocumentTargetReference | null;
+    readonly targetReferenceSha256: string | null;
+  };
+  readonly execution: {
+    readonly providerId: string;
+    readonly modelId: string;
+    readonly providerLabel: string;
+    readonly modelLabel: string;
+  };
+  readonly requires: {
+    readonly freshActionSnapshot: boolean;
+    readonly freshModelCallAuthorization: boolean;
+    readonly sameTargetSource: boolean;
+    readonly sameTargetReference: boolean;
+    readonly exactTargetResolution: boolean;
+    readonly allowWidenToWholeDocument: false;
+  };
+}
+
 /** Drift state plus open counts for the rail drift-health strip (R1 or R7). */
 export interface RailDriftHealth {
   readonly state: "clean" | "drifted" | "missing";
@@ -162,6 +455,13 @@ export interface ReviewRailData {
   readonly documentId: string;
   readonly title: string;
   readonly drift: RailDriftHealth;
+  readonly verifyCapability: CoworkVerifyCapability;
+  readonly verificationConfiguration: VerificationConfiguration;
+  readonly evaluationRuns: readonly EvaluationRunSummary[];
+  readonly evaluationResults: readonly EvaluationResult[];
+  readonly verificationRecheckIntents: readonly VerificationRecheckIntent[];
+  readonly cothinkItems: readonly CothinkItem[];
+  readonly cothinkOutcomes: readonly CothinkOutcome[];
   readonly proposals: readonly ReviewProposal[];
   readonly expressions: readonly ReviewExpression[];
   readonly provenanceSpans: readonly ProvenanceSpan[];

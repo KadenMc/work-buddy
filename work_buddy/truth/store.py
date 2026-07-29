@@ -1881,9 +1881,11 @@ class TruthStore:
             "(SELECT COUNT(*) FROM documents WHERE content_sha256 = ? "
             "OR ydoc_snapshot_sha256 = ?) + "
             "(SELECT COUNT(*) FROM document_versions WHERE projection_sha256 = ? "
-            "OR ydoc_snapshot_sha256 = ?)"
+            "OR ydoc_snapshot_sha256 = ?) + "
+            "(SELECT COUNT(*) FROM action_snapshots WHERE projection_blob_sha256 = ? "
+            "OR target_blob_sha256 = ?)"
         )
-        params = (normalized,) * 5
+        params = (normalized,) * 7
         if conn is not None:
             return int(conn.execute(sql, params).fetchone()[0])
         with self._read_connection() as read_conn:

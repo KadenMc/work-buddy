@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from work_buddy.truth import migrations as truth_migrations
 from work_buddy.truth.anchors import CompositeSelector
 from work_buddy.truth.contracts import Actor
 from work_buddy.truth.export import (
@@ -992,8 +993,11 @@ def test_import_rejects_newer_malformed_duplicate_header_and_trailing_records(
             registry=FakeRegistry(),
         )
     duplicate_header = payload.replace(
-        b'"format_version":4',
-        b'"format_version":4,"format_version":4',
+        f'"format_version":{FORMAT_VERSION}'.encode("ascii"),
+        (
+            f'"format_version":{FORMAT_VERSION},'
+            f'"format_version":{FORMAT_VERSION}'
+        ).encode("ascii"),
         1,
     )
     with pytest.raises(TruthImportError, match="malformed JSON"):
@@ -1026,12 +1030,18 @@ def test_older_schema_export_rebuilds_under_a_newer_engine(tmp_path: Path) -> No
 
     assert restored.get_claim(claim.id).canonical_sha256 == claim.canonical_sha256
     with restored.connect() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert (
+            conn.execute("PRAGMA user_version").fetchone()[0]
+            == truth_migrations.SCHEMA_VERSION
+        )
         assert conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'documents'"
         ).fetchone()
     header = _objects(restored.paths.claims_export.read_bytes())[0]
-    assert header["store_info"]["schema_version"] == 4
+    assert (
+        header["store_info"]["schema_version"]
+        == truth_migrations.SCHEMA_VERSION
+    )
 
 
 def test_staging_failure_is_not_published_and_existing_empty_target_is_restored(

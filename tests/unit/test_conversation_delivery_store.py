@@ -40,10 +40,22 @@ def test_fresh_schema_contains_delivery_cursor_and_agent_lease(
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             ).fetchall()
         }
+        receipt_columns = {
+            str(row["name"])
+            for row in conn.execute(
+                "PRAGMA table_info(conversation_action_snapshot_receipts)"
+            ).fetchall()
+        }
     finally:
         conn.close()
     assert "conversation_consumer_cursors" in tables
     assert "conversation_agent_leases" in tables
+    assert "conversation_action_snapshot_receipts" in tables
+    assert {
+        "fetch_outcome",
+        "unavailable_code",
+        "fetch_resolved_at",
+    } <= receipt_columns
 
 
 def test_ordinary_turn_does_not_answer_pending_and_exact_reply_is_scoped(
@@ -229,6 +241,259 @@ def test_receive_redelivers_until_exact_ordered_ack_and_generation_rotation(
         generation_two,
     )
     assert restarted["message"]["message_id"] == second.message_id
+
+
+def test_targeted_turn_requires_fetched_receipt_for_reply_and_ack(
+    isolated_conversations,
+) -> None:
+    conversation = _conversation()
+    consumer = "cowork-document:store-target:doc-target"
+    generation = "generation-target"
+    claimed = store.claim_agent_lease(
+        conversation.conversation_id,
+        consumer,
+        generation,
+    )
+    assert claimed is not None and claimed["claimed"] is True
+    assert store.activate_agent_lease(
+        conversation.conversation_id,
+        consumer,
+        generation,
+        12345,
+    )
+    context = {
+        "schema": "wb.conversation.message-context/v1",
+        "kind": "action_snapshot",
+        "action_snapshot_id": "action-snapshot-target",
+        "store_id": "store-target",
+        "document_id": "doc-target",
+        "target_kind": "text_quote",
+        "target_label": "Introduction",
+        "target_word_count": 24,
+        "target_text_sha256": "a" * 64,
+        "projection_sha256": "b" * 64,
+        "captured_at": "2026-07-28T12:00:00+00:00",
+    }
+    turn = store.post_user_message(
+        conversation.conversation_id,
+        "Please focus here.",
+        context=context,
+    )
+    assert turn is not None
+
+    delivered = store.receive_user_message(
+        conversation.conversation_id,
+        consumer,
+        generation,
+    )
+    assert delivered["message"]["context"] == context
+    assert store.ack_user_message(
+        conversation.conversation_id,
+        consumer,
+        generation,
+        turn.message_id,
+    ) == {
+        "status": "action_snapshot_receipt_required",
+        "acked": False,
+        "action_snapshot_id": "action-snapshot-target",
+    }
+    receipt = store.record_action_snapshot_consumption(
+        conversation.conversation_id,
+        consumer,
+        generation,
+        turn.message_id,
+        "action-snapshot-target",
+    )
+    resolution_conn = store.get_connection()
+    try:
+        receipt = store.resolve_action_snapshot_consumption(
+            receipt["receipt_id"],
+            "available",
+            conn=resolution_conn,
+        )
+        resolution_conn.commit()
+    finally:
+        resolution_conn.close()
+    reply_id = f"cowork-reply-{turn.message_id}"
+    reply_context = store.targeted_reply_context(
+        conversation.conversation_id,
+        consumer,
+        generation,
+        reply_id,
+        receipt["receipt_id"],
+        conn=(conn := store.get_connection()),
+    )
+    try:
+        reply, created = store.send_agent_message_idempotent(
+            conversation.conversation_id,
+            "Used the frozen target.",
+            reply_id,
+            conn=conn,
+            context=reply_context,
+        )
+        assert reply is not None and created is True
+        store.bind_action_snapshot_reply(
+            receipt["receipt_id"],
+            reply.message_id,
+            conn=conn,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    assert store.ack_user_message(
+        conversation.conversation_id,
+        consumer,
+        generation,
+        turn.message_id,
+        action_snapshot_id="action-snapshot-target",
+        consumption_receipt_id=receipt["receipt_id"],
+    ) == {
+        "status": "acked",
+        "acked": True,
+        "message_id": turn.message_id,
+    }
+
+
+def test_restart_replay_rejects_a_different_targeted_turn(
+    isolated_conversations,
+) -> None:
+    conversation = _conversation()
+    consumer = "cowork-document:store-target:doc-target"
+    generation_one = "generation-target-one"
+    store.claim_agent_lease(
+        conversation.conversation_id,
+        consumer,
+        generation_one,
+    )
+    assert store.activate_agent_lease(
+        conversation.conversation_id,
+        consumer,
+        generation_one,
+        12345,
+    )
+    first_context = {
+        "schema": "wb.conversation.message-context/v1",
+        "kind": "action_snapshot",
+        "action_snapshot_id": "action-snapshot-one",
+        "store_id": "store-target",
+        "document_id": "doc-target",
+        "target_kind": "text_quote",
+        "target_label": "Introduction",
+        "target_word_count": 24,
+        "target_text_sha256": "a" * 64,
+        "projection_sha256": "b" * 64,
+        "captured_at": "2026-07-28T12:00:00+00:00",
+    }
+    first_turn = store.post_user_message(
+        conversation.conversation_id,
+        "First exact turn.",
+        context=first_context,
+    )
+    assert first_turn is not None
+    first_receipt = store.record_action_snapshot_consumption(
+        conversation.conversation_id,
+        consumer,
+        generation_one,
+        first_turn.message_id,
+        "action-snapshot-one",
+    )
+    conn = store.get_connection()
+    try:
+        first_receipt = store.resolve_action_snapshot_consumption(
+            first_receipt["receipt_id"],
+            "available",
+            conn=conn,
+        )
+        reply_id = "stable-but-incorrectly-reused-reply"
+        reply_context = store.targeted_reply_context(
+            conversation.conversation_id,
+            consumer,
+            generation_one,
+            reply_id,
+            first_receipt["receipt_id"],
+            conn=conn,
+        )
+        reply, _created = store.send_agent_message_idempotent(
+            conversation.conversation_id,
+            "First reply.",
+            reply_id,
+            conn=conn,
+            context=reply_context,
+        )
+        assert reply is not None
+        store.bind_action_snapshot_reply(
+            first_receipt["receipt_id"],
+            reply_id,
+            conn=conn,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    assert store.ack_user_message(
+        conversation.conversation_id,
+        consumer,
+        generation_one,
+        first_turn.message_id,
+        consumption_receipt_id=first_receipt["receipt_id"],
+    )["acked"] is True
+
+    second_context = {
+        **first_context,
+        "action_snapshot_id": "action-snapshot-two",
+        "target_label": "Conclusion",
+        "target_text_sha256": "c" * 64,
+    }
+    second_turn = store.post_user_message(
+        conversation.conversation_id,
+        "Second, different exact turn.",
+        context=second_context,
+    )
+    assert second_turn is not None
+    assert store.stop_agent_lease(
+        conversation.conversation_id,
+        consumer,
+        generation_one,
+    )
+    generation_two = "generation-target-two"
+    store.claim_agent_lease(
+        conversation.conversation_id,
+        consumer,
+        generation_two,
+    )
+    assert store.activate_agent_lease(
+        conversation.conversation_id,
+        consumer,
+        generation_two,
+        12346,
+    )
+    second_receipt = store.record_action_snapshot_consumption(
+        conversation.conversation_id,
+        consumer,
+        generation_two,
+        second_turn.message_id,
+        "action-snapshot-two",
+    )
+    conn = store.get_connection()
+    try:
+        second_receipt = store.resolve_action_snapshot_consumption(
+            second_receipt["receipt_id"],
+            "available",
+            conn=conn,
+        )
+        with pytest.raises(
+            ValueError,
+            match="different targeted turn",
+        ):
+            store.targeted_reply_context(
+                conversation.conversation_id,
+                consumer,
+                generation_two,
+                reply_id,
+                second_receipt["receipt_id"],
+                conn=conn,
+            )
+    finally:
+        conn.close()
 
 
 def test_close_revokes_lease_and_receive_loses_generation(

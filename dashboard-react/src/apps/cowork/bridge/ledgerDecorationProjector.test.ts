@@ -19,6 +19,25 @@ const data: ReviewRailData = {
     lastMaterializedSha256: null,
     currentFileSha256: null,
   },
+  verifyCapability: {
+    enabled: true,
+    contractVersion: 1,
+    canRun: true,
+    canConfigure: true,
+    canCothink: true,
+    disabledReason: null,
+  },
+  verificationConfiguration: {
+    schema: "work-buddy.cowork-verify-configuration/v1",
+    documentId: "doc-1",
+    coordination: null,
+    criteria: [],
+  },
+  evaluationRuns: [],
+  evaluationResults: [],
+  verificationRecheckIntents: [],
+  cothinkItems: [],
+  cothinkOutcomes: [],
   proposals: [
     {
       proposalId: "flag-1",
@@ -151,6 +170,7 @@ describe("ledgerDecorationProjectionFromReview", () => {
           quote: "Claim passage",
         },
       ],
+      evaluations: [],
       provenance: [
         {
           spanId: "span-1",

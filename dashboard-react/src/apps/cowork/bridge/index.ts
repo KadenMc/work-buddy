@@ -23,6 +23,7 @@ export {
   type LiveReviewRailProviderOptions,
   type ProposalsListener,
   type ReviewDataListener,
+  type VerifyRecheckRequest,
 } from "./LiveReviewRailProvider";
 export {
   HttpCoworkDocClient,

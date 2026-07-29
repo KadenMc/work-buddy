@@ -1039,7 +1039,7 @@ def endorse_flag(
 ) -> ProposalDecisionResult:
     """Consume an endorse gesture on a FLAG, keep it open, route to the agent.
 
-    A drafted fix returns as a NEW linked proposal, never an auto-apply (AOV).
+    A drafted fix returns as a NEW linked proposal, never an auto-apply.
     """
     return _route_open(
         store,

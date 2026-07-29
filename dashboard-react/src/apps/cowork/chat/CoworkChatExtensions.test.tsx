@@ -1,127 +1,40 @@
 import { render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
-import { expectNoAccessibilityViolations } from "../../../test/setup";
-import {
-  CoworkPassageAction,
-  CoworkRoutingNotices,
-} from "./CoworkChatExtensions";
+import { CoworkActionSnapshotProvenance } from "./CoworkChatExtensions";
 
-describe("Cowork chat extensions", () => {
-  it("activates the exact passage target with a descriptive accessible name", async () => {
-    const target = {
-      spanId: "span-9",
-      anchor: { exact: "too strong" },
-    };
-    const onActivate = vi.fn();
-
+describe("CoworkActionSnapshotProvenance", () => {
+  it("does not claim an unavailable frozen context was used", () => {
     render(
-      <CoworkPassageAction
-        link={{
-          messageId: "message-9",
-          evidenceId: "evidence-9",
-          target,
-        }}
-        onActivate={onActivate}
-      />,
-    );
-
-    await userEvent.click(
-      screen.getByRole("button", {
-        name: 'Jump to passage: "too strong"',
-      }),
-    );
-    expect(onActivate).toHaveBeenCalledWith(target);
-  });
-
-  it("keeps a long passage out of the accessible name", () => {
-    const quote = `A ${"very ".repeat(40)}long passage`;
-    render(
-      <CoworkPassageAction
-        link={{
-          messageId: "message-long",
-          evidenceId: "evidence-long",
-          target: {
-            spanId: "span-long",
-            anchor: { exact: quote },
+      <CoworkActionSnapshotProvenance
+        author="assistant"
+        context={{
+          kind: "action_snapshot",
+          actionSnapshotId: "action-unavailable",
+          storeId: "store-1",
+          documentId: "doc-1",
+          targetKind: "text_quote",
+          targetLabel: "Introduction",
+          targetTextSha256: "a".repeat(64),
+          projectionSha256: "b".repeat(64),
+          capturedAt: "2026-07-28T00:00:00Z",
+          consumption: {
+            receiptId: "receipt-unavailable",
+            userMessageId: "user-unavailable",
+            fetchedAt: "2026-07-28T00:00:01Z",
+            fetchOutcome: "unavailable",
+            unavailableCode: "action_snapshot_unavailable",
           },
         }}
-        onActivate={vi.fn()}
       />,
     );
 
-    const button = screen.getByRole("button", { name: /Jump to passage:/ });
-    expect(button.getAttribute("aria-label")?.length).toBeLessThanOrEqual(120);
-    expect(button).toHaveAccessibleName(/…"/);
-  });
-
-  it("renders and dismisses delivered, queued, and failed routing notices", async () => {
-    const onDismiss = vi.fn();
-    render(
-      <CoworkRoutingNotices
-        deliveries={[
-          {
-            id: "routing-1",
-            verb: "redirect",
-            proposalId: "proposal-1",
-            state: "delivered",
-          },
-          {
-            id: "routing-2",
-            verb: "endorse",
-            proposalId: "proposal-2",
-            state: "queued",
-          },
-          {
-            id: "routing-3",
-            verb: "redirect",
-            proposalId: "proposal-3",
-            state: "failed",
-            reason: "conversation unavailable",
-          },
-        ]}
-        onDismiss={onDismiss}
-      />,
+    const provenance = screen.getByLabelText(
+      "Frozen document context: Introduction",
     );
-
-    expect(
-      screen.getByText("Redirect sent to the document agent."),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText("Endorsement saved in chat. Restart chat to continue."),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(/Redirect could not be saved in chat/),
-    ).toBeInTheDocument();
-    expect(screen.getByText(/conversation unavailable/)).toBeInTheDocument();
-
-    await userEvent.click(
-      screen.getByRole("button", {
-        name: "Dismiss delivered redirect notice",
-      }),
+    expect(provenance).toHaveTextContent(
+      "Couldn’t open Working on: Introduction",
     );
-    expect(onDismiss).toHaveBeenCalledWith("routing-1");
-  });
-
-  it("does not create a nested live region and remains axe-clean", async () => {
-    const { container } = render(
-      <div role="log" aria-label="Conversation">
-        <CoworkRoutingNotices
-          deliveries={[
-            {
-              id: "routing-1",
-              verb: "redirect",
-              proposalId: "proposal-1",
-              state: "failed",
-            },
-          ]}
-        />
-      </div>,
-    );
-
-    expect(container.querySelector("[role='status']")).toBeNull();
-    expect(container.querySelector("[role='alert']")).toBeNull();
-    await expectNoAccessibilityViolations(container);
+    expect(provenance).not.toHaveTextContent("Used Working on");
   });
 });

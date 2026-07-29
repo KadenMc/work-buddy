@@ -27,6 +27,7 @@ import {
   saveRailTab,
 } from "../guards";
 import { ReviewPanel } from "./ReviewPanel";
+import type { VerificationRecheckIntent } from "./contracts";
 import type { QueueBindings } from "./QueueView";
 import type { AnchorRectSource, ReviewRailProvider } from "./provider";
 import { RailStore, type RailTab } from "./store";
@@ -70,6 +71,10 @@ export interface CoworkRailProps {
   readonly onScrollToChatAnchor?: (target: ScrollAnchorTarget) => void;
   /** Shared provider/model selection, available before a conversation starts. */
   readonly chatExecution?: ChatExecutionControl;
+  /** Runs one exact, server-derived correction recheck intent. */
+  readonly onRecheckIntent?: (
+    intent: VerificationRecheckIntent,
+  ) => void | Promise<void>;
 }
 
 export type CoworkRailChat =
@@ -82,7 +87,7 @@ export type CoworkRailChat =
       readonly agent: CoworkDocumentAgent;
       readonly ensuringAgent?: boolean;
       readonly ensureError?: string | null;
-      readonly onEnsureAgent: () => void;
+      readonly onEnsureAgent: () => void | Promise<void>;
     }
   | {
       readonly kind: "loading";
@@ -95,14 +100,14 @@ export type CoworkRailChat =
   | {
       readonly kind: "idle";
       readonly draftStorageId: string;
-      readonly onStart: () => void;
+      readonly onStart: () => void | Promise<void>;
     }
   | {
       readonly kind: "error";
       readonly draftStorageId: string;
       readonly error: string;
       readonly action?: "start" | "restart";
-      readonly onRetry: () => void;
+      readonly onRetry: () => void | Promise<void>;
     };
 
 function CoworkConversationGate({
@@ -190,6 +195,22 @@ export function CoworkRail(props: CoworkRailProps) {
       .slice(seenCount)
       .some((message) => message.author === "assistant");
 
+  const continueCothinkInChat = async (): Promise<void> => {
+    if (
+      props.chat.kind === "ready" &&
+      (props.chat.agent.status !== "running" ||
+        props.chat.agent.alive === false)
+    ) {
+      await props.chat.onEnsureAgent();
+    } else if (props.chat.kind === "idle") {
+      await props.chat.onStart();
+    } else if (props.chat.kind === "error") {
+      await props.chat.onRetry();
+    }
+    store.setTab("chat");
+    props.onChatSelected?.();
+  };
+
   return (
     <div className="wb-cowork-rail">
       {props.showTabs !== false ? <div
@@ -253,6 +274,8 @@ export function CoworkRail(props: CoworkRailProps) {
           queueBindings={props.queueBindings}
           active={tab === "review" && props.reviewVisible !== false}
           narrow={props.narrow}
+          onDiscussCothink={continueCothinkInChat}
+          onRecheckIntent={props.onRecheckIntent}
         />
       </div>
 

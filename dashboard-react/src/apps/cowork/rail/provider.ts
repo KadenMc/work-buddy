@@ -12,8 +12,13 @@ import type {
   SittingResult,
   StagedClaimDecision,
   StagedDecision,
+  VerifyRunInspection,
+  VerifyCriterionDraftInput,
 } from "./contracts";
 import type { RailSelectionKind } from "./store";
+
+/** Editor-anchor namespaces include evidence results outside sitting selection state. */
+export type ReviewAnchorKind = RailSelectionKind | "evaluation_result";
 
 /** Tear down a subscription registered through the provider. */
 export type ReviewUnsubscribe = () => void;
@@ -44,6 +49,32 @@ export interface ReviewRailProvider {
   subscribe(onInvalidate: ReviewInvalidationListener): ReviewUnsubscribe;
   /** Submit the staged sitting (R5 marks). The route mints the gestures. */
   submitSitting(submission: SittingSubmission): Promise<SittingResult>;
+  /** Immediate, exact-hash-bound action on a non-evidential Co-think item. */
+  actOnCothink?(
+    itemId: string,
+    action: "park" | "dismiss",
+    canonicalSha256: string,
+  ): Promise<void>;
+  /** Save an exact item/action-bound Co-think turn into document Chat. */
+  discussCothink?(
+    itemId: string,
+    canonicalSha256: string,
+  ): Promise<{
+    readonly conversationId: string;
+    readonly messageId: string;
+  }>;
+  /** Append an exact-document human activation for future Verify runs. */
+  setVerifyCriterionEnabled?(
+    criterionKey: string,
+    enabled: boolean,
+    expectedActivationId: string | null,
+  ): Promise<void>;
+  /** Inspect one run's immutable typed records without raw worker prose. */
+  inspectVerifyRun?(runId: string): Promise<VerifyRunInspection>;
+  /** Save an unavailable user-authored criterion/checker draft for later admission. */
+  createVerifyCriterionDraft?(
+    draft: VerifyCriterionDraftInput,
+  ): Promise<void>;
 }
 
 /** How an explicit Review affordance should move attention in the editor. */
@@ -70,7 +101,7 @@ export interface AnchorRectSource {
    */
   anchorRect(
     id: string,
-    kind: RailSelectionKind,
+    kind: ReviewAnchorKind,
   ): { readonly top: number; readonly height: number } | null;
   /** Bring a proposal's anchor into view and flash it (the degrade path). */
   scrollToAnchor(proposalId: string): void;
@@ -82,7 +113,7 @@ export interface AnchorRectSource {
    */
   focusAnchor(
     id: string,
-    kind: RailSelectionKind,
+    kind: ReviewAnchorKind,
     options?: AnchorFocusOptions,
   ): void;
   /** Clear only the focused treatment, never the underlying annotations. */

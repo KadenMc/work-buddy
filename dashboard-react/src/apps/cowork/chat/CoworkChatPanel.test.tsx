@@ -4,8 +4,14 @@ import { describe, expect, it, vi } from "vitest";
 
 import { HttpChatConversationProvider } from "../../../dashboard/conversations";
 import { expectNoAccessibilityViolations } from "../../../test/setup";
+import type { ChatActionSnapshotContext } from "../../../widget-library/chat";
+import type {
+  CoworkActionSnapshotController,
+  CoworkCapturedActionSnapshot,
+} from "../targets";
 import { CoworkChatAnnotations } from "./annotations";
 import { CoworkChatPanel } from "./CoworkChatPanel";
+import { CoworkChatTargetingProvider } from "./CoworkChatTargeting";
 
 function jsonResponse(
   body: unknown,
@@ -27,6 +33,7 @@ interface RawMessage {
   readonly message_type?: string;
   readonly status?: string;
   readonly response_type?: string;
+  readonly context?: Record<string, unknown>;
 }
 
 function conversation(
@@ -170,6 +177,195 @@ describe("CoworkChatPanel", () => {
     expect(await screen.findByText("Done.")).toBeInTheDocument();
   });
 
+  it("saves frozen Working on context even while Chat is stopped", async () => {
+    const captured = {
+      schema: "wb.cowork.action-snapshot/v1",
+      storeId: "store-1",
+      documentId: "doc-1",
+    } as CoworkCapturedActionSnapshot;
+    const targetSnapshot = {
+      phase: "ready" as const,
+      selection: null,
+      currentSection: null,
+      workingTarget: {
+        kind: "text_range" as const,
+        label: "Introduction",
+        wordCount: 24,
+        range: { from: 1, to: 30 },
+      },
+    };
+    const controller: CoworkActionSnapshotController = {
+      subscribe: () => () => undefined,
+      getSnapshot: () => targetSnapshot,
+      setWorkingTargetFromSelection: vi.fn(),
+      clearWorkingTarget: vi.fn(),
+      capture: vi.fn(async () => captured),
+    };
+    const context: ChatActionSnapshotContext = {
+      kind: "action_snapshot",
+      actionSnapshotId: "action-snapshot-12345678",
+      storeId: "store-1",
+      documentId: "doc-1",
+      targetKind: "text_quote",
+      targetLabel: "Introduction",
+      targetWordCount: 24,
+      targetTextSha256: "a".repeat(64),
+      projectionSha256: "b".repeat(64),
+      capturedAt: "2026-07-28T12:00:00Z",
+    };
+    const prepare = vi.fn(async () => context);
+    let posted = false;
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        posted = true;
+        return jsonResponse({ sent: true, message_id: "targeted-user" });
+      }
+      return jsonResponse(
+        conversation(
+          posted
+            ? [
+                {
+                  message_id: "targeted-user",
+                  role: "user",
+                  content: "Focus here.",
+                  context: {
+                    kind: "action_snapshot",
+                    action_snapshot_id: context.actionSnapshotId,
+                    store_id: context.storeId,
+                    document_id: context.documentId,
+                    target_kind: context.targetKind,
+                    target_label: context.targetLabel,
+                    target_word_count: context.targetWordCount,
+                    target_text_sha256: context.targetTextSha256,
+                    projection_sha256: context.projectionSha256,
+                    captured_at: context.capturedAt,
+                  },
+                },
+              ]
+            : [],
+        ),
+      );
+    });
+    const fetchImpl = fetchMock as unknown as typeof fetch;
+
+    render(
+      <CoworkChatTargetingProvider
+        storeId="store-1"
+        documentId="doc-1"
+        controller={controller}
+        agent={{
+          status: "stopped",
+          alive: false,
+          started: false,
+          error: null,
+        }}
+        client={{ prepare }}
+      >
+        <CoworkChatPanel
+          provider={provider(fetchImpl)}
+          conversationId="c1"
+          agent={{
+            status: "stopped",
+            alive: false,
+            started: false,
+            error: null,
+          }}
+        />
+      </CoworkChatTargetingProvider>,
+    );
+    await screen.findByText(/No messages yet/);
+    expect(
+      screen.getByText(/Your message will stay here until Chat restarts/),
+    ).toBeVisible();
+    await userEvent.click(
+      screen.getByRole("switch", {
+        name: "Use Working on for this message",
+      }),
+    );
+    await userEvent.type(screen.getByRole("textbox"), "Focus here.");
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await screen.findByText("Focus here.");
+    expect(controller.capture).toHaveBeenCalledWith("working_target");
+    expect(prepare).toHaveBeenCalledWith(captured);
+    const post = fetchMock.mock.calls.find(
+      (call) => call[1]?.method === "POST",
+    );
+    expect(JSON.parse((post?.[1] as RequestInit).body as string)).toEqual({
+      value: "Focus here.",
+      context: {
+        kind: "action_snapshot",
+        action_snapshot_id: context.actionSnapshotId,
+        store_id: "store-1",
+        document_id: "doc-1",
+      },
+    });
+    expect(
+      screen.getByLabelText("Frozen document context: Introduction"),
+    ).toHaveTextContent("Frozen version · action-s");
+  });
+
+  it("explains when Working on context cannot be consumed", async () => {
+    const targetSnapshot = {
+      phase: "ready" as const,
+      selection: null,
+      currentSection: null,
+      workingTarget: {
+        kind: "unresolved" as const,
+        label: "Old selection",
+        wordCount: 0,
+        range: null,
+        resolution: "unresolved" as const,
+      },
+    };
+    const controller: CoworkActionSnapshotController = {
+      subscribe: () => () => undefined,
+      getSnapshot: () => targetSnapshot,
+      setWorkingTargetFromSelection: vi.fn(),
+      clearWorkingTarget: vi.fn(),
+      capture: vi.fn(),
+    };
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(conversation([])),
+    ) as unknown as typeof fetch;
+    render(
+      <CoworkChatTargetingProvider
+        storeId="store-1"
+        documentId="doc-1"
+        controller={controller}
+        agent={{
+          status: "running",
+          alive: true,
+          started: true,
+          error: null,
+        }}
+        client={{ prepare: vi.fn() }}
+      >
+        <CoworkChatPanel
+          provider={provider(fetchImpl)}
+          conversationId="c1"
+          agent={{
+            status: "running",
+            alive: true,
+            started: true,
+            error: null,
+          }}
+        />
+      </CoworkChatTargetingProvider>,
+    );
+
+    expect(
+      await screen.findByText(
+        "Working on needs attention in the editor before Chat can use it.",
+      ),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("switch", {
+        name: "Use Working on for this message",
+      }),
+    ).toBeDisabled();
+  });
+
   it("clears the draft after an acknowledged send when its reload fails", async () => {
     let initialLoaded = false;
     const fetchImpl = vi.fn(
@@ -247,7 +443,9 @@ describe("CoworkChatPanel", () => {
     expect(screen.getByText("Chat couldn’t start.")).toBeVisible();
     expect(screen.queryByText("Chat paused.")).toBeNull();
     expect(screen.getByText(/configured agent runner is unavailable/i)).toBeVisible();
-    expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull();
+    expect(
+      screen.getByRole("textbox", { name: "Message" }),
+    ).toBeVisible();
     await userEvent.click(
       screen.getByRole("button", { name: "Try again" }),
     );

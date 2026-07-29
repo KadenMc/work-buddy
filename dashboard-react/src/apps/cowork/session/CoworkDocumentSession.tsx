@@ -6,6 +6,10 @@ import type {
   CoworkMaterializeReceipt,
 } from "../materialization/contracts";
 import { CoworkLiveWorkspace, healthFromDocument } from "../surface/CoworkWorkspaceSurface";
+import type {
+  CoworkInvitePerspectiveHandler,
+  CoworkRunVerifyHandler,
+} from "../targets";
 
 export interface CoworkDocumentSessionProps {
   readonly storeId: string;
@@ -17,6 +21,8 @@ export interface CoworkDocumentSessionProps {
     controller: CoworkMaterializationController | null,
   ) => void;
   readonly onMaterialized?: (receipt: CoworkMaterializeReceipt) => void;
+  readonly onRunVerify?: CoworkRunVerifyHandler;
+  readonly onInvitePerspective?: CoworkInvitePerspectiveHandler;
 }
 
 /** Key this boundary by store/document so no live editor resource crosses a switch. */
@@ -28,6 +34,8 @@ export function CoworkDocumentSession({
   onMaterializationState,
   onMaterializationController,
   onMaterialized,
+  onRunVerify,
+  onInvitePerspective,
 }: CoworkDocumentSessionProps) {
   return (
     <CoworkLiveWorkspace
@@ -42,6 +50,8 @@ export function CoworkDocumentSession({
       onMaterializationState={onMaterializationState}
       onMaterializationController={onMaterializationController}
       onMaterialized={onMaterialized}
+      onRunVerify={onRunVerify}
+      onInvitePerspective={onInvitePerspective}
     />
   );
 }

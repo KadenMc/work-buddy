@@ -23,9 +23,9 @@ import {
 import type {
   AnchorFocusOptions,
   AnchorRectSource,
+  ReviewAnchorKind,
   ReviewUnsubscribe,
 } from "../rail/provider";
-import type { RailSelectionKind } from "../rail/store";
 
 /** How long the scroll-to flash class stays on a mark before it is removed. */
 const FLASH_MS = 1200;
@@ -76,7 +76,7 @@ export class DomAnchorRectSource implements AnchorRectSource {
   #focused:
     | {
         readonly id: string;
-        readonly kind: RailSelectionKind;
+        readonly kind: ReviewAnchorKind;
         readonly options: AnchorFocusOptions;
       }
     | null = null;
@@ -99,7 +99,7 @@ export class DomAnchorRectSource implements AnchorRectSource {
    * decorations use plain data-wb-anchor attributes. The legacy JSON data-id fallback
    * keeps older suggestion marks and focused tests interoperable during the transition.
    */
-  #anchorElements(id: string, kind: RailSelectionKind): HTMLElement[] {
+  #anchorElements(id: string, kind: ReviewAnchorKind): HTMLElement[] {
     const root = this.#options.getEditorRoot();
     if (root === null) return [];
     const matches = new Set<HTMLElement>();
@@ -187,7 +187,7 @@ export class DomAnchorRectSource implements AnchorRectSource {
 
   anchorRect(
     id: string,
-    kind: RailSelectionKind,
+    kind: ReviewAnchorKind,
   ): { readonly top: number; readonly height: number } | null {
     const railRoot = this.#options.getRailRoot();
     const elements = this.#anchorElements(id, kind);
@@ -215,7 +215,7 @@ export class DomAnchorRectSource implements AnchorRectSource {
 
   focusAnchor(
     id: string,
-    kind: RailSelectionKind,
+    kind: ReviewAnchorKind,
     options: AnchorFocusOptions = {},
   ): void {
     this.#cancelFlashTimer();

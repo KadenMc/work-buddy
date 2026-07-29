@@ -36,9 +36,13 @@ import type {
   CoworkMaterializationState,
   CoworkMaterializeReceipt,
 } from "../materialization/contracts";
-import { CoworkBridgeEditor, useCoworkBridge } from "../bridge";
+import {
+  CoworkBridgeEditor,
+  useCoworkBridge,
+} from "../bridge";
 import {
   CoworkChatAnnotations,
+  CoworkChatTargetingProvider,
   coworkConversationEndpoint,
   coworkConversationExecutionEndpoint,
   useDocumentConversationBinding,
@@ -66,7 +70,14 @@ import {
   createDemoChatProvider,
   isDirty,
   type CoworkRailChat,
+  type VerificationRecheckIntent,
 } from "../rail";
+import {
+  CoworkDocumentActionBar,
+  type CoworkInvitePerspectiveHandler,
+  type CoworkRunVerifyHandler,
+} from "../targets";
+import { HttpCoworkVerifyClient } from "../verify";
 import {
   EDITOR_DEFAULT_SIZE,
   EDITOR_MIN_SIZE,
@@ -264,6 +275,7 @@ function CoworkHealthStrip({ health }: { health: CoworkHealthView | null }) {
  */
 function CoworkWorkspaceLayout({
   health,
+  actionBar = null,
   editor,
   rail,
   railRef,
@@ -273,6 +285,7 @@ function CoworkWorkspaceLayout({
   paneTabs = null,
 }: {
   readonly health: CoworkHealthView | null;
+  readonly actionBar?: ReactNode;
   readonly editor: ReactNode;
   readonly rail: ReactNode;
   readonly railRef?: (element: HTMLElement | null) => void;
@@ -286,6 +299,7 @@ function CoworkWorkspaceLayout({
   return (
     <div className={`wb-cowork${helping ? " is-helping" : ""}`}>
       {showHealth ? <CoworkHealthStrip health={health} /> : null}
+      {actionBar}
       {paneTabs}
       <Group
         className="wb-cowork__body"
@@ -460,6 +474,8 @@ export function CoworkLiveWorkspace({
   onMaterializationController,
   onMaterialized,
   conversationBindingClient,
+  onRunVerify,
+  onInvitePerspective,
 }: {
   readonly documentId: string;
   readonly storeId: string;
@@ -476,6 +492,9 @@ export function CoworkLiveWorkspace({
   readonly onMaterialized?: (receipt: CoworkMaterializeReceipt) => void;
   /** Injectable server-binding client for focused integration tests. */
   readonly conversationBindingClient?: CoworkDocumentConversationBindingClient;
+  /** Exact capture handoff; route transport remains injectable at this boundary. */
+  readonly onRunVerify?: CoworkRunVerifyHandler;
+  readonly onInvitePerspective?: CoworkInvitePerspectiveHandler;
 }) {
   const workspaceIdentity = `${storeId}\u0000${documentId}`;
   const workspaceIdentityRef = useRef(workspaceIdentity);
@@ -571,9 +590,14 @@ export function CoworkLiveWorkspace({
           modelId: chatExecution.snapshot.selection.modelId,
           expectedRevision: chatExecution.snapshot.selection.revision,
         };
-  const ensureConversation = useCallback((): void => {
-    void conversation.ensure(selectedExecution);
-  }, [conversation.ensure, selectedExecution]);
+  const verifyClient = useMemo(
+    () => new HttpCoworkVerifyClient({ documentId, storeId }),
+    [documentId, storeId],
+  );
+  const ensureConversation = useCallback(
+    (): Promise<void> => conversation.ensure(selectedExecution),
+    [conversation.ensure, selectedExecution],
+  );
   const chat: CoworkRailChat = useMemo(() => {
     if (
       conversation.phase === "ready" &&
@@ -627,6 +651,9 @@ export function CoworkLiveWorkspace({
   const [activePane, setActivePane] = useState<CoworkWorkspacePane>("editor");
   const editorPaneTabRef = useRef<HTMLButtonElement | null>(null);
   const [passageAnnouncement, setPassageAnnouncement] = useState("");
+  const rechecksInFlightRef = useRef(
+    new Map<string, Promise<void>>(),
+  );
   const selectPane = useCallback(
     (pane: CoworkWorkspacePane): void => {
       setActivePane(pane);
@@ -642,6 +669,9 @@ export function CoworkLiveWorkspace({
     [narrowWorkspace, railStore],
   );
   useEffect(() => setActivePane("editor"), [documentId]);
+  useEffect(() => {
+    rechecksInFlightRef.current.clear();
+  }, [documentId, storeId]);
   const navBinding = useCoworkNavBinding();
 
   const bridge = useCoworkBridge({
@@ -688,6 +718,113 @@ export function CoworkLiveWorkspace({
         }
       : {}),
   });
+  const resolvedRunVerify = useMemo<CoworkRunVerifyHandler | undefined>(() => {
+    if (onRunVerify !== undefined) return onRunVerify;
+    const selection = chatExecution?.snapshot?.selection;
+    if (selection === undefined) return undefined;
+    return async (capture, intent) => {
+      await verifyClient.startVerify(capture, selection, {
+        userGoal: intent.userGoal,
+        protectedIntent: intent.protectedIntent,
+      });
+      bridge.reviewProvider.invalidate();
+    };
+  }, [
+    bridge.reviewProvider,
+    chatExecution?.snapshot?.selection,
+    onRunVerify,
+    verifyClient,
+  ]);
+  const resolvedInvitePerspective = useMemo<
+    CoworkInvitePerspectiveHandler | undefined
+  >(() => {
+    if (onInvitePerspective !== undefined) return onInvitePerspective;
+    const selection = chatExecution?.snapshot?.selection;
+    if (selection === undefined) return undefined;
+    return async (capture) => {
+      await verifyClient.startCothink(capture, selection);
+      bridge.reviewProvider.invalidate();
+    };
+  }, [
+    bridge.reviewProvider,
+    chatExecution?.snapshot?.selection,
+    onInvitePerspective,
+    verifyClient,
+  ]);
+  const runRecheckIntent = useCallback(
+    (request: VerificationRecheckIntent): Promise<void> => {
+      const existing = rechecksInFlightRef.current.get(request.intentId);
+      if (existing !== undefined) return existing;
+      const run = (async () => {
+        if (request.status === "user_action_required") {
+          throw new Error(
+            "The original document target cannot be recovered automatically. Choose the intended target in the document action bar and run Verify explicitly.",
+          );
+        }
+        const controller = bridge.actionSnapshotController;
+        if (controller === null) {
+          throw new Error(
+            "Recheck is waiting for the editor to become available.",
+          );
+        }
+        const source = request.originalActionTarget.source;
+        if (source === null) {
+          throw new Error(
+            "The original document target source is unavailable.",
+          );
+        }
+        let capture;
+        if (request.originalActionTarget.kind === "document") {
+          capture =
+            controller.captureReference === undefined
+              ? await controller.capture(source)
+              : await controller.captureReference(source, null);
+        } else {
+          const reference = request.originalActionTarget.targetReference;
+          if (
+            reference === null ||
+            controller.captureReference === undefined
+          ) {
+            throw new Error(
+              "The original document target cannot be resolved by this editor.",
+            );
+          }
+          capture = await controller.captureReference(source, reference);
+        }
+        await verifyClient.startVerify(capture, request.execution, {
+          userGoal: request.userGoal,
+          protectedIntent: request.protectedIntent,
+          recheckOfProposalIds: request.pendingProposalIds,
+          recheckOfRunId: request.sourceRunId,
+          recheckIntentId: request.intentId,
+        });
+        bridge.reviewProvider.invalidate();
+        setPassageAnnouncement(
+          "Co-work Verify is rechecking the committed document version.",
+        );
+      })();
+      rechecksInFlightRef.current.set(request.intentId, run);
+      const clear = (): void => {
+        if (rechecksInFlightRef.current.get(request.intentId) === run) {
+          rechecksInFlightRef.current.delete(request.intentId);
+        }
+      };
+      void run.then(clear, clear);
+      return run;
+    },
+    [
+      bridge.actionSnapshotController,
+      bridge.reviewProvider,
+      verifyClient,
+    ],
+  );
+
+  const recheckIntent = useCallback(
+    async (request: VerificationRecheckIntent): Promise<void> => {
+      await runRecheckIntent(request);
+    },
+    [runRecheckIntent],
+  );
   const scrollToChatAnchor = useCallback(
     (target: ScrollAnchorTarget): void => {
       const announceResult = (found: boolean): void => {
@@ -752,6 +889,21 @@ export function CoworkLiveWorkspace({
     <CoworkWorkspaceLayout
       health={health}
       showHealth={showHealth}
+      actionBar={
+        <CoworkDocumentActionBar
+          controller={bridge.actionSnapshotController}
+          readOnly={readOnly}
+          onRunVerify={resolvedRunVerify}
+          onInvitePerspective={resolvedInvitePerspective}
+          verifySetup={bridge.verifySetup}
+          verifyCapability={bridge.verifyCapability}
+          executionLabel={
+            chatExecution?.snapshot?.selection === undefined
+              ? undefined
+              : `${chatExecution.snapshot.selection.providerLabel} · ${chatExecution.snapshot.selection.modelLabel}`
+          }
+        />
+      }
       railRef={bridge.railRef}
       narrow={narrowWorkspace}
       activePane={activePane}
@@ -775,22 +927,30 @@ export function CoworkLiveWorkspace({
       }
       editor={<CoworkBridgeEditor {...bridge.editorProps} />}
       rail={
-        <CoworkRail
+        <CoworkChatTargetingProvider
+          storeId={storeId}
           documentId={documentId}
-          reviewProvider={bridge.reviewProvider}
-          chat={chat}
-          anchorRects={bridge.anchorRects}
-          store={railStore}
-          queueBindings={navBinding}
-          chatAnnotations={annotations}
-          chatExecution={presentedChatExecution}
-          onScrollToChatAnchor={scrollToChatAnchor}
-          narrow={narrowWorkspace}
-          reviewVisible={
-            !narrowWorkspace || activePane === "review"
-          }
-          showTabs={!narrowWorkspace}
-        />
+          controller={bridge.actionSnapshotController}
+          agent={conversation.agent}
+        >
+          <CoworkRail
+            documentId={documentId}
+            reviewProvider={bridge.reviewProvider}
+            chat={chat}
+            anchorRects={bridge.anchorRects}
+            store={railStore}
+            queueBindings={navBinding}
+            chatAnnotations={annotations}
+            chatExecution={presentedChatExecution}
+            onScrollToChatAnchor={scrollToChatAnchor}
+            narrow={narrowWorkspace}
+            reviewVisible={
+              !narrowWorkspace || activePane === "review"
+            }
+            showTabs={!narrowWorkspace}
+            onRecheckIntent={recheckIntent}
+          />
+        </CoworkChatTargetingProvider>
       }
     />
   );

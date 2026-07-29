@@ -39,7 +39,12 @@ import type {
   ScrollAnchorTarget,
 } from "../chat";
 import type { CoworkFeedbackTransport } from "../feedback";
-import type { RailDriftHealth, ReviewRailData } from "../rail/contracts";
+import type {
+  CoworkVerifyCapability,
+  RailDriftHealth,
+  ReviewRailData,
+  VerificationRecheckIntent,
+} from "../rail/contracts";
 import type { AnchorRectSource } from "../rail/provider";
 import { DomAnchorRectSource } from "./DomAnchorRectSource";
 import {
@@ -47,10 +52,14 @@ import {
   type CoworkDocClient,
 } from "./HttpCoworkDocClient";
 import { CoworkPassageHighlighter } from "./CoworkPassageHighlighter";
-import { LiveReviewRailProvider } from "./LiveReviewRailProvider";
+import {
+  LiveReviewRailProvider,
+  type VerifyRecheckRequest,
+} from "./LiveReviewRailProvider";
 import { LedgerDecorationProjector } from "./ledgerDecorationProjector";
 import type { CoworkEditorReadyContext } from "./CoworkBridgeEditor";
 import type { CoworkSittingWorkspace } from "./sittingWorkspace";
+import type { CoworkActionSnapshotController } from "../targets";
 
 /** Registered documents are initialized by bootstrap; live hydration never fabricates text. */
 export const DEFAULT_BRIDGE_SEED_MARKDOWN = "";
@@ -83,6 +92,10 @@ export interface UseCoworkBridgeOptions {
   readonly sittingTransport?: CoworkSittingTransport;
   /** Notified per routed item after a submit, so the Chat tab annotates the routing note. */
   readonly onRoutingDelivery?: (delivery: RoutingDeliveryInput) => void;
+  /** Applied Verify corrections after the authoritative structured version is pulled. */
+  readonly onSittingCommitted?: (
+    requests: readonly VerifyRecheckRequest[],
+  ) => void;
   /**
    * Notified after a successful R9 feedback capture, so the surface annotates the
    * span-linked message on the Chat tab and switches the rail to Chat.
@@ -117,6 +130,9 @@ export interface CoworkBridgeEditorMountProps {
   ) => void;
   readonly onMaterialized?: (receipt: CoworkMaterializeReceipt) => void;
   readonly onSittingWorkspace?: (workspace: CoworkSittingWorkspace | null) => void;
+  readonly onActionSnapshotController?: (
+    controller: CoworkActionSnapshotController | null,
+  ) => void;
   readonly getProposalCatalog: () => readonly ProposalInput[];
   readonly onSittingServerRefreshed?: () => void;
 }
@@ -129,6 +145,20 @@ export interface CoworkBridge {
   readonly railRef: (element: HTMLElement | null) => void;
   /** Latest live health, or null before the first pull resolves. */
   readonly health: CoworkLiveHealth | null;
+  /** Concise effective setup for the document action bar. */
+  readonly verifySetup: {
+    readonly activeCount: number;
+    readonly unavailableCount: number;
+    readonly costCeilingUsdPerWorker: number | null;
+    readonly baseWorkerCalls: number | null;
+    readonly maximumWorkerCalls: number | null;
+  } | null;
+  /** Fail-closed server negotiation for Verify and Co-think actions. */
+  readonly verifyCapability: CoworkVerifyCapability | null;
+  /** Exact target/action capture behavior owned by the currently mounted editor. */
+  readonly actionSnapshotController: CoworkActionSnapshotController | null;
+  /** Durable, restart-surviving rechecks from the latest authoritative R2 pull. */
+  readonly verificationRecheckIntents: readonly VerificationRecheckIntent[];
   /**
    * Bring a feedback span's passage into view. The Chat tab's scroll-to affordance is
    * span-keyed, so it carries the span's quote anchor, which resolves to an editor position
@@ -168,6 +198,7 @@ export const useCoworkBridge = (
     ydocTransport,
     sittingTransport,
     onRoutingDelivery,
+    onSittingCommitted,
     onFeedbackCaptured,
     feedbackTransport,
   } = options;
@@ -179,11 +210,26 @@ export const useCoworkBridge = (
   const sittingWorkspaceRef = useRef<CoworkSittingWorkspace | null>(null);
   const proposalCatalogRef = useRef<readonly ProposalInput[]>([]);
   const [health, setHealth] = useState<CoworkLiveHealth | null>(null);
+  const [verifySetup, setVerifySetup] = useState<{
+    readonly activeCount: number;
+    readonly unavailableCount: number;
+    readonly costCeilingUsdPerWorker: number | null;
+    readonly baseWorkerCalls: number | null;
+    readonly maximumWorkerCalls: number | null;
+  } | null>(null);
+  const [verifyCapability, setVerifyCapability] =
+    useState<CoworkVerifyCapability | null>(null);
+  const [verificationRecheckIntents, setVerificationRecheckIntents] =
+    useState<readonly VerificationRecheckIntent[]>([]);
+  const [actionSnapshotController, setActionSnapshotController] =
+    useState<CoworkActionSnapshotController | null>(null);
 
   // Kept in a ref so the review provider stays stable per (documentId, storeId) while always
   // routing a delivery through the surface's latest callback.
   const onRoutingDeliveryRef = useRef(onRoutingDelivery);
   onRoutingDeliveryRef.current = onRoutingDelivery;
+  const onSittingCommittedRef = useRef(onSittingCommitted);
+  onSittingCommittedRef.current = onSittingCommitted;
 
   // Same treatment for the feedback callback: a stable editorProps that always
   // routes a capture through the surface's latest callback.
@@ -212,6 +258,8 @@ export const useCoworkBridge = (
       sittingTransport: resolvedSittingTransport,
       getSittingWorkspace: () => sittingWorkspaceRef.current,
       onRoutingDelivery: (delivery) => onRoutingDeliveryRef.current?.(delivery),
+      onSittingCommitted: (requests) =>
+        onSittingCommittedRef.current?.(requests),
     });
 
     const anchorRects = new DomAnchorRectSource({
@@ -237,11 +285,32 @@ export const useCoworkBridge = (
   // from the provider's single authoritative pull.
   useEffect(() => {
     proposalCatalogRef.current = [];
+    setVerificationRecheckIntents([]);
     const stopProposals = core.reviewProvider.onProposals((proposals) => {
       proposalCatalogRef.current = proposals;
     });
     const stopData = core.reviewProvider.onData((data: ReviewRailData) => {
       setHealth({ title: data.title, drift: data.drift });
+      setVerifyCapability(data.verifyCapability);
+      setVerificationRecheckIntents(data.verificationRecheckIntents);
+      setVerifySetup({
+        activeCount: data.verificationConfiguration.criteria.filter(
+          (criterion) => criterion.operationalState === "active",
+        ).length,
+        unavailableCount: data.verificationConfiguration.criteria.filter(
+          (criterion) =>
+            criterion.operationalState === "unavailable" ||
+            criterion.operationalState === "blocked_required_check",
+        ).length,
+        costCeilingUsdPerWorker:
+          data.verificationConfiguration.coordination
+            ?.costCeilingUsdPerWorker ?? null,
+        baseWorkerCalls:
+          data.verificationConfiguration.coordination?.baseWorkerCalls ?? null,
+        maximumWorkerCalls:
+          data.verificationConfiguration.coordination?.maximumWorkerCalls ??
+          null,
+      });
       core.ledgerProjector.setData(data);
       core.anchorRects.refresh();
     });
@@ -303,6 +372,7 @@ export const useCoworkBridge = (
       onSittingWorkspace: (workspace) => {
         sittingWorkspaceRef.current = workspace;
       },
+      onActionSnapshotController: setActionSnapshotController,
       getProposalCatalog: () => proposalCatalogRef.current,
       onSittingServerRefreshed: () => {
         core.ledgerProjector.clear();
@@ -346,6 +416,10 @@ export const useCoworkBridge = (
     editorProps,
     railRef,
     health,
+    verifySetup,
+    verifyCapability,
+    verificationRecheckIntents,
+    actionSnapshotController,
     scrollToSpanAnchor,
   };
 };

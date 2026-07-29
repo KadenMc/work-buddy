@@ -49,6 +49,8 @@ export interface ChatMessage {
    * rewrite the history shown beside an earlier reply.
    */
   readonly producer?: ChatMessageProducer;
+  /** Explicit, durable context attached to this authored turn. */
+  readonly context?: ChatActionSnapshotContext;
 }
 
 /** Exact provider/model that produced one durable assistant message. */
@@ -57,6 +59,40 @@ export interface ChatMessageProducer {
   readonly modelId?: string;
   readonly providerLabel: string;
   readonly modelLabel: string;
+}
+
+/**
+ * Immutable document context attached by an explicit targeted-chat gesture.
+ * The stable action snapshot ID is the agent delivery and acknowledgement
+ * boundary; the remaining fields are transcript-visible provenance.
+ */
+export interface ChatActionSnapshotContext {
+  readonly kind: "action_snapshot";
+  readonly actionSnapshotId: string;
+  readonly storeId: string;
+  readonly documentId: string;
+  readonly targetKind: "document" | "text_quote";
+  readonly targetLabel: string;
+  readonly targetWordCount?: number;
+  readonly targetTextSha256: string;
+  readonly projectionSha256: string;
+  readonly capturedAt: string;
+  readonly consumption?: {
+    readonly receiptId: string;
+    readonly userMessageId: string;
+    readonly fetchedAt: string;
+    /** Whether this generation could actually open the frozen context. */
+    readonly fetchOutcome: "available" | "unavailable";
+    readonly unavailableCode?: string;
+  };
+  readonly discussion?: {
+    readonly kind: "cothink_item";
+    readonly itemId: string;
+    readonly canonicalSha256: string;
+    readonly content: string;
+    readonly rationale: string;
+    readonly nonEvidential: true;
+  };
 }
 
 /** Whether the conversation still accepts input. */
@@ -85,6 +121,8 @@ export interface ChatConversationSnapshot {
 export interface ChatSendInput {
   readonly value: string;
   readonly inReplyTo?: string;
+  /** Omitted for ordinary Chat; present only after explicit context capture. */
+  readonly context?: ChatActionSnapshotContext;
 }
 
 /** Called by a provider when its view of a conversation may have changed. */
@@ -223,6 +261,7 @@ export interface RawChatMessage {
   readonly response_type?: string;
   readonly choices?: readonly RawChatChoice[];
   readonly producer?: RawChatMessageProducer;
+  readonly context?: RawChatActionSnapshotContext;
 }
 
 export interface RawChatMessageProducer {
@@ -230,6 +269,21 @@ export interface RawChatMessageProducer {
   readonly model_id?: unknown;
   readonly provider_label?: unknown;
   readonly model_label?: unknown;
+}
+
+export interface RawChatActionSnapshotContext {
+  readonly kind?: unknown;
+  readonly action_snapshot_id?: unknown;
+  readonly store_id?: unknown;
+  readonly document_id?: unknown;
+  readonly target_kind?: unknown;
+  readonly target_label?: unknown;
+  readonly target_word_count?: unknown;
+  readonly target_text_sha256?: unknown;
+  readonly projection_sha256?: unknown;
+  readonly captured_at?: unknown;
+  readonly consumption?: unknown;
+  readonly discussion?: unknown;
 }
 
 export interface RawChatConversation {

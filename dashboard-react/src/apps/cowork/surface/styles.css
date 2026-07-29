@@ -1062,6 +1062,18 @@
 }
 
 /*
+ * Verify evidence: a double underline says "evaluated observation" without
+ * borrowing tracked-change, flag, or claim-provenance semantics.
+ */
+.wb-cowork-evaluation-mark {
+  text-decoration-line: underline;
+  text-decoration-style: double;
+  text-decoration-color: var(--wb-color-status-info);
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 3px;
+}
+
+/*
  * State 2 provenance tint: an AI-written, human-confirmed span. Accent token plus a
  * left rule and a stamp, so the signal is not carried by color alone.
  */
@@ -1123,6 +1135,9 @@
   .wb-cowork-expression-mark,
   .wb-cowork-claim-anchor {
     text-decoration: underline dashed CanvasText;
+  }
+  .wb-cowork-evaluation-mark {
+    text-decoration: underline double Highlight;
   }
   .wb-cowork-suggestion--insertion {
     text-decoration: underline solid LinkText;

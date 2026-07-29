@@ -196,6 +196,61 @@ describe("HttpChatConversationProvider", () => {
     });
   });
 
+  it("serializes an explicit action snapshot context and keeps it on fallback", async () => {
+    let initialLoaded = false;
+    const fetchImpl = vi.fn(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "POST") {
+          return jsonResponse({ sent: true, message_id: "targeted-user" });
+        }
+        if (!initialLoaded) {
+          initialLoaded = true;
+          return jsonResponse(conversation([]));
+        }
+        return jsonResponse({ error: "reload unavailable" }, { status: 503 });
+      },
+    );
+    const provider = new HttpChatConversationProvider({
+      conversationId: "c1",
+      fetchImpl,
+      pollIntervalMs: 0,
+    });
+    await provider.loadConversation("c1");
+    const context = {
+      kind: "action_snapshot" as const,
+      actionSnapshotId: "action-1",
+      storeId: "store-1",
+      documentId: "doc-1",
+      targetKind: "text_quote" as const,
+      targetLabel: "Introduction",
+      targetWordCount: 24,
+      targetTextSha256: "a".repeat(64),
+      projectionSha256: "b".repeat(64),
+      capturedAt: "2026-07-28T12:00:00Z",
+    };
+
+    const snapshot = await provider.sendMessage("c1", {
+      value: "Focus here.",
+      context,
+    });
+
+    const post = fetchImpl.mock.calls.find(
+      ([, init]) => (init as RequestInit | undefined)?.method === "POST",
+    );
+    expect(JSON.parse((post?.[1] as RequestInit).body as string)).toEqual({
+      value: "Focus here.",
+      context: {
+        kind: "action_snapshot",
+        action_snapshot_id: "action-1",
+        store_id: "store-1",
+        document_id: "doc-1",
+      },
+    });
+    expect(snapshot.messages[snapshot.messages.length - 1]?.context).toEqual(
+      context,
+    );
+  });
+
   it("treats a successful respond ack as delivered when the reload fails", async () => {
     let initialLoaded = false;
     let reloadAvailable = false;

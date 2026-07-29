@@ -215,7 +215,7 @@ def test_document_surface_round_trips_lossless_including_ydoc_blob(
 
     exported = export_store(source)
     objects = _objects(exported.path.read_bytes())
-    assert objects[0]["format_version"] == FORMAT_VERSION == 4
+    assert objects[0]["format_version"] == FORMAT_VERSION == 7
 
     record_types = {
         item["record_type"]

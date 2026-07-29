@@ -15,7 +15,13 @@
  * out to the rail's reload listeners exactly as a provider-internal nudge would.
  */
 
-import type { ReviewRailData, SittingResult } from "../rail/contracts";
+import type {
+  ReviewRailData,
+  SittingResult,
+  VerificationRecheckIntent,
+  VerifyCriterionDraftInput,
+  VerifyRunInspection,
+} from "../rail/contracts";
 import type {
   ReviewInvalidationListener,
   ReviewRailProvider,
@@ -35,6 +41,9 @@ export type ProposalsListener = (proposals: readonly ProposalInput[]) => void;
 /** Called with the rail data each time a pull resolves (health-strip channel). */
 export type ReviewDataListener = (data: ReviewRailData) => void;
 
+/** One durable recheck intent projected from the committed sitting ledger. */
+export type VerifyRecheckRequest = VerificationRecheckIntent;
+
 export interface LiveReviewRailProviderOptions {
   readonly docClient: CoworkDocClient;
   readonly documentId: string;
@@ -45,6 +54,10 @@ export interface LiveReviewRailProviderOptions {
   readonly getSittingWorkspace: () => CoworkSittingWorkspace | null;
   /** Notified per routed item after a submit, so the Chat tab annotates the routing note. */
   readonly onRoutingDelivery?: (delivery: RoutingDeliveryInput) => void;
+  /** Applied Verify corrections whose committed document version is ready to recheck. */
+  readonly onSittingCommitted?: (
+    requests: readonly VerifyRecheckRequest[],
+  ) => void;
 }
 
 export class LiveReviewRailProvider implements ReviewRailProvider {
@@ -110,7 +123,7 @@ export class LiveReviewRailProvider implements ReviewRailProvider {
     if (workspace === null) {
       throw new Error("the editor is not ready, so the sitting cannot be prepared");
     }
-    return submitCoworkSitting({
+    const result = await submitCoworkSitting({
       documentId: this.#options.documentId,
       storeId: this.#options.storeId,
       submission,
@@ -124,6 +137,91 @@ export class LiveReviewRailProvider implements ReviewRailProvider {
         ? {}
         : { onRoutingDelivery: this.#options.onRoutingDelivery }),
     });
+    if (result.results.some((item) => item.result === "applied")) {
+      // A fresh R2 pull is the only source of recheck work. It derives the
+      // intent from the committed sitting receipt and therefore survives a
+      // browser or sidecar restart; pre-commit client inference is forbidden.
+      const refreshed = await this.load();
+      const requests = refreshed.verificationRecheckIntents.filter(
+        (intent) => intent.status !== "fulfilled",
+      );
+      if (requests.length > 0) {
+        this.#options.onSittingCommitted?.(requests);
+      }
+    }
+    return result;
+  }
+
+  async setVerifyCriterionEnabled(
+    criterionKey: string,
+    enabled: boolean,
+    expectedActivationId: string | null,
+  ): Promise<void> {
+    const update = this.#options.docClient.setVerifyCriterionEnabled;
+    if (update === undefined) {
+      throw new Error("Verify setup is unavailable from this document provider.");
+    }
+    await update.call(
+      this.#options.docClient,
+      criterionKey,
+      enabled,
+      expectedActivationId,
+    );
+    this.invalidate();
+  }
+
+  async actOnCothink(
+    itemId: string,
+    action: "park" | "dismiss",
+    canonicalSha256: string,
+  ): Promise<void> {
+    const update = this.#options.docClient.actOnCothink;
+    if (update === undefined) {
+      throw new Error("Co-think history actions are unavailable.");
+    }
+    await update.call(
+      this.#options.docClient,
+      itemId,
+      action,
+      canonicalSha256,
+    );
+    this.invalidate();
+  }
+
+  async discussCothink(
+    itemId: string,
+    canonicalSha256: string,
+  ): Promise<{ readonly conversationId: string; readonly messageId: string }> {
+    const discuss = this.#options.docClient.discussCothink;
+    if (discuss === undefined) {
+      throw new Error("Co-think discussion is unavailable.");
+    }
+    const receipt = await discuss.call(
+      this.#options.docClient,
+      itemId,
+      canonicalSha256,
+    );
+    this.invalidate();
+    return receipt;
+  }
+
+  async inspectVerifyRun(runId: string): Promise<VerifyRunInspection> {
+    const inspect = this.#options.docClient.inspectVerifyRun;
+    if (inspect === undefined) {
+      throw new Error("Verify run inspection is unavailable.");
+    }
+    return inspect.call(this.#options.docClient, runId);
+  }
+
+  async createVerifyCriterionDraft(
+    draft: VerifyCriterionDraftInput,
+  ): Promise<void> {
+    const create = this.#options.docClient.createVerifyCriterionDraft;
+    if (create === undefined) {
+      throw new Error("User-authored Verify criteria are unavailable.");
+    }
+    await create.call(this.#options.docClient, draft);
+    this.invalidate();
   }
 
   #idempotencyKey(fingerprint: string): string {

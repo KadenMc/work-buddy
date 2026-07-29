@@ -73,6 +73,12 @@ from work_buddy.truth.store import (
     TruthStore,
 )
 
+_COTHINK_ITEM_TRANSITIONS = {
+    "open": frozenset({"parked", "dismissed"}),
+    "parked": frozenset({"dismissed"}),
+    "dismissed": frozenset(),
+}
+
 
 # This is the one status resolver used by current, historical, projection, and
 # review queries. Base lifecycle state and the needs-review overlay are kept as
@@ -1636,6 +1642,28 @@ _DOCUMENT_SURFACE_TABLES = (
     "doc_events",
 )
 
+_VERIFY_RECORD_TABLES = {
+    "criterion_definition_version": "criterion_definition_versions",
+    "check_definition_version": "check_definition_versions",
+    "criterion_check_binding": "criterion_check_bindings",
+    "criterion_activation": "criterion_activations",
+    "action_snapshot": "action_snapshots",
+    "evaluation_plan_snapshot": "evaluation_plan_snapshots",
+    "evaluation_run": "evaluation_runs",
+    "check_execution": "check_executions",
+    "evaluation_result": "evaluation_results",
+    "routing_disposition": "routing_dispositions",
+    "result_relation": "result_relations",
+    "model_call_authorization_receipt": "model_call_authorization_receipts",
+    "cothink_item": "cothink_items",
+    "cothink_item_status_event": "cothink_item_status_events",
+    "cowork_coordination_job": "cowork_coordination_jobs",
+    "cowork_coordination_status_event": (
+        "cowork_coordination_status_events"
+    ),
+    "cowork_review_application": "cowork_review_applications",
+}
+
 
 def _document_surface_tables_present(conn: sqlite3.Connection) -> bool:
     """Return whether every v2 co-work table exists in this store.
@@ -1650,6 +1678,37 @@ def _document_surface_tables_present(conn: sqlite3.Connection) -> bool:
         _DOCUMENT_SURFACE_TABLES,
     ).fetchall()
     return len({row[0] for row in rows}) == len(_DOCUMENT_SURFACE_TABLES)
+
+
+def _verify_ledger_rows(conn: sqlite3.Connection) -> dict[str, set[str]]:
+    """Return the v5 Verify/Co-think rows expected in the global ledger.
+
+    The table-existence guard keeps integrity inspection compatible with an
+    explicitly opened pre-v5 database. Normal ``TruthStore`` construction
+    migrates first, so current stores always take the populated path.
+    """
+
+    tables = tuple(_VERIFY_RECORD_TABLES.values())
+    placeholders = ", ".join("?" for _ in tables)
+    present = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master "
+            f"WHERE type = 'table' AND name IN ({placeholders})",
+            tables,
+        ).fetchall()
+    }
+    return {
+        record_type: (
+            {
+                row["id"]
+                for row in conn.execute(f"SELECT id FROM {table}").fetchall()
+            }
+            if table in present
+            else set()
+        )
+        for record_type, table in _VERIFY_RECORD_TABLES.items()
+    }
 
 
 def _recompute_proposal_canonical(row: sqlite3.Row) -> str | None:
@@ -1719,6 +1778,15 @@ def _document_integrity_findings(
         "SELECT * FROM proposal_status_events ORDER BY proposal_id, seq"
     ).fetchall()
     doc_events = conn.execute("SELECT * FROM doc_events").fetchall()
+    document_versions = (
+        conn.execute("SELECT * FROM document_versions").fetchall()
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'document_versions'"
+        ).fetchone()
+        is not None
+        else []
+    )
 
     latest_status: dict[str, sqlite3.Row] = {}
     for row in status_rows:
@@ -1958,6 +2026,7 @@ def _document_integrity_findings(
         "proposal": {row["id"] for row in proposals},
         "proposal_status_event": {row["id"] for row in status_rows},
         "doc_event": {row["id"] for row in doc_events},
+        "document_version": {row["id"] for row in document_versions},
     }
 
 
@@ -4622,6 +4691,82 @@ def integrity_findings(
                 gestures=gestures,
             )
 
+        lifecycle_table = read_conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'cothink_item_status_events'"
+        ).fetchone()
+        if lifecycle_table is not None:
+            cothink_ids = {
+                row["id"]
+                for row in read_conn.execute(
+                    "SELECT id FROM cothink_items"
+                ).fetchall()
+            }
+            lifecycle_state: dict[str, str] = {}
+            cothink_status_rows = read_conn.execute(
+                "SELECT * FROM cothink_item_status_events"
+            ).fetchall()
+            ordered_status_rows = sorted(
+                cothink_status_rows,
+                key=lambda row: ledger_sequence.get(
+                    ("cothink_item_status_event", row["id"]),
+                    2**63,
+                ),
+            )
+            for row in ordered_status_rows:
+                item_id = row["cothink_item_id"]
+                if item_id not in cothink_ids:
+                    add(
+                        "dangling_cothink_status",
+                        "cothink_item_status_event",
+                        row["id"],
+                        f"Co-think item {item_id} does not exist",
+                    )
+                    continue
+                item_sequence = ledger_sequence.get(("cothink_item", item_id))
+                event_sequence = ledger_sequence.get(
+                    ("cothink_item_status_event", row["id"])
+                )
+                if (
+                    item_sequence is not None
+                    and event_sequence is not None
+                    and event_sequence <= item_sequence
+                ):
+                    add(
+                        "cothink_status_before_item",
+                        "cothink_item_status_event",
+                        row["id"],
+                        "status event does not follow its Co-think item",
+                    )
+                previous = lifecycle_state.get(item_id)
+                if previous is None:
+                    if row["status"] != "open":
+                        add(
+                            "invalid_cothink_initial_status",
+                            "cothink_item_status_event",
+                            row["id"],
+                            "first lifecycle status must be open",
+                        )
+                elif row["status"] not in _COTHINK_ITEM_TRANSITIONS.get(
+                    previous,
+                    frozenset(),
+                ):
+                    add(
+                        "invalid_cothink_status_transition",
+                        "cothink_item_status_event",
+                        row["id"],
+                        f"invalid lifecycle transition "
+                        f"{previous} -> {row['status']}",
+                    )
+                lifecycle_state[item_id] = row["status"]
+            for item_id in sorted(cothink_ids - set(lifecycle_state)):
+                add(
+                    "missing_cothink_status",
+                    "cothink_item",
+                    item_id,
+                    "Co-think item has no lifecycle status event",
+                )
+
         expected_ledger: dict[str, set[str]] = {
             "evidence": set(evidence_by_id),
             "evidence_span": set(spans_by_id),
@@ -4647,6 +4792,7 @@ def integrity_findings(
         # Fold in the six co-work ledger types so the store-wide completeness
         # check does not flag document rows as unknown record types.
         expected_ledger.update(document_ledger)
+        expected_ledger.update(_verify_ledger_rows(read_conn))
         actual_ledger: dict[str, set[str]] = defaultdict(set)
         for row in ledger_rows:
             actual_ledger[row["record_type"]].add(row["record_key"])

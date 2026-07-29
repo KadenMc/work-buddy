@@ -110,6 +110,95 @@ describe("normalizeConversationPayload", () => {
     expect(snapshot.messages).toEqual([]);
   });
 
+  it("preserves receipt-bound consumed-target and Co-think provenance", () => {
+    const snapshot = normalizeConversationPayload({
+      conversation: { conversation_id: "c-target" },
+      messages: [
+        {
+          message_id: "reply-1",
+          role: "agent",
+          content: "I used the exact target.",
+          context: {
+            kind: "action_snapshot",
+            action_snapshot_id: "action-1",
+            store_id: "store-1",
+            document_id: "doc-1",
+            target_kind: "document",
+            target_label: "Whole document",
+            target_text_sha256: "a".repeat(64),
+            projection_sha256: "b".repeat(64),
+            captured_at: "2026-07-28T00:00:00Z",
+            consumption: {
+              receipt_id: "receipt-1",
+              user_message_id: "user-1",
+              fetched_at: "2026-07-28T00:00:01Z",
+            },
+            discussion: {
+              kind: "cothink_item",
+              item_id: "item-1",
+              canonical_sha256: "c".repeat(64),
+              content: "What if the choice is reversible?",
+              rationale: "Challenge the framing.",
+              non_evidential: true,
+            },
+          },
+        },
+      ],
+    });
+
+    expect(snapshot.messages[0]?.context).toMatchObject({
+      actionSnapshotId: "action-1",
+      consumption: {
+        receiptId: "receipt-1",
+        userMessageId: "user-1",
+      },
+      discussion: {
+        kind: "cothink_item",
+        itemId: "item-1",
+        nonEvidential: true,
+      },
+    });
+  });
+
+  it("preserves a typed unavailable frozen-context receipt", () => {
+    const snapshot = normalizeConversationPayload({
+      conversation: { conversation_id: "c-unavailable" },
+      messages: [
+        {
+          message_id: "reply-unavailable",
+          role: "agent",
+          content: "I could not open the exact frozen context.",
+          context: {
+            kind: "action_snapshot",
+            action_snapshot_id: "action-unavailable",
+            store_id: "store-1",
+            document_id: "doc-1",
+            target_kind: "text_quote",
+            target_label: "Introduction",
+            target_text_sha256: "a".repeat(64),
+            projection_sha256: "b".repeat(64),
+            captured_at: "2026-07-28T00:00:00Z",
+            consumption: {
+              receipt_id: "receipt-unavailable",
+              user_message_id: "user-unavailable",
+              fetched_at: "2026-07-28T00:00:01Z",
+              fetch_outcome: "unavailable",
+              unavailable_code: "action_snapshot_unavailable",
+            },
+          },
+        },
+      ],
+    });
+
+    expect(snapshot.messages[0]?.context?.consumption).toEqual({
+      receiptId: "receipt-unavailable",
+      userMessageId: "user-unavailable",
+      fetchedAt: "2026-07-28T00:00:01Z",
+      fetchOutcome: "unavailable",
+      unavailableCode: "action_snapshot_unavailable",
+    });
+  });
+
   it("falls back to a bare id when only a fixture-shaped id is present", () => {
     const snapshot = normalizeConversationPayload({
       conversation: { conversation_id: "c3" },
