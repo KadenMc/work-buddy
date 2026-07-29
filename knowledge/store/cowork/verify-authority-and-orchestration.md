@@ -2,7 +2,7 @@
 name: Co-work Verify authority and orchestration
 kind: system
 description: Coordinator-first routing, role separation, and the human-only authority boundary for Co-work Verify.
-summary: Check output never reaches Review directly. Normalized results go to a whole-context coordinator; requested revisions remain private, receive deterministic affected-region evaluation, and return to a post-revision coordinator. Only a passing candidate may become an ordinary proposal for human review and application.
+summary: Check output never reaches Review directly. Selected in-process and model-backed checks finish before their normalized results go to a whole-context coordinator; requested revisions remain private and require an admitted affected-region evaluator before ordinary human review.
 entry_points:
 - work_buddy.cowork.verify_orchestration
 - work_buddy.cowork.verify_coordination
@@ -51,7 +51,7 @@ under its exact model-call authorization, plus:
 - every normalized result assigned to the run;
 - relevant prior routing dispositions;
 - relevant prior human proposal/sitting outcomes;
-- the complete frozen effective configuration;
+- the frozen run-only configuration containing enabled criteria and bindings;
 - the frozen configuration and policy hashes;
 - the allowed change and egress boundaries; and
 - a private revision candidate plus its deterministic affected-region proof
@@ -62,14 +62,24 @@ unavailable. Undispositioned results do not bypass the coordinator into Review.
 
 ## Role boundaries
 
-### Check executor
+### Check evaluator
 
 Evaluates the frozen target under one admitted method and emits structured
 results. It cannot route, configure, propose, decide, or apply.
 
-The current executable check is deterministic and runs in the domain process.
-The orchestration contracts reserve a specialist worker role, but model-based
-specialist submission is not enabled.
+The deterministic terminology evaluator runs in the domain process. A personal
+instruction-based check runs in a narrow specialist worker which receives only
+the exact target text and hash, one criterion/binding, and its typed output
+schema. It does not receive document title, full-document prose, selector
+prefix/suffix context, or text outside the captured target. The server validates
+the result kind, severity, coverage, limitations, and exact evidence, then
+derives canonical prefix/suffix context from the frozen target rather than
+trusting model-supplied context.
+
+All selected evaluators must complete before the coordinator starts. A run
+admits at most five selected account-backed specialist checks. A missing,
+invalid, or unavailable evaluator fails the run closed; raw specialist prose
+cannot surface.
 
 ### Coordinator
 
@@ -83,8 +93,10 @@ decision vocabulary supports:
 - after revision, route an accepted candidate to a correction proposal.
 
 A conforming result must be retained. A revision can be requested only for a
-finding. Routing never upgrades the evidential strength of the underlying
-result.
+finding whose check family has a separately admitted candidate evaluator.
+Model-backed personal checks currently support retain, surface, and escalation,
+not automatic private revision. Routing never upgrades the evidential strength
+of the underlying result.
 
 ### Reviser
 
@@ -101,9 +113,10 @@ surrounding text to detect configured terms spanning the replacement boundary.
 
 The server recomputes the proof from the frozen projection, exact evidence,
 candidate, and effective configuration; a portable proof must match that
-authorized context. `route_to_correction` is rejected unless the proof passes.
-Only then may the post-revision coordinator decide that the candidate fits
-globally well enough to be routed to the proposal service.
+authorized context. `route_to_correction` is rejected unless the check family
+admits that evaluator and the proof passes. Only then may the post-revision
+coordinator decide that the candidate fits globally well enough to be routed
+to the proposal service.
 
 ### Human reviewer and sitting
 
@@ -150,7 +163,13 @@ database:
 It does not export the frozen document bytes, raw worker output, private
 revision candidate text, or model rationale. Import validates exact fields,
 hashes, transitions, and referential order before rebuilding the inspectable
-history.
+history. For specialist chains it also proves that every sequence position
+corresponds to an admitted account-backed assignment, parent links are
+contiguous, the final specialist hands off to the initial coordinator, and
+completed consequence IDs equal the full assigned execution/result set.
+Authorization receipts must preserve the exact provider/model, context,
+captured-target boundary, human authorization, fixed per-worker ceiling, and
+zero model-call retry policy.
 
 ## Review projection
 

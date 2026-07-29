@@ -741,6 +741,22 @@ test.describe.serial("Co-work live lifecycle", () => {
     await expect(cothinkTrigger).toHaveAttribute("aria-expanded", "false");
     await expect(verifyPanel).not.toBeVisible();
     await expect(cothinkPanel).not.toBeVisible();
+    await expect(
+      page.locator(".wb-cowork > .wb-cowork-action-dock"),
+    ).toHaveCount(1);
+    await expect(
+      page.locator(".wb-cowork__editor-panel .wb-cowork-action-dock"),
+    ).toHaveCount(0);
+    const workspaceBox = await page.locator(".wb-cowork").boundingBox();
+    const dockBox = await page
+      .locator(".wb-cowork > .wb-cowork-action-dock")
+      .boundingBox();
+    expect(workspaceBox).not.toBeNull();
+    expect(dockBox).not.toBeNull();
+    expect(Math.abs((dockBox?.x ?? 0) - (workspaceBox?.x ?? 0))).toBeLessThan(1);
+    expect(
+      Math.abs((dockBox?.width ?? 0) - (workspaceBox?.width ?? 0)),
+    ).toBeLessThan(1);
     await expect(reviewPanel).not.toContainText("Verify setup");
     await expect(
       reviewPanel.getByRole("button", { name: "Run Verify", exact: true }),
@@ -770,33 +786,60 @@ test.describe.serial("Co-work live lifecycle", () => {
     await expect(verifyTrigger).toHaveAttribute("aria-expanded", "true");
     await expect(verifyPanel).toBeVisible();
     await expect(
-      verifyPanel.locator(".wb-cowork-action-dock__disclosure > li"),
-    ).toHaveCount(4, { timeout: 30_000 });
-    await expect(verifyPanel).toContainText(
-      "Checker · captured target · in process · no external egress",
+      verifyPanel.getByRole("button", { name: "Run Verify", exact: true }),
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(
+      verifyPanel.getByRole("region", {
+        name: "Verification checks",
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(verifyPanel).not.toContainText("Sessions ·");
+    await expect(verifyPanel).not.toContainText(
+      "What should Verify accomplish?",
     );
     await expect(
-      verifyPanel.getByRole("button", { name: "Run Verify", exact: true }),
+      verifyPanel.getByRole("button", { name: "Add check", exact: true }),
     ).toBeVisible();
+    await verifyPanel.getByText("Checks", { exact: true }).click();
     await expect(
-      verifyPanel.getByText("Verify setup", { exact: true }),
+      verifyPanel.getByRole("checkbox").first(),
     ).toBeVisible();
 
-    const goal = verifyPanel.getByLabel("What should Verify accomplish?");
-    await goal.fill("Keep this draft while switching sibling docks.");
+    await verifyPanel
+      .getByRole("button", { name: "Add check", exact: true })
+      .click();
+    await expect(
+      verifyPanel.getByRole("region", {
+        name: "Add verification check",
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(
+      verifyPanel.getByRole("button", { name: "Run Verify", exact: true }),
+    ).toHaveCount(0);
+    const checkName = verifyPanel.getByRole("textbox", {
+      name: "Name",
+      exact: true,
+    });
+    await checkName.fill("Keep this draft while switching sibling docks.");
     await cothinkTrigger.click();
     await expect(verifyTrigger).toHaveAttribute("aria-expanded", "false");
     await expect(cothinkTrigger).toHaveAttribute("aria-expanded", "true");
     await expect(verifyPanel).not.toBeVisible();
     await expect(cothinkPanel).toBeVisible();
-    await expect(cothinkPanel).toContainText(
-      "It does not run from this shell yet.",
-    );
+    await expect(cothinkPanel).toHaveText("Planned");
     await verifyTrigger.click();
     await expect(cothinkPanel).not.toBeVisible();
-    await expect(goal).toHaveValue(
+    await expect(checkName).toHaveValue(
       "Keep this draft while switching sibling docks.",
     );
+    await verifyPanel
+      .getByRole("button", { name: "Close add check", exact: true })
+      .click();
+    await expect(
+      verifyPanel.getByRole("button", { name: "Run Verify", exact: true }),
+    ).toBeVisible();
     await verifyTrigger.click();
     await expect(verifyPanel).not.toBeVisible();
 

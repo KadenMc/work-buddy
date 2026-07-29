@@ -29,11 +29,6 @@ export {
   type VerificationAttentionFeedProps,
   type CothinkAction,
 } from "./VerificationAttentionFeed";
-export {
-  VerifySetupCard,
-  type VerifySetupCardProps,
-} from "./VerifySetupCard";
-
 export { RailStore, isDirty } from "./store";
 export type {
   RailState,

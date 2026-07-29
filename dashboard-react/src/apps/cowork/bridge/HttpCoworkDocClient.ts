@@ -15,6 +15,7 @@ import type {
 } from "./types";
 import { mapVerifyExecutionPlan } from "./reviewMapping";
 import type {
+  VerifyCheckInput,
   VerifyCriterionDraftInput,
   VerifyRunInspection,
 } from "../rail/contracts";
@@ -60,6 +61,9 @@ export interface CoworkDocClient {
   inspectVerifyRun?(runId: string): Promise<VerifyRunInspection>;
   createVerifyCriterionDraft?(
     draft: VerifyCriterionDraftInput,
+  ): Promise<R2VerificationConfiguration>;
+  createVerifyCheck?(
+    check: VerifyCheckInput,
   ): Promise<R2VerificationConfiguration>;
 }
 
@@ -111,7 +115,7 @@ export class HttpCoworkDocClient implements CoworkDocClient {
       },
     );
     if (!response.ok) {
-      let message = "Verify setup could not be changed.";
+      let message = "Verify checks could not be changed.";
       try {
         const payload = (await response.json()) as {
           error?: unknown;
@@ -128,7 +132,7 @@ export class HttpCoworkDocClient implements CoworkDocClient {
       configuration?: R2VerificationConfiguration;
     };
     if (payload.configuration === undefined) {
-      throw new Error("Verify setup returned an invalid configuration.");
+      throw new Error("Verify checks returned an invalid configuration.");
     }
     return payload.configuration;
   }
@@ -325,6 +329,43 @@ export class HttpCoworkDocClient implements CoworkDocClient {
       payload.configuration === null
     ) {
       throw new Error("The criterion draft returned an invalid response.");
+    }
+    return payload.configuration as unknown as R2VerificationConfiguration;
+  }
+
+  async createVerifyCheck(
+    check: VerifyCheckInput,
+  ): Promise<R2VerificationConfiguration> {
+    const response = await this.#fetch(
+      `/api/truth/doc/${encodeURIComponent(this.#documentId)}/verify/checks?store_id=${encodeURIComponent(this.#storeId)}`,
+      {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: check.title,
+          description: check.description,
+          evaluation_instructions: check.evaluationInstructions,
+          limitations: check.limitations,
+        }),
+      },
+    );
+    if (!response.ok) {
+      let message = "The verification check could not be created.";
+      try {
+        const payload = objectValue(await response.json());
+        if (typeof payload.error === "string") message = payload.error;
+      } catch {
+        // Preserve the stable recovery message for malformed responses.
+      }
+      throw new Error(message);
+    }
+    const payload = objectValue(await response.json());
+    if (
+      typeof payload.configuration !== "object" ||
+      payload.configuration === null
+    ) {
+      throw new Error("The verification check returned an invalid response.");
     }
     return payload.configuration as unknown as R2VerificationConfiguration;
   }

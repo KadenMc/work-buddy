@@ -33,17 +33,20 @@ parents:
 - cowork
 ---
 
-This is the only authoritative delivery path for enabled job-scoped reviser,
-coordinator, and Co-think workers. The specialist role is reserved by the
-transport contract, but model-based specialist submission is not enabled; the
-current deterministic exact-term check runs in the domain process. Stdout,
-files, terminal output, and the hosted agent's final response have no effect.
+This is the only authoritative delivery path for enabled job-scoped
+specialists, revisers, coordinators, and historical Co-think workers.
+Deterministic checks run in the domain process; admitted model-backed checks use
+one narrow specialist submission per frozen assignment. Stdout, files,
+terminal output, and the hosted agent's final response have no effect.
 
 An identical retry is idempotent; a different second payload is rejected.
-Specialist output cannot publish to Review. Reviser output remains a private
-candidate. Only a coordinator submission can append routing dispositions and
-ask the server to create an ordinary immutable proposal; a human still decides
-and applies that proposal through the existing sitting.
+Specialist results are schema-validated, reanchored to exact frozen-target
+evidence, and recorded as typed check executions/results. The next specialist
+or initial coordinator starts only after those consequences commit. Specialist
+output cannot publish to Review or request revision. Reviser output remains a
+private candidate. Only a coordinator submission can append routing
+dispositions and ask the server to create an ordinary immutable proposal; a
+human still decides and applies that proposal through the existing sitting.
 
 The server first validates and durably records the normalized typed payload and
 its hash as `submitted`, then atomically leases deterministic consequence

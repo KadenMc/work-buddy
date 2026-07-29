@@ -281,7 +281,7 @@ function CoworkHealthStrip({ health }: { health: CoworkHealthView | null }) {
 function CoworkWorkspaceLayout({
   health,
   editorTopBar = null,
-  editorBottomDock = null,
+  workspaceBottomDock = null,
   editor,
   rail,
   railRef,
@@ -292,7 +292,7 @@ function CoworkWorkspaceLayout({
 }: {
   readonly health: CoworkHealthView | null;
   readonly editorTopBar?: ReactNode;
-  readonly editorBottomDock?: ReactNode;
+  readonly workspaceBottomDock?: ReactNode;
   readonly editor: ReactNode;
   readonly rail: ReactNode;
   readonly railRef?: (element: HTMLElement | null) => void;
@@ -333,7 +333,6 @@ function CoworkWorkspaceLayout({
             <HelpTarget content={COWORK_EDITOR_HELP} placement="top">
               <div className="wb-cowork__editor-region">{editor}</div>
             </HelpTarget>
-            {editorBottomDock}
           </div>
         </Panel>
         <Separator
@@ -360,6 +359,7 @@ function CoworkWorkspaceLayout({
           </aside>
         </Panel>
       </Group>
+      {workspaceBottomDock}
     </div>
   );
 }
@@ -842,7 +842,7 @@ export function CoworkLiveWorkspace({
           controller={bridge.actionSnapshotController}
         />
       }
-      editorBottomDock={
+      workspaceBottomDock={
         <CoworkDocumentActionDock
           storeId={storeId}
           documentId={documentId}

@@ -2,7 +2,7 @@
 name: Co-think
 kind: system
 description: Explicit, non-evidential support for human deliberation within the Co-work document experience.
-summary: Co-think is the planned non-evidential sibling of Co-work Verify. The current editor-bottom dock is a non-operational shell; durable alternative-perspective records and Review actions from the earlier slice remain readable for compatibility while the fuller deliberation workflow is designed.
+summary: Co-think is the planned non-evidential sibling of Co-work Verify. The current full-workspace dock is a non-operational shell; durable alternative-perspective records and Review actions from the earlier slice remain readable for compatibility while the fuller deliberation workflow is designed.
 entry_points:
 - work_buddy.cowork.verify_orchestration
 - work_buddy.cowork.verify.service
@@ -32,10 +32,13 @@ dev_notes: |-
 
 ## Current surface contract
 
-Co-think has a collapsed sibling dock beside Verify beneath the editor. In the
-current slice it is labeled **Planned** and does not expose a worker action,
-settings, or a substitute transcript. This deliberately avoids locking the
-subsystem to the earlier one-shot **Invite perspective** experiment.
+Co-think has a collapsed sibling dock beside Verify beneath the complete
+editor/Review/Chat split. The two headers span the full workspace. In the
+current slice Co-think is labeled **Planned** and does not expose a worker
+action, settings, or a substitute transcript. Hover help is attached to the
+existing header rather than introduced as separate explanatory chrome. This
+deliberately avoids locking the subsystem to the earlier one-shot **Invite
+perspective** experiment.
 
 Future operation belongs in the dock; durable outputs belong in Review; and
 question-led continuation belongs in the existing document Chat. Co-think

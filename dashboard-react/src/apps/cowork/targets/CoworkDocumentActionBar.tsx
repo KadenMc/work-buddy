@@ -139,13 +139,15 @@ export function CoworkDocumentActionBar({
       {controller?.setWorkingTargetStartHere !== undefined &&
       controller.setWorkingTargetEndHere !== undefined ? (
         <details className="wb-cowork-action-bar__range">
-          <summary>
-            Set by cursor
-            {state.workingTargetStart === null ||
-            state.workingTargetStart === undefined
-              ? ""
-              : ` · ${state.workingTargetStart.label}`}
-          </summary>
+          <HelpTarget content={CURSOR_RANGE_HELP} placement="bottom end">
+            <summary>
+              Set by cursor
+              {state.workingTargetStart === null ||
+              state.workingTargetStart === undefined
+                ? ""
+                : ` · ${state.workingTargetStart.label}`}
+            </summary>
+          </HelpTarget>
           <div className="wb-cowork-action-bar__range-actions">
             <Button
               size="small"
@@ -174,18 +176,6 @@ export function CoworkDocumentActionBar({
                 Cancel
               </Button>
             ) : null}
-            <HelpTarget
-              content={CURSOR_RANGE_HELP}
-              placement="bottom end"
-              focusable
-            >
-              <span
-                className="wb-cowork-action-bar__range-help"
-                aria-label="About setting a range by cursor"
-              >
-                ?
-              </span>
-            </HelpTarget>
           </div>
         </details>
       ) : null}

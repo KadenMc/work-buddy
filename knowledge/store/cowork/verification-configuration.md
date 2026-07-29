@@ -2,11 +2,11 @@
 name: Co-work Verify configuration
 kind: system
 description: Criterion-first, append-only configuration with separate authorship, activation authority, executor admission, and data-sharing facts.
-summary: Effective Verify setup is derived from immutable criterion/check versions, bindings, and activation events. Human document overrides use compare-and-swap activation IDs. User-authored criteria are stored as disabled, unavailable drafts until a separately reviewed executor is admitted.
+summary: Effective Verify checks are derived from immutable criterion/check versions, bindings, and activation events. Human document overrides use compare-and-swap activation IDs. Personal checks use a user-authored criterion bound to a statically admitted system evaluator; legacy unadmitted drafts remain unavailable.
 entry_points:
 - work_buddy.cowork.verify_configuration
 - work_buddy.cowork.verify.service
-- dashboard-react/src/apps/cowork/rail/VerifySetupCard.tsx
+- dashboard-react/src/apps/cowork/verify/VerifyCheckControl.tsx
 - dashboard-react/src/apps/cowork/targets/CoworkDocumentActionDock.tsx
 tags:
 - cowork
@@ -28,14 +28,15 @@ dev_notes: |-
   `_configuration_projection` is the effective-state reducer. Preserve the four
   independent facts: definition origin/author, activation authorizer, executor
   availability, and data-sharing classification. Never infer one from another.
-  `create_user_criterion_draft` intentionally writes an unadmitted
-  `model_judge_draft`; do not make it runnable by weakening
-  `_check_availability`.
+  `create_user_verification_check` may bind declarative user semantics only to
+  the exact system-owned instruction evaluator. `create_user_criterion_draft`
+  remains a compatibility path which writes an unadmitted `model_judge_draft`;
+  do not make those records runnable by weakening executor admission.
 ---
 
 ## Record model
 
-Verify setup is criterion-first:
+Verify configuration is criterion-first:
 
 - `CriterionDefinitionVersion` states what the work is expected to satisfy.
 - `CheckDefinitionVersion` states one evaluation mechanism, its schemas,
@@ -68,7 +69,7 @@ human overrides. A required policy activation stays locked. A human can enable
 or disable an optional criterion for one document.
 
 The HTTP toggle carries `expected_activation_id`. The mutation occurs in the
-same transaction that recomputes current state, so a stale setup card fails
+same transaction that recomputes current state, so stale selection state fails
 with a reload instruction instead of overwriting a newer decision.
 
 Enabling fails closed when the selected check is unavailable. Required but
@@ -91,54 +92,53 @@ records. The whole-context coordinator and optional reviser are separate
 account-backed model calls; the fact that the check is local does not make
 those calls local.
 
-## User-authored criterion drafts
+## Personal instruction-based checks
 
-The setup card can save:
+The Verify dock's **Add check** page accepts a name, evaluation instructions,
+and optional exceptions. Saving creates:
 
-- a criterion name and positive statement;
-- proposed evaluation instructions; and
-- known limitations.
+- an immutable user-authored criterion;
+- a binding to the immutable system-owned instruction evaluator; and
+- an enabled, optional document activation authorized by the human.
 
-Saving creates immutable user-authored criterion, proposed-check, binding, and
-disabled activation records. The check is explicitly labeled
-`model_judge_draft` with an `unadmitted:` executor reference. It:
+The evaluator is admitted by exact mechanism, schema, executor reference, and
+criterion kind. User text remains declarative data and cannot introduce code,
+tools, a new executor, or a broader content boundary.
 
-- does not execute a model;
-- does not share document content;
-- does not become enabled; and
-- cannot be toggled on.
+Personal checks are scoped to the exact document whose human activation
+selected their binding. They do not appear in another document's menu or run
+plan merely because their immutable definition exists in the same Truth
+store. Disabled checks remain available in that document's menu, but a run
+freezes and shares only the enabled criteria and bindings selected for that
+run.
 
-There is no user-facing executor-admission capability or UI. Making a draft
-runnable requires a separately reviewed and implemented executor definition,
-admission policy, evaluation evidence, data-sharing disclosure, and an
-authorized activation. “Save unavailable draft” is therefore an honest capture
-of the desired criterion, not a promise that Work Buddy automatically invented
-a trustworthy verifier.
+Evaluation instructions are limited to 8,000 characters. Oversized input is
+rejected before seeding a built-in definition or writing any criterion, check,
+binding, or activation record.
+
+Legacy `model_judge_draft` records with `unadmitted:` executor references remain
+readable, disabled, and unavailable. They are kept in a separate stable-key
+namespace and are never silently upgraded. General executor/plugin admission
+remains outside the user-facing surface.
 
 ## User behavior
 
-The editor-bottom Verify dock contains the collapsible **Verify setup** card.
-Review contains results and decisions, not configuration. Setup shows:
+The full-workspace Verify dock presents configuration as the person's actual
+task:
 
-- active and unavailable counts;
-- built-in versus user-authored origin;
-- optional, required, and locked state;
-- activation authority;
-- check method/version and limitations;
-- the check's narrowly scoped in-process/external data-sharing status; and
-- the separate account-backed coordination boundary, worker-session range,
-  provider-specific cost-control class, and fail-closed fallback policy.
+- a **Checks** menu with selected state;
+- built-in versus personal origin where useful;
+- an **Add check** replacement page; and
+- **Run Verify**.
 
-The Verify dock also shows the explicit provider/model that a new run will use.
-Choosing it is local to Verify and does not restart or silently change document
-Chat. The visible disclosure distinguishes:
+Review contains results and decisions, not configuration. Internal criterion
+versions, executor admission, provider/model authorization, call topology,
+cost, egress, and failure telemetry remain inspectable domain facts rather than
+primary run-flow prose.
 
-- the deterministic checker, which runs in-process against the captured target
-  with no checker egress; from
-- coordinator/reviser worker sessions, which use the selected account-backed
-  provider/model and receive the entire frozen document.
-
-For Claude Code, the configured maximum budget is an enforced per-worker
-session ceiling. For Codex, no equivalent enforced ceiling is attested, so the
-UI says that an enforced cap is unavailable. Provider/model fallback is off and
-failure is fail-closed.
+The deterministic terminology check runs in-process against the captured
+target. Personal instruction-based checks use narrow account-backed specialist
+evaluations of that same target. A run admits at most five such selected
+model-backed checks. Whole-context coordination is separate and receives the
+permitted complete frozen document plus the active run-only configuration.
+Provider/model fallback stays off and failure remains fail-closed.

@@ -191,6 +191,46 @@ def result_projection(
         )
         evidence = item["evidence_selector"]
         decision = str(item["disposition"]["decision"])
+        try:
+            result_payload = json.loads(result.payload_json)
+        except (TypeError, json.JSONDecodeError):
+            result_payload = {}
+        coverage = (
+            result_payload.get("coverage")
+            if isinstance(result_payload, dict)
+            else None
+        )
+        coverage_label = {
+            "complete_target_review": "Model review of the complete frozen target",
+            "partial_target_review": "Partial model review of the frozen target",
+            "not_assessed": "Model review coverage was not assessed",
+        }.get(
+            coverage,
+            (
+                "Complete exact-string coverage of the frozen document"
+                if action.target_kind == "document"
+                else "Complete exact-string coverage of the frozen target"
+            ),
+        )
+        check_limitations = (
+            []
+            if check is None
+            else json.loads(check.limitations_json)
+        )
+        result_limitations = (
+            result_payload.get("limitations", [])
+            if isinstance(result_payload, dict)
+            else []
+        )
+        limitations = list(
+            dict.fromkeys(
+                [
+                    str(value)
+                    for value in [*check_limitations, *result_limitations]
+                    if isinstance(value, str) and value.strip()
+                ]
+            )
+        )
         projected.append(
             {
                 "result_id": result.id,
@@ -219,21 +259,15 @@ def result_projection(
                     else (
                         "Deterministic exact match"
                         if check.mechanism == "deterministic"
+                        else "Instruction-based model evaluation"
+                        if check.mechanism == "model_judge"
                         else check.mechanism.replace("_", " ").title()
                     )
                 ),
                 "explanation": result.message,
                 "quote_anchor": _quote_anchor(evidence),
-                "coverage_label": (
-                    "Complete exact-string coverage of the frozen document"
-                    if action.target_kind == "document"
-                    else "Complete exact-string coverage of the frozen target"
-                ),
-                "limitations": (
-                    []
-                    if check is None
-                    else json.loads(check.limitations_json)
-                ),
+                "coverage_label": coverage_label,
+                "limitations": limitations,
                 "current_version": (
                     current_head == action.structured_head_sha256
                 ),

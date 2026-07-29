@@ -1,32 +1,26 @@
 import {
   useEffect,
   useMemo,
-  useRef,
   useState,
   useSyncExternalStore,
 } from "react";
 
 import { HelpTarget, type HelpContent } from "../../../dashboard/help";
-import { Button, SelectField, TextAreaField } from "../../../ui";
+import { Button } from "../../../ui";
+import type { ChatExecutionControl } from "../../../widget-library/chat";
 import {
-  ChatExecutionPicker,
-  type ChatExecutionControl,
-} from "../../../widget-library/chat";
-import {
-  VerifySetupCard,
   useReviewData,
   type CoworkVerifyCapability,
-  type EvaluationRunSummary,
   type ReviewRailProvider,
 } from "../rail";
-import type {
-  VerificationRecheckIntent,
-  VerifyRunInspection,
-} from "../rail/contracts";
+import {
+  VerifyCheckControl,
+  type VerifyCheckPage,
+} from "../verify";
+import type { VerificationRecheckIntent } from "../rail/contracts";
 import type {
   CoworkActionSnapshotController,
   CoworkActionSnapshotControllerState,
-  CoworkActionTargetChoice,
   CoworkAffirmVerifyRecheckTargetHandler,
   CoworkCapturedActionSnapshot,
   CoworkRunVerifyHandler,
@@ -46,11 +40,23 @@ interface AffirmedWorkingTarget {
 
 const DOCK_STORAGE_PREFIX = "wb.cowork.action-dock.v1";
 const DEFAULT_VERIFY_GOAL =
-  "Check this target against the active verification criteria.";
+  "Evaluate the current Working on target with the selected verification checks.";
 const DEFAULT_PROTECTED_INTENT =
   "Preserve the author's intended meaning, voice, and constraints.";
 const VERIFY_EXECUTION_PLAN_SCHEMA =
   "work-buddy.cowork-verify-execution-disclosure/v1";
+
+const VERIFY_DOCK_HELP: HelpContent = {
+  summary: "Choose checks and run them against Working on.",
+  details:
+    "Verify captures the current Working on passage, executes the selected checks, and sends only coordinated findings or proposals to Review.",
+};
+
+const COTHINK_DOCK_HELP: HelpContent = {
+  summary: "Challenge or explore the work from another angle.",
+  details:
+    "Co-think supports provocations and Socratic questions; Verify evaluates selected checks and may propose corrections.",
+};
 
 const FALLBACK_STATE: CoworkActionSnapshotControllerState = {
   phase: "loading",
@@ -64,44 +70,8 @@ const FALLBACK_STATE: CoworkActionSnapshotControllerState = {
   },
 };
 
-const RUN_LABEL: Readonly<Record<EvaluationRunSummary["status"], string>> = {
-  prepared: "Preparing",
-  queued: "Queued",
-  running: "Checking",
-  completed: "Complete",
-  completed_with_failures: "Completed with limits",
-  failed: "Couldn’t complete",
-  cancelled: "Cancelled",
-};
-
 const subscribeFallback = (): (() => void) => () => undefined;
 const getFallback = (): CoworkActionSnapshotControllerState => FALLBACK_STATE;
-
-const planValue = (value: unknown): string => {
-  if (typeof value === "string" && value.trim().length > 0) {
-    return value.replace(/_/gu, " ");
-  }
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value.toLocaleString();
-  }
-  return "unattested";
-};
-
-const planToggle = (
-  value: unknown,
-  whenTrue: string,
-  whenFalse: string,
-): string =>
-  value === true ? whenTrue : value === false ? whenFalse : "unattested";
-
-const rawPlanValue = (value: unknown): string => {
-  if (typeof value === "string" && value.trim().length > 0) return value;
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value.toString();
-  }
-  if (typeof value === "boolean") return value.toString();
-  return "unattested";
-};
 
 const actionErrorMessage = (error: unknown): string =>
   error instanceof Error
@@ -131,146 +101,6 @@ const saveDockPanel = (
   else storage?.setItem(key, panel);
 };
 
-const latestFirst = <T extends { readonly createdAt: string }>(
-  values: readonly T[],
-): readonly T[] =>
-  [...values].sort((left, right) =>
-    right.createdAt.localeCompare(left.createdAt),
-  );
-
-function VerifyRunInspectionView({
-  inspection,
-}: {
-  readonly inspection: VerifyRunInspection;
-}) {
-  return (
-    <div className="wb-cowork-verify-history__inspection">
-      <p>
-        Frozen plan <code>{inspection.plan.planSnapshotId.slice(0, 12)}</code> ·
-        document version{" "}
-        <code>{inspection.action.structuredHeadSha256.slice(0, 12)}</code>
-      </p>
-      <ul>
-        {inspection.checks.map((check) => (
-          <li key={check.checkExecutionId}>
-            {check.definition.title} v{check.definition.version.toString()} ·{" "}
-            {check.mechanism} · {check.status}
-          </li>
-        ))}
-      </ul>
-      {inspection.coordination.length > 0 ? (
-        <ul>
-          {inspection.coordination.map((job) => (
-            <li key={job.jobId}>
-              {job.role.replace(/_/gu, " ")} · {job.provider} · {job.model} ·{" "}
-              {job.status} · requested launch budget $
-              {job.costCeilingUsd.toFixed(2)}
-              {job.error === null ? "" : ` · ${job.error}`}
-            </li>
-          ))}
-        </ul>
-      ) : null}
-      {inspection.results.map((result) => (
-        <div key={result.evaluationResultId}>
-          <strong>{result.kind.replace(/_/gu, " ")}</strong>
-          <p>{result.message}</p>
-          {result.dispositions.map((disposition, index) => (
-            <p key={`${disposition.decision}:${index.toString()}`}>
-              {disposition.decision.replace(/_/gu, " ")} ·{" "}
-              {disposition.rationale}
-            </p>
-          ))}
-          {result.lineage.length > 0 ? (
-            <p>
-              Lineage:{" "}
-              {result.lineage
-                .map(
-                  (relation) =>
-                    `${relation.relation} ${relation.targetKind} ${relation.targetRef.slice(0, 12)}`,
-                )
-                .join(" · ")}
-            </p>
-          ) : null}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-export function VerifyRunHistory({
-  runs,
-  onInspectRun,
-}: {
-  readonly runs: readonly EvaluationRunSummary[];
-  readonly onInspectRun?: (runId: string) => Promise<VerifyRunInspection>;
-}) {
-  const [inspection, setInspection] = useState<VerifyRunInspection | null>(
-    null,
-  );
-  const [loadingRunId, setLoadingRunId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  if (runs.length === 0) return null;
-  const latest = latestFirst(runs)[0];
-  const active =
-    latest.status === "prepared" ||
-    latest.status === "queued" ||
-    latest.status === "running";
-  return (
-    <details
-      className="wb-cowork-verify-history"
-      open={active || inspection !== null}
-    >
-      <summary>
-        <span>Verify runs</span>
-        <span className="wb-cowork-verify-history__summary">
-          {RUN_LABEL[latest.status]} · {latest.targetLabel}
-        </span>
-      </summary>
-      <ol className="wb-cowork-verify-history__list">
-        {latestFirst(runs).map((run) => (
-          <li key={run.runId}>
-            <span className="wb-cowork-verify-history__status">
-              {RUN_LABEL[run.status]}
-            </span>
-            <span>{run.targetLabel}</span>
-            <span>{run.coverageLabel}</span>
-            {!run.currentVersion ? <span>Earlier version</span> : null}
-            {run.coordinationStatus === "unavailable" ? (
-              <span role="status">Coordination unavailable</span>
-            ) : null}
-            {onInspectRun !== undefined ? (
-              <button
-                type="button"
-                disabled={loadingRunId !== null}
-                onClick={() => {
-                  setLoadingRunId(run.runId);
-                  setError(null);
-                  void onInspectRun(run.runId)
-                    .then(
-                      (value) => setInspection(value),
-                      (cause: unknown) =>
-                        setError(
-                          cause instanceof Error
-                            ? cause.message
-                            : "Verify run details could not be loaded.",
-                        ),
-                    )
-                    .finally(() => setLoadingRunId(null));
-                }}
-              >
-                {loadingRunId === run.runId ? "Loading…" : "Inspect"}
-              </button>
-            ) : null}
-          </li>
-        ))}
-      </ol>
-      {inspection !== null ? (
-        <VerifyRunInspectionView inspection={inspection} />
-      ) : null}
-      {error !== null ? <p role="alert">{error}</p> : null}
-    </details>
-  );
-}
 
 export interface CoworkDocumentActionDockProps {
   readonly storeId: string;
@@ -322,73 +152,37 @@ export function CoworkDocumentActionDock({
   const [expanded, setExpanded] = useState<DockPanel | null>(() =>
     loadDockPanel(storage, storeId, documentId),
   );
-  const [choice, setChoice] =
-    useState<CoworkActionTargetChoice>("working_target");
+  const [verifyPage, setVerifyPage] =
+    useState<VerifyCheckPage>("select");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [verifyGoal, setVerifyGoal] = useState(DEFAULT_VERIFY_GOAL);
-  const [protectedIntent, setProtectedIntent] = useState(
-    DEFAULT_PROTECTED_INTENT,
-  );
   const [setupBusy, setSetupBusy] = useState(false);
   const [affirmedWorkingTarget, setAffirmedWorkingTarget] =
     useState<AffirmedWorkingTarget | null>(null);
-  const normalRunStateRef = useRef({
-    choice: "working_target" as CoworkActionTargetChoice,
-    verifyGoal: DEFAULT_VERIFY_GOAL,
-    protectedIntent: DEFAULT_PROTECTED_INTENT,
-  });
 
   useEffect(() => {
     setExpanded(loadDockPanel(storage, storeId, documentId));
-    setChoice("working_target");
+    setVerifyPage("select");
     setMessage(null);
     setError(null);
-    setVerifyGoal(DEFAULT_VERIFY_GOAL);
-    setProtectedIntent(DEFAULT_PROTECTED_INTENT);
     setSetupBusy(false);
     setAffirmedWorkingTarget(null);
-    normalRunStateRef.current = {
-      choice: "working_target",
-      verifyGoal: DEFAULT_VERIFY_GOAL,
-      protectedIntent: DEFAULT_PROTECTED_INTENT,
-    };
   }, [documentId, storage, storeId]);
-
-  useEffect(() => {
-    if (armedRecheck !== null) return;
-    normalRunStateRef.current = {
-      choice,
-      verifyGoal,
-      protectedIntent,
-    };
-  }, [armedRecheck, choice, protectedIntent, verifyGoal]);
 
   useEffect(() => {
     if (armedRecheck === null) return;
     setExpanded("verify");
     saveDockPanel(storage, storeId, documentId, "verify");
-    setChoice(
-      armedRecheck.status === "user_action_required"
-        ? "working_target"
-        : armedRecheck.originalActionTarget.source ?? "working_target",
-    );
-    setVerifyGoal(armedRecheck.userGoal);
-    setProtectedIntent(armedRecheck.protectedIntent);
+    setVerifyPage("select");
     setAffirmedWorkingTarget(null);
     setError(null);
     setMessage(
       armedRecheck.status === "user_action_required"
-        ? "Bound recheck ready. Set and affirm Working on, then run Verify."
-        : "Bound recheck ready with its exact original target. Review it, then run Verify.",
+        ? "Recheck ready. Set Working on to the earlier passage, then confirm it."
+        : "Recheck ready with its original passage.",
     );
-  }, [
-    armedRecheck,
-    documentId,
-    storage,
-    storeId,
-  ]);
+  }, [armedRecheck, documentId, storage, storeId]);
 
   const setPanel = (panel: DockPanel): void => {
     setExpanded((current) => {
@@ -435,30 +229,29 @@ export function CoworkDocumentActionDock({
     selectedProvider?.available === true &&
     selectedModel?.available === true;
   const setupSummary = useMemo(() => {
-    if (configuration === undefined) return verifySetup ?? null;
+    if (configuration === undefined) {
+      return verifySetup === null || verifySetup === undefined
+        ? null
+        : {
+            selectedCount: verifySetup.activeCount,
+            unavailableSelectedCount: 0,
+          };
+    }
     return {
-      activeCount: configuration.criteria.filter(
-        (criterion) => criterion.operationalState === "active",
+      selectedCount: configuration.criteria.filter(
+        (criterion) => criterion.enabled,
       ).length,
-      unavailableCount: configuration.criteria.filter(
+      unavailableSelectedCount: configuration.criteria.filter(
         (criterion) =>
-          criterion.operationalState === "unavailable" ||
-          criterion.operationalState === "blocked_required_check",
+          criterion.enabled && criterion.operationalState !== "active",
       ).length,
     };
   }, [configuration, verifySetup]);
-  const latestRun =
-    data?.evaluationRuns === undefined || data.evaluationRuns.length === 0
-      ? undefined
-      : latestFirst(data.evaluationRuns)[0];
   const contractSupported =
     capability?.enabled === true && capability.contractVersion === 1;
-  const chosenTargetUnavailable =
+  const workingTargetUnavailable =
     armedRecheck === null &&
-    ((choice === "working_target" &&
-      targetState.workingTarget.kind === "unresolved") ||
-      (choice === "current_selection" && targetState.selection === null) ||
-      (choice === "current_section" && targetState.currentSection === null));
+    targetState.workingTarget.kind === "unresolved";
   const workingTargetKey =
     targetState.workingTarget.kind === "text_range" &&
     targetState.workingTarget.range !== null
@@ -487,26 +280,16 @@ export function CoworkDocumentActionDock({
     onRunVerify === undefined ||
     !contractSupported ||
     capability?.canRun !== true ||
-    setupSummary?.activeCount === 0 ||
+    setupSummary?.selectedCount === 0 ||
+    (setupSummary?.unavailableSelectedCount ?? 0) > 0 ||
     !authoritativePlanReady ||
     !selectedExecutionAvailable ||
-    verifyGoal.trim().length === 0 ||
-    protectedIntent.trim().length === 0 ||
     setupBusy ||
     busy ||
-    chosenTargetUnavailable ||
+    workingTargetUnavailable ||
     boundRecheckTargetUnavailable;
 
-  const workingLabel =
-    targetState.workingTarget.kind === "unresolved"
-      ? `${targetState.workingTarget.label} · needs attention`
-      : `${targetState.workingTarget.label} · ${targetState.workingTarget.wordCount.toLocaleString()} words`;
-
   const clearBoundRecheck = (): void => {
-    const normal = normalRunStateRef.current;
-    setChoice(normal.choice);
-    setVerifyGoal(normal.verifyGoal);
-    setProtectedIntent(normal.protectedIntent);
     setAffirmedWorkingTarget(null);
     onClearArmedRecheck?.();
   };
@@ -515,7 +298,7 @@ export function CoworkDocumentActionDock({
     if (controller === null) {
       throw new Error("Co-work Verify is waiting for the editor.");
     }
-    if (armedRecheck === null) return controller.capture(choice);
+    if (armedRecheck === null) return controller.capture("working_target");
     if (armedRecheck.status === "user_action_required") {
       return controller.capture("working_target");
     }
@@ -660,11 +443,9 @@ export function CoworkDocumentActionDock({
           : undefined;
         return onRunVerify(captured, {
           userGoal:
-            armedRecheck === null ? verifyGoal.trim() : verifyGoal,
+            armedRecheck?.userGoal ?? DEFAULT_VERIFY_GOAL,
           protectedIntent:
-            armedRecheck === null
-              ? protectedIntent.trim()
-              : protectedIntent,
+            armedRecheck?.protectedIntent ?? DEFAULT_PROTECTED_INTENT,
           execution: selectedExecution,
           ...(armedRecheck === null
             ? {}
@@ -684,8 +465,8 @@ export function CoworkDocumentActionDock({
         () => {
           setMessage(
             armedRecheck === null
-              ? "Co-work Verify started on the captured version."
-              : "The bound recheck started on the captured passage.",
+              ? "Verify started."
+              : "Recheck started.",
           );
           if (armedRecheck !== null) clearBoundRecheck();
         },
@@ -697,93 +478,91 @@ export function CoworkDocumentActionDock({
       .finally(() => setBusy(false));
   };
 
-  const selectedExecutionLabel =
-    selectedExecution === null
-      ? "execution selection unattested"
-      : `${selectedExecution.providerLabel} · ${selectedExecution.modelLabel}`;
-  const selectedCostControl =
-    plan === null || selectedExecution === null
-      ? null
-      : plan.coordination.providerCostControls.find(
-          (control) => control.providerId === selectedExecution.providerId,
-        ) ??
-        (plan.coordination.costControl?.providerId ===
-        selectedExecution.providerId
-          ? plan.coordination.costControl
-          : null);
-  const costCeiling =
-    typeof selectedCostControl?.ceilingUsdPerWorkerSession === "number" &&
-    Number.isFinite(selectedCostControl.ceilingUsdPerWorkerSession)
-      ? `$${selectedCostControl.ceilingUsdPerWorkerSession.toFixed(2)} per worker session`
-      : "ceiling unattested";
-  const costControlLabel =
-    selectedCostControl === null
-      ? "Cost control · unattested"
-      : `Cost control · ${planValue(selectedCostControl.enforcementClass)} · ${costCeiling}`;
-  const conditionalRoles =
-    plan === null || plan.coordination.workerSessions.conditionalRoles.length === 0
-      ? "none attested"
-      : plan.coordination.workerSessions.conditionalRoles
-          .map(planValue)
-          .join(", ");
-  const disclosureHelp: HelpContent = {
-    summary:
-      "Verify shows the execution boundary attested for this document and run selection.",
-    details:
-      !authoritativePlanReady || plan === null
-        ? "No matching authoritative execution disclosure is currently available, so Run Verify stays disabled."
-        : `Plan schema=${rawPlanValue(plan.schema)}; authoritative=${rawPlanValue(plan.authoritative)}. Checker mechanism=${rawPlanValue(plan.checker.mechanism)}, model_call=${rawPlanValue(plan.checker.modelCall)}, external_egress=${rawPlanValue(plan.checker.externalEgress)}. Coordinator execution_class=${rawPlanValue(plan.coordination.executionClass)}, selection_mode=${rawPlanValue(plan.coordination.selection.mode)}, external_egress=${rawPlanValue(plan.coordination.externalEgress)}. Conditional roles=${plan.coordination.workerSessions.conditionalRoles.map(rawPlanValue).join(", ") || "unattested"}. Cost basis=${rawPlanValue(selectedCostControl?.basis)}.`,
-  };
-  const goalHelp: HelpContent = {
-    summary: "State the outcome this Verify run should evaluate or improve.",
-    details:
-      "The coordinator receives this exact goal with the frozen document and active criteria.",
-  };
-  const protectedIntentHelp: HelpContent = {
-    summary: "Name meaning, voice, constraints, or decisions that must survive.",
-    details:
-      "Verify carries this exact protected intent into coordination and any requested revision.",
-  };
-  const cothinkHelp: HelpContent = {
-    summary: "Co-think is for non-evidential alternative perspectives.",
-    details:
-      "It remains distinct from Verify findings and cannot become a correction or verified claim merely by being surfaced.",
-  };
+  const runUnavailableReason = readOnly
+    ? "Read-only sessions cannot start Verify"
+    : !matchingReviewData
+      ? "Loading checks"
+      : !authoritativePlanReady
+        ? "Verify is not ready for this document"
+        : !selectedExecutionAvailable
+          ? "Verify’s execution model is unavailable"
+          : setupBusy
+            ? "Wait for the selected checks to finish updating"
+            : boundRecheckTargetUnavailable
+              ? legacyRecheck
+                ? "Confirm the Working on passage before running this recheck"
+                : "The original recheck passage is unavailable"
+              : workingTargetUnavailable
+                ? "Set Working on before running Verify"
+                : (setupSummary?.unavailableSelectedCount ?? 0) > 0
+                  ? "Turn off checks that need setup"
+                  : setupSummary?.selectedCount === 0
+                  ? "Select at least one check"
+                  : !contractSupported || capability?.canRun !== true
+                    ? capability?.disabledReason ?? "Verify is unavailable"
+                    : onRunVerify === undefined
+                      ? "Verify is unavailable"
+                      : undefined;
+  const readinessMessage =
+    !readOnly &&
+    matchingReviewData &&
+    (setupSummary?.unavailableSelectedCount ?? 0) > 0
+      ? "Turn off checks that need setup."
+      : !readOnly &&
+          matchingReviewData &&
+          execution !== undefined &&
+          execution?.status !== "loading" &&
+          !selectedExecutionAvailable
+        ? "Verify needs an available account model."
+        : null;
 
   return (
     <section className="wb-cowork-action-dock" aria-label="Co-work tools">
       <div className="wb-cowork-action-dock__headers">
-        <button
-          type="button"
-          id="wb-cowork-dock-trigger-verify"
-          className="wb-cowork-action-dock__trigger"
-          aria-label="Verify"
-          aria-expanded={expanded === "verify"}
-          aria-controls="wb-cowork-dock-panel-verify"
-          onClick={() => setPanel("verify")}
-        >
-          <span>Verify</span>
-          <span className="wb-cowork-action-dock__trigger-summary">
-            {setupSummary === null
-              ? "Setup loading"
-              : `${setupSummary.activeCount.toLocaleString()} active`}
-            {latestRun === undefined ? "" : ` · ${RUN_LABEL[latestRun.status]}`}
-          </span>
-        </button>
-        <button
-          type="button"
-          id="wb-cowork-dock-trigger-cothink"
-          className="wb-cowork-action-dock__trigger"
-          aria-label="Co-think"
-          aria-expanded={expanded === "cothink"}
-          aria-controls="wb-cowork-dock-panel-cothink"
-          onClick={() => setPanel("cothink")}
-        >
-          <span>Co-think</span>
-          <span className="wb-cowork-action-dock__trigger-summary">
-            Planned
-          </span>
-        </button>
+        <HelpTarget content={VERIFY_DOCK_HELP} placement="top start">
+          <button
+            type="button"
+            id="wb-cowork-dock-trigger-verify"
+            className="wb-cowork-action-dock__trigger"
+            aria-label="Verify"
+            aria-describedby="wb-cowork-dock-summary-verify"
+            aria-expanded={expanded === "verify"}
+            aria-controls="wb-cowork-dock-panel-verify"
+            onClick={() => setPanel("verify")}
+          >
+            <span>Verify</span>
+            <span
+              id="wb-cowork-dock-summary-verify"
+              className="wb-cowork-action-dock__trigger-summary"
+            >
+              {setupSummary === null
+                ? "Loading…"
+                : verifyPage === "add"
+                  ? "Adding check"
+                  : `${setupSummary.selectedCount.toLocaleString()} selected`}
+            </span>
+          </button>
+        </HelpTarget>
+        <HelpTarget content={COTHINK_DOCK_HELP} placement="top">
+          <button
+            type="button"
+            id="wb-cowork-dock-trigger-cothink"
+            className="wb-cowork-action-dock__trigger"
+            aria-label="Co-think"
+            aria-describedby="wb-cowork-dock-summary-cothink"
+            aria-expanded={expanded === "cothink"}
+            aria-controls="wb-cowork-dock-panel-cothink"
+            onClick={() => setPanel("cothink")}
+          >
+            <span>Co-think</span>
+            <span
+              id="wb-cowork-dock-summary-cothink"
+              className="wb-cowork-action-dock__trigger-summary"
+            >
+              Planned
+            </span>
+          </button>
+        </HelpTarget>
       </div>
 
       <div
@@ -794,285 +573,116 @@ export function CoworkDocumentActionDock({
         hidden={expanded !== "verify"}
         inert={expanded !== "verify" ? true : undefined}
       >
-          <div className="wb-cowork-action-dock__run">
-            <div className="wb-cowork-action-dock__run-copy">
-              <strong>Co-work Verify</strong>
-              <ul className="wb-cowork-action-dock__disclosure">
-                {authoritativePlanReady && plan !== null ? (
-                  <>
-                    <li>
-                      Checker · {planValue(plan.checker.contentBoundary)} ·{" "}
-                      {planValue(plan.checker.executionClass)} ·{" "}
-                      {planToggle(
-                        plan.checker.externalEgress,
-                        "external egress",
-                        "no external egress",
-                      )}
-                    </li>
-                    <li>
-                      Coordinator · {selectedExecutionLabel} ·{" "}
-                      {planValue(plan.coordination.executionClass)} ·{" "}
-                      {planValue(plan.coordination.contentBoundary)}
-                    </li>
-                    <li>
-                      Sessions ·{" "}
-                      {planValue(plan.coordination.workerSessions.initial)}{" "}
-                      initial ·{" "}
-                      {planValue(plan.coordination.workerSessions.maximum)}{" "}
-                      maximum · {conditionalRoles} when needed
-                    </li>
-                    <li>
-                      {costControlLabel} ·{" "}
-                      {planToggle(
-                        plan.coordination.fallback.providerModelFallback,
-                        "provider/model fallback allowed",
-                        "no provider/model fallback",
-                      )}{" "}
-                      ·{" "}
-                      {planValue(plan.coordination.fallback.failureMode)}
-                    </li>
-                  </>
-                ) : (
-                  <li>
-                    Execution disclosure · unknown/unattested for this
-                    document
-                  </li>
-                )}
-              </ul>
-              <HelpTarget content={disclosureHelp} placement="top start" focusable>
-                <span className="wb-cowork-action-dock__help">
-                  How checks, coordination, and cost work
-                </span>
-              </HelpTarget>
-            </div>
-            <div className="wb-cowork-action-dock__run-actions">
-              {armedRecheck !== null ? (
-                <p
-                  className="wb-cowork-action-dock__execution"
-                  aria-label="Bound recheck execution"
-                >
-                  Original run model · {selectedExecutionLabel}
-                </p>
-              ) : execution === undefined ? null : (
-                <ChatExecutionPicker
-                  control={execution}
-                  disabled={busy || setupBusy}
-                  readOnly={readOnly}
-                  className="wb-cowork-action-dock__execution"
-                />
-              )}
-              <Button
-                variant="primary"
-                size="small"
-                disabled={runDisabled}
-                title={
-                  readOnly
-                    ? "Read-only sessions cannot start Co-work Verify"
-                    : !matchingReviewData
-                      ? "Waiting for this document’s authoritative Verify setup"
-                      : !authoritativePlanReady
-                        ? "This document has no supported authoritative execution disclosure"
-                        : !selectedExecutionAvailable
-                          ? "The exact provider and model are unavailable"
-                          : setupBusy
-                            ? "Wait for the Verify setup change to finish"
-                            : boundRecheckTargetUnavailable
-                              ? legacyRecheck
-                                ? "Affirm the exact Working on passage before starting this bound recheck"
-                                : "The exact original target is unavailable, so this bound recheck cannot start"
-                    : setupSummary?.activeCount === 0
-                      ? "Turn on at least one available criterion in Verify setup"
-                      : !contractSupported || capability?.canRun !== true
-                        ? capability?.disabledReason ??
-                          "This Co-work Verify contract is unavailable"
-                        : onRunVerify === undefined
-                          ? "Co-work Verify is unavailable for this document"
-                          : undefined
-                }
-                onClick={runVerify}
-              >
-                {busy ? "Capturing…" : "Run Verify"}
-              </Button>
-            </div>
-          </div>
-
-          {armedRecheck !== null ? (
-            <div className="wb-cowork-action-dock__notice" role="status">
-              <p>
-                <strong>Bound recheck.</strong>{" "}
-                {legacyRecheck
-                  ? "Set Working on to the exact earlier passage, then affirm it below."
-                  : "The exact durable target from the earlier run is bound below."}{" "}
-                This run keeps the original model, goal, and correction
-                lineage.
-              </p>
-              <p>
-                Earlier target:{" "}
-                {armedRecheck.originalActionTarget.label ??
-                  "legacy passage without a durable label"}
-                {legacyRecheck ? `. Current Working on: ${workingLabel}.` : "."}
-              </p>
-              {legacyRecheck ? (
-                <Button
-                  size="small"
-                  variant="secondary"
-                  disabled={
-                    busy ||
-                    workingTargetKey === null ||
-                    onAffirmRecheckTarget === undefined
-                  }
-                  onClick={affirmWorkingTarget}
-                >
-                  {workingTargetKey !== null &&
-                  affirmedWorkingTarget?.workingTargetKey === workingTargetKey
-                    ? "Working on affirmed"
-                    : "Use this Working on passage"}
-                </Button>
-              ) : null}
+        {armedRecheck !== null ? (
+          <div className="wb-cowork-action-dock__notice" role="status">
+            <p>
+              <strong>Recheck.</strong>{" "}
+              {legacyRecheck
+                ? "Set Working on to the earlier passage, then use that passage."
+                : `Original passage: ${
+                    armedRecheck.originalActionTarget.label ??
+                    "the earlier Verify target"
+                  }.`}
+            </p>
+            {legacyRecheck ? (
               <Button
                 size="small"
                 variant="secondary"
-                disabled={busy}
-                onClick={() => {
-                  setMessage(null);
-                  setError(null);
-                  clearBoundRecheck();
-                }}
-              >
-                Cancel recheck
-              </Button>
-            </div>
-          ) : null}
-
-          <div className="wb-cowork-action-dock__intent">
-            {durableRecheck ? (
-              <div
-                className="wb-cowork-action-dock__bound-target"
-                role="group"
-                aria-label="Verify target"
-              >
-                <span>Verify target</span>
-                <strong>
-                  Original target ·{" "}
-                  {armedRecheck.originalActionTarget.label ??
-                    (armedRecheck.originalActionTarget.kind === "document"
-                      ? "Whole document"
-                      : "Exact earlier passage")}
-                </strong>
-              </div>
-            ) : (
-              <SelectField<CoworkActionTargetChoice>
-                label="Verify target"
-                value={choice}
-                compact
-                options={[
-                  {
-                    value: "working_target",
-                    label: "Working on",
-                    description: workingLabel,
-                    disabled: targetState.workingTarget.kind === "unresolved",
-                  },
-                  {
-                    value: "current_selection",
-                    label: "Current selection · one run",
-                    description:
-                      targetState.selection === null
-                        ? "Select document text first"
-                        : `${targetState.selection.label} · ${targetState.selection.wordCount.toLocaleString()} words`,
-                    disabled: targetState.selection === null,
-                  },
-                  {
-                    value: "current_section",
-                    label: "Current section · one run",
-                    description:
-                      targetState.currentSection === null
-                        ? "No section is available"
-                        : `${targetState.currentSection.label} · ${targetState.currentSection.wordCount.toLocaleString()} words`,
-                    disabled: targetState.currentSection === null,
-                  },
-                  {
-                    value: "whole_document",
-                    label: "Whole document · one run",
-                  },
-                ]}
                 disabled={
-                  controller === null || busy || armedRecheck !== null
+                  busy ||
+                  workingTargetKey === null ||
+                  onAffirmRecheckTarget === undefined
                 }
-                onChange={setChoice}
-              />
-            )}
-            <TextAreaField
-              label="What should Verify accomplish?"
-              value={verifyGoal}
-              disabled={busy || armedRecheck !== null}
-              rows={2}
-              help={goalHelp}
-              onChange={setVerifyGoal}
-            />
-            <TextAreaField
-              label="What must it preserve?"
-              value={protectedIntent}
-              disabled={busy || armedRecheck !== null}
-              rows={2}
-              help={protectedIntentHelp}
-              onChange={setProtectedIntent}
-            />
-          </div>
-
-          {reviewStatus === "error" ? (
-            <div className="wb-cowork-action-dock__notice" role="alert">
-              <p>{reviewError ?? "Verify setup could not load."}</p>
-              <Button size="small" variant="secondary" onClick={reload}>
-                Retry
+                onClick={affirmWorkingTarget}
+              >
+                {workingTargetKey !== null &&
+                affirmedWorkingTarget?.workingTargetKey === workingTargetKey
+                  ? "Passage selected"
+                  : "Use this passage"}
               </Button>
-            </div>
-          ) : reviewStatus === "loading" ||
-            data === null ||
-            !matchingReviewData ? (
-            <p className="wb-cowork-action-dock__notice" role="status">
-              Loading this document’s Verify setup…
-            </p>
-          ) : (
-            <>
-              <VerifySetupCard
-                capability={data.verifyCapability}
-                configuration={data.verificationConfiguration}
-                onBusyChange={setSetupBusy}
-                onSetEnabled={
-                  reviewProvider.setVerifyCriterionEnabled === undefined
-                    ? undefined
-                    : async (criterionKey, enabled, expectedActivationId) => {
-                        await reviewProvider.setVerifyCriterionEnabled?.(
-                          criterionKey,
-                          enabled,
-                          expectedActivationId,
-                        );
-                      }
-                }
-                onCreateDraft={
-                  reviewProvider.createVerifyCriterionDraft === undefined
-                    ? undefined
-                    : async (draft) => {
-                        await reviewProvider.createVerifyCriterionDraft?.(draft);
-                      }
-                }
-              />
-              <VerifyRunHistory
-                runs={data.evaluationRuns}
-                onInspectRun={reviewProvider.inspectVerifyRun?.bind(
-                  reviewProvider,
-                )}
-              />
-            </>
-          )}
+            ) : null}
+            <Button
+              size="small"
+              variant="ghost"
+              disabled={busy}
+              onClick={() => {
+                setMessage(null);
+                setError(null);
+                clearBoundRecheck();
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+        ) : null}
 
-          <p
-            className="wb-cowork-action-dock__status"
-            role={error === null ? "status" : "alert"}
-            aria-live={error === null ? "polite" : "assertive"}
-          >
-            {error ?? message ?? ""}
+        {reviewStatus === "error" ? (
+          <div className="wb-cowork-action-dock__notice" role="alert">
+            <p>{reviewError ?? "Checks could not load."}</p>
+            <Button size="small" variant="secondary" onClick={reload}>
+              Retry
+            </Button>
+          </div>
+        ) : reviewStatus === "loading" ||
+          data === null ||
+          !matchingReviewData ? (
+          <p className="wb-cowork-action-dock__notice" role="status">
+            Loading checks…
           </p>
+        ) : (
+          <div
+            className="wb-cowork-action-dock__verify-page"
+            data-page={verifyPage}
+          >
+            <VerifyCheckControl
+              capability={data.verifyCapability}
+              configuration={data.verificationConfiguration}
+              page={verifyPage}
+              onPageChange={setVerifyPage}
+              onBusyChange={setSetupBusy}
+              onSetEnabled={
+                reviewProvider.setVerifyCriterionEnabled === undefined
+                  ? undefined
+                  : async (criterionKey, enabled, expectedActivationId) => {
+                      await reviewProvider.setVerifyCriterionEnabled?.(
+                        criterionKey,
+                        enabled,
+                        expectedActivationId,
+                      );
+                    }
+              }
+              onCreateCheck={
+                reviewProvider.createVerifyCheck === undefined
+                  ? undefined
+                  : async (check) => {
+                      await reviewProvider.createVerifyCheck?.(check);
+                    }
+              }
+            />
+            {verifyPage === "select" ? (
+              <Button
+                className="wb-cowork-action-dock__run-button"
+                variant="primary"
+                size="small"
+                disabled={runDisabled}
+                title={runUnavailableReason}
+                aria-describedby="wb-cowork-verify-status"
+                onClick={runVerify}
+              >
+                {busy ? "Starting…" : "Run Verify"}
+              </Button>
+            ) : null}
+          </div>
+        )}
+
+        <p
+          id="wb-cowork-verify-status"
+          className="wb-cowork-action-dock__status"
+          role={error === null ? "status" : "alert"}
+          aria-live={error === null ? "polite" : "assertive"}
+        >
+          {error ?? message ?? readinessMessage ?? ""}
+        </p>
       </div>
 
       <div
@@ -1083,15 +693,7 @@ export function CoworkDocumentActionDock({
         hidden={expanded !== "cothink"}
         inert={expanded !== "cothink" ? true : undefined}
       >
-          <p>
-            Co-think is reserved here as a sibling workspace for alternative
-            perspectives. It does not run from this shell yet.
-          </p>
-          <HelpTarget content={cothinkHelp} placement="top start" focusable>
-            <span className="wb-cowork-action-dock__help">
-              How Co-think differs from Verify
-            </span>
-          </HelpTarget>
+        <p className="wb-cowork-action-dock__planned">Planned</p>
       </div>
     </section>
   );

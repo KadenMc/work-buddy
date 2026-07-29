@@ -18,6 +18,10 @@ from work_buddy.cowork.verify_jobs import MAX_VERIFY_JOB_BUDGET_USD
 VERIFY_EXECUTION_PLAN_SCHEMA = (
     "work-buddy.cowork-verify-execution-disclosure/v1"
 )
+# A single click may launch one account-backed specialist per selected personal
+# check before the coordinator.  Keep that fan-out server-bounded even for
+# providers whose per-worker spend ceiling cannot be enforced.
+MAX_VERIFY_SPECIALIST_CHECKS_PER_RUN = 5
 
 CostEnforcementClass = Literal["hard_ceiling", "estimate", "unavailable"]
 
@@ -77,14 +81,36 @@ class VerifyExecutionDisclosurePlan:
     """Immutable disclosure for the currently implemented Verify route."""
 
     selection: AgentExecutionSelection | None = None
+    specialist_worker_sessions: int = 0
 
     def to_dict(self) -> dict[str, Any]:
+        if (
+            isinstance(self.specialist_worker_sessions, bool)
+            or not isinstance(self.specialist_worker_sessions, int)
+            or self.specialist_worker_sessions < 0
+            or self.specialist_worker_sessions
+            > MAX_VERIFY_SPECIALIST_CHECKS_PER_RUN
+        ):
+            raise ValueError(
+                "specialist_worker_sessions must be an integer between 0 and "
+                f"{MAX_VERIFY_SPECIALIST_CHECKS_PER_RUN}"
+            )
         selected_cost = (
             None
             if self.selection is None
             else provider_cost_control(self.selection.provider_id).to_dict()
         )
-        return {
+        worker_sessions: dict[str, Any] = {
+            "initial": 1 + self.specialist_worker_sessions,
+            "maximum": 3 + self.specialist_worker_sessions,
+            "conditional_roles": [
+                "reviser",
+                "post_revision_coordinator",
+            ],
+        }
+        if self.specialist_worker_sessions:
+            worker_sessions["specialist_checks"] = self.specialist_worker_sessions
+        plan = {
             "schema": VERIFY_EXECUTION_PLAN_SCHEMA,
             "authoritative": True,
             "checker": {
@@ -125,32 +151,46 @@ class VerifyExecutionDisclosurePlan:
                     "provider_model_fallback": False,
                     "failure_mode": "fail_closed",
                 },
-                "worker_sessions": {
-                    "initial": 1,
-                    "maximum": 3,
-                    "conditional_roles": [
-                        "reviser",
-                        "post_revision_coordinator",
-                    ],
-                },
+                "worker_sessions": worker_sessions,
                 "cost_control": selected_cost,
                 "provider_cost_controls": [
                     control.to_dict() for control in _PROVIDER_COST_CONTROLS
                 ],
             },
         }
+        if self.specialist_worker_sessions:
+            plan["specialist_checks"] = {
+                "execution_class": "account_backed_agent",
+                "mechanism": "instruction_based_model_evaluation",
+                "worker_sessions": self.specialist_worker_sessions,
+                "content_boundary": "captured_target",
+                "external_egress": True,
+                "selection": "same_explicit_provider_and_model_as_verify_run",
+                "fallback": {
+                    "provider_model_fallback": False,
+                    "failure_mode": "fail_closed",
+                },
+                "cost_control": selected_cost,
+            }
+        return plan
 
 
 def verify_execution_disclosure_plan(
     selection: AgentExecutionSelection | None = None,
+    *,
+    specialist_worker_sessions: int = 0,
 ) -> dict[str, Any]:
     """Project the immutable plan as wire-ready JSON data."""
 
-    return VerifyExecutionDisclosurePlan(selection=selection).to_dict()
+    return VerifyExecutionDisclosurePlan(
+        selection=selection,
+        specialist_worker_sessions=specialist_worker_sessions,
+    ).to_dict()
 
 
 __all__ = [
     "CostEnforcementClass",
+    "MAX_VERIFY_SPECIALIST_CHECKS_PER_RUN",
     "ProviderCostControl",
     "VERIFY_EXECUTION_PLAN_SCHEMA",
     "VerifyExecutionDisclosurePlan",

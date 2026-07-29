@@ -35,6 +35,7 @@ from work_buddy.cowork.verify_orchestration import (
 from work_buddy.cowork.verify_inspection import verify_run_detail
 from work_buddy.cowork.verify_configuration import (
     create_user_criterion_draft,
+    create_user_verification_check,
     list_effective_verification_configuration,
     set_document_criterion_enabled,
 )
@@ -346,6 +347,52 @@ def api_verify_criterion_draft_create(document_id: str):
         ),
     )
     return jsonify({"ok": True, **result}), 201
+
+
+@verify_blueprint.post("/api/truth/doc/<document_id>/verify/checks")
+def api_verify_check_create(document_id: str):
+    store, document, error = _mutation_context(document_id)
+    if error:
+        return error
+    try:
+        body = _body()
+        limitations = body.get("limitations", [])
+        if not isinstance(limitations, list) or not all(
+            isinstance(item, str) for item in limitations
+        ):
+            raise VerifyOrchestrationError(
+                "limitations must be an array of strings"
+            )
+        with user_initiated("dashboard.cowork.verify_check"):
+            result = create_user_verification_check(
+                store,
+                document_id=document.id,
+                title=str(body.get("title") or ""),
+                description=str(body.get("description") or ""),
+                evaluation_instructions=str(
+                    body.get("evaluation_instructions") or ""
+                ),
+                limitations=limitations,
+                actor=_actor_for_request(),
+            )
+    except Exception as exc:  # noqa: BLE001
+        return _safe_error(exc)
+    if result["created"]:
+        _emit(
+            "truth.doc_verify_configuration_changed",
+            store.store_id,
+            {
+                "document_id": document.id,
+                "criterion_key": result["criterion_key"],
+                "change": "user_verification_check_created",
+            },
+            event_id=(
+                "cowork-verify-check:"
+                f"{document.id}:{result['criterion_key']}"
+            ),
+        )
+    status_code = 201 if result["created"] else 200
+    return jsonify({"ok": True, **result}), status_code
 
 
 @verify_blueprint.post("/api/truth/doc/<document_id>/cothink")

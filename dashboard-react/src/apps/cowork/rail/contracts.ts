@@ -294,6 +294,14 @@ export interface VerifyCriterionDraftInput {
   readonly limitations: readonly string[];
 }
 
+/** Declarative semantics for one runnable, user-authored Verify check. */
+export interface VerifyCheckInput {
+  readonly title: string;
+  readonly description: string;
+  readonly evaluationInstructions: string;
+  readonly limitations: readonly string[];
+}
+
 export type EvaluationRunStatus =
   | "prepared"
   | "queued"

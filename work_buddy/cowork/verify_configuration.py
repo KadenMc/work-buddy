@@ -22,11 +22,12 @@ from work_buddy.cowork.verify import (
     CriterionDefinitionVersion,
     SeededTerminologyExactMatch,
     VerifyInvariantViolation,
+    seed_instruction_model_check,
     seed_terminology_exact_match,
     terminology_exact_match_defaults,
 )
 from work_buddy.cowork.verify import store as verify_store
-from work_buddy.cowork.verify.service import TERMINOLOGY_EXACT_MATCH_EXECUTOR
+from work_buddy.cowork.verify.service import admitted_check_executor
 from work_buddy.cowork.verify_execution import (
     verify_execution_disclosure_plan,
 )
@@ -38,6 +39,7 @@ from work_buddy.truth.store import DocumentRecord, TruthStore
 
 
 CONFIGURATION_SCHEMA = "work-buddy.cowork-verify-configuration/v1"
+MAX_USER_CHECK_EVALUATION_INSTRUCTIONS_CHARS = 8_000
 _SYSTEM_ORIGIN = "system"
 _USER_ORIGIN = "user"
 _EXPECTED_ACTIVATION_UNSET = object()
@@ -116,18 +118,26 @@ def _scope_specificity(scope: Mapping[str, Any], document_id: str) -> int | None
     return 1 if scoped_document == document_id else None
 
 
-def _check_availability(check: CheckDefinitionVersion) -> dict[str, Any]:
+def _check_availability(
+    check: CheckDefinitionVersion,
+    *,
+    criterion_kind: str,
+) -> dict[str, Any]:
     """Project executor admission independently from the stored definition."""
 
-    admitted = (
-        check.mechanism == "deterministic"
-        and check.executor_ref == TERMINOLOGY_EXACT_MATCH_EXECUTOR
+    executor = admitted_check_executor(
+        check,
+        criterion_kind=criterion_kind,
     )
-    if admitted:
+    if executor is not None:
         return {
             "state": "available",
             "reason": None,
-            "execution_location": "local",
+            "execution_location": (
+                "local"
+                if executor.execution_mode == "in_process"
+                else "account_backed_agent"
+            ),
         }
     return {
         "state": "unavailable",
@@ -136,13 +146,29 @@ def _check_availability(check: CheckDefinitionVersion) -> dict[str, Any]:
     }
 
 
-def _data_sharing(check: CheckDefinitionVersion) -> dict[str, Any]:
-    availability = _check_availability(check)
-    if availability["state"] == "available":
+def _data_sharing(
+    check: CheckDefinitionVersion,
+    *,
+    criterion_kind: str,
+) -> dict[str, Any]:
+    executor = admitted_check_executor(
+        check,
+        criterion_kind=criterion_kind,
+    )
+    if executor is not None and executor.execution_mode == "in_process":
         return {
             "class": "local_only",
             "external_egress": False,
             "basis": "admitted_deterministic_executor",
+        }
+    if (
+        executor is not None
+        and executor.execution_mode == "account_backed_specialist"
+    ):
+        return {
+            "class": "account_backed_agent",
+            "external_egress": True,
+            "basis": "explicit_verify_run_selection",
         }
     return {
         "class": "not_authorized",
@@ -237,6 +263,44 @@ def _effective_activation(
     return selected[2], selected[3], required, issues
 
 
+def _criterion_applies_to_document(
+    criterion: CriterionDefinitionVersion,
+    *,
+    bindings: tuple[CriterionCheckBinding, ...],
+    activations: tuple[CriterionActivation, ...],
+    document_id: str,
+) -> bool:
+    """Keep personal criteria inside the document that owns their activation.
+
+    System definitions may intentionally carry document-class defaults. A
+    user-authored criterion, however, is personal document configuration: it
+    is visible only when an authorized activation names this exact document
+    and selects a binding that belongs to the same criterion. A generic
+    ``{"kind": "document"}`` activation must not silently turn a personal
+    check into a reusable cross-document definition.
+    """
+
+    if criterion.origin != _USER_ORIGIN:
+        return True
+    criterion_binding_ids = {
+        binding.id
+        for binding in bindings
+        if binding.criterion_definition_version_id == criterion.id
+    }
+    if not criterion_binding_ids:
+        return False
+    applicable, _issues = _applicable_activations(
+        activations,
+        criterion_id=criterion.id,
+        document_id=document_id,
+    )
+    return any(
+        specificity == 1
+        and activation.criterion_check_binding_id in criterion_binding_ids
+        for specificity, _sequence, activation, _scope in applicable
+    )
+
+
 def _configuration_projection(
     store: TruthStore,
     document_id: str,
@@ -291,7 +355,20 @@ def _configuration_projection(
         ):
             activations.append(system_defaults.activation)
 
-    criteria = _latest_definitions(tuple(criterion_records))
+    binding_records = tuple(bindings)
+    activation_records = tuple(activations)
+    criteria = _latest_definitions(
+        tuple(
+            criterion
+            for criterion in criterion_records
+            if _criterion_applies_to_document(
+                criterion,
+                bindings=binding_records,
+                activations=activation_records,
+                document_id=document_id,
+            )
+        )
+    )
     checks = {
         item.id: item
         for item in check_records
@@ -304,7 +381,7 @@ def _configuration_projection(
             if item.criterion_definition_version_id == criterion.id
         )
         effective, effective_scope, required, issues = _effective_activation(
-            tuple(activations),
+            activation_records,
             criterion_id=criterion.id,
             document_id=document_id,
         )
@@ -319,7 +396,10 @@ def _configuration_projection(
                     }
                 )
                 continue
-            availability = _check_availability(check)
+            availability = _check_availability(
+                check,
+                criterion_kind=criterion.criterion_kind,
+            )
             projected_checks.append(
                 {
                     "id": check.id,
@@ -342,7 +422,10 @@ def _configuration_projection(
                             meta_json=check.created_by_meta_json,
                         ),
                     },
-                    "data_sharing": _data_sharing(check),
+                    "data_sharing": _data_sharing(
+                        check,
+                        criterion_kind=criterion.criterion_kind,
+                    ),
                     "availability": availability,
                     "binding": {
                         "id": binding.id,
@@ -657,8 +740,6 @@ def create_user_criterion_draft(
         raise VerifyInvariantViolation(
             "user criterion drafts require a human actor"
         )
-    document = documents.get_document(store, document_id)
-    seed_terminology_exact_match(store)
     title_value = title.strip() if isinstance(title, str) else ""
     description_value = (
         description.strip() if isinstance(description, str) else ""
@@ -678,6 +759,14 @@ def create_user_criterion_draft(
         raise VerifyInvariantViolation(
             "evaluation instructions must be nonempty"
         )
+    if (
+        len(instructions_value)
+        > MAX_USER_CHECK_EVALUATION_INSTRUCTIONS_CHARS
+    ):
+        raise VerifyInvariantViolation(
+            "evaluation instructions exceed the supported "
+            f"{MAX_USER_CHECK_EVALUATION_INSTRUCTIONS_CHARS}-character boundary"
+        )
     if len(title_value) > 160 or len(description_value) > 2000:
         raise VerifyInvariantViolation("criterion draft is too long")
     normalized_limitations = [
@@ -691,6 +780,8 @@ def create_user_criterion_draft(
         raise VerifyInvariantViolation(
             "criterion limitations exceed the supported draft boundary"
         )
+    document = documents.get_document(store, document_id)
+    seed_terminology_exact_match(store)
     created_at = _timestamp(at)
     actor_kind, actor_ref, actor_meta = _actor_fields(actor)
     identity_payload = {
@@ -837,9 +928,195 @@ def create_user_criterion_draft(
     }
 
 
+def create_user_verification_check(
+    store: TruthStore,
+    *,
+    document_id: str,
+    title: str,
+    description: str,
+    evaluation_instructions: str,
+    limitations: list[str] | tuple[str, ...] = (),
+    actor: Actor,
+    at: str | None = None,
+) -> dict[str, Any]:
+    """Create one runnable user-authored criterion from admitted building blocks.
+
+    The user authors declarative evaluation semantics only. Execution remains
+    bound to the immutable, system-owned instruction-model check, so creating a
+    criterion cannot introduce or admit executable code.
+    """
+
+    if actor.kind != "human":
+        raise VerifyInvariantViolation(
+            "user verification checks require a human actor"
+        )
+    title_value = title.strip() if isinstance(title, str) else ""
+    description_value = (
+        description.strip() if isinstance(description, str) else ""
+    )
+    instructions_value = (
+        evaluation_instructions.strip()
+        if isinstance(evaluation_instructions, str)
+        else ""
+    )
+    if not title_value:
+        raise VerifyInvariantViolation("criterion title must be nonempty")
+    if not description_value:
+        raise VerifyInvariantViolation(
+            "criterion description must be nonempty"
+        )
+    if not instructions_value:
+        raise VerifyInvariantViolation(
+            "evaluation instructions must be nonempty"
+        )
+    if (
+        len(instructions_value)
+        > MAX_USER_CHECK_EVALUATION_INSTRUCTIONS_CHARS
+    ):
+        raise VerifyInvariantViolation(
+            "evaluation instructions exceed the supported "
+            f"{MAX_USER_CHECK_EVALUATION_INSTRUCTIONS_CHARS}-character boundary"
+        )
+    if len(title_value) > 160 or len(description_value) > 2000:
+        raise VerifyInvariantViolation("criterion draft is too long")
+    normalized_limitations = [
+        item.strip()
+        for item in limitations
+        if isinstance(item, str) and item.strip()
+    ]
+    if len(normalized_limitations) > 20 or any(
+        len(item) > 500 for item in normalized_limitations
+    ):
+        raise VerifyInvariantViolation(
+            "criterion limitations exceed the supported draft boundary"
+        )
+
+    document = documents.get_document(store, document_id)
+    created_at = _timestamp(at)
+    seed_terminology_exact_match(store)
+    admitted_check = seed_instruction_model_check(store, at=created_at)
+    actor_kind, actor_ref, actor_meta = _actor_fields(actor)
+    identity_payload = {
+        "document_id": document.id,
+        "title": title_value,
+        "description": description_value,
+        "evaluation_instructions": instructions_value,
+        "limitations": normalized_limitations,
+        "author_ref": actor.ref,
+    }
+    identity = sha256_text(canonical_json(identity_payload))
+    # Keep runnable criteria in a distinct stable-key namespace so an
+    # identical legacy unadmitted draft cannot shadow this admitted version.
+    stable_key = f"user_check_{identity[:16]}"
+    criterion_payload = {
+        "stable_key": stable_key,
+        "version": 1,
+        "title": title_value,
+        "description": description_value,
+        "criterion_kind": "user_authored",
+        "origin": _USER_ORIGIN,
+        "configuration_schema": {
+            "type": "object",
+            "required": ["evaluation_instructions"],
+            "properties": {
+                "evaluation_instructions": {"type": "string"},
+                "limitations": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+            },
+        },
+    }
+    criterion = CriterionDefinitionVersion(
+        id=sha256_text(f"criterion:runnable:{identity}")[:32],
+        stable_key=stable_key,
+        version=1,
+        title=title_value,
+        description=description_value,
+        criterion_kind="user_authored",
+        origin=_USER_ORIGIN,
+        configuration_schema_json=canonical_json(
+            criterion_payload["configuration_schema"]
+        ),
+        canonical_sha256=sha256_text(canonical_json(criterion_payload)),
+        created_at=created_at,
+        created_by_kind=actor_kind,
+        created_by_ref=actor_ref,
+        created_by_meta_json=actor_meta,
+    )
+    binding_configuration = {
+        "evaluation_instructions": instructions_value,
+        "limitations": normalized_limitations,
+    }
+    binding_payload = {
+        "criterion_definition_version_id": criterion.id,
+        "check_definition_version_id": admitted_check.id,
+        "configuration": binding_configuration,
+    }
+    binding = CriterionCheckBinding(
+        id=sha256_text(f"binding:runnable:{identity}")[:32],
+        criterion_definition_version_id=criterion.id,
+        check_definition_version_id=admitted_check.id,
+        configuration_json=canonical_json(binding_configuration),
+        canonical_sha256=sha256_text(canonical_json(binding_payload)),
+        created_at=created_at,
+        created_by_kind=actor_kind,
+        created_by_ref=actor_ref,
+        created_by_meta_json=actor_meta,
+    )
+    scope = {"kind": "document", "document_id": document.id}
+    activation_payload = {
+        "criterion_definition_version_id": criterion.id,
+        "criterion_check_binding_id": binding.id,
+        "scope": scope,
+        "is_enabled": True,
+        "is_required": False,
+        "origin": _USER_ORIGIN,
+    }
+    activation = CriterionActivation(
+        id=sha256_text(f"activation:runnable:{identity}")[:32],
+        criterion_definition_version_id=criterion.id,
+        criterion_check_binding_id=binding.id,
+        scope_json=canonical_json(scope),
+        is_enabled=1,
+        is_required=0,
+        origin=_USER_ORIGIN,
+        canonical_sha256=sha256_text(canonical_json(activation_payload)),
+        created_at=created_at,
+        created_by_kind=actor_kind,
+        created_by_ref=actor_ref,
+        created_by_meta_json=actor_meta,
+    )
+    created = False
+    with store.write_transaction() as conn:
+        for record in (criterion, binding, activation):
+            existing = verify_store.get_by_canonical_sha256(
+                store,
+                type(record),
+                record.canonical_sha256,
+                conn=conn,
+            )
+            if existing is None:
+                verify_store.insert_record(store, record, conn=conn)
+                created = True
+        configuration = _configuration_projection(
+            store,
+            document.id,
+            conn=conn,
+        )
+    return {
+        "criterion_key": stable_key,
+        "status": "active",
+        "created": created,
+        "configuration": configuration,
+    }
+
+
 __all__ = [
     "CONFIGURATION_SCHEMA",
+    "MAX_USER_CHECK_EVALUATION_INSTRUCTIONS_CHARS",
     "create_user_criterion_draft",
+    "create_user_verification_check",
     "list_effective_verification_configuration",
     "set_document_criterion_enabled",
 ]

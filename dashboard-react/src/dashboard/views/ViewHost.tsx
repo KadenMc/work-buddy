@@ -719,13 +719,13 @@ function StandardGridViewHost({
     return widgetHostFor(instance, { durable: false });
   };
 
-  // The toolbar earns a row only when it holds something: the customize menu, a refresh
-  // status, or a chrome-less view's provider label. Rendering it while idle would reserve
-  // an empty labeled toolbar between the title and the grid, which is both a wasted gap and
-  // an empty-landmark accessibility smell. When it is absent, the view-host flex column owns
-  // the small, deliberate gap that sits between the title chrome and the grid.
+  // The toolbar earns a row only when it holds persistent controls or a chrome-less view's
+  // provider label. Background reconciliation is announced separately without entering the
+  // visual layout: briefly mounting an otherwise-absent toolbar shifts every widget below it.
+  // When the toolbar is absent, the view-host flex column owns the small, deliberate gap that
+  // sits between the title chrome and the grid.
   const showProviderLabel = providerLabel !== undefined && renderChrome === undefined;
-  const toolbarHasContent = customizing || session.reconciling || showProviderLabel;
+  const toolbarHasContent = customizing || showProviderLabel;
 
   return (
     <main
@@ -740,12 +740,16 @@ function StandardGridViewHost({
           {chromeSlots.contextualActions}
         </div>
       ) : null}
+      {session.reconciling ? (
+        <span className="wb-visually-hidden" role="status" aria-label="Refreshing…">
+          Refreshing…
+        </span>
+      ) : null}
       {toolbarHasContent ? (
       <div className="wb-view-toolbar" role="toolbar" aria-label="View controls">
         {showProviderLabel ? (
           <span className="wb-view-toolbar__provider">{providerLabel}</span>
         ) : null}
-        {session.reconciling ? <span role="status" aria-label="Refreshing…">Refreshing…</span> : null}
         {customizing ? (
           <>
             <span className="wb-view-toolbar__mode">

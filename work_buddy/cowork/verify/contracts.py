@@ -367,8 +367,18 @@ class SeededTerminologyExactMatch:
 class DeterministicEvaluation:
     plan: EvaluationPlanSnapshot
     run: EvaluationRun
-    execution: CheckExecution
+    executions: tuple[CheckExecution, ...]
     results: tuple[EvaluationResult, ...]
+
+    @property
+    def execution(self) -> CheckExecution:
+        """Backward-compatible singular access for one-check evaluations."""
+
+        if len(self.executions) != 1:
+            raise VerifyInvariantViolation(
+                "evaluation contains more than one check execution"
+            )
+        return self.executions[0]
 
 
 __all__ = [

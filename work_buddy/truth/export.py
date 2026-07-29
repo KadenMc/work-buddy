@@ -21,6 +21,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Protocol
 from urllib.parse import urlparse
 
@@ -1593,6 +1594,8 @@ def _validate_record_values(item: _DataRecord) -> None:
         }
         if "recheck_target_confirmation" in request:
             request_keys.add("recheck_target_confirmation")
+        if "specialist_assignment" in request:
+            request_keys.add("specialist_assignment")
         _require_exact_keys(
             request,
             request_keys,
@@ -1732,6 +1735,58 @@ def _validate_record_values(item: _DataRecord) -> None:
             raise TruthImportError(
                 "coordination job candidate evaluations are not canonical"
             )
+        specialist_assignment = request.get("specialist_assignment")
+        if row["role"] != "specialist":
+            if specialist_assignment is not None:
+                raise TruthImportError(
+                    "non-specialist coordination cannot retain a "
+                    "specialist_assignment"
+                )
+        elif specialist_assignment is not None:
+            if not isinstance(specialist_assignment, dict):
+                raise TruthImportError(
+                    "coordination job specialist_assignment must be an "
+                    "object or null"
+                )
+            _require_exact_keys(
+                specialist_assignment,
+                {
+                    "criterion_definition_version_id",
+                    "check_definition_version_id",
+                    "criterion_check_binding_id",
+                    "sequence",
+                    "total",
+                    "configuration_sha256",
+                },
+                "coordination job specialist_assignment",
+            )
+            for field in (
+                "criterion_definition_version_id",
+                "check_definition_version_id",
+                "criterion_check_binding_id",
+            ):
+                _record_id(
+                    specialist_assignment[field],
+                    f"coordination job specialist_assignment.{field}",
+                )
+            sequence = _positive_int(
+                specialist_assignment["sequence"],
+                "coordination job specialist_assignment.sequence",
+            )
+            total = _positive_int(
+                specialist_assignment["total"],
+                "coordination job specialist_assignment.total",
+            )
+            if sequence > total:
+                raise TruthImportError(
+                    "coordination job specialist_assignment.sequence "
+                    "cannot exceed total"
+                )
+            _digest(
+                specialist_assignment["configuration_sha256"],
+                "coordination job "
+                "specialist_assignment.configuration_sha256",
+            )
         payload = {
             "document_id": row["document_id"],
             "evaluation_run_id": row["evaluation_run_id"],
@@ -1810,6 +1865,8 @@ def _validate_record_values(item: _DataRecord) -> None:
             "proposal_ids",
             "disposition_ids",
             "requested_revision_result_ids",
+            "check_execution_ids",
+            "evaluation_result_ids",
         }:
             raise TruthImportError(
                 "coordination status event has unsupported consequence refs"
@@ -1824,6 +1881,8 @@ def _validate_record_values(item: _DataRecord) -> None:
             "proposal_ids",
             "disposition_ids",
             "requested_revision_result_ids",
+            "check_execution_ids",
+            "evaluation_result_ids",
         ):
             values = refs.get(field, [])
             if not isinstance(values, list):
@@ -1903,6 +1962,9 @@ def _validate_record_values(item: _DataRecord) -> None:
 
 def _validate_foreign_refs(records: tuple[_DataRecord, ...]) -> None:
     index = {(item.record_type, item.record_key): item.seq for item in records}
+    record_by_identity = {
+        (item.record_type, item.record_key): item.record for item in records
+    }
     cothink_status_by_item: dict[str, str] = {}
     coordination_status_by_job: dict[str, str] = {}
 
@@ -1911,16 +1973,18 @@ def _validate_foreign_refs(records: tuple[_DataRecord, ...]) -> None:
         key: Any,
         before: int,
         label: str,
-    ) -> None:
+    ) -> Mapping[str, Any]:
         if record_type in _ID_KEY_TYPES or record_type == "link_retraction":
             normalized_key = _record_id(key, label)
         else:
             normalized_key = _nonempty_text(key, label)
-        seq = index.get((record_type, normalized_key))
+        identity = (record_type, normalized_key)
+        seq = index.get(identity)
         if seq is None:
             raise TruthImportError(f"{label} references a missing {record_type}")
         if seq >= before:
             raise TruthImportError(f"{label} must reference an earlier ledger record")
+        return record_by_identity[identity]
 
     for item in records:
         row = item.record
@@ -2180,12 +2244,16 @@ def _validate_foreign_refs(records: tuple[_DataRecord, ...]) -> None:
                 item.seq,
                 "coordination job.document_id",
             )
-            require_prior(
+            action_record = require_prior(
                 "action_snapshot",
                 row["action_snapshot_id"],
                 item.seq,
                 "coordination job.action_snapshot_id",
             )
+            if action_record["document_id"] != row["document_id"]:
+                raise TruthImportError(
+                    "coordination job action snapshot belongs to another document"
+                )
             request_summary = json.loads(row["request_summary_json"])
             confirmation = request_summary.get(
                 "recheck_target_confirmation"
@@ -2197,28 +2265,66 @@ def _validate_foreign_refs(records: tuple[_DataRecord, ...]) -> None:
                     item.seq,
                     "coordination job recheck target affirmation",
                 )
-            if row["evaluation_run_id"] is not None:
+            specialist_assignment = request_summary.get(
+                "specialist_assignment"
+            )
+            specialist_binding: Mapping[str, Any] | None = None
+            if isinstance(specialist_assignment, dict):
                 require_prior(
+                    "criterion_definition_version",
+                    specialist_assignment[
+                        "criterion_definition_version_id"
+                    ],
+                    item.seq,
+                    "coordination job specialist criterion",
+                )
+                require_prior(
+                    "check_definition_version",
+                    specialist_assignment["check_definition_version_id"],
+                    item.seq,
+                    "coordination job specialist check",
+                )
+                specialist_binding = require_prior(
+                    "criterion_check_binding",
+                    specialist_assignment["criterion_check_binding_id"],
+                    item.seq,
+                    "coordination job specialist binding",
+                )
+            run_record: Mapping[str, Any] | None = None
+            if row["evaluation_run_id"] is not None:
+                run_record = require_prior(
                     "evaluation_run",
                     row["evaluation_run_id"],
                     item.seq,
                     "coordination job.evaluation_run_id",
                 )
+            plan_record: Mapping[str, Any] | None = None
             if row["plan_snapshot_id"] is not None:
-                require_prior(
+                plan_record = require_prior(
                     "evaluation_plan_snapshot",
                     row["plan_snapshot_id"],
                     item.seq,
                     "coordination job.plan_snapshot_id",
                 )
+            parent_record: Mapping[str, Any] | None = None
             if row["parent_job_id"] is not None:
-                require_prior(
+                parent_record = require_prior(
                     "cowork_coordination_job",
                     row["parent_job_id"],
                     item.seq,
                     "coordination job.parent_job_id",
                 )
-            require_prior(
+                if (
+                    parent_record["document_id"] != row["document_id"]
+                    or parent_record["action_snapshot_id"]
+                    != row["action_snapshot_id"]
+                    or parent_record["evaluation_run_id"]
+                    != row["evaluation_run_id"]
+                ):
+                    raise TruthImportError(
+                        "coordination parent job has incompatible lineage"
+                    )
+            receipt_record = require_prior(
                 "model_call_authorization_receipt",
                 row["authorization_receipt_id"],
                 item.seq,
@@ -2239,9 +2345,279 @@ def _validate_foreign_refs(records: tuple[_DataRecord, ...]) -> None:
                 raise TruthImportError(
                     "Verify coordination requires an evaluation run and plan"
                 )
+            if plan_record is not None and (
+                plan_record["action_snapshot_id"] != row["action_snapshot_id"]
+            ):
+                raise TruthImportError(
+                    "coordination job plan belongs to another action snapshot"
+                )
+            if run_record is not None and (
+                run_record["action_snapshot_id"] != row["action_snapshot_id"]
+                or run_record["plan_snapshot_id"] != row["plan_snapshot_id"]
+            ):
+                raise TruthImportError(
+                    "coordination job run does not match its action and plan"
+                )
+            selection = json.loads(row["selection_json"])
+            try:
+                authorization_boundary = json.loads(
+                    receipt_record["content_boundary_json"]
+                )
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise TruthImportError(
+                    "coordination authorization boundary is invalid"
+                ) from exc
+            expected_boundary_fields = {
+                "role",
+                "job_id",
+                "document",
+                "action_snapshot_id",
+                "authority_context",
+            }
+            expected_document_boundary = (
+                "captured_target_only"
+                if row["role"] == "specialist"
+                else "complete_permitted_frozen_projection"
+            )
+            expected_authority_context = {
+                "user_goal": request_summary["user_goal"],
+                "protected_intent": request_summary["protected_intent"],
+                "effective_configuration": request_summary[
+                    "effective_configuration"
+                ],
+                "effective_configuration_sha256": request_summary[
+                    "effective_configuration_sha256"
+                ],
+                "effective_policy_sha256": request_summary[
+                    "effective_policy_sha256"
+                ],
+                "active_criterion_ids": request_summary[
+                    "active_criterion_ids"
+                ],
+                "prior_disposition_ids": request_summary[
+                    "prior_disposition_ids"
+                ],
+                "prior_human_review_outcome_ids": request_summary[
+                    "prior_human_review_outcome_ids"
+                ],
+                "recheck_of_run_id": request_summary["recheck_of_run_id"],
+                "recheck_of_proposal_ids": request_summary[
+                    "recheck_of_proposal_ids"
+                ],
+                "recheck_intent_id": request_summary["recheck_intent_id"],
+                "coordinator_stage": request_summary["coordinator_stage"],
+                "requested_revision_result_ids": request_summary[
+                    "requested_revision_result_ids"
+                ],
+            }
+            if "specialist_assignment" in request_summary:
+                expected_authority_context["specialist_assignment"] = (
+                    request_summary["specialist_assignment"]
+                )
+            if "recheck_target_confirmation" in request_summary:
+                expected_authority_context["recheck_target_confirmation"] = (
+                    request_summary["recheck_target_confirmation"]
+                )
+            from work_buddy.cowork.verify_jobs import (
+                MAX_VERIFY_JOB_BUDGET_USD,
+            )
+
+            if (
+                receipt_record["action_snapshot_id"]
+                != row["action_snapshot_id"]
+                or receipt_record["plan_snapshot_id"]
+                != row["plan_snapshot_id"]
+                or receipt_record["provider"] != selection["provider_id"]
+                or receipt_record["model"] != selection["model_id"]
+                or receipt_record["context_sha256"] != row["context_sha256"]
+                or receipt_record["egress_class"] != "account_backed_agent"
+                or receipt_record["cost_ceiling_usd"]
+                != MAX_VERIFY_JOB_BUDGET_USD
+                or receipt_record["retry_limit"] != 0
+                or receipt_record["created_by_kind"] != "human"
+                or not isinstance(authorization_boundary, dict)
+                or set(authorization_boundary) != expected_boundary_fields
+                or authorization_boundary.get("role") != row["role"]
+                or authorization_boundary.get("job_id") != row["id"]
+                or authorization_boundary.get("document")
+                != expected_document_boundary
+                or authorization_boundary.get("action_snapshot_id")
+                != row["action_snapshot_id"]
+                or not isinstance(
+                    authorization_boundary.get("authority_context"),
+                    dict,
+                )
+                or canonical_json(
+                    authorization_boundary["authority_context"]
+                )
+                != canonical_json(expected_authority_context)
+            ):
+                raise TruthImportError(
+                    "coordination job does not match its exact authorization "
+                    "boundary"
+                )
+            if isinstance(specialist_assignment, dict):
+                if plan_record is None or specialist_binding is None:
+                    raise TruthImportError(
+                        "specialist assignment has no frozen plan lineage"
+                    )
+                from work_buddy.cowork.verify import admitted_check_executor
+
+                plan_payload = json.loads(plan_record["plan_json"])
+                plan_checks = (
+                    plan_payload.get("checks")
+                    if isinstance(plan_payload, dict)
+                    else None
+                )
+                plan_fields = {
+                    "criterion_definition_version_id",
+                    "check_definition_version_id",
+                    "criterion_check_binding_id",
+                    "criterion_activation_id",
+                    "configuration_sha256",
+                }
+                if (
+                    not isinstance(plan_payload, dict)
+                    or plan_payload.get("schema")
+                    != "work-buddy.cowork-evaluation-plan/v1"
+                    or plan_payload.get("action_snapshot_id")
+                    != row["action_snapshot_id"]
+                    or not isinstance(plan_checks, list)
+                ):
+                    raise TruthImportError(
+                        "specialist assignment has an invalid frozen plan"
+                    )
+                specialist_entries: list[dict[str, Any]] = []
+                for plan_check in plan_checks:
+                    if (
+                        not isinstance(plan_check, dict)
+                        or set(plan_check) != plan_fields
+                    ):
+                        raise TruthImportError(
+                            "specialist assignment has an invalid frozen plan "
+                            "check"
+                        )
+                    criterion_record = require_prior(
+                        "criterion_definition_version",
+                        plan_check["criterion_definition_version_id"],
+                        item.seq,
+                        "coordination plan criterion",
+                    )
+                    check_record = require_prior(
+                        "check_definition_version",
+                        plan_check["check_definition_version_id"],
+                        item.seq,
+                        "coordination plan check",
+                    )
+                    binding_record = require_prior(
+                        "criterion_check_binding",
+                        plan_check["criterion_check_binding_id"],
+                        item.seq,
+                        "coordination plan binding",
+                    )
+                    if (
+                        binding_record["criterion_definition_version_id"]
+                        != criterion_record["id"]
+                        or binding_record["check_definition_version_id"]
+                        != check_record["id"]
+                        or sha256_bytes(
+                            binding_record["configuration_json"].encode(
+                                "utf-8"
+                            )
+                        )
+                        != plan_check["configuration_sha256"]
+                    ):
+                        raise TruthImportError(
+                            "coordination plan check does not match its "
+                            "immutable binding"
+                        )
+                    executor = admitted_check_executor(
+                        SimpleNamespace(
+                            id=check_record["id"],
+                            canonical_sha256=check_record[
+                                "canonical_sha256"
+                            ],
+                            executor_ref=check_record["executor_ref"],
+                            mechanism=check_record["mechanism"],
+                            supported_criterion_kinds_json=check_record[
+                                "supported_criterion_kinds_json"
+                            ],
+                        ),
+                        criterion_kind=criterion_record["criterion_kind"],
+                    )
+                    if executor is None:
+                        raise TruthImportError(
+                            "coordination plan contains an unadmitted check"
+                        )
+                    if executor.execution_mode == "account_backed_specialist":
+                        specialist_entries.append(
+                            {
+                                "criterion_definition_version_id": (
+                                    criterion_record["id"]
+                                ),
+                                "check_definition_version_id": check_record[
+                                    "id"
+                                ],
+                                "criterion_check_binding_id": binding_record[
+                                    "id"
+                                ],
+                                "configuration_sha256": plan_check[
+                                    "configuration_sha256"
+                                ],
+                            }
+                        )
+                sequence = specialist_assignment["sequence"]
+                expected_assignment = (
+                    None
+                    if sequence > len(specialist_entries)
+                    else {
+                        **specialist_entries[sequence - 1],
+                        "sequence": sequence,
+                        "total": len(specialist_entries),
+                    }
+                )
+                if (
+                    expected_assignment is None
+                    or specialist_assignment != expected_assignment
+                ):
+                    raise TruthImportError(
+                        "specialist assignment does not match the exact "
+                        "admitted specialist sequence in its frozen plan"
+                    )
+                if sequence == 1:
+                    if parent_record is not None:
+                        raise TruthImportError(
+                            "first specialist assignment cannot have a parent "
+                            "job"
+                        )
+                else:
+                    parent_request = (
+                        {}
+                        if parent_record is None
+                        else json.loads(parent_record["request_summary_json"])
+                    )
+                    parent_assignment = parent_request.get(
+                        "specialist_assignment"
+                    )
+                    if (
+                        parent_record is None
+                        or parent_record["role"] != "specialist"
+                        or parent_record["evaluation_run_id"]
+                        != row["evaluation_run_id"]
+                        or parent_record["plan_snapshot_id"]
+                        != row["plan_snapshot_id"]
+                        or not isinstance(parent_assignment, dict)
+                        or parent_assignment.get("sequence") != sequence - 1
+                        or parent_assignment.get("total")
+                        != specialist_assignment["total"]
+                    ):
+                        raise TruthImportError(
+                            "specialist parent does not match the previous "
+                            "frozen assignment"
+                        )
         elif item.record_type == "cowork_coordination_status_event":
             job_id = row["coordination_job_id"]
-            require_prior(
+            coordination_job = require_prior(
                 "cowork_coordination_job",
                 job_id,
                 item.seq,
@@ -2259,8 +2635,9 @@ def _validate_foreign_refs(records: tuple[_DataRecord, ...]) -> None:
                     f"{previous} -> {row['status']}"
                 )
             refs = json.loads(row["consequence_refs_json"])
+            next_job_record: Mapping[str, Any] | None = None
             if "next_job_id" in refs:
-                require_prior(
+                next_job_record = require_prior(
                     "cowork_coordination_job",
                     refs["next_job_id"],
                     item.seq,
@@ -2296,6 +2673,153 @@ def _validate_foreign_refs(records: tuple[_DataRecord, ...]) -> None:
                     result_id,
                     item.seq,
                     "coordination status event.requested_revision_result_ids",
+                )
+            execution_records: dict[str, Mapping[str, Any]] = {}
+            for execution_id in refs.get("check_execution_ids", []):
+                execution_records[execution_id] = require_prior(
+                    "check_execution",
+                    execution_id,
+                    item.seq,
+                    "coordination status event.check_execution_ids",
+                )
+            result_records: dict[str, Mapping[str, Any]] = {}
+            for result_id in refs.get("evaluation_result_ids", []):
+                result_records[result_id] = require_prior(
+                    "evaluation_result",
+                    result_id,
+                    item.seq,
+                    "coordination status event.evaluation_result_ids",
+                )
+            request_summary = json.loads(
+                coordination_job["request_summary_json"]
+            )
+            specialist_assignment = request_summary.get(
+                "specialist_assignment"
+            )
+            if isinstance(specialist_assignment, dict):
+                if row["status"] == "completed" and (
+                    row["outcome_kind"] != "typed_submission_received"
+                    or len(execution_records) != 1
+                    or not result_records
+                ):
+                    raise TruthImportError(
+                        "completed specialist coordination must retain one "
+                        "assigned execution and its results"
+                    )
+                action_record = require_prior(
+                    "action_snapshot",
+                    coordination_job["action_snapshot_id"],
+                    item.seq,
+                    "specialist coordination action snapshot",
+                )
+                for execution in execution_records.values():
+                    try:
+                        producer = json.loads(execution["producer_json"])
+                    except (TypeError, json.JSONDecodeError) as exc:
+                        raise TruthImportError(
+                            "specialist execution producer is invalid"
+                        ) from exc
+                    if (
+                        execution["evaluation_run_id"]
+                        != coordination_job["evaluation_run_id"]
+                        or execution["check_definition_version_id"]
+                        != specialist_assignment[
+                            "check_definition_version_id"
+                        ]
+                        or execution["criterion_check_binding_id"]
+                        != specialist_assignment[
+                            "criterion_check_binding_id"
+                        ]
+                        or execution["input_sha256"]
+                        != action_record["target_text_sha256"]
+                        or not isinstance(producer, dict)
+                        or producer.get("kind")
+                        != "account_backed_specialist"
+                        or producer.get("job_id") != coordination_job["id"]
+                    ):
+                        raise TruthImportError(
+                            "specialist execution does not match its exact "
+                            "job assignment"
+                        )
+                for result in result_records.values():
+                    if (
+                        result["evaluation_run_id"]
+                        != coordination_job["evaluation_run_id"]
+                        or result["criterion_definition_version_id"]
+                        != specialist_assignment[
+                            "criterion_definition_version_id"
+                        ]
+                        or result["check_execution_id"]
+                        not in execution_records
+                    ):
+                        raise TruthImportError(
+                            "specialist result does not match its assigned "
+                            "execution lineage"
+                        )
+                if row["status"] == "completed":
+                    execution_id = next(iter(execution_records))
+                    complete_result_ids = {
+                        record_key
+                        for (record_type, record_key), record in (
+                            record_by_identity.items()
+                        )
+                        if record_type == "evaluation_result"
+                        and record["check_execution_id"] == execution_id
+                    }
+                    if set(result_records) != complete_result_ids:
+                        raise TruthImportError(
+                            "specialist completion does not retain the "
+                            "complete result set for its execution"
+                        )
+                    if (
+                        next_job_record is None
+                        or next_job_record["document_id"]
+                        != coordination_job["document_id"]
+                        or next_job_record["action_snapshot_id"]
+                        != coordination_job["action_snapshot_id"]
+                        or next_job_record["evaluation_run_id"]
+                        != coordination_job["evaluation_run_id"]
+                        or next_job_record["plan_snapshot_id"]
+                        != coordination_job["plan_snapshot_id"]
+                    ):
+                        raise TruthImportError(
+                            "specialist next job does not preserve its exact "
+                            "run and plan lineage"
+                        )
+                    sequence = specialist_assignment["sequence"]
+                    total = specialist_assignment["total"]
+                    next_request = json.loads(
+                        next_job_record["request_summary_json"]
+                    )
+                    if sequence < total:
+                        next_assignment = next_request.get(
+                            "specialist_assignment"
+                        )
+                        if (
+                            next_job_record["role"] != "specialist"
+                            or next_job_record["parent_job_id"]
+                            != coordination_job["id"]
+                            or not isinstance(next_assignment, dict)
+                            or next_assignment.get("sequence") != sequence + 1
+                            or next_assignment.get("total") != total
+                        ):
+                            raise TruthImportError(
+                                "specialist handoff does not target the next "
+                                "frozen assignment"
+                            )
+                    elif (
+                        next_job_record["role"] != "coordinator"
+                        or next_job_record["parent_job_id"] is not None
+                        or next_request.get("coordinator_stage") != "initial"
+                    ):
+                        raise TruthImportError(
+                            "final specialist handoff does not target the "
+                            "initial coordinator"
+                        )
+            elif execution_records or result_records:
+                raise TruthImportError(
+                    "coordination status carries specialist execution lineage "
+                    "without a specialist assignment"
                 )
             coordination_status_by_job[job_id] = row["status"]
         elif item.record_type == "cowork_review_application":

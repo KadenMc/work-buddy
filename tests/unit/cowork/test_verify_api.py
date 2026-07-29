@@ -432,6 +432,64 @@ def test_user_criterion_draft_is_visible_but_not_silently_admitted(
     assert criterion["checks"][0]["data_sharing"]["class"] == "not_authorized"
 
 
+def test_user_verification_check_route_creates_an_active_admitted_check(
+    client,
+    seeded,
+):
+    body = {
+        "title": "State the positive claim",
+        "description": "Prefer direct positive descriptions.",
+        "evaluation_instructions": (
+            "Identify negative-definition framing and assess whether a direct "
+            "positive account preserves the intended meaning."
+        ),
+        "limitations": ["Substantive contrasts may require negation."],
+    }
+    url = (
+        f"/api/truth/doc/{seeded['document'].id}/verify/checks"
+        f"?store_id={seeded['store_id']}"
+    )
+
+    response = client.post(
+        url,
+        json=body,
+        headers={"X-WB-User-Ref": "verify-reviewer"},
+    )
+
+    assert response.status_code == 201
+    payload = response.get_json()
+    assert payload["created"] is True
+    assert payload["status"] == "active"
+    criterion = next(
+        item
+        for item in payload["configuration"]["criteria"]
+        if item["stable_key"] == payload["criterion_key"]
+    )
+    assert criterion["author_origin"]["definition_origin"] == "user"
+    assert criterion["operational_state"] == "active"
+    assert criterion["effective_activation"]["enabled"] is True
+    assert criterion["effective_activation"]["authorized_by"] == {
+        "kind": "human",
+        "ref": "verify-reviewer",
+        "meta": None,
+    }
+    assert criterion["checks"][0]["origin"]["definition_origin"] == "system"
+    assert criterion["checks"][0]["availability"]["state"] == "available"
+    assert criterion["checks"][0]["binding"]["configuration"] == {
+        "evaluation_instructions": body["evaluation_instructions"],
+        "limitations": body["limitations"],
+    }
+
+    repeated = client.post(
+        url,
+        json=body,
+        headers={"X-WB-User-Ref": "verify-reviewer"},
+    )
+    assert repeated.status_code == 200
+    assert repeated.get_json()["created"] is False
+    assert repeated.get_json()["criterion_key"] == payload["criterion_key"]
+
+
 def test_cothink_item_can_be_parked_then_dismissed_by_exact_item_hash(
     client,
     seeded,

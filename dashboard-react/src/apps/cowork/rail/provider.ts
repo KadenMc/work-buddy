@@ -12,6 +12,7 @@ import type {
   SittingResult,
   StagedClaimDecision,
   StagedDecision,
+  VerifyCheckInput,
   VerifyRunInspection,
   VerifyCriterionDraftInput,
 } from "./contracts";
@@ -63,7 +64,7 @@ export interface ReviewRailProvider {
     readonly conversationId: string;
     readonly messageId: string;
   }>;
-  /** Append an exact-document human activation for future Verify runs. */
+  /** Append an exact-document human activation and wait for the fresh projection. */
   setVerifyCriterionEnabled?(
     criterionKey: string,
     enabled: boolean,
@@ -75,6 +76,8 @@ export interface ReviewRailProvider {
   createVerifyCriterionDraft?(
     draft: VerifyCriterionDraftInput,
   ): Promise<void>;
+  /** Create, enable, and reload a declarative check backed by an admitted mechanism. */
+  createVerifyCheck?(check: VerifyCheckInput): Promise<void>;
 }
 
 /** How an explicit Review affordance should move attention in the editor. */

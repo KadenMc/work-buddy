@@ -1,13 +1,15 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { expectNoAccessibilityViolations } from "../../../test/setup";
+import { DashboardHelpProvider } from "../../../dashboard/help";
 import type { ChatExecutionControl } from "../../../widget-library/chat";
 import {
   demoReviewData,
   InMemoryReviewProvider,
   type EvaluationRunSummary,
+  type ReviewRailProvider,
 } from "../rail";
 import type {
   VerificationCriterion,
@@ -162,6 +164,7 @@ const providerFor = (
   documentId = "doc-a",
   runs: readonly EvaluationRunSummary[] = [],
   plan: VerifyExecutionPlan | null = executionPlan,
+  criteria: readonly VerificationCriterion[] = [criterion],
 ): InMemoryReviewProvider => {
   const data = demoReviewData();
   return new InMemoryReviewProvider({
@@ -172,7 +175,7 @@ const providerFor = (
         ...data.verificationConfiguration,
         documentId,
         executionPlan: plan,
-        criteria: [criterion],
+        criteria,
       },
       evaluationRuns: runs,
     },
@@ -404,6 +407,7 @@ describe("CoworkDocumentActionDock", () => {
         controller={fake.value}
         reviewProvider={providerFor("doc-a", [run])}
         onRunVerify={() => undefined}
+        execution={executionControl()}
         storage={new MemoryStorage()}
       />,
     );
@@ -415,13 +419,22 @@ describe("CoworkDocumentActionDock", () => {
 
     await user.click(verify);
     expect(verify).toHaveAttribute("aria-expanded", "true");
-    expect(await screen.findByText("Verify runs")).toBeVisible();
-    expect(screen.queryByText("Custom range")).not.toBeInTheDocument();
+    expect(
+      await screen.findByRole("region", { name: "Verification checks" }),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "Run Verify" })).toBeVisible();
+    expect(
+      screen.queryByText(/Sessions ·|What should Verify accomplish|How checks/u),
+    ).not.toBeInTheDocument();
 
     await user.click(cothink);
     expect(verify).toHaveAttribute("aria-expanded", "false");
     expect(cothink).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByText("Planned")).toBeVisible();
+    expect(
+      within(screen.getByRole("region", { name: "Co-think" })).getByText(
+        "Planned",
+      ),
+    ).toBeVisible();
     expect(
       screen.queryByRole("button", { name: "Invite perspective" }),
     ).not.toBeInTheDocument();
@@ -472,7 +485,7 @@ describe("CoworkDocumentActionDock", () => {
     ).toHaveAttribute("aria-expanded", "false");
   });
 
-  it("captures one exact target and passes the edited goal and protected intent", async () => {
+  it("runs the selected checks against Working on without extra prompt fields", async () => {
     const user = userEvent.setup();
     const fake = controller();
     const onRunVerify = vi.fn(async () => undefined);
@@ -489,23 +502,24 @@ describe("CoworkDocumentActionDock", () => {
     );
 
     await user.click(screen.getByRole("button", { name: /^Verify/u }));
-    await screen.findByRole("button", { name: "Run Verify" });
-    const goal = screen.getByRole("textbox", {
-      name: "What should Verify accomplish?",
-    });
-    const protectedIntent = screen.getByRole("textbox", {
-      name: "What must it preserve?",
-    });
-    await user.clear(goal);
-    await user.type(goal, "Keep the PRD faithful to the requested workflow.");
-    await user.clear(protectedIntent);
-    await user.type(protectedIntent, "Do not change the product boundary.");
+    expect(
+      screen.queryByRole("textbox", {
+        name: "What should Verify accomplish?",
+      }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("textbox", {
+        name: "What must it preserve?",
+      }),
+    ).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Run Verify" }));
 
     await waitFor(() =>
       expect(onRunVerify).toHaveBeenCalledWith(capture, {
-        userGoal: "Keep the PRD faithful to the requested workflow.",
-        protectedIntent: "Do not change the product boundary.",
+        userGoal:
+          "Evaluate the current Working on target with the selected verification checks.",
+        protectedIntent:
+          "Preserve the author's intended meaning, voice, and constraints.",
         execution: {
           providerId: "codex",
           modelId: "gpt-5.6",
@@ -517,7 +531,7 @@ describe("CoworkDocumentActionDock", () => {
     expect(fake.capture).toHaveBeenCalledWith("working_target");
   });
 
-  it("renders a Verify-local execution picker only inside Verify", async () => {
+  it("keeps provider mechanics out of the main run surface", async () => {
     const user = userEvent.setup();
     render(
       <CoworkDocumentActionDock
@@ -532,22 +546,105 @@ describe("CoworkDocumentActionDock", () => {
 
     await user.click(screen.getByRole("button", { name: /^Verify/u }));
     expect(
-      screen.getByRole("button", { name: /Run with Codex · GPT-5.6/u }),
-    ).toBeVisible();
+      screen.queryByRole("button", { name: /Run with Codex · GPT-5.6/u }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run Verify" })).toBeVisible();
     await user.click(screen.getByRole("button", { name: /^Co-think/u }));
     expect(
       screen.queryByRole("button", { name: /Run with Codex · GPT-5.6/u }),
     ).not.toBeInTheDocument();
   });
 
-  it("keeps an unsaved criterion draft mounted across sibling-panel toggles", async () => {
+  it("counts every enabled check and blocks Run when a selected check is unavailable", async () => {
+    const user = userEvent.setup();
+    const unavailableCriterion: VerificationCriterion = {
+      ...criterion,
+      id: "criterion-unavailable",
+      stableKey: "legacy-unavailable",
+      title: "Legacy unavailable check",
+      definitionOrigin: "user",
+      operationalState: "unavailable",
+      availableCheckCount: 0,
+      issues: [],
+      checks: criterion.checks.map((check) => ({
+        ...check,
+        id: "check-unavailable",
+        stableKey: "legacy-unavailable",
+        availability: "unavailable",
+        unavailableReason: "Its evaluator is not admitted.",
+      })),
+    };
+    render(
+      <CoworkDocumentActionDock
+        storeId="store-a"
+        documentId="doc-a"
+        controller={controller().value}
+        reviewProvider={providerFor(
+          "doc-a",
+          [],
+          executionPlan,
+          [criterion, unavailableCriterion],
+        )}
+        onRunVerify={() => undefined}
+        execution={executionControl()}
+        storage={new MemoryStorage()}
+      />,
+    );
+
+    const verify = screen.getByRole("button", { name: "Verify" });
+    await waitFor(() =>
+      expect(verify).toHaveAccessibleDescription("2 selected"),
+    );
+    await user.click(verify);
+    expect(screen.getByRole("button", { name: "Run Verify" })).toBeDisabled();
+    expect(screen.getByText("Turn off checks that need setup.")).toBeVisible();
+    await user.click(screen.getByText("Checks"));
+    expect(screen.getAllByText("2 selected")).toHaveLength(2);
+    expect(
+      screen.getByRole("checkbox", {
+        name: "Legacy unavailable check: include in Verify runs",
+      }),
+    ).toBeChecked();
+  });
+
+  it("explains an unavailable execution model on the existing Run status surface", async () => {
+    const user = userEvent.setup();
+    render(
+      <CoworkDocumentActionDock
+        storeId="store-a"
+        documentId="doc-a"
+        controller={controller().value}
+        reviewProvider={providerFor()}
+        onRunVerify={() => undefined}
+        execution={{
+          ...executionControl(),
+          snapshot: null,
+          status: "unavailable",
+          currentAvailable: false,
+        }}
+        storage={new MemoryStorage()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Verify" }));
+    const run = screen.getByRole("button", { name: "Run Verify" });
+    expect(run).toBeDisabled();
+    expect(run).toHaveAccessibleDescription(
+      "Verify needs an available account model.",
+    );
+    expect(
+      screen.getByText("Verify needs an available account model."),
+    ).toBeVisible();
+  });
+
+  it("replaces Run with Add check and preserves the draft across sibling toggles", async () => {
     const user = userEvent.setup();
     const provider = providerFor() as InMemoryReviewProvider & {
-      createVerifyCriterionDraft: (
-        draft: unknown,
+      createVerifyCheck: (
+        check: unknown,
       ) => Promise<void>;
     };
-    provider.createVerifyCriterionDraft = vi.fn(async () => undefined);
+    provider.createVerifyCheck = vi.fn(async () => undefined);
     render(
       <CoworkDocumentActionDock
         storeId="store-a"
@@ -560,19 +657,116 @@ describe("CoworkDocumentActionDock", () => {
     );
 
     await user.click(screen.getByRole("button", { name: /^Verify/u }));
-    await user.click(await screen.findByText("Verify setup"));
-    await user.click(screen.getByText("Add a user-authored criterion"));
-    const name = screen.getByRole("textbox", { name: "Criterion name" });
+    await user.click(
+      await screen.findByRole("button", { name: "Add check" }),
+    );
+    expect(
+      screen.queryByRole("button", { name: "Run Verify" }),
+    ).not.toBeInTheDocument();
+    const name = screen.getByRole("textbox", { name: "Name" });
     await user.type(name, "Avoid negative definitions");
 
     await user.click(screen.getByRole("button", { name: /^Co-think/u }));
     expect(
-      screen.queryByRole("textbox", { name: "Criterion name" }),
+      screen.queryByRole("textbox", { name: "Name" }),
     ).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /^Verify/u }));
     expect(
-      screen.getByRole("textbox", { name: "Criterion name" }),
+      screen.getByRole("textbox", { name: "Name" }),
     ).toHaveValue("Avoid negative definitions");
+    await user.click(screen.getByRole("button", { name: "Close add check" }));
+    expect(screen.getByRole("button", { name: "Run Verify" })).toBeVisible();
+  });
+
+  it("returns a saved personal check to the selected runnable menu", async () => {
+    const user = userEvent.setup();
+    const base = providerFor();
+    let current = await base.load();
+    const listeners = new Set<() => void>();
+    const personalCriterion: VerificationCriterion = {
+      ...criterion,
+      id: "criterion-personal",
+      stableKey: "state_positive_claim",
+      title: "State the positive claim",
+      description: "Prefer direct positive descriptions.",
+      definitionOrigin: "user",
+      author: { kind: "human", ref: "user", meta: null },
+      activationId: "activation-personal",
+      activationOrigin: "user",
+      authorizedBy: { kind: "human", ref: "user", meta: null },
+      checks: criterion.checks.map((check) => ({
+        ...check,
+        id: "check-personal",
+        stableKey: "instruction_model_check",
+        mechanism: "model_judge",
+        executorRef: "system:instruction-model-check/v1",
+        definitionOrigin: "system",
+        dataSharingClass: "account_backed_agent",
+        externalEgress: true,
+        dataSharingBasis: "explicit_verify_run_selection",
+        executionLocation: "account_backed_agent",
+        bindingId: "binding-personal",
+      })),
+    };
+    const provider: ReviewRailProvider = {
+      load: async () => current,
+      subscribe: (listener) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      submitSitting: base.submitSitting.bind(base),
+      createVerifyCheck: async () => {
+        current = {
+          ...current,
+          verificationConfiguration: {
+            ...current.verificationConfiguration,
+            criteria: [
+              ...current.verificationConfiguration.criteria,
+              personalCriterion,
+            ],
+          },
+        };
+        for (const listener of listeners) listener();
+      },
+    };
+    render(
+      <CoworkDocumentActionDock
+        storeId="store-a"
+        documentId="doc-a"
+        controller={controller().value}
+        reviewProvider={provider}
+        onRunVerify={() => undefined}
+        execution={executionControl()}
+        storage={new MemoryStorage()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Verify" }));
+    await user.click(await screen.findByRole("button", { name: "Add check" }));
+    await user.type(
+      screen.getByRole("textbox", { name: "Name" }),
+      "State the positive claim",
+    );
+    await user.type(
+      screen.getByRole("textbox", { name: "What should it check?" }),
+      "Prefer direct positive descriptions.",
+    );
+    await user.click(screen.getByRole("button", { name: "Save check" }));
+
+    expect(
+      await screen.findByRole("button", { name: "Run Verify" }),
+    ).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "Verify" }),
+    ).toHaveAccessibleDescription("2 selected");
+    await user.click(screen.getByText("Checks"));
+    expect(await screen.findByText("State the positive claim")).toBeVisible();
+    expect(screen.getByText("Yours")).toBeVisible();
+    expect(
+      screen.getByRole("checkbox", {
+        name: "State the positive claim: include in Verify runs",
+      }),
+    ).toBeChecked();
   });
 
   it("fails closed without matching ready review data and an authoritative plan", async () => {
@@ -589,12 +783,12 @@ describe("CoworkDocumentActionDock", () => {
       />,
     );
     await user.click(screen.getByRole("button", { name: /^Verify/u }));
-    expect(screen.getByRole("button", { name: "Run Verify" })).toBeDisabled();
     expect(
-      screen.getByText(
-        "Execution disclosure · unknown/unattested for this document",
-      ),
+      screen.getByText("Loading checks…"),
     ).toBeVisible();
+    expect(
+      screen.queryByText(/unattested|execution disclosure/u),
+    ).not.toBeInTheDocument();
     mismatched.unmount();
 
     render(
@@ -611,36 +805,48 @@ describe("CoworkDocumentActionDock", () => {
     await user.click(screen.getByRole("button", { name: /^Verify/u }));
     expect(screen.getByRole("button", { name: "Run Verify" })).toBeDisabled();
     expect(
-      screen.queryByText(/no checker egress|up to 3|no provider\/model fallback/i),
+      screen.queryByText(/checker egress|sessions ·|provider\/model fallback/i),
     ).not.toBeInTheDocument();
   });
 
-  it("renders execution, sharing, session, fallback, and cost claims from the plan", async () => {
+  it("attaches Hover help to the existing sibling headers", async () => {
     const user = userEvent.setup();
     render(
-      <CoworkDocumentActionDock
-        storeId="store-a"
-        documentId="doc-a"
-        controller={controller().value}
-        reviewProvider={providerFor()}
-        onRunVerify={() => undefined}
-        execution={executionControl()}
-        storage={new MemoryStorage()}
-      />,
+      <DashboardHelpProvider enabled>
+        <CoworkDocumentActionDock
+          storeId="store-a"
+          documentId="doc-a"
+          controller={controller().value}
+          reviewProvider={providerFor()}
+          onRunVerify={() => undefined}
+          execution={executionControl()}
+          storage={new MemoryStorage()}
+        />
+      </DashboardHelpProvider>,
     );
-    await user.click(screen.getByRole("button", { name: /^Verify/u }));
 
+    const verify = screen.getByRole("button", { name: "Verify" });
+    const cothink = screen.getByRole("button", { name: "Co-think" });
+    await waitFor(() =>
+      expect(verify).toHaveAccessibleDescription("1 selected"),
+    );
+    expect(cothink).toHaveAccessibleDescription("Planned");
+    expect(verify).toHaveAttribute("data-help-target", "true");
+    expect(cothink).toHaveAttribute("data-help-target", "true");
+    expect(screen.queryByText(/^How /u)).not.toBeInTheDocument();
+
+    await user.hover(verify);
     expect(
-      screen.getByText(/Checker · captured target · in process/u),
+      await screen.findByText(
+        "Choose checks and run them against Working on.",
+      ),
     ).toBeVisible();
+    await user.unhover(verify);
+    await user.hover(cothink);
     expect(
-      screen.getByText(/Sessions · 2 initial · 5 maximum/u),
-    ).toBeVisible();
-    expect(
-      screen.getByText(/Cost control · estimate · \$1.25 per worker session/u),
-    ).toBeVisible();
-    expect(
-      screen.getByText(/no provider\/model fallback · fail closed/u),
+      await screen.findByText(
+        "Challenge or explore the work from another angle.",
+      ),
     ).toBeVisible();
   });
 
@@ -673,6 +879,7 @@ describe("CoworkDocumentActionDock", () => {
     const runButton = screen.getByRole("button", { name: "Run Verify" });
     expect(runButton).toBeEnabled();
 
+    await user.click(screen.getByText("Checks"));
     await user.click(
       screen.getByRole("checkbox", {
         name: "Preferred terminology: include in Verify runs",
@@ -725,22 +932,21 @@ describe("CoworkDocumentActionDock", () => {
       />,
     );
 
+    expect(await screen.findByText(/Recheck\./u)).toBeVisible();
+    expect(screen.queryByText("Original run model · Codex · GPT-5.6"))
+      .not.toBeInTheDocument();
     expect(
-      await screen.findByText(/Bound recheck\./u),
-    ).toBeVisible();
-    expect(
-      screen.getByLabelText("Bound recheck execution"),
-    ).toHaveTextContent("Original run model · Codex · GPT-5.6");
-    expect(
-      screen.getByRole("textbox", {
+      screen.queryByRole("textbox", {
         name: "What should Verify accomplish?",
       }),
-    ).toBeDisabled();
-    const runVerify = screen.getByRole("button", { name: "Run Verify" });
+    ).not.toBeInTheDocument();
+    const runVerify = await screen.findByRole("button", {
+      name: "Run Verify",
+    });
     expect(runVerify).toBeDisabled();
     await user.click(
       screen.getByRole("button", {
-        name: "Use this Working on passage",
+        name: "Use this passage",
       }),
     );
     await waitFor(() => expect(runVerify).toBeEnabled());
@@ -836,11 +1042,13 @@ describe("CoworkDocumentActionDock", () => {
     );
 
     await user.click(
-      screen.getByRole("button", {
-        name: "Use this Working on passage",
+      await screen.findByRole("button", {
+        name: "Use this passage",
       }),
     );
-    const runVerify = screen.getByRole("button", { name: "Run Verify" });
+    const runVerify = await screen.findByRole("button", {
+      name: "Run Verify",
+    });
     await waitFor(() => expect(runVerify).toBeEnabled());
     await user.click(runVerify);
 
@@ -873,13 +1081,15 @@ describe("CoworkDocumentActionDock", () => {
 
     expect(
       await screen.findByText(
-        "Original target · Original methods passage",
+        "Original passage: Original methods passage.",
       ),
     ).toBeVisible();
     expect(onRunVerify).not.toHaveBeenCalled();
     expect(fake.captureReference).not.toHaveBeenCalled();
 
-    await user.click(screen.getByRole("button", { name: "Run Verify" }));
+    await user.click(
+      await screen.findByRole("button", { name: "Run Verify" }),
+    );
     await waitFor(() =>
       expect(fake.captureReference).toHaveBeenCalledWith(
         "working_target",

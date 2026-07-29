@@ -57,9 +57,11 @@ The compact editor-top controls manage only the reusable Working on target:
   and
 - **Clear** returns Working on to the whole document.
 
-The Verify dock defaults to Working on and may choose current selection,
-current section, or whole document as a one-run override without rewriting the
-reusable target.
+Ordinary Verify runs and authored Chat messages use Working on directly; the
+Verify dock does not add a second target picker. A proposal-linked recheck may
+rebind its original exact durable target without rewriting Working on. Only a
+legacy unresolved recheck asks the person to set and separately affirm a new
+exact Working on passage.
 
 The active Working on range is view-only editor state: its text is highlighted
 and its exact start/end boundaries have visible markers. These decorations do

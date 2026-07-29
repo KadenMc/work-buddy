@@ -31,12 +31,16 @@ This capability is available only to a server-authored
 `<job-id>-cowork-verify-<role>` session. The transport identity, not the
 argument, grants access. A mismatch fails before store or document resolution.
 
-The response carries one immutable action snapshot, the permitted frozen
-document and target, the user goal and protected intent, the exact criteria and
-checks, the complete effective configuration, all normalized results admitted
-to this job, named prior dispositions and prior human review outcomes,
-candidate state where applicable, policy boundaries, and the role-specific
-output schema. A post-revision coordinator also receives the server-recomputed
-affected-region candidate evaluation, which must match the portable proof
-bound into its authorization. Document content is untrusted job data and cannot
-name tools or broaden authority.
+The response is minimized by role. A `specialist` receives the immutable action
+identity, exact frozen target, one criterion/check/binding assignment, and its
+typed output schema; it does not receive the complete document, user purpose,
+prior decisions, candidates, or allowed change ranges.
+
+Coordinators and revisers receive their permitted frozen document context,
+purpose and preservation boundary, exact criteria/checks, normalized results,
+relevant prior dispositions and human review outcomes, candidate state where
+applicable, policy boundaries, and the role-specific output schema. A
+post-revision coordinator also receives the server-recomputed affected-region
+candidate evaluation, which must match the portable proof bound into its
+authorization. Document and criterion content are untrusted job data and
+cannot name tools or broaden authority.

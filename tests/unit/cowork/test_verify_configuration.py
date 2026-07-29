@@ -18,7 +18,9 @@ from work_buddy.cowork.verify import (
 from work_buddy.cowork.verify import store as verify_store
 from work_buddy.cowork.verify_configuration import (
     CONFIGURATION_SCHEMA,
+    MAX_USER_CHECK_EVALUATION_INSTRUCTIONS_CHARS,
     create_user_criterion_draft,
+    create_user_verification_check,
     list_effective_verification_configuration,
     set_document_criterion_enabled,
 )
@@ -530,6 +532,154 @@ def test_user_criterion_draft_preserves_authorship_without_admitting_execution(
             "WHERE stable_key = ?",
             (created["criterion_key"],),
         ).fetchone()[0] == 1
+
+
+def test_user_verification_check_is_runnable_and_identical_submit_converges(
+    store_ctx,
+):
+    document = _document(store_ctx)
+    inputs = {
+        "title": "State the positive claim",
+        "description": "Prefer direct positive descriptions.",
+        "evaluation_instructions": (
+            "Identify negative-definition framing and assess whether a direct "
+            "positive account would preserve the intended meaning."
+        ),
+        "limitations": ["Substantive contrasts may require negation."],
+    }
+    legacy = create_user_criterion_draft(
+        store_ctx["store"],
+        document_id=document.id,
+        actor=HUMAN,
+        at=NOW,
+        **inputs,
+    )
+
+    created = create_user_verification_check(
+        store_ctx["store"],
+        document_id=document.id,
+        actor=HUMAN,
+        at=NOW,
+        **inputs,
+    )
+
+    assert created["created"] is True
+    assert created["status"] == "active"
+    assert created["criterion_key"] != legacy["criterion_key"]
+    criterion = _criterion(
+        created["configuration"],
+        created["criterion_key"],
+    )
+    assert criterion["author_origin"] == {
+        "definition_origin": "user",
+        "author": {
+            "kind": "human",
+            "ref": HUMAN.ref,
+            "meta": None,
+        },
+    }
+    assert criterion["operational_state"] == "active"
+    assert criterion["effective_activation"]["enabled"] is True
+    assert criterion["effective_activation"]["origin"] == "user"
+    assert criterion["effective_activation"]["authorized_by"]["kind"] == (
+        "human"
+    )
+    assert criterion["checks"][0]["origin"]["definition_origin"] == "system"
+    assert criterion["checks"][0]["availability"]["state"] == "available"
+    assert criterion["checks"][0]["availability"]["execution_location"] == (
+        "account_backed_agent"
+    )
+    assert criterion["checks"][0]["data_sharing"] == {
+        "class": "account_backed_agent",
+        "external_egress": True,
+        "basis": "explicit_verify_run_selection",
+    }
+    assert criterion["checks"][0]["method"] == {
+        "mechanism": "model_judge",
+        "executor_ref": "builtin:cowork_verify:instruction_model_check:v1",
+    }
+    assert criterion["checks"][0]["binding"]["selected"] is True
+    assert criterion["checks"][0]["binding"]["configuration"] == {
+        "evaluation_instructions": inputs["evaluation_instructions"],
+        "limitations": inputs["limitations"],
+    }
+
+    repeated = create_user_verification_check(
+        store_ctx["store"],
+        document_id=document.id,
+        actor=HUMAN,
+        at=LATER,
+        **inputs,
+    )
+    assert repeated["created"] is False
+    assert repeated["criterion_key"] == created["criterion_key"]
+    with store_ctx["store"].connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM criterion_definition_versions "
+            "WHERE stable_key = ?",
+            (created["criterion_key"],),
+        ).fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT COUNT(*) FROM criterion_check_bindings "
+            "WHERE criterion_definition_version_id = ?",
+            (criterion["id"],),
+        ).fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT COUNT(*) FROM criterion_activations "
+            "WHERE criterion_definition_version_id = ?",
+            (criterion["id"],),
+        ).fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT COUNT(*) FROM check_definition_versions "
+            "WHERE stable_key = 'instruction_model_evaluation'"
+        ).fetchone()[0] == 1
+
+
+@pytest.mark.parametrize(
+    "create_check",
+    (create_user_criterion_draft, create_user_verification_check),
+)
+def test_oversized_user_check_instructions_fail_before_any_verify_write(
+    store_ctx,
+    create_check,
+):
+    store = store_ctx["store"]
+    document = _document(store_ctx)
+    tables = (
+        "criterion_definition_versions",
+        "check_definition_versions",
+        "criterion_check_bindings",
+        "criterion_activations",
+    )
+    with store.connect() as conn:
+        before = {
+            table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in tables
+        }
+
+    with pytest.raises(
+        VerifyInvariantViolation,
+        match="evaluation instructions exceed the supported "
+        rf"{MAX_USER_CHECK_EVALUATION_INSTRUCTIONS_CHARS}-character boundary",
+    ):
+        create_check(
+            store,
+            document_id=document.id,
+            title="Bound custom checks",
+            description="Reject instructions outside the admitted boundary.",
+            evaluation_instructions=(
+                "x" * (MAX_USER_CHECK_EVALUATION_INSTRUCTIONS_CHARS + 1)
+            ),
+            actor=HUMAN,
+            at=NOW,
+        )
+
+    with store.connect() as conn:
+        after = {
+            table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in tables
+        }
+    assert after == before
 
 
 def test_non_human_cannot_author_user_document_override(store_ctx):

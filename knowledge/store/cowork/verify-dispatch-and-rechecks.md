@@ -2,7 +2,7 @@
 name: Co-work Verify durable dispatch and rechecks
 kind: system
 description: Closed durable worker dispatch, fail-closed restart recovery, and proposal-linked re-evaluation obligations.
-summary: Verify worker launches use the disk-backed operation queue through a non-agent-callable internal allowlist. Recovery recreates only provably unlaunched work, fails closed on uncertain calls, and resumes durable typed submissions without another model call. Applied corrections project exact recheck intents that Review hands to the Verify dock; only dock-owned Run Verify launches them.
+summary: Verify specialist and coordinator launches use the disk-backed operation queue through a non-agent-callable internal allowlist. Recovery recreates only provably unlaunched work, fails closed on uncertain calls, and resumes durable typed submissions without another model call. Applied corrections project exact recheck intents that Review hands to the Verify dock; only dock-owned Run Verify launches them.
 entry_points:
 - work_buddy.cowork.verify_dispatch
 - work_buddy.cowork.verify_runtime
@@ -60,6 +60,24 @@ Concurrent identical enqueues converge; conflicting reuse fails. `RetrySweep`
 provides the existing atomic lease. The runtime job then adds an atomic launch
 claim, preventing two sweepers from spawning the same worker.
 
+For a mixed selected-check plan, admitted in-process checks finish first.
+Model-backed check assignments then run as a deterministic sequential chain of
+least-authority `specialist` jobs. Each job is bound to exactly one criterion,
+check, binding, configuration hash, and sequence position. Its normalized
+submission commits the exact check execution and result IDs, prepares the one
+deterministic successor, and then durably completes the parent with that exact
+next-job reference before enqueueing the successor. A crash during enqueue
+therefore leaves a completed parent and one recoverable prepared child, never
+a failed parent plus a viable duplicate path. The initial whole-context
+coordinator is the final specialist's one deterministic successor.
+
+Portable coordination lifecycle records retain the sanitized specialist
+assignment plus consequence IDs, never raw worker prose. Replay validates the
+assignment against the frozen plan and returns only the already-bound next-job
+or coordinator consequence. Prepared-job reconciliation recreates a missing
+queue handoff for that same child without projecting the parent again or
+starting another specialist.
+
 ## What recovery may do
 
 On sidecar start and queue sweeps:
@@ -80,6 +98,13 @@ The last case is intentionally not replayed: the host cannot prove whether the
 external model call began before the crash. The model-call receipt has
 `retry_limit: 0`; queue retry handles pre-launch dispatch failure, not silent
 model-call replay.
+
+Portable import enforces the same boundary without trusting runtime state:
+specialist sequence and parent links must match the admitted account-backed
+assignments in the frozen plan, completed result references must be complete,
+and the final handoff must target the run's initial coordinator. Receipts must
+retain the fixed cost ceiling, zero retry limit, human authorizer, exact
+provider/model, and captured-target-only specialist boundary.
 
 The durable `submitted` boundary is not a call retry. It means the worker call
 already returned and the normalized typed payload plus SHA-256 digest were

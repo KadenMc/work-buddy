@@ -50,6 +50,18 @@ _STATUS_TRANSITIONS: dict[str, frozenset[str]] = {
 }
 
 
+def _typed_output_json(value: Mapping[str, Any]) -> str:
+    """Serialize typed worker output without altering evidence whitespace."""
+
+    return json.dumps(
+        dict(value),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class VerifyRuntimeJob:
     job_id: str
@@ -545,7 +557,7 @@ def update_job(
     if status not in _VALID_STATUSES:
         raise ValueError(f"unsupported Verify job status: {status}")
     timestamp = at or utc_now()
-    output_json = None if output is None else canonical_json(dict(output))
+    output_json = None if output is None else _typed_output_json(output)
     if output_json is not None:
         computed_output_sha256 = sha256_text(output_json)
         if output_sha256 is None:

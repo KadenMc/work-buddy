@@ -19,7 +19,14 @@ from work_buddy.cowork import (
     verify_rechecks,
     verify_runtime,
 )
-from work_buddy.cowork.execution_identity import cowork_verify_job_session_id
+from work_buddy.cowork.execution_identity import (
+    CoworkVerifyRole,
+    cowork_verify_job_session_id,
+)
+from work_buddy.cowork.verify_configuration import (
+    create_user_verification_check,
+)
+from work_buddy.cowork.verify_coordination import portable_coordination_jobs
 from work_buddy.cowork.verify_dispatch import (
     dispatch_verify_launch,
     reconcile_verify_launches,
@@ -31,11 +38,15 @@ from work_buddy.cowork.verify_jobs import (
 from work_buddy.cowork.verify_orchestration import (
     VerifyOrchestrationError,
     get_worker_job,
+    resume_submitted_job,
+    run_status_projection,
     start_verify_run,
+    submit_worker_job,
 )
 from work_buddy.cowork.verify_runtime import (
     claim_job_launch,
     get_job,
+    jobs_for_run,
     update_job,
 )
 from work_buddy.cowork.verify import (
@@ -203,6 +214,140 @@ def test_missing_handoff_is_recreated_from_prepared_job(
     assert result["queued"] == 1
     assert path.is_file()
     assert get_job(started["job_id"]).status == "prepared"
+
+
+def test_specialist_handoff_crash_completes_parent_before_recovering_exact_child(
+    durable_dispatch_ctx: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    store = durable_dispatch_ctx["store"]
+    capture = _capture(durable_dispatch_ctx)
+    for title in ("Positive framing", "Reader clarity"):
+        create_user_verification_check(
+            store,
+            document_id=capture["documentId"],
+            title=title,
+            description=f"Evaluate {title.lower()}.",
+            evaluation_instructions=f"Evaluate the target for {title.lower()}.",
+            actor=HUMAN,
+        )
+    started = start_verify_run(
+        store,
+        document_id=capture["documentId"],
+        capture=capture,
+        selection=SELECTION,
+        actor=HUMAN,
+        user_goal="Run the selected checks, then reconcile their results.",
+        protected_intent="Preserve the author's substantive meaning.",
+        validate_selection=lambda selection: selection,
+    )
+    first = get_job(started["job_id"])
+    assert first is not None
+    assert first.role is CoworkVerifyRole.SPECIALIST
+    assert first.status == "prepared"
+
+    spawn_calls: list[str] = []
+
+    def spawn(**kwargs: Any) -> VerifyJobSpawnMetadata:
+        spawn_calls.append(str(kwargs["job_id"]))
+        return _spawn_result(**kwargs)
+
+    monkeypatch.setattr(verify_dispatch, "spawn_verify_job", spawn)
+    launched = RetrySweep(reconcile_internal=True).sweep()
+    first = get_job(first.job_id)
+    assert len(launched) == 1 and launched[0]["success"] is True
+    assert first is not None and first.status == "running"
+    assert spawn_calls == [first.job_id]
+
+    original_enqueue = verify_dispatch.enqueue_verify_launch
+
+    def crash_before_enqueue(*_args: Any, **_kwargs: Any):
+        raise RuntimeError("simulated handoff enqueue crash")
+
+    monkeypatch.setattr(
+        verify_dispatch,
+        "enqueue_verify_launch",
+        crash_before_enqueue,
+    )
+    payload = {
+        "results": [
+            {
+                "result_kind": "conforming",
+                "severity": "info",
+                "message": "No issue found by this check.",
+                "evidence": None,
+                "coverage": "complete_target_review",
+                "limitations": ["Model judgment is advisory."],
+            }
+        ],
+        "summary": "The complete target was reviewed.",
+    }
+    with pytest.raises(RuntimeError, match="simulated handoff enqueue crash"):
+        submit_worker_job(
+            job_id=first.job_id,
+            payload=payload,
+            agent_session_id=first.session_id,
+        )
+
+    parent = get_job(first.job_id)
+    run_jobs = jobs_for_run(store.store_id, started["run_id"])
+    assert parent is not None and parent.status == "completed"
+    assert len(run_jobs) == 2
+    child = next(job for job in run_jobs if job.job_id != first.job_id)
+    assert child.role is CoworkVerifyRole.SPECIALIST
+    assert child.parent_job_id == first.job_id
+    assert child.status == "prepared"
+    portable_parent = next(
+        item
+        for item in portable_coordination_jobs(
+            store,
+            evaluation_run_id=started["run_id"],
+        )
+        if item["job_id"] == first.job_id
+    )
+    assert portable_parent["status"] == "completed"
+    assert portable_parent["consequence_refs"]["next_job_id"] == child.job_id
+
+    replay = resume_submitted_job(first.job_id)
+    assert replay is not None
+    assert replay["status"] == "completed"
+    assert replay["replayed"] is True
+    assert replay["next_job_id"] == child.job_id
+    assert len(jobs_for_run(store.store_id, started["run_id"])) == 2
+    assert spawn_calls == [first.job_id]
+
+    monkeypatch.setattr(
+        verify_dispatch,
+        "enqueue_verify_launch",
+        original_enqueue,
+    )
+    reconciled = reconcile_verify_launches(
+        operations_dir=durable_dispatch_ctx["operations_path"]
+    )
+    assert reconciled["queued"] == 1
+    child_path, child_record = _operation(
+        durable_dispatch_ctx,
+        child.job_id,
+    )
+    assert child_path.is_file()
+    assert child_record["params"] == {"job_id": child.job_id}
+
+    launched_child = RetrySweep(reconcile_internal=True).sweep()
+    recovered = get_job(child.job_id)
+    assert len(launched_child) == 1
+    assert launched_child[0]["success"] is True
+    assert recovered is not None and recovered.status == "running"
+    assert spawn_calls == [first.job_id, child.job_id]
+    summary = next(
+        item
+        for item in run_status_projection(
+            store,
+            document_id=capture["documentId"],
+        )
+        if item["run_id"] == started["run_id"]
+    )
+    assert summary["status"] == "running"
+    assert summary["status"] != "completed_with_failures"
 
 
 def test_sidecar_recovers_prepared_job_when_operations_directory_is_missing(

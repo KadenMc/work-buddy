@@ -287,4 +287,53 @@ describe("HttpCoworkDocClient Verify setup", () => {
       limitations: ["Negation can be necessary."],
     });
   });
+
+  it("creates a runnable user-authored verification check", async () => {
+    const configuration = {
+      schema: "work-buddy.cowork-verify-configuration/v1",
+      document_id: "doc-1",
+      coordination: {
+        required: true,
+        selection: "explicit_provider_and_model_at_run_start",
+        content_boundary: "complete_permitted_frozen_document",
+        egress_class: "account_backed_agent",
+        external_egress: true,
+        cost_ceiling_usd_per_worker: 2,
+        separate_reviser_for_findings: true,
+      },
+      criteria: [],
+    };
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      new Response(JSON.stringify({ ok: true, configuration }), {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const client = new HttpCoworkDocClient({
+      documentId: "doc-1",
+      storeId: "store-1",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await expect(
+      client.createVerifyCheck({
+        title: "State the positive claim",
+        description: "Prefer direct positive descriptions.",
+        evaluationInstructions: "Identify negative-definition framing.",
+        limitations: ["Negation can be necessary."],
+      }),
+    ).resolves.toEqual(configuration);
+
+    const [url, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(url).toBe(
+      "/api/truth/doc/doc-1/verify/checks?store_id=store-1",
+    );
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(String(init?.body))).toEqual({
+      title: "State the positive claim",
+      description: "Prefer direct positive descriptions.",
+      evaluation_instructions: "Identify negative-definition framing.",
+      limitations: ["Negation can be necessary."],
+    });
+  });
 });

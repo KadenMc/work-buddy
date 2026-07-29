@@ -29,6 +29,7 @@ from work_buddy.cowork.verify import (
     CheckDefinitionVersion,
     CheckExecution,
     CothinkItem,
+    CriterionActivation,
     CriterionCheckBinding,
     CriterionDefinitionVersion,
     EvaluationPlanSnapshot,
@@ -38,13 +39,14 @@ from work_buddy.cowork.verify import (
     ResultRelation,
     RoutingDisposition,
     VerifyInvariantViolation,
+    admitted_check_executor,
     create_action_snapshot,
     record_cothink_item,
     record_model_call_authorization,
     record_result_relation,
     record_routing_disposition,
-    run_terminology_exact_match,
-    seed_terminology_exact_match,
+    record_specialist_evaluation,
+    run_admitted_checks,
 )
 from work_buddy.cowork.verify import store as verify_store
 from work_buddy.cowork.verify_configuration import (
@@ -52,6 +54,7 @@ from work_buddy.cowork.verify_configuration import (
     list_effective_verification_configuration,
 )
 from work_buddy.cowork.verify_execution import (
+    MAX_VERIFY_SPECIALIST_CHECKS_PER_RUN,
     verify_execution_disclosure_plan,
 )
 from work_buddy.cowork.verify_candidate_evaluation import (
@@ -83,6 +86,10 @@ from work_buddy.cowork.verify_runtime import (
 from work_buddy.cowork.verify_rechecks import (
     validate_recheck_intent,
     verification_recheck_intents,
+)
+from work_buddy.cowork.verify_specialist import (
+    SpecialistOutputError,
+    normalize_specialist_output,
 )
 from work_buddy.truth import documents, proposals
 from work_buddy.truth.anchors import CompositeSelector
@@ -139,6 +146,19 @@ def _mapping(value: object, label: str) -> dict[str, Any]:
     ):
         raise VerifyOrchestrationError(f"{label} must be an object")
     return dict(value)
+
+
+def _typed_output_sha256(value: Mapping[str, Any]) -> str:
+    """Hash typed worker output without normalizing evidence text."""
+
+    serialized = json.dumps(
+        dict(value),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    return sha256_text(serialized)
 
 
 def _required_text(value: object, label: str) -> str:
@@ -345,8 +365,12 @@ def _authorization_actor(job: VerifyRuntimeJob) -> Actor:
     return Actor("human", authorizer)
 
 
-def _result_view(result: EvaluationResult) -> dict[str, Any]:
-    return {
+def _result_view(
+    result: EvaluationResult,
+    *,
+    include_check_binding: bool = False,
+) -> dict[str, Any]:
+    view = {
         "evaluation_result_id": result.id,
         "result_kind": result.result_kind,
         "severity": result.severity,
@@ -360,6 +384,16 @@ def _result_view(result: EvaluationResult) -> dict[str, Any]:
         "canonical_sha256": result.canonical_sha256,
         "created_at": result.created_at,
     }
+    if include_check_binding:
+        view.update(
+            {
+                "criterion_definition_version_id": (
+                    result.criterion_definition_version_id
+                ),
+                "check_execution_id": result.check_execution_id,
+            }
+        )
+    return view
 
 
 def _coordinator_stage(job: VerifyRuntimeJob) -> str:
@@ -377,8 +411,226 @@ def _coordinator_decisions(job: VerifyRuntimeJob) -> frozenset[str]:
     )
 
 
+def _plan_check_assignments(
+    store: TruthStore,
+    plan: EvaluationPlanSnapshot,
+) -> tuple[dict[str, Any], ...]:
+    """Resolve the exact admitted assignments frozen by one plan."""
+
+    try:
+        payload = json.loads(plan.plan_json)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise VerifyOrchestrationError("evaluation plan is invalid") from exc
+    if not isinstance(payload, Mapping):
+        raise VerifyOrchestrationError("evaluation plan must be an object")
+    raw_checks = payload.get("checks")
+    if not isinstance(raw_checks, list) or not raw_checks:
+        raise VerifyOrchestrationError(
+            "evaluation plan must contain selected checks"
+        )
+    resolved: list[dict[str, Any]] = []
+    total = len(raw_checks)
+    for sequence, raw in enumerate(raw_checks, start=1):
+        item = _mapping(raw, "evaluation plan check")
+        criterion_id = _required_text(
+            item.get("criterion_definition_version_id"),
+            "criterion_definition_version_id",
+        )
+        check_id = _required_text(
+            item.get("check_definition_version_id"),
+            "check_definition_version_id",
+        )
+        binding_id = _required_text(
+            item.get("criterion_check_binding_id"),
+            "criterion_check_binding_id",
+        )
+        activation_id = _required_text(
+            item.get("criterion_activation_id"),
+            "criterion_activation_id",
+        )
+        configuration_sha256 = _required_text(
+            item.get("configuration_sha256"),
+            "configuration_sha256",
+        )
+        criterion = _record(
+            store,
+            CriterionDefinitionVersion,
+            criterion_id,
+        )
+        check = _record(store, CheckDefinitionVersion, check_id)
+        binding = _record(store, CriterionCheckBinding, binding_id)
+        activation = _record(store, CriterionActivation, activation_id)
+        executor = admitted_check_executor(
+            check,
+            criterion_kind=criterion.criterion_kind,
+        )
+        if (
+            executor is None
+            or binding.criterion_definition_version_id != criterion.id
+            or binding.check_definition_version_id != check.id
+            or activation.criterion_definition_version_id != criterion.id
+            or activation.criterion_check_binding_id != binding.id
+            or not activation.is_enabled
+            or sha256_text(binding.configuration_json)
+            != configuration_sha256
+        ):
+            raise VerifyOrchestrationError(
+                "evaluation plan check no longer matches its admitted records"
+            )
+        resolved.append(
+            {
+                "criterion_definition_version_id": criterion.id,
+                "check_definition_version_id": check.id,
+                "criterion_check_binding_id": binding.id,
+                "criterion_activation_id": activation.id,
+                "configuration_sha256": configuration_sha256,
+                "sequence": sequence,
+                "total": total,
+                "execution_mode": executor.execution_mode,
+            }
+        )
+    return tuple(resolved)
+
+
+def _specialist_assignments(
+    store: TruthStore,
+    plan: EvaluationPlanSnapshot,
+) -> tuple[dict[str, Any], ...]:
+    selected = [
+        item
+        for item in _plan_check_assignments(store, plan)
+        if item["execution_mode"] == "account_backed_specialist"
+    ]
+    total = len(selected)
+    return tuple(
+        {
+            "criterion_definition_version_id": item[
+                "criterion_definition_version_id"
+            ],
+            "check_definition_version_id": item[
+                "check_definition_version_id"
+            ],
+            "criterion_check_binding_id": item[
+                "criterion_check_binding_id"
+            ],
+            "configuration_sha256": item["configuration_sha256"],
+            "sequence": sequence,
+            "total": total,
+        }
+        for sequence, item in enumerate(selected, start=1)
+    )
+
+
+def _job_specialist_assignment(job: VerifyRuntimeJob) -> dict[str, Any]:
+    raw = job.request.get("specialist_assignment")
+    assignment = _mapping(raw, "specialist_assignment")
+    expected = {
+        "criterion_definition_version_id",
+        "check_definition_version_id",
+        "criterion_check_binding_id",
+        "configuration_sha256",
+        "sequence",
+        "total",
+    }
+    if set(assignment) != expected:
+        raise VerifyOrchestrationError(
+            "specialist_assignment has an unsupported shape"
+        )
+    for field in (
+        "criterion_definition_version_id",
+        "check_definition_version_id",
+        "criterion_check_binding_id",
+        "configuration_sha256",
+    ):
+        _required_text(assignment.get(field), f"specialist_assignment.{field}")
+    sequence = assignment.get("sequence")
+    total = assignment.get("total")
+    if (
+        isinstance(sequence, bool)
+        or isinstance(total, bool)
+        or not isinstance(sequence, int)
+        or not isinstance(total, int)
+        or sequence < 1
+        or total < 1
+        or sequence > total
+    ):
+        raise VerifyOrchestrationError(
+            "specialist_assignment sequence is invalid"
+        )
+    return assignment
+
+
 def _output_schema(job: VerifyRuntimeJob) -> dict[str, Any]:
     role = job.role
+    if role is CoworkVerifyRole.SPECIALIST:
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["results", "summary"],
+            "properties": {
+                "results": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 50,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": [
+                            "result_kind",
+                            "severity",
+                            "message",
+                            "evidence",
+                            "coverage",
+                            "limitations",
+                        ],
+                        "properties": {
+                            "result_kind": {
+                                "enum": [
+                                    "conforming",
+                                    "finding",
+                                    "inconclusive",
+                                ]
+                            },
+                            "severity": {
+                                "enum": ["info", "warning", "error"]
+                            },
+                            "message": {"type": "string"},
+                            "evidence": {
+                                "oneOf": [
+                                    {"type": "null"},
+                                    {
+                                        "type": "object",
+                                        "additionalProperties": False,
+                                        "required": [
+                                            "exact",
+                                            "prefix",
+                                            "suffix",
+                                        ],
+                                        "properties": {
+                                            "exact": {"type": "string"},
+                                            "prefix": {"type": "string"},
+                                            "suffix": {"type": "string"},
+                                        },
+                                    },
+                                ]
+                            },
+                            "coverage": {
+                                "enum": [
+                                    "complete_target_review",
+                                    "partial_target_review",
+                                    "not_assessed",
+                                ]
+                            },
+                            "limitations": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                        },
+                    },
+                },
+                "summary": {"type": "string"},
+            },
+        }
     if role is CoworkVerifyRole.REVISER:
         return {
             "type": "object",
@@ -445,18 +697,15 @@ def _output_schema(job: VerifyRuntimeJob) -> dict[str, Any]:
                 "rationale": {"type": "string"},
             },
         }
-    return {
-        "type": "object",
-        "additionalProperties": False,
-        "required": ["results"],
-        "properties": {"results": {"type": "array"}},
-    }
+    raise VerifyOrchestrationError("Verify job has no output schema")
 
 
 def _criterion_and_check_context(
     store: TruthStore,
     run: EvaluationRun,
     results: Sequence[EvaluationResult],
+    *,
+    include_execution_binding: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     executions = verify_store.list_records(
         store,
@@ -471,8 +720,7 @@ def _criterion_and_check_context(
             CheckDefinitionVersion,
             execution.check_definition_version_id,
         )
-        checks.append(
-            {
+        check_view = {
                 "check_definition_version_id": check.id,
                 "stable_key": check.stable_key,
                 "version": check.version,
@@ -482,7 +730,22 @@ def _criterion_and_check_context(
                 "execution_status": execution.status,
                 "diagnostics": json.loads(execution.diagnostics_json),
             }
-        )
+        if include_execution_binding:
+            binding = _record(
+                store,
+                CriterionCheckBinding,
+                execution.criterion_check_binding_id,
+            )
+            check_view.update(
+                {
+                    "check_execution_id": execution.id,
+                    "criterion_check_binding_id": binding.id,
+                    "criterion_definition_version_id": (
+                        binding.criterion_definition_version_id
+                    ),
+                }
+            )
+        checks.append(check_view)
     criterion_ids = list(
         dict.fromkeys(result.criterion_definition_version_id for result in results)
     )
@@ -546,6 +809,33 @@ def _affected_candidate_evaluations(
             raise VerifyOrchestrationError(
                 "candidate re-evaluation requires exact finding evidence"
             )
+        execution = _record(
+            store,
+            CheckExecution,
+            result.check_execution_id,
+        )
+        criterion = _record(
+            store,
+            CriterionDefinitionVersion,
+            result.criterion_definition_version_id,
+        )
+        check = _record(
+            store,
+            CheckDefinitionVersion,
+            execution.check_definition_version_id,
+        )
+        executor = admitted_check_executor(
+            check,
+            criterion_kind=criterion.criterion_kind,
+        )
+        if (
+            execution.evaluation_run_id != result.evaluation_run_id
+            or executor is None
+            or executor.candidate_evaluation != "terminology_exact_match"
+        ):
+            raise VerifyOrchestrationError(
+                "the result check has no admitted candidate evaluator"
+            )
         try:
             affected_evaluations.append(
                 evaluate_terminology_candidate(
@@ -557,6 +847,7 @@ def _affected_candidate_evaluations(
                         "replacement",
                     ),
                     effective_configuration=configuration,
+                    criterion_definition_version_id=criterion.id,
                 )
             )
         except CandidateEvaluationError as exc:
@@ -619,10 +910,15 @@ def _build_job_context(
     job: VerifyRuntimeJob,
 ) -> dict[str, Any]:
     action = _record(store, ActionSnapshot, job.action_snapshot_id)
-    projection_bytes = _read_blob(
-        store,
-        action.projection_blob_sha256,
-        "frozen Markdown projection",
+    is_specialist = job.role is CoworkVerifyRole.SPECIALIST
+    projection_bytes = (
+        None
+        if is_specialist
+        else _read_blob(
+            store,
+            action.projection_blob_sha256,
+            "frozen Markdown projection",
+        )
     )
     target_bytes = _read_blob(
         store,
@@ -630,7 +926,11 @@ def _build_job_context(
         "frozen action target",
     )
     try:
-        projection = projection_bytes.decode("utf-8")
+        projection = (
+            None
+            if projection_bytes is None
+            else projection_bytes.decode("utf-8")
+        )
         target_text = target_bytes.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise VerifyOrchestrationError("frozen action content is not UTF-8") from exc
@@ -639,35 +939,103 @@ def _build_job_context(
     results: tuple[EvaluationResult, ...] = ()
     criteria: list[dict[str, Any]] = []
     checks: list[dict[str, Any]] = []
+    specialist_assignment: dict[str, Any] | None = None
     plan: EvaluationPlanSnapshot | None = None
     run: EvaluationRun | None = None
+    active_context_ids = job.request.get("active_criterion_ids", [])
+    multi_check_context = (
+        job.role is not CoworkVerifyRole.COTHINK
+        and isinstance(active_context_ids, list)
+        and len(active_context_ids) > 1
+    )
     if job.role is not CoworkVerifyRole.COTHINK:
         run = _record(store, EvaluationRun, job.evaluation_run_id)
-        results = verify_store.list_records(
-            store,
-            EvaluationResult,
-            where="source.evaluation_run_id = ?",
-            params=(run.id,),
-        )
-        if job.role is CoworkVerifyRole.REVISER:
-            requested_ids = set(_requested_revision_result_ids(job))
-            results = tuple(
-                result for result in results if result.id in requested_ids
-            )
-            if {result.id for result in results} != requested_ids:
-                raise VerifyOrchestrationError(
-                    "reviser context is not bound to its requested results"
-                )
-        criteria, checks = _criterion_and_check_context(store, run, results)
         if job.plan_snapshot_id is not None:
             plan = _record(
                 store,
                 EvaluationPlanSnapshot,
                 job.plan_snapshot_id,
             )
+        if is_specialist:
+            if plan is None:
+                raise VerifyOrchestrationError(
+                    "specialist job has no frozen evaluation plan"
+                )
+            specialist_assignment = _job_specialist_assignment(job)
+            expected_assignments = _specialist_assignments(store, plan)
+            if specialist_assignment not in expected_assignments:
+                raise VerifyOrchestrationError(
+                    "specialist job is not bound to a frozen plan assignment"
+                )
+            criterion = _record(
+                store,
+                CriterionDefinitionVersion,
+                specialist_assignment["criterion_definition_version_id"],
+            )
+            check = _record(
+                store,
+                CheckDefinitionVersion,
+                specialist_assignment["check_definition_version_id"],
+            )
+            binding = _record(
+                store,
+                CriterionCheckBinding,
+                specialist_assignment["criterion_check_binding_id"],
+            )
+            criteria = [
+                {
+                    "criterion_definition_version_id": criterion.id,
+                    "stable_key": criterion.stable_key,
+                    "version": criterion.version,
+                    "title": criterion.title,
+                    "statement": criterion.description,
+                    "criterion_kind": criterion.criterion_kind,
+                    "origin": criterion.origin,
+                }
+            ]
+            checks = [
+                {
+                    "check_definition_version_id": check.id,
+                    "stable_key": check.stable_key,
+                    "version": check.version,
+                    "title": check.title,
+                    "mechanism": check.mechanism,
+                    "limitations": json.loads(check.limitations_json),
+                    "criterion_check_binding_id": binding.id,
+                    "criterion_definition_version_id": criterion.id,
+                    "configuration": json.loads(binding.configuration_json),
+                }
+            ]
+        else:
+            results = verify_store.list_records(
+                store,
+                EvaluationResult,
+                where="source.evaluation_run_id = ?",
+                params=(run.id,),
+            )
+            if job.role is CoworkVerifyRole.REVISER:
+                requested_ids = set(_requested_revision_result_ids(job))
+                results = tuple(
+                    result for result in results if result.id in requested_ids
+                )
+                if {result.id for result in results} != requested_ids:
+                    raise VerifyOrchestrationError(
+                        "reviser context is not bound to its requested results"
+                    )
+            criteria, checks = _criterion_and_check_context(
+                store,
+                run,
+                results,
+                include_execution_binding=(
+                    multi_check_context
+                    or job.role is CoworkVerifyRole.COORDINATOR
+                ),
+            )
 
     prior_dispositions = []
-    for disposition_id in job.request.get("prior_disposition_ids", []):
+    for disposition_id in (
+        [] if is_specialist else job.request.get("prior_disposition_ids", [])
+    ):
         if not isinstance(disposition_id, str):
             raise VerifyOrchestrationError(
                 "job prior_disposition_ids contains an invalid id"
@@ -689,7 +1057,9 @@ def _build_job_context(
                 "created_at": disposition.created_at,
             }
         )
-    prior_human_review_outcomes = _prior_human_review_outcomes(store, job)
+    prior_human_review_outcomes = (
+        [] if is_specialist else _prior_human_review_outcomes(store, job)
+    )
     effective_configuration: dict[str, Any] | None = None
     if job.role is not CoworkVerifyRole.COTHINK:
         effective_configuration = _mapping(
@@ -708,6 +1078,40 @@ def _build_job_context(
                 "effective verification configuration failed integrity validation"
             )
 
+    if is_specialist:
+        # A specialist is authorized for the captured target, not for the
+        # surrounding document.  Action selectors and context boundaries may
+        # contain quote prefix/suffix text outside a ranged target, while the
+        # document title is also user content.  Keep all of that server-side.
+        document_context = {
+            "document_version_id": action.document_version_id,
+        }
+        target_context = {
+            "kind": action.target_kind,
+            "text": target_text,
+            "text_sha256": action.target_text_sha256,
+        }
+    else:
+        document_context = {
+            "title": document.title or "",
+            "document_class": document.document_class,
+            "projection_sha256": action.projection_sha256,
+            "structured_head_sha256": action.structured_head_sha256,
+            "document_version_id": action.document_version_id,
+        }
+        if projection is not None:
+            document_context["frozen_markdown"] = projection
+        target_context = {
+            "kind": action.target_kind,
+            "selector": json.loads(action.target_selector_json),
+            "text": target_text,
+            "text_sha256": action.target_text_sha256,
+            "context_boundary": json.loads(action.context_boundary_json),
+            "allowed_change_ranges": json.loads(
+                action.allowed_change_ranges_json
+            ),
+            "egress_boundary": json.loads(action.egress_boundary_json),
+        }
     return {
         "schema": "work-buddy.cowork-verify-job/v1",
         "binding": {
@@ -718,34 +1122,35 @@ def _build_job_context(
             "role": job.role.value,
             "action_snapshot_id": action.id,
             "plan_snapshot_id": None if plan is None else plan.id,
+            "specialist_assignment": specialist_assignment,
         },
-        "document": {
-            "title": document.title or "",
-            "document_class": document.document_class,
-            "frozen_markdown": projection,
-            "projection_sha256": action.projection_sha256,
-            "structured_head_sha256": action.structured_head_sha256,
-            "document_version_id": action.document_version_id,
-        },
-        "target": {
-            "kind": action.target_kind,
-            "selector": json.loads(action.target_selector_json),
-            "text": target_text,
-            "text_sha256": action.target_text_sha256,
-            "context_boundary": json.loads(action.context_boundary_json),
-            "allowed_change_ranges": json.loads(
-                action.allowed_change_ranges_json
-            ),
-            "egress_boundary": json.loads(action.egress_boundary_json),
-        },
-        "user_goal": str(job.request.get("user_goal") or ""),
-        "protected_intent": str(job.request.get("protected_intent") or ""),
-        "recheck_of_proposal_ids": list(
-            job.request.get("recheck_of_proposal_ids", [])
+        "document": document_context,
+        "target": target_context,
+        "user_goal": (
+            "" if is_specialist else str(job.request.get("user_goal") or "")
+        ),
+        "protected_intent": (
+            ""
+            if is_specialist
+            else str(job.request.get("protected_intent") or "")
+        ),
+        "recheck_of_proposal_ids": (
+            []
+            if is_specialist
+            else list(job.request.get("recheck_of_proposal_ids", []))
         ),
         "criteria": criteria,
         "checks": checks,
-        "normalized_results": [_result_view(result) for result in results],
+        "normalized_results": [
+            _result_view(
+                result,
+                include_check_binding=(
+                    multi_check_context
+                    or job.role is CoworkVerifyRole.COORDINATOR
+                ),
+            )
+            for result in results
+        ],
         "prior_dispositions": prior_dispositions,
         "prior_human_review_outcomes": prior_human_review_outcomes,
         "candidate_revision": (
@@ -775,12 +1180,14 @@ def _build_job_context(
             ),
             "decision_rules": {
                 "conforming": ["retain"],
+                "inconclusive": ["retain", "defer", "surface"],
                 "finding": (
                     sorted(_coordinator_decisions(job))
                     if job.role is CoworkVerifyRole.COORDINATOR
                     else []
                 ),
                 "request_revision_only_for_findings": True,
+                "specialist_model_results_are_not_revision_eligible": True,
                 "route_to_correction_only_after_revision": True,
             },
             "requested_revision_result_ids": list(
@@ -789,7 +1196,9 @@ def _build_job_context(
             "effective_configuration_sha256": job.request.get(
                 "effective_configuration_sha256"
             ),
-            "effective_configuration": effective_configuration,
+            "effective_configuration": (
+                None if is_specialist else effective_configuration
+            ),
             "effective_policy_sha256": job.request.get(
                 "effective_policy_sha256"
             ),
@@ -1061,7 +1470,27 @@ def _create_job(
             effective_configuration.get("execution_plan"),
             "effective_configuration.execution_plan",
         )
-        expected_execution_plan = verify_execution_disclosure_plan(selection)
+        projected_coordination = _mapping(
+            projected_execution_plan.get("coordination"),
+            "effective_configuration.execution_plan.coordination",
+        )
+        worker_sessions = _mapping(
+            projected_coordination.get("worker_sessions"),
+            "effective_configuration.execution_plan.coordination.worker_sessions",
+        )
+        specialist_count = worker_sessions.get("specialist_checks", 0)
+        if (
+            isinstance(specialist_count, bool)
+            or not isinstance(specialist_count, int)
+            or specialist_count < 0
+        ):
+            raise VerifyOrchestrationError(
+                "Verify execution plan has an invalid specialist count"
+            )
+        expected_execution_plan = verify_execution_disclosure_plan(
+            selection,
+            specialist_worker_sessions=specialist_count,
+        )
         if canonical_json(projected_execution_plan) != canonical_json(
             expected_execution_plan
         ):
@@ -1109,7 +1538,11 @@ def _create_job(
         content_boundary={
             "role": role.value,
             "job_id": job_id,
-            "document": "complete_permitted_frozen_projection",
+            "document": (
+                "captured_target_only"
+                if role is CoworkVerifyRole.SPECIALIST
+                else "complete_permitted_frozen_projection"
+            ),
             "action_snapshot_id": action_snapshot_id,
             "authority_context": _authorization_authority_context(
                 request_payload
@@ -1211,6 +1644,116 @@ def _launch_job(
     )
     record_coordination_status(resolved_store, persisted)
     return persisted, metadata
+
+
+def _create_and_launch_specialist(
+    store: TruthStore,
+    *,
+    document_id: str,
+    run_id: str,
+    action_snapshot_id: str,
+    plan_snapshot_id: str,
+    selection: AgentExecutionSelection,
+    request_payload: Mapping[str, Any],
+    assignment: Mapping[str, Any],
+    parent_job_id: str | None,
+    spawn_detached: SpawnDetached | None = None,
+    launch: bool = True,
+) -> VerifyRuntimeJob:
+    def _existing() -> VerifyRuntimeJob | None:
+        return next(
+            (
+                candidate
+                for candidate in jobs_for_run(store.store_id, run_id)
+                if candidate.role is CoworkVerifyRole.SPECIALIST
+                and candidate.parent_job_id == parent_job_id
+            ),
+            None,
+        )
+
+    payload = dict(request_payload)
+    payload["specialist_assignment"] = dict(assignment)
+    specialist = _existing()
+    if specialist is None:
+        try:
+            specialist = _create_job(
+                store,
+                document_id=document_id,
+                run_id=run_id,
+                action_snapshot_id=action_snapshot_id,
+                plan_snapshot_id=plan_snapshot_id,
+                role=CoworkVerifyRole.SPECIALIST,
+                selection=selection,
+                request_payload=payload,
+                parent_job_id=parent_job_id,
+            )
+        except sqlite3.IntegrityError:
+            specialist = _existing()
+            if specialist is None:
+                raise
+    if _job_specialist_assignment(specialist) != dict(assignment):
+        raise VerifyOrchestrationError(
+            "specialist job is already bound to a different assignment"
+        )
+    if launch and specialist.status == "prepared":
+        specialist, _ = _launch_job(
+            specialist,
+            store=store,
+            spawn_detached=spawn_detached,
+        )
+    return specialist
+
+
+def _create_and_launch_initial_coordinator(
+    store: TruthStore,
+    *,
+    document_id: str,
+    run_id: str,
+    action_snapshot_id: str,
+    plan_snapshot_id: str,
+    selection: AgentExecutionSelection,
+    request_payload: Mapping[str, Any],
+    spawn_detached: SpawnDetached | None = None,
+    launch: bool = True,
+) -> VerifyRuntimeJob:
+    def _existing() -> VerifyRuntimeJob | None:
+        return next(
+            (
+                candidate
+                for candidate in jobs_for_run(store.store_id, run_id)
+                if candidate.role is CoworkVerifyRole.COORDINATOR
+                and candidate.parent_job_id is None
+                and _coordinator_stage(candidate) == "initial"
+            ),
+            None,
+        )
+
+    payload = dict(request_payload)
+    payload.pop("specialist_assignment", None)
+    coordinator = _existing()
+    if coordinator is None:
+        try:
+            coordinator = _create_job(
+                store,
+                document_id=document_id,
+                run_id=run_id,
+                action_snapshot_id=action_snapshot_id,
+                plan_snapshot_id=plan_snapshot_id,
+                role=CoworkVerifyRole.COORDINATOR,
+                selection=selection,
+                request_payload=payload,
+            )
+        except sqlite3.IntegrityError:
+            coordinator = _existing()
+            if coordinator is None:
+                raise
+    if launch and coordinator.status == "prepared":
+        coordinator, _ = _launch_job(
+            coordinator,
+            store=store,
+            spawn_detached=spawn_detached,
+        )
+    return coordinator
 
 
 def _validate_capture(
@@ -1580,7 +2123,7 @@ def _replay_existing_verify_action(
         raise VerifyOrchestrationError(
             "Verify action is missing its exact evaluation run"
         )
-    existing = next(
+    coordinator_root = next(
         (
             candidate
             for candidate in existing_jobs
@@ -1589,9 +2132,18 @@ def _replay_existing_verify_action(
         ),
         None,
     )
+    existing = coordinator_root or next(
+        (
+            candidate
+            for candidate in existing_jobs
+            if candidate.role is CoworkVerifyRole.SPECIALIST
+            and candidate.parent_job_id is None
+        ),
+        None,
+    )
     if existing is None:
         raise VerifyOrchestrationError(
-            "Verify run is missing its initial coordinator binding"
+            "Verify run is missing its initial execution binding"
         )
     existing_request, persisted_execution_plan, _ = (
         _validated_execution_request(store, existing)
@@ -1660,7 +2212,8 @@ def _replay_existing_verify_action(
     visible_job = active_job or coordinator or existing_jobs[-1]
     unavailable = visible_job.status in {"unavailable", "failed"}
     completed = (
-        visible_job.status == "completed"
+        coordinator is not None
+        and coordinator.status == "completed"
         and not any(
             job.status in {"prepared", "launching", "running", "submitted"}
             for job in existing_jobs
@@ -1673,6 +2226,8 @@ def _replay_existing_verify_action(
         if unavailable
         else "drafting_correction"
         if visible_job.role is CoworkVerifyRole.REVISER
+        else "checking"
+        if visible_job.role is CoworkVerifyRole.SPECIALIST
         else "reconciling"
     )
     result_count = sum(
@@ -1732,6 +2287,23 @@ def _resolve_execution_configuration(
         raise VerifyOrchestrationError(
             f"required verification criteria are blocked or unavailable: {titles}"
         )
+    unavailable_enabled = [
+        item
+        for item in criteria
+        if isinstance(item, Mapping)
+        and item.get("operational_state") == "unavailable"
+        and isinstance(item.get("effective_activation"), Mapping)
+        and item["effective_activation"].get("enabled") is True
+    ]
+    if unavailable_enabled:
+        titles = ", ".join(
+            str(item.get("title") or item.get("stable_key") or "criterion")
+            for item in unavailable_enabled
+        )
+        raise VerifyOrchestrationError(
+            "enabled verification criteria select unsupported or unadmitted "
+            f"bindings: {titles}"
+        )
     active = [
         dict(item)
         for item in criteria
@@ -1742,35 +2314,73 @@ def _resolve_execution_configuration(
             "no active available verification criteria apply to this document"
         )
 
-    supported = [
-        item
-        for item in active
-        if item.get("stable_key") == "terminology_exact_match"
-    ]
-    if len(supported) != 1 or len(active) != 1:
-        raise VerifyOrchestrationError(
-            "the active verification configuration includes a criterion "
-            "without an admitted orchestration implementation"
+    for criterion in active:
+        checks = criterion.get("checks")
+        if not isinstance(checks, list):
+            raise VerifyOrchestrationError(
+                "an active verification criterion has an invalid check projection"
+            )
+        selected_checks = [
+            item
+            for item in checks
+            if isinstance(item, Mapping)
+            and isinstance(item.get("binding"), Mapping)
+            and item["binding"].get("selected") is True
+            and isinstance(item.get("availability"), Mapping)
+            and item["availability"].get("state") == "available"
+        ]
+        if len(selected_checks) != 1:
+            raise VerifyOrchestrationError(
+                "an active verification criterion must select exactly one "
+                "admitted available binding"
+            )
+    specialist_count = 0
+    for criterion in active:
+        selected = next(
+            item
+            for item in criterion["checks"]
+            if isinstance(item, Mapping)
+            and isinstance(item.get("binding"), Mapping)
+            and item["binding"].get("selected") is True
         )
-    criterion = supported[0]
-    selected_checks = [
-        item
-        for item in criterion.get("checks", [])
-        if isinstance(item, Mapping)
-        and isinstance(item.get("binding"), Mapping)
-        and item["binding"].get("selected") is True
-        and isinstance(item.get("availability"), Mapping)
-        and item["availability"].get("state") == "available"
-    ]
-    seeded = seed_terminology_exact_match(store)
-    if (
-        len(selected_checks) != 1
-        or selected_checks[0].get("id") != seeded.check.id
-        or selected_checks[0]["binding"].get("id") != seeded.binding.id
-    ):
-        raise VerifyOrchestrationError(
-            "the active terminology criterion selects an unsupported binding"
+        check = _record(
+            store,
+            CheckDefinitionVersion,
+            _required_text(selected.get("id"), "selected check id"),
         )
+        executor = admitted_check_executor(
+            check,
+            criterion_kind=_required_text(
+                criterion.get("kind"),
+                "active criterion kind",
+            ),
+        )
+        if executor is None:
+            raise VerifyOrchestrationError(
+                "active verification criterion has no admitted executor"
+            )
+        if executor.execution_mode == "account_backed_specialist":
+            specialist_count += 1
+    if specialist_count > MAX_VERIFY_SPECIALIST_CHECKS_PER_RUN:
+        raise VerifyOrchestrationError(
+            "Verify supports at most "
+            f"{MAX_VERIFY_SPECIALIST_CHECKS_PER_RUN} selected "
+            "account-backed checks in one run"
+        )
+    # The menu projection intentionally retains inactive checks so the person
+    # can turn them back on.  A worker must not receive those instructions:
+    # freeze a run-only policy projection containing only selected, active
+    # criteria before hashing or authorizing any external context.
+    configuration = json.loads(canonical_json(configuration))
+    configuration["criteria"] = json.loads(canonical_json(active))
+    configuration["execution_plan"] = verify_execution_disclosure_plan(
+        execution_selection,
+        specialist_worker_sessions=specialist_count,
+    )
+    coordination = configuration.get("coordination")
+    if isinstance(coordination, dict):
+        coordination["base_worker_calls"] = 1 + specialist_count
+        coordination["maximum_worker_calls"] = 3 + specialist_count
     return configuration, active
 
 
@@ -1796,6 +2406,10 @@ def _effective_policy_sha256(
                         "initial": sorted(_INITIAL_COORDINATOR_DECISIONS),
                         "post_revision": sorted(_SECOND_COORDINATOR_DECISIONS),
                     },
+                    "inconclusive": {
+                        "initial": ["retain", "defer", "surface"],
+                        "post_revision": [],
+                    },
                 },
                 "retain_persists_as": "suppress",
                 "proposal_authority": "post_revision_coordinator_only",
@@ -1803,6 +2417,73 @@ def _effective_policy_sha256(
             }
         )
     )
+
+
+def _record_recheck_relations_for_results(
+    store: TruthStore,
+    *,
+    results: Sequence[EvaluationResult],
+    proposal_ids: Sequence[str],
+    actor: Actor,
+) -> None:
+    """Bind new results only to prior proposal results in the same check family."""
+
+    if not proposal_ids or not results:
+        return
+    addressed: dict[str, set[str]] = {
+        proposal_id: set() for proposal_id in proposal_ids
+    }
+    for relation in verify_store.list_records(store, ResultRelation):
+        if (
+            relation.relation_kind == "addresses"
+            and relation.target_kind == "proposal"
+            and relation.target_ref in addressed
+        ):
+            addressed[relation.target_ref].add(relation.evaluation_result_id)
+
+    def _family(result: EvaluationResult) -> tuple[str, str]:
+        execution = _record(store, CheckExecution, result.check_execution_id)
+        return (
+            result.criterion_definition_version_id,
+            execution.check_definition_version_id,
+        )
+
+    prior_results = {
+        result_id: _record(store, EvaluationResult, result_id)
+        for result_ids in addressed.values()
+        for result_id in result_ids
+    }
+    prior_families = {
+        result_id: _family(result)
+        for result_id, result in prior_results.items()
+    }
+    for result in results:
+        result_family = _family(result)
+        for proposal_id, result_ids in addressed.items():
+            if not any(
+                prior_families.get(prior_result_id) == result_family
+                for prior_result_id in result_ids
+            ):
+                continue
+            record_result_relation(
+                store,
+                evaluation_result_id=result.id,
+                relation_kind="rechecks",
+                target_kind="proposal",
+                target_ref=proposal_id,
+                actor=actor,
+            )
+        for prior_result_id in sorted(prior_results):
+            if prior_families[prior_result_id] != result_family:
+                continue
+            record_result_relation(
+                store,
+                evaluation_result_id=result.id,
+                relation_kind="rechecks",
+                target_kind="evaluation_result",
+                target_ref=prior_result_id,
+                actor=actor,
+            )
 
 
 def _authorization_authority_context(
@@ -1841,6 +2522,9 @@ def _authorization_authority_context(
         "coordinator_stage": request_payload.get("coordinator_stage"),
         "requested_revision_result_ids": list(
             request_payload.get("requested_revision_result_ids", [])
+        ),
+        "specialist_assignment": request_payload.get(
+            "specialist_assignment"
         ),
     }
     # Preserve authorization verification for already-durable jobs whose v1
@@ -1890,7 +2574,11 @@ def _validate_job_authorization_binding(
         or boundary.get("job_id") != job.job_id
         or boundary.get("action_snapshot_id") != job.action_snapshot_id
         or boundary.get("document")
-        != "complete_permitted_frozen_projection"
+        != (
+            "captured_target_only"
+            if job.role is CoworkVerifyRole.SPECIALIST
+            else "complete_permitted_frozen_projection"
+        )
     ):
         raise VerifyOrchestrationError(
             "Verify job no longer matches its exact authorization"
@@ -2005,9 +2693,33 @@ def _validated_execution_request(
             "effective Verify policy failed integrity validation"
         )
 
-    expected_plan = verify_execution_disclosure_plan(selection)
     stored_plan = configuration.get("execution_plan")
     legacy = stored_plan is None
+    specialist_count = 0
+    if isinstance(stored_plan, Mapping):
+        projected_coordination = _mapping(
+            stored_plan.get("coordination"),
+            "effective_configuration.execution_plan.coordination",
+        )
+        worker_sessions = _mapping(
+            projected_coordination.get("worker_sessions"),
+            "effective_configuration.execution_plan.coordination.worker_sessions",
+        )
+        raw_specialist_count = worker_sessions.get("specialist_checks", 0)
+        if (
+            isinstance(raw_specialist_count, bool)
+            or not isinstance(raw_specialist_count, int)
+            or raw_specialist_count < 0
+            or raw_specialist_count > MAX_VERIFY_SPECIALIST_CHECKS_PER_RUN
+        ):
+            raise VerifyOrchestrationError(
+                "Verify execution plan has an invalid specialist count"
+            )
+        specialist_count = raw_specialist_count
+    expected_plan = verify_execution_disclosure_plan(
+        selection,
+        specialist_worker_sessions=specialist_count,
+    )
     if legacy:
         configuration = _legacy_configuration_with_execution_plan(
             configuration,
@@ -2171,46 +2883,35 @@ def start_verify_run(
             target_confirmation=attested_recheck_target_confirmation,
             affirmed_action_snapshot=affirmed_target_action,
         )
-    activation_id = active_criteria[0].get("effective_activation", {}).get("id")
-    if not isinstance(activation_id, str) or not activation_id:
-        raise VerifyOrchestrationError(
-            "the active terminology criterion has no exact activation"
+    activation_ids: list[str] = []
+    for criterion in active_criteria:
+        activation = criterion.get("effective_activation")
+        activation_id = (
+            activation.get("id")
+            if isinstance(activation, Mapping)
+            else None
         )
-    evaluation = run_terminology_exact_match(
+        if not isinstance(activation_id, str) or not activation_id:
+            raise VerifyOrchestrationError(
+                "an active verification criterion has no exact activation"
+            )
+        activation_ids.append(activation_id)
+    evaluation = run_admitted_checks(
         store,
         action_snapshot_id=action.id,
-        criterion_activation_id=activation_id,
+        criterion_activation_ids=activation_ids,
         actor=Actor("system", "cowork-verify"),
     )
-    prior_result_ids = {
-        relation.evaluation_result_id
-        for relation in verify_store.list_records(store, ResultRelation)
-        if relation.relation_kind == "addresses"
-        and relation.target_kind == "proposal"
-        and relation.target_ref in recheck_proposal_ids
-    }
-    for result in evaluation.results:
-        for proposal_id in recheck_proposal_ids:
-            record_result_relation(
-                store,
-                evaluation_result_id=result.id,
-                relation_kind="rechecks",
-                target_kind="proposal",
-                target_ref=proposal_id,
-                actor=Actor("system", "cowork-verify"),
-            )
-        for prior_result_id in sorted(prior_result_ids):
-            record_result_relation(
-                store,
-                evaluation_result_id=result.id,
-                relation_kind="rechecks",
-                target_kind="evaluation_result",
-                target_ref=prior_result_id,
-                actor=Actor("system", "cowork-verify"),
-            )
+    specialist_assignments = _specialist_assignments(store, evaluation.plan)
+    _record_recheck_relations_for_results(
+        store,
+        results=evaluation.results,
+        proposal_ids=recheck_proposal_ids,
+        actor=Actor("system", "cowork-verify"),
+    )
     existing_jobs = jobs_for_run(store.store_id, evaluation.run.id)
     if existing_jobs:
-        existing = next(
+        coordinator_root = next(
             (
                 candidate
                 for candidate in existing_jobs
@@ -2219,9 +2920,18 @@ def start_verify_run(
             ),
             None,
         )
+        existing = coordinator_root or next(
+            (
+                candidate
+                for candidate in existing_jobs
+                if candidate.role is CoworkVerifyRole.SPECIALIST
+                and candidate.parent_job_id is None
+            ),
+            None,
+        )
         if existing is None:
             raise VerifyOrchestrationError(
-                "Verify run is missing its initial coordinator binding"
+                "Verify run is missing its initial execution binding"
             )
         existing_request, persisted_execution_plan, _ = (
             _validated_execution_request(store, existing)
@@ -2295,7 +3005,8 @@ def start_verify_run(
         visible_job = active_job or coordinator or existing_jobs[-1]
         unavailable = visible_job.status in {"unavailable", "failed"}
         completed = (
-            visible_job.status == "completed"
+            coordinator is not None
+            and coordinator.status == "completed"
             and not any(
                 job.status
                 in {"prepared", "launching", "running", "submitted"}
@@ -2309,7 +3020,14 @@ def start_verify_run(
             if unavailable
             else "drafting_correction"
             if visible_job.role is CoworkVerifyRole.REVISER
+            else "checking"
+            if visible_job.role is CoworkVerifyRole.SPECIALIST
             else "reconciling"
+        )
+        result_count = sum(
+            1
+            for result in verify_store.list_records(store, EvaluationResult)
+            if result.evaluation_run_id == evaluation.run.id
         )
         return {
             "ok": True,
@@ -2318,7 +3036,7 @@ def start_verify_run(
             "run_id": evaluation.run.id,
             "job_id": visible_job.job_id,
             "stage": replay_stage,
-            "result_count": len(evaluation.results),
+            "result_count": result_count,
             "coordination_status": (
                 "completed" if completed else "unavailable" if unavailable else "pending"
             ),
@@ -2326,28 +3044,37 @@ def start_verify_run(
             "execution_plan": persisted_execution_plan,
             "replayed": True,
         }
-    job = _create_job(
-        store,
-        document_id=document_id,
-        run_id=evaluation.run.id,
-        action_snapshot_id=action.id,
-        plan_snapshot_id=evaluation.plan.id,
-        role=CoworkVerifyRole.COORDINATOR,
-        selection=validated_selection,
-        request_payload=request_payload,
-    )
-    launched, _ = _launch_job(
-        job,
-        store=store,
-        spawn_detached=spawn_detached,
-    )
+    if specialist_assignments:
+        launched = _create_and_launch_specialist(
+            store,
+            document_id=document_id,
+            run_id=evaluation.run.id,
+            action_snapshot_id=action.id,
+            plan_snapshot_id=evaluation.plan.id,
+            selection=validated_selection,
+            request_payload=request_payload,
+            assignment=specialist_assignments[0],
+            parent_job_id=None,
+            spawn_detached=spawn_detached,
+        )
+    else:
+        launched = _create_and_launch_initial_coordinator(
+            store,
+            document_id=document_id,
+            run_id=evaluation.run.id,
+            action_snapshot_id=action.id,
+            plan_snapshot_id=evaluation.plan.id,
+            selection=validated_selection,
+            request_payload=request_payload,
+            spawn_detached=spawn_detached,
+        )
     return {
         "ok": True,
         "contract_version": VERIFY_CONTRACT_VERSION,
         "action_snapshot_id": action.id,
         "run_id": evaluation.run.id,
         "job_id": launched.job_id,
-        "stage": "reconciling",
+        "stage": "checking" if specialist_assignments else "reconciling",
         "result_count": len(evaluation.results),
         "coordination_status": (
             "pending"
@@ -2594,6 +3321,77 @@ def _validate_reviser_output(
     return {"candidates": normalized}
 
 
+def _validate_specialist_output(
+    store: TruthStore,
+    job: VerifyRuntimeJob,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Normalize one narrow worker result against its exact frozen target."""
+
+    if job.role is not CoworkVerifyRole.SPECIALIST:
+        raise VerifyOrchestrationError(
+            "specialist output validation requires a specialist job"
+        )
+    _job_specialist_assignment(job)
+    action = _record(store, ActionSnapshot, job.action_snapshot_id)
+    target_bytes = _read_blob(
+        store,
+        action.target_blob_sha256,
+        "frozen action target",
+    )
+    try:
+        target_text = target_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise VerifyOrchestrationError(
+            "frozen action target is not UTF-8"
+        ) from exc
+    selector = _mapping(
+        json.loads(action.target_selector_json),
+        "action target selector",
+    )
+    target_start = int(selector.get("start", 0))
+    if action.target_kind == "text_quote":
+        resolved = _mapping(selector.get("resolved"), "resolved target selector")
+        raw_start = resolved.get("start")
+        if isinstance(raw_start, bool) or not isinstance(raw_start, int):
+            raise VerifyOrchestrationError(
+                "resolved target selector has an invalid start"
+            )
+        target_start = raw_start
+    try:
+        evaluation = normalize_specialist_output(
+            payload,
+            target_text=target_text,
+            target_start=target_start,
+            target_text_sha256=action.target_text_sha256,
+        )
+    except SpecialistOutputError as exc:
+        raise VerifyOrchestrationError(str(exc)) from exc
+    return dict(evaluation.output)
+
+
+def _result_supports_revision(
+    store: TruthStore,
+    result: EvaluationResult,
+) -> bool:
+    execution = _record(store, CheckExecution, result.check_execution_id)
+    check = _record(
+        store,
+        CheckDefinitionVersion,
+        execution.check_definition_version_id,
+    )
+    criterion = _record(
+        store,
+        CriterionDefinitionVersion,
+        result.criterion_definition_version_id,
+    )
+    executor = admitted_check_executor(
+        check,
+        criterion_kind=criterion.criterion_kind,
+    )
+    return executor is not None and executor.candidate_evaluation is not None
+
+
 def _validate_coordinator_output(
     store: TruthStore,
     job: VerifyRuntimeJob,
@@ -2660,13 +3458,32 @@ def _validate_coordinator_output(
             raise VerifyOrchestrationError(
                 "conforming results must be quietly retained"
             )
-        if result.result_kind != "finding" and result.result_kind != "conforming":
+        if result.result_kind not in {
+            "finding",
+            "conforming",
+            "inconclusive",
+        }:
             raise VerifyOrchestrationError(
                 "coordinator received an unsupported result kind"
+            )
+        if result.result_kind == "inconclusive" and choice not in {
+            "retain",
+            "defer",
+            "surface",
+        }:
+            raise VerifyOrchestrationError(
+                "inconclusive results may only be retained, deferred, or surfaced"
             )
         if choice == "request_revision" and result.result_kind != "finding":
             raise VerifyOrchestrationError(
                 "only a finding may request revision"
+            )
+        if choice == "request_revision" and not _result_supports_revision(
+            store,
+            result,
+        ):
+            raise VerifyOrchestrationError(
+                "this finding has no admitted deterministic revision evaluator"
             )
         if choice == "route_to_correction" and result_id not in candidates:
             raise VerifyOrchestrationError(
@@ -2827,6 +3644,7 @@ def _create_and_launch_reviser(
     requested_revision_result_ids: Sequence[str],
     disposition_ids: Sequence[str],
     spawn_detached: SpawnDetached | None = None,
+    launch: bool = True,
 ) -> tuple[VerifyRuntimeJob, VerifyJobSpawnMetadata | None]:
     def _existing() -> VerifyRuntimeJob | None:
         return next(
@@ -2877,7 +3695,7 @@ def _create_and_launch_reviser(
                 raise
     else:
         _validated_execution_request(store, reviser)
-    if reviser.status == "prepared":
+    if launch and reviser.status == "prepared":
         return _launch_job(
             reviser,
             store=store,
@@ -2891,6 +3709,7 @@ def _create_and_launch_coordinator(
     reviser: VerifyRuntimeJob,
     *,
     spawn_detached: SpawnDetached | None = None,
+    launch: bool = True,
 ) -> VerifyRuntimeJob:
     def _existing() -> VerifyRuntimeJob | None:
         return next(
@@ -2954,7 +3773,7 @@ def _create_and_launch_coordinator(
                 raise
     else:
         _validated_execution_request(store, coordinator)
-    if coordinator.status == "prepared":
+    if launch and coordinator.status == "prepared":
         coordinator, _ = _launch_job(
             coordinator,
             store=store,
@@ -3010,6 +3829,40 @@ def _cothink_item_id_for_job(
     return None
 
 
+def _specialist_consequence_refs(
+    store: TruthStore,
+    job: VerifyRuntimeJob,
+) -> dict[str, list[str]]:
+    executions: list[CheckExecution] = []
+    for execution in verify_store.list_records(
+        store,
+        CheckExecution,
+        where="source.evaluation_run_id = ?",
+        params=(job.evaluation_run_id,),
+    ):
+        try:
+            producer = json.loads(execution.producer_json)
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(producer, Mapping) and producer.get("job_id") == job.job_id:
+            executions.append(execution)
+    execution_ids = [execution.id for execution in executions]
+    result_ids = [
+        result.id
+        for result in verify_store.list_records(
+            store,
+            EvaluationResult,
+            where="source.evaluation_run_id = ?",
+            params=(job.evaluation_run_id,),
+        )
+        if result.check_execution_id in set(execution_ids)
+    ]
+    return {
+        "check_execution_ids": execution_ids,
+        "evaluation_result_ids": result_ids,
+    }
+
+
 def _completed_submission_response(
     store: TruthStore,
     job: VerifyRuntimeJob,
@@ -3021,7 +3874,36 @@ def _completed_submission_response(
         "replayed": True,
         "output_sha256": job.output_sha256,
     }
-    if job.role is CoworkVerifyRole.REVISER:
+    if job.role is CoworkVerifyRole.SPECIALIST:
+        assignment = _job_specialist_assignment(job)
+        run_jobs = jobs_for_run(job.store_id, job.evaluation_run_id)
+        next_job = next(
+            (
+                candidate
+                for candidate in run_jobs
+                if (
+                    candidate.role is CoworkVerifyRole.SPECIALIST
+                    and candidate.parent_job_id == job.job_id
+                )
+            ),
+            None,
+        )
+        if next_job is None and assignment["sequence"] == assignment["total"]:
+            next_job = next(
+                (
+                    candidate
+                    for candidate in run_jobs
+                    if candidate.role is CoworkVerifyRole.COORDINATOR
+                    and candidate.parent_job_id is None
+                    and _coordinator_stage(candidate) == "initial"
+                ),
+                None,
+            )
+        if next_job is not None:
+            response["next_job_id"] = next_job.job_id
+            response["next_status"] = next_job.status
+        response.update(_specialist_consequence_refs(store, job))
+    elif job.role is CoworkVerifyRole.REVISER:
         coordinator = next(
             (
                 candidate
@@ -3090,6 +3972,8 @@ def _completed_submission_response(
             and decision.get("decision") == "request_revision"
         ],
     }
+    if job.role is CoworkVerifyRole.SPECIALIST:
+        refs.update(_specialist_consequence_refs(store, job))
     if isinstance(response.get("next_job_id"), str):
         refs["next_job_id"] = response["next_job_id"]
     if isinstance(response.get("cothink_item_id"), str):
@@ -3111,11 +3995,116 @@ def _project_claimed_submission(
     """Append idempotent typed consequences while holding the projection lease."""
 
     try:
+        if job.role is CoworkVerifyRole.SPECIALIST:
+            assignment = _job_specialist_assignment(job)
+            if job.plan_snapshot_id is None:
+                raise VerifyOrchestrationError(
+                    "specialist job has no evaluation plan"
+                )
+            plan = _record(
+                store,
+                EvaluationPlanSnapshot,
+                job.plan_snapshot_id,
+            )
+            assignments = _specialist_assignments(store, plan)
+            sequence = int(assignment["sequence"])
+            if (
+                sequence > len(assignments)
+                or assignments[sequence - 1] != assignment
+            ):
+                raise VerifyOrchestrationError(
+                    "specialist job assignment does not match the frozen sequence"
+                )
+            execution, results = record_specialist_evaluation(
+                store,
+                evaluation_run_id=job.evaluation_run_id,
+                criterion_definition_version_id=assignment[
+                    "criterion_definition_version_id"
+                ],
+                check_definition_version_id=assignment[
+                    "check_definition_version_id"
+                ],
+                criterion_check_binding_id=assignment[
+                    "criterion_check_binding_id"
+                ],
+                configuration_sha256=assignment["configuration_sha256"],
+                normalized_output=normalized,
+                actor=_agent_actor(job),
+            )
+            _record_recheck_relations_for_results(
+                store,
+                results=results,
+                proposal_ids=[
+                    str(item)
+                    for item in job.request.get("recheck_of_proposal_ids", [])
+                    if isinstance(item, str) and item
+                ],
+                actor=_agent_actor(job),
+            )
+            request_payload, _, _ = _validated_execution_request(store, job)
+            selection = _selection_from_mapping(job.selection)
+            if sequence < len(assignments):
+                next_job = _create_and_launch_specialist(
+                    store,
+                    document_id=job.document_id,
+                    run_id=job.evaluation_run_id,
+                    action_snapshot_id=job.action_snapshot_id,
+                    plan_snapshot_id=job.plan_snapshot_id,
+                    selection=selection,
+                    request_payload=request_payload,
+                    assignment=assignments[sequence],
+                    parent_job_id=job.job_id,
+                    launch=False,
+                )
+            else:
+                next_job = _create_and_launch_initial_coordinator(
+                    store,
+                    document_id=job.document_id,
+                    run_id=job.evaluation_run_id,
+                    action_snapshot_id=job.action_snapshot_id,
+                    plan_snapshot_id=job.plan_snapshot_id,
+                    selection=selection,
+                    request_payload=request_payload,
+                    launch=False,
+                )
+            completed_job = update_job(
+                job.job_id,
+                status="completed",
+                expected_projection_owner=projection_owner,
+            )
+            consequence_refs = {
+                "check_execution_ids": [execution.id],
+                "evaluation_result_ids": [result.id for result in results],
+                "next_job_id": next_job.job_id,
+            }
+            record_coordination_status(
+                store,
+                completed_job,
+                consequence_refs=consequence_refs,
+            )
+            launched_next = next_job
+            if next_job.status == "prepared":
+                launched_next, _ = _launch_job(
+                    next_job,
+                    store=store,
+                    spawn_detached=spawn_detached,
+                )
+            return {
+                "ok": True,
+                "job_id": job.job_id,
+                "status": "completed",
+                "replayed": replayed,
+                "output_sha256": normalized_sha256,
+                "check_execution_ids": [execution.id],
+                "evaluation_result_ids": [result.id for result in results],
+                "next_job_id": next_job.job_id,
+                "next_status": launched_next.status,
+            }
         if job.role is CoworkVerifyRole.REVISER:
             coordinator = _create_and_launch_coordinator(
                 store,
                 get_job(job.job_id) or job,
-                spawn_detached=spawn_detached,
+                launch=False,
             )
             completed_job = update_job(
                 job.job_id,
@@ -3127,6 +4116,13 @@ def _project_claimed_submission(
                 completed_job,
                 consequence_refs={"next_job_id": coordinator.job_id},
             )
+            launched_coordinator = coordinator
+            if coordinator.status == "prepared":
+                launched_coordinator, _ = _launch_job(
+                    coordinator,
+                    store=store,
+                    spawn_detached=spawn_detached,
+                )
             return {
                 "ok": True,
                 "job_id": job.job_id,
@@ -3134,7 +4130,7 @@ def _project_claimed_submission(
                 "replayed": replayed,
                 "output_sha256": normalized_sha256,
                 "next_job_id": coordinator.job_id,
-                "next_status": coordinator.status,
+                "next_status": launched_coordinator.status,
             }
         if job.role is CoworkVerifyRole.COORDINATOR:
             outcome = _process_coordinator(store, job, normalized)
@@ -3150,15 +4146,9 @@ def _project_claimed_submission(
                         "requested_revision_result_ids"
                     ],
                     disposition_ids=outcome["disposition_ids"],
-                    spawn_detached=spawn_detached,
+                    launch=False,
                 )
                 next_job = reviser
-                if metadata is not None and not metadata.ok:
-                    next_job = _create_and_launch_coordinator(
-                        store,
-                        reviser,
-                        spawn_detached=spawn_detached,
-                    )
             completed_job = update_job(
                 job.job_id,
                 status="completed",
@@ -3178,6 +4168,30 @@ def _project_claimed_submission(
                 completed_job,
                 consequence_refs=consequence_refs,
             )
+            if next_job is not None and next_job.status == "prepared":
+                launched_next, metadata = _launch_job(
+                    next_job,
+                    store=store,
+                    spawn_detached=spawn_detached,
+                )
+                next_job = launched_next
+                if (
+                    next_job.role is CoworkVerifyRole.REVISER
+                    and metadata is not None
+                    and not metadata.ok
+                ):
+                    fallback = _create_and_launch_coordinator(
+                        store,
+                        next_job,
+                        launch=False,
+                    )
+                    if fallback.status == "prepared":
+                        fallback, _ = _launch_job(
+                            fallback,
+                            store=store,
+                            spawn_detached=spawn_detached,
+                        )
+                    next_job = fallback
             if _coordinator_stage(job) == "post_revision":
                 if job.parent_job_id is None:
                     raise VerifyOrchestrationError(
@@ -3282,7 +4296,7 @@ def _claim_and_project_submission(
         raise VerifyOrchestrationError(
             "submitted Verify job has no readable typed output"
         )
-    normalized_sha256 = sha256_text(canonical_json(claimed_job.output))
+    normalized_sha256 = _typed_output_sha256(claimed_job.output)
     if normalized_sha256 != claimed_job.output_sha256:
         raise VerifyOrchestrationError(
             "submitted Verify job output failed integrity validation"
@@ -3338,11 +4352,13 @@ def submit_worker_job(
     replayed = job.output_sha256 is not None
     if job.output_sha256 is not None:
         normalized = (
-            _validate_cothink_output(normalized_input)
+            _validate_specialist_output(store, job, normalized_input)
+            if job.role is CoworkVerifyRole.SPECIALIST
+            else _validate_cothink_output(normalized_input)
             if job.role is CoworkVerifyRole.COTHINK
             else normalized_input
         )
-        normalized_sha256 = sha256_text(canonical_json(normalized))
+        normalized_sha256 = _typed_output_sha256(normalized)
         if job.output_sha256 != normalized_sha256:
             raise VerifyOrchestrationError(
                 "Verify job already received a different submission"
@@ -3362,13 +4378,13 @@ def submit_worker_job(
             normalized = _validate_reviser_output(store, job, normalized_input)
         elif job.role is CoworkVerifyRole.COORDINATOR:
             normalized = _validate_coordinator_output(store, job, normalized_input)
+        elif job.role is CoworkVerifyRole.SPECIALIST:
+            normalized = _validate_specialist_output(store, job, normalized_input)
         elif job.role is CoworkVerifyRole.COTHINK:
             normalized = _validate_cothink_output(normalized_input)
         else:
-            raise VerifyOrchestrationError(
-                "model-based specialist submission is not enabled in this slice"
-            )
-        normalized_sha256 = sha256_text(canonical_json(normalized))
+            raise VerifyOrchestrationError("unsupported Verify worker role")
+        normalized_sha256 = _typed_output_sha256(normalized)
         job = update_job(
             job.job_id,
             status="submitted",
@@ -3495,11 +4511,20 @@ def run_status_projection(
             in {"prepared", "launching", "running", "submitted"}
             for candidate in run_jobs
         )
+        has_active_specialist = any(
+            candidate["role"] == CoworkVerifyRole.SPECIALIST.value
+            and candidate["status"]
+            in {"prepared", "launching", "running", "submitted"}
+            for candidate in run_jobs
+        )
         has_unavailable = (
-            coordinator is None
-            or any(
+            any(
                 candidate["status"] in {"unavailable", "failed", None}
                 for candidate in run_jobs
+            )
+            or (
+                coordinator is None
+                and not has_active_specialist
             )
         )
         effective_status = (
@@ -3509,12 +4534,21 @@ def run_status_projection(
             if has_unavailable
             else "completed"
         )
-        root = next(
+        coordinator_root = next(
             (
                 candidate
                 for candidate in run_jobs
                 if candidate["parent_job_id"] is None
                 and candidate["role"] == CoworkVerifyRole.COORDINATOR.value
+            ),
+            None,
+        )
+        root = coordinator_root or next(
+            (
+                candidate
+                for candidate in run_jobs
+                if candidate["parent_job_id"] is None
+                and candidate["role"] == CoworkVerifyRole.SPECIALIST.value
             ),
             None,
         )
@@ -3552,15 +4586,9 @@ def run_status_projection(
                 "surfaced_result_count": surfaced,
                 "coordination_status": (
                     "pending"
-                    if coordinator is not None and coordinator["status"] in {
-                        "prepared",
-                        "launching",
-                        "running",
-                        "submitted",
-                    }
+                    if has_active
                     else "unavailable"
-                    if coordinator is None
-                    or coordinator["status"] in {"unavailable", "failed", None}
+                    if has_unavailable
                     else "completed"
                 ),
                 "provider_label": str(

@@ -24,15 +24,22 @@ from work_buddy.cowork.verify_candidate_evaluation import (
 )
 from work_buddy.cowork.verify import (
     ActionSnapshot,
+    CheckDefinitionVersion,
+    CheckExecution,
     CoworkCoordinationJob,
     CoworkCoordinationStatusEvent,
     CoworkReviewApplication,
+    CriterionCheckBinding,
+    CriterionDefinitionVersion,
+    EvaluationResult,
     EvaluationPlanSnapshot,
     EvaluationRun,
     ModelCallAuthorizationReceipt,
     VerifyInvariantViolation,
+    admitted_check_executor,
 )
 from work_buddy.cowork.verify import store as verify_store
+from work_buddy.cowork.verify_jobs import MAX_VERIFY_JOB_BUDGET_USD
 from work_buddy.truth.contracts import Actor
 from work_buddy.truth.identity import canonical_json, new_id, sha256_text, utc_now
 from work_buddy.truth.store import TruthStore
@@ -134,6 +141,76 @@ def _string_list(value: object, label: str) -> list[str]:
     return result
 
 
+def _id_list(value: object, label: str) -> list[str]:
+    return [_id(item, label) for item in _string_list(value, label)]
+
+
+def _specialist_assignment(
+    role: CoworkVerifyRole,
+    value: object,
+) -> dict[str, Any] | None:
+    """Sanitize the immutable check binding assigned to one specialist."""
+
+    if role is not CoworkVerifyRole.SPECIALIST:
+        return None
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise VerifyInvariantViolation(
+            "specialist_assignment must be an object"
+        )
+    fields = {
+        "criterion_definition_version_id",
+        "check_definition_version_id",
+        "criterion_check_binding_id",
+        "sequence",
+        "total",
+        "configuration_sha256",
+    }
+    if set(value) != fields:
+        raise VerifyInvariantViolation(
+            "specialist_assignment must contain exactly its admitted fields"
+        )
+    sequence = value["sequence"]
+    total = value["total"]
+    if (
+        isinstance(sequence, bool)
+        or not isinstance(sequence, int)
+        or sequence < 1
+    ):
+        raise VerifyInvariantViolation(
+            "specialist_assignment.sequence must be a positive integer"
+        )
+    if isinstance(total, bool) or not isinstance(total, int) or total < 1:
+        raise VerifyInvariantViolation(
+            "specialist_assignment.total must be a positive integer"
+        )
+    if sequence > total:
+        raise VerifyInvariantViolation(
+            "specialist_assignment.sequence cannot exceed total"
+        )
+    return {
+        "criterion_definition_version_id": _id(
+            value["criterion_definition_version_id"],
+            "specialist_assignment.criterion_definition_version_id",
+        ),
+        "check_definition_version_id": _id(
+            value["check_definition_version_id"],
+            "specialist_assignment.check_definition_version_id",
+        ),
+        "criterion_check_binding_id": _id(
+            value["criterion_check_binding_id"],
+            "specialist_assignment.criterion_check_binding_id",
+        ),
+        "sequence": sequence,
+        "total": total,
+        "configuration_sha256": _digest(
+            value["configuration_sha256"],
+            "specialist_assignment.configuration_sha256",
+        ),
+    }
+
+
 def sanitized_request_summary(
     role: CoworkVerifyRole,
     request: Mapping[str, Any],
@@ -195,6 +272,10 @@ def sanitized_request_summary(
             "requested_revision_result_ids",
         ),
         "candidate_evaluations": [],
+        "specialist_assignment": _specialist_assignment(
+            role,
+            request.get("specialist_assignment"),
+        ),
     }
     # Keep pre-confirmation v1 jobs byte-compatible during replay/export while
     # persisting the field (including explicit null) for newly created jobs.
@@ -249,6 +330,237 @@ def _selection_summary(selection: Mapping[str, Any]) -> dict[str, str]:
     return result
 
 
+def _validate_authorization_boundary(
+    receipt: ModelCallAuthorizationReceipt,
+    *,
+    role: CoworkVerifyRole,
+    job_id: str,
+    action_snapshot_id: str,
+    request: Mapping[str, Any],
+) -> None:
+    """Require the portable job to retain its exact execution authorization."""
+
+    try:
+        boundary = json.loads(receipt.content_boundary_json)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise VerifyInvariantViolation(
+            "coordination job authorization boundary is invalid"
+        ) from exc
+    expected_fields = {
+        "role",
+        "job_id",
+        "document",
+        "action_snapshot_id",
+        "authority_context",
+    }
+    expected_document = (
+        "captured_target_only"
+        if role is CoworkVerifyRole.SPECIALIST
+        else "complete_permitted_frozen_projection"
+    )
+    expected_authority_context = {
+        "user_goal": str(request.get("user_goal") or ""),
+        "protected_intent": str(request.get("protected_intent") or ""),
+        "effective_configuration": request.get("effective_configuration"),
+        "effective_configuration_sha256": request.get(
+            "effective_configuration_sha256"
+        ),
+        "effective_policy_sha256": request.get("effective_policy_sha256"),
+        "active_criterion_ids": list(request.get("active_criterion_ids", [])),
+        "prior_disposition_ids": list(
+            request.get("prior_disposition_ids", [])
+        ),
+        "prior_human_review_outcome_ids": list(
+            request.get("prior_human_review_outcome_ids", [])
+        ),
+        "recheck_of_run_id": request.get("recheck_of_run_id"),
+        "recheck_of_proposal_ids": list(
+            request.get("recheck_of_proposal_ids", [])
+        ),
+        "recheck_intent_id": request.get("recheck_intent_id"),
+        "coordinator_stage": request.get("coordinator_stage"),
+        "requested_revision_result_ids": list(
+            request.get("requested_revision_result_ids", [])
+        ),
+        "specialist_assignment": request.get("specialist_assignment"),
+    }
+    if "recheck_target_confirmation" in request:
+        expected_authority_context["recheck_target_confirmation"] = (
+            request.get("recheck_target_confirmation")
+        )
+    if (
+        not isinstance(boundary, Mapping)
+        or set(boundary) != expected_fields
+        or boundary.get("role") != role.value
+        or boundary.get("job_id") != job_id
+        or boundary.get("document") != expected_document
+        or boundary.get("action_snapshot_id") != action_snapshot_id
+        or not isinstance(boundary.get("authority_context"), Mapping)
+        or canonical_json(dict(boundary["authority_context"]))
+        != canonical_json(expected_authority_context)
+    ):
+        raise VerifyInvariantViolation(
+            "coordination job authorization boundary does not match its "
+            "role, job, and content"
+        )
+
+
+def _validate_specialist_assignment_lineage(
+    store: TruthStore,
+    *,
+    role: CoworkVerifyRole,
+    action_snapshot_id: str,
+    plan: EvaluationPlanSnapshot | None,
+    request_summary: Mapping[str, Any],
+) -> None:
+    """Bind one specialist assignment to one exact frozen plan and binding."""
+
+    if role is not CoworkVerifyRole.SPECIALIST:
+        return
+    assignment = request_summary.get("specialist_assignment")
+    if not isinstance(assignment, Mapping) or plan is None:
+        raise VerifyInvariantViolation(
+            "specialist coordination requires an exact frozen assignment"
+        )
+    try:
+        plan_payload = json.loads(plan.plan_json)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise VerifyInvariantViolation(
+            "specialist coordination plan is invalid"
+        ) from exc
+    checks = (
+        plan_payload.get("checks")
+        if isinstance(plan_payload, Mapping)
+        else None
+    )
+    if (
+        not isinstance(plan_payload, Mapping)
+        or plan_payload.get("schema")
+        != "work-buddy.cowork-evaluation-plan/v1"
+        or plan_payload.get("action_snapshot_id") != action_snapshot_id
+        or not isinstance(checks, list)
+    ):
+        raise VerifyInvariantViolation(
+            "specialist coordination plan does not match its action snapshot"
+        )
+    plan_fields = {
+        "criterion_definition_version_id",
+        "check_definition_version_id",
+        "criterion_check_binding_id",
+        "criterion_activation_id",
+        "configuration_sha256",
+    }
+    specialist_entries: list[dict[str, Any]] = []
+    for check_entry in checks:
+        if not isinstance(check_entry, Mapping) or set(check_entry) != plan_fields:
+            raise VerifyInvariantViolation(
+                "specialist coordination plan contains an invalid check entry"
+            )
+        criterion = verify_store.get_record(
+            store,
+            CriterionDefinitionVersion,
+            check_entry["criterion_definition_version_id"],
+        )
+        check = verify_store.get_record(
+            store,
+            CheckDefinitionVersion,
+            check_entry["check_definition_version_id"],
+        )
+        binding = verify_store.get_record(
+            store,
+            CriterionCheckBinding,
+            check_entry["criterion_check_binding_id"],
+        )
+        if (
+            criterion is None
+            or check is None
+            or binding is None
+            or binding.criterion_definition_version_id != criterion.id
+            or binding.check_definition_version_id != check.id
+            or sha256_text(binding.configuration_json)
+            != check_entry["configuration_sha256"]
+        ):
+            raise VerifyInvariantViolation(
+                "specialist coordination plan no longer matches its immutable "
+                "records"
+            )
+        executor = admitted_check_executor(
+            check,
+            criterion_kind=criterion.criterion_kind,
+        )
+        if executor is None:
+            raise VerifyInvariantViolation(
+                "specialist coordination plan contains an unadmitted check"
+            )
+        if executor.execution_mode == "account_backed_specialist":
+            specialist_entries.append(
+                {
+                    "criterion_definition_version_id": criterion.id,
+                    "check_definition_version_id": check.id,
+                    "criterion_check_binding_id": binding.id,
+                    "configuration_sha256": check_entry[
+                        "configuration_sha256"
+                    ],
+                }
+            )
+    sequence = assignment["sequence"]
+    total = len(specialist_entries)
+    expected_assignment = (
+        None
+        if not isinstance(sequence, int)
+        or isinstance(sequence, bool)
+        or sequence < 1
+        or sequence > total
+        else {
+            **specialist_entries[sequence - 1],
+            "sequence": sequence,
+            "total": total,
+        }
+    )
+    if expected_assignment is None or dict(assignment) != expected_assignment:
+        raise VerifyInvariantViolation(
+            "specialist assignment does not match the exact admitted "
+            "specialist sequence in its frozen plan"
+        )
+
+
+def _validate_specialist_parent_lineage(
+    *,
+    role: CoworkVerifyRole,
+    parent: CoworkCoordinationJob | None,
+    run_id: str | None,
+    plan_id: str | None,
+    request_summary: Mapping[str, Any],
+) -> None:
+    if role is not CoworkVerifyRole.SPECIALIST:
+        return
+    assignment = request_summary["specialist_assignment"]
+    sequence = assignment["sequence"]
+    if sequence == 1:
+        if parent is not None:
+            raise VerifyInvariantViolation(
+                "first specialist assignment cannot have a parent job"
+            )
+        return
+    if parent is None:
+        raise VerifyInvariantViolation(
+            "later specialist assignment requires the previous specialist job"
+        )
+    parent_request = json.loads(parent.request_summary_json)
+    parent_assignment = parent_request.get("specialist_assignment")
+    if (
+        parent.role != CoworkVerifyRole.SPECIALIST.value
+        or parent.evaluation_run_id != run_id
+        or parent.plan_snapshot_id != plan_id
+        or not isinstance(parent_assignment, Mapping)
+        or parent_assignment.get("sequence") != sequence - 1
+        or parent_assignment.get("total") != assignment["total"]
+    ):
+        raise VerifyInvariantViolation(
+            "specialist parent does not match the previous frozen assignment"
+        )
+
+
 def record_coordination_job(
     store: TruthStore,
     job: Any,
@@ -269,6 +581,7 @@ def record_coordination_job(
             "coordination job action snapshot does not match its document"
         )
     plan_id = job.plan_snapshot_id
+    plan: EvaluationPlanSnapshot | None = None
     if plan_id is not None:
         plan = verify_store.get_record(store, EvaluationPlanSnapshot, plan_id)
         if plan is None or plan.action_snapshot_id != action.id:
@@ -299,7 +612,15 @@ def record_coordination_job(
         raise VerifyInvariantViolation(
             "coordination job authorization binding is invalid"
         )
+    _validate_authorization_boundary(
+        receipt,
+        role=role,
+        job_id=job_id,
+        action_snapshot_id=action.id,
+        request=job.request,
+    )
     parent_id = job.parent_job_id
+    parent: CoworkCoordinationJob | None = None
     if parent_id is not None:
         parent_id = _id(parent_id, "coordination parent job id")
         parent = verify_store.get_record(
@@ -320,11 +641,31 @@ def record_coordination_job(
     if (
         receipt.provider != selection["provider_id"]
         or receipt.model != selection["model_id"]
+        or receipt.egress_class != "account_backed_agent"
+        or receipt.cost_ceiling_usd != MAX_VERIFY_JOB_BUDGET_USD
+        or receipt.retry_limit != 0
+        or receipt.created_by_kind != "human"
+        or receipt.created_by_ref
+        != str(job.request.get("authorized_by_ref") or "dashboard-user")
     ):
         raise VerifyInvariantViolation(
             "coordination selection does not match its authorization"
         )
     request_summary = sanitized_request_summary(role, job.request)
+    _validate_specialist_assignment_lineage(
+        store,
+        role=role,
+        action_snapshot_id=action.id,
+        plan=plan,
+        request_summary=request_summary,
+    )
+    _validate_specialist_parent_lineage(
+        role=role,
+        parent=parent,
+        run_id=run_id,
+        plan_id=plan_id,
+        request_summary=request_summary,
+    )
     payload = {
         "document_id": job.document_id,
         "evaluation_run_id": run_id,
@@ -428,6 +769,10 @@ def _infer_outcome(job: Any, status: str) -> str | None:
             if output.get("outcome") == "perspective"
             else "completed_no_useful_item"
         )
+    if role is CoworkVerifyRole.SPECIALIST:
+        # The completed status plus its check/result consequence refs carries
+        # completion semantics without widening the persisted v7 SQL enum.
+        return "typed_submission_received"
     if role is CoworkVerifyRole.REVISER:
         return "revision_candidate_prepared"
     stage = str(job.request.get("coordinator_stage") or "initial")
@@ -461,7 +806,161 @@ def _consequence_refs(
         "requested_revision_result_ids",
     ):
         allowed[field] = _string_list(raw.get(field), field)
+    for field in ("check_execution_ids", "evaluation_result_ids"):
+        allowed[field] = _id_list(raw.get(field), field)
     return allowed
+
+
+def _validate_specialist_consequence_lineage(
+    store: TruthStore,
+    *,
+    binding: CoworkCoordinationJob,
+    status: str,
+    refs: Mapping[str, Any],
+) -> None:
+    """Keep specialist completion refs on their exact assigned execution."""
+
+    execution_ids = refs.get("check_execution_ids", [])
+    result_ids = refs.get("evaluation_result_ids", [])
+    request_summary = json.loads(binding.request_summary_json)
+    assignment = request_summary.get("specialist_assignment")
+    if binding.role != CoworkVerifyRole.SPECIALIST.value:
+        if execution_ids or result_ids:
+            raise VerifyInvariantViolation(
+                "non-specialist coordination cannot retain specialist "
+                "execution lineage"
+            )
+        return
+    if not isinstance(assignment, Mapping):
+        if execution_ids or result_ids:
+            raise VerifyInvariantViolation(
+                "specialist execution lineage requires an exact assignment"
+            )
+        return
+    if status == "completed" and (
+        len(execution_ids) != 1 or not result_ids
+    ):
+        raise VerifyInvariantViolation(
+            "completed specialist coordination requires one assigned "
+            "execution and its results"
+        )
+    action = verify_store.get_record(
+        store,
+        ActionSnapshot,
+        binding.action_snapshot_id,
+    )
+    if action is None:
+        raise VerifyInvariantViolation(
+            "specialist coordination action snapshot is unavailable"
+        )
+    executions: dict[str, CheckExecution] = {}
+    for execution_id in execution_ids:
+        execution = verify_store.get_record(
+            store,
+            CheckExecution,
+            execution_id,
+        )
+        if execution is None:
+            raise VerifyInvariantViolation(
+                "specialist consequence references a missing check execution"
+            )
+        try:
+            producer = json.loads(execution.producer_json)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise VerifyInvariantViolation(
+                "specialist execution producer is invalid"
+            ) from exc
+        if (
+            execution.evaluation_run_id != binding.evaluation_run_id
+            or execution.check_definition_version_id
+            != assignment["check_definition_version_id"]
+            or execution.criterion_check_binding_id
+            != assignment["criterion_check_binding_id"]
+            or execution.input_sha256 != action.target_text_sha256
+            or not isinstance(producer, Mapping)
+            or producer.get("kind") != "account_backed_specialist"
+            or producer.get("job_id") != binding.id
+        ):
+            raise VerifyInvariantViolation(
+                "specialist execution does not match its exact job assignment"
+            )
+        executions[execution.id] = execution
+    for result_id in result_ids:
+        result = verify_store.get_record(store, EvaluationResult, result_id)
+        if (
+            result is None
+            or result.evaluation_run_id != binding.evaluation_run_id
+            or result.criterion_definition_version_id
+            != assignment["criterion_definition_version_id"]
+            or result.check_execution_id not in executions
+        ):
+            raise VerifyInvariantViolation(
+                "specialist result does not match its assigned execution "
+                "lineage"
+            )
+    if status != "completed":
+        return
+    execution = next(iter(executions.values()))
+    complete_result_ids = {
+        result.id
+        for result in verify_store.list_records(
+            store,
+            EvaluationResult,
+            where="source.check_execution_id = ?",
+            params=(execution.id,),
+        )
+    }
+    if set(result_ids) != complete_result_ids:
+        raise VerifyInvariantViolation(
+            "specialist completion must retain the complete result set for "
+            "its assigned execution"
+        )
+    next_job_id = refs.get("next_job_id")
+    next_job = (
+        None
+        if next_job_id is None
+        else verify_store.get_record(
+            store,
+            CoworkCoordinationJob,
+            next_job_id,
+        )
+    )
+    if next_job is None:
+        raise VerifyInvariantViolation(
+            "completed specialist coordination requires its exact next job"
+        )
+    if (
+        next_job.document_id != binding.document_id
+        or next_job.action_snapshot_id != binding.action_snapshot_id
+        or next_job.evaluation_run_id != binding.evaluation_run_id
+        or next_job.plan_snapshot_id != binding.plan_snapshot_id
+    ):
+        raise VerifyInvariantViolation(
+            "specialist next job does not preserve its run and plan lineage"
+        )
+    sequence = assignment["sequence"]
+    total = assignment["total"]
+    next_request = json.loads(next_job.request_summary_json)
+    if sequence < total:
+        next_assignment = next_request.get("specialist_assignment")
+        if (
+            next_job.role != CoworkVerifyRole.SPECIALIST.value
+            or next_job.parent_job_id != binding.id
+            or not isinstance(next_assignment, Mapping)
+            or next_assignment.get("sequence") != sequence + 1
+            or next_assignment.get("total") != total
+        ):
+            raise VerifyInvariantViolation(
+                "specialist handoff does not target the next frozen assignment"
+            )
+    elif (
+        next_job.role != CoworkVerifyRole.COORDINATOR.value
+        or next_job.parent_job_id is not None
+        or next_request.get("coordinator_stage") != "initial"
+    ):
+        raise VerifyInvariantViolation(
+            "final specialist handoff must target the initial coordinator"
+        )
 
 
 def record_coordination_status(
@@ -490,6 +989,12 @@ def record_coordination_status(
     if output_sha256 is not None:
         output_sha256 = _digest(output_sha256, "coordination output_sha256")
     refs = _consequence_refs(consequence_refs)
+    _validate_specialist_consequence_lineage(
+        store,
+        binding=binding,
+        status=status,
+        refs=refs,
+    )
     error_code = _safe_error_code(job.error_code, status=status)
     message = _safe_message(status)
     payload = {

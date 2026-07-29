@@ -2,7 +2,7 @@
 name: Co-work Verify and Co-think surfaces
 kind: system
 description: HTTP, MCP, event, Review, Chat, and editor projections for Co-work Verify and Co-think.
-summary: Compact Working on controls and sibling editor-bottom Verify/Co-think docks share exact document targeting. Verify configuration and execution stay in its dock; Review receives durable outputs, human decisions, and contextual recheck handoffs, while Chat inherits Working on through a compact About chip.
+summary: Compact Working on controls and sibling full-workspace Verify/Co-think docks share exact document targeting. Verify offers selected checks, Add check, and Run; Review receives durable outputs and contextual recheck handoffs, while Chat inherits Working on through a compact About chip.
 entry_points:
 - work_buddy.cowork.verify_api
 - work_buddy.cowork.verify_projection
@@ -23,7 +23,7 @@ aliases:
 - Verify API
 - Co-think API
 - Verify Review rail
-- Verify run history
+- Verify checks
 parents:
 - cowork/verify-and-cothink
 dev_notes: |-
@@ -44,6 +44,7 @@ The user-facing mutation/read surface is document-scoped:
 - `GET /api/truth/doc/<document>/verify/runs/<run>`
 - `GET /api/truth/doc/<document>/verify/configuration`
 - `PATCH /api/truth/doc/<document>/verify/criteria/<criterion-key>`
+- `POST /api/truth/doc/<document>/verify/checks`
 - `POST /api/truth/doc/<document>/verify/criteria/drafts`
 - `POST /api/truth/doc/<document>/cothink`
 - `POST /api/truth/doc/<document>/cothink/items/<item>/actions`
@@ -52,18 +53,21 @@ The user-facing mutation/read surface is document-scoped:
 Every mutation applies the existing Co-work gates: registered reachable store,
 enabled document surface, active lifecycle, document policy, and non-read-only
 dashboard. Starts require an exact capture and explicit provider/model.
-Verify starts additionally require the user goal and protected intent currently
-shown in the Verify dock. Recheck starts require the exact derived intent,
-source run, still-pending proposals, original provider/model, original
-goal/intent, and a fresh target capture. A durable recheck must resolve the
+Verify starts additionally bind a stable internal run purpose and preservation
+boundary; these are not ordinary visible form fields. Recheck starts require
+the exact derived intent, source run, still-pending proposals, original
+provider/model, original purpose/preservation values, and a fresh target
+capture. A durable recheck must resolve the
 original target reference. A legacy intent without that reference requires a
 separate non-executing human affirmation request. The server persists its
 ActionSnapshot and returns a receipt whose character-range identity and
 target-text hash must match the fresh Run capture.
 
 There is intentionally no general agent-facing capability that starts Verify,
-admits a checker, toggles a criterion, invokes Co-think, or decides a proposal.
-Those are user/policy actions through the dashboard/domain boundary.
+admits executable code, toggles a criterion, invokes Co-think, or decides a
+proposal. A human may create a declarative personal check through the
+dashboard; the server binds it to a statically admitted system evaluator. User
+text never becomes executable code.
 
 ## R2 document projection
 
@@ -81,7 +85,7 @@ Old clients may ignore the additive fields. `LiveReviewRailProvider` maps one
 authoritative read into:
 
 - the Review attention feed;
-- Verify dock run history, setup counts, configuration, and execution plan;
+- the Verify dock's available and selected checks;
 - editor evidence decorations;
 - Co-think cards/outcomes; and
 - the existing proposal sitting.
@@ -139,17 +143,15 @@ The compact editor-top target controls:
 - provide a secondary, two-step **Set by cursor** flow; and
 - show the active target as view-only highlighting with start/end markers.
 
-The editor-bottom docks:
+The full-workspace bottom docks:
 
 - show sibling **Verify** and **Co-think** headers in one accordion;
-- keep Verify target override, criteria, goal, protected intent, explicit
-  provider/model, truthful execution disclosure, run action, progress, and
-  history together;
-- state separately that the deterministic checker runs in-process against the
-  captured target while account-backed coordination receives the entire frozen
-  document;
-- derive cost language from the selected provider's enforcement class and
-  never present a requested budget as a universal guarantee; and
+- span beneath both the editor and Review/Chat rail;
+- keep Verify's primary page to **Checks**, **Add check**, and **Run Verify**;
+- replace that primary page with the focused Add-check form rather than nesting
+  another disclosure inside it;
+- attach hover help to the existing dock headers instead of adding help-only
+  controls; and
 - keep Co-think as a non-operational **Planned** shell in the current slice.
 
 The Review rail:
@@ -183,6 +185,6 @@ those checks, and binds the confirmation to the intent, lineage, original
 goal/intent, and authorization receipt. Neither path may silently widen to the
 whole document.
 
-Clean conforming results remain quiet in the attention feed but inspectable in
-run history. Results against an earlier structured head are labeled as an
-earlier version instead of being presented as current.
+Clean conforming results remain quiet in the attention feed. Results against an
+earlier structured head are labeled as an earlier version instead of being
+presented as current.

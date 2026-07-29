@@ -1,0 +1,181 @@
+/*
+ * Verify selection and authoring styles. Configuration belongs to the shared
+ * workspace dock; Review imports none of this chrome.
+ */
+
+.wb-cowork-verify-setup {
+  display: flex;
+  min-inline-size: 0;
+  align-items: start;
+  gap: var(--wb-space-2);
+}
+
+.wb-cowork-verify-setup__menu {
+  flex: 1 1 24rem;
+  min-inline-size: 12rem;
+  border: 1px solid var(--wb-color-border-default);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-surface-raised);
+}
+
+.wb-cowork-verify-setup__menu > summary {
+  display: flex;
+  min-block-size: var(--wb-target-size);
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--wb-space-3);
+  padding: var(--wb-space-2) var(--wb-space-3);
+  cursor: pointer;
+  color: var(--wb-color-text-strong);
+  font-weight: var(--wb-font-weight-semibold);
+}
+
+.wb-cowork-verify-setup__count,
+.wb-cowork-verify-criterion__meta,
+.wb-cowork-verify-setup__notice {
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-xs);
+}
+
+.wb-cowork-verify-setup__count {
+  font-weight: var(--wb-font-weight-regular);
+}
+
+.wb-cowork-verify-setup__menu-body {
+  display: grid;
+  gap: var(--wb-space-2);
+  max-block-size: 18rem;
+  padding: var(--wb-space-2);
+  overflow: auto;
+  border-block-start: 1px solid var(--wb-color-border-subtle);
+}
+
+.wb-cowork-verify-setup__menu-body p {
+  margin: 0;
+}
+
+.wb-cowork-verify-setup__criteria {
+  display: grid;
+  gap: var(--wb-space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.wb-cowork-verify-criterion {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--wb-space-2);
+  padding: var(--wb-space-2);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-surface-workspace);
+  cursor: pointer;
+}
+
+.wb-cowork-verify-criterion:hover {
+  background: var(--wb-color-action-secondary-hover);
+}
+
+.wb-cowork-verify-criterion > input {
+  inline-size: 1rem;
+  block-size: 1rem;
+  margin-block-start: 0.15rem;
+}
+
+.wb-cowork-verify-criterion__copy {
+  display: grid;
+  gap: var(--wb-space-1);
+  min-inline-size: 0;
+}
+
+.wb-cowork-verify-criterion__copy > span {
+  overflow: hidden;
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-cowork-verify-setup__error {
+  margin: 0;
+  color: var(--wb-color-status-danger);
+  font-size: var(--wb-font-size-xs);
+}
+
+.wb-cowork-verify-setup--add {
+  display: grid;
+  gap: var(--wb-space-3);
+  inline-size: 100%;
+}
+
+.wb-cowork-verify-setup__add-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--wb-space-3);
+}
+
+.wb-cowork-verify-draft {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--wb-space-2) var(--wb-space-3);
+}
+
+.wb-cowork-verify-draft label {
+  display: grid;
+  gap: var(--wb-space-1);
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-xs);
+}
+
+.wb-cowork-verify-draft label:last-of-type {
+  grid-column: 1 / -1;
+}
+
+.wb-cowork-verify-draft :is(input, textarea) {
+  inline-size: 100%;
+  padding: var(--wb-space-2);
+  border: 1px solid var(--wb-color-border-default);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-surface-workspace);
+  color: var(--wb-color-text-primary);
+  font: inherit;
+}
+
+.wb-cowork-verify-draft textarea {
+  min-block-size: 3.5rem;
+  resize: vertical;
+}
+
+.wb-cowork-verify-draft__actions {
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--wb-space-3);
+  color: var(--wb-color-text-muted);
+  font-size: var(--wb-font-size-xs);
+}
+
+.wb-cowork-verify-setup__menu > summary:focus-visible,
+.wb-cowork-verify-criterion > input:focus-visible {
+  outline: none;
+  box-shadow: var(--wb-shadow-focus);
+}
+
+@container (max-width: 42rem) {
+  .wb-cowork-verify-draft {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .wb-cowork-verify-setup {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .wb-cowork-verify-draft__actions {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

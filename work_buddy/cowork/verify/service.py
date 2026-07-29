@@ -7,8 +7,9 @@ import math
 import re
 import sqlite3
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
 from work_buddy.cowork.readiness import classify_document
 from work_buddy.truth import documents, proposals, ydoc_store
@@ -55,6 +56,11 @@ TERMINOLOGY_EXACT_MATCH_VERSION = 1
 TERMINOLOGY_EXACT_MATCH_EXECUTOR = (
     "work_buddy.cowork.verify.service:run_terminology_exact_match"
 )
+INSTRUCTION_MODEL_CHECK_KEY = "instruction_model_evaluation"
+INSTRUCTION_MODEL_CHECK_VERSION = 1
+INSTRUCTION_MODEL_CHECK_EXECUTOR = (
+    "builtin:cowork_verify:instruction_model_check:v1"
+)
 SURFACING_DECISIONS = frozenset({"surface", "route_to_correction"})
 ROUTING_DECISIONS = SURFACING_DECISIONS | frozenset(
     {"suppress", "defer", "supersede"}
@@ -76,6 +82,51 @@ _RECORD_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 _SYSTEM_ACTOR = Actor("system", "cowork-verify")
 _SEED_DOMAIN = b"work-buddy:cowork-verify:seed:v1\0"
 _COTHINK_STATUS_DOMAIN = b"work-buddy:cothink-item-status:v1\0"
+
+
+@dataclass(frozen=True, slots=True)
+class CheckResultDraft:
+    result_kind: str
+    severity: str
+    message: str
+    evidence_selector: Mapping[str, Any] | None
+    payload: Mapping[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class CheckEvaluationOutput:
+    output: Mapping[str, Any]
+    diagnostics: Mapping[str, Any]
+    results: tuple[CheckResultDraft, ...]
+
+
+CheckEvaluator = Callable[
+    [str, int, Mapping[str, Any]],
+    CheckEvaluationOutput,
+]
+
+
+@dataclass(frozen=True, slots=True)
+class AdmittedCheckExecutor:
+    """One statically admitted executor; no record can dynamically import code."""
+
+    check_definition_id: str
+    check_definition_sha256: str
+    executor_ref: str
+    mechanism: str
+    supported_criterion_kinds: frozenset[str]
+    execution_mode: str
+    evaluate: CheckEvaluator | None
+    candidate_evaluation: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _ResolvedSelectedCheck:
+    criterion: CriterionDefinitionVersion
+    check: CheckDefinitionVersion
+    binding: CriterionCheckBinding
+    activation: CriterionActivation
+    executor: AdmittedCheckExecutor
 
 
 def _text(value: object, label: str) -> str:
@@ -137,6 +188,18 @@ def _sequence(value: Sequence[Mapping[str, Any]] | None, label: str) -> list[Any
 
 def _canonical_hash(value: Mapping[str, Any]) -> str:
     return sha256_text(canonical_json(value))
+
+
+def _json_preserving_text(value: Mapping[str, Any]) -> str:
+    """Serialize evidence without semantic-whitespace normalization."""
+
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
 
 
 def _actor_fields(actor: Actor) -> tuple[str, str | None, str | None]:
@@ -354,6 +417,100 @@ def seed_terminology_exact_match(
         binding=binding,
         activation=activation,
     )
+
+
+def instruction_model_check_defaults(
+    *,
+    actor: Actor = _SYSTEM_ACTOR,
+    at: str | None = None,
+) -> CheckDefinitionVersion:
+    """Build the one admitted model-evaluation template without writing.
+
+    User-authored criteria bind declarative instructions to this exact,
+    system-owned mechanism. They never create or admit executable code.
+    """
+
+    created_at = _timestamp(at, "seed timestamp")
+    actor_kind, actor_ref, actor_meta = _actor_fields(actor)
+    payload = {
+        "stable_key": INSTRUCTION_MODEL_CHECK_KEY,
+        "version": INSTRUCTION_MODEL_CHECK_VERSION,
+        "title": "Instruction-based model evaluation",
+        "mechanism": "model_judge",
+        "executor_ref": INSTRUCTION_MODEL_CHECK_EXECUTOR,
+        "supported_criterion_kinds": ["user_authored"],
+        "input_schema": {
+            "type": "object",
+            "required": [
+                "frozen_target",
+                "criterion",
+                "evaluation_instructions",
+            ],
+        },
+        "output_schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["results", "summary"],
+            "properties": {
+                "results": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": [
+                            "result_kind",
+                            "severity",
+                            "message",
+                            "evidence",
+                            "coverage",
+                            "limitations",
+                        ],
+                    },
+                },
+                "summary": {"type": "string"},
+            },
+        },
+        "limitations": [
+            "This is an advisory model evaluation, not a deterministic proof.",
+            "A finding must cite evidence that resolves inside the frozen target.",
+            "This first version cannot authorize an automatic revision.",
+        ],
+        "origin": "system",
+    }
+    return CheckDefinitionVersion(
+        id=_seed_id("check:instruction_model_evaluation:v1"),
+        stable_key=payload["stable_key"],
+        version=payload["version"],
+        title=payload["title"],
+        mechanism=payload["mechanism"],
+        executor_ref=payload["executor_ref"],
+        supported_criterion_kinds_json=canonical_json(
+            payload["supported_criterion_kinds"]
+        ),
+        input_schema_json=canonical_json(payload["input_schema"]),
+        output_schema_json=canonical_json(payload["output_schema"]),
+        limitations_json=canonical_json(payload["limitations"]),
+        origin=payload["origin"],
+        canonical_sha256=_canonical_hash(payload),
+        created_at=created_at,
+        created_by_kind=actor_kind,
+        created_by_ref=actor_ref,
+        created_by_meta_json=actor_meta,
+    )
+
+
+def seed_instruction_model_check(
+    store: TruthStore,
+    *,
+    actor: Actor = _SYSTEM_ACTOR,
+    at: str | None = None,
+) -> CheckDefinitionVersion:
+    """Idempotently persist the admitted declarative model-check template."""
+
+    record = instruction_model_check_defaults(actor=actor, at=at)
+    with store.write_transaction() as conn:
+        return _insert_seed(store, record, conn=conn)
 
 
 def _normalize_target(
@@ -616,47 +773,136 @@ def create_action_snapshot(
             return verify_store.insert_record(store, record, conn=conn)
 
 
-def create_terminology_plan(
+def _resolve_selected_checks(
+    store: TruthStore,
+    *,
+    action: ActionSnapshot,
+    criterion_activation_ids: Sequence[str],
+) -> tuple[_ResolvedSelectedCheck, ...]:
+    if (
+        isinstance(criterion_activation_ids, (str, bytes, bytearray))
+        or not isinstance(criterion_activation_ids, Sequence)
+        or not criterion_activation_ids
+    ):
+        raise VerifyInvariantViolation(
+            "evaluation plan requires selected criterion activations"
+        )
+    resolved: list[_ResolvedSelectedCheck] = []
+    seen_activations: set[str] = set()
+    seen_bindings: set[str] = set()
+    for activation_id in criterion_activation_ids:
+        if not isinstance(activation_id, str) or not activation_id:
+            raise VerifyInvariantViolation(
+                "criterion activation ids must be nonempty strings"
+            )
+        if activation_id in seen_activations:
+            raise VerifyInvariantViolation(
+                "evaluation plan cannot select an activation more than once"
+            )
+        activation = _require_record(
+            store,
+            CriterionActivation,
+            activation_id,
+        )
+        if not activation.is_enabled:
+            raise VerifyInvariantViolation(
+                "evaluation plan activation is not enabled"
+            )
+        try:
+            scope = json.loads(activation.scope_json)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise VerifyInvariantViolation(
+                "criterion activation scope is invalid"
+            ) from exc
+        scoped_document = (
+            scope.get("document_id")
+            if isinstance(scope, Mapping)
+            else None
+        )
+        if (
+            not isinstance(scope, Mapping)
+            or scope.get("kind") != "document"
+            or (
+                scoped_document is not None
+                and scoped_document != action.document_id
+            )
+        ):
+            raise VerifyInvariantViolation(
+                "criterion activation does not apply to the action document"
+            )
+        criterion = _require_record(
+            store,
+            CriterionDefinitionVersion,
+            activation.criterion_definition_version_id,
+        )
+        binding = _require_record(
+            store,
+            CriterionCheckBinding,
+            activation.criterion_check_binding_id,
+        )
+        if (
+            binding.criterion_definition_version_id != criterion.id
+            or binding.id in seen_bindings
+        ):
+            raise VerifyInvariantViolation(
+                "criterion activation does not select one exact binding"
+            )
+        check = _require_record(
+            store,
+            CheckDefinitionVersion,
+            binding.check_definition_version_id,
+        )
+        executor = admitted_check_executor(
+            check,
+            criterion_kind=criterion.criterion_kind,
+        )
+        if executor is None:
+            raise VerifyInvariantViolation(
+                "criterion activation selects an unadmitted check executor"
+            )
+        resolved.append(
+            _ResolvedSelectedCheck(
+                criterion=criterion,
+                check=check,
+                binding=binding,
+                activation=activation,
+                executor=executor,
+            )
+        )
+        seen_activations.add(activation.id)
+        seen_bindings.add(binding.id)
+    return tuple(resolved)
+
+
+def create_evaluation_plan(
     store: TruthStore,
     *,
     action_snapshot_id: str,
-    criterion_activation_id: str | None = None,
+    criterion_activation_ids: Sequence[str],
     actor: Actor = _SYSTEM_ACTOR,
     at: str | None = None,
     plan_id: str | None = None,
 ) -> EvaluationPlanSnapshot:
-    seeded = seed_terminology_exact_match(store, actor=_SYSTEM_ACTOR, at=at)
     action = _require_record(store, ActionSnapshot, action_snapshot_id)
-    activation = (
-        seeded.activation
-        if criterion_activation_id is None
-        else _require_record(
-            store,
-            CriterionActivation,
-            criterion_activation_id,
-        )
+    selected = _resolve_selected_checks(
+        store,
+        action=action,
+        criterion_activation_ids=criterion_activation_ids,
     )
-    if (
-        not activation.is_enabled
-        or activation.criterion_definition_version_id != seeded.criterion.id
-        or activation.criterion_check_binding_id != seeded.binding.id
-    ):
-        raise VerifyInvariantViolation(
-            "terminology plan activation does not select the admitted check"
-        )
     plan_payload = {
         "schema": "work-buddy.cowork-evaluation-plan/v1",
         "action_snapshot_id": action.id,
         "checks": [
             {
-                "criterion_definition_version_id": seeded.criterion.id,
-                "check_definition_version_id": seeded.check.id,
-                "criterion_check_binding_id": seeded.binding.id,
-                "criterion_activation_id": activation.id,
+                "criterion_definition_version_id": item.criterion.id,
+                "check_definition_version_id": item.check.id,
+                "criterion_check_binding_id": item.binding.id,
+                "criterion_activation_id": item.activation.id,
                 "configuration_sha256": sha256_text(
-                    seeded.binding.configuration_json
+                    item.binding.configuration_json
                 ),
             }
+            for item in selected
         ],
     }
     canonical_sha256 = _canonical_hash(plan_payload)
@@ -689,6 +935,45 @@ def create_terminology_plan(
         if concurrent is None:
             raise
         return concurrent
+
+
+def create_terminology_plan(
+    store: TruthStore,
+    *,
+    action_snapshot_id: str,
+    criterion_activation_id: str | None = None,
+    actor: Actor = _SYSTEM_ACTOR,
+    at: str | None = None,
+    plan_id: str | None = None,
+) -> EvaluationPlanSnapshot:
+    """Backward-compatible one-check plan for the built-in terminology check."""
+
+    seeded = seed_terminology_exact_match(store, actor=_SYSTEM_ACTOR, at=at)
+    activation = (
+        seeded.activation
+        if criterion_activation_id is None
+        else _require_record(
+            store,
+            CriterionActivation,
+            criterion_activation_id,
+        )
+    )
+    if (
+        not activation.is_enabled
+        or activation.criterion_definition_version_id != seeded.criterion.id
+        or activation.criterion_check_binding_id != seeded.binding.id
+    ):
+        raise VerifyInvariantViolation(
+            "terminology plan activation does not select the admitted check"
+        )
+    return create_evaluation_plan(
+        store,
+        action_snapshot_id=action_snapshot_id,
+        criterion_activation_ids=(activation.id,),
+        actor=actor,
+        at=at,
+        plan_id=plan_id,
+    )
 
 
 def _read_blob(store: TruthStore, digest: str, label: str) -> bytes:
@@ -748,22 +1033,170 @@ def terminology_exact_matches(
     return tuple(_term_matches(text, configuration))
 
 
-def run_terminology_exact_match(
+def _evaluate_terminology_exact_match(
+    text: str,
+    target_start: int,
+    configuration: Mapping[str, Any],
+) -> CheckEvaluationOutput:
+    matches = _term_matches(text, configuration)
+    drafts: list[CheckResultDraft] = []
+    if not matches:
+        drafts.append(
+            CheckResultDraft(
+                result_kind="conforming",
+                severity="info",
+                message=(
+                    "No configured non-preferred term was found in the frozen "
+                    "evaluation target."
+                ),
+                evidence_selector=None,
+                payload={
+                    "match_count": 0,
+                    "coverage": "complete_exact_string",
+                },
+            )
+        )
+    for match in matches:
+        projection_start = target_start + int(match["start"])
+        projection_end = target_start + int(match["end"])
+        evidence_selector = {
+            "kind": "text_quote",
+            "selector": CompositeSelector(
+                exact=str(match["non_preferred"]),
+                start=projection_start,
+                end=projection_end,
+            ).to_web_annotation(),
+        }
+        drafts.append(
+            CheckResultDraft(
+                result_kind="finding",
+                severity="warning",
+                message=(
+                    f"Use the preferred term “{match['preferred']}” instead of "
+                    f"“{match['non_preferred']}”."
+                ),
+                evidence_selector=evidence_selector,
+                payload={
+                    "non_preferred": match["non_preferred"],
+                    "preferred": match["preferred"],
+                    "target_relative_start": match["start"],
+                    "target_relative_end": match["end"],
+                },
+            )
+        )
+    return CheckEvaluationOutput(
+        output={"matches": matches},
+        diagnostics={"match_count": len(matches)},
+        results=tuple(drafts),
+    )
+
+
+_ADMITTED_TERMINOLOGY_CHECK = terminology_exact_match_defaults().check
+_ADMITTED_INSTRUCTION_MODEL_CHECK = instruction_model_check_defaults()
+_ADMITTED_CHECK_EXECUTORS: dict[str, AdmittedCheckExecutor] = {
+    _ADMITTED_TERMINOLOGY_CHECK.id: AdmittedCheckExecutor(
+        check_definition_id=_ADMITTED_TERMINOLOGY_CHECK.id,
+        check_definition_sha256=_ADMITTED_TERMINOLOGY_CHECK.canonical_sha256,
+        executor_ref=TERMINOLOGY_EXACT_MATCH_EXECUTOR,
+        mechanism="deterministic",
+        supported_criterion_kinds=frozenset({"terminology"}),
+        execution_mode="in_process",
+        evaluate=_evaluate_terminology_exact_match,
+        candidate_evaluation="terminology_exact_match",
+    ),
+    _ADMITTED_INSTRUCTION_MODEL_CHECK.id: AdmittedCheckExecutor(
+        check_definition_id=_ADMITTED_INSTRUCTION_MODEL_CHECK.id,
+        check_definition_sha256=(
+            _ADMITTED_INSTRUCTION_MODEL_CHECK.canonical_sha256
+        ),
+        executor_ref=INSTRUCTION_MODEL_CHECK_EXECUTOR,
+        mechanism="model_judge",
+        supported_criterion_kinds=frozenset({"user_authored"}),
+        execution_mode="account_backed_specialist",
+        evaluate=None,
+        candidate_evaluation=None,
+    ),
+}
+
+
+def admitted_check_executor(
+    check: CheckDefinitionVersion,
+    *,
+    criterion_kind: str | None = None,
+) -> AdmittedCheckExecutor | None:
+    """Resolve only a statically admitted executor; never import a record ref."""
+
+    executor = _ADMITTED_CHECK_EXECUTORS.get(check.id)
+    if (
+        executor is None
+        or check.canonical_sha256 != executor.check_definition_sha256
+        or check.executor_ref != executor.executor_ref
+        or check.mechanism != executor.mechanism
+    ):
+        return None
+    try:
+        declared_kinds = json.loads(check.supported_criterion_kinds_json)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if (
+        not isinstance(declared_kinds, list)
+        or not declared_kinds
+        or not all(isinstance(item, str) and item for item in declared_kinds)
+        or not set(declared_kinds).issubset(
+            executor.supported_criterion_kinds
+        )
+    ):
+        return None
+    if (
+        criterion_kind is not None
+        and (
+            criterion_kind not in declared_kinds
+            or criterion_kind not in executor.supported_criterion_kinds
+        )
+    ):
+        return None
+    return executor
+
+
+def run_admitted_checks(
     store: TruthStore,
     *,
     action_snapshot_id: str,
-    criterion_activation_id: str | None = None,
+    criterion_activation_ids: Sequence[str],
     actor: Actor = _SYSTEM_ACTOR,
     at: str | None = None,
 ) -> DeterministicEvaluation:
-    """Run and persist the seeded deterministic terminology check."""
+    """Freeze a selected series and execute its admitted in-process checks.
 
-    seeded = seed_terminology_exact_match(store, actor=_SYSTEM_ACTOR, at=at)
+    Account-backed specialist assignments remain frozen in the same plan and
+    run, but their executions/results are appended only after a strictly typed
+    job submission. This keeps one exact run across heterogeneous mechanisms.
+    """
+
     action = _require_record(store, ActionSnapshot, action_snapshot_id)
-    plan = create_terminology_plan(
+    selected = _resolve_selected_checks(
+        store,
+        action=action,
+        criterion_activation_ids=criterion_activation_ids,
+    )
+    local_selected = tuple(
+        item
+        for item in selected
+        if item.executor.execution_mode == "in_process"
+    )
+    specialist_selected = tuple(
+        item
+        for item in selected
+        if item.executor.execution_mode == "account_backed_specialist"
+    )
+    if len(local_selected) + len(specialist_selected) != len(selected):
+        raise VerifyInvariantViolation(
+            "evaluation plan contains an unsupported execution mode"
+        )
+    plan = create_evaluation_plan(
         store,
         action_snapshot_id=action.id,
-        criterion_activation_id=criterion_activation_id,
+        criterion_activation_ids=criterion_activation_ids,
         actor=actor,
         at=at,
     )
@@ -776,21 +1209,41 @@ def run_terminology_exact_match(
         target_text = target_bytes.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise VerifyInvariantViolation("action target is not UTF-8 text") from exc
-    configuration = json.loads(seeded.binding.configuration_json)
-    matches = _term_matches(target_text, configuration)
     selector_payload = json.loads(action.target_selector_json)
     target_start = int(selector_payload.get("start", 0))
     if action.target_kind == "text_quote":
         target_start = int(selector_payload["resolved"]["start"])
     completed_at = _timestamp(at, "evaluation timestamp")
     actor_kind, actor_ref, actor_meta = _actor_fields(actor)
-    run_payload = {
-        "action_snapshot_id": action.id,
-        "plan_snapshot_id": plan.id,
-        "run_kind": "verify",
-        "executor": TERMINOLOGY_EXACT_MATCH_EXECUTOR,
-        "input_sha256": action.target_text_sha256,
-    }
+    if (
+        len(selected) == 1
+        and selected[0].executor.executor_ref
+        == TERMINOLOGY_EXACT_MATCH_EXECUTOR
+    ):
+        # Retain the original canonical identity for the shipped one-check path.
+        run_payload = {
+            "action_snapshot_id": action.id,
+            "plan_snapshot_id": plan.id,
+            "run_kind": "verify",
+            "executor": TERMINOLOGY_EXACT_MATCH_EXECUTOR,
+            "input_sha256": action.target_text_sha256,
+        }
+    else:
+        run_payload = {
+            "action_snapshot_id": action.id,
+            "plan_snapshot_id": plan.id,
+            "run_kind": "verify",
+            "executors": [
+                {
+                    "criterion_definition_version_id": item.criterion.id,
+                    "check_definition_version_id": item.check.id,
+                    "criterion_check_binding_id": item.binding.id,
+                    "executor_ref": item.executor.executor_ref,
+                }
+                for item in selected
+            ],
+            "input_sha256": action.target_text_sha256,
+        }
     run_sha256 = _canonical_hash(run_payload)
     existing_run = verify_store.get_by_canonical_sha256(
         store,
@@ -810,165 +1263,455 @@ def run_terminology_exact_match(
             where="source.evaluation_run_id = ?",
             params=(existing_run.id,),
         )
-        if len(executions) != 1:
+        expected_bindings = [item.binding.id for item in local_selected]
+        if (
+            len(executions) < len(local_selected)
+            or [item.criterion_check_binding_id for item in executions]
+            [: len(expected_bindings)]
+            != expected_bindings
+        ):
             raise VerifyInvariantViolation(
-                "deterministic evaluation has an incomplete execution ledger"
+                "evaluation has an incomplete in-process execution ledger"
             )
         return DeterministicEvaluation(
             plan=plan,
             run=existing_run,
-            execution=executions[0],
-            results=results,
+            executions=executions,
+            results=tuple(results),
         )
 
-    output_payload = {"matches": matches}
-    output_sha256 = _canonical_hash(output_payload)
     run = EvaluationRun(
         id=new_id(),
         action_snapshot_id=action.id,
         plan_snapshot_id=plan.id,
         run_kind="verify",
-        status="completed",
+        status=("running" if specialist_selected else "completed"),
         canonical_sha256=run_sha256,
         started_at=completed_at,
-        completed_at=completed_at,
+        completed_at=None if specialist_selected else completed_at,
         created_by_kind=actor_kind,
         created_by_ref=actor_ref,
         created_by_meta_json=actor_meta,
     )
-    execution_payload = {
-        "evaluation_run_id": run.id,
-        "check_definition_version_id": seeded.check.id,
-        "criterion_check_binding_id": seeded.binding.id,
-        "mechanism": "deterministic",
-        "status": "succeeded",
-        "input_sha256": action.target_text_sha256,
-        "output_sha256": output_sha256,
-    }
-    execution = CheckExecution(
-        id=new_id(),
-        evaluation_run_id=run.id,
-        check_definition_version_id=seeded.check.id,
-        criterion_check_binding_id=seeded.binding.id,
-        mechanism="deterministic",
-        status="succeeded",
-        input_sha256=action.target_text_sha256,
-        output_sha256=output_sha256,
-        diagnostics_json=canonical_json(
-            {"match_count": len(matches), "output_sha256": output_sha256}
-        ),
-        producer_json=canonical_json(
-            {
-                "kind": "deterministic",
-                "executor_ref": TERMINOLOGY_EXACT_MATCH_EXECUTOR,
-                "version": TERMINOLOGY_EXACT_MATCH_VERSION,
-            }
-        ),
-        canonical_sha256=_canonical_hash(execution_payload),
-        started_at=completed_at,
-        completed_at=completed_at,
-        created_by_kind=actor_kind,
-        created_by_ref=actor_ref,
-        created_by_meta_json=actor_meta,
-    )
+    executions: list[CheckExecution] = []
     results: list[EvaluationResult] = []
-    if not matches:
-        message = (
-            "No configured non-preferred term was found in the frozen "
-            "evaluation target."
-        )
-        payload = {
-            "match_count": 0,
-            "coverage": "complete_exact_string",
-        }
-        result_payload = {
-            "evaluation_run_id": run.id,
-            "check_execution_id": execution.id,
-            "criterion_definition_version_id": seeded.criterion.id,
-            "result_kind": "conforming",
-            "severity": "info",
-            "message": message,
-            "evidence_selector": None,
-            "payload": payload,
-        }
-        results.append(
-            EvaluationResult(
-                id=new_id(),
-                evaluation_run_id=run.id,
-                check_execution_id=execution.id,
-                criterion_definition_version_id=seeded.criterion.id,
-                result_kind="conforming",
-                severity="info",
-                message=message,
-                evidence_selector_json=None,
-                payload_json=canonical_json(payload),
-                canonical_sha256=_canonical_hash(result_payload),
-                created_at=completed_at,
-                created_by_kind=actor_kind,
-                created_by_ref=actor_ref,
-                created_by_meta_json=actor_meta,
+    for item in local_selected:
+        try:
+            configuration = json.loads(item.binding.configuration_json)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise VerifyInvariantViolation(
+                "criterion-check binding configuration is invalid"
+            ) from exc
+        if not isinstance(configuration, Mapping):
+            raise VerifyInvariantViolation(
+                "criterion-check binding configuration must be an object"
             )
-        )
-    for match in matches:
-        projection_start = target_start + int(match["start"])
-        projection_end = target_start + int(match["end"])
-        evidence_selector = {
-            "kind": "text_quote",
-            "selector": CompositeSelector(
-                exact=str(match["non_preferred"]),
-                start=projection_start,
-                end=projection_end,
-            ).to_web_annotation(),
-        }
-        message = (
-            f"Use the preferred term “{match['preferred']}” instead of "
-            f"“{match['non_preferred']}”."
-        )
-        payload = {
-            "non_preferred": match["non_preferred"],
-            "preferred": match["preferred"],
-            "target_relative_start": match["start"],
-            "target_relative_end": match["end"],
-        }
-        result_payload = {
-            "evaluation_run_id": run.id,
-            "check_execution_id": execution.id,
-            "criterion_definition_version_id": seeded.criterion.id,
-            "result_kind": "finding",
-            "severity": "warning",
-            "message": message,
-            "evidence_selector": evidence_selector,
-            "payload": payload,
-        }
-        results.append(
-            EvaluationResult(
-                id=new_id(),
-                evaluation_run_id=run.id,
-                check_execution_id=execution.id,
-                criterion_definition_version_id=seeded.criterion.id,
-                result_kind="finding",
-                severity="warning",
-                message=message,
-                evidence_selector_json=canonical_json(evidence_selector),
-                payload_json=canonical_json(payload),
-                canonical_sha256=_canonical_hash(result_payload),
-                created_at=completed_at,
-                created_by_kind=actor_kind,
-                created_by_ref=actor_ref,
-                created_by_meta_json=actor_meta,
+        if item.executor.evaluate is None:
+            raise VerifyInvariantViolation(
+                "in-process check has no admitted evaluator"
             )
+        evaluated = item.executor.evaluate(
+            target_text,
+            target_start,
+            configuration,
         )
+        if not evaluated.results:
+            raise VerifyInvariantViolation(
+                "admitted check executor returned no typed evaluation result"
+            )
+        output_payload = dict(evaluated.output)
+        output_sha256 = _canonical_hash(output_payload)
+        execution_payload = {
+            "evaluation_run_id": run.id,
+            "check_definition_version_id": item.check.id,
+            "criterion_check_binding_id": item.binding.id,
+            "mechanism": item.executor.mechanism,
+            "status": "succeeded",
+            "input_sha256": action.target_text_sha256,
+            "output_sha256": output_sha256,
+        }
+        execution = CheckExecution(
+            id=new_id(),
+            evaluation_run_id=run.id,
+            check_definition_version_id=item.check.id,
+            criterion_check_binding_id=item.binding.id,
+            mechanism=item.executor.mechanism,
+            status="succeeded",
+            input_sha256=action.target_text_sha256,
+            output_sha256=output_sha256,
+            diagnostics_json=canonical_json(
+                {
+                    **dict(evaluated.diagnostics),
+                    "output_sha256": output_sha256,
+                }
+            ),
+            producer_json=canonical_json(
+                {
+                    "kind": item.executor.mechanism,
+                    "executor_ref": item.executor.executor_ref,
+                    "version": item.check.version,
+                }
+            ),
+            canonical_sha256=_canonical_hash(execution_payload),
+            started_at=completed_at,
+            completed_at=completed_at,
+            created_by_kind=actor_kind,
+            created_by_ref=actor_ref,
+            created_by_meta_json=actor_meta,
+        )
+        executions.append(execution)
+        for draft in evaluated.results:
+            evidence_selector = (
+                None
+                if draft.evidence_selector is None
+                else dict(draft.evidence_selector)
+            )
+            payload = dict(draft.payload)
+            result_payload = {
+                "evaluation_run_id": run.id,
+                "check_execution_id": execution.id,
+                "criterion_definition_version_id": item.criterion.id,
+                "result_kind": draft.result_kind,
+                "severity": draft.severity,
+                "message": draft.message,
+                "evidence_selector": evidence_selector,
+                "payload": payload,
+            }
+            results.append(
+                EvaluationResult(
+                    id=new_id(),
+                    evaluation_run_id=run.id,
+                    check_execution_id=execution.id,
+                    criterion_definition_version_id=item.criterion.id,
+                    result_kind=draft.result_kind,
+                    severity=draft.severity,
+                    message=draft.message,
+                    evidence_selector_json=(
+                        None
+                        if evidence_selector is None
+                        else _json_preserving_text(evidence_selector)
+                    ),
+                    payload_json=canonical_json(payload),
+                    canonical_sha256=_canonical_hash(result_payload),
+                    created_at=completed_at,
+                    created_by_kind=actor_kind,
+                    created_by_ref=actor_ref,
+                    created_by_meta_json=actor_meta,
+                )
+            )
 
     with store.write_transaction() as conn:
         verify_store.insert_record(store, run, conn=conn)
-        verify_store.insert_record(store, execution, conn=conn)
+        for execution in executions:
+            verify_store.insert_record(store, execution, conn=conn)
         for result in results:
             verify_store.insert_record(store, result, conn=conn)
     return DeterministicEvaluation(
         plan=plan,
         run=run,
-        execution=execution,
+        executions=tuple(executions),
         results=tuple(results),
+    )
+
+
+def record_specialist_evaluation(
+    store: TruthStore,
+    *,
+    evaluation_run_id: str,
+    criterion_definition_version_id: str,
+    check_definition_version_id: str,
+    criterion_check_binding_id: str,
+    configuration_sha256: str,
+    normalized_output: Mapping[str, Any],
+    actor: Actor,
+    at: str | None = None,
+) -> tuple[CheckExecution, tuple[EvaluationResult, ...]]:
+    """Append one admitted specialist execution and its normalized results.
+
+    The caller must already have converted untrusted worker evidence into
+    exact frozen-projection selectors. This boundary revalidates the frozen
+    plan assignment and constructs every durable identity server-side.
+    """
+
+    if actor.kind != "agent_run":
+        raise VerifyInvariantViolation(
+            "specialist evaluation requires an agent_run actor"
+        )
+    run = _require_record(store, EvaluationRun, evaluation_run_id)
+    plan = _require_record(
+        store,
+        EvaluationPlanSnapshot,
+        run.plan_snapshot_id,
+    )
+    action = _require_record(store, ActionSnapshot, run.action_snapshot_id)
+    try:
+        plan_payload = json.loads(plan.plan_json)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise VerifyInvariantViolation("evaluation plan is invalid") from exc
+    if not isinstance(plan_payload, Mapping):
+        raise VerifyInvariantViolation("evaluation plan must be an object")
+    plan_checks = plan_payload.get("checks")
+    if not isinstance(plan_checks, list):
+        raise VerifyInvariantViolation("evaluation plan has no checks list")
+    assignment = next(
+        (
+            item
+            for item in plan_checks
+            if isinstance(item, Mapping)
+            and item.get("criterion_definition_version_id")
+            == criterion_definition_version_id
+            and item.get("check_definition_version_id")
+            == check_definition_version_id
+            and item.get("criterion_check_binding_id")
+            == criterion_check_binding_id
+        ),
+        None,
+    )
+    if assignment is None:
+        raise VerifyInvariantViolation(
+            "specialist assignment is not present in the frozen plan"
+        )
+    if assignment.get("configuration_sha256") != configuration_sha256:
+        raise VerifyInvariantViolation(
+            "specialist assignment configuration hash does not match the plan"
+        )
+    criterion = _require_record(
+        store,
+        CriterionDefinitionVersion,
+        criterion_definition_version_id,
+    )
+    check = _require_record(
+        store,
+        CheckDefinitionVersion,
+        check_definition_version_id,
+    )
+    binding = _require_record(
+        store,
+        CriterionCheckBinding,
+        criterion_check_binding_id,
+    )
+    if (
+        binding.criterion_definition_version_id != criterion.id
+        or binding.check_definition_version_id != check.id
+        or sha256_text(binding.configuration_json) != configuration_sha256
+    ):
+        raise VerifyInvariantViolation(
+            "specialist assignment no longer matches its immutable records"
+        )
+    executor = admitted_check_executor(
+        check,
+        criterion_kind=criterion.criterion_kind,
+    )
+    if (
+        executor is None
+        or executor.execution_mode != "account_backed_specialist"
+    ):
+        raise VerifyInvariantViolation(
+            "specialist assignment has no admitted specialist executor"
+        )
+    if set(normalized_output) != {"results", "summary"}:
+        raise VerifyInvariantViolation(
+            "normalized specialist output must contain results and summary"
+        )
+    raw_results = normalized_output.get("results")
+    if not isinstance(raw_results, list) or not raw_results:
+        raise VerifyInvariantViolation(
+            "normalized specialist output requires at least one result"
+        )
+    summary = normalized_output.get("summary")
+    if not isinstance(summary, str) or not summary.strip():
+        raise VerifyInvariantViolation(
+            "normalized specialist summary must be nonempty"
+        )
+    normalized_results: list[dict[str, Any]] = []
+    for raw in raw_results:
+        if not isinstance(raw, Mapping) or set(raw) != {
+            "result_kind",
+            "severity",
+            "message",
+            "evidence_selector",
+            "payload",
+        }:
+            raise VerifyInvariantViolation(
+                "normalized specialist result has an invalid shape"
+            )
+        result_kind = raw.get("result_kind")
+        severity = raw.get("severity")
+        message = raw.get("message")
+        evidence = raw.get("evidence_selector")
+        payload = raw.get("payload")
+        if result_kind not in {"conforming", "finding", "inconclusive"}:
+            raise VerifyInvariantViolation(
+                "normalized specialist result kind is invalid"
+            )
+        if severity not in {"info", "warning", "error"}:
+            raise VerifyInvariantViolation(
+                "normalized specialist severity is invalid"
+            )
+        if not isinstance(message, str) or not message.strip():
+            raise VerifyInvariantViolation(
+                "normalized specialist message must be nonempty"
+            )
+        if evidence is not None and not isinstance(evidence, Mapping):
+            raise VerifyInvariantViolation(
+                "normalized specialist evidence must be an object or null"
+            )
+        if not isinstance(payload, Mapping):
+            raise VerifyInvariantViolation(
+                "normalized specialist payload must be an object"
+            )
+        normalized_results.append(
+            {
+                "result_kind": str(result_kind),
+                "severity": str(severity),
+                "message": message,
+                "evidence_selector": (
+                    None if evidence is None else dict(evidence)
+                ),
+                "payload": dict(payload),
+            }
+        )
+
+    completed_at = _timestamp(at, "specialist evaluation timestamp")
+    actor_kind, actor_ref, actor_meta = _actor_fields(actor)
+    output_payload = {
+        "results": normalized_results,
+        "summary": summary,
+    }
+    output_sha256 = _canonical_hash(output_payload)
+    execution_payload = {
+        "evaluation_run_id": run.id,
+        "check_definition_version_id": check.id,
+        "criterion_check_binding_id": binding.id,
+        "mechanism": executor.mechanism,
+        "status": "succeeded",
+        "input_sha256": action.target_text_sha256,
+        "output_sha256": output_sha256,
+    }
+    execution_sha256 = _canonical_hash(execution_payload)
+    with store.write_transaction() as conn:
+        existing = verify_store.get_by_canonical_sha256(
+            store,
+            CheckExecution,
+            execution_sha256,
+            conn=conn,
+        )
+        if existing is not None:
+            results = verify_store.list_records(
+                store,
+                EvaluationResult,
+                where="source.check_execution_id = ?",
+                params=(existing.id,),
+                conn=conn,
+            )
+            if len(results) != len(normalized_results):
+                raise VerifyInvariantViolation(
+                    "specialist execution has an incomplete result ledger"
+                )
+            return existing, results
+        execution = CheckExecution(
+            id=new_id(),
+            evaluation_run_id=run.id,
+            check_definition_version_id=check.id,
+            criterion_check_binding_id=binding.id,
+            mechanism=executor.mechanism,
+            status="succeeded",
+            input_sha256=action.target_text_sha256,
+            output_sha256=output_sha256,
+            diagnostics_json=canonical_json(
+                {
+                    "result_count": len(normalized_results),
+                    "output_sha256": output_sha256,
+                    "summary_sha256": sha256_text(summary),
+                }
+            ),
+            producer_json=canonical_json(
+                {
+                    "kind": "account_backed_specialist",
+                    "executor_ref": executor.executor_ref,
+                    "version": check.version,
+                    "job_id": actor.ref,
+                }
+            ),
+            canonical_sha256=execution_sha256,
+            started_at=completed_at,
+            completed_at=completed_at,
+            created_by_kind=actor_kind,
+            created_by_ref=actor_ref,
+            created_by_meta_json=actor_meta,
+        )
+        verify_store.insert_record(store, execution, conn=conn)
+        durable_results: list[EvaluationResult] = []
+        for raw in normalized_results:
+            evidence = raw["evidence_selector"]
+            payload = raw["payload"]
+            result_payload = {
+                "evaluation_run_id": run.id,
+                "check_execution_id": execution.id,
+                "criterion_definition_version_id": criterion.id,
+                "result_kind": raw["result_kind"],
+                "severity": raw["severity"],
+                "message": raw["message"],
+                "evidence_selector": evidence,
+                "payload": payload,
+            }
+            result = EvaluationResult(
+                id=new_id(),
+                evaluation_run_id=run.id,
+                check_execution_id=execution.id,
+                criterion_definition_version_id=criterion.id,
+                result_kind=raw["result_kind"],
+                severity=raw["severity"],
+                message=raw["message"],
+                evidence_selector_json=(
+                    None if evidence is None else _json_preserving_text(evidence)
+                ),
+                payload_json=canonical_json(payload),
+                canonical_sha256=_canonical_hash(result_payload),
+                created_at=completed_at,
+                created_by_kind=actor_kind,
+                created_by_ref=actor_ref,
+                created_by_meta_json=actor_meta,
+            )
+            verify_store.insert_record(store, result, conn=conn)
+            durable_results.append(result)
+    return execution, tuple(durable_results)
+
+
+def run_terminology_exact_match(
+    store: TruthStore,
+    *,
+    action_snapshot_id: str,
+    criterion_activation_id: str | None = None,
+    actor: Actor = _SYSTEM_ACTOR,
+    at: str | None = None,
+) -> DeterministicEvaluation:
+    """Run the original built-in through the admitted multi-check dispatcher."""
+
+    seeded = seed_terminology_exact_match(store, actor=_SYSTEM_ACTOR, at=at)
+    activation = (
+        seeded.activation
+        if criterion_activation_id is None
+        else _require_record(
+            store,
+            CriterionActivation,
+            criterion_activation_id,
+        )
+    )
+    if (
+        not activation.is_enabled
+        or activation.criterion_definition_version_id != seeded.criterion.id
+        or activation.criterion_check_binding_id != seeded.binding.id
+    ):
+        raise VerifyInvariantViolation(
+            "terminology plan activation does not select the admitted check"
+        )
+    return run_admitted_checks(
+        store,
+        action_snapshot_id=action_snapshot_id,
+        criterion_activation_ids=(activation.id,),
+        actor=actor,
+        at=at,
     )
 
 
@@ -1520,6 +2263,12 @@ def cothink_items(
 
 
 __all__ = [
+    "AdmittedCheckExecutor",
+    "CheckEvaluationOutput",
+    "CheckResultDraft",
+    "INSTRUCTION_MODEL_CHECK_EXECUTOR",
+    "INSTRUCTION_MODEL_CHECK_KEY",
+    "INSTRUCTION_MODEL_CHECK_VERSION",
     "RESULT_RELATION_KINDS",
     "ROUTING_DECISIONS",
     "SURFACING_DECISIONS",
@@ -1531,13 +2280,18 @@ __all__ = [
     "cothink_items",
     "current_cothink_item_status",
     "create_action_snapshot",
+    "create_evaluation_plan",
     "create_terminology_plan",
+    "instruction_model_check_defaults",
     "record_cothink_item",
     "record_cothink_item_status",
     "record_model_call_authorization",
     "record_result_relation",
     "record_routing_disposition",
+    "record_specialist_evaluation",
+    "run_admitted_checks",
     "run_terminology_exact_match",
+    "seed_instruction_model_check",
     "seed_terminology_exact_match",
     "surfaced_results",
     "terminology_exact_matches",

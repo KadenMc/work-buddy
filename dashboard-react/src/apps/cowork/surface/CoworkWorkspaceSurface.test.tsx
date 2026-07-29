@@ -1102,6 +1102,17 @@ describe("CoworkWorkspaceWidget live mode", () => {
     }, emit);
   };
 
+  it("places the Verify and Co-think dock across the workspace", async () => {
+    const { container } = renderLive();
+
+    await screen.findByRole("button", { name: "Verify" });
+    const dock = container.querySelector(".wb-cowork-action-dock");
+
+    expect(dock).not.toBeNull();
+    expect(dock?.parentElement).toHaveClass("wb-cowork");
+    expect(dock?.closest(".wb-cowork__editor-panel")).toBeNull();
+  });
+
   it("loads and reloads the exact server-issued conversation id", async () => {
     const firstFetch = liveFetch();
     const first = renderLive(

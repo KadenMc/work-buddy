@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
+import { DashboardHelpProvider } from "../../../dashboard/help";
 import { expectNoAccessibilityViolations } from "../../../test/setup";
 import type {
   CoworkActionSnapshotController,
@@ -115,6 +116,29 @@ describe("CoworkDocumentActionBar", () => {
     expect(fake.setWorkingTargetStartHere).toHaveBeenCalledOnce();
     expect(fake.setWorkingTargetEndHere).toHaveBeenCalledOnce();
     expect(fake.clearWorkingTargetDraft).toHaveBeenCalledOnce();
+  });
+
+  it("attaches hover help to the existing cursor control", async () => {
+    const user = userEvent.setup();
+    const fake = fakeController();
+    render(
+      <DashboardHelpProvider enabled>
+        <CoworkDocumentActionBar controller={fake.controller} />
+      </DashboardHelpProvider>,
+    );
+
+    const cursorControl = screen.getByText("Set by cursor", {
+      selector: "summary",
+    });
+    expect(cursorControl).toHaveAttribute("data-help-target", "true");
+    expect(screen.queryByText("?")).not.toBeInTheDocument();
+
+    await user.hover(cursorControl);
+    expect(
+      await screen.findByText(
+        "Set the Working on range from two exact cursor positions.",
+      ),
+    ).toBeVisible();
   });
 
   it("fails gracefully while selection or cursor controls are unavailable", () => {

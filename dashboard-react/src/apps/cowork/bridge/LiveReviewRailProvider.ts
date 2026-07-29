@@ -19,6 +19,7 @@ import type {
   ReviewRailData,
   SittingResult,
   VerificationRecheckIntent,
+  VerifyCheckInput,
   VerifyCriterionDraftInput,
   VerifyRunInspection,
 } from "../rail/contracts";
@@ -113,6 +114,22 @@ export class LiveReviewRailProvider implements ReviewRailProvider {
     for (const listener of this.#invalidationListeners) listener();
   }
 
+  /**
+   * Mutation completion means the subscriber has received a fresh R2
+   * projection, not merely that the write request returned. This keeps the
+   * check menu and Run gate from briefly falling back to stale state.
+   */
+  async #invalidateAndWaitForReload(): Promise<void> {
+    const sequenceBefore = this.#loadSequence;
+    this.invalidate();
+    if (
+      this.#loadSequence > sequenceBefore &&
+      this.#latestLoad !== null
+    ) {
+      await this.#latestLoad;
+    }
+  }
+
   async submitSitting(submission: SittingSubmission): Promise<SittingResult> {
     if (submission.claimDecisions.length > 0) {
       throw new Error(
@@ -159,7 +176,7 @@ export class LiveReviewRailProvider implements ReviewRailProvider {
   ): Promise<void> {
     const update = this.#options.docClient.setVerifyCriterionEnabled;
     if (update === undefined) {
-      throw new Error("Verify setup is unavailable from this document provider.");
+      throw new Error("Verify checks are unavailable from this document provider.");
     }
     await update.call(
       this.#options.docClient,
@@ -167,7 +184,7 @@ export class LiveReviewRailProvider implements ReviewRailProvider {
       enabled,
       expectedActivationId,
     );
-    this.invalidate();
+    await this.#invalidateAndWaitForReload();
   }
 
   async actOnCothink(
@@ -222,6 +239,15 @@ export class LiveReviewRailProvider implements ReviewRailProvider {
     }
     await create.call(this.#options.docClient, draft);
     this.invalidate();
+  }
+
+  async createVerifyCheck(check: VerifyCheckInput): Promise<void> {
+    const create = this.#options.docClient.createVerifyCheck;
+    if (create === undefined) {
+      throw new Error("User-authored verification checks are unavailable.");
+    }
+    await create.call(this.#options.docClient, check);
+    await this.#invalidateAndWaitForReload();
   }
 
   #idempotencyKey(fingerprint: string): string {

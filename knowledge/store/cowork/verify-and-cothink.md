@@ -2,7 +2,7 @@
 name: Co-work Verify and Co-think
 kind: system
 description: Exact-version document evaluation and deliberately non-evidential support for human deliberation inside the Co-work document surface.
-summary: Co-work Verify and Co-think are sibling editor docks over one shared document target. Verify evaluates explicit criteria through a coordinator, optional reviser, deterministic candidate proof, and post-revision coordinator before ordinary human review. Co-think currently exposes only a planned sibling shell; its fuller deliberation workflow is deferred.
+summary: Co-work Verify and Co-think are sibling full-workspace docks over one shared document target. Verify runs selected checks through narrow evaluators and a whole-context coordinator before ordinary human review. Co-think currently exposes only a planned sibling shell; its fuller deliberation workflow is deferred.
 entry_points:
 - work_buddy.cowork.verify
 - work_buddy.cowork.verify_orchestration
@@ -10,7 +10,8 @@ entry_points:
 - work_buddy.cowork.verify_candidate_evaluation
 - work_buddy.cowork.verify_api
 - dashboard-react/src/apps/cowork/rail/VerificationAttentionFeed.tsx
-- dashboard-react/src/apps/cowork/rail/VerifySetupCard.tsx
+- dashboard-react/src/apps/cowork/verify/VerifyCheckControl.tsx
+- dashboard-react/src/apps/cowork/targets/CoworkDocumentActionDock.tsx
 tags:
 - cowork
 - verify
@@ -64,15 +65,19 @@ advisory item or an honest no-useful-item outcome.
 ## Sibling dock experience
 
 The editor top keeps one compact **Working on** control. The editor bottom has
-an accordion with sibling **Verify** and **Co-think** docks; only one is open at
-a time and both may be collapsed. Expanding a dock reduces only editor space.
-It does not overlay or displace Review or Chat.
+an accordion with sibling **Verify** and **Co-think** docks beneath the complete
+editor/rail split. It spans the full workspace rather than only the editor
+column; only one dock is open at a time and both may be collapsed.
 
-The Verify dock owns the current target or one-run override, criteria and check
-configuration, user goal, protected intent, explicit account-backed
-provider/model, execution and data-sharing disclosure, run action, progress,
-and history. Review receives only durable results, proposals, rechecks, and
-human decisions.
+Verify's ordinary page contains a **Checks** menu, **Add check**, and **Run
+Verify**. Add check replaces that page with Name, evaluation instructions,
+optional exceptions, Save, and an X back to selection. Goal/intent fields,
+provider/model, call counts, cost/egress disclosure, worker mechanics, and run
+history are not primary product controls. Review receives only durable results,
+proposals, rechecks, and human decisions.
+
+Hover help wraps existing **Verify**, **Co-think**, and **Set by cursor**
+controls. It does not add help-only buttons or explanatory chrome.
 
 The Co-think dock is currently a non-operational **Planned** shell so the
 sibling interaction and responsive footprint can be tested without treating
@@ -85,14 +90,17 @@ changing Working on or editing the document afterward does not rewrite it.
 
 ## Current end-to-end behavior
 
-1. The user chooses or confirms Working on and, in the Verify dock, may choose
-   a one-run override and edit the exact user goal and protected intent.
+1. The user chooses or confirms Working on, selects checks, and presses **Run
+   Verify**. Stable internal run-purpose and preservation values remain
+   transport bindings rather than visible fields.
 2. The editor freezes one exact document/action snapshot and the server
    validates its structured head, selector, projection, target text, and hashes.
-3. Verify resolves and freezes the effective criterion/check configuration,
-   then the admitted deterministic terminology check evaluates the frozen
-   target.
-4. A job-scoped coordinator receives the complete permitted frozen projection,
+3. Verify resolves one frozen ordered multi-check plan. Admitted in-process
+   checks run directly; each model-backed check runs as a narrow specialist
+   against only the target and that check's instructions. The server normalizes
+   typed outcomes and reanchors evidence to the frozen target.
+4. Only after every selected check completes does a job-scoped coordinator
+   receive the complete permitted frozen projection,
    target, user goal, protected intent, effective configuration and policy,
    normalized results, relevant prior dispositions, and prior human review
    outcomes.
@@ -129,7 +137,7 @@ Both subsystems share:
 
 - the registered document and exact structured head;
 - document-target capture and immutable action snapshots;
-- explicit provider/model selection and content-bound authorization;
+- content-bound provider/model authorization;
 - job-scoped least-authority worker sessions;
 - durable history and event-driven Review refresh; and
 - passage navigation back into the editor.
@@ -199,12 +207,17 @@ human review before application**.
 
 ## Current capability boundary
 
-The executable evaluation set contains one admitted deterministic exact-term
-check. User-authored criteria can be saved as disabled, unavailable drafts, but
-there is no user-facing executor-admission mechanism. The Co-think dock is
-present but non-operational. Model-based specialists, source-grounded checks,
-multi-turn Socratic inquiry, ambient prompts, named return conditions, and
-blocking publication policy remain extension points.
+The executable evaluation set includes the admitted deterministic exact-term
+check and personal instruction-based checks created through a statically
+admitted system evaluator. User instructions remain data rather than executable
+code. Legacy unadmitted drafts stay unavailable.
+
+Model-backed specialists may yield conforming, finding, or inconclusive typed
+results, but cannot request automatic revision until their check family has a
+separately admitted candidate evaluator. Source-grounded checks, arbitrary
+executor/plugin admission, multi-turn Socratic inquiry, ambient prompts, named
+return conditions, and blocking publication policy remain extension points.
+The Co-think dock is present but non-operational.
 
 Related units:
 

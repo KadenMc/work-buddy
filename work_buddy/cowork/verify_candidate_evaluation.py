@@ -26,7 +26,9 @@ def _digest(value: object, label: str) -> str:
 
 def _terminology_configuration(
     effective_configuration: Mapping[str, Any],
-) -> Mapping[str, Any]:
+    *,
+    criterion_definition_version_id: str | None = None,
+) -> tuple[str, Mapping[str, Any]]:
     criteria = effective_configuration.get("criteria")
     if not isinstance(criteria, list):
         raise CandidateEvaluationError(
@@ -36,8 +38,15 @@ def _terminology_configuration(
     for criterion in criteria:
         if (
             not isinstance(criterion, Mapping)
-            or criterion.get("stable_key") != "terminology_exact_match"
             or criterion.get("operational_state") != "active"
+            or (
+                criterion_definition_version_id is None
+                and criterion.get("stable_key") != "terminology_exact_match"
+            )
+            or (
+                criterion_definition_version_id is not None
+                and criterion.get("id") != criterion_definition_version_id
+            )
         ):
             continue
         checks = criterion.get("checks")
@@ -55,12 +64,25 @@ def _terminology_configuration(
                 and availability.get("state") == "available"
                 and isinstance(binding.get("configuration"), Mapping)
             ):
-                admitted.append(binding["configuration"])
+                admitted.append(
+                    {
+                        "criterion_key": str(
+                            criterion.get("stable_key") or ""
+                        ),
+                        "configuration": binding["configuration"],
+                    }
+                )
     if len(admitted) != 1:
         raise CandidateEvaluationError(
             "candidate evaluation requires one admitted terminology check"
         )
-    return admitted[0]
+    criterion_key = admitted[0]["criterion_key"]
+    configuration = admitted[0]["configuration"]
+    if not criterion_key or not isinstance(configuration, Mapping):
+        raise CandidateEvaluationError(
+            "candidate evaluation criterion binding is invalid"
+        )
+    return criterion_key, configuration
 
 
 def evaluate_terminology_candidate(
@@ -70,6 +92,7 @@ def evaluate_terminology_candidate(
     evidence_selector_json: str,
     replacement: str,
     effective_configuration: Mapping[str, Any],
+    criterion_definition_version_id: str | None = None,
 ) -> dict[str, Any]:
     """Re-evaluate the exact changed region, including boundary-spanning terms."""
 
@@ -94,7 +117,10 @@ def evaluate_terminology_candidate(
             "candidate evidence no longer matches the frozen projection"
         )
 
-    configuration = _terminology_configuration(effective_configuration)
+    criterion_key, configuration = _terminology_configuration(
+        effective_configuration,
+        criterion_definition_version_id=criterion_definition_version_id,
+    )
     terms = configuration.get("terms")
     if not isinstance(terms, list) or not terms:
         raise CandidateEvaluationError(
@@ -145,7 +171,7 @@ def evaluate_terminology_candidate(
     payload = {
         "schema": "work-buddy.cowork-verify-candidate-evaluation/v1",
         "evaluation_result_id": evaluation_result_id,
-        "criterion_key": "terminology_exact_match",
+        "criterion_key": criterion_key,
         "mechanism": "deterministic",
         "coverage": "changed_region_with_term_length_boundaries",
         "status": status,

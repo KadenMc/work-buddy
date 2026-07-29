@@ -10,6 +10,7 @@
   flex-direction: column;
   block-size: 100%;
   min-block-size: 0;
+  container-type: inline-size;
   background: var(--wb-color-surface-canvas);
   color: var(--wb-color-text-primary);
   font-family: var(--wb-font-sans);

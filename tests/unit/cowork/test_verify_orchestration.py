@@ -21,25 +21,39 @@ from work_buddy.cowork import verify_orchestration, verify_runtime
 from work_buddy.cowork.execution_identity import CoworkVerifyRole
 from work_buddy.cowork.verify import (
     ActionSnapshot,
+    CheckDefinitionVersion,
+    CheckExecution,
+    CoworkCoordinationJob,
     CoworkCoordinationStatusEvent,
     CriterionActivation,
+    CriterionCheckBinding,
+    CriterionDefinitionVersion,
+    EvaluationPlanSnapshot,
+    EvaluationResult,
+    EvaluationRun,
     ModelCallAuthorizationReceipt,
     ResultRelation,
     RoutingDisposition,
+    VerifyInvariantViolation,
     cothink_items,
     record_model_call_authorization,
     seed_terminology_exact_match,
     surfaced_results,
 )
 from work_buddy.cowork.verify_configuration import (
+    create_user_verification_check,
     set_document_criterion_enabled,
 )
 from work_buddy.cowork.verify_coordination import (
     portable_coordination_jobs,
     record_coordination_status,
+    sanitized_request_summary,
 )
 from work_buddy.cowork.verify_inspection import verify_run_detail
-from work_buddy.cowork.verify_projection import cothink_outcome_projection
+from work_buddy.cowork.verify_projection import (
+    cothink_outcome_projection,
+    result_projection,
+)
 from work_buddy.cowork.verify import store as verify_store
 from work_buddy.cowork.verify_orchestration import (
     VerifyOrchestrationError,
@@ -343,6 +357,143 @@ def _start_verify(
         spawn_detached=ctx["spawn"],
     )
     return capture, result
+
+
+def _add_terminology_criterion(
+    store,
+    *,
+    document_id: str,
+    stable_key: str,
+    non_preferred: str,
+    preferred: str,
+    admitted: bool,
+):
+    seeded = seed_terminology_exact_match(store)
+    criterion_payload = {
+        "stable_key": stable_key,
+        "version": 1,
+        "title": f"{stable_key} criterion",
+        "description": f"Prefer {preferred}.",
+        "criterion_kind": "terminology",
+        "origin": "system",
+        "configuration_schema": {"type": "object"},
+    }
+    criterion = CriterionDefinitionVersion(
+        id=new_id(),
+        stable_key=stable_key,
+        version=1,
+        title=criterion_payload["title"],
+        description=criterion_payload["description"],
+        criterion_kind="terminology",
+        origin="system",
+        configuration_schema_json=canonical_json(
+            criterion_payload["configuration_schema"]
+        ),
+        canonical_sha256=sha256_text(canonical_json(criterion_payload)),
+        created_at=NOW,
+        created_by_kind="system",
+        created_by_ref="multi-check-test",
+        created_by_meta_json=None,
+    )
+    check = seeded.check
+    created_check = None
+    if not admitted:
+        check_payload = {
+            "stable_key": f"{stable_key}_check",
+            "version": 1,
+            "title": "Unadmitted test check",
+            "mechanism": "deterministic",
+            # Borrowing an admitted ref is not admission: the registry pins
+            # the exact immutable check-definition identity and hash.
+            "executor_ref": seeded.check.executor_ref,
+            "supported_criterion_kinds": ["terminology"],
+            "input_schema": {"type": "object"},
+            "output_schema": {"type": "object"},
+            "limitations": ["No admitted implementation."],
+            "origin": "system",
+        }
+        created_check = CheckDefinitionVersion(
+            id=new_id(),
+            stable_key=check_payload["stable_key"],
+            version=1,
+            title=check_payload["title"],
+            mechanism="deterministic",
+            executor_ref=check_payload["executor_ref"],
+            supported_criterion_kinds_json=canonical_json(
+                check_payload["supported_criterion_kinds"]
+            ),
+            input_schema_json=canonical_json(
+                check_payload["input_schema"]
+            ),
+            output_schema_json=canonical_json(
+                check_payload["output_schema"]
+            ),
+            limitations_json=canonical_json(
+                check_payload["limitations"]
+            ),
+            origin="system",
+            canonical_sha256=sha256_text(canonical_json(check_payload)),
+            created_at=NOW,
+            created_by_kind="system",
+            created_by_ref="multi-check-test",
+            created_by_meta_json=None,
+        )
+        check = created_check
+    configuration = {
+        "terms": [
+            {
+                "non_preferred": non_preferred,
+                "preferred": preferred,
+            }
+        ]
+    }
+    binding_payload = {
+        "criterion_definition_version_id": criterion.id,
+        "check_definition_version_id": check.id,
+        "configuration": configuration,
+    }
+    binding = CriterionCheckBinding(
+        id=new_id(),
+        criterion_definition_version_id=criterion.id,
+        check_definition_version_id=check.id,
+        configuration_json=canonical_json(configuration),
+        canonical_sha256=sha256_text(canonical_json(binding_payload)),
+        created_at=NOW,
+        created_by_kind="system",
+        created_by_ref="multi-check-test",
+        created_by_meta_json=None,
+    )
+    scope = {"kind": "document", "document_id": document_id}
+    activation_payload = {
+        "criterion_definition_version_id": criterion.id,
+        "criterion_check_binding_id": binding.id,
+        "scope": scope,
+        "is_enabled": True,
+        "is_required": False,
+        "origin": "system",
+    }
+    activation = CriterionActivation(
+        id=new_id(),
+        criterion_definition_version_id=criterion.id,
+        criterion_check_binding_id=binding.id,
+        scope_json=canonical_json(scope),
+        is_enabled=1,
+        is_required=0,
+        origin="system",
+        canonical_sha256=sha256_text(canonical_json(activation_payload)),
+        created_at=NOW,
+        created_by_kind="system",
+        created_by_ref="multi-check-test",
+        created_by_meta_json=None,
+    )
+    records = [criterion]
+    if created_check is not None:
+        records.append(created_check)
+    records.extend([binding, activation])
+    with store.write_transaction() as conn:
+        for record in records:
+            verify_store.insert_record(store, record, conn=conn)
+    return criterion, check, binding, activation
 
 
 def _downgrade_runtime_job_to_legacy(
@@ -690,6 +841,170 @@ def test_disabled_seeded_criterion_fails_before_evaluation_or_model_launch(
 
     with store.connect() as conn:
         assert conn.execute("SELECT COUNT(*) FROM evaluation_runs").fetchone()[0] == 0
+    assert orchestration_ctx["spawned"] == []
+    assert not orchestration_ctx["runtime_path"].exists()
+
+
+def test_two_admitted_criteria_freeze_and_run_each_selected_binding(
+    orchestration_ctx: dict[str, Any],
+):
+    capture = _capture(orchestration_ctx)
+    store = orchestration_ctx["store"]
+    seeded = seed_terminology_exact_match(store)
+    second_criterion, second_check, second_binding, second_activation = (
+        _add_terminology_criterion(
+            store,
+            document_id=capture["documentId"],
+            stable_key="terminology_fixture_heading",
+            non_preferred="Throwaway",
+            preferred="Disposable",
+            admitted=True,
+        )
+    )
+
+    started = start_verify_run(
+        store,
+        document_id=capture["documentId"],
+        capture=capture,
+        selection=SELECTION,
+        actor=HUMAN,
+        user_goal="Apply both admitted terminology policies.",
+        protected_intent="Preserve the document's meaning.",
+        validate_selection=lambda selection: selection,
+        spawn_detached=orchestration_ctx["spawn"],
+    )
+
+    assert started["result_count"] == 2
+    plan = verify_store.get_record(
+        store,
+        EvaluationPlanSnapshot,
+        get_job(started["job_id"]).plan_snapshot_id,
+    )
+    assert plan is not None
+    frozen_checks = json.loads(plan.plan_json)["checks"]
+    assert {
+        (
+            item["criterion_definition_version_id"],
+            item["check_definition_version_id"],
+            item["criterion_check_binding_id"],
+            item["criterion_activation_id"],
+        )
+        for item in frozen_checks
+    } == {
+        (
+            seeded.criterion.id,
+            seeded.check.id,
+            seeded.binding.id,
+            seeded.activation.id,
+        ),
+        (
+            second_criterion.id,
+            second_check.id,
+            second_binding.id,
+            second_activation.id,
+        ),
+    }
+    executions = verify_store.list_records(
+        store,
+        CheckExecution,
+        where="source.evaluation_run_id = ?",
+        params=(started["run_id"],),
+    )
+    results = verify_store.list_records(
+        store,
+        EvaluationResult,
+        where="source.evaluation_run_id = ?",
+        params=(started["run_id"],),
+    )
+    assert len(executions) == 2
+    assert {item.criterion_check_binding_id for item in executions} == {
+        seeded.binding.id,
+        second_binding.id,
+    }
+    assert len(results) == 2
+    assert {item.criterion_definition_version_id for item in results} == {
+        seeded.criterion.id,
+        second_criterion.id,
+    }
+    execution_by_id = {item.id: item for item in executions}
+    assert {
+        execution_by_id[item.check_execution_id].criterion_check_binding_id
+        for item in results
+    } == {seeded.binding.id, second_binding.id}
+
+    job = get_job(started["job_id"])
+    assert job is not None
+    context = get_worker_job(
+        job_id=job.job_id,
+        agent_session_id=job.session_id,
+    )["context"]
+    assert all(
+        "criterion_definition_version_id" in item
+        and "check_execution_id" in item
+        for item in context["normalized_results"]
+    )
+    assert all(
+        "criterion_check_binding_id" in item
+        and "check_execution_id" in item
+        for item in context["checks"]
+    )
+
+    replayed = start_verify_run(
+        store,
+        document_id=capture["documentId"],
+        capture=capture,
+        selection=SELECTION,
+        actor=HUMAN,
+        user_goal="Apply both admitted terminology policies.",
+        protected_intent="Preserve the document's meaning.",
+        validate_selection=lambda selection: selection,
+        spawn_detached=orchestration_ctx["spawn"],
+    )
+    assert replayed["replayed"] is True
+    assert replayed["run_id"] == started["run_id"]
+    assert len(
+        verify_store.list_records(
+            store,
+            CheckExecution,
+            where="source.evaluation_run_id = ?",
+            params=(started["run_id"],),
+        )
+    ) == 2
+
+
+def test_enabled_unadmitted_binding_fails_closed_before_run_or_launch(
+    orchestration_ctx: dict[str, Any],
+):
+    capture = _capture(orchestration_ctx)
+    store = orchestration_ctx["store"]
+    _add_terminology_criterion(
+        store,
+        document_id=capture["documentId"],
+        stable_key="unadmitted_fixture_check",
+        non_preferred="Throwaway",
+        preferred="Disposable",
+        admitted=False,
+    )
+
+    with pytest.raises(
+        VerifyOrchestrationError,
+        match="unsupported or unadmitted bindings",
+    ):
+        start_verify_run(
+            store,
+            document_id=capture["documentId"],
+            capture=capture,
+            selection=SELECTION,
+            actor=HUMAN,
+            user_goal="Do not bypass an unadmitted selection.",
+            protected_intent="Fail closed before any model launch.",
+            validate_selection=lambda selection: selection,
+            spawn_detached=orchestration_ctx["spawn"],
+        )
+
+    assert (
+        verify_store.list_records(store, EvaluationPlanSnapshot) == ()
+    )
     assert orchestration_ctx["spawned"] == []
     assert not orchestration_ctx["runtime_path"].exists()
 
@@ -1730,3 +2045,585 @@ def test_candidate_re_evaluation_proof_survives_redaction_and_export(
         "changed_region_with_term_length_boundaries"
     )
     assert proof[0]["candidate_sha256"] == sha256_text("document target")
+
+
+def _specialist_assignment_fixture() -> dict[str, Any]:
+    return {
+        "criterion_definition_version_id": "a1" * 16,
+        "check_definition_version_id": "b2" * 16,
+        "criterion_check_binding_id": "c3" * 16,
+        "sequence": 1,
+        "total": 2,
+        "configuration_sha256": "d4" * 32,
+    }
+
+
+def test_portable_specialist_assignment_is_exact_and_role_scoped():
+    assignment = _specialist_assignment_fixture()
+
+    summary = sanitized_request_summary(
+        CoworkVerifyRole.SPECIALIST,
+        {
+            "user_goal": "Check one admitted criterion.",
+            "protected_intent": "Preserve the captured target.",
+            "specialist_assignment": assignment,
+        },
+    )
+    coordinator_summary = sanitized_request_summary(
+        CoworkVerifyRole.COORDINATOR,
+        {
+            "user_goal": "Coordinate the complete run.",
+            "protected_intent": "Preserve the captured target.",
+            "specialist_assignment": assignment,
+        },
+    )
+
+    assert summary["specialist_assignment"] == assignment
+    assert coordinator_summary["specialist_assignment"] is None
+
+
+@pytest.mark.parametrize(
+    ("mutation", "match"),
+    [
+        ({"sequence": 0}, "sequence must be a positive integer"),
+        ({"sequence": 3}, "sequence cannot exceed total"),
+        ({"total": False}, "total must be a positive integer"),
+        (
+            {"criterion_definition_version_id": "not-an-id"},
+            "criterion_definition_version_id must be a lowercase 32-hex id",
+        ),
+        (
+            {"configuration_sha256": "not-a-digest"},
+            "configuration_sha256 must be a lowercase SHA-256 digest",
+        ),
+        (
+            {"private_worker_prompt": "must not survive"},
+            "must contain exactly its admitted fields",
+        ),
+    ],
+)
+def test_portable_specialist_assignment_rejects_invalid_bindings(
+    mutation: dict[str, Any],
+    match: str,
+):
+    assignment = {**_specialist_assignment_fixture(), **mutation}
+
+    with pytest.raises(VerifyInvariantViolation, match=match):
+        sanitized_request_summary(
+            CoworkVerifyRole.SPECIALIST,
+            {
+                "user_goal": "Check one admitted criterion.",
+                "protected_intent": "Preserve the captured target.",
+                "specialist_assignment": assignment,
+            },
+        )
+
+
+def test_specialist_completion_and_lineage_survive_truth_export(
+    orchestration_ctx: dict[str, Any],
+    tmp_path: Path,
+):
+    capture = _capture(orchestration_ctx)
+    store = orchestration_ctx["store"]
+    created = create_user_verification_check(
+        store,
+        document_id=capture["documentId"],
+        title="Portable clarity check",
+        description="Identify wording that may be unclear.",
+        evaluation_instructions="Review the captured target for unclear wording.",
+        actor=HUMAN,
+        at=NOW,
+    )
+    assert created["status"] == "active"
+    started = start_verify_run(
+        store,
+        document_id=capture["documentId"],
+        capture=capture,
+        selection=SELECTION,
+        actor=HUMAN,
+        user_goal="Evaluate the selected checks.",
+        protected_intent="Preserve the captured target.",
+        validate_selection=lambda selection: selection,
+        spawn_detached=orchestration_ctx["spawn"],
+    )
+    specialist = get_job(started["job_id"])
+    assert specialist is not None
+    assert specialist.role is CoworkVerifyRole.SPECIALIST
+    submit_worker_job(
+        job_id=specialist.job_id,
+        payload={
+            "results": [
+                {
+                    "result_kind": "conforming",
+                    "severity": "info",
+                    "message": "No clarity issue was found.",
+                    "evidence": None,
+                    "coverage": "complete_target_review",
+                    "limitations": ["Model judgment is advisory."],
+                }
+            ],
+            "summary": "The complete captured target was reviewed.",
+        },
+        agent_session_id=specialist.session_id,
+        spawn_detached=orchestration_ctx["spawn"],
+    )
+    execution = next(
+        item
+        for item in verify_store.list_records(
+            store,
+            CheckExecution,
+            where="source.evaluation_run_id = ?",
+            params=(started["run_id"],),
+        )
+        if json.loads(item.producer_json).get("job_id") == specialist.job_id
+    )
+    results = verify_store.list_records(
+        store,
+        EvaluationResult,
+        where="source.check_execution_id = ?",
+        params=(execution.id,),
+    )
+    assert results
+
+    specialist_history = next(
+        item
+        for item in portable_coordination_jobs(
+            store,
+            document_id=capture["documentId"],
+        )
+        if item["job_id"] == specialist.job_id
+    )
+    assert specialist_history["request_summary"][
+        "specialist_assignment"
+    ]["criterion_check_binding_id"] == execution.criterion_check_binding_id
+    assert specialist_history["consequence_refs"][
+        "check_execution_ids"
+    ] == [execution.id]
+    assert specialist_history["consequence_refs"][
+        "evaluation_result_ids"
+    ] == [result.id for result in results]
+
+    exported = export_store(
+        store,
+        tmp_path / "portable-specialist.jsonl",
+    )
+    target = tmp_path / "portable-specialist-target"
+    target.mkdir()
+    restored = import_store(
+        exported.path,
+        target,
+        registry=_EmptyRegistry(),
+    ).store
+    restored_specialist = next(
+        item
+        for item in portable_coordination_jobs(
+            restored,
+            document_id=capture["documentId"],
+        )
+        if item["job_id"] == specialist.job_id
+    )
+    assert restored_specialist == specialist_history
+
+
+def test_ranged_specialist_context_contains_only_the_captured_target(
+    orchestration_ctx: dict[str, Any],
+):
+    exact = "Co-work scope"
+    capture = _capture(orchestration_ctx, target_text=exact)
+    selector = capture["target"]["selector"]
+    capture["target"]["targetReference"] = {
+        "schema": "wb.cowork.document-target/v1",
+        "storeId": capture["storeId"],
+        "documentId": capture["documentId"],
+        "kind": "text_range",
+        "granularity": "character",
+        "relative": {
+            "startBase64": "AA==",
+            "endBase64": "AQ==",
+        },
+        "quote": {
+            "exact": exact,
+            "prefix": selector["prefix"],
+            "suffix": selector["suffix"],
+        },
+        "label": "Working on",
+        "headingPath": [],
+        "createdAt": NOW,
+        "updatedAt": NOW,
+    }
+    store = orchestration_ctx["store"]
+    created = create_user_verification_check(
+        store,
+        document_id=capture["documentId"],
+        title="Clarity",
+        description="Identify wording that may be unclear in the captured passage.",
+        evaluation_instructions=(
+            "Review only the captured passage and identify unclear wording."
+        ),
+        actor=HUMAN,
+        at=NOW,
+    )
+    assert created["status"] == "active"
+
+    started = start_verify_run(
+        store,
+        document_id=capture["documentId"],
+        capture=capture,
+        selection=SELECTION,
+        actor=HUMAN,
+        user_goal="Evaluate the selected checks.",
+        protected_intent="Preserve the captured passage.",
+        validate_selection=lambda selection: selection,
+        spawn_detached=orchestration_ctx["spawn"],
+    )
+    specialist = get_job(started["job_id"])
+    assert specialist is not None
+    assert specialist.role is CoworkVerifyRole.SPECIALIST
+    context = get_worker_job(
+        job_id=specialist.job_id,
+        agent_session_id=specialist.session_id,
+    )["context"]
+
+    assert context["target"] == {
+        "kind": "text_quote",
+        "text": exact,
+        "text_sha256": sha256_text(exact),
+    }
+    assert set(context["document"]) == {"document_version_id"}
+    serialized = canonical_json(context)
+    assert selector["prefix"] not in serialized
+    assert selector["suffix"] not in serialized
+    assert "target_reference" not in serialized
+    assert "Throwaway Verify orchestration fixture" not in serialized
+
+
+def test_specialist_fanout_limit_fails_before_run_side_effects(
+    orchestration_ctx: dict[str, Any],
+):
+    capture = _capture(orchestration_ctx)
+    store = orchestration_ctx["store"]
+    limit = verify_orchestration.MAX_VERIFY_SPECIALIST_CHECKS_PER_RUN
+    for index in range(limit + 1):
+        created = create_user_verification_check(
+            store,
+            document_id=capture["documentId"],
+            title=f"Personal check {index + 1}",
+            description=f"Evaluate requirement {index + 1}.",
+            evaluation_instructions=f"Evaluate requirement {index + 1}.",
+            actor=HUMAN,
+            at=NOW,
+        )
+        assert created["status"] == "active"
+
+    portable_types = (
+        ActionSnapshot,
+        EvaluationPlanSnapshot,
+        EvaluationRun,
+        ModelCallAuthorizationReceipt,
+        CoworkCoordinationJob,
+        CoworkCoordinationStatusEvent,
+    )
+    counts_before = {
+        record_type: len(verify_store.list_records(store, record_type))
+        for record_type in portable_types
+    }
+    blobs_before = {
+        path.name for path in store.paths.blobs.iterdir() if path.is_file()
+    }
+    runtime_existed_before = orchestration_ctx["runtime_path"].exists()
+    spawned_before = tuple(orchestration_ctx["spawned"])
+
+    with pytest.raises(
+        VerifyOrchestrationError,
+        match=rf"at most {limit} selected account-backed checks",
+    ):
+        start_verify_run(
+            store,
+            document_id=capture["documentId"],
+            capture=capture,
+            selection=SELECTION,
+            actor=HUMAN,
+            user_goal="Evaluate all selected checks.",
+            protected_intent="Preserve the document.",
+            validate_selection=lambda selection: selection,
+            spawn_detached=orchestration_ctx["spawn"],
+        )
+
+    assert {
+        record_type: len(verify_store.list_records(store, record_type))
+        for record_type in portable_types
+    } == counts_before
+    assert {
+        path.name for path in store.paths.blobs.iterdir() if path.is_file()
+    } == blobs_before
+    assert orchestration_ctx["runtime_path"].exists() is runtime_existed_before
+    assert tuple(orchestration_ctx["spawned"]) == spawned_before
+
+
+def test_runnable_model_checks_execute_sequentially_before_coordination(
+    orchestration_ctx: dict[str, Any],
+):
+    capture = _capture(orchestration_ctx)
+    store = orchestration_ctx["store"]
+    for title, instructions in (
+        (
+            "Positive framing",
+            "Identify wording that defines the subject by negation.",
+        ),
+        (
+            "Reader clarity",
+            "Identify wording that would be unclear to an unfamiliar reader.",
+        ),
+    ):
+        created = create_user_verification_check(
+            store,
+            document_id=capture["documentId"],
+            title=title,
+            description=instructions,
+            evaluation_instructions=instructions,
+            actor=HUMAN,
+            at=NOW,
+        )
+        assert created["status"] == "active"
+
+    started = start_verify_run(
+        store,
+        document_id=capture["documentId"],
+        capture=capture,
+        selection=SELECTION,
+        actor=HUMAN,
+        user_goal="Run the selected checks, then reconcile their results.",
+        protected_intent="Preserve the author's substantive meaning.",
+        validate_selection=lambda selection: selection,
+        spawn_detached=orchestration_ctx["spawn"],
+    )
+
+    assert started["stage"] == "checking"
+    assert started["result_count"] == 1
+    first = get_job(started["job_id"])
+    assert first is not None
+    assert first.role is CoworkVerifyRole.SPECIALIST
+    first_assignment = first.request["specialist_assignment"]
+    assert first_assignment["sequence"] == 1
+    assert first_assignment["total"] == 2
+    first_context = get_worker_job(
+        job_id=first.job_id,
+        agent_session_id=first.session_id,
+    )["context"]
+    assert "frozen_markdown" not in first_context["document"]
+    assert first_context["target"]["text"] == BODY
+    assert len(first_context["criteria"]) == 1
+    assert first_context["normalized_results"] == []
+    first_receipt = verify_store.get_record(
+        store,
+        ModelCallAuthorizationReceipt,
+        first.authorization_receipt_id,
+    )
+    assert first_receipt is not None
+    assert json.loads(first_receipt.content_boundary_json)["document"] == (
+        "captured_target_only"
+    )
+
+    conforming_payload = {
+        "results": [
+            {
+                "result_kind": "conforming",
+                "severity": "info",
+                "message": "No issue found by this check.",
+                "evidence": None,
+                "coverage": "complete_target_review",
+                "limitations": ["Model judgment is advisory."],
+            }
+        ],
+        "summary": "The complete target was reviewed.",
+    }
+    incomplete_conforming = deepcopy(conforming_payload)
+    incomplete_conforming["results"][0]["coverage"] = "partial_target_review"
+    with pytest.raises(
+        VerifyOrchestrationError,
+        match="requires complete target review",
+    ):
+        submit_worker_job(
+            job_id=first.job_id,
+            payload=incomplete_conforming,
+            agent_session_id=first.session_id,
+            spawn_detached=orchestration_ctx["spawn"],
+        )
+    assert get_job(first.job_id).status == "running"
+    first_submission = submit_worker_job(
+        job_id=first.job_id,
+        payload=conforming_payload,
+        agent_session_id=first.session_id,
+        spawn_detached=orchestration_ctx["spawn"],
+    )
+    second = get_job(first_submission["next_job_id"])
+    assert second is not None
+    assert second.role is CoworkVerifyRole.SPECIALIST
+    assert second.parent_job_id == first.job_id
+    assert second.request["specialist_assignment"]["sequence"] == 2
+
+    finding_payload = {
+        "results": [
+            {
+                "result_kind": "finding",
+                "severity": "warning",
+                "message": "The phrase may be unclear without product context.",
+                "evidence": {
+                    "exact": "Co-work scope",
+                    "prefix": "model-supplied inconsistent context",
+                    "suffix": "model-supplied inconsistent context",
+                },
+                "coverage": "complete_target_review",
+                "limitations": ["Clarity depends on the intended audience."],
+            }
+        ],
+        "summary": "One clarity concern was found.",
+    }
+    second_submission = submit_worker_job(
+        job_id=second.job_id,
+        payload=finding_payload,
+        agent_session_id=second.session_id,
+        spawn_detached=orchestration_ctx["spawn"],
+    )
+    coordinator = get_job(second_submission["next_job_id"])
+    assert coordinator is not None
+    assert coordinator.role is CoworkVerifyRole.COORDINATOR
+    assert coordinator.parent_job_id is None
+    coordinator_context = get_worker_job(
+        job_id=coordinator.job_id,
+        agent_session_id=coordinator.session_id,
+    )["context"]
+    assert coordinator_context["document"]["frozen_markdown"] == BODY
+    assert len(coordinator_context["normalized_results"]) == 3
+
+    executions = verify_store.list_records(
+        store,
+        CheckExecution,
+        where="source.evaluation_run_id = ?",
+        params=(started["run_id"],),
+    )
+    results = verify_store.list_records(
+        store,
+        EvaluationResult,
+        where="source.evaluation_run_id = ?",
+        params=(started["run_id"],),
+    )
+    assert len(executions) == 3
+    assert len(results) == 3
+    specialist_results = [
+        result
+        for result in results
+        if json.loads(
+            next(
+                execution.producer_json
+                for execution in executions
+                if execution.id == result.check_execution_id
+            )
+        ).get("kind")
+        == "account_backed_specialist"
+    ]
+    assert len(specialist_results) == 2
+    model_finding = next(
+        result
+        for result in specialist_results
+        if result.result_kind == "finding"
+    )
+    selector = CompositeSelector.from_web_annotation(
+        json.loads(model_finding.evidence_selector_json)
+    )
+    quote_start = BODY.index("Co-work scope")
+    assert selector.start == quote_start
+    assert selector.end == quote_start + len("Co-work scope")
+    assert selector.prefix == BODY[max(0, quote_start - 120) : quote_start]
+    assert selector.suffix == BODY[
+        quote_start + len("Co-work scope") :
+        quote_start + len("Co-work scope") + 120
+    ]
+
+    decisions = [
+        {
+            "evaluation_result_id": result.id,
+            "decision": (
+                "request_revision"
+                if result.id == model_finding.id
+                else "retain"
+            ),
+            "rationale": "Test the revision authority boundary.",
+        }
+        for result in results
+    ]
+    with pytest.raises(
+        VerifyOrchestrationError,
+        match="no admitted deterministic revision evaluator",
+    ):
+        submit_worker_job(
+            job_id=coordinator.job_id,
+            payload={
+                "decisions": decisions,
+                "summary": "Attempted an unsupported model-based revision.",
+            },
+            agent_session_id=coordinator.session_id,
+            spawn_detached=orchestration_ctx["spawn"],
+        )
+    assert get_job(coordinator.job_id).status == "running"
+
+    for decision in decisions:
+        if decision["evaluation_result_id"] == model_finding.id:
+            decision["decision"] = "surface"
+            decision["rationale"] = "Show the evidence-backed advisory finding."
+    completed = submit_worker_job(
+        job_id=coordinator.job_id,
+        payload={
+            "decisions": decisions,
+            "summary": "The specialist findings were reconciled.",
+        },
+        agent_session_id=coordinator.session_id,
+        spawn_detached=orchestration_ctx["spawn"],
+    )
+    assert completed["status"] == "completed"
+    assert completed.get("next_job_id") is None
+    assert [
+        item["id"]
+        for item in surfaced_results(
+            store,
+            document_id=capture["documentId"],
+        )
+    ] == [model_finding.id]
+    document = documents.get_document(store, capture["documentId"])
+    projected_result = result_projection(store, document)[0]
+    assert projected_result["method_label"] == (
+        "Instruction-based model evaluation"
+    )
+    assert projected_result["coverage_label"] == (
+        "Model review of the complete frozen target"
+    )
+    assert "Clarity depends on the intended audience." in projected_result[
+        "limitations"
+    ]
+
+    replay = submit_worker_job(
+        job_id=second.job_id,
+        payload=finding_payload,
+        agent_session_id=second.session_id,
+        spawn_detached=orchestration_ctx["spawn"],
+    )
+    assert replay["replayed"] is True
+    assert replay["next_job_id"] == coordinator.job_id
+    assert len(
+        verify_store.list_records(
+            store,
+            CheckExecution,
+            where="source.evaluation_run_id = ?",
+            params=(started["run_id"],),
+        )
+    ) == 3
+    summary = next(
+        item
+        for item in run_status_projection(
+            store,
+            document_id=capture["documentId"],
+        )
+        if item["run_id"] == started["run_id"]
+    )
+    assert summary["status"] == "completed"
+    assert summary["coordination_status"] == "completed"

@@ -235,6 +235,73 @@ describe("LiveReviewRailProvider", () => {
     expect(reload).toHaveBeenCalledTimes(1);
   });
 
+  it("creates a runnable Verify check and invalidates the projection", async () => {
+    const createVerifyCheck = vi.fn(async () => ({}) as never);
+    const provider = new LiveReviewRailProvider({
+      docClient: {
+        fetchDoc: async () => payload([]),
+        createVerifyCheck,
+      },
+      documentId: "doc-1",
+      storeId: "store-1",
+      sittingTransport: new InMemoryCoworkSittingTransport(),
+      getSittingWorkspace: () => workspaceRecording().workspace,
+    });
+    const reload = vi.fn();
+    provider.subscribe(reload);
+    const check = {
+      title: "State the positive claim",
+      description: "Prefer direct positive descriptions.",
+      evaluationInstructions: "Identify negative-definition framing.",
+      limitations: ["Negation can be necessary."],
+    };
+
+    await provider.createVerifyCheck(check);
+
+    expect(createVerifyCheck).toHaveBeenCalledWith(check);
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not finish a check mutation until the subscribed projection reloads", async () => {
+    const refreshed = deferred<R2DocPayload>();
+    const fetchDoc = vi.fn(() => refreshed.promise);
+    const createVerifyCheck = vi.fn(async () => ({}) as never);
+    const provider = new LiveReviewRailProvider({
+      docClient: {
+        fetchDoc,
+        createVerifyCheck,
+      },
+      documentId: "doc-1",
+      storeId: "store-1",
+      sittingTransport: new InMemoryCoworkSittingTransport(),
+      getSittingWorkspace: () => workspaceRecording().workspace,
+    });
+    provider.subscribe(() => {
+      void provider.load();
+    });
+
+    let settled = false;
+    const mutation = provider
+      .createVerifyCheck({
+        title: "State the positive claim",
+        description: "Prefer direct positive descriptions.",
+        evaluationInstructions: "Identify negative-definition framing.",
+        limitations: [],
+      })
+      .then(() => {
+        settled = true;
+      });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(fetchDoc).toHaveBeenCalledTimes(1);
+    expect(settled).toBe(false);
+
+    refreshed.resolve(payload([]));
+    await mutation;
+    expect(settled).toBe(true);
+  });
+
   it("submitSitting delegates through the prepared workspace", async () => {
     const { workspace, events } = workspaceRecording();
     const provider = build({ getSittingWorkspace: () => workspace });
