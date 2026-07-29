@@ -13,6 +13,7 @@ const reference = (
   storeId: "store-a",
   documentId: "doc-a",
   kind: "text_range",
+  granularity: "character",
   relative: { startBase64: "AA==", endBase64: "AQ==" },
   quote: { exact: "Risk", prefix: "A ", suffix: " here" },
   label: "Risks",
@@ -53,6 +54,13 @@ describe("CoworkDocumentTargetStore", () => {
     window.localStorage.setItem(
       key,
       JSON.stringify(reference({ documentId: "another-doc" })),
+    );
+    expect(store.load()).toBeNull();
+    expect(window.localStorage.getItem(key)).toBeNull();
+
+    window.localStorage.setItem(
+      key,
+      JSON.stringify({ ...reference(), granularity: "paragraph" }),
     );
     expect(store.load()).toBeNull();
     expect(window.localStorage.getItem(key)).toBeNull();

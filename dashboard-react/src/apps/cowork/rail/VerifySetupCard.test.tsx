@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -20,10 +20,11 @@ const capability: CoworkVerifyCapability = {
 const configuration: VerificationConfiguration = {
   schema: "work-buddy.cowork-verify-configuration/v1",
   documentId: "doc-1",
+  executionPlan: null,
   coordination: {
     required: true,
     selection: "explicit_provider_and_model_at_run_start",
-    contentBoundary: "complete_permitted_frozen_document",
+    contentBoundary: "entire_frozen_document",
     egressClass: "account_backed_agent",
     externalEgress: true,
     costCeilingUsdPerWorker: 2,
@@ -91,13 +92,13 @@ describe("VerifySetupCard", () => {
 
     await user.click(screen.getByText("Verify setup"));
     expect(screen.getByText(/Changes apply to the next run/u)).toBeVisible();
-    expect(
-      screen.getByText(/receive the complete permitted frozen document/u),
-    ).toBeVisible();
+    expect(screen.queryByText("Model coordination")).not.toBeInTheDocument();
     expect(screen.getByText("Built in · Runs next time · Optional")).toBeVisible();
     await user.click(screen.getByText(/Terminology exact-match check/u));
     expect(
-      screen.getByText("Runs locally; no external egress"),
+      screen.getByText(
+        "In-process deterministic checker · checker egress: none",
+      ),
     ).toBeVisible();
     expect(
       screen.getByText("Exact, case-sensitive matching only."),
@@ -116,12 +117,103 @@ describe("VerifySetupCard", () => {
     );
 
     await user.click(screen.getByText("Verify setup"));
-    await user.click(screen.getByRole("checkbox", { name: /On/u }));
+    const toggle = screen.getByRole("checkbox", {
+      name: "Preferred terminology: include in Verify runs",
+    });
+    await user.click(toggle);
+    expect(toggle).toHaveAccessibleName(
+      "Preferred terminology: include in Verify runs",
+    );
     expect(onSetEnabled).toHaveBeenCalledWith(
       "terminology_exact_match",
       false,
       "activation-1",
     );
+  });
+
+  it("reports a criterion activation as busy until its authoritative mutation settles", async () => {
+    const user = userEvent.setup();
+    let settleMutation!: () => void;
+    const onSetEnabled = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          settleMutation = resolve;
+        }),
+    );
+    const onBusyChange = vi.fn();
+    render(
+      <VerifySetupCard
+        capability={capability}
+        configuration={configuration}
+        onSetEnabled={onSetEnabled}
+        onBusyChange={onBusyChange}
+      />,
+    );
+
+    await user.click(screen.getByText("Verify setup"));
+    await user.click(
+      screen.getByRole("checkbox", {
+        name: "Preferred terminology: include in Verify runs",
+      }),
+    );
+    await waitFor(() => {
+      expect(onBusyChange).toHaveBeenLastCalledWith(true);
+    });
+
+    await act(async () => {
+      settleMutation();
+    });
+    await waitFor(() => {
+      expect(onBusyChange).toHaveBeenLastCalledWith(false);
+    });
+  });
+
+  it("reports a criterion draft as busy until its save settles", async () => {
+    const user = userEvent.setup();
+    let settleDraft!: () => void;
+    const onCreateDraft = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          settleDraft = resolve;
+        }),
+    );
+    const onBusyChange = vi.fn();
+    render(
+      <VerifySetupCard
+        capability={capability}
+        configuration={configuration}
+        onCreateDraft={onCreateDraft}
+        onBusyChange={onBusyChange}
+      />,
+    );
+
+    await user.click(screen.getByText("Verify setup"));
+    await user.click(screen.getByText("Add a user-authored criterion"));
+    await user.type(
+      screen.getByLabelText("Criterion name"),
+      "State the positive claim",
+    );
+    await user.type(
+      screen.getByLabelText("What should be true?"),
+      "Prefer direct positive descriptions.",
+    );
+    await user.type(
+      screen.getByLabelText("Proposed evaluation instructions"),
+      "Identify negative-definition framing.",
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Save unavailable draft" }),
+    );
+    await waitFor(() => {
+      expect(onBusyChange).toHaveBeenLastCalledWith(true);
+    });
+
+    await act(async () => {
+      settleDraft();
+    });
+    await waitFor(() => {
+      expect(onBusyChange).toHaveBeenLastCalledWith(false);
+    });
   });
 
   it("saves a user-authored criterion only as an explicitly unavailable draft", async () => {

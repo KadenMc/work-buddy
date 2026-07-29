@@ -1,13 +1,9 @@
-import { useState } from "react";
-
 import type {
   CothinkItem,
   CothinkItemStatus,
   CothinkOutcome,
   EvaluationResult,
-  EvaluationRunSummary,
   VerificationRecheckIntent,
-  VerifyRunInspection,
 } from "./contracts";
 
 const RESULT_LABEL: Readonly<Record<EvaluationResult["kind"], string>> = {
@@ -17,20 +13,9 @@ const RESULT_LABEL: Readonly<Record<EvaluationResult["kind"], string>> = {
   review_comment: "Review comment",
 };
 
-const RUN_LABEL: Readonly<Record<EvaluationRunSummary["status"], string>> = {
-  prepared: "Preparing",
-  queued: "Queued",
-  running: "Checking",
-  completed: "Complete",
-  completed_with_failures: "Completed with limits",
-  failed: "Couldn’t complete",
-  cancelled: "Cancelled",
-};
-
 export type CothinkAction = "park" | "dismiss";
 
 export interface VerificationAttentionFeedProps {
-  readonly runs: readonly EvaluationRunSummary[];
   readonly results: readonly EvaluationResult[];
   readonly cothinkItems: readonly CothinkItem[];
   readonly cothinkOutcomes: readonly CothinkOutcome[];
@@ -38,7 +23,6 @@ export interface VerificationAttentionFeedProps {
   readonly busyItemId?: string | null;
   readonly onRevealResult?: (result: EvaluationResult) => void;
   readonly onOpenProposal?: (proposalId: string) => void;
-  readonly onInspectRun?: (runId: string) => Promise<VerifyRunInspection>;
   readonly onDiscussCothink?: (item: CothinkItem) => void;
   readonly onCothinkAction?: (
     item: CothinkItem,
@@ -79,7 +63,7 @@ function VerificationRecheckCard({
       </header>
       <p>
         {needsTarget
-          ? "The earlier scoped target predates durable target references. Choose the intended passage in the document action bar and run Verify explicitly."
+          ? "The earlier target predates durable target references. Set the intended passage with the Working on controls, then run Verify from its dock."
           : `Recheck ${targetLabel} against the committed document version with the original provider and model.`}
       </p>
       <p className="wb-cowork-attention-card__version">
@@ -87,14 +71,20 @@ function VerificationRecheckCard({
         {intent.pendingProposalIds.length === 1 ? "correction" : "corrections"}{" "}
         awaiting recheck
       </p>
-      {!needsTarget && onRecheck !== undefined ? (
+      {onRecheck !== undefined ? (
         <div className="wb-cowork-attention-card__actions">
           <button
             type="button"
             disabled={busy}
             onClick={() => onRecheck(intent)}
           >
-            {busy ? "Starting recheck…" : "Recheck now"}
+            {busy
+              ? needsTarget
+                ? "Opening target…"
+                : "Opening Verify…"
+              : needsTarget
+                ? "Set target and recheck"
+                : "Recheck in Verify"}
           </button>
         </div>
       ) : null}
@@ -137,134 +127,6 @@ const latestFirst = <T extends { readonly createdAt: string }>(
   [...values].sort((left, right) =>
     right.createdAt.localeCompare(left.createdAt),
   );
-
-function RunInspection({
-  inspection,
-}: {
-  readonly inspection: VerifyRunInspection;
-}) {
-  return (
-    <div className="wb-cowork-verify-history__inspection">
-      <p>
-        Frozen plan <code>{inspection.plan.planSnapshotId.slice(0, 12)}</code> ·
-        document version{" "}
-        <code>{inspection.action.structuredHeadSha256.slice(0, 12)}</code>
-      </p>
-      <ul>
-        {inspection.checks.map((check) => (
-          <li key={check.checkExecutionId}>
-            {check.definition.title} v{check.definition.version.toString()} ·{" "}
-            {check.mechanism} · {check.status}
-          </li>
-        ))}
-      </ul>
-      {inspection.coordination.length > 0 ? (
-        <ul>
-          {inspection.coordination.map((job) => (
-            <li key={job.jobId}>
-              {job.role.replace(/_/gu, " ")} · {job.provider} · {job.model} ·{" "}
-              {job.status} · up to ${job.costCeilingUsd.toFixed(2)}
-              {job.error === null ? "" : ` · ${job.error}`}
-            </li>
-          ))}
-        </ul>
-      ) : null}
-      {inspection.results.map((result) => (
-        <div key={result.evaluationResultId}>
-          <strong>{result.kind.replace(/_/gu, " ")}</strong>
-          <p>{result.message}</p>
-          {result.dispositions.map((disposition, index) => (
-            <p key={`${disposition.decision}:${index.toString()}`}>
-              {disposition.decision.replace(/_/gu, " ")} ·{" "}
-              {disposition.rationale}
-            </p>
-          ))}
-          {result.lineage.length > 0 ? (
-            <p>
-              Lineage:{" "}
-              {result.lineage
-                .map(
-                  (relation) =>
-                    `${relation.relation} ${relation.targetKind} ${relation.targetRef.slice(0, 12)}`,
-                )
-                .join(" · ")}
-            </p>
-          ) : null}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function RunHistory({
-  runs,
-  onInspectRun,
-}: {
-  readonly runs: readonly EvaluationRunSummary[];
-  readonly onInspectRun?: (runId: string) => Promise<VerifyRunInspection>;
-}) {
-  const [inspection, setInspection] = useState<VerifyRunInspection | null>(
-    null,
-  );
-  const [loadingRunId, setLoadingRunId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  if (runs.length === 0) return null;
-  const latest = latestFirst(runs)[0];
-  const active = latest.status === "queued" || latest.status === "running";
-  return (
-    <details
-      className="wb-cowork-verify-history"
-      open={active || inspection !== null}
-    >
-      <summary>
-        <span>Verify runs</span>
-        <span className="wb-cowork-verify-history__summary">
-          {RUN_LABEL[latest.status]} · {latest.targetLabel}
-        </span>
-      </summary>
-      <ol className="wb-cowork-verify-history__list">
-        {latestFirst(runs).map((run) => (
-          <li key={run.runId}>
-            <span className="wb-cowork-verify-history__status">
-              {RUN_LABEL[run.status]}
-            </span>
-            <span>{run.targetLabel}</span>
-            <span>{run.coverageLabel}</span>
-            {!run.currentVersion ? <span>Earlier version</span> : null}
-            {run.coordinationStatus === "unavailable" ? (
-              <span role="status">Coordination unavailable</span>
-            ) : null}
-            {onInspectRun !== undefined ? (
-              <button
-                type="button"
-                disabled={loadingRunId !== null}
-                onClick={() => {
-                  setLoadingRunId(run.runId);
-                  setError(null);
-                  void onInspectRun(run.runId)
-                    .then(
-                      (value) => setInspection(value),
-                      (cause: unknown) =>
-                        setError(
-                          cause instanceof Error
-                            ? cause.message
-                            : "Verify run details could not be loaded.",
-                        ),
-                    )
-                    .finally(() => setLoadingRunId(null));
-                }}
-              >
-                {loadingRunId === run.runId ? "Loading…" : "Inspect"}
-              </button>
-            ) : null}
-          </li>
-        ))}
-      </ol>
-      {inspection !== null ? <RunInspection inspection={inspection} /> : null}
-      {error !== null ? <p role="alert">{error}</p> : null}
-    </details>
-  );
-}
 
 function EvaluationResultCard({
   result,
@@ -421,7 +283,6 @@ export function VerificationAttentionFeed(
       right.committedAt.localeCompare(left.committedAt),
     );
   if (
-    props.runs.length === 0 &&
     visibleResults.length === 0 &&
     visibleRechecks.length === 0 &&
     visibleCothink.length === 0 &&
@@ -431,7 +292,6 @@ export function VerificationAttentionFeed(
   }
   return (
     <section className="wb-cowork-attention" aria-label="Verify and Co-think">
-      <RunHistory runs={props.runs} onInspectRun={props.onInspectRun} />
       {visibleRechecks.map((intent) => (
         <VerificationRecheckCard
           key={intent.intentId}

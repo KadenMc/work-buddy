@@ -10,8 +10,10 @@
 
 import type {
   R2DocPayload,
+  R2VerifyExecutionPlan,
   R2VerificationConfiguration,
 } from "./types";
+import { mapVerifyExecutionPlan } from "./reviewMapping";
 import type {
   VerifyCriterionDraftInput,
   VerifyRunInspection,
@@ -276,6 +278,7 @@ export class HttpCoworkDocClient implements CoworkDocClient {
       }),
       coordination: arrayValue(detail.coordination).map((rawJob) => {
         const job = objectValue(rawJob);
+        const executionPlan = objectValue(job.execution_plan);
         return {
           jobId: stringValue(job.job_id),
           role: stringValue(job.role),
@@ -284,6 +287,12 @@ export class HttpCoworkDocClient implements CoworkDocClient {
           model: stringValue(job.model),
           egressClass: stringValue(job.egress_class),
           costCeilingUsd: numberValue(job.cost_ceiling_usd),
+          executionPlan:
+            Object.keys(executionPlan).length === 0
+              ? null
+              : mapVerifyExecutionPlan(
+                  executionPlan as unknown as R2VerifyExecutionPlan,
+                ),
           error: nullableStringValue(job.error),
         };
       }),

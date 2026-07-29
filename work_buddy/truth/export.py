@@ -1574,25 +1574,28 @@ def _validate_record_values(item: _DataRecord) -> None:
             "coordination job.request_summary_json",
             mapping=True,
         )
+        request_keys = {
+            "schema",
+            "user_goal",
+            "protected_intent",
+            "effective_configuration",
+            "effective_configuration_sha256",
+            "effective_policy_sha256",
+            "active_criterion_ids",
+            "prior_disposition_ids",
+            "prior_human_review_outcome_ids",
+            "recheck_of_run_id",
+            "recheck_of_proposal_ids",
+            "recheck_intent_id",
+            "coordinator_stage",
+            "requested_revision_result_ids",
+            "candidate_evaluations",
+        }
+        if "recheck_target_confirmation" in request:
+            request_keys.add("recheck_target_confirmation")
         _require_exact_keys(
             request,
-            {
-                "schema",
-                "user_goal",
-                "protected_intent",
-                "effective_configuration",
-                "effective_configuration_sha256",
-                "effective_policy_sha256",
-                "active_criterion_ids",
-                "prior_disposition_ids",
-                "prior_human_review_outcome_ids",
-                "recheck_of_run_id",
-                "recheck_of_proposal_ids",
-                "recheck_intent_id",
-                "coordinator_stage",
-                "requested_revision_result_ids",
-                "candidate_evaluations",
-            },
+            request_keys,
             "coordination job request summary",
         )
         if request["schema"] != "work-buddy.cowork-coordination-request/v1":
@@ -1651,6 +1654,61 @@ def _validate_record_values(item: _DataRecord) -> None:
                 request["recheck_intent_id"],
                 "coordination job request summary.recheck_intent_id",
             )
+        confirmation = request.get("recheck_target_confirmation")
+        if confirmation is not None:
+            if not isinstance(confirmation, dict):
+                raise TruthImportError(
+                    "coordination job request summary."
+                    "recheck_target_confirmation must be an object or null"
+                )
+            _require_exact_keys(
+                confirmation,
+                {
+                    "schema",
+                    "method",
+                    "affirmed_capture_id",
+                    "affirmed_action_snapshot_id",
+                    "run_capture_id",
+                    "target_reference_sha256",
+                    "target_text_sha256",
+                },
+                "coordination job recheck target confirmation",
+            )
+            if (
+                confirmation["schema"]
+                != "work-buddy.cowork-recheck-target-confirmation/v1"
+                or confirmation["method"]
+                != "user_affirmed_working_target"
+            ):
+                raise TruthImportError(
+                    "coordination job recheck target confirmation has an "
+                    "unsupported method"
+                )
+            for field in (
+                "affirmed_capture_id",
+                "affirmed_action_snapshot_id",
+                "run_capture_id",
+            ):
+                _nonempty_text(
+                    confirmation[field],
+                    f"coordination job recheck target confirmation.{field}",
+                )
+            if (
+                confirmation["affirmed_capture_id"]
+                == confirmation["run_capture_id"]
+            ):
+                raise TruthImportError(
+                    "coordination job recheck target confirmation requires "
+                    "separate captures"
+                )
+            for field in (
+                "target_reference_sha256",
+                "target_text_sha256",
+            ):
+                _digest(
+                    confirmation[field],
+                    f"coordination job recheck target confirmation.{field}",
+                )
         if request["coordinator_stage"] not in {
             None,
             "initial",
@@ -2128,6 +2186,17 @@ def _validate_foreign_refs(records: tuple[_DataRecord, ...]) -> None:
                 item.seq,
                 "coordination job.action_snapshot_id",
             )
+            request_summary = json.loads(row["request_summary_json"])
+            confirmation = request_summary.get(
+                "recheck_target_confirmation"
+            )
+            if isinstance(confirmation, dict):
+                require_prior(
+                    "action_snapshot",
+                    confirmation["affirmed_action_snapshot_id"],
+                    item.seq,
+                    "coordination job recheck target affirmation",
+                )
             if row["evaluation_run_id"] is not None:
                 require_prior(
                     "evaluation_run",

@@ -30,6 +30,7 @@ const data: ReviewRailData = {
   verificationConfiguration: {
     schema: "work-buddy.cowork-verify-configuration/v1",
     documentId: "doc-1",
+    executionPlan: null,
     coordination: null,
     criteria: [],
   },

@@ -175,16 +175,67 @@ export interface R2VerificationCriterion {
   readonly issues: readonly Readonly<Record<string, unknown>>[];
 }
 
+export type R2VerifyCostEnforcementClass =
+  | "hard_ceiling"
+  | "estimate"
+  | "unavailable";
+
+export interface R2VerifyProviderCostControl {
+  readonly provider_id: string;
+  readonly enforcement_class: R2VerifyCostEnforcementClass;
+  readonly ceiling_usd_per_worker_session: number | null;
+  readonly basis: string;
+}
+
+export interface R2VerifyExecutionPlan {
+  readonly schema: string;
+  readonly authoritative: true;
+  readonly checker: {
+    readonly execution_class: "in_process";
+    readonly mechanism: "deterministic_exact_match";
+    readonly model_call: false;
+    readonly external_egress: false;
+    readonly content_boundary: "captured_target";
+  };
+  readonly coordination: {
+    readonly execution_class: "account_backed_agent";
+    readonly selection: {
+      readonly mode: "explicit_at_run_start";
+      readonly provider_id: string | null;
+      readonly model_id: string | null;
+      readonly provider_label: string | null;
+      readonly model_label: string | null;
+    };
+    readonly content_boundary: "entire_frozen_document";
+    readonly external_egress: true;
+    readonly fallback: {
+      readonly provider_model_fallback: false;
+      readonly failure_mode: "fail_closed";
+    };
+    readonly worker_sessions: {
+      readonly initial: number;
+      readonly maximum: number;
+      readonly conditional_roles: readonly string[];
+    };
+    readonly cost_control: R2VerifyProviderCostControl | null;
+    readonly provider_cost_controls: readonly R2VerifyProviderCostControl[];
+  };
+}
+
 export interface R2VerificationConfiguration {
   readonly schema: string;
   readonly document_id: string;
+  readonly execution_plan?: R2VerifyExecutionPlan;
   readonly coordination: {
+    readonly deprecated?: boolean;
+    readonly authoritative_projection?: string;
     readonly required: boolean;
     readonly selection: string;
     readonly content_boundary: string;
     readonly egress_class: string;
     readonly external_egress: boolean;
     readonly cost_ceiling_usd_per_worker: number;
+    readonly cost_ceiling_semantics?: string;
     readonly separate_reviser_for_findings: boolean;
     readonly pattern?: string;
     readonly base_worker_calls?: number;
@@ -313,6 +364,7 @@ export interface R2VerificationRecheckIntent {
     readonly same_target_source: boolean;
     readonly same_target_reference: boolean;
     readonly exact_target_resolution: boolean;
+    readonly user_affirmed_exact_target_required: boolean;
     readonly on_unresolved: "user_action_required";
     readonly allow_widen_to_whole_document: false;
   };

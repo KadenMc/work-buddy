@@ -49,22 +49,23 @@ sharing.
 
 ## Available choices
 
-The action bar supports:
+The compact editor-top controls manage only the reusable Working on target:
 
-- Working on;
-- current selection;
-- current section;
-- custom range; and
-- whole document.
+- **Set by selection** promotes the current selection with exact character
+  endpoints;
+- **Set by cursor** records an exact start cursor and then an exact end cursor;
+  and
+- **Clear** returns Working on to the whole document.
 
-**Work on this** promotes the current selection to the reusable target.
-**Clear** returns Working on to the whole document.
+The Verify dock defaults to Working on and may choose current selection,
+current section, or whole document as a one-run override without rewriting the
+reusable target.
 
-The custom range uses keyboard-accessible **Set start here** and **Set end
-here** actions at block boundaries. A draggable overview-ruler with two range
-handles is not part of the current implementation; it can be added later
-without changing the action-snapshot contract and must not become the only
-input method.
+The active Working on range is view-only editor state: its text is highlighted
+and its exact start/end boundaries have visible markers. These decorations do
+not enter Yjs, Markdown, undo history, or outbound persistence. A draggable
+overview ruler with two range handles remains optional; it must not replace the
+keyboard-accessible selection and cursor workflows.
 
 ## Target persistence and repair
 
@@ -72,10 +73,20 @@ The reusable target is presentation state stored in browser local storage
 under the exact store/document identity. It is not embedded in collaborative
 document content.
 
-Its endpoints are encoded Yjs relative positions with quote, heading path, and
-block hints for repair. Resolution prefers the relative range and can fall
-back to the quote. An unresolved target blocks the action and asks the user to
+Its exact endpoints are encoded Yjs relative positions with quote, heading
+path, and block hints for repair. Resolution prefers the relative range and can
+fall back to the quote. Character-granularity references remain character
+granular during repair; older references without granularity retain their
+block behavior. An unresolved target blocks the action and asks the user to
 choose a target again; it is never silently widened.
+
+A character range may legitimately begin at the first ProseMirror text
+position. The Yjs adapter also guards that position because a stale
+item-associated reference can appear there after a collaborative block
+reorder. Co-work accepts the current-coordinate translation only for a
+character target whose stored start and end block identities both match the
+resolved range. Missing or mismatched structural proof falls through to quote
+repair or fails closed.
 
 ## Stable capture protocol
 
@@ -104,8 +115,13 @@ immutable `ActionSnapshot` with separate:
 
 ## Chat consumption
 
-A targeted Chat message stores a safe action-snapshot reference in transcript
-context. The generation-fenced document agent must call
+An ordinary authored Chat message inherits Working on and stores a safe
+action-snapshot reference in transcript context. Its compact **About:** chip
+reports that shared target; there is no independent sticky toggle. Structured
+answers to an existing agent question remain bound to that question rather
+than capturing a second target.
+
+The generation-fenced document agent must call
 `cowork_action_snapshot_get` with the exact message and snapshot IDs. A
 terminal fetch records a generation-bound consumption receipt; the reply and
 acknowledgement must echo that receipt.

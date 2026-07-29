@@ -8,7 +8,10 @@ lineage, bounded authorization metadata, and sanitized runtime state.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any
+
+from work_buddy.agent_execution.models import AgentExecutionSelection
 
 from work_buddy.cowork.verify import (
     ActionSnapshot,
@@ -26,6 +29,10 @@ from work_buddy.cowork.verify import store as verify_store
 from work_buddy.cowork.verify_coordination import (
     coordination_jobs_with_runtime_fallback,
 )
+from work_buddy.cowork.verify_execution import (
+    verify_execution_disclosure_plan,
+)
+from work_buddy.cowork.verify_jobs import MAX_VERIFY_JOB_BUDGET_USD
 from work_buddy.truth.store import TruthStore
 
 
@@ -50,6 +57,53 @@ def _json(value: str | None) -> Any:
     if value is None:
         return None
     return json.loads(value)
+
+
+def _job_execution_plan(
+    job: Mapping[str, Any],
+    authorization: ModelCallAuthorizationReceipt,
+) -> dict[str, Any] | None:
+    """Return the exact persisted plan, or its validated legacy equivalent."""
+
+    selection_value = job.get("selection")
+    if not isinstance(selection_value, Mapping):
+        raise VerifyInspectionError("Verify coordination selection is invalid")
+    try:
+        selection = AgentExecutionSelection(
+            provider_id=str(selection_value.get("provider_id") or ""),
+            model_id=str(selection_value.get("model_id") or ""),
+            provider_label=str(selection_value.get("provider_label") or ""),
+            model_label=str(selection_value.get("model_label") or ""),
+        )
+    except ValueError as exc:
+        raise VerifyInspectionError(
+            "Verify coordination selection is invalid"
+        ) from exc
+    if (
+        authorization.provider != selection.provider_id
+        or authorization.model != selection.model_id
+        or authorization.egress_class != "account_backed_agent"
+        or authorization.cost_ceiling_usd != MAX_VERIFY_JOB_BUDGET_USD
+        or authorization.retry_limit != 0
+    ):
+        raise VerifyInspectionError(
+            "Verify coordination authorization does not match its selection"
+        )
+    expected = verify_execution_disclosure_plan(selection)
+    request_summary = job.get("request_summary")
+    if not isinstance(request_summary, Mapping):
+        return None
+    configuration = request_summary.get("effective_configuration")
+    if not isinstance(configuration, Mapping):
+        return None
+    stored = configuration.get("execution_plan")
+    if stored is not None and (
+        not isinstance(stored, Mapping) or dict(stored) != expected
+    ):
+        raise VerifyInspectionError(
+            "Verify coordination execution plan failed integrity validation"
+        )
+    return expected
 
 
 def verify_run_detail(
@@ -251,6 +305,10 @@ def verify_run_detail(
                     job["authorization_receipt_id"]
                 ].model,
                 "selection": job["selection"],
+                "execution_plan": _job_execution_plan(
+                    job,
+                    authorizations[job["authorization_receipt_id"]],
+                ),
                 "context_sha256": job["context_sha256"],
                 "request_summary": job["request_summary"],
                 "candidate_lineage": {

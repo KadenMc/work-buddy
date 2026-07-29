@@ -106,6 +106,7 @@ const recheckIntent: VerificationRecheckIntent = {
     sameTargetSource: true,
     sameTargetReference: true,
     exactTargetResolution: true,
+    userAffirmedExactTargetRequired: false,
     allowWidenToWholeDocument: false,
   },
 };
@@ -118,7 +119,6 @@ describe("VerificationAttentionFeed", () => {
     const act = vi.fn();
     render(
       <VerificationAttentionFeed
-        runs={[run]}
         results={[result]}
         cothinkItems={[cothink]}
         cothinkOutcomes={[]}
@@ -130,7 +130,7 @@ describe("VerificationAttentionFeed", () => {
     );
 
     expect(screen.getByText("Requirement not met")).toBeVisible();
-    expect(screen.getAllByText("Complete exact-string scan")).toHaveLength(2);
+    expect(screen.getAllByText("Complete exact-string scan")).toHaveLength(1);
     expect(screen.getByText("Co-think · Alternative perspective")).toBeVisible();
     expect(screen.queryByText(/severity/i)).toBeNull();
 
@@ -155,7 +155,6 @@ describe("VerificationAttentionFeed", () => {
     const act = vi.fn();
     render(
       <VerificationAttentionFeed
-        runs={[]}
         results={[]}
         cothinkItems={[{ ...cothink, status: "parked" }]}
         cothinkOutcomes={[]}
@@ -178,36 +177,9 @@ describe("VerificationAttentionFeed", () => {
     );
   });
 
-  it("retains a quiet clean run in history without making a result card", () => {
-    render(
-      <VerificationAttentionFeed
-        runs={[
-          {
-            ...run,
-            resultCount: 1,
-            surfacedResultCount: 0,
-          },
-        ]}
-        results={[
-          {
-            ...result,
-            kind: "conforming",
-            disposition: "retain_without_interrupting",
-          },
-        ]}
-        cothinkItems={[]}
-        cothinkOutcomes={[]}
-      />,
-    );
-
-    expect(screen.getByText("Verify runs")).toBeVisible();
-    expect(screen.queryByText("Requirement met")).toBeNull();
-  });
-
   it("shows durable no-item and unavailable Co-think outcomes", () => {
     render(
       <VerificationAttentionFeed
-        runs={[]}
         results={[]}
         cothinkItems={[]}
         cothinkOutcomes={[
@@ -235,7 +207,6 @@ describe("VerificationAttentionFeed", () => {
     const recheck = vi.fn();
     render(
       <VerificationAttentionFeed
-        runs={[]}
         results={[]}
         recheckIntents={[recheckIntent]}
         cothinkItems={[]}
@@ -247,82 +218,49 @@ describe("VerificationAttentionFeed", () => {
     expect(screen.getByText("Correction ready to recheck")).toBeVisible();
     expect(recheck).not.toHaveBeenCalled();
     await userEvent.click(
-      screen.getByRole("button", { name: "Recheck now" }),
+      screen.getByRole("button", { name: "Recheck in Verify" }),
     );
     expect(recheck).toHaveBeenCalledWith(recheckIntent);
   });
 
-  it("loads an inspectable typed run history without raw worker output", async () => {
-    const inspect = vi.fn(async () => ({
-      schema: "work-buddy.cowork-verify-run-inspection/v1",
-      runId: "run-1",
-      action: {
-        actionSnapshotId: "action-1",
-        structuredHeadSha256: "head-sha",
-        targetKind: "document",
-        contextBoundary: {},
-        egressBoundary: {},
+  it("routes a legacy target through an explicit target-setting action", async () => {
+    const recheck = vi.fn();
+    const legacyIntent: VerificationRecheckIntent = {
+      ...recheckIntent,
+      intentId: "recheck-legacy",
+      status: "user_action_required",
+      originalActionTarget: {
+        ...recheckIntent.originalActionTarget,
+        source: null,
+        label: "Earlier methods passage",
+        kind: "text_quote",
+        selector: {
+          kind: "text_quote",
+          exact: "Earlier methods passage",
+          prefix: "",
+          suffix: "",
+          start: 0,
+          end: 23,
+        },
       },
-      plan: {
-        planSnapshotId: "plan-1",
-        canonicalSha256: "plan-sha",
-        definition: {},
-      },
-      checks: [
-        {
-          checkExecutionId: "execution-1",
-          status: "completed",
-          mechanism: "deterministic",
-          definition: {
-            stableKey: "terminology_exact_match",
-            version: 1,
-            title: "Terminology exact match",
-            limitations: [],
-          },
-        },
-      ],
-      results: [
-        {
-          evaluationResultId: "result-1",
-          kind: "conforming",
-          message: "No configured term was found.",
-          dispositions: [
-            {
-              decision: "suppress",
-              rationale: "Quiet clean result.",
-              policySnapshotSha256: "policy-sha",
-            },
-          ],
-          lineage: [],
-        },
-      ],
-      coordination: [
-        {
-          jobId: "job-1",
-          role: "coordinator",
-          status: "completed",
-          provider: "codex",
-          model: "gpt-5.6",
-          egressClass: "account_backed_agent",
-          costCeilingUsd: 2,
-          error: null,
-        },
-      ],
-    }));
+    };
     render(
       <VerificationAttentionFeed
-        runs={[run]}
         results={[]}
+        recheckIntents={[legacyIntent]}
         cothinkItems={[]}
         cothinkOutcomes={[]}
-        onInspectRun={inspect}
+        onRecheckIntent={recheck}
       />,
     );
 
-    await userEvent.click(screen.getByRole("button", { name: "Inspect" }));
-
-    expect(await screen.findByText(/Frozen plan/u)).toBeVisible();
-    expect(screen.getByText(/Quiet clean result/u)).toBeVisible();
-    expect(inspect).toHaveBeenCalledWith("run-1");
+    expect(
+      screen.getByText("Choose a target for the follow-up check"),
+    ).toBeVisible();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Set target and recheck" }),
+    );
+    expect(recheck).toHaveBeenCalledWith(legacyIntent);
   });
+
 });

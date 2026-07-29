@@ -70,6 +70,7 @@ class VerifyRecheckIntent:
         return "pending_capture"
 
     def to_dict(self) -> dict[str, Any]:
+        original_request = json.loads(self.original_request_summary_json)
         return {
             "id": self.id,
             "sitting_id": self.sitting_id,
@@ -80,6 +81,13 @@ class VerifyRecheckIntent:
             "fulfilled_by_run_ids": list(self.fulfilled_by_run_ids),
             "committed_at": self.committed_at,
             "status": self.status,
+            # These immutable request fields are projected at the level the
+            # R2/UI contract consumes. Keep the complete original request
+            # below for audit and forward-compatible inspection.
+            "user_goal": str(original_request.get("user_goal") or ""),
+            "protected_intent": str(
+                original_request.get("protected_intent") or ""
+            ),
             "original_action_target": {
                 "action_snapshot_id": self.source_action_snapshot_id,
                 "source": self.original_target_source,
@@ -108,7 +116,7 @@ class VerifyRecheckIntent:
             "requires": {
                 "fresh_action_snapshot": True,
                 "fresh_model_call_authorization": True,
-                "same_target_source": True,
+                "same_target_source": self.status != "user_action_required",
                 "same_target_reference": (
                     self.original_target_kind == "document"
                     or self.original_target_reference_sha256 is not None
@@ -116,6 +124,9 @@ class VerifyRecheckIntent:
                 "exact_target_resolution": (
                     self.original_target_kind == "document"
                     or self.original_target_reference_sha256 is not None
+                ),
+                "user_affirmed_exact_target_required": (
+                    self.status == "user_action_required"
                 ),
                 "on_unresolved": "user_action_required",
                 "allow_widen_to_whole_document": False,
@@ -243,6 +254,8 @@ def _run_is_bound_fulfillment(
     proposal_ids: tuple[str, ...],
     source_target: Mapping[str, str | None],
     source_execution: Mapping[str, str],
+    source_request: Mapping[str, Any],
+    committed_at: str,
     conn: sqlite3.Connection | None = None,
 ) -> bool:
     """Require the later run to carry the exact derived recheck binding."""
@@ -262,6 +275,10 @@ def _run_is_bound_fulfillment(
         != source_execution["provider_id"]
         or root["selection"].get("model_id")
         != source_execution["model_id"]
+        or request.get("user_goal")
+        != source_request.get("user_goal")
+        or request.get("protected_intent")
+        != source_request.get("protected_intent")
     ):
         return False
     target = _action_target_for_run(store, run, conn=conn)
@@ -270,7 +287,59 @@ def _run_is_bound_fulfillment(
     if (
         target["source_action_snapshot_id"]
         == source_target["source_action_snapshot_id"]
-        or target["original_target_source"]
+    ):
+        return False
+    source_requires_confirmation = (
+        source_target["original_target_source"] is None
+        or (
+            source_target["original_target_kind"] != "document"
+            and source_target["original_target_reference_sha256"] is None
+        )
+    )
+    if source_requires_confirmation:
+        action = verify_store.get_record(
+            store,
+            ActionSnapshot,
+            run.action_snapshot_id,
+            conn=conn,
+        )
+        if action is None:
+            return False
+        try:
+            context = json.loads(action.context_boundary_json)
+            if not isinstance(context, Mapping):
+                return False
+            _validate_user_affirmed_recheck_target(
+                store=store,
+                action_snapshot=action,
+                context=context,
+                target_confirmation=(
+                    request.get("recheck_target_confirmation")
+                    if isinstance(
+                        request.get("recheck_target_confirmation"),
+                        Mapping,
+                    )
+                    else None
+                ),
+                recheck_intent_id=intent_id,
+                source_run_id=source_run_id,
+                proposal_ids=proposal_ids,
+                user_goal=str(source_request.get("user_goal") or ""),
+                protected_intent=str(
+                    source_request.get("protected_intent") or ""
+                ),
+                committed_at=committed_at,
+                conn=conn,
+            )
+        except (
+            json.JSONDecodeError,
+            TypeError,
+            VerifyRecheckIntentError,
+        ):
+            return False
+        return True
+    if (
+        target["original_target_source"]
         != source_target["original_target_source"]
         or target["original_target_kind"]
         != source_target["original_target_kind"]
@@ -423,6 +492,8 @@ def verification_recheck_intents(
                         proposal_ids=proposal_ids,
                         source_target=target,
                         source_execution=execution,
+                        source_request=original_request,
+                        committed_at=committed_at,
                         conn=conn,
                     )
                 ):
@@ -468,7 +539,11 @@ def validate_recheck_intent(
     intent_id: str,
     source_run_id: str,
     proposal_ids: Sequence[str],
+    user_goal: str,
+    protected_intent: str,
     action_snapshot: ActionSnapshot | None = None,
+    target_confirmation: Mapping[str, Any] | None = None,
+    affirmed_action_snapshot: ActionSnapshot | None = None,
 ) -> VerifyRecheckIntent:
     """Bind a fresh Verify start to exactly one still-pending sitting intent."""
 
@@ -487,11 +562,6 @@ def validate_recheck_intent(
         raise VerifyRecheckIntentError("recheck intent does not exist")
     if intent.status == "fulfilled":
         raise VerifyRecheckIntentError("recheck intent is already fulfilled")
-    if intent.status == "user_action_required":
-        raise VerifyRecheckIntentError(
-            "the original scoped target source is unavailable; "
-            "the user must choose a new target explicitly"
-        )
     if intent.source_run_id != source_run_id:
         raise VerifyRecheckIntentError(
             "recheck intent belongs to another source run"
@@ -500,6 +570,26 @@ def validate_recheck_intent(
     if requested != intent.pending_proposal_ids:
         raise VerifyRecheckIntentError(
             "recheck intent proposal binding changed"
+        )
+    try:
+        original_request = json.loads(
+            intent.original_request_summary_json
+        )
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise VerifyRecheckIntentError(
+            "recheck intent has an invalid original request"
+        ) from exc
+    if not isinstance(original_request, Mapping):
+        raise VerifyRecheckIntentError(
+            "recheck intent has an invalid original request"
+        )
+    if (
+        user_goal != str(original_request.get("user_goal") or "")
+        or protected_intent
+        != str(original_request.get("protected_intent") or "")
+    ):
+        raise VerifyRecheckIntentError(
+            "recheck must preserve the original user goal and protected intent"
         )
     if action_snapshot is not None:
         if action_snapshot.document_id != document_id:
@@ -524,25 +614,274 @@ def validate_recheck_intent(
             raise VerifyRecheckIntentError(
                 "fresh recheck capture has invalid target context"
             )
-        if context.get("target_source") != intent.original_target_source:
-            raise VerifyRecheckIntentError(
-                "fresh recheck capture must resolve the original target "
-                "source; widening to another target is not allowed"
+        if intent.status == "user_action_required":
+            _validate_user_affirmed_recheck_target(
+                store=store,
+                action_snapshot=action_snapshot,
+                context=context,
+                target_confirmation=target_confirmation,
+                affirmed_action_snapshot=affirmed_action_snapshot,
+                committed_at=intent.committed_at,
+                recheck_intent_id=intent.id,
+                source_run_id=intent.source_run_id,
+                proposal_ids=intent.pending_proposal_ids,
+                user_goal=user_goal,
+                protected_intent=protected_intent,
             )
-        if action_snapshot.target_kind != intent.original_target_kind:
-            raise VerifyRecheckIntentError(
-                "fresh recheck capture changed the original target kind"
-            )
-        if (
-            intent.original_target_reference_sha256 is not None
-            and context.get("target_reference_sha256")
-            != intent.original_target_reference_sha256
-        ):
-            raise VerifyRecheckIntentError(
-                "fresh recheck capture did not resolve the original target "
-                "reference"
-            )
+        else:
+            if (
+                target_confirmation is not None
+                or affirmed_action_snapshot is not None
+            ):
+                raise VerifyRecheckIntentError(
+                    "an exact durable recheck target cannot be replaced by "
+                    "user target confirmation"
+                )
+            if context.get("target_source") != intent.original_target_source:
+                raise VerifyRecheckIntentError(
+                    "fresh recheck capture must resolve the original target "
+                    "source; widening to another target is not allowed"
+                )
+            if action_snapshot.target_kind != intent.original_target_kind:
+                raise VerifyRecheckIntentError(
+                    "fresh recheck capture changed the original target kind"
+                )
+            if (
+                intent.original_target_reference_sha256 is not None
+                and context.get("target_reference_sha256")
+                != intent.original_target_reference_sha256
+            ):
+                raise VerifyRecheckIntentError(
+                    "fresh recheck capture did not resolve the original target "
+                    "reference"
+                )
+    elif intent.status == "user_action_required":
+        raise VerifyRecheckIntentError(
+            "the unresolved original target requires a fresh explicitly "
+            "affirmed Working on capture"
+        )
+    elif (
+        target_confirmation is not None
+        or affirmed_action_snapshot is not None
+    ):
+        raise VerifyRecheckIntentError(
+            "target confirmation requires a fresh recheck capture"
+        )
     return intent
+
+
+def _validate_user_affirmed_recheck_target(
+    *,
+    store: TruthStore,
+    action_snapshot: ActionSnapshot,
+    context: Mapping[str, Any],
+    target_confirmation: Mapping[str, Any] | None,
+    affirmed_action_snapshot: ActionSnapshot | None = None,
+    committed_at: str | None = None,
+    recheck_intent_id: str,
+    source_run_id: str,
+    proposal_ids: Sequence[str],
+    user_goal: str,
+    protected_intent: str,
+    conn: sqlite3.Connection | None = None,
+) -> None:
+    """Validate server-attested replacement-target evidence for a legacy intent."""
+
+    if action_snapshot.created_by_kind != "human":
+        raise VerifyRecheckIntentError(
+            "recheck target confirmation requires a fresh human capture"
+        )
+    if (
+        action_snapshot.target_kind != "text_quote"
+        or context.get("target_source") != "working_target"
+    ):
+        raise VerifyRecheckIntentError(
+            "the unresolved original target requires an exact Working on "
+            "passage; widening is not allowed"
+        )
+    target_reference = context.get("target_reference")
+    target_reference_sha256 = context.get("target_reference_sha256")
+    if (
+        not isinstance(target_reference, Mapping)
+        or target_reference.get("kind") != "text_range"
+        or target_reference.get("granularity") != "character"
+        or not isinstance(target_reference_sha256, str)
+        or not target_reference_sha256
+    ):
+        raise VerifyRecheckIntentError(
+            "the affirmed Working on passage requires a durable target "
+            "reference"
+        )
+    if target_confirmation is None:
+        raise VerifyRecheckIntentError(
+            "the unresolved original target requires explicit user "
+            "affirmation"
+        )
+    required_keys = {
+        "schema",
+        "method",
+        "affirmed_capture_id",
+        "affirmed_action_snapshot_id",
+        "run_capture_id",
+        "target_reference_sha256",
+        "target_text_sha256",
+    }
+    if set(target_confirmation) != required_keys:
+        raise VerifyRecheckIntentError(
+            "recheck target confirmation has an invalid shape"
+        )
+    if (
+        target_confirmation.get("schema")
+        != "work-buddy.cowork-recheck-target-confirmation/v1"
+        or target_confirmation.get("method")
+        != "user_affirmed_working_target"
+    ):
+        raise VerifyRecheckIntentError(
+            "recheck target confirmation has an unsupported method"
+        )
+    affirmed_capture_id = target_confirmation.get("affirmed_capture_id")
+    affirmed_action_snapshot_id = target_confirmation.get(
+        "affirmed_action_snapshot_id"
+    )
+    run_capture_id = target_confirmation.get("run_capture_id")
+    if (
+        not isinstance(affirmed_capture_id, str)
+        or not affirmed_capture_id.strip()
+        or not isinstance(affirmed_action_snapshot_id, str)
+        or not affirmed_action_snapshot_id.strip()
+        or not isinstance(run_capture_id, str)
+        or not run_capture_id.strip()
+    ):
+        raise VerifyRecheckIntentError(
+            "recheck target confirmation requires exact capture ids"
+        )
+    if affirmed_capture_id == run_capture_id:
+        raise VerifyRecheckIntentError(
+            "recheck target confirmation requires a separate completed "
+            "affirmation capture"
+        )
+    affirmed_action = affirmed_action_snapshot
+    if affirmed_action is None:
+        affirmed_action = verify_store.get_record(
+            store,
+            ActionSnapshot,
+            affirmed_action_snapshot_id,
+            conn=conn,
+        )
+    if (
+        affirmed_action is None
+        or affirmed_action.id != affirmed_action_snapshot_id
+    ):
+        raise VerifyRecheckIntentError(
+            "recheck target confirmation has no attested affirmation snapshot"
+        )
+    if affirmed_action.id == action_snapshot.id:
+        raise VerifyRecheckIntentError(
+            "recheck target confirmation requires separate action snapshots"
+        )
+    if (
+        affirmed_action.document_id != action_snapshot.document_id
+        or affirmed_action.created_by_kind != "human"
+        or affirmed_action.created_by_ref != action_snapshot.created_by_ref
+    ):
+        raise VerifyRecheckIntentError(
+            "recheck target affirmation belongs to another human or document"
+        )
+    if committed_at is not None and (
+        _utc(affirmed_action.created_at) <= _utc(committed_at)
+        or _utc(affirmed_action.created_at)
+        > _utc(action_snapshot.created_at)
+    ):
+        raise VerifyRecheckIntentError(
+            "recheck target affirmation is not ordered between the committed "
+            "sitting and the Run capture"
+        )
+    try:
+        affirmed_context = json.loads(affirmed_action.context_boundary_json)
+        affirmed_egress = json.loads(affirmed_action.egress_boundary_json)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise VerifyRecheckIntentError(
+            "recheck target affirmation has invalid attested context"
+        ) from exc
+    if not isinstance(affirmed_context, Mapping) or not isinstance(
+        affirmed_egress,
+        Mapping,
+    ):
+        raise VerifyRecheckIntentError(
+            "recheck target affirmation has invalid attested context"
+        )
+    if (
+        affirmed_action.target_kind != "text_quote"
+        or affirmed_context.get("target_source") != "working_target"
+        or affirmed_context.get("purpose")
+        != "user_affirmed_exact_recheck_target"
+        or affirmed_egress.get("class") != "no_external_egress"
+        or affirmed_egress.get("content") != "none"
+    ):
+        raise VerifyRecheckIntentError(
+            "recheck target affirmation is not an attested exact Working on "
+            "capture"
+        )
+    affirmed_reference = affirmed_context.get("target_reference")
+    affirmed_reference_sha256 = affirmed_context.get(
+        "target_reference_sha256"
+    )
+    if (
+        not isinstance(affirmed_reference, Mapping)
+        or affirmed_reference.get("kind") != "text_range"
+        or affirmed_reference.get("granularity") != "character"
+        or not isinstance(affirmed_reference_sha256, str)
+        or not affirmed_reference_sha256
+    ):
+        raise VerifyRecheckIntentError(
+            "recheck target affirmation has no durable character reference"
+        )
+    affirmed_authority = affirmed_context.get("authority_context")
+    if (
+        not isinstance(affirmed_authority, Mapping)
+        or affirmed_authority.get("recheck_intent_id") != recheck_intent_id
+        or affirmed_authority.get("source_run_id") != source_run_id
+        or affirmed_authority.get("pending_proposal_ids")
+        != list(proposal_ids)
+        or affirmed_authority.get("user_goal_sha256")
+        != sha256_text(user_goal)
+        or affirmed_authority.get("protected_intent_sha256")
+        != sha256_text(protected_intent)
+    ):
+        raise VerifyRecheckIntentError(
+            "recheck target affirmation is bound to another recheck intent"
+        )
+    if affirmed_context.get("capture_id") != affirmed_capture_id:
+        raise VerifyRecheckIntentError(
+            "recheck target affirmation capture id is not attested"
+        )
+    if run_capture_id != context.get("capture_id"):
+        raise VerifyRecheckIntentError(
+            "recheck target confirmation belongs to another run capture"
+        )
+    if (
+        target_confirmation.get("target_reference_sha256")
+        != target_reference_sha256
+    ):
+        raise VerifyRecheckIntentError(
+            "recheck target confirmation changed the affirmed target "
+            "reference"
+        )
+    if affirmed_reference_sha256 != target_reference_sha256:
+        raise VerifyRecheckIntentError(
+            "Run target reference does not match the attested affirmation"
+        )
+    if (
+        target_confirmation.get("target_text_sha256")
+        != action_snapshot.target_text_sha256
+    ):
+        raise VerifyRecheckIntentError(
+            "recheck target confirmation changed the affirmed target text"
+        )
+    if affirmed_action.target_text_sha256 != action_snapshot.target_text_sha256:
+        raise VerifyRecheckIntentError(
+            "Run target text does not match the attested affirmation"
+        )
 
 
 __all__ = [

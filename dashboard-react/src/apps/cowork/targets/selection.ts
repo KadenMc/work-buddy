@@ -3,9 +3,7 @@ import type { Node } from "@tiptap/pm/model";
 import type * as Y from "yjs";
 
 import { quoteAnchorFromRange } from "../feedback/feedbackAnchor";
-import {
-  createCoworkMarkdownManager,
-} from "../editor/extensions";
+import { createCoworkMarkdownManager } from "../editor/extensions";
 import {
   normalizeCoworkMarkdownNewlines,
   serializeCoworkEditorMarkdownProjection,
@@ -24,9 +22,14 @@ interface TopLevelBlock {
   readonly to: number;
 }
 
-export interface CoworkBlockRange extends CoworkProseMirrorRange {
+export interface CoworkIndexedRange extends CoworkProseMirrorRange {
   readonly startBlockIndex: number;
   readonly endBlockIndex: number;
+  readonly granularity: "character" | "block";
+}
+
+export interface CoworkBlockRange extends CoworkIndexedRange {
+  readonly granularity: "block";
 }
 
 export interface CoworkProjectionTarget {
@@ -56,14 +59,20 @@ export const coworkWordCount = (
 };
 
 /**
- * Expand a non-empty text selection to complete top-level blocks. The initial
- * direct-manipulation target is deliberately contiguous and block-aligned.
+ * Expand a non-empty range to complete top-level blocks. Section targets and
+ * stored v1 references without an explicit granularity use this behavior.
  */
 export const blockAlignCoworkRange = (
   doc: Node,
   range: CoworkProseMirrorRange,
 ): CoworkBlockRange | null => {
-  if (range.to <= range.from) return null;
+  if (
+    range.from < 0 ||
+    range.to > doc.content.size ||
+    range.to <= range.from
+  ) {
+    return null;
+  }
   const blocks = blocksIn(doc);
   const selected = blocks.filter(
     (block) => range.from < block.to && range.to > block.from,
@@ -76,15 +85,48 @@ export const blockAlignCoworkRange = (
     to: last.to,
     startBlockIndex: first.index,
     endBlockIndex: last.index + 1,
+    granularity: "block",
+  };
+};
+
+/**
+ * Preserve exact ProseMirror character endpoints while recording only the
+ * containing top-level blocks needed for labels, repair hints, and Markdown
+ * projection. This helper never widens the supplied range.
+ */
+export const coworkExactRange = (
+  doc: Node,
+  range: CoworkProseMirrorRange,
+): CoworkIndexedRange | null => {
+  if (
+    range.from < 0 ||
+    range.to > doc.content.size ||
+    range.to <= range.from
+  ) {
+    return null;
+  }
+  const blocks = blocksIn(doc);
+  const selected = blocks.filter(
+    (block) => range.from < block.to && range.to > block.from,
+  );
+  const first = selected[0];
+  const last = selected[selected.length - 1];
+  if (first === undefined || last === undefined) return null;
+  return {
+    from: range.from,
+    to: range.to,
+    startBlockIndex: first.index,
+    endBlockIndex: last.index + 1,
+    granularity: "character",
   };
 };
 
 export const coworkSelectionRange = (
   editor: Editor,
-): CoworkBlockRange | null => {
+): CoworkIndexedRange | null => {
   const { from, to, empty } = editor.state.selection;
   if (empty) return null;
-  return blockAlignCoworkRange(editor.state.doc, { from, to });
+  return coworkExactRange(editor.state.doc, { from, to });
 };
 
 /** The single top-level block containing the caret/selection head. */
@@ -105,6 +147,7 @@ export const coworkCurrentBlockRange = (
     to: block.to,
     startBlockIndex: block.index,
     endBlockIndex: block.index + 1,
+    granularity: "block",
   };
 };
 
@@ -135,6 +178,7 @@ export const coworkCurrentSectionRange = (
       to: containing.to,
       startBlockIndex: containing.index,
       endBlockIndex: containing.index + 1,
+      granularity: "block",
     };
   }
   const level = Number(heading.node.attrs.level ?? 1);
@@ -149,6 +193,7 @@ export const coworkCurrentSectionRange = (
     to: next?.from ?? doc.content.size,
     startBlockIndex: heading.index,
     endBlockIndex: next?.index ?? blocks.length,
+    granularity: "block",
   };
 };
 
@@ -184,7 +229,7 @@ const blockId = (block: TopLevelBlock | undefined): string | undefined => {
 
 export const coworkRangeBlockIds = (
   doc: Node,
-  range: CoworkBlockRange,
+  range: CoworkIndexedRange,
 ): { readonly startBlockId?: string; readonly endBlockId?: string } => {
   const blocks = blocksIn(doc);
   return {
@@ -199,7 +244,7 @@ export const coworkRangeBlockIds = (
 
 const labelForRange = (
   doc: Node,
-  range: CoworkBlockRange,
+  range: CoworkIndexedRange,
   fallback: string,
 ): string => {
   const first = blocksIn(doc)[range.startBlockIndex];
@@ -212,7 +257,7 @@ const labelForRange = (
 
 export const coworkRangeSummary = (
   doc: Node,
-  range: CoworkBlockRange,
+  range: CoworkIndexedRange,
   fallback: string,
 ): CoworkTargetSummary => ({
   kind: "text_range",
@@ -257,16 +302,133 @@ const projectionQuote = (
   };
 };
 
+const markerPair = (
+  body: string,
+): { readonly start: string; readonly end: string } => {
+  const stem = "WBCOWORKEXACTTARGETBOUNDARY";
+  let attempt = 0;
+  for (;;) {
+    const suffix = attempt.toString(36).toUpperCase();
+    const start = `${stem}START${suffix}`;
+    const end = `${stem}END${suffix}`;
+    if (!body.includes(start) && !body.includes(end)) return { start, end };
+    attempt += 1;
+  }
+};
+
+const exactProjectionOffsets = (
+  editor: Editor,
+  range: CoworkIndexedRange,
+  body: string,
+  newlineStyle: Parameters<typeof normalizeCoworkMarkdownNewlines>[1],
+): { readonly start: number; readonly end: number } => {
+  const markers = markerPair(body);
+  const startPosition = editor.state.doc.resolve(range.from);
+  const endPosition = editor.state.doc.resolve(range.to);
+  const startMarks =
+    startPosition.nodeAfter?.isText === true
+      ? startPosition.nodeAfter.marks
+      : startPosition.marks();
+  const endMarks =
+    endPosition.nodeBefore?.isText === true
+      ? endPosition.nodeBefore.marks
+      : endPosition.marks();
+  let transaction = editor.state.tr.insert(
+    range.to,
+    editor.state.schema.text(markers.end, endMarks),
+  );
+  transaction = transaction.insert(
+    range.from,
+    editor.state.schema.text(markers.start, startMarks),
+  );
+  const marked = normalizeCoworkMarkdownNewlines(
+    createCoworkMarkdownManager().serialize(transaction.doc.toJSON()),
+    newlineStyle,
+  );
+  const start = marked.indexOf(markers.start);
+  const end = marked.indexOf(markers.end);
+  const markersAreUnique =
+    start >= 0 &&
+    end > start &&
+    marked.indexOf(markers.start, start + markers.start.length) < 0 &&
+    marked.indexOf(markers.end, end + markers.end.length) < 0;
+  if (!markersAreUnique) {
+    throw new Error(
+      "Co-work could not map these exact character boundaries into Markdown",
+    );
+  }
+
+  const withoutMarkers =
+    marked.slice(0, start) +
+    marked.slice(start + markers.start.length, end) +
+    marked.slice(end + markers.end.length);
+  if (withoutMarkers !== body) {
+    throw new Error(
+      "Co-work could not verify these exact character boundaries without changing Markdown",
+    );
+  }
+  return {
+    start,
+    end: end - markers.start.length,
+  };
+};
+
+const blockProjectionOffsets = (
+  editor: Editor,
+  range: CoworkIndexedRange,
+  body: string,
+  newlineStyle: Parameters<typeof normalizeCoworkMarkdownNewlines>[1],
+): { readonly start: number; readonly end: number } => {
+  const content = editor.getJSON().content ?? [];
+  const manager = createCoworkMarkdownManager();
+  const prefix = normalizeCoworkMarkdownNewlines(
+    manager.serialize(asDoc(content.slice(0, range.startBlockIndex))),
+    newlineStyle,
+  );
+  const selected = normalizeCoworkMarkdownNewlines(
+    manager.serialize(
+      asDoc(content.slice(range.startBlockIndex, range.endBlockIndex)),
+    ),
+    newlineStyle,
+  );
+  if (selected.length === 0) {
+    throw new Error("The selected document target has no Markdown representation");
+  }
+  if (!body.startsWith(prefix)) {
+    throw new Error(
+      "Co-work could not verify the Markdown prefix for this document target",
+    );
+  }
+
+  // Top-level renderers may place blank-line separators between the prefix and
+  // selected slice. Search forward from the exact rendered-prefix boundary and
+  // reject any non-whitespace gap instead of guessing at another occurrence.
+  const start = body.indexOf(selected, prefix.length);
+  if (start < 0) {
+    throw new Error(
+      "Co-work could not map this document target into the Markdown projection",
+    );
+  }
+  if (/\S/u.test(body.slice(prefix.length, start))) {
+    throw new Error(
+      "Co-work found an ambiguous Markdown boundary for this document target",
+    );
+  }
+  return { start, end: start + selected.length };
+};
+
 /**
- * Translate one block-aligned ProseMirror range into Unicode code-point
- * offsets in the exact canonical Markdown projection. Each top-level slice is
- * rendered through the same MarkdownManager, then located after the rendered
- * prefix. This makes the coordinate-system conversion explicit and testable.
+ * Translate one ProseMirror range into Unicode code-point offsets in the exact
+ * canonical Markdown projection. Character ranges are mapped by inserting
+ * sentinel text into an undispatched transaction, serializing that detached
+ * document, and proving that removing the sentinels reproduces the canonical
+ * body byte-for-byte. A serializer shape that cannot preserve both endpoints
+ * fails closed instead of widening to blocks.
  */
 export const coworkProjectionTarget = (
   editor: Editor,
   document: Y.Doc,
-  range: CoworkBlockRange | null,
+  range: CoworkIndexedRange | null,
 ): {
   readonly markdown: string;
   readonly target: CoworkProjectionTarget;
@@ -282,46 +444,28 @@ export const coworkProjectionTarget = (
     };
   }
 
-  const json = editor.getJSON();
-  const content = json.content ?? [];
-  const manager = createCoworkMarkdownManager();
-  const prefix = normalizeCoworkMarkdownNewlines(
-    manager.serialize(asDoc(content.slice(0, range.startBlockIndex))),
-    projection.fidelity.newlineStyle,
-  );
-  const selected = normalizeCoworkMarkdownNewlines(
-    manager.serialize(
-      asDoc(content.slice(range.startBlockIndex, range.endBlockIndex)),
-    ),
-    projection.fidelity.newlineStyle,
-  );
-  if (selected.length === 0) {
+  const offsets =
+    range.granularity === "character"
+      ? exactProjectionOffsets(
+          editor,
+          range,
+          projection.body,
+          projection.fidelity.newlineStyle,
+        )
+      : blockProjectionOffsets(
+          editor,
+          range,
+          projection.body,
+          projection.fidelity.newlineStyle,
+        );
+  if (offsets.end <= offsets.start) {
     throw new Error("The selected document target has no Markdown representation");
   }
-  if (!projection.body.startsWith(prefix)) {
-    throw new Error(
-      "Co-work could not verify the Markdown prefix for this document target",
-    );
-  }
-
-  // Top-level renderers may place blank-line separators between the prefix and
-  // selected slice. Search forward from the exact rendered-prefix boundary and
-  // reject any non-whitespace gap instead of guessing at another occurrence.
-  const bodyIndex = projection.body.indexOf(selected, prefix.length);
-  if (bodyIndex < 0) {
-    throw new Error(
-      "Co-work could not map this document target into the Markdown projection",
-    );
-  }
-  if (/\S/u.test(projection.body.slice(prefix.length, bodyIndex))) {
-    throw new Error(
-      "Co-work found an ambiguous Markdown boundary for this document target",
-    );
-  }
-  const startUtf16 = projection.bodyStart + bodyIndex;
-  const endUtf16 = startUtf16 + selected.length;
+  const startUtf16 = projection.bodyStart + offsets.start;
+  const endUtf16 = projection.bodyStart + offsets.end;
   if (
-    projection.markdown.slice(startUtf16, endUtf16) !== selected
+    projection.markdown.slice(startUtf16, endUtf16) !==
+    projection.body.slice(offsets.start, offsets.end)
   ) {
     throw new Error(
       "Co-work could not verify the Markdown boundary for this document target",

@@ -213,6 +213,7 @@ export function demoReviewData(): ReviewRailData {
     verificationConfiguration: {
       schema: "work-buddy.cowork-verify-configuration/v1",
       documentId: "demo-doc",
+      executionPlan: null,
       coordination: null,
       criteria: [],
     },

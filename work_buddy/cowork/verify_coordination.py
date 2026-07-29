@@ -148,6 +148,16 @@ def sanitized_request_summary(
         raise VerifyInvariantViolation(
             "effective_configuration must be an object"
         )
+    recheck_target_confirmation = request.get(
+        "recheck_target_confirmation"
+    )
+    if (
+        recheck_target_confirmation is not None
+        and not isinstance(recheck_target_confirmation, Mapping)
+    ):
+        raise VerifyInvariantViolation(
+            "recheck_target_confirmation must be an object"
+        )
     summary = {
         "schema": "work-buddy.cowork-coordination-request/v1",
         "user_goal": str(request.get("user_goal") or ""),
@@ -186,6 +196,14 @@ def sanitized_request_summary(
         ),
         "candidate_evaluations": [],
     }
+    # Keep pre-confirmation v1 jobs byte-compatible during replay/export while
+    # persisting the field (including explicit null) for newly created jobs.
+    if "recheck_target_confirmation" in request:
+        summary["recheck_target_confirmation"] = (
+            None
+            if recheck_target_confirmation is None
+            else dict(recheck_target_confirmation)
+        )
     try:
         summary["candidate_evaluations"] = sanitize_candidate_evaluations(
             request.get("candidate_evaluations", [])

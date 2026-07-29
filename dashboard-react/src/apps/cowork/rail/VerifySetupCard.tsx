@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 
 import type {
   CoworkVerifyCapability,
@@ -34,6 +34,8 @@ export interface VerifySetupCardProps {
   readonly onCreateDraft?: (
     draft: VerifyCriterionDraftInput,
   ) => Promise<void>;
+  /** Reports whether a visible setup mutation is awaiting authoritative state. */
+  readonly onBusyChange?: (busy: boolean) => void;
 }
 
 /**
@@ -45,6 +47,7 @@ export function VerifySetupCard({
   configuration,
   onSetEnabled,
   onCreateDraft,
+  onBusyChange,
 }: VerifySetupCardProps) {
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -53,6 +56,7 @@ export function VerifySetupCard({
   const [draftInstructions, setDraftInstructions] = useState("");
   const [draftLimitation, setDraftLimitation] = useState("");
   const [draftBusy, setDraftBusy] = useState(false);
+  const setupBusy = busyKey !== null || draftBusy;
   const activeCount = configuration.criteria.filter(
     (criterion) => criterion.operationalState === "active",
   ).length;
@@ -61,6 +65,17 @@ export function VerifySetupCard({
       criterion.operationalState === "unavailable" ||
       criterion.operationalState === "blocked_required_check",
   ).length;
+
+  useEffect(() => {
+    onBusyChange?.(setupBusy);
+  }, [onBusyChange, setupBusy]);
+
+  useEffect(
+    () => () => {
+      onBusyChange?.(false);
+    },
+    [onBusyChange],
+  );
 
   const setEnabled = (
     criterion: VerificationCriterion,
@@ -86,7 +101,7 @@ export function VerifySetupCard({
 
   const createDraft = (event: FormEvent<HTMLFormElement>): void => {
     event.preventDefault();
-    if (onCreateDraft === undefined || draftBusy) return;
+    if (onCreateDraft === undefined || setupBusy) return;
     setDraftBusy(true);
     setError(null);
     void onCreateDraft({
@@ -130,27 +145,6 @@ export function VerifySetupCard({
           Criteria say what this work should satisfy. Changes apply to the next
           run; a run already started keeps its frozen setup.
         </p>
-        {configuration.coordination !== null ? (
-          <section
-            className="wb-cowork-verify-setup__coordination"
-            aria-label="Model coordination and data sharing"
-          >
-            <strong>Model coordination</strong>
-            <p>
-              The account-backed provider and model shown beside Run Verify
-              receive the complete permitted frozen document to make the
-              forest-level routing decision. Verify starts with{" "}
-              {configuration.coordination.baseWorkerCalls.toString()} worker
-              call and may use up to{" "}
-              {configuration.coordination.maximumWorkerCalls.toString()} only
-              when the coordinator requests a separate revision and then
-              reconciles it. Each worker is capped at $
-              {configuration.coordination.costCeilingUsdPerWorker.toFixed(2)}.
-              The deterministic check itself runs locally; that does not make
-              these coordination calls local.
-            </p>
-          </section>
-        ) : null}
         {!capability.canConfigure && capability.disabledReason !== null ? (
           <p className="wb-cowork-verify-setup__notice">
             {capability.disabledReason}
@@ -163,12 +157,11 @@ export function VerifySetupCard({
         ) : (
           <ul className="wb-cowork-verify-setup__criteria">
             {configuration.criteria.map((criterion) => {
-              const busy = busyKey === criterion.stableKey;
               const cannotEnable =
                 criterion.operationalState === "unavailable" ||
                 criterion.operationalState === "blocked_required_check";
               const toggleDisabled =
-                busy ||
+                setupBusy ||
                 criterion.locked ||
                 !capability.canConfigure ||
                 onSetEnabled === undefined ||
@@ -189,6 +182,7 @@ export function VerifySetupCard({
                     <label className="wb-cowork-verify-criterion__toggle">
                       <input
                         type="checkbox"
+                        aria-label={`${criterion.title}: include in Verify runs`}
                         checked={criterion.enabled}
                         disabled={toggleDisabled}
                         onChange={(event) =>
@@ -231,7 +225,7 @@ export function VerifySetupCard({
                           <dt>Data sharing</dt>
                           <dd>
                             {check.externalEgress === false
-                              ? "Runs locally; no external egress"
+                              ? "In-process deterministic checker · checker egress: none"
                               : check.dataSharingClass.replace(/_/gu, " ")}
                           </dd>
                         </div>
@@ -308,7 +302,7 @@ export function VerifySetupCard({
                   }
                 />
               </label>
-              <button type="submit" disabled={draftBusy}>
+              <button type="submit" disabled={setupBusy}>
                 {draftBusy ? "Saving…" : "Save unavailable draft"}
               </button>
             </form>

@@ -294,6 +294,11 @@
     flex: 1 1 auto;
   }
 
+  .wb-chat-composer__footer-accessory {
+    min-width: 0;
+    flex: 0 1 auto;
+  }
+
   .wb-chat-composer__error {
     flex: 0 0 auto;
   }

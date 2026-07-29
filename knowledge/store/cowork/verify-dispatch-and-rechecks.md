@@ -2,7 +2,7 @@
 name: Co-work Verify durable dispatch and rechecks
 kind: system
 description: Closed durable worker dispatch, fail-closed restart recovery, and proposal-linked re-evaluation obligations.
-summary: Verify worker launches use the disk-backed operation queue through a non-agent-callable internal allowlist. Recovery recreates only provably unlaunched work, fails closed on uncertain calls, and resumes durable typed submissions without another model call. Applied corrections project exact, user-invoked recheck intents.
+summary: Verify worker launches use the disk-backed operation queue through a non-agent-callable internal allowlist. Recovery recreates only provably unlaunched work, fails closed on uncertain calls, and resumes durable typed submissions without another model call. Applied corrections project exact recheck intents that Review hands to the Verify dock; only dock-owned Run Verify launches them.
 entry_points:
 - work_buddy.cowork.verify_dispatch
 - work_buddy.cowork.verify_runtime
@@ -35,6 +35,11 @@ dev_notes: |-
   and must become unavailable without replay. A `submitted` job is different:
   its typed payload and hash are already durable, so a projection lease may
   resume only the deterministic domain consequences.
+
+  Portable coordination records treat a legacy affirmation's
+  `affirmed_action_snapshot_id` as a required prior ActionSnapshot reference.
+  Import cannot silently retain a confirmation whose attested affirmation is
+  absent.
 ---
 
 ## Durable launch path
@@ -113,22 +118,48 @@ criterion found no configured non-preferred term in the new frozen target.
 
 A pending intent appears as a persistent **Correction ready to recheck** card
 in Review. It does not run a model on refresh, SSE invalidation, sitting
-commit, or background recovery. The user starts it with **Recheck now**.
+commit, or background recovery. The Review action is only a contextual handoff:
+it opens the Verify dock and binds the source run, pending proposals, original
+intent, and required execution selection. Review cannot launch the worker.
 
-A strict recheck start requires:
+Only **Run Verify** in that bound dock captures the fresh action snapshot and
+starts execution. When the durable original target still resolves, it is
+rebound automatically. When a legacy target cannot be resolved, the dock
+requires a newly chosen and affirmed exact **Working on** passage before the
+run can start. The affirmation captures the character-range reference identity
+and target-text hash in a separate non-executing server request. The server
+persists that human ActionSnapshot and returns its receipt. Run captures again,
+reloads the attested receipt, and must match both values; an edit inside the
+same apparent range invalidates the affirmation.
+
+Every strict recheck start requires:
 
 - a fresh action snapshot captured after the sitting committed;
 - the source run’s provider/model;
-- the same target source, kind, and durable target reference;
 - the source run’s user goal and protected intent;
 - the exact still-pending proposal set; and
 - the exact derived `recheck_intent_id`;
 - a fresh model-call authorization.
 
-It must not widen an unresolved range to the whole document. If the original
-target source/reference cannot be reconstructed, the status is
-`user_action_required`; Review asks the person to choose the intended target
-and run Verify explicitly.
+For an ordinary durable intent, the fresh capture must also resolve the same
+target source, kind, and durable target reference. For a legacy
+`user_action_required` intent, the server instead requires the separately
+persisted human affirmation receipt, a fresh non-document **Working on**
+action, a character-granular durable reference, and exact reference/text
+hashes matching that affirmation. The receipt is bound to the intent, source
+run, proposal set, original goal, protected intent, actor, and document before
+Run. The confirmation, intent, source run, proposals, and
+original goal/intent travel together in the coordination request and model-call
+authorization context.
+
+Neither path may widen an unresolved range to the whole document. Review only
+hands the context to the Verify dock; the person chooses and affirms the
+intended passage, and **Run Verify** remains the execution boundary.
+
+An exact retry of the same Run capture and bindings returns the already-started
+run, even after the derived intent has become fulfilled. Reusing that capture
+with a changed goal, protected intent, model, configuration, lineage, or
+affirmation receipt fails closed.
 
 New results record `rechecks` relations to the applied proposal and prior
 evaluation result. The derived intent becomes fulfilled only when later result

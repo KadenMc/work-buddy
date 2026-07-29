@@ -217,17 +217,68 @@ export interface VerificationCriterion {
   readonly issues: readonly Readonly<Record<string, unknown>>[];
 }
 
+export type VerifyCostEnforcementClass =
+  | "hard_ceiling"
+  | "estimate"
+  | "unavailable";
+
+export interface VerifyProviderCostControl {
+  readonly providerId: string;
+  readonly enforcementClass: VerifyCostEnforcementClass;
+  readonly ceilingUsdPerWorkerSession: number | null;
+  readonly basis: string;
+}
+
+export interface VerifyExecutionPlan {
+  readonly schema: string;
+  readonly authoritative: true;
+  readonly checker: {
+    readonly executionClass: "in_process";
+    readonly mechanism: "deterministic_exact_match";
+    readonly modelCall: false;
+    readonly externalEgress: false;
+    readonly contentBoundary: "captured_target";
+  };
+  readonly coordination: {
+    readonly executionClass: "account_backed_agent";
+    readonly selection: {
+      readonly mode: "explicit_at_run_start";
+      readonly providerId: string | null;
+      readonly modelId: string | null;
+      readonly providerLabel: string | null;
+      readonly modelLabel: string | null;
+    };
+    readonly contentBoundary: "entire_frozen_document";
+    readonly externalEgress: true;
+    readonly fallback: {
+      readonly providerModelFallback: false;
+      readonly failureMode: "fail_closed";
+    };
+    readonly workerSessions: {
+      readonly initial: number;
+      readonly maximum: number;
+      readonly conditionalRoles: readonly string[];
+    };
+    readonly costControl: VerifyProviderCostControl | null;
+    readonly providerCostControls: readonly VerifyProviderCostControl[];
+  };
+}
+
 /** The effective future-run setup for one document. */
 export interface VerificationConfiguration {
   readonly schema: string;
   readonly documentId: string;
+  readonly executionPlan: VerifyExecutionPlan | null;
   readonly coordination: {
+    readonly deprecated?: boolean;
+    readonly authoritativeProjection?: string;
     readonly required: boolean;
     readonly selection: string;
     readonly contentBoundary: string;
     readonly egressClass: string;
     readonly externalEgress: boolean;
     readonly costCeilingUsdPerWorker: number;
+    readonly costCeilingSemantics?: string;
     readonly separateReviserForFindings: boolean;
     readonly pattern: string;
     readonly baseWorkerCalls: number;
@@ -335,6 +386,7 @@ export interface VerifyRunInspection {
     readonly model: string;
     readonly egressClass: string;
     readonly costCeilingUsd: number;
+    readonly executionPlan: VerifyExecutionPlan | null;
     readonly error: string | null;
   }[];
 }
@@ -437,6 +489,7 @@ export interface VerificationRecheckIntent {
     readonly sameTargetSource: boolean;
     readonly sameTargetReference: boolean;
     readonly exactTargetResolution: boolean;
+    readonly userAffirmedExactTargetRequired: boolean;
     readonly allowWidenToWholeDocument: false;
   };
 }

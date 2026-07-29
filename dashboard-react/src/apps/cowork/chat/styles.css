@@ -26,33 +26,28 @@
   }
 
   .wb-cowork-chat-target {
-    display: grid;
-    grid-template-columns: minmax(0, auto) minmax(0, 1fr);
-    gap: var(--wb-space-1) var(--wb-space-3);
-    align-items: center;
-    padding: var(--wb-space-2) var(--wb-space-3);
-    border: 1px solid var(--wb-color-border);
-    border-radius: var(--wb-radius-md);
-    background: var(--wb-color-surface-subtle);
-  }
-
-  .wb-cowork-chat-target__summary {
-    min-width: 0;
+    display: block;
     overflow: hidden;
+    padding: var(--wb-space-1) var(--wb-space-2);
+    border: var(--wb-border-width) solid var(--wb-color-border-default);
+    border-radius: var(--wb-radius-pill);
+    background: var(--wb-color-surface-subtle);
     color: var(--wb-color-text);
-    font-size: var(--wb-font-size-sm);
+    font-size: var(--wb-font-size-xs);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .wb-cowork-chat-target__hint,
-  .wb-cowork-chat-target__unavailable {
-    grid-column: 1 / -1;
+  .wb-cowork-chat-target__prefix {
     color: var(--wb-color-text-muted);
-    font-size: var(--wb-font-size-xs);
   }
 
-  .wb-cowork-chat-target__unavailable {
+  .wb-cowork-chat-target__label {
+    font-weight: var(--wb-font-weight-medium);
+  }
+
+  .wb-cowork-chat-target.is-unavailable {
+    border-color: currentColor;
     color: var(--wb-color-text-warning);
   }
 

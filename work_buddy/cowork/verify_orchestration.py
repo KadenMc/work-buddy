@@ -48,7 +48,11 @@ from work_buddy.cowork.verify import (
 )
 from work_buddy.cowork.verify import store as verify_store
 from work_buddy.cowork.verify_configuration import (
+    CONFIGURATION_SCHEMA,
     list_effective_verification_configuration,
+)
+from work_buddy.cowork.verify_execution import (
+    verify_execution_disclosure_plan,
 )
 from work_buddy.cowork.verify_candidate_evaluation import (
     CandidateEvaluationError,
@@ -76,7 +80,10 @@ from work_buddy.cowork.verify_runtime import (
     redact_job_output,
     update_job,
 )
-from work_buddy.cowork.verify_rechecks import validate_recheck_intent
+from work_buddy.cowork.verify_rechecks import (
+    validate_recheck_intent,
+    verification_recheck_intents,
+)
 from work_buddy.truth import documents, proposals
 from work_buddy.truth.anchors import CompositeSelector
 from work_buddy.truth.contracts import Actor, InvariantViolation
@@ -140,6 +147,16 @@ def _required_text(value: object, label: str) -> str:
     return value
 
 
+def _utc_timestamp(value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (AttributeError, ValueError) as exc:
+        raise VerifyOrchestrationError("timestamp must be ISO-8601 text") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def _decode_base64(value: object, label: str) -> bytes:
     text = _required_text(value, label)
     try:
@@ -175,6 +192,11 @@ def _target_reference(
         raise VerifyOrchestrationError(
             "target.targetReference must identify a text range"
         )
+    granularity = reference.get("granularity", "block")
+    if granularity not in {"character", "block"}:
+        raise VerifyOrchestrationError(
+            "target.targetReference.granularity must be character or block"
+        )
     relative = _mapping(
         reference.get("relative"),
         "target.targetReference.relative",
@@ -203,6 +225,34 @@ def _target_reference(
         raise VerifyOrchestrationError(
             "target.targetReference quote context must be text"
         )
+    label = _required_text(
+        reference.get("label"),
+        "target.targetReference.label",
+    )
+    heading_path = reference.get("headingPath")
+    if (
+        not isinstance(heading_path, list)
+        or not all(isinstance(item, str) for item in heading_path)
+    ):
+        raise VerifyOrchestrationError(
+            "target.targetReference.headingPath must be a list of text"
+        )
+    created_at = _required_text(
+        reference.get("createdAt"),
+        "target.targetReference.createdAt",
+    )
+    updated_at = _required_text(
+        reference.get("updatedAt"),
+        "target.targetReference.updatedAt",
+    )
+    block_ids: dict[str, str] = {}
+    for key in ("startBlockId", "endBlockId"):
+        value = reference.get(key)
+        if value is not None:
+            block_ids[key] = _required_text(
+                value,
+                f"target.targetReference.{key}",
+            )
     identity = {
         "schema": "wb.cowork.document-target/v1",
         "storeId": store_id,
@@ -218,7 +268,21 @@ def _target_reference(
             "suffix": suffix,
         },
     }
-    return reference, sha256_text(canonical_json(identity))
+    # Missing granularity was the v1 block-range representation. Preserve its
+    # historical digest for both missing and explicit ``block`` while making a
+    # character range a distinct, trust-bound identity.
+    if granularity == "character":
+        identity["granularity"] = "character"
+    normalized_reference = {
+        **identity,
+        "granularity": granularity,
+        "label": label,
+        "headingPath": list(heading_path),
+        **block_ids,
+        "createdAt": created_at,
+        "updatedAt": updated_at,
+    }
+    return normalized_reference, sha256_text(canonical_json(identity))
 
 
 def _read_blob(store: TruthStore, digest: str, label: str) -> bytes:
@@ -988,6 +1052,23 @@ def _create_job(
     )[:32]
     session_id = cowork_verify_job_session_id(job_id, role)
     provisional_request = dict(request_payload)
+    if role is not CoworkVerifyRole.COTHINK:
+        effective_configuration = _mapping(
+            provisional_request.get("effective_configuration"),
+            "effective_configuration",
+        )
+        projected_execution_plan = _mapping(
+            effective_configuration.get("execution_plan"),
+            "effective_configuration.execution_plan",
+        )
+        expected_execution_plan = verify_execution_disclosure_plan(selection)
+        if canonical_json(projected_execution_plan) != canonical_json(
+            expected_execution_plan
+        ):
+            raise VerifyOrchestrationError(
+                "effective Verify execution disclosure does not match the "
+                "exact provider and model authorization"
+            )
     # Build the exact context against a temporary in-memory binding first.
     provisional = VerifyRuntimeJob(
         job_id=job_id,
@@ -1030,51 +1111,9 @@ def _create_job(
             "job_id": job_id,
             "document": "complete_permitted_frozen_projection",
             "action_snapshot_id": action_snapshot_id,
-            "authority_context": {
-                "user_goal": str(request_payload.get("user_goal") or ""),
-                "protected_intent": str(
-                    request_payload.get("protected_intent") or ""
-                ),
-                "effective_configuration": request_payload.get(
-                    "effective_configuration"
-                ),
-                "effective_configuration_sha256": request_payload.get(
-                    "effective_configuration_sha256"
-                ),
-                "effective_policy_sha256": request_payload.get(
-                    "effective_policy_sha256"
-                ),
-                "active_criterion_ids": list(
-                    request_payload.get("active_criterion_ids", [])
-                ),
-                "prior_disposition_ids": list(
-                    request_payload.get("prior_disposition_ids", [])
-                ),
-                "prior_human_review_outcome_ids": list(
-                    request_payload.get(
-                        "prior_human_review_outcome_ids",
-                        [],
-                    )
-                ),
-                "recheck_of_run_id": request_payload.get(
-                    "recheck_of_run_id"
-                ),
-                "recheck_of_proposal_ids": list(
-                    request_payload.get("recheck_of_proposal_ids", [])
-                ),
-                "recheck_intent_id": request_payload.get(
-                    "recheck_intent_id"
-                ),
-                "coordinator_stage": request_payload.get(
-                    "coordinator_stage"
-                ),
-                "requested_revision_result_ids": list(
-                    request_payload.get(
-                        "requested_revision_result_ids",
-                        [],
-                    )
-                ),
-            },
+            "authority_context": _authorization_authority_context(
+                request_payload
+            ),
         },
         egress_class="account_backed_agent",
         cost_ceiling_usd=MAX_VERIFY_JOB_BUDGET_USD,
@@ -1180,8 +1219,16 @@ def _validate_capture(
     document_id: str,
     capture: Mapping[str, Any],
     actor: Actor,
-    selection: AgentExecutionSelection,
+    selection: AgentExecutionSelection | None,
+    purpose: str = "verify_execution",
+    authority_context: Mapping[str, Any] | None = None,
 ) -> ActionSnapshot:
+    if purpose not in {"verify_execution", "recheck_target_affirmation"}:
+        raise VerifyOrchestrationError("unsupported action snapshot purpose")
+    if purpose == "verify_execution" and selection is None:
+        raise VerifyOrchestrationError(
+            "an execution selection is required for this action snapshot"
+        )
     if capture.get("schema") != "wb.cowork.action-snapshot/v1":
         raise VerifyOrchestrationError("unsupported action snapshot schema")
     if capture.get("storeId") != store.store_id:
@@ -1273,7 +1320,11 @@ def _validate_capture(
             target=selector,
             context_boundary={
                 "kind": "complete_frozen_document",
-                "purpose": "whole-context coordinator and bounded reviser",
+                "purpose": (
+                    "user_affirmed_exact_recheck_target"
+                    if purpose == "recheck_target_affirmation"
+                    else "whole-context coordinator and bounded reviser"
+                ),
                 "capture_id": _required_text(
                     capture.get("captureId"),
                     "captureId",
@@ -1282,16 +1333,29 @@ def _validate_capture(
                 "target_label": target_label,
                 "target_reference": target_reference,
                 "target_reference_sha256": target_reference_sha256,
+                "authority_context": (
+                    {}
+                    if authority_context is None
+                    else _mapping(authority_context, "authority_context")
+                ),
                 # Browser time is useful diagnostics but never temporal
                 # authority for prior-decision or recheck ordering.
                 "client_captured_at": client_captured_at,
             },
-            egress_boundary={
-                "class": "account_backed_agent",
-                "provider_id": selection.provider_id,
-                "model_id": selection.model_id,
-                "content": "complete_permitted_frozen_document",
-            },
+            egress_boundary=(
+                {
+                    "class": "no_external_egress",
+                    "content": "none",
+                    "purpose": "recheck_target_affirmation",
+                }
+                if purpose == "recheck_target_affirmation"
+                else {
+                    "class": "account_backed_agent",
+                    "provider_id": selection.provider_id,
+                    "model_id": selection.model_id,
+                    "content": "complete_permitted_frozen_document",
+                }
+            ),
             actor=actor,
             at=server_captured_at,
         )
@@ -1306,15 +1370,348 @@ def _validate_capture(
     return action
 
 
+def affirm_verify_recheck_target(
+    store: TruthStore,
+    *,
+    document_id: str,
+    capture: Mapping[str, Any],
+    actor: Actor,
+    recheck_intent_id: str,
+    source_run_id: str,
+    proposal_ids: Sequence[str],
+    user_goal: str,
+    protected_intent: str,
+) -> dict[str, Any]:
+    """Persist one explicit, non-executing human target affirmation."""
+
+    if actor.kind != "human":
+        raise VerifyOrchestrationError(
+            "recheck target affirmation requires a human authorizer"
+        )
+    intent_id = _required_text(recheck_intent_id, "recheck_intent_id")
+    run_id = _required_text(source_run_id, "source_run_id")
+    pending_proposal_ids = tuple(
+        _validated_recheck_proposal_ids(
+            store,
+            document_id=document_id,
+            proposal_ids=proposal_ids,
+        )
+    )
+    intent = next(
+        (
+            item
+            for item in verification_recheck_intents(
+                store,
+                document_id=document_id,
+            )
+            if item.id == intent_id
+        ),
+        None,
+    )
+    if intent is None or intent.status != "user_action_required":
+        raise VerifyOrchestrationError(
+            "this legacy recheck no longer requires target affirmation"
+        )
+    if (
+        intent.source_run_id != run_id
+        or intent.pending_proposal_ids != pending_proposal_ids
+    ):
+        raise VerifyOrchestrationError(
+            "recheck target affirmation changed the committed lineage"
+        )
+    goal = _required_text(user_goal, "user_goal")
+    protected = _required_text(protected_intent, "protected_intent")
+    original_request = json.loads(intent.original_request_summary_json)
+    if (
+        not isinstance(original_request, Mapping)
+        or goal != str(original_request.get("user_goal") or "")
+        or protected
+        != str(original_request.get("protected_intent") or "")
+    ):
+        raise VerifyOrchestrationError(
+            "recheck target affirmation must preserve the original goal and "
+            "protected intent"
+        )
+    action = _validate_capture(
+        store,
+        document_id=document_id,
+        capture=capture,
+        actor=actor,
+        selection=None,
+        purpose="recheck_target_affirmation",
+        authority_context={
+            "recheck_intent_id": intent_id,
+            "source_run_id": run_id,
+            "pending_proposal_ids": list(pending_proposal_ids),
+            "user_goal_sha256": sha256_text(goal),
+            "protected_intent_sha256": sha256_text(protected),
+        },
+    )
+    context = json.loads(action.context_boundary_json)
+    reference = context.get("target_reference")
+    reference_sha256 = context.get("target_reference_sha256")
+    if (
+        action.target_kind != "text_quote"
+        or context.get("target_source") != "working_target"
+        or not isinstance(reference, Mapping)
+        or reference.get("kind") != "text_range"
+        or reference.get("granularity") != "character"
+        or not isinstance(reference_sha256, str)
+        or not reference_sha256
+    ):
+        raise VerifyOrchestrationError(
+            "target affirmation requires an exact character-level Working on "
+            "passage"
+        )
+    if _utc_timestamp(action.created_at) <= _utc_timestamp(intent.committed_at):
+        raise VerifyOrchestrationError(
+            "target affirmation predates the committed sitting"
+        )
+    return {
+        "schema": "work-buddy.cowork-recheck-target-affirmation-receipt/v1",
+        "recheck_intent_id": intent_id,
+        "source_run_id": run_id,
+        "pending_proposal_ids": list(pending_proposal_ids),
+        "affirmed_capture_id": str(context.get("capture_id") or ""),
+        "affirmed_action_snapshot_id": action.id,
+        "target_reference_sha256": reference_sha256,
+        "target_text_sha256": action.target_text_sha256,
+        "affirmed_at": action.created_at,
+    }
+
+
+def _resolve_recheck_target_confirmation(
+    store: TruthStore,
+    *,
+    value: Mapping[str, Any] | None,
+) -> tuple[dict[str, Any] | None, ActionSnapshot | None]:
+    """Resolve a prior server-issued affirmation receipt for a Run request."""
+
+    if value is None:
+        return None, None
+    confirmation = _mapping(value, "recheck_target_confirmation")
+    required_keys = {
+        "schema",
+        "method",
+        "affirmed_capture_id",
+        "affirmed_action_snapshot_id",
+        "run_capture_id",
+        "target_reference_sha256",
+        "target_text_sha256",
+    }
+    if set(confirmation) != required_keys:
+        raise VerifyOrchestrationError(
+            "recheck_target_confirmation has an invalid shape"
+        )
+    if (
+        confirmation.get("schema")
+        != "work-buddy.cowork-recheck-target-confirmation/v1"
+        or confirmation.get("method")
+        != "user_affirmed_working_target"
+    ):
+        raise VerifyOrchestrationError(
+            "recheck_target_confirmation has an unsupported method"
+        )
+    affirmed_capture_id = _required_text(
+        confirmation.get("affirmed_capture_id"),
+        "recheck_target_confirmation.affirmed_capture_id",
+    )
+    affirmed_action_snapshot_id = _required_text(
+        confirmation.get("affirmed_action_snapshot_id"),
+        "recheck_target_confirmation.affirmed_action_snapshot_id",
+    )
+    affirmed_action = verify_store.get_record(
+        store,
+        ActionSnapshot,
+        affirmed_action_snapshot_id,
+    )
+    if affirmed_action is None:
+        raise VerifyOrchestrationError(
+            "recheck target confirmation has no server-issued affirmation"
+        )
+    return (
+        {
+            "schema": confirmation["schema"],
+            "method": confirmation["method"],
+            "affirmed_capture_id": affirmed_capture_id,
+            "affirmed_action_snapshot_id": affirmed_action_snapshot_id,
+            "run_capture_id": _required_text(
+                confirmation.get("run_capture_id"),
+                "recheck_target_confirmation.run_capture_id",
+            ),
+            "target_reference_sha256": _required_text(
+                confirmation.get("target_reference_sha256"),
+                "recheck_target_confirmation.target_reference_sha256",
+            ),
+            "target_text_sha256": _required_text(
+                confirmation.get("target_text_sha256"),
+                "recheck_target_confirmation.target_text_sha256",
+            ),
+        },
+        affirmed_action,
+    )
+
+
+def _replay_existing_verify_action(
+    store: TruthStore,
+    *,
+    action: ActionSnapshot,
+    selection: AgentExecutionSelection,
+    effective_configuration: Mapping[str, Any],
+    request_payload: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Return an exact action retry before a fulfilled intent is rejected."""
+
+    existing_jobs = tuple(
+        job
+        for job in jobs_for_document(store.store_id, action.document_id)
+        if job.action_snapshot_id == action.id
+    )
+    if not existing_jobs:
+        return None
+    run_ids = {job.evaluation_run_id for job in existing_jobs}
+    if len(run_ids) != 1 or None in run_ids:
+        raise VerifyOrchestrationError(
+            "Verify action has inconsistent evaluation-run bindings"
+        )
+    run_id = next(iter(run_ids))
+    run = verify_store.get_record(store, EvaluationRun, run_id)
+    if run is None or run.action_snapshot_id != action.id:
+        raise VerifyOrchestrationError(
+            "Verify action is missing its exact evaluation run"
+        )
+    existing = next(
+        (
+            candidate
+            for candidate in existing_jobs
+            if candidate.role is CoworkVerifyRole.COORDINATOR
+            and candidate.parent_job_id is None
+        ),
+        None,
+    )
+    if existing is None:
+        raise VerifyOrchestrationError(
+            "Verify run is missing its initial coordinator binding"
+        )
+    existing_request, persisted_execution_plan, _ = (
+        _validated_execution_request(store, existing)
+    )
+    for candidate in existing_jobs:
+        _, candidate_execution_plan, _ = _validated_execution_request(
+            store,
+            candidate,
+        )
+        if canonical_json(candidate_execution_plan) != canonical_json(
+            persisted_execution_plan
+        ):
+            raise VerifyOrchestrationError(
+                "Verify run jobs disagree about their exact execution plan"
+            )
+        if candidate.status == "completed":
+            _completed_submission_response(store, candidate)
+        else:
+            record_coordination_status(store, candidate)
+    comparable_keys = {
+        "authorized_by_ref",
+        "user_goal",
+        "protected_intent",
+        "prior_disposition_ids",
+        "prior_human_review_outcome_ids",
+        "recheck_of_proposal_ids",
+        "recheck_of_run_id",
+        "recheck_intent_id",
+        "recheck_target_confirmation",
+        "active_criterion_ids",
+        "coordinator_stage",
+        "requested_revision_result_ids",
+    }
+    current_configuration = json.loads(canonical_json(effective_configuration))
+    current_configuration["execution_plan"] = persisted_execution_plan
+    if (
+        any(
+            existing_request.get(key) != request_payload.get(key)
+            for key in comparable_keys
+        )
+        or canonical_json(existing_request["effective_configuration"])
+        != canonical_json(current_configuration)
+        or existing.selection.get("provider_id") != selection.provider_id
+        or existing.selection.get("model_id") != selection.model_id
+    ):
+        raise VerifyOrchestrationError(
+            "captureId was already used with different Verify inputs"
+        )
+    coordinator = next(
+        (
+            job
+            for job in reversed(existing_jobs)
+            if job.role is CoworkVerifyRole.COORDINATOR
+        ),
+        None,
+    )
+    active_job = next(
+        (
+            job
+            for job in reversed(existing_jobs)
+            if job.status
+            in {"prepared", "launching", "running", "submitted"}
+        ),
+        None,
+    )
+    visible_job = active_job or coordinator or existing_jobs[-1]
+    unavailable = visible_job.status in {"unavailable", "failed"}
+    completed = (
+        visible_job.status == "completed"
+        and not any(
+            job.status in {"prepared", "launching", "running", "submitted"}
+            for job in existing_jobs
+        )
+    )
+    replay_stage = (
+        "complete"
+        if completed
+        else "coordination_unavailable"
+        if unavailable
+        else "drafting_correction"
+        if visible_job.role is CoworkVerifyRole.REVISER
+        else "reconciling"
+    )
+    result_count = sum(
+        1
+        for result in verify_store.list_records(store, EvaluationResult)
+        if result.evaluation_run_id == run.id
+    )
+    return {
+        "ok": True,
+        "contract_version": VERIFY_CONTRACT_VERSION,
+        "action_snapshot_id": action.id,
+        "run_id": run.id,
+        "job_id": visible_job.job_id,
+        "stage": replay_stage,
+        "result_count": result_count,
+        "coordination_status": (
+            "completed"
+            if completed
+            else "unavailable"
+            if unavailable
+            else "pending"
+        ),
+        "selection": selection.to_dict(),
+        "execution_plan": persisted_execution_plan,
+        "replayed": True,
+    }
+
+
 def _resolve_execution_configuration(
     store: TruthStore,
     *,
     document_id: str,
+    execution_selection: AgentExecutionSelection,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     configuration = list_effective_verification_configuration(
         store,
         document_id=document_id,
         ensure_system_defaults=True,
+        execution_selection=execution_selection,
     )
     criteria = configuration.get("criteria")
     if not isinstance(criteria, list):
@@ -1408,6 +1805,236 @@ def _effective_policy_sha256(
     )
 
 
+def _authorization_authority_context(
+    request_payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Rebuild the exact authority subset persisted in a model-call receipt."""
+
+    context = {
+        "user_goal": str(request_payload.get("user_goal") or ""),
+        "protected_intent": str(
+            request_payload.get("protected_intent") or ""
+        ),
+        "effective_configuration": request_payload.get(
+            "effective_configuration"
+        ),
+        "effective_configuration_sha256": request_payload.get(
+            "effective_configuration_sha256"
+        ),
+        "effective_policy_sha256": request_payload.get(
+            "effective_policy_sha256"
+        ),
+        "active_criterion_ids": list(
+            request_payload.get("active_criterion_ids", [])
+        ),
+        "prior_disposition_ids": list(
+            request_payload.get("prior_disposition_ids", [])
+        ),
+        "prior_human_review_outcome_ids": list(
+            request_payload.get("prior_human_review_outcome_ids", [])
+        ),
+        "recheck_of_run_id": request_payload.get("recheck_of_run_id"),
+        "recheck_of_proposal_ids": list(
+            request_payload.get("recheck_of_proposal_ids", [])
+        ),
+        "recheck_intent_id": request_payload.get("recheck_intent_id"),
+        "coordinator_stage": request_payload.get("coordinator_stage"),
+        "requested_revision_result_ids": list(
+            request_payload.get("requested_revision_result_ids", [])
+        ),
+    }
+    # Preserve authorization verification for already-durable jobs whose v1
+    # request predates explicit replacement-target confirmation.
+    if "recheck_target_confirmation" in request_payload:
+        context["recheck_target_confirmation"] = request_payload.get(
+            "recheck_target_confirmation"
+        )
+    return context
+
+
+def _validate_job_authorization_binding(
+    store: TruthStore,
+    job: VerifyRuntimeJob,
+) -> AgentExecutionSelection:
+    """Fail closed unless a durable job still matches its exact authorization."""
+
+    selection = _selection_from_mapping(job.selection)
+    receipt = _record(
+        store,
+        ModelCallAuthorizationReceipt,
+        job.authorization_receipt_id,
+    )
+    try:
+        boundary = json.loads(receipt.content_boundary_json)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise VerifyOrchestrationError(
+            "Verify job authorization boundary is invalid"
+        ) from exc
+    if not isinstance(boundary, Mapping):
+        raise VerifyOrchestrationError(
+            "Verify job authorization boundary is invalid"
+        )
+    if (
+        receipt.action_snapshot_id != job.action_snapshot_id
+        or receipt.plan_snapshot_id != job.plan_snapshot_id
+        or receipt.provider != selection.provider_id
+        or receipt.model != selection.model_id
+        or receipt.context_sha256 != job.context_sha256
+        or receipt.egress_class != "account_backed_agent"
+        or receipt.cost_ceiling_usd != MAX_VERIFY_JOB_BUDGET_USD
+        or receipt.retry_limit != 0
+        or receipt.created_by_kind != "human"
+        or receipt.created_by_ref
+        != str(job.request.get("authorized_by_ref") or "dashboard-user")
+        or boundary.get("role") != job.role.value
+        or boundary.get("job_id") != job.job_id
+        or boundary.get("action_snapshot_id") != job.action_snapshot_id
+        or boundary.get("document")
+        != "complete_permitted_frozen_projection"
+    ):
+        raise VerifyOrchestrationError(
+            "Verify job no longer matches its exact authorization"
+        )
+    authority_context = boundary.get("authority_context")
+    if (
+        not isinstance(authority_context, Mapping)
+        or canonical_json(dict(authority_context))
+        != canonical_json(_authorization_authority_context(job.request))
+    ):
+        raise VerifyOrchestrationError(
+            "Verify job authority context failed integrity validation"
+        )
+    rebuilt_context_sha256 = sha256_text(
+        canonical_json(_build_job_context(store, job))
+    )
+    if rebuilt_context_sha256 != job.context_sha256:
+        raise VerifyOrchestrationError(
+            "Verify job context failed integrity validation"
+        )
+    return selection
+
+
+def _legacy_configuration_with_execution_plan(
+    configuration: Mapping[str, Any],
+    execution_plan: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Upgrade a valid pre-disclosure v1 projection without changing meaning."""
+
+    if configuration.get("schema") != CONFIGURATION_SCHEMA:
+        raise VerifyOrchestrationError(
+            "legacy Verify configuration has an unsupported schema"
+        )
+    coordination = _mapping(
+        configuration.get("coordination"),
+        "effective_configuration.coordination",
+    )
+    expected_coordination = {
+        "required": True,
+        "selection": "explicit_provider_and_model_at_run_start",
+        "content_boundary": "complete_permitted_frozen_document",
+        "egress_class": "account_backed_agent",
+        "external_egress": True,
+        "cost_ceiling_usd_per_worker": MAX_VERIFY_JOB_BUDGET_USD,
+        "separate_reviser_for_findings": True,
+        "pattern": "coordinator_then_optional_reviser_then_coordinator",
+        "base_worker_calls": 1,
+        "maximum_worker_calls": 3,
+    }
+    if any(
+        coordination.get(key) != value
+        for key, value in expected_coordination.items()
+    ):
+        raise VerifyOrchestrationError(
+            "legacy Verify configuration does not match the admitted "
+            "execution policy"
+        )
+    upgraded = json.loads(canonical_json(dict(configuration)))
+    upgraded["execution_plan"] = dict(execution_plan)
+    upgraded_coordination = dict(upgraded["coordination"])
+    upgraded_coordination["deprecated"] = True
+    upgraded_coordination["authoritative_projection"] = "execution_plan"
+    upgraded_coordination["cost_ceiling_semantics"] = (
+        "requested_launch_budget_not_provider_guarantee"
+    )
+    upgraded["coordination"] = upgraded_coordination
+    return upgraded
+
+
+def _validated_execution_request(
+    store: TruthStore,
+    job: VerifyRuntimeJob,
+) -> tuple[dict[str, Any], dict[str, Any], bool]:
+    """Return an exact request, synthesizing disclosure only for legacy jobs."""
+
+    selection = _validate_job_authorization_binding(store, job)
+    request_payload = dict(job.request)
+    configuration = _mapping(
+        request_payload.get("effective_configuration"),
+        "effective_configuration",
+    )
+    stored_configuration_sha256 = _required_text(
+        request_payload.get("effective_configuration_sha256"),
+        "effective_configuration_sha256",
+    )
+    if (
+        sha256_text(canonical_json(configuration))
+        != stored_configuration_sha256
+    ):
+        raise VerifyOrchestrationError(
+            "effective verification configuration failed integrity validation"
+        )
+    active_criterion_ids = request_payload.get("active_criterion_ids")
+    if (
+        not isinstance(active_criterion_ids, list)
+        or not all(
+            isinstance(item, str) and item for item in active_criterion_ids
+        )
+    ):
+        raise VerifyOrchestrationError(
+            "active_criterion_ids must be a list of ids"
+        )
+    expected_policy_sha256 = _effective_policy_sha256(
+        effective_configuration_sha256=stored_configuration_sha256,
+        active_criterion_ids=active_criterion_ids,
+    )
+    if (
+        request_payload.get("effective_policy_sha256")
+        != expected_policy_sha256
+    ):
+        raise VerifyOrchestrationError(
+            "effective Verify policy failed integrity validation"
+        )
+
+    expected_plan = verify_execution_disclosure_plan(selection)
+    stored_plan = configuration.get("execution_plan")
+    legacy = stored_plan is None
+    if legacy:
+        configuration = _legacy_configuration_with_execution_plan(
+            configuration,
+            expected_plan,
+        )
+        request_payload["effective_configuration"] = configuration
+        configuration_sha256 = sha256_text(canonical_json(configuration))
+        request_payload["effective_configuration_sha256"] = (
+            configuration_sha256
+        )
+        request_payload["effective_policy_sha256"] = _effective_policy_sha256(
+            effective_configuration_sha256=configuration_sha256,
+            active_criterion_ids=active_criterion_ids,
+        )
+    else:
+        projected_plan = _mapping(
+            stored_plan,
+            "effective_configuration.execution_plan",
+        )
+        if canonical_json(projected_plan) != canonical_json(expected_plan):
+            raise VerifyOrchestrationError(
+                "effective Verify execution disclosure does not match the "
+                "exact provider and model authorization"
+            )
+    return request_payload, expected_plan, legacy
+
+
 def start_verify_run(
     store: TruthStore,
     *,
@@ -1420,6 +2047,7 @@ def start_verify_run(
     recheck_of_proposal_ids: Sequence[str] = (),
     recheck_of_run_id: str | None = None,
     recheck_intent_id: str | None = None,
+    recheck_target_confirmation: Mapping[str, Any] | None = None,
     validate_selection: SelectionValidator = _default_selection_validator,
     spawn_detached: SpawnDetached | None = None,
 ) -> dict[str, Any]:
@@ -1441,17 +2069,41 @@ def start_verify_run(
         raise VerifyOrchestrationError(
             "recheck_intent_id requires pending proposal bindings"
         )
+    if (
+        recheck_target_confirmation is not None
+        and not isinstance(recheck_target_confirmation, Mapping)
+    ):
+        raise VerifyOrchestrationError(
+            "recheck_target_confirmation must be an object"
+        )
+    if recheck_target_confirmation is not None and recheck_intent_id is None:
+        raise VerifyOrchestrationError(
+            "recheck_target_confirmation requires a bound recheck intent"
+        )
+    validated_user_goal = _required_text(user_goal, "user_goal")
+    validated_protected_intent = _required_text(
+        protected_intent,
+        "protected_intent",
+    )
+    validated_selection = validate_selection(selection)
     effective_configuration, active_criteria = _resolve_execution_configuration(
         store,
         document_id=document_id,
+        execution_selection=validated_selection,
     )
-    validated_selection = validate_selection(selection)
     validated_recheck_run_id = _validate_recheck_origin(
         store,
         document_id=document_id,
         proposal_ids=recheck_proposal_ids,
         source_run_id=recheck_of_run_id,
         selection=validated_selection,
+    )
+    (
+        attested_recheck_target_confirmation,
+        affirmed_target_action,
+    ) = _resolve_recheck_target_confirmation(
+        store,
+        value=recheck_target_confirmation,
     )
     action = _validate_capture(
         store,
@@ -1460,6 +2112,49 @@ def start_verify_run(
         actor=actor,
         selection=validated_selection,
     )
+    effective_configuration_sha256 = sha256_text(
+        canonical_json(effective_configuration)
+    )
+    active_criterion_ids = [str(item["id"]) for item in active_criteria]
+    request_payload = {
+        "authorized_by_ref": actor.ref,
+        "user_goal": validated_user_goal,
+        "protected_intent": validated_protected_intent,
+        "prior_disposition_ids": _prior_disposition_ids(
+            store,
+            document_id=document_id,
+            before=action.created_at,
+        ),
+        "prior_human_review_outcome_ids": (
+            _prior_human_review_outcome_ids(
+                store,
+                document_id=document_id,
+                before=action.created_at,
+            )
+        ),
+        "recheck_of_proposal_ids": recheck_proposal_ids,
+        "recheck_of_run_id": validated_recheck_run_id,
+        "recheck_intent_id": recheck_intent_id,
+        "recheck_target_confirmation": attested_recheck_target_confirmation,
+        "effective_configuration_sha256": effective_configuration_sha256,
+        "effective_configuration": effective_configuration,
+        "effective_policy_sha256": _effective_policy_sha256(
+            effective_configuration_sha256=effective_configuration_sha256,
+            active_criterion_ids=active_criterion_ids,
+        ),
+        "active_criterion_ids": active_criterion_ids,
+        "coordinator_stage": "initial",
+        "requested_revision_result_ids": [],
+    }
+    replay = _replay_existing_verify_action(
+        store,
+        action=action,
+        selection=validated_selection,
+        effective_configuration=effective_configuration,
+        request_payload=request_payload,
+    )
+    if replay is not None:
+        return replay
     if recheck_intent_id is not None:
         validate_recheck_intent(
             store,
@@ -1470,7 +2165,11 @@ def start_verify_run(
             ),
             source_run_id=validated_recheck_run_id or "",
             proposal_ids=recheck_proposal_ids,
+            user_goal=validated_user_goal,
+            protected_intent=validated_protected_intent,
             action_snapshot=action,
+            target_confirmation=attested_recheck_target_confirmation,
+            affirmed_action_snapshot=affirmed_target_action,
         )
     activation_id = active_criteria[0].get("effective_activation", {}).get("id")
     if not isinstance(activation_id, str) or not activation_id:
@@ -1509,49 +2208,8 @@ def start_verify_run(
                 target_ref=prior_result_id,
                 actor=Actor("system", "cowork-verify"),
             )
-    effective_configuration_sha256 = sha256_text(
-        canonical_json(effective_configuration)
-    )
-    active_criterion_ids = [str(item["id"]) for item in active_criteria]
-    request_payload = {
-        "authorized_by_ref": actor.ref,
-        "user_goal": _required_text(user_goal, "user_goal"),
-        "protected_intent": _required_text(
-            protected_intent,
-            "protected_intent",
-        ),
-        "prior_disposition_ids": _prior_disposition_ids(
-            store,
-            document_id=document_id,
-            before=action.created_at,
-        ),
-        "prior_human_review_outcome_ids": (
-            _prior_human_review_outcome_ids(
-                store,
-                document_id=document_id,
-                before=action.created_at,
-            )
-        ),
-        "recheck_of_proposal_ids": recheck_proposal_ids,
-        "recheck_of_run_id": validated_recheck_run_id,
-        "recheck_intent_id": recheck_intent_id,
-        "effective_configuration_sha256": effective_configuration_sha256,
-        "effective_configuration": effective_configuration,
-        "effective_policy_sha256": _effective_policy_sha256(
-            effective_configuration_sha256=effective_configuration_sha256,
-            active_criterion_ids=active_criterion_ids,
-        ),
-        "active_criterion_ids": active_criterion_ids,
-        "coordinator_stage": "initial",
-        "requested_revision_result_ids": [],
-    }
     existing_jobs = jobs_for_run(store.store_id, evaluation.run.id)
     if existing_jobs:
-        for candidate in existing_jobs:
-            if candidate.status == "completed":
-                _completed_submission_response(store, candidate)
-            else:
-                record_coordination_status(store, candidate)
         existing = next(
             (
                 candidate
@@ -1565,6 +2223,24 @@ def start_verify_run(
             raise VerifyOrchestrationError(
                 "Verify run is missing its initial coordinator binding"
             )
+        existing_request, persisted_execution_plan, _ = (
+            _validated_execution_request(store, existing)
+        )
+        for candidate in existing_jobs:
+            _, candidate_execution_plan, _ = _validated_execution_request(
+                store,
+                candidate,
+            )
+            if canonical_json(candidate_execution_plan) != canonical_json(
+                persisted_execution_plan
+            ):
+                raise VerifyOrchestrationError(
+                    "Verify run jobs disagree about their exact execution plan"
+                )
+            if candidate.status == "completed":
+                _completed_submission_response(store, candidate)
+            else:
+                record_coordination_status(store, candidate)
         comparable_keys = {
             "authorized_by_ref",
             "user_goal",
@@ -1574,18 +2250,24 @@ def start_verify_run(
             "recheck_of_proposal_ids",
             "recheck_of_run_id",
             "recheck_intent_id",
-            "effective_configuration",
-            "effective_configuration_sha256",
-            "effective_policy_sha256",
+            "recheck_target_confirmation",
             "active_criterion_ids",
             "coordinator_stage",
             "requested_revision_result_ids",
         }
+        current_configuration = json.loads(
+            canonical_json(effective_configuration)
+        )
+        current_configuration["execution_plan"] = persisted_execution_plan
         if (
             any(
-                existing.request.get(key) != request_payload.get(key)
+                existing_request.get(key) != request_payload.get(key)
                 for key in comparable_keys
             )
+            or canonical_json(
+                existing_request["effective_configuration"]
+            )
+            != canonical_json(current_configuration)
             or existing.selection.get("provider_id")
             != validated_selection.provider_id
             or existing.selection.get("model_id") != validated_selection.model_id
@@ -1641,6 +2323,7 @@ def start_verify_run(
                 "completed" if completed else "unavailable" if unavailable else "pending"
             ),
             "selection": validated_selection.to_dict(),
+            "execution_plan": persisted_execution_plan,
             "replayed": True,
         }
     job = _create_job(
@@ -1672,6 +2355,7 @@ def start_verify_run(
             else "unavailable"
         ),
         "selection": validated_selection.to_dict(),
+        "execution_plan": effective_configuration["execution_plan"],
     }
 
 
@@ -2158,7 +2842,10 @@ def _create_and_launch_reviser(
             None,
         )
 
-    request_payload = dict(coordinator.request)
+    request_payload, _, _ = _validated_execution_request(
+        store,
+        coordinator,
+    )
     request_payload["requested_revision_result_ids"] = list(
         requested_revision_result_ids
     )
@@ -2188,6 +2875,8 @@ def _create_and_launch_reviser(
             reviser = _existing()
             if reviser is None:
                 raise
+    else:
+        _validated_execution_request(store, reviser)
     if reviser.status == "prepared":
         return _launch_job(
             reviser,
@@ -2220,7 +2909,10 @@ def _create_and_launch_coordinator(
     coordinator = _existing()
     if coordinator is None:
         try:
-            request_payload = dict(reviser.request)
+            request_payload, _, _ = _validated_execution_request(
+                store,
+                reviser,
+            )
             request_payload["coordinator_stage"] = "post_revision"
             raw_candidates = (
                 reviser.output.get("candidates", [])
@@ -2260,6 +2952,8 @@ def _create_and_launch_coordinator(
             coordinator = _existing()
             if coordinator is None:
                 raise
+    else:
+        _validated_execution_request(store, coordinator)
     if coordinator.status == "prepared":
         coordinator, _ = _launch_job(
             coordinator,

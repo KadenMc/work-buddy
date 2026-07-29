@@ -41,6 +41,7 @@ from work_buddy.cowork.verify_runtime import (
 from work_buddy.cowork.verify import (
     ActionSnapshot,
     EvaluationResult,
+    ModelCallAuthorizationReceipt,
     record_result_relation,
 )
 from work_buddy.sidecar import internal_operations, retry_sweep
@@ -558,6 +559,11 @@ def test_committed_verify_proposal_derives_capture_gated_recheck_intent(
     assert intent.provider_id == SELECTION.provider_id
     assert intent.model_id == SELECTION.model_id
     projected = intent.to_dict()
+    assert projected["user_goal"] == "Use established terminology."
+    assert (
+        projected["protected_intent"]
+        == "Preserve the author's substantive meaning."
+    )
     assert projected["original_action_target"]["source"] == "working_target"
     assert projected["requires"]["fresh_action_snapshot"] is True
     assert projected["requires"]["fresh_model_call_authorization"] is True
@@ -578,6 +584,8 @@ def test_committed_verify_proposal_derives_capture_gated_recheck_intent(
             intent_id=intent.id,
             source_run_id=started["run_id"],
             proposal_ids=[proposal.id],
+            user_goal="Use established terminology.",
+            protected_intent="Preserve the author's substantive meaning.",
         )
         == intent
     )
@@ -591,6 +599,8 @@ def test_committed_verify_proposal_derives_capture_gated_recheck_intent(
             intent_id=intent.id,
             source_run_id=started["run_id"],
             proposal_ids=[],
+            user_goal="Use established terminology.",
+            protected_intent="Preserve the author's substantive meaning.",
         )
 
     refreshed_document = documents.get_document(
@@ -643,8 +653,8 @@ def test_committed_verify_proposal_derives_capture_gated_recheck_intent(
             capture=widened_capture,
             selection=SELECTION,
             actor=HUMAN,
-            user_goal="Recheck the applied terminology correction.",
-            protected_intent="Preserve substantive meaning.",
+            user_goal="Use established terminology.",
+            protected_intent="Preserve the author's substantive meaning.",
             recheck_of_proposal_ids=[proposal.id],
             recheck_of_run_id=started["run_id"],
             recheck_intent_id=intent.id,
@@ -693,8 +703,8 @@ def test_committed_verify_proposal_derives_capture_gated_recheck_intent(
             },
             selection=SELECTION,
             actor=HUMAN,
-            user_goal="Manually revisit the terminology correction.",
-            protected_intent="Preserve substantive meaning.",
+            user_goal="Use established terminology.",
+            protected_intent="Preserve the author's substantive meaning.",
             recheck_of_proposal_ids=[proposal.id],
             recheck_of_run_id=started["run_id"],
             validate_selection=lambda selection: selection,
@@ -738,14 +748,47 @@ def test_committed_verify_proposal_derives_capture_gated_recheck_intent(
     )
     assert restored_request["effective_configuration"]
 
+    for suffix, wrong_goal, wrong_intent in (
+        (
+            "goal",
+            "Use a different terminology policy.",
+            "Preserve the author's substantive meaning.",
+        ),
+        (
+            "intent",
+            "Use established terminology.",
+            "Change the author's substantive meaning.",
+        ),
+    ):
+        with pytest.raises(
+            verify_rechecks.VerifyRecheckIntentError,
+            match="original user goal and protected intent",
+        ):
+            start_verify_run(
+                store,
+                document_id=capture["documentId"],
+                capture={
+                    **scoped_capture,
+                    "captureId": f"durable-recheck-wrong-{suffix}",
+                },
+                selection=SELECTION,
+                actor=HUMAN,
+                user_goal=wrong_goal,
+                protected_intent=wrong_intent,
+                recheck_of_proposal_ids=[proposal.id],
+                recheck_of_run_id=started["run_id"],
+                recheck_intent_id=intent.id,
+                validate_selection=lambda selection: selection,
+            )
+
     rechecked = start_verify_run(
         store,
         document_id=capture["documentId"],
         capture=scoped_capture,
         selection=SELECTION,
         actor=HUMAN,
-        user_goal="Recheck the applied terminology correction.",
-        protected_intent="Preserve substantive meaning.",
+        user_goal="Use established terminology.",
+        protected_intent="Preserve the author's substantive meaning.",
         recheck_of_proposal_ids=[proposal.id],
         recheck_of_run_id=started["run_id"],
         recheck_intent_id=intent.id,
@@ -769,3 +812,518 @@ def test_committed_verify_proposal_derives_capture_gated_recheck_intent(
     assert len(fulfilled) == 1
     assert fulfilled[0].status == "fulfilled"
     assert fulfilled[0].fulfilled_by_run_ids == (rechecked["run_id"],)
+    replayed = start_verify_run(
+        store,
+        document_id=capture["documentId"],
+        capture=scoped_capture,
+        selection=SELECTION,
+        actor=HUMAN,
+        user_goal="Use established terminology.",
+        protected_intent="Preserve the author's substantive meaning.",
+        recheck_of_proposal_ids=[proposal.id],
+        recheck_of_run_id=started["run_id"],
+        recheck_intent_id=intent.id,
+        validate_selection=lambda selection: selection,
+    )
+    assert replayed["replayed"] is True
+    assert replayed["run_id"] == rechecked["run_id"]
+
+
+def test_unresolved_recheck_requires_bound_affirmation_and_then_fulfills(
+    durable_dispatch_ctx: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    capture, started = _start(
+        durable_dispatch_ctx,
+        target_text="Co-work scope",
+    )
+    store = durable_dispatch_ctx["store"]
+    source_results = verify_rechecks.verify_store.list_records(
+        store,
+        EvaluationResult,
+        where="source.evaluation_run_id = ?",
+        params=(started["run_id"],),
+    )
+    offset = BODY.index("Co-work scope")
+    proposal = proposals.propose_edit(
+        store,
+        document_id=capture["documentId"],
+        base_content_sha256=capture["projectionSha256"],
+        base_structured_head_sha256=capture["structuredHeadSha256"],
+        selector=CompositeSelector(
+            exact="Co-work scope",
+            start=offset,
+            end=offset + len("Co-work scope"),
+        ),
+        quote_exact="Co-work scope",
+        replacement="document target",
+        rationale="Use the audited preferred term.",
+        tldr="Replace the non-preferred label.",
+        actor=AGENT,
+    )
+    record_result_relation(
+        store,
+        evaluation_result_id=source_results[0].id,
+        relation_kind="addresses",
+        target_kind="proposal",
+        target_ref=proposal.id,
+        actor=AGENT,
+    )
+    sitting, _created = sitting_lifecycle.prepare_sitting(
+        store,
+        document_id=capture["documentId"],
+        actor=HUMAN,
+        items=[
+            {
+                "proposal_id": proposal.id,
+                "verb": "confirm",
+                "canonical_sha256": proposal.canonical_sha256,
+            }
+        ],
+        expected_file_sha256=capture["projectionSha256"],
+        expected_structured_head_sha256=capture[
+            "structuredHeadSha256"
+        ],
+        idempotency_key="unresolved-verify-recheck-0001",
+    )
+    rendered = BODY.replace("Co-work scope", "document target")
+    snapshot = b"YDOC-UNRESOLVED-VERIFY-RECHECK:" + rendered.encode("utf-8")
+    sitting_lifecycle.commit_sitting(
+        store,
+        document_id=capture["documentId"],
+        intent_id=sitting.id,
+        actor=HUMAN,
+        snapshot=snapshot,
+        snapshot_sha256=sha256_bytes(snapshot),
+        rendered_markdown=rendered,
+        rendered_sha256=sha256_bytes(rendered.encode("utf-8")),
+    )
+
+    # Project the source as a pre-target-identity text run: its selector and
+    # exact target text remain durable, but the old record cannot attest which
+    # UI source/reference the person originally used. Later actions still use
+    # the real parser, so fulfillment must validate their persisted evidence.
+    original_action_target = verify_rechecks._action_target_for_run
+
+    def legacy_source_target(
+        store_arg,
+        run,
+        *,
+        conn=None,
+    ):
+        target = original_action_target(
+            store_arg,
+            run,
+            conn=conn,
+        )
+        if target is not None and run.id == started["run_id"]:
+            return {
+                **target,
+                "original_target_source": None,
+                "original_target_label": None,
+                "original_target_reference_json": None,
+                "original_target_reference_sha256": None,
+            }
+        return target
+
+    monkeypatch.setattr(
+        verify_rechecks,
+        "_action_target_for_run",
+        legacy_source_target,
+    )
+
+    intent = verify_rechecks.verification_recheck_intents(
+        store,
+        document_id=capture["documentId"],
+    )[0]
+    assert intent.status == "user_action_required"
+    projected = intent.to_dict()
+    assert projected["user_goal"] == "Use established terminology."
+    assert (
+        projected["protected_intent"]
+        == "Preserve the author's substantive meaning."
+    )
+    assert projected["requires"]["same_target_source"] is False
+    assert projected["requires"]["same_target_reference"] is False
+    assert (
+        projected["requires"]["user_affirmed_exact_target_required"] is True
+    )
+
+    refreshed_document = documents.get_document(
+        store,
+        capture["documentId"],
+    )
+    refreshed_head = ydoc_store.current_structured_head(
+        store,
+        document_id=refreshed_document.id,
+        snapshot_sha256=refreshed_document.ydoc_snapshot_sha256,
+    )
+    refreshed_generation = documents.current_ydoc_generation(
+        store,
+        refreshed_document.id,
+    )
+    state_vector = b"unresolved-recheck-state-vector"
+    start = rendered.index("document target")
+    exact = "document target"
+    reference = {
+        "schema": "wb.cowork.document-target/v1",
+        "storeId": capture["storeId"],
+        "documentId": capture["documentId"],
+        "kind": "text_range",
+        "granularity": "character",
+        "relative": {
+            "startBase64": "Ag==",
+            "endBase64": "Aw==",
+        },
+        "quote": {
+            "exact": exact,
+            "prefix": rendered[max(0, start - 20) : start],
+            "suffix": rendered[
+                start + len(exact) : start + len(exact) + 20
+            ],
+        },
+        "label": "Working on",
+        "headingPath": [],
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+        "updatedAt": datetime.now(timezone.utc).isoformat(),
+    }
+    _normalized, reference_sha256 = verify_orchestration._target_reference(
+        reference,
+        store_id=capture["storeId"],
+        document_id=capture["documentId"],
+    )
+    run_capture_id = "unresolved-recheck-run-capture"
+    scoped_capture = {
+        **capture,
+        "captureId": run_capture_id,
+        "ydocGenerationSha256": refreshed_generation,
+        "snapshotBase64": base64.b64encode(snapshot).decode("ascii"),
+        "snapshotSha256": sha256_bytes(snapshot),
+        "stateVectorBase64": base64.b64encode(state_vector).decode("ascii"),
+        "stateVectorSha256": sha256_bytes(state_vector),
+        "structuredHeadSha256": refreshed_head,
+        "projectionMarkdown": rendered,
+        "projectionSha256": sha256_bytes(rendered.encode("utf-8")),
+        "target": {
+            "source": "working_target",
+            "label": "Working on",
+            "wordCount": 2,
+            "proseMirrorRange": None,
+            "selector": {
+                "kind": "text_quote",
+                "exact": exact,
+                "prefix": rendered[max(0, start - 20) : start],
+                "suffix": rendered[
+                    start + len(exact) : start + len(exact) + 20
+                ],
+                "start": start,
+                "end": start + len(exact),
+            },
+            "targetTextSha256": sha256_text(exact),
+            "targetReference": reference,
+        },
+    }
+    affirmed_capture_id = "unresolved-recheck-affirmation-capture"
+    affirmed_capture = {
+        **scoped_capture,
+        "captureId": affirmed_capture_id,
+    }
+    affirmation_receipt = (
+        verify_orchestration.affirm_verify_recheck_target(
+            store,
+            document_id=capture["documentId"],
+            capture=affirmed_capture,
+            actor=HUMAN,
+            recheck_intent_id=intent.id,
+            source_run_id=started["run_id"],
+            proposal_ids=[proposal.id],
+            user_goal="Use established terminology.",
+            protected_intent="Preserve the author's substantive meaning.",
+        )
+    )
+    confirmation = {
+        "schema": "work-buddy.cowork-recheck-target-confirmation/v1",
+        "method": "user_affirmed_working_target",
+        "affirmed_capture_id": affirmation_receipt["affirmed_capture_id"],
+        "affirmed_action_snapshot_id": affirmation_receipt[
+            "affirmed_action_snapshot_id"
+        ],
+        "run_capture_id": run_capture_id,
+        "target_reference_sha256": affirmation_receipt[
+            "target_reference_sha256"
+        ],
+        "target_text_sha256": affirmation_receipt["target_text_sha256"],
+    }
+
+    with pytest.raises(
+        verify_orchestration.VerifyOrchestrationError,
+        match="invalid shape",
+    ):
+        start_verify_run(
+            store,
+            document_id=capture["documentId"],
+            capture=scoped_capture,
+            selection=SELECTION,
+            actor=HUMAN,
+            user_goal="Use established terminology.",
+            protected_intent="Preserve the author's substantive meaning.",
+            recheck_of_proposal_ids=[proposal.id],
+            recheck_of_run_id=started["run_id"],
+            recheck_intent_id=intent.id,
+            recheck_target_confirmation={
+                key: value
+                for key, value in confirmation.items()
+                if key != "affirmed_action_snapshot_id"
+            },
+            validate_selection=lambda selection: selection,
+        )
+
+    with pytest.raises(
+        verify_orchestration.VerifyOrchestrationError,
+        match="no server-issued affirmation",
+    ):
+        start_verify_run(
+            store,
+            document_id=capture["documentId"],
+            capture=scoped_capture,
+            selection=SELECTION,
+            actor=HUMAN,
+            user_goal="Use established terminology.",
+            protected_intent="Preserve the author's substantive meaning.",
+            recheck_of_proposal_ids=[proposal.id],
+            recheck_of_run_id=started["run_id"],
+            recheck_intent_id=intent.id,
+            recheck_target_confirmation={
+                **confirmation,
+                "affirmed_action_snapshot_id": "invented-affirmation-action",
+            },
+            validate_selection=lambda selection: selection,
+        )
+
+    with pytest.raises(
+        verify_rechecks.VerifyRecheckIntentError,
+        match="explicit user affirmation",
+    ):
+        start_verify_run(
+            store,
+            document_id=capture["documentId"],
+            capture={
+                **scoped_capture,
+                "captureId": "unresolved-recheck-without-affirmation",
+            },
+            selection=SELECTION,
+            actor=HUMAN,
+            user_goal="Use established terminology.",
+            protected_intent="Preserve the author's substantive meaning.",
+            recheck_of_proposal_ids=[proposal.id],
+            recheck_of_run_id=started["run_id"],
+            recheck_intent_id=intent.id,
+            validate_selection=lambda selection: selection,
+        )
+
+    with pytest.raises(
+        verify_rechecks.VerifyRecheckIntentError,
+        match="separate completed affirmation capture",
+    ):
+        same_capture_id = affirmed_capture_id
+        same_capture_confirmation = {
+            **confirmation,
+            "run_capture_id": same_capture_id,
+        }
+        start_verify_run(
+            store,
+            document_id=capture["documentId"],
+            capture={
+                **scoped_capture,
+                "captureId": same_capture_id,
+            },
+            selection=SELECTION,
+            actor=HUMAN,
+            user_goal="Use established terminology.",
+            protected_intent="Preserve the author's substantive meaning.",
+            recheck_of_proposal_ids=[proposal.id],
+            recheck_of_run_id=started["run_id"],
+            recheck_intent_id=intent.id,
+            recheck_target_confirmation=same_capture_confirmation,
+            validate_selection=lambda selection: selection,
+        )
+
+    with pytest.raises(
+        verify_rechecks.VerifyRecheckIntentError,
+        match="changed the affirmed target text",
+    ):
+        start_verify_run(
+            store,
+            document_id=capture["documentId"],
+            capture={
+                **scoped_capture,
+                "captureId": "unresolved-recheck-wrong-text",
+            },
+            selection=SELECTION,
+            actor=HUMAN,
+            user_goal="Use established terminology.",
+            protected_intent="Preserve the author's substantive meaning.",
+            recheck_of_proposal_ids=[proposal.id],
+            recheck_of_run_id=started["run_id"],
+            recheck_intent_id=intent.id,
+            recheck_target_confirmation={
+                **confirmation,
+                "run_capture_id": "unresolved-recheck-wrong-text",
+                "target_text_sha256": "0" * 64,
+            },
+            validate_selection=lambda selection: selection,
+        )
+
+    block_capture_id = "unresolved-recheck-block-target"
+    with pytest.raises(
+        verify_rechecks.VerifyRecheckIntentError,
+        match="durable target reference",
+    ):
+        start_verify_run(
+            store,
+            document_id=capture["documentId"],
+            capture={
+                **scoped_capture,
+                "captureId": block_capture_id,
+                "target": {
+                    **scoped_capture["target"],
+                    "targetReference": {
+                        **reference,
+                        "granularity": "block",
+                    },
+                },
+            },
+            selection=SELECTION,
+            actor=HUMAN,
+            user_goal="Use established terminology.",
+            protected_intent="Preserve the author's substantive meaning.",
+            recheck_of_proposal_ids=[proposal.id],
+            recheck_of_run_id=started["run_id"],
+            recheck_intent_id=intent.id,
+            recheck_target_confirmation={
+                **confirmation,
+                "run_capture_id": block_capture_id,
+            },
+            validate_selection=lambda selection: selection,
+        )
+
+    rechecked = start_verify_run(
+        store,
+        document_id=capture["documentId"],
+        capture=scoped_capture,
+        selection=SELECTION,
+        actor=HUMAN,
+        user_goal="Use established terminology.",
+        protected_intent="Preserve the author's substantive meaning.",
+        recheck_of_proposal_ids=[proposal.id],
+        recheck_of_run_id=started["run_id"],
+        recheck_intent_id=intent.id,
+        recheck_target_confirmation=confirmation,
+        validate_selection=lambda selection: selection,
+    )
+    job = get_job(rechecked["job_id"])
+    persisted_confirmation = job.request["recheck_target_confirmation"]
+    assert (
+        persisted_confirmation["affirmed_capture_id"]
+        == affirmed_capture_id
+    )
+    assert persisted_confirmation["affirmed_action_snapshot_id"]
+    assert (
+        persisted_confirmation["target_reference_sha256"]
+        == reference_sha256
+    )
+    affirmed_action = verify_rechecks.verify_store.get_record(
+        store,
+        ActionSnapshot,
+        persisted_confirmation["affirmed_action_snapshot_id"],
+    )
+    assert affirmed_action is not None
+    affirmed_context = json.loads(affirmed_action.context_boundary_json)
+    affirmed_egress = json.loads(affirmed_action.egress_boundary_json)
+    assert (
+        affirmed_context["purpose"]
+        == "user_affirmed_exact_recheck_target"
+    )
+    assert affirmed_context["capture_id"] == affirmed_capture_id
+    assert affirmed_egress == {
+        "class": "no_external_egress",
+        "content": "none",
+        "purpose": "recheck_target_affirmation",
+    }
+    receipt = verify_rechecks.verify_store.get_record(
+        store,
+        ModelCallAuthorizationReceipt,
+        job.authorization_receipt_id,
+    )
+    assert receipt is not None
+    authorization = json.loads(receipt.content_boundary_json)
+    assert (
+        authorization["authority_context"]["recheck_target_confirmation"]
+        == persisted_confirmation
+    )
+    fulfilled = verify_rechecks.verification_recheck_intents(
+        store,
+        document_id=capture["documentId"],
+    )[0]
+    assert fulfilled.status == "fulfilled"
+    assert fulfilled.fulfilled_by_run_ids == (rechecked["run_id"],)
+
+    replayed = start_verify_run(
+        store,
+        document_id=capture["documentId"],
+        capture=scoped_capture,
+        selection=SELECTION,
+        actor=HUMAN,
+        user_goal="Use established terminology.",
+        protected_intent="Preserve the author's substantive meaning.",
+        recheck_of_proposal_ids=[proposal.id],
+        recheck_of_run_id=started["run_id"],
+        recheck_intent_id=intent.id,
+        recheck_target_confirmation=confirmation,
+        validate_selection=lambda selection: selection,
+    )
+    assert replayed["replayed"] is True
+    assert replayed["run_id"] == rechecked["run_id"]
+
+    with pytest.raises(
+        verify_orchestration.VerifyOrchestrationError,
+        match="different Verify inputs",
+    ):
+        start_verify_run(
+            store,
+            document_id=capture["documentId"],
+            capture=scoped_capture,
+            selection=SELECTION,
+            actor=HUMAN,
+            user_goal="Changed retry goal.",
+            protected_intent="Preserve the author's substantive meaning.",
+            recheck_of_proposal_ids=[proposal.id],
+            recheck_of_run_id=started["run_id"],
+            recheck_intent_id=intent.id,
+            recheck_target_confirmation=confirmation,
+            validate_selection=lambda selection: selection,
+        )
+
+    exported = export_store(
+        store,
+        tmp_path / "fulfilled-legacy-recheck.jsonl",
+    )
+    target = tmp_path / "fulfilled-legacy-recheck-restored"
+    target.mkdir()
+    restored = import_store(
+        exported.path,
+        target,
+        registry=_EmptyRegistry(),
+    ).store
+    monkeypatch.setattr(
+        verify_runtime,
+        "_DB_PATH",
+        tmp_path / "fulfilled-legacy-recheck-empty-runtime.db",
+    )
+    restored_intent = verify_rechecks.verification_recheck_intents(
+        restored,
+        document_id=capture["documentId"],
+    )[0]
+    assert restored_intent.status == "fulfilled"
+    assert restored_intent.fulfilled_by_run_ids == (rechecked["run_id"],)

@@ -74,10 +74,15 @@ import {
 } from "../rail";
 import {
   CoworkDocumentActionBar,
+  CoworkDocumentActionDock,
+  type CoworkAffirmVerifyRecheckTargetHandler,
   type CoworkInvitePerspectiveHandler,
   type CoworkRunVerifyHandler,
 } from "../targets";
-import { HttpCoworkVerifyClient } from "../verify";
+import {
+  HttpCoworkVerifyClient,
+  useCoworkVerifyExecution,
+} from "../verify";
 import {
   EDITOR_DEFAULT_SIZE,
   EDITOR_MIN_SIZE,
@@ -275,7 +280,8 @@ function CoworkHealthStrip({ health }: { health: CoworkHealthView | null }) {
  */
 function CoworkWorkspaceLayout({
   health,
-  actionBar = null,
+  editorTopBar = null,
+  editorBottomDock = null,
   editor,
   rail,
   railRef,
@@ -285,7 +291,8 @@ function CoworkWorkspaceLayout({
   paneTabs = null,
 }: {
   readonly health: CoworkHealthView | null;
-  readonly actionBar?: ReactNode;
+  readonly editorTopBar?: ReactNode;
+  readonly editorBottomDock?: ReactNode;
   readonly editor: ReactNode;
   readonly rail: ReactNode;
   readonly railRef?: (element: HTMLElement | null) => void;
@@ -299,7 +306,6 @@ function CoworkWorkspaceLayout({
   return (
     <div className={`wb-cowork${helping ? " is-helping" : ""}`}>
       {showHealth ? <CoworkHealthStrip health={health} /> : null}
-      {actionBar}
       {paneTabs}
       <Group
         className="wb-cowork__body"
@@ -315,18 +321,20 @@ function CoworkWorkspaceLayout({
           minSize={EDITOR_MIN_SIZE}
           data-pane-active={!narrow || activePane === "editor"}
         >
-          <HelpTarget content={COWORK_EDITOR_HELP} placement="top">
-            <div
-              id="wb-cowork-mobile-panel-editor"
-              className="wb-cowork__editor-region"
-              role={narrow ? "tabpanel" : undefined}
-              aria-labelledby={narrow ? "wb-cowork-mobile-tab-editor" : undefined}
-              hidden={narrow && activePane !== "editor"}
-              inert={narrow && activePane !== "editor" ? true : undefined}
-            >
-              {editor}
-            </div>
-          </HelpTarget>
+          <div
+            id="wb-cowork-mobile-panel-editor"
+            className="wb-cowork__editor-shell"
+            role={narrow ? "tabpanel" : undefined}
+            aria-labelledby={narrow ? "wb-cowork-mobile-tab-editor" : undefined}
+            hidden={narrow && activePane !== "editor"}
+            inert={narrow && activePane !== "editor" ? true : undefined}
+          >
+            {editorTopBar}
+            <HelpTarget content={COWORK_EDITOR_HELP} placement="top">
+              <div className="wb-cowork__editor-region">{editor}</div>
+            </HelpTarget>
+            {editorBottomDock}
+          </div>
         </Panel>
         <Separator
           className="wb-cowork__rail-separator"
@@ -475,7 +483,7 @@ export function CoworkLiveWorkspace({
   onMaterialized,
   conversationBindingClient,
   onRunVerify,
-  onInvitePerspective,
+  onAffirmRecheckTarget,
 }: {
   readonly documentId: string;
   readonly storeId: string;
@@ -494,6 +502,7 @@ export function CoworkLiveWorkspace({
   readonly conversationBindingClient?: CoworkDocumentConversationBindingClient;
   /** Exact capture handoff; route transport remains injectable at this boundary. */
   readonly onRunVerify?: CoworkRunVerifyHandler;
+  readonly onAffirmRecheckTarget?: CoworkAffirmVerifyRecheckTargetHandler;
   readonly onInvitePerspective?: CoworkInvitePerspectiveHandler;
 }) {
   const workspaceIdentity = `${storeId}\u0000${documentId}`;
@@ -572,6 +581,10 @@ export function CoworkLiveWorkspace({
         ),
     };
   }, [chatExecution, conversation.agent.status]);
+  const verifyExecution = useCoworkVerifyExecution(
+    chatExecution,
+    workspaceIdentity,
+  );
   const chatDraftStorageId = `document:${storeId}:${documentId}`;
   const chatProvider = useMemo(
     () =>
@@ -651,9 +664,8 @@ export function CoworkLiveWorkspace({
   const [activePane, setActivePane] = useState<CoworkWorkspacePane>("editor");
   const editorPaneTabRef = useRef<HTMLButtonElement | null>(null);
   const [passageAnnouncement, setPassageAnnouncement] = useState("");
-  const rechecksInFlightRef = useRef(
-    new Map<string, Promise<void>>(),
-  );
+  const [armedVerifyRecheck, setArmedVerifyRecheck] =
+    useState<VerificationRecheckIntent | null>(null);
   const selectPane = useCallback(
     (pane: CoworkWorkspacePane): void => {
       setActivePane(pane);
@@ -670,7 +682,7 @@ export function CoworkLiveWorkspace({
   );
   useEffect(() => setActivePane("editor"), [documentId]);
   useEffect(() => {
-    rechecksInFlightRef.current.clear();
+    setArmedVerifyRecheck(null);
   }, [documentId, storeId]);
   const navBinding = useCoworkNavBinding();
 
@@ -720,110 +732,46 @@ export function CoworkLiveWorkspace({
   });
   const resolvedRunVerify = useMemo<CoworkRunVerifyHandler | undefined>(() => {
     if (onRunVerify !== undefined) return onRunVerify;
-    const selection = chatExecution?.snapshot?.selection;
-    if (selection === undefined) return undefined;
     return async (capture, intent) => {
-      await verifyClient.startVerify(capture, selection, {
+      await verifyClient.startVerify(capture, intent.execution, {
         userGoal: intent.userGoal,
         protectedIntent: intent.protectedIntent,
+        recheckOfProposalIds: intent.recheck?.pendingProposalIds,
+        recheckOfRunId: intent.recheck?.sourceRunId,
+        recheckIntentId: intent.recheck?.intentId,
+        recheckTargetConfirmation: intent.recheck?.targetConfirmation,
       });
       bridge.reviewProvider.invalidate();
     };
   }, [
     bridge.reviewProvider,
-    chatExecution?.snapshot?.selection,
     onRunVerify,
     verifyClient,
   ]);
-  const resolvedInvitePerspective = useMemo<
-    CoworkInvitePerspectiveHandler | undefined
-  >(() => {
-    if (onInvitePerspective !== undefined) return onInvitePerspective;
-    const selection = chatExecution?.snapshot?.selection;
-    if (selection === undefined) return undefined;
-    return async (capture) => {
-      await verifyClient.startCothink(capture, selection);
-      bridge.reviewProvider.invalidate();
-    };
-  }, [
-    bridge.reviewProvider,
-    chatExecution?.snapshot?.selection,
-    onInvitePerspective,
-    verifyClient,
-  ]);
-  const runRecheckIntent = useCallback(
-    (request: VerificationRecheckIntent): Promise<void> => {
-      const existing = rechecksInFlightRef.current.get(request.intentId);
-      if (existing !== undefined) return existing;
-      const run = (async () => {
-        if (request.status === "user_action_required") {
-          throw new Error(
-            "The original document target cannot be recovered automatically. Choose the intended target in the document action bar and run Verify explicitly.",
-          );
-        }
-        const controller = bridge.actionSnapshotController;
-        if (controller === null) {
-          throw new Error(
-            "Recheck is waiting for the editor to become available.",
-          );
-        }
-        const source = request.originalActionTarget.source;
-        if (source === null) {
-          throw new Error(
-            "The original document target source is unavailable.",
-          );
-        }
-        let capture;
-        if (request.originalActionTarget.kind === "document") {
-          capture =
-            controller.captureReference === undefined
-              ? await controller.capture(source)
-              : await controller.captureReference(source, null);
-        } else {
-          const reference = request.originalActionTarget.targetReference;
-          if (
-            reference === null ||
-            controller.captureReference === undefined
-          ) {
-            throw new Error(
-              "The original document target cannot be resolved by this editor.",
-            );
-          }
-          capture = await controller.captureReference(source, reference);
-        }
-        await verifyClient.startVerify(capture, request.execution, {
-          userGoal: request.userGoal,
-          protectedIntent: request.protectedIntent,
-          recheckOfProposalIds: request.pendingProposalIds,
-          recheckOfRunId: request.sourceRunId,
-          recheckIntentId: request.intentId,
-        });
-        bridge.reviewProvider.invalidate();
-        setPassageAnnouncement(
-          "Co-work Verify is rechecking the committed document version.",
-        );
-      })();
-      rechecksInFlightRef.current.set(request.intentId, run);
-      const clear = (): void => {
-        if (rechecksInFlightRef.current.get(request.intentId) === run) {
-          rechecksInFlightRef.current.delete(request.intentId);
-        }
-      };
-      void run.then(clear, clear);
-      return run;
-    },
-    [
-      bridge.actionSnapshotController,
-      bridge.reviewProvider,
-      verifyClient,
-    ],
-  );
-
+  const resolvedAffirmRecheckTarget =
+    useMemo<CoworkAffirmVerifyRecheckTargetHandler>(() => {
+      if (onAffirmRecheckTarget !== undefined) {
+        return onAffirmRecheckTarget;
+      }
+      return async (capture, intent) =>
+        verifyClient.affirmRecheckTarget(capture, intent);
+    }, [onAffirmRecheckTarget, verifyClient]);
   const recheckIntent = useCallback(
-    async (request: VerificationRecheckIntent): Promise<void> => {
-      await runRecheckIntent(request);
+    (request: VerificationRecheckIntent): Promise<void> => {
+      if (request.status === "fulfilled") return Promise.resolve();
+      setArmedVerifyRecheck(request);
+      setPassageAnnouncement(
+        request.status === "user_action_required"
+          ? "Bound recheck opened in Verify. Set and affirm Working on before running it."
+          : "Bound recheck opened in Verify with its original target. Review it, then run Verify.",
+      );
+      if (narrowWorkspace) {
+        selectPane("editor");
+        window.requestAnimationFrame(() => editorPaneTabRef.current?.focus());
+      }
+      return Promise.resolve();
     },
-    [runRecheckIntent],
+    [narrowWorkspace, selectPane],
   );
   const scrollToChatAnchor = useCallback(
     (target: ScrollAnchorTarget): void => {
@@ -889,19 +837,25 @@ export function CoworkLiveWorkspace({
     <CoworkWorkspaceLayout
       health={health}
       showHealth={showHealth}
-      actionBar={
+      editorTopBar={
         <CoworkDocumentActionBar
           controller={bridge.actionSnapshotController}
+        />
+      }
+      editorBottomDock={
+        <CoworkDocumentActionDock
+          storeId={storeId}
+          documentId={documentId}
+          controller={bridge.actionSnapshotController}
+          reviewProvider={bridge.reviewProvider}
           readOnly={readOnly}
           onRunVerify={resolvedRunVerify}
-          onInvitePerspective={resolvedInvitePerspective}
+          onAffirmRecheckTarget={resolvedAffirmRecheckTarget}
           verifySetup={bridge.verifySetup}
           verifyCapability={bridge.verifyCapability}
-          executionLabel={
-            chatExecution?.snapshot?.selection === undefined
-              ? undefined
-              : `${chatExecution.snapshot.selection.providerLabel} · ${chatExecution.snapshot.selection.modelLabel}`
-          }
+          execution={verifyExecution}
+          armedRecheck={armedVerifyRecheck}
+          onClearArmedRecheck={() => setArmedVerifyRecheck(null)}
         />
       }
       railRef={bridge.railRef}

@@ -97,6 +97,7 @@ const payload = (): R2DocPayload => ({
         same_target_source: true,
         same_target_reference: true,
         exact_target_resolution: true,
+        user_affirmed_exact_target_required: false,
         on_unresolved: "user_action_required",
         allow_widen_to_whole_document: false,
       },
@@ -124,6 +125,14 @@ describe("Verify R2 mapping", () => {
       disposition: "surface_result",
     });
     expect(mapped.verificationRecheckIntents[0]).toMatchObject({
+      userGoal: "Recheck the applied terminology correction.",
+      protectedIntent: "Preserve substantive meaning.",
+      requires: {
+        sameTargetSource: true,
+        userAffirmedExactTargetRequired: false,
+      },
+    });
+    expect(mapped.verificationRecheckIntents[0]).toMatchObject({
       intentId: "recheck-1",
       sourceRunId: "run-1",
       status: "pending_capture",
@@ -133,6 +142,127 @@ describe("Verify R2 mapping", () => {
       },
     });
     expect(mapped.proposals).toEqual([]);
+  });
+
+  it("carries the authoritative provider-aware execution disclosure", () => {
+    const current: R2DocPayload = {
+      ...payload(),
+      verification_configuration: {
+        schema: "work-buddy.cowork-verify-configuration/v1",
+        document_id: "doc-1",
+        execution_plan: {
+          schema: "work-buddy.cowork-verify-execution-disclosure/v1",
+          authoritative: true,
+          checker: {
+            execution_class: "in_process",
+            mechanism: "deterministic_exact_match",
+            model_call: false,
+            external_egress: false,
+            content_boundary: "captured_target",
+          },
+          coordination: {
+            execution_class: "account_backed_agent",
+            selection: {
+              mode: "explicit_at_run_start",
+              provider_id: null,
+              model_id: null,
+              provider_label: null,
+              model_label: null,
+            },
+            content_boundary: "entire_frozen_document",
+            external_egress: true,
+            fallback: {
+              provider_model_fallback: false,
+              failure_mode: "fail_closed",
+            },
+            worker_sessions: {
+              initial: 1,
+              maximum: 3,
+              conditional_roles: [
+                "reviser",
+                "post_revision_coordinator",
+              ],
+            },
+            cost_control: null,
+            provider_cost_controls: [
+              {
+                provider_id: "claude-code",
+                enforcement_class: "hard_ceiling",
+                ceiling_usd_per_worker_session: 2,
+                basis: "claude_code_max_budget_usd",
+              },
+              {
+                provider_id: "codex",
+                enforcement_class: "unavailable",
+                ceiling_usd_per_worker_session: null,
+                basis: "codex_worker_has_no_budget_enforcement",
+              },
+            ],
+          },
+        },
+        coordination: {
+          deprecated: true,
+          authoritative_projection: "execution_plan",
+          required: true,
+          selection: "explicit_provider_and_model_at_run_start",
+          content_boundary: "entire_frozen_document",
+          egress_class: "account_backed_agent",
+          external_egress: true,
+          cost_ceiling_usd_per_worker: 2,
+          cost_ceiling_semantics:
+            "requested_launch_budget_not_provider_guarantee",
+          separate_reviser_for_findings: true,
+          pattern:
+            "coordinator_then_optional_reviser_then_coordinator",
+          base_worker_calls: 1,
+          maximum_worker_calls: 3,
+        },
+        criteria: [],
+      },
+    };
+
+    const configuration =
+      mapR2ToReview(current).railData.verificationConfiguration;
+
+    expect(configuration.executionPlan).toMatchObject({
+      authoritative: true,
+      checker: {
+        executionClass: "in_process",
+        externalEgress: false,
+      },
+      coordination: {
+        executionClass: "account_backed_agent",
+        contentBoundary: "entire_frozen_document",
+        externalEgress: true,
+        fallback: {
+          providerModelFallback: false,
+          failureMode: "fail_closed",
+        },
+        workerSessions: { initial: 1, maximum: 3 },
+      },
+    });
+    expect(
+      configuration.executionPlan?.coordination.providerCostControls,
+    ).toEqual([
+      {
+        providerId: "claude-code",
+        enforcementClass: "hard_ceiling",
+        ceilingUsdPerWorkerSession: 2,
+        basis: "claude_code_max_budget_usd",
+      },
+      {
+        providerId: "codex",
+        enforcementClass: "unavailable",
+        ceilingUsdPerWorkerSession: null,
+        basis: "codex_worker_has_no_budget_enforcement",
+      },
+    ]);
+    expect(configuration.coordination).toMatchObject({
+      deprecated: true,
+      authoritativeProjection: "execution_plan",
+      costCeilingSemantics:
+        "requested_launch_budget_not_provider_guarantee",
+    });
   });
 
   it("fails closed when an older server omits capability negotiation", () => {

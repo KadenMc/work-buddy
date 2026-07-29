@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from work_buddy.cowork import (
+    verify_api,
     verify_dispatch,
     verify_orchestration,
     verify_runtime,
@@ -180,6 +181,17 @@ def test_verify_start_is_exact_explicit_and_projects_running_history(
         payload["verification_configuration"]["criteria"][0]["stable_key"]
         == "terminology_exact_match"
     )
+    execution_plan = payload["verification_configuration"]["execution_plan"]
+    assert execution_plan["checker"]["execution_class"] == "in_process"
+    assert execution_plan["checker"]["external_egress"] is False
+    assert execution_plan["coordination"]["selection"]["provider_id"] is None
+    assert execution_plan["coordination"]["content_boundary"] == (
+        "entire_frozen_document"
+    )
+    assert execution_plan["coordination"]["fallback"] == {
+        "provider_model_fallback": False,
+        "failure_mode": "fail_closed",
+    }
     assert payload["evaluation_results"] == []
     assert payload["evaluation_run_summaries"][0]["run_id"] == receipt["run_id"]
     assert payload["evaluation_run_summaries"][0]["status"] == "running"
@@ -239,6 +251,59 @@ def test_verify_start_requires_explicit_goal_and_protected_intent(
     assert response.status_code == 409
     assert "user_goal" in response.get_json()["error"]
     assert fake_verify_host == []
+
+
+def test_recheck_target_affirmation_is_a_separate_nonexecuting_request(
+    client,
+    seeded,
+    monkeypatch,
+):
+    calls = []
+
+    def affirm(store, **kwargs):
+        calls.append((store, kwargs))
+        return {
+            "schema": (
+                "work-buddy.cowork-recheck-target-affirmation-receipt/v1"
+            ),
+            "recheck_intent_id": kwargs["recheck_intent_id"],
+            "source_run_id": kwargs["source_run_id"],
+            "pending_proposal_ids": list(kwargs["proposal_ids"]),
+            "affirmed_capture_id": kwargs["capture"]["captureId"],
+            "affirmed_action_snapshot_id": "affirmed-action-1",
+            "target_reference_sha256": "a" * 64,
+            "target_text_sha256": "b" * 64,
+            "affirmed_at": NOW,
+        }
+
+    monkeypatch.setattr(
+        verify_api,
+        "affirm_verify_recheck_target",
+        affirm,
+    )
+    response = client.post(
+        (
+            f"/api/truth/doc/{seeded['document'].id}/verify/"
+            "recheck-target-affirmations"
+            f"?store_id={seeded['store_id']}"
+        ),
+        json={
+            "capture": _capture(seeded),
+            "recheck_intent_id": "intent-1",
+            "source_run_id": "source-run-1",
+            "proposal_ids": ["proposal-1"],
+            **VERIFY_INTENT,
+        },
+        headers={"X-WB-User-Ref": "verify-reviewer"},
+    )
+
+    assert response.status_code == 201
+    assert response.get_json()["affirmed_action_snapshot_id"] == (
+        "affirmed-action-1"
+    )
+    assert len(calls) == 1
+    assert calls[0][1]["actor"].kind == "human"
+    assert calls[0][1]["recheck_intent_id"] == "intent-1"
 
 
 def test_cothink_is_a_distinct_explicit_job(

@@ -145,13 +145,10 @@ export interface CoworkBridge {
   readonly railRef: (element: HTMLElement | null) => void;
   /** Latest live health, or null before the first pull resolves. */
   readonly health: CoworkLiveHealth | null;
-  /** Concise effective setup for the document action bar. */
+  /** Concise criterion counts for the editor-bottom Verify dock. */
   readonly verifySetup: {
     readonly activeCount: number;
     readonly unavailableCount: number;
-    readonly costCeilingUsdPerWorker: number | null;
-    readonly baseWorkerCalls: number | null;
-    readonly maximumWorkerCalls: number | null;
   } | null;
   /** Fail-closed server negotiation for Verify and Co-think actions. */
   readonly verifyCapability: CoworkVerifyCapability | null;
@@ -213,9 +210,6 @@ export const useCoworkBridge = (
   const [verifySetup, setVerifySetup] = useState<{
     readonly activeCount: number;
     readonly unavailableCount: number;
-    readonly costCeilingUsdPerWorker: number | null;
-    readonly baseWorkerCalls: number | null;
-    readonly maximumWorkerCalls: number | null;
   } | null>(null);
   const [verifyCapability, setVerifyCapability] =
     useState<CoworkVerifyCapability | null>(null);
@@ -302,14 +296,6 @@ export const useCoworkBridge = (
             criterion.operationalState === "unavailable" ||
             criterion.operationalState === "blocked_required_check",
         ).length,
-        costCeilingUsdPerWorker:
-          data.verificationConfiguration.coordination
-            ?.costCeilingUsdPerWorker ?? null,
-        baseWorkerCalls:
-          data.verificationConfiguration.coordination?.baseWorkerCalls ?? null,
-        maximumWorkerCalls:
-          data.verificationConfiguration.coordination?.maximumWorkerCalls ??
-          null,
       });
       core.ledgerProjector.setData(data);
       core.anchorRects.refresh();

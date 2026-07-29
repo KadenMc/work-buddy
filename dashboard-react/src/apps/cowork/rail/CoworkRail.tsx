@@ -71,7 +71,7 @@ export interface CoworkRailProps {
   readonly onScrollToChatAnchor?: (target: ScrollAnchorTarget) => void;
   /** Shared provider/model selection, available before a conversation starts. */
   readonly chatExecution?: ChatExecutionControl;
-  /** Runs one exact, server-derived correction recheck intent. */
+  /** Opens one exact, server-derived correction recheck intent in Verify. */
   readonly onRecheckIntent?: (
     intent: VerificationRecheckIntent,
   ) => void | Promise<void>;

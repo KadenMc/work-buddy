@@ -23,6 +23,56 @@
   animation: wb-cowork-passage-highlight 1200ms ease-out;
 }
 
+.wb-cowork-working-target__highlight {
+  background: color-mix(
+    in srgb,
+    var(--wb-color-selection) 62%,
+    transparent
+  );
+  box-shadow: inset 0 -1px 0
+    color-mix(in srgb, var(--wb-color-focus-ring) 64%, transparent);
+}
+
+.wb-cowork-working-target__boundary {
+  display: inline-block;
+  position: relative;
+  inline-size: 0;
+  block-size: 1em;
+  pointer-events: none;
+  user-select: none;
+  vertical-align: text-bottom;
+}
+
+.wb-cowork-working-target__boundary::before {
+  position: absolute;
+  z-index: 2;
+  inset-block-start: -0.9em;
+  color: var(--wb-color-focus-ring);
+  font-size: 0.72em;
+  font-weight: 700;
+  line-height: 1;
+  text-shadow: 0 1px 1px var(--wb-color-surface-raised);
+}
+
+.wb-cowork-working-target__boundary--start::before {
+  content: "▶";
+  inset-inline-start: -0.1em;
+}
+
+.wb-cowork-working-target__boundary--end::before {
+  content: "◀";
+  inset-inline-end: -0.1em;
+}
+
+.wb-cowork-working-target__boundary--provisional::after {
+  position: absolute;
+  z-index: 1;
+  inset-block: -0.15em;
+  inset-inline-start: 0;
+  border-inline-start: 2px dashed var(--wb-color-focus-ring);
+  content: "";
+}
+
 @keyframes wb-cowork-passage-highlight {
   from {
     background: color-mix(
@@ -49,8 +99,18 @@
 /* Forced colors: the animation is invisible, so keep a system-color outline. */
 @media (forced-colors: active) {
   .wb-cowork-anchor--flash,
-  .wb-cowork-passage-highlight {
+  .wb-cowork-passage-highlight,
+  .wb-cowork-working-target__highlight {
     outline: 2px solid Highlight;
     outline-offset: 1px;
+  }
+
+  .wb-cowork-working-target__boundary::before {
+    color: Highlight;
+    text-shadow: none;
+  }
+
+  .wb-cowork-working-target__boundary--provisional::after {
+    border-inline-start-color: Highlight;
   }
 }

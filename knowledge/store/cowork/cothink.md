@@ -2,7 +2,7 @@
 name: Co-think
 kind: system
 description: Explicit, non-evidential support for human deliberation within the Co-work document experience.
-summary: Co-think is the non-evidential sibling of Co-work Verify in the document action bar. It uses the same exact action target and explicit provider/model to request at most one alternative perspective, recording a distinct advisory item or an honest no-useful-item/unavailable outcome.
+summary: Co-think is the planned non-evidential sibling of Co-work Verify. The current editor-bottom dock is a non-operational shell; durable alternative-perspective records and Review actions from the earlier slice remain readable for compatibility while the fuller deliberation workflow is designed.
 entry_points:
 - work_buddy.cowork.verify_orchestration
 - work_buddy.cowork.verify.service
@@ -23,30 +23,38 @@ aliases:
 parents:
 - cowork/verify-and-cothink
 dev_notes: |-
-  Co-think currently admits only subtype `alternative_perspective`, although the
-  durable record carries a subtype for extension. Keep `CothinkItem` and
+  The historical backend admits only subtype `alternative_perspective`, although
+  the durable record carries a subtype for extension. The current document UI
+  intentionally exposes no new worker invocation. Keep `CothinkItem` and
   `CothinkItemStatusEvent` distinct from `EvaluationResult`,
   `RoutingDisposition`, and `ProposalRecord`.
 ---
 
-## Interaction contract
+## Current surface contract
 
-The user explicitly invokes **Invite perspective** from Co-think’s own action
-block beside Co-work Verify. Both actions use the same **Action target**
-chooser and display the selected provider/model, but Co-think does not inherit
-Verify’s criteria, results, goal, or proposal path. Co-think does not infer a
-need for reflection from cursor
-movement, scrolling, dwell time, edit repetition, or other passive behavior.
+Co-think has a collapsed sibling dock beside Verify beneath the editor. In the
+current slice it is labeled **Planned** and does not expose a worker action,
+settings, or a substitute transcript. This deliberately avoids locking the
+subsystem to the earlier one-shot **Invite perspective** experiment.
 
-The worker receives:
+Future operation belongs in the dock; durable outputs belong in Review; and
+question-led continuation belongs in the existing document Chat. Co-think
+does not inherit Verify’s criteria, results, goal, or proposal path. It does
+not infer a need for reflection from cursor movement, scrolling, dwell time,
+edit repetition, or other passive behavior.
 
-- the complete permitted frozen document;
+## Historical alternative-perspective contract
+
+The retained backend worker receives:
+
+- the entire frozen document;
 - exact target and context/change/egress boundaries;
 - the user’s purpose;
 - protected intent; and
 - a schema requiring either `perspective` or `none`.
 
-A perspective must contain nonempty content and a rationale. `none` is an
+This contract is not exposed as a new invocation in the current dock. A
+historical perspective must contain nonempty content and a rationale. `none` is an
 honest outcome when the worker found no useful alternative. Unavailability and
 no-useful-item outcomes remain visible without fabricating a card.
 
@@ -89,8 +97,8 @@ semantics.
 ## Relationship to Verify
 
 Verify may identify a reason that more deliberation would help, but a
-coordinator cannot silently run Co-think. The transition remains a suggestion
-until the user invokes it.
+coordinator cannot silently run Co-think. A future transition remains a
+suggestion until the user explicitly invokes it.
 
 Co-think output cannot:
 

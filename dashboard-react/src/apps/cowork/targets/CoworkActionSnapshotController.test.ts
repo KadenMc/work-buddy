@@ -220,7 +220,7 @@ describe("DefaultCoworkActionSnapshotController", () => {
     expect(controller.getSnapshot().customRangeStart).not.toBeNull();
     expect(controller.getSnapshot().workingTarget.kind).toBe("document");
 
-    opened.editor.commands.setTextSelection(done.from);
+    opened.editor.commands.setTextSelection(done.to);
     controller.setCustomRangeEndHere();
     const prepared = controller.getSnapshot().customRange;
     expect(prepared?.kind).toBe("text_range");
@@ -234,6 +234,134 @@ describe("DefaultCoworkActionSnapshotController", () => {
       expect(capture.target.selector.exact).not.toContain("Opening.");
     }
     expect(controller.getSnapshot().workingTarget.kind).toBe("document");
+    controller.detach();
+  });
+
+  it("sets Working on from exact partial selection endpoints", async () => {
+    const opened = await open();
+    const risk = resolveQuoteAnchor(opened.editor.state.doc, {
+      exact: "Risk one.",
+      prefix: "",
+      suffix: "",
+    });
+    if (risk === null) throw new Error("fixture did not resolve");
+    const exact = {
+      from: risk.from + "Risk ".length,
+      to: risk.to - 1,
+    };
+    opened.editor.commands.setTextSelection(exact);
+    const persistence = new FakeCapturePersistence(opened.document);
+    const controller = new DefaultCoworkActionSnapshotController({
+      document: opened.document,
+      documentId: "doc-a",
+      storeId: "store-a",
+      persistence,
+      getEditGeneration: () => 0,
+      storage: window.localStorage,
+    });
+    controller.attach(opened.editor);
+
+    controller.setWorkingTargetFromSelection();
+
+    expect(controller.getSnapshot().workingTarget.range).toEqual(exact);
+    const capture = await controller.capture("working_target");
+    expect(capture.target.proseMirrorRange).toEqual(exact);
+    expect(capture.target.targetReference?.granularity).toBe("character");
+    expect(capture.target.selector).toMatchObject({
+      kind: "text_quote",
+      exact: "one",
+    });
+    controller.detach();
+  });
+
+  it("builds a persistent exact Working on range from two edit-tracking cursor boundaries", async () => {
+    const opened = await open();
+    const risk = resolveQuoteAnchor(opened.editor.state.doc, {
+      exact: "Risk one.",
+      prefix: "",
+      suffix: "",
+    });
+    if (risk === null) throw new Error("fixture did not resolve");
+    const persistence = new FakeCapturePersistence(opened.document);
+    const controller = new DefaultCoworkActionSnapshotController({
+      document: opened.document,
+      documentId: "doc-a",
+      storeId: "store-a",
+      persistence,
+      getEditGeneration: () => 0,
+      storage: window.localStorage,
+    });
+    controller.attach(opened.editor);
+
+    opened.editor.commands.setTextSelection(risk.from);
+    controller.setWorkingTargetStartHere();
+    expect(controller.getSnapshot().workingTargetStart).toEqual({
+      position: risk.from,
+      label: "Working on start",
+    });
+
+    opened.editor.commands.insertContentAt(risk.from, "New ");
+    const movedRisk = resolveQuoteAnchor(opened.editor.state.doc, {
+      exact: "Risk one.",
+      prefix: "",
+      suffix: "",
+    });
+    if (movedRisk === null) throw new Error("edited fixture did not resolve");
+    opened.editor.commands.setTextSelection(movedRisk.to);
+    controller.setWorkingTargetEndHere();
+
+    expect(controller.getSnapshot().workingTargetStart).toBeNull();
+    expect(controller.getSnapshot().workingTarget.range).toEqual(movedRisk);
+    const capture = await controller.capture("working_target");
+    expect(capture.target.selector).toMatchObject({
+      kind: "text_quote",
+      exact: "Risk one.",
+    });
+    expect(capture.target.targetReference?.granularity).toBe("character");
+    controller.detach();
+  });
+
+  it("keeps a Working on start at position 1 attached to the original text", async () => {
+    const opened = await open();
+    const persistence = new FakeCapturePersistence(opened.document);
+    const controller = new DefaultCoworkActionSnapshotController({
+      document: opened.document,
+      documentId: "doc-a",
+      storeId: "store-a",
+      persistence,
+      getEditGeneration: () => 0,
+      storage: window.localStorage,
+    });
+    controller.attach(opened.editor);
+
+    opened.editor.commands.setTextSelection(1);
+    controller.setWorkingTargetStartHere();
+    expect(controller.getSnapshot().workingTargetStart).toEqual({
+      position: 1,
+      label: "Working on start",
+    });
+
+    opened.editor.commands.insertContentAt(1, "Prefixed ");
+    const intro = resolveQuoteAnchor(opened.editor.state.doc, {
+      exact: "Intro",
+      prefix: "",
+      suffix: "",
+    });
+    if (intro === null) throw new Error("edited fixture did not resolve");
+    expect(controller.getSnapshot().workingTargetStart?.position).toBe(
+      intro.from,
+    );
+
+    opened.editor.commands.setTextSelection(intro.to);
+    controller.setWorkingTargetEndHere();
+
+    expect(controller.getSnapshot().workingTargetStart).toBeNull();
+    expect(controller.getSnapshot().workingTarget.range).toEqual(intro);
+    const capture = await controller.capture("working_target");
+    expect(capture.target.selector).toMatchObject({
+      kind: "text_quote",
+      exact: "Intro",
+    });
     controller.detach();
   });
 

@@ -44,6 +44,12 @@ export interface CoworkDocumentTargetReference {
   readonly storeId: string;
   readonly documentId: string;
   readonly kind: "text_range";
+  /**
+   * Character references preserve the exact editor endpoints. Block
+   * references retain the section/block behavior used by older captures.
+   * Missing values are read as `block` for stored v1 compatibility.
+   */
+  readonly granularity?: "character" | "block";
   readonly relative: CoworkRelativeRange;
   readonly quote: CoworkRangeQuote;
   readonly label: string;
@@ -60,6 +66,12 @@ export interface CoworkTargetSummary {
   readonly wordCount: number;
   readonly range: CoworkProseMirrorRange | null;
   readonly resolution?: CoworkDocumentTargetResolution;
+}
+
+/** One exact, edit-tracking cursor boundary in a two-step range workflow. */
+export interface CoworkTargetBoundarySummary {
+  readonly position: number;
+  readonly label: string;
 }
 
 /**
@@ -119,8 +131,10 @@ export interface CoworkActionSnapshotControllerState {
   readonly selection: CoworkTargetSummary | null;
   readonly currentSection: CoworkTargetSummary | null;
   readonly workingTarget: CoworkTargetSummary;
+  /** Pending first endpoint for the accessible two-step Working on workflow. */
+  readonly workingTargetStart?: CoworkTargetBoundarySummary | null;
   /** Ephemeral accessible range-boundary workflow; it does not replace Working on. */
-  readonly customRangeStart?: CoworkTargetSummary | null;
+  readonly customRangeStart?: CoworkTargetBoundarySummary | null;
   readonly customRange?: CoworkTargetSummary | null;
 }
 
@@ -130,6 +144,9 @@ export interface CoworkActionSnapshotController {
     listener: () => void,
   ) => () => void;
   setWorkingTargetFromSelection(): void;
+  setWorkingTargetStartHere?(): void;
+  setWorkingTargetEndHere?(): void;
+  clearWorkingTargetDraft?(): void;
   clearWorkingTarget(): void;
   setCustomRangeStartHere?(): void;
   setCustomRangeEndHere?(): void;
@@ -158,9 +175,72 @@ export interface CoworkActionCapturePersistence {
   compact(): Promise<CoworkCompactionReceipt>;
 }
 
+/**
+ * The exact account-backed execution selected for this run. It travels with
+ * the capture so an injected run handler cannot accidentally consult a
+ * different, later UI selection.
+ */
+export interface CoworkVerifyExecutionSelection {
+  readonly providerId: string;
+  readonly modelId: string;
+  readonly providerLabel: string;
+  readonly modelLabel: string;
+}
+
+/** Durable lineage that makes a Verify run a bound recheck, not a new run. */
+export interface CoworkVerifyRecheckBinding {
+  readonly intentId: string;
+  readonly sourceRunId: string;
+  readonly pendingProposalIds: readonly string[];
+  /**
+   * Required only when an older intent has no recoverable durable target.
+   * This binds the explicit Working on affirmation to both the newly captured
+   * range identity and its exact text; it is never a generic boolean grant.
+   */
+  readonly targetConfirmation?: CoworkVerifyRecheckTargetConfirmation;
+}
+
+export interface CoworkVerifyRecheckTargetConfirmation {
+  readonly schema: "work-buddy.cowork-recheck-target-confirmation/v1";
+  readonly method: "user_affirmed_working_target";
+  readonly affirmedCaptureId: string;
+  readonly affirmedActionSnapshotId: string;
+  readonly runCaptureId: string;
+  readonly targetReferenceSha256: string;
+  readonly targetTextSha256: string;
+}
+
+export interface CoworkVerifyRecheckTargetAffirmationReceipt {
+  readonly schema:
+    "work-buddy.cowork-recheck-target-affirmation-receipt/v1";
+  readonly recheckIntentId: string;
+  readonly sourceRunId: string;
+  readonly pendingProposalIds: readonly string[];
+  readonly affirmedCaptureId: string;
+  readonly affirmedActionSnapshotId: string;
+  readonly targetReferenceSha256: string;
+  readonly targetTextSha256: string;
+  readonly affirmedAt: string;
+}
+
+export interface CoworkVerifyRecheckTargetAffirmationIntent {
+  readonly intentId: string;
+  readonly sourceRunId: string;
+  readonly pendingProposalIds: readonly string[];
+  readonly userGoal: string;
+  readonly protectedIntent: string;
+}
+
+export type CoworkAffirmVerifyRecheckTargetHandler = (
+  capture: CoworkCapturedActionSnapshot,
+  intent: CoworkVerifyRecheckTargetAffirmationIntent,
+) => Promise<CoworkVerifyRecheckTargetAffirmationReceipt>;
+
 export interface CoworkVerifyRunIntent {
   readonly userGoal: string;
   readonly protectedIntent: string;
+  readonly execution: CoworkVerifyExecutionSelection;
+  readonly recheck?: CoworkVerifyRecheckBinding;
 }
 
 export type CoworkRunVerifyHandler = (

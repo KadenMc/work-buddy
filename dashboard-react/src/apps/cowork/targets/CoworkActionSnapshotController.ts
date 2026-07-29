@@ -14,20 +14,23 @@ import type {
 } from "./contracts";
 import { CoworkDocumentTargetStore } from "./documentTargetStore";
 import {
+  createCoworkCursorBoundaryReference,
   createCoworkDocumentTargetReference,
   encodeCoworkBytes,
+  resolveCoworkCursorBoundaryReference,
   resolveCoworkDocumentTargetReference,
+  type CoworkCursorBoundaryReference,
 } from "./relativeEndpoints";
 import {
   coworkCurrentSectionRange,
-  coworkCurrentBlockRange,
+  coworkExactRange,
   coworkProjectionTarget,
   coworkRangeQuote,
   coworkRangeSummary,
   coworkSelectionRange,
   coworkWholeDocumentSummary,
   coworkWordCount,
-  type CoworkBlockRange,
+  type CoworkIndexedRange,
 } from "./selection";
 
 const CAPTURE_STABILITY_ATTEMPTS = 2;
@@ -90,7 +93,8 @@ export class DefaultCoworkActionSnapshotController
   readonly #listeners = new Set<() => void>();
   #editor: Editor | null = null;
   #reference: CoworkDocumentTargetReference | null;
-  #customStartReference: CoworkDocumentTargetReference | null = null;
+  #workingStartBoundary: CoworkCursorBoundaryReference | null = null;
+  #customStartBoundary: CoworkCursorBoundaryReference | null = null;
   #customReference: CoworkDocumentTargetReference | null = null;
   #state: CoworkActionSnapshotControllerState = loadingState();
   #captureInFlight: Promise<CoworkCapturedActionSnapshot> | null = null;
@@ -155,9 +159,10 @@ export class DefaultCoworkActionSnapshotController
     const range = coworkSelectionRange(editor);
     if (range === null || coworkRangeQuote(editor.state.doc, range) === null) {
       throw new CoworkActionTargetUnavailableError(
-        "Select some document text before choosing Work on this.",
+        "Select some document text before choosing Set by selection.",
       );
     }
+    coworkProjectionTarget(editor, this.#document, range);
     const next = createCoworkDocumentTargetReference({
       editor,
       document: this.#document,
@@ -167,63 +172,88 @@ export class DefaultCoworkActionSnapshotController
     });
     this.#targetStore.save(next);
     this.#reference = next;
+    this.#workingStartBoundary = null;
     this.#refresh();
   }
 
-  clearWorkingTarget(): void {
-    this.#targetStore.clear();
-    this.#reference = null;
+  setWorkingTargetStartHere(): void {
+    const editor = this.#requireCollapsedCursor(
+      "Place the cursor at the exact Working on start.",
+    );
+    this.#workingStartBoundary = createCoworkCursorBoundaryReference(
+      editor,
+      this.#document,
+    );
     this.#refresh();
   }
 
-  setCustomRangeStartHere(): void {
-    const editor = this.#requireEditor();
-    const range = coworkCurrentBlockRange(editor);
-    if (range === null) {
+  setWorkingTargetEndHere(): void {
+    const editor = this.#requireCollapsedCursor(
+      "Place the cursor at the exact Working on end.",
+    );
+    if (this.#workingStartBoundary === null) {
       throw new CoworkActionTargetUnavailableError(
-        "Place the cursor in a document block before setting the range start.",
+        "Set the Working on start before setting its end.",
       );
     }
-    this.#customStartReference = createCoworkDocumentTargetReference({
+    const range = this.#exactRangeFromBoundary(
+      editor,
+      this.#workingStartBoundary,
+      "Working on",
+    );
+    coworkProjectionTarget(editor, this.#document, range);
+    const next = createCoworkDocumentTargetReference({
       editor,
       document: this.#document,
       storeId: this.#storeId,
       documentId: this.#documentId,
       range,
     });
+    this.#targetStore.save(next);
+    this.#reference = next;
+    this.#workingStartBoundary = null;
+    this.#refresh();
+  }
+
+  clearWorkingTargetDraft(): void {
+    this.#workingStartBoundary = null;
+    this.#refresh();
+  }
+
+  clearWorkingTarget(): void {
+    this.#targetStore.clear();
+    this.#reference = null;
+    this.#workingStartBoundary = null;
+    this.#refresh();
+  }
+
+  setCustomRangeStartHere(): void {
+    const editor = this.#requireCollapsedCursor(
+      "Place the cursor at the exact custom range start.",
+    );
+    this.#customStartBoundary = createCoworkCursorBoundaryReference(
+      editor,
+      this.#document,
+    );
     this.#customReference = null;
     this.#refresh();
   }
 
   setCustomRangeEndHere(): void {
-    const editor = this.#requireEditor();
-    if (this.#customStartReference === null) {
+    const editor = this.#requireCollapsedCursor(
+      "Place the cursor at the exact custom range end.",
+    );
+    if (this.#customStartBoundary === null) {
       throw new CoworkActionTargetUnavailableError(
         "Set the custom range start before setting its end.",
       );
     }
-    const resolvedStart = resolveCoworkDocumentTargetReference(
+    const range = this.#exactRangeFromBoundary(
       editor,
-      this.#document,
-      this.#customStartReference,
+      this.#customStartBoundary,
+      "custom range",
     );
-    const end = coworkCurrentBlockRange(editor);
-    if (resolvedStart === null || end === null) {
-      throw new CoworkActionTargetUnavailableError(
-        "The custom range boundary could not be resolved.",
-      );
-    }
-    if (end.endBlockIndex <= resolvedStart.range.startBlockIndex) {
-      throw new CoworkActionTargetUnavailableError(
-        "Set the range end at or after its start.",
-      );
-    }
-    const range: CoworkBlockRange = {
-      from: resolvedStart.range.from,
-      to: end.to,
-      startBlockIndex: resolvedStart.range.startBlockIndex,
-      endBlockIndex: end.endBlockIndex,
-    };
+    coworkProjectionTarget(editor, this.#document, range);
     this.#customReference = createCoworkDocumentTargetReference({
       editor,
       document: this.#document,
@@ -231,12 +261,12 @@ export class DefaultCoworkActionSnapshotController
       documentId: this.#documentId,
       range,
     });
-    this.#customStartReference = null;
+    this.#customStartBoundary = null;
     this.#refresh();
   }
 
   clearCustomRange(): void {
-    this.#customStartReference = null;
+    this.#customStartBoundary = null;
     this.#customReference = null;
     this.#refresh();
   }
@@ -529,7 +559,7 @@ export class DefaultCoworkActionSnapshotController
   #resolvePlanRange(
     editor: Editor,
     plan: CapturePlan,
-  ): CoworkBlockRange | null {
+  ): CoworkIndexedRange | null {
     if (plan.reference === null) return null;
     const resolved = resolveCoworkDocumentTargetReference(
       editor,
@@ -538,6 +568,44 @@ export class DefaultCoworkActionSnapshotController
     );
     if (resolved === null) throw new CoworkActionTargetUnavailableError();
     return resolved.range;
+  }
+
+  #requireCollapsedCursor(message: string): Editor {
+    const editor = this.#requireEditor();
+    if (!editor.state.selection.empty) {
+      throw new CoworkActionTargetUnavailableError(message);
+    }
+    return editor;
+  }
+
+  #exactRangeFromBoundary(
+    editor: Editor,
+    boundary: CoworkCursorBoundaryReference,
+    label: string,
+  ): CoworkIndexedRange {
+    const from = resolveCoworkCursorBoundaryReference(
+      editor,
+      this.#document,
+      boundary,
+    );
+    const to = editor.state.selection.head;
+    if (from === null) {
+      throw new CoworkActionTargetUnavailableError(
+        `The ${label} start could not be resolved after the document changed.`,
+      );
+    }
+    if (to <= from) {
+      throw new CoworkActionTargetUnavailableError(
+        `Set the ${label} end after its start.`,
+      );
+    }
+    const range = coworkExactRange(editor.state.doc, { from, to });
+    if (range === null || coworkRangeQuote(editor.state.doc, range) === null) {
+      throw new CoworkActionTargetUnavailableError(
+        `The ${label} boundaries do not contain document text.`,
+      );
+    }
+    return range;
   }
 
   #requireEditor(): Editor {
@@ -580,13 +648,21 @@ export class DefaultCoworkActionSnapshotController
             this.#document,
             this.#reference,
           );
-    const resolvedCustomStart =
-      this.#customStartReference === null
+    const resolvedWorkingStart =
+      this.#workingStartBoundary === null
         ? null
-        : resolveCoworkDocumentTargetReference(
+        : resolveCoworkCursorBoundaryReference(
             editor,
             this.#document,
-            this.#customStartReference,
+            this.#workingStartBoundary,
+          );
+    const resolvedCustomStart =
+      this.#customStartBoundary === null
+        ? null
+        : resolveCoworkCursorBoundaryReference(
+            editor,
+            this.#document,
+            this.#customStartBoundary,
           );
     const resolvedCustom =
       this.#customReference === null
@@ -600,14 +676,20 @@ export class DefaultCoworkActionSnapshotController
       phase: "ready",
       selection,
       currentSection,
+      workingTargetStart:
+        resolvedWorkingStart === null
+          ? null
+          : {
+              position: resolvedWorkingStart,
+              label: "Working on start",
+            },
       customRangeStart:
         resolvedCustomStart === null
           ? null
-          : coworkRangeSummary(
-              editor.state.doc,
-              resolvedCustomStart.range,
-              "Range start",
-            ),
+          : {
+              position: resolvedCustomStart,
+              label: "Custom range start",
+            },
       customRange:
         resolvedCustom === null
           ? null

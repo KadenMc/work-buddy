@@ -26,7 +26,9 @@ import type {
   ReviewProposal,
   ReviewRailData,
   TrustState,
+  VerificationConfiguration,
   VerificationRecheckIntent,
+  VerifyProviderCostControl,
 } from "../rail/contracts";
 import type { EpistemicState, ProposalInput } from "../suggestions/types";
 import type {
@@ -42,6 +44,7 @@ import type {
   R2ProvenanceSpan,
   R2VerificationConfiguration,
   R2VerificationCriterion,
+  R2VerifyProviderCostControl,
   R2VerificationRecheckIntent,
 } from "./types";
 
@@ -228,6 +231,8 @@ const mapVerificationRecheckIntent = (
     sameTargetSource: intent.requires.same_target_source,
     sameTargetReference: intent.requires.same_target_reference,
     exactTargetResolution: intent.requires.exact_target_resolution,
+    userAffirmedExactTargetRequired:
+      intent.requires.user_affirmed_exact_target_required,
     allowWidenToWholeDocument:
       intent.requires.allow_widen_to_whole_document,
   },
@@ -277,36 +282,85 @@ const mapVerificationCriterion = (
   issues: criterion.issues,
 });
 
+const mapVerifyProviderCostControl = (
+  control: R2VerifyProviderCostControl,
+): VerifyProviderCostControl => ({
+  providerId: control.provider_id,
+  enforcementClass: control.enforcement_class,
+  ceilingUsdPerWorkerSession: control.ceiling_usd_per_worker_session,
+  basis: control.basis,
+});
+
+export const mapVerifyExecutionPlan = (
+  executionPlan: NonNullable<R2VerificationConfiguration["execution_plan"]>,
+): NonNullable<VerificationConfiguration["executionPlan"]> => ({
+  schema: executionPlan.schema,
+  authoritative: executionPlan.authoritative,
+  checker: {
+    executionClass: executionPlan.checker.execution_class,
+    mechanism: executionPlan.checker.mechanism,
+    modelCall: executionPlan.checker.model_call,
+    externalEgress: executionPlan.checker.external_egress,
+    contentBoundary: executionPlan.checker.content_boundary,
+  },
+  coordination: {
+    executionClass: executionPlan.coordination.execution_class,
+    selection: {
+      mode: executionPlan.coordination.selection.mode,
+      providerId: executionPlan.coordination.selection.provider_id,
+      modelId: executionPlan.coordination.selection.model_id,
+      providerLabel: executionPlan.coordination.selection.provider_label,
+      modelLabel: executionPlan.coordination.selection.model_label,
+    },
+    contentBoundary: executionPlan.coordination.content_boundary,
+    externalEgress: executionPlan.coordination.external_egress,
+    fallback: {
+      providerModelFallback:
+        executionPlan.coordination.fallback.provider_model_fallback,
+      failureMode: executionPlan.coordination.fallback.failure_mode,
+    },
+    workerSessions: {
+      initial: executionPlan.coordination.worker_sessions.initial,
+      maximum: executionPlan.coordination.worker_sessions.maximum,
+      conditionalRoles:
+        executionPlan.coordination.worker_sessions.conditional_roles,
+    },
+    costControl:
+      executionPlan.coordination.cost_control === null
+        ? null
+        : mapVerifyProviderCostControl(
+            executionPlan.coordination.cost_control,
+          ),
+    providerCostControls:
+      executionPlan.coordination.provider_cost_controls.map(
+        mapVerifyProviderCostControl,
+      ),
+  },
+});
+
 const mapVerificationConfiguration = (
   payload: R2DocPayload,
-): {
-  readonly schema: string;
-  readonly documentId: string;
-  readonly coordination: {
-    readonly required: boolean;
-    readonly selection: string;
-    readonly contentBoundary: string;
-    readonly egressClass: string;
-    readonly externalEgress: boolean;
-    readonly costCeilingUsdPerWorker: number;
-    readonly separateReviserForFindings: boolean;
-    readonly pattern: string;
-    readonly baseWorkerCalls: number;
-    readonly maximumWorkerCalls: number;
-  } | null;
-  readonly criteria: ReturnType<typeof mapVerificationCriterion>[];
-} => {
+): VerificationConfiguration => {
   const configuration: R2VerificationConfiguration | undefined =
     payload.verification_configuration;
+  const executionPlan = configuration?.execution_plan;
   return {
     schema:
       configuration?.schema ??
       "work-buddy.cowork-verify-configuration/unavailable",
     documentId: configuration?.document_id ?? payload.document_id,
+    executionPlan:
+      executionPlan === undefined
+        ? null
+        : mapVerifyExecutionPlan(executionPlan),
     coordination:
       configuration === undefined
         ? null
         : {
+            deprecated: configuration.coordination.deprecated ?? true,
+            authoritativeProjection:
+              configuration.coordination.authoritative_projection ??
+              "execution_plan",
             required: configuration.coordination.required,
             selection: configuration.coordination.selection,
             contentBoundary: configuration.coordination.content_boundary,
@@ -314,6 +368,9 @@ const mapVerificationConfiguration = (
             externalEgress: configuration.coordination.external_egress,
             costCeilingUsdPerWorker:
               configuration.coordination.cost_ceiling_usd_per_worker,
+            costCeilingSemantics:
+              configuration.coordination.cost_ceiling_semantics ??
+              "requested_launch_budget_not_provider_guarantee",
             separateReviserForFindings:
               configuration.coordination.separate_reviser_for_findings,
             pattern:

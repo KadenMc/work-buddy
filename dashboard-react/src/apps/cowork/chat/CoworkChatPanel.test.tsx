@@ -177,7 +177,7 @@ describe("CoworkChatPanel", () => {
     expect(await screen.findByText("Done.")).toBeInTheDocument();
   });
 
-  it("saves frozen Working on context even while Chat is stopped", async () => {
+  it("uses the shared Working on target and saves its frozen context even while Chat is stopped", async () => {
     const captured = {
       schema: "wb.cowork.action-snapshot/v1",
       storeId: "store-1",
@@ -275,13 +275,10 @@ describe("CoworkChatPanel", () => {
     );
     await screen.findByText(/No messages yet/);
     expect(
-      screen.getByText(/Your message will stay here until Chat restarts/),
-    ).toBeVisible();
-    await userEvent.click(
-      screen.getByRole("switch", {
-        name: "Use Working on for this message",
-      }),
-    );
+      screen.getByLabelText(
+        "About: Introduction. An exact version will be captured when sent.",
+      ),
+    ).toHaveTextContent("About: Introduction · 24 words");
     await userEvent.type(screen.getByRole("textbox"), "Focus here.");
     await userEvent.click(screen.getByRole("button", { name: "Send" }));
 
@@ -355,15 +352,10 @@ describe("CoworkChatPanel", () => {
     );
 
     expect(
-      await screen.findByText(
-        "Working on needs attention in the editor before Chat can use it.",
+      await screen.findByLabelText(
+        "Message target unavailable. Working on needs attention in the editor before Chat can use it.",
       ),
-    ).toBeVisible();
-    expect(
-      screen.getByRole("switch", {
-        name: "Use Working on for this message",
-      }),
-    ).toBeDisabled();
+    ).toHaveTextContent("About: target unavailable");
   });
 
   it("clears the draft after an acknowledged send when its reload fails", async () => {

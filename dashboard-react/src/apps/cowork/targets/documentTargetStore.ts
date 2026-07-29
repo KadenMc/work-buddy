@@ -20,6 +20,9 @@ const isReference = (
     candidate.storeId === storeId &&
     candidate.documentId === documentId &&
     candidate.kind === "text_range" &&
+    (candidate.granularity === undefined ||
+      candidate.granularity === "character" ||
+      candidate.granularity === "block") &&
     typeof candidate.relative?.startBase64 === "string" &&
     typeof candidate.relative?.endBase64 === "string" &&
     typeof candidate.quote?.exact === "string" &&

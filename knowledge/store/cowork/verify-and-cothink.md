@@ -2,7 +2,7 @@
 name: Co-work Verify and Co-think
 kind: system
 description: Exact-version document evaluation and deliberately non-evidential support for human deliberation inside the Co-work document surface.
-summary: Co-work Verify and Co-think are sibling actions over one exact document target. Verify evaluates explicit criteria through a coordinator, optional reviser, deterministic candidate proof, and post-revision coordinator before ordinary human review. Co-think offers one explicitly requested, non-evidential alternative perspective.
+summary: Co-work Verify and Co-think are sibling editor docks over one shared document target. Verify evaluates explicit criteria through a coordinator, optional reviser, deterministic candidate proof, and post-revision coordinator before ordinary human review. Co-think currently exposes only a planned sibling shell; its fuller deliberation workflow is deferred.
 entry_points:
 - work_buddy.cowork.verify
 - work_buddy.cowork.verify_orchestration
@@ -61,24 +61,32 @@ Sharing the same workspace and action snapshot does not make their outputs the
 same type. Verify produces typed evaluation records. Co-think produces an
 advisory item or an honest no-useful-item outcome.
 
-## Sibling launch experience
+## Sibling dock experience
 
-The document action bar presents **Co-work Verify** and **Co-think** as sibling
-actions beneath one **Action target** chooser. Both display the selected
-account-backed provider/model and their content-sharing boundary. Verify has a
-collapsible **Goal and protected intent** editor and a primary **Run Verify**
-button. Co-think has its own non-evidential explanation and **Invite
-perspective** button. Invoking one does not invoke the other.
+The editor top keeps one compact **Working on** control. The editor bottom has
+an accordion with sibling **Verify** and **Co-think** docks; only one is open at
+a time and both may be collapsed. Expanding a dock reduces only editor space.
+It does not overlay or displace Review or Chat.
 
-The target chooser can use Working on, the current selection, a custom range,
-the current section, or the whole document. The chosen target is frozen for
-that one action; changing Working on or the live selection afterward does not
-rewrite it.
+The Verify dock owns the current target or one-run override, criteria and check
+configuration, user goal, protected intent, explicit account-backed
+provider/model, execution and data-sharing disclosure, run action, progress,
+and history. Review receives only durable results, proposals, rechecks, and
+human decisions.
+
+The Co-think dock is currently a non-operational **Planned** shell so the
+sibling interaction and responsive footprint can be tested without treating
+the earlier one-shot perspective worker as a settled product. Historical
+Co-think items may still appear in Review.
+
+Ordinary Chat messages use the shared Working on target and show it as one
+compact **About:** chip in the composer. The target is frozen for that message;
+changing Working on or editing the document afterward does not rewrite it.
 
 ## Current end-to-end behavior
 
-1. The user chooses an action target and, for Verify, may edit the exact user
-   goal and protected intent.
+1. The user chooses or confirms Working on and, in the Verify dock, may choose
+   a one-run override and edit the exact user goal and protected intent.
 2. The editor freezes one exact document/action snapshot and the server
    validates its structured head, selector, projection, target text, and hashes.
 3. Verify resolves and freezes the effective criterion/check configuration,
@@ -98,14 +106,22 @@ rewrite it.
    passes. The domain service then creates an ordinary immutable proposal.
 8. A human confirms, amends, rejects, redirects, endorses, or defers through
    the existing review sitting. Only the sitting may apply the exact payload.
-9. An applied Verify-linked correction creates a persistent recheck card. The
-   user chooses **Recheck now**, which captures a fresh version while preserving
-   the original target source/reference, provider/model, user goal, protected
-   intent, source run, and still-pending proposal set.
+9. An applied Verify-linked correction creates a persistent recheck card.
+   Review hands that context into the Verify dock; it does not launch a run.
+   The dock preserves the original provider/model, goal, protected intent,
+   source run, and still-pending proposal set. It automatically rebinds a
+   resolvable durable target, while a legacy unresolved target requires a newly
+   affirmed exact **Working on** passage. That affirmation is persisted by a
+   separate non-executing request before Run can use its server receipt.
+10. Only **Run Verify** in the bound dock captures the fresh version and
+    authorizes recheck execution. Silent widening to the whole document remains
+    forbidden.
 
-Co-think begins only after the user invokes **Invite perspective**. Its
-worker may return one alternative perspective or state that it found no useful
-item. A delivered item offers **Discuss**, **Keep for later**, and **Dismiss**.
+The durable Co-think records and worker contracts from the earlier
+alternative-perspective slice remain readable for compatibility. The current
+document surface does not expose a new invocation until the planned
+deliberation contracts are reviewed. A historical delivered item retains
+**Discuss**, **Keep for later**, and **Dismiss**.
 
 ## Shared foundations, different authority
 
@@ -126,9 +142,10 @@ They do not share:
 - proposal authority; or
 - user response semantics.
 
-The coordinator may suggest that another perspective could be useful, but
-Co-think invocation remains an explicit user action. A Co-think item cannot
-activate a criterion, establish a nonconformity, or create/apply a correction.
+The coordinator may eventually suggest that another perspective could be
+useful, but Co-think invocation must remain an explicit user action. A
+Co-think item cannot activate a criterion, establish a nonconformity, or
+create/apply a correction.
 
 Coordination also has a content-minimized portable projection in the Truth
 store. Export/import preserves exact bindings, provider/model, user goal,
@@ -184,9 +201,10 @@ human review before application**.
 
 The executable evaluation set contains one admitted deterministic exact-term
 check. User-authored criteria can be saved as disabled, unavailable drafts, but
-there is no user-facing executor-admission mechanism. Model-based specialists,
-source-grounded checks, multi-turn Socratic inquiry, ambient prompts, named
-return conditions, and blocking publication policy remain extension points.
+there is no user-facing executor-admission mechanism. The Co-think dock is
+present but non-operational. Model-based specialists, source-grounded checks,
+multi-turn Socratic inquiry, ambient prompts, named return conditions, and
+blocking publication policy remain extension points.
 
 Related units:
 

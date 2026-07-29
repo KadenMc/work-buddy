@@ -27,6 +27,7 @@ from work_buddy.cowork.verify import (
 from work_buddy.cowork.verify import store as verify_store
 from work_buddy.cowork.verify_orchestration import (
     VerifyOrchestrationError,
+    affirm_verify_recheck_target,
     run_status_projection,
     start_cothink,
     start_verify_run,
@@ -103,6 +104,48 @@ def _safe_error(exc: Exception):
     return _fail("Co-work could not start this exact action.", 500)
 
 
+@verify_blueprint.post(
+    "/api/truth/doc/<document_id>/verify/recheck-target-affirmations"
+)
+def api_affirm_verify_recheck_target(document_id: str):
+    store, document, error = _mutation_context(document_id)
+    if error:
+        return error
+    try:
+        body = _body()
+        capture = body.get("capture")
+        if not isinstance(capture, Mapping):
+            raise VerifyOrchestrationError("capture is required")
+        with user_initiated("dashboard.cowork.verify_target_affirmation"):
+            result = affirm_verify_recheck_target(
+                store,
+                document_id=document.id,
+                capture=capture,
+                actor=_actor_for_request(),
+                recheck_intent_id=str(body.get("recheck_intent_id") or ""),
+                source_run_id=str(body.get("source_run_id") or ""),
+                proposal_ids=body.get("proposal_ids", ()),
+                user_goal=str(body.get("user_goal") or ""),
+                protected_intent=str(body.get("protected_intent") or ""),
+            )
+    except Exception as exc:  # noqa: BLE001 - safe adapter projection below
+        return _safe_error(exc)
+    _emit(
+        "truth.doc_verify_recheck_target_affirmed",
+        store.store_id,
+        {
+            "document_id": document.id,
+            "recheck_intent_id": result["recheck_intent_id"],
+            "action_snapshot_id": result["affirmed_action_snapshot_id"],
+        },
+        event_id=(
+            "cowork-verify-target-affirmation:"
+            f"{result['affirmed_action_snapshot_id']}"
+        ),
+    )
+    return jsonify(result), 201
+
+
 @verify_blueprint.post("/api/truth/doc/<document_id>/verify/runs")
 def api_start_verify_run(document_id: str):
     store, document, error = _mutation_context(document_id)
@@ -128,6 +171,9 @@ def api_start_verify_run(document_id: str):
                 ),
                 recheck_of_run_id=body.get("recheck_of_run_id"),
                 recheck_intent_id=body.get("recheck_intent_id"),
+                recheck_target_confirmation=body.get(
+                    "recheck_target_confirmation"
+                ),
             )
     except Exception as exc:  # noqa: BLE001 - safe adapter projection below
         return _safe_error(exc)

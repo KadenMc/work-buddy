@@ -744,10 +744,21 @@
   block-size: 100%;
 }
 
+.wb-cowork__editor-shell {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  inline-size: 100%;
+  min-inline-size: 0;
+  min-block-size: 0;
+  block-size: 100%;
+  container-type: inline-size;
+}
+
 .wb-cowork__editor-region {
   flex: 1 1 auto;
   min-inline-size: 0;
-  block-size: 100%;
+  min-block-size: 0;
   overflow: auto;
   padding: var(--wb-space-5);
   background: var(--wb-color-surface-canvas);
@@ -763,7 +774,7 @@
 }
 
 .wb-cowork__rail[hidden],
-.wb-cowork__editor-region[hidden] {
+.wb-cowork__editor-shell[hidden] {
   display: none;
 }
 

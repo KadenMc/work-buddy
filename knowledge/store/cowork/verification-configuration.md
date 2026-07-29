@@ -7,6 +7,7 @@ entry_points:
 - work_buddy.cowork.verify_configuration
 - work_buddy.cowork.verify.service
 - dashboard-react/src/apps/cowork/rail/VerifySetupCard.tsx
+- dashboard-react/src/apps/cowork/targets/CoworkDocumentActionDock.tsx
 tags:
 - cowork
 - verify
@@ -116,16 +117,28 @@ a trustworthy verifier.
 
 ## User behavior
 
-The Review rail’s collapsible **Verify setup** card shows:
+The editor-bottom Verify dock contains the collapsible **Verify setup** card.
+Review contains results and decisions, not configuration. Setup shows:
 
 - active and unavailable counts;
 - built-in versus user-authored origin;
 - optional, required, and locked state;
 - activation authority;
 - check method/version and limitations;
-- local/external data-sharing status; and
-- the account-backed coordination boundary, maximum worker calls, and per-worker
-  cost ceiling.
+- the check's narrowly scoped in-process/external data-sharing status; and
+- the separate account-backed coordination boundary, worker-session range,
+  provider-specific cost-control class, and fail-closed fallback policy.
 
-The document action bar shows the current active/unavailable summary and the
-explicit provider/model that a new run will use.
+The Verify dock also shows the explicit provider/model that a new run will use.
+Choosing it is local to Verify and does not restart or silently change document
+Chat. The visible disclosure distinguishes:
+
+- the deterministic checker, which runs in-process against the captured target
+  with no checker egress; from
+- coordinator/reviser worker sessions, which use the selected account-backed
+  provider/model and receive the entire frozen document.
+
+For Claude Code, the configured maximum budget is an enforced per-worker
+session ceiling. For Codex, no equivalent enforced ceiling is attested, so the
+UI says that an enforced cap is unavailable. Provider/model fallback is off and
+failure is fail-closed.

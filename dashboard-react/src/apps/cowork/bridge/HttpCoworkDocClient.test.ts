@@ -167,6 +167,49 @@ describe("HttpCoworkDocClient Verify setup", () => {
                 model: "gpt-5.6",
                 egress_class: "account_backed_agent",
                 cost_ceiling_usd: 2,
+                execution_plan: {
+                  schema:
+                    "work-buddy.cowork-verify-execution-disclosure/v1",
+                  authoritative: true,
+                  checker: {
+                    execution_class: "in_process",
+                    mechanism: "deterministic_exact_match",
+                    model_call: false,
+                    external_egress: false,
+                    content_boundary: "captured_target",
+                  },
+                  coordination: {
+                    execution_class: "account_backed_agent",
+                    selection: {
+                      mode: "explicit_at_run_start",
+                      provider_id: "codex",
+                      model_id: "gpt-5.6",
+                      provider_label: "Codex",
+                      model_label: "GPT-5.6",
+                    },
+                    content_boundary: "entire_frozen_document",
+                    external_egress: true,
+                    fallback: {
+                      provider_model_fallback: false,
+                      failure_mode: "fail_closed",
+                    },
+                    worker_sessions: {
+                      initial: 1,
+                      maximum: 3,
+                      conditional_roles: [
+                        "reviser",
+                        "post_revision_coordinator",
+                      ],
+                    },
+                    cost_control: {
+                      provider_id: "codex",
+                      enforcement_class: "unavailable",
+                      ceiling_usd_per_worker_session: null,
+                      basis: "codex_worker_has_no_budget_enforcement",
+                    },
+                    provider_cost_controls: [],
+                  },
+                },
                 error: null,
                 raw_output: "must never be mapped",
               },
@@ -187,6 +230,12 @@ describe("HttpCoworkDocClient Verify setup", () => {
     expect(detail.runId).toBe("run-1");
     expect(detail.checks[0]?.definition.version).toBe(1);
     expect(detail.results[0]?.dispositions[0]?.decision).toBe("suppress");
+    expect(
+      detail.coordination[0]?.executionPlan?.coordination.costControl,
+    ).toMatchObject({
+      providerId: "codex",
+      enforcementClass: "unavailable",
+    });
     expect(detail.coordination[0]).not.toHaveProperty("raw_output");
     expect(fetchImpl.mock.calls[0]?.[0]).toBe(
       "/api/truth/doc/doc-1/verify/runs/run-1?store_id=store-1",

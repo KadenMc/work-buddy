@@ -5,12 +5,14 @@
 
 import {
   useCallback,
-  useEffect,
   useMemo,
-  useState,
   useSyncExternalStore,
 } from "react";
 
+import {
+  HelpTarget,
+  type HelpContent,
+} from "../../../dashboard/help";
 import {
   ConversationChat,
   type ChatConversationProvider,
@@ -20,7 +22,6 @@ import {
   type ChatSendInput,
   type ConversationChatState,
 } from "../../../widget-library/chat";
-import { SwitchField } from "../../../ui";
 import type { CoworkActionSnapshotControllerState } from "../targets";
 import {
   CoworkChatAnnotations,
@@ -83,6 +84,12 @@ const subscribeWithoutTarget = (): (() => void) => () => undefined;
 const getTargetLoadingState = (): CoworkActionSnapshotControllerState =>
   TARGET_LOADING_STATE;
 
+const CHAT_TARGET_HELP: HelpContent = {
+  summary: "Sets what this message is about.",
+  details:
+    "Chat uses the editor’s shared Working on target and captures its exact document version when you send. Change Working on above the editor to change the target; later edits do not rewrite a sent message’s context.",
+};
+
 export function CoworkChatPanel({
   provider,
   conversationId,
@@ -111,10 +118,6 @@ export function CoworkChatPanel({
     targeting?.controller?.getSnapshot ?? getTargetLoadingState,
     getTargetLoadingState,
   );
-  const [attachWorkingTarget, setAttachWorkingTarget] = useState(false);
-  useEffect(() => {
-    setAttachWorkingTarget(false);
-  }, [targeting?.documentId, targeting?.storeId]);
 
   const targetUnavailableReason = useMemo(() => {
     if (targeting === null) return null;
@@ -130,9 +133,8 @@ export function CoworkChatPanel({
   const prepareSend = useCallback(
     async (input: ChatSendInput): Promise<ChatSendInput> => {
       // Structured answers remain exact question responses. The explicit
-      // Working-on choice applies only to ordinary authored composer turns.
+      // Working on target applies only to ordinary authored composer turns.
       if (
-        !attachWorkingTarget ||
         input.inReplyTo !== undefined ||
         targeting === null
       ) {
@@ -151,7 +153,7 @@ export function CoworkChatPanel({
       const context = await targeting.client.prepare(capture);
       return { ...input, context };
     },
-    [attachWorkingTarget, targetUnavailableReason, targeting],
+    [targetUnavailableReason, targeting],
   );
 
   const renderMessageAccessory = useCallback(
@@ -265,39 +267,37 @@ export function CoworkChatPanel({
       onMessagesChange={onMessagesChange}
       renderMessageAccessory={renderMessageAccessory}
       prepareSend={targeting === null ? undefined : prepareSend}
-      composerAccessory={
+      composerFooterAccessory={
         targeting === null ? null : (
-          <div className="wb-cowork-chat-target">
-            <SwitchField
-              label="Use Working on for this message"
-              selected={attachWorkingTarget}
-              disabled={targetUnavailableReason !== null}
-              onChange={setAttachWorkingTarget}
-            />
-            <span className="wb-cowork-chat-target__summary">
-              {targetState.workingTarget.label}
-              {targetState.phase === "ready" &&
+          <HelpTarget
+            content={CHAT_TARGET_HELP}
+            placement="top start"
+            focusable
+          >
+            <span
+              className={`wb-chat-composer__footer-accessory wb-cowork-chat-target${
+                targetUnavailableReason === null ? "" : " is-unavailable"
+              }`}
+              aria-label={
+                targetUnavailableReason === null
+                  ? `About: ${targetState.workingTarget.label}. An exact version will be captured when sent.`
+                  : `Message target unavailable. ${targetUnavailableReason}`
+              }
+              role={targetUnavailableReason === null ? undefined : "status"}
+            >
+              <span className="wb-cowork-chat-target__prefix">About:</span>{" "}
+              <span className="wb-cowork-chat-target__label">
+                {targetUnavailableReason === null
+                  ? targetState.workingTarget.label
+                  : "target unavailable"}
+              </span>
+              {targetUnavailableReason === null &&
+              targetState.phase === "ready" &&
               targetState.workingTarget.kind !== "unresolved"
                 ? ` · ${targetState.workingTarget.wordCount.toLocaleString()} words`
                 : ""}
             </span>
-            {targetUnavailableReason === null ? (
-              <span className="wb-cowork-chat-target__hint">
-                Captures an exact frozen version when you send.
-                {targeting.agent.status !== "running" ||
-                targeting.agent.alive === false
-                  ? " Your message will stay here until Chat restarts."
-                  : ""}
-              </span>
-            ) : (
-              <span
-                className="wb-cowork-chat-target__unavailable"
-                role="status"
-              >
-                {targetUnavailableReason}
-              </span>
-            )}
-          </div>
+          </HelpTarget>
         )
       }
       transcriptAppendix={

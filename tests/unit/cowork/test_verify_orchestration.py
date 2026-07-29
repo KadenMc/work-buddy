@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import base64
 import json
+import sqlite3
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -21,16 +23,21 @@ from work_buddy.cowork.verify import (
     ActionSnapshot,
     CoworkCoordinationStatusEvent,
     CriterionActivation,
+    ModelCallAuthorizationReceipt,
     ResultRelation,
     RoutingDisposition,
     cothink_items,
+    record_model_call_authorization,
     seed_terminology_exact_match,
     surfaced_results,
 )
 from work_buddy.cowork.verify_configuration import (
     set_document_criterion_enabled,
 )
-from work_buddy.cowork.verify_coordination import portable_coordination_jobs
+from work_buddy.cowork.verify_coordination import (
+    portable_coordination_jobs,
+    record_coordination_status,
+)
 from work_buddy.cowork.verify_inspection import verify_run_detail
 from work_buddy.cowork.verify_projection import cothink_outcome_projection
 from work_buddy.cowork.verify import store as verify_store
@@ -186,6 +193,99 @@ def _capture(
     }
 
 
+def test_target_reference_granularity_is_trust_bound_and_legacy_block_safe():
+    reference = {
+        "schema": "wb.cowork.document-target/v1",
+        "storeId": "store-1",
+        "documentId": "doc-1",
+        "kind": "text_range",
+        "relative": {
+            "startBase64": "AA==",
+            "endBase64": "AQ==",
+        },
+        "quote": {
+            "exact": "exact text",
+            "prefix": "",
+            "suffix": "",
+        },
+        "label": "Working on",
+        "headingPath": ["Section"],
+        "startBlockId": "block-a",
+        "endBlockId": "block-b",
+        "createdAt": NOW,
+        "updatedAt": NOW,
+    }
+
+    legacy, legacy_digest = verify_orchestration._target_reference(
+        reference,
+        store_id="store-1",
+        document_id="doc-1",
+    )
+    block, block_digest = verify_orchestration._target_reference(
+        {**reference, "granularity": "block"},
+        store_id="store-1",
+        document_id="doc-1",
+    )
+    character, character_digest = verify_orchestration._target_reference(
+        {**reference, "granularity": "character"},
+        store_id="store-1",
+        document_id="doc-1",
+    )
+
+    assert legacy is not None and legacy["granularity"] == "block"
+    assert legacy["label"] == "Working on"
+    assert legacy["headingPath"] == ["Section"]
+    assert legacy["startBlockId"] == "block-a"
+    assert block is not None and block["granularity"] == "block"
+    assert character is not None and character["granularity"] == "character"
+    assert legacy_digest == block_digest
+    assert character_digest != block_digest
+
+    with pytest.raises(
+        VerifyOrchestrationError,
+        match="granularity must be character or block",
+    ):
+        verify_orchestration._target_reference(
+            {**reference, "granularity": "paragraph"},
+            store_id="store-1",
+            document_id="doc-1",
+        )
+
+
+def test_character_target_reference_digest_matches_browser_contract():
+    reference = {
+        "schema": "wb.cowork.document-target/v1",
+        "storeId": "store-a",
+        "documentId": "doc-a",
+        "kind": "text_range",
+        "granularity": "character",
+        "relative": {
+            "startBase64": "AQID",
+            "endBase64": "BAUG",
+        },
+        "quote": {
+            "exact": "  alpha   beta ",
+            "prefix": "before\nline",
+            "suffix": " after ",
+        },
+        "label": "Selected passage",
+        "headingPath": ["Methods"],
+        "createdAt": NOW,
+        "updatedAt": NOW,
+    }
+
+    _normalized, digest = verify_orchestration._target_reference(
+        reference,
+        store_id="store-a",
+        document_id="doc-a",
+    )
+
+    assert (
+        digest
+        == "46809563029c5d6b664bd3a0610af6da73b0b53afed1c7bf8b3fd5f56683b611"
+    )
+
+
 @pytest.fixture
 def orchestration_ctx(
     store_ctx: dict[str, Any],
@@ -243,6 +343,86 @@ def _start_verify(
         spawn_detached=ctx["spawn"],
     )
     return capture, result
+
+
+def _downgrade_runtime_job_to_legacy(
+    ctx: dict[str, Any],
+    job_id: str,
+):
+    """Rewrite one test job as a valid pre-execution-disclosure durable job."""
+
+    job = get_job(job_id)
+    assert job is not None
+    request = deepcopy(dict(job.request))
+    request.pop("recheck_target_confirmation", None)
+    configuration = deepcopy(dict(request["effective_configuration"]))
+    configuration.pop("execution_plan")
+    coordination = dict(configuration["coordination"])
+    coordination.pop("deprecated", None)
+    coordination.pop("authoritative_projection", None)
+    coordination.pop("cost_ceiling_semantics", None)
+    configuration["coordination"] = coordination
+    request["effective_configuration"] = configuration
+    configuration_sha256 = sha256_text(canonical_json(configuration))
+    request["effective_configuration_sha256"] = configuration_sha256
+    request["effective_policy_sha256"] = (
+        verify_orchestration._effective_policy_sha256(
+            effective_configuration_sha256=configuration_sha256,
+            active_criterion_ids=request["active_criterion_ids"],
+        )
+    )
+    provisional = replace(job, request=request)
+    context_sha256 = sha256_text(
+        canonical_json(
+            verify_orchestration._build_job_context(
+                ctx["store"],
+                provisional,
+            )
+        )
+    )
+    receipt = record_model_call_authorization(
+        ctx["store"],
+        action_snapshot_id=job.action_snapshot_id,
+        plan_snapshot_id=job.plan_snapshot_id,
+        provider=str(job.selection["provider_id"]),
+        model=str(job.selection["model_id"]),
+        context_sha256=context_sha256,
+        content_boundary={
+            "role": job.role.value,
+            "job_id": job.job_id,
+            "document": "complete_permitted_frozen_projection",
+            "action_snapshot_id": job.action_snapshot_id,
+            "authority_context": (
+                verify_orchestration._authorization_authority_context(
+                    request
+                )
+            ),
+        },
+        egress_class="account_backed_agent",
+        cost_ceiling_usd=2.0,
+        retry_limit=0,
+        expires_at="2099-01-01T00:00:00.000+00:00",
+        actor=HUMAN,
+        at=job.created_at,
+    )
+    with sqlite3.connect(ctx["runtime_path"]) as conn:
+        conn.execute(
+            """
+            UPDATE cowork_verify_jobs
+            SET request_json = ?, context_sha256 = ?,
+                authorization_receipt_id = ?
+            WHERE job_id = ?
+            """,
+            (
+                canonical_json(request),
+                context_sha256,
+                receipt.id,
+                job.job_id,
+            ),
+        )
+    downgraded = get_job(job.job_id)
+    assert downgraded is not None
+    return downgraded
 
 
 def _submit_initial_coordinator(
@@ -759,6 +939,207 @@ def test_initial_coordinator_retains_immaterial_finding_without_reviser(
         dispositions[0].policy_snapshot_sha256
         == context["policy"]["effective_policy_sha256"]
     )
+
+
+def test_verify_execution_disclosure_matches_exact_codex_authorization(
+    orchestration_ctx: dict[str, Any],
+):
+    _, started = _start_verify(orchestration_ctx)
+    store = orchestration_ctx["store"]
+    plan = started["execution_plan"]
+
+    assert plan["coordination"]["selection"] == {
+        "mode": "explicit_at_run_start",
+        **SELECTION.to_dict(),
+    }
+    assert plan["coordination"]["content_boundary"] == (
+        "entire_frozen_document"
+    )
+    assert plan["coordination"]["fallback"] == {
+        "provider_model_fallback": False,
+        "failure_mode": "fail_closed",
+    }
+    assert plan["coordination"]["cost_control"] == {
+        "provider_id": "codex",
+        "enforcement_class": "unavailable",
+        "ceiling_usd_per_worker_session": None,
+        "basis": "codex_worker_has_no_budget_enforcement",
+    }
+
+    job = get_job(started["job_id"])
+    assert job is not None
+    assert (
+        job.request["effective_configuration"]["execution_plan"]
+        == plan
+    )
+    receipt = verify_store.get_record(
+        store,
+        ModelCallAuthorizationReceipt,
+        job.authorization_receipt_id,
+    )
+    assert receipt is not None
+    assert receipt.provider == SELECTION.provider_id
+    assert receipt.model == SELECTION.model_id
+    assert receipt.egress_class == "account_backed_agent"
+    assert receipt.retry_limit == 0
+    # Dispatch still passes its bounded launch-budget request. The disclosure
+    # truthfully does not present this as a Codex-enforced ceiling.
+    assert receipt.cost_ceiling_usd == 2.0
+    detail = verify_run_detail(
+        store,
+        document_id=job.document_id,
+        run_id=started["run_id"],
+    )
+    historical_plan = detail["coordination"][0]["execution_plan"]
+    assert historical_plan == plan
+    assert historical_plan["coordination"]["cost_control"][
+        "enforcement_class"
+    ] == "unavailable"
+
+
+def test_pre_disclosure_job_replays_with_validated_synthesized_plan(
+    orchestration_ctx: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    original_record = verify_orchestration.record_coordination_status
+    monkeypatch.setattr(
+        verify_orchestration,
+        "record_coordination_status",
+        lambda *_args, **_kwargs: None,
+    )
+    capture, started = _start_verify(orchestration_ctx)
+    monkeypatch.setattr(
+        verify_orchestration,
+        "record_coordination_status",
+        original_record,
+    )
+    legacy = _downgrade_runtime_job_to_legacy(
+        orchestration_ctx,
+        started["job_id"],
+    )
+    assert (
+        legacy.request["effective_configuration"].get("execution_plan")
+        is None
+    )
+    spawn_count = len(orchestration_ctx["spawned"])
+
+    replay = start_verify_run(
+        orchestration_ctx["store"],
+        document_id=capture["documentId"],
+        capture=capture,
+        selection=SELECTION,
+        actor=HUMAN,
+        user_goal="Use established terminology.",
+        protected_intent="Preserve the author's substantive meaning.",
+        validate_selection=lambda selection: selection,
+        spawn_detached=orchestration_ctx["spawn"],
+    )
+
+    assert replay["replayed"] is True
+    assert replay["execution_plan"]["coordination"]["selection"] == {
+        "mode": "explicit_at_run_start",
+        **SELECTION.to_dict(),
+    }
+    assert len(orchestration_ctx["spawned"]) == spawn_count
+
+
+def test_pre_disclosure_job_synthesizes_bound_plan_for_both_children(
+    orchestration_ctx: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    original_record = verify_orchestration.record_coordination_status
+    monkeypatch.setattr(
+        verify_orchestration,
+        "record_coordination_status",
+        lambda *_args, **_kwargs: None,
+    )
+    _, started = _start_verify(orchestration_ctx)
+    monkeypatch.setattr(
+        verify_orchestration,
+        "record_coordination_status",
+        original_record,
+    )
+    legacy = _downgrade_runtime_job_to_legacy(
+        orchestration_ctx,
+        started["job_id"],
+    )
+    record_coordination_status(orchestration_ctx["store"], legacy)
+    result_ids = [
+        result.id
+        for result in verify_store.list_records(
+            orchestration_ctx["store"],
+            verify_orchestration.EvaluationResult,
+        )
+        if result.evaluation_run_id == legacy.evaluation_run_id
+    ]
+    reviser, _ = verify_orchestration._create_and_launch_reviser(
+        orchestration_ctx["store"],
+        legacy,
+        requested_revision_result_ids=result_ids,
+        disposition_ids=[],
+        spawn_detached=orchestration_ctx["spawn"],
+    )
+    reviser_configuration = reviser.request["effective_configuration"]
+    assert reviser_configuration["execution_plan"]["coordination"][
+        "selection"
+    ] == {
+        "mode": "explicit_at_run_start",
+        **SELECTION.to_dict(),
+    }
+    assert reviser.request["effective_configuration_sha256"] == sha256_text(
+        canonical_json(reviser_configuration)
+    )
+    assert reviser.request["effective_policy_sha256"] == (
+        verify_orchestration._effective_policy_sha256(
+            effective_configuration_sha256=reviser.request[
+                "effective_configuration_sha256"
+            ],
+            active_criterion_ids=reviser.request["active_criterion_ids"],
+        )
+    )
+
+    coordinator = verify_orchestration._create_and_launch_coordinator(
+        orchestration_ctx["store"],
+        reviser,
+        spawn_detached=orchestration_ctx["spawn"],
+    )
+    assert (
+        coordinator.request["effective_configuration"]["execution_plan"]
+        == reviser_configuration["execution_plan"]
+    )
+    assert coordinator.request["coordinator_stage"] == "post_revision"
+
+
+def test_pre_disclosure_upgrade_rejects_selection_tampering(
+    orchestration_ctx: dict[str, Any],
+):
+    _, started = _start_verify(orchestration_ctx)
+    legacy = _downgrade_runtime_job_to_legacy(
+        orchestration_ctx,
+        started["job_id"],
+    )
+    tampered_selection = {
+        **legacy.selection,
+        "provider_id": "claude-code",
+        "model_id": "sonnet",
+    }
+    with sqlite3.connect(orchestration_ctx["runtime_path"]) as conn:
+        conn.execute(
+            "UPDATE cowork_verify_jobs SET selection_json = ? "
+            "WHERE job_id = ?",
+            (canonical_json(tampered_selection), legacy.job_id),
+        )
+    tampered = get_job(legacy.job_id)
+    assert tampered is not None
+
+    with pytest.raises(
+        VerifyOrchestrationError,
+        match="no longer matches its exact authorization",
+    ):
+        verify_orchestration._validated_execution_request(
+            orchestration_ctx["store"],
+            tampered,
+        )
 
 
 def test_material_finding_flows_coordinator_reviser_coordinator_to_proposal(

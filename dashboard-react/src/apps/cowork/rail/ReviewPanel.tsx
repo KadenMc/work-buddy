@@ -11,7 +11,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Inspector } from "./Inspector";
 import { VerificationAttentionFeed } from "./VerificationAttentionFeed";
-import { VerifySetupCard } from "./VerifySetupCard";
 import { FilterLens } from "./FilterLens";
 import { MarkBar, type MarkBarTarget } from "./MarkBar";
 import { QueueView, type QueueBindings } from "./QueueView";
@@ -401,31 +400,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
     >
       <RailDriftStrip title={data.title} drift={data.drift} />
 
-      <VerifySetupCard
-        capability={data.verifyCapability}
-        configuration={data.verificationConfiguration}
-        onSetEnabled={
-          props.provider.setVerifyCriterionEnabled === undefined
-            ? undefined
-            : async (criterionKey, enabled, expectedActivationId) => {
-                await props.provider.setVerifyCriterionEnabled?.(
-                  criterionKey,
-                  enabled,
-                  expectedActivationId,
-                );
-              }
-        }
-        onCreateDraft={
-          props.provider.createVerifyCriterionDraft === undefined
-            ? undefined
-            : async (draft) => {
-                await props.provider.createVerifyCriterionDraft?.(draft);
-              }
-        }
-      />
-
       <VerificationAttentionFeed
-        runs={data.evaluationRuns}
         results={data.evaluationResults}
         recheckIntents={data.verificationRecheckIntents}
         cothinkItems={data.cothinkItems}
@@ -433,7 +408,6 @@ export function ReviewPanel(props: ReviewPanelProps) {
         busyItemId={busyAttentionId}
         onRevealResult={revealResult}
         onOpenProposal={openCorrection}
-        onInspectRun={props.provider.inspectVerifyRun?.bind(props.provider)}
         onDiscussCothink={
           props.provider.discussCothink === undefined
             ? undefined
@@ -459,7 +433,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
                     setAttentionError(
                       cause instanceof Error
                         ? cause.message
-                        : "The correction recheck could not start.",
+                        : "The correction recheck could not open in Verify.",
                     );
                   })
                   .finally(() => setBusyAttentionId(null));

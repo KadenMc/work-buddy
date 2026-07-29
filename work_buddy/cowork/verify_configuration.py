@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
+from work_buddy.agent_execution.models import AgentExecutionSelection
 from work_buddy.cowork.verify import (
     CheckDefinitionVersion,
     CriterionActivation,
@@ -26,6 +27,9 @@ from work_buddy.cowork.verify import (
 )
 from work_buddy.cowork.verify import store as verify_store
 from work_buddy.cowork.verify.service import TERMINOLOGY_EXACT_MATCH_EXECUTOR
+from work_buddy.cowork.verify_execution import (
+    verify_execution_disclosure_plan,
+)
 from work_buddy.cowork.verify_jobs import MAX_VERIFY_JOB_BUDGET_USD
 from work_buddy.truth import documents
 from work_buddy.truth.contracts import Actor, validate_agent_producer_meta
@@ -239,6 +243,7 @@ def _configuration_projection(
     *,
     conn: sqlite3.Connection,
     system_defaults: SeededTerminologyExactMatch | None = None,
+    execution_selection: AgentExecutionSelection | None = None,
 ) -> dict[str, Any]:
     criterion_records = list(
         verify_store.list_records(
@@ -440,13 +445,26 @@ def _configuration_projection(
     return {
         "schema": CONFIGURATION_SCHEMA,
         "document_id": document_id,
+        "execution_plan": verify_execution_disclosure_plan(
+            execution_selection
+        ),
         "coordination": {
+            "deprecated": True,
+            "authoritative_projection": "execution_plan",
             "required": True,
             "selection": "explicit_provider_and_model_at_run_start",
+            # Preserve the v1 compatibility token. The authoritative
+            # execution_plan above carries the newer normalized boundary.
             "content_boundary": "complete_permitted_frozen_document",
             "egress_class": "account_backed_agent",
             "external_egress": True,
+            # Compatibility only. This is the bounded launch-budget request,
+            # not a provider-independent guarantee. Consumers must use the
+            # authoritative execution_plan cost-control projection above.
             "cost_ceiling_usd_per_worker": MAX_VERIFY_JOB_BUDGET_USD,
+            "cost_ceiling_semantics": (
+                "requested_launch_budget_not_provider_guarantee"
+            ),
             "separate_reviser_for_findings": True,
             "pattern": "coordinator_then_optional_reviser_then_coordinator",
             "base_worker_calls": 1,
@@ -462,6 +480,7 @@ def list_effective_verification_configuration(
     document_id: str,
     ensure_system_defaults: bool = True,
     document: DocumentRecord | None = None,
+    execution_selection: AgentExecutionSelection | None = None,
     conn: sqlite3.Connection | None = None,
 ) -> dict[str, Any]:
     """Return the wire-ready effective criterion/check configuration."""
@@ -486,6 +505,7 @@ def list_effective_verification_configuration(
             current_document.id,
             conn=conn,
             system_defaults=defaults,
+            execution_selection=execution_selection,
         )
     with store._read_connection() as read_conn:
         return _configuration_projection(
@@ -493,6 +513,7 @@ def list_effective_verification_configuration(
             current_document.id,
             conn=read_conn,
             system_defaults=defaults,
+            execution_selection=execution_selection,
         )
 
 

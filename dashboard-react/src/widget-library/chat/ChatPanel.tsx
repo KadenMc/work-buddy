@@ -138,6 +138,8 @@ export interface ChatPanelProps {
   readonly composerPlaceholder?: string;
   /** Additive context controls rendered by the shared composer. */
   readonly composerAccessory?: ReactNode;
+  /** Compact additive context rendered in the shared composer footer. */
+  readonly composerFooterAccessory?: ReactNode;
   /** Recoverable state shown in the input region instead of the composer. */
   readonly inputRecovery?: ChatInputRecovery;
   /** Seed the composer draft once on mount, e.g. from a retained unsent draft. */
@@ -198,6 +200,7 @@ export function ChatPanel({
   composerDisabled = false,
   composerPlaceholder,
   composerAccessory,
+  composerFooterAccessory,
   inputRecovery,
   initialValue,
   onDraftChange,
@@ -330,6 +333,7 @@ export function ChatPanel({
                 onDraftChange={onDraftChange}
                 execution={execution}
                 accessory={composerAccessory}
+                footerAccessory={composerFooterAccessory}
               />
             ) : null}
           </div>
@@ -344,6 +348,7 @@ export function ChatPanel({
             onDraftChange={onDraftChange}
             execution={execution}
             accessory={composerAccessory}
+            footerAccessory={composerFooterAccessory}
           />
         ) : execution === undefined ? null : (
           <ChatExecutionPicker control={execution} />

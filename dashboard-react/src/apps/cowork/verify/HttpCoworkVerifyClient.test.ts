@@ -65,6 +65,15 @@ describe("HttpCoworkVerifyClient", () => {
         recheckOfProposalIds: ["proposal-1"],
         recheckOfRunId: "source-run-1",
         recheckIntentId: "recheck-intent-1",
+        recheckTargetConfirmation: {
+          schema: "work-buddy.cowork-recheck-target-confirmation/v1",
+          method: "user_affirmed_working_target",
+          affirmedCaptureId: "affirmed-capture-1",
+          affirmedActionSnapshotId: "affirmed-action-1",
+          runCaptureId: "capture-1",
+          targetReferenceSha256: "a".repeat(64),
+          targetTextSha256: "b".repeat(64),
+        },
       }),
     ).resolves.toMatchObject({
       runId: "run-1",
@@ -85,6 +94,15 @@ describe("HttpCoworkVerifyClient", () => {
     expect(body.recheck_of_proposal_ids).toEqual(["proposal-1"]);
     expect(body.recheck_of_run_id).toBe("source-run-1");
     expect(body.recheck_intent_id).toBe("recheck-intent-1");
+    expect(body.recheck_target_confirmation).toEqual({
+      schema: "work-buddy.cowork-recheck-target-confirmation/v1",
+      method: "user_affirmed_working_target",
+      affirmed_capture_id: "affirmed-capture-1",
+      affirmed_action_snapshot_id: "affirmed-action-1",
+      run_capture_id: "capture-1",
+      target_reference_sha256: "a".repeat(64),
+      target_text_sha256: "b".repeat(64),
+    });
     expect(body.user_goal).toBe(
       "Audit this PRD against the active criteria.",
     );
@@ -92,6 +110,58 @@ describe("HttpCoworkVerifyClient", () => {
       "Preserve the user's product constraints.",
     );
     expect(body).not.toHaveProperty("expected_revision");
+  });
+
+  it("persists a non-executing target affirmation before Run", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      new Response(
+        JSON.stringify({
+          schema:
+            "work-buddy.cowork-recheck-target-affirmation-receipt/v1",
+          recheck_intent_id: "intent-1",
+          source_run_id: "source-run-1",
+          pending_proposal_ids: ["proposal-1"],
+          affirmed_capture_id: capture.captureId,
+          affirmed_action_snapshot_id: "affirmed-action-1",
+          target_reference_sha256: "a".repeat(64),
+          target_text_sha256: "b".repeat(64),
+          affirmed_at: "2026-07-28T12:01:00.000Z",
+        }),
+        { status: 201, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    const client = new HttpCoworkVerifyClient({
+      documentId: "doc-1",
+      storeId: "store-1",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await expect(
+      client.affirmRecheckTarget(capture, {
+        intentId: "intent-1",
+        sourceRunId: "source-run-1",
+        pendingProposalIds: ["proposal-1"],
+        userGoal: "Check it.",
+        protectedIntent: "Preserve intent.",
+      }),
+    ).resolves.toMatchObject({
+      affirmedActionSnapshotId: "affirmed-action-1",
+      recheckIntentId: "intent-1",
+    });
+
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe(
+      "/api/truth/doc/doc-1/verify/recheck-target-affirmations?store_id=store-1",
+    );
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    expect(body).toEqual({
+      capture,
+      recheck_intent_id: "intent-1",
+      source_run_id: "source-run-1",
+      proposal_ids: ["proposal-1"],
+      user_goal: "Check it.",
+      protected_intent: "Preserve intent.",
+    });
   });
 
   it("keeps Co-think a separate explicit action and preserves safe errors", async () => {

@@ -331,6 +331,7 @@ describe("LiveReviewRailProvider", () => {
               same_target_source: true,
               same_target_reference: true,
               exact_target_resolution: true,
+              user_affirmed_exact_target_required: false,
               on_unresolved: "user_action_required",
               allow_widen_to_whole_document: false,
             },

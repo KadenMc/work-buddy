@@ -57,6 +57,7 @@ import {
   DefaultCoworkActionSnapshotController,
   type CoworkActionSnapshotController,
 } from "../targets";
+import { CoworkWorkingTargetProjector } from "./CoworkWorkingTargetProjector";
 
 /** What the host reports up once the canonical editor is mounted. */
 export interface CoworkEditorReadyContext {
@@ -261,6 +262,13 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
             getEditGeneration: () => editGeneration.current,
           }),
     [persistence, props.document, props.documentId, props.storeId],
+  );
+  const workingTargetProjector = useMemo(
+    () =>
+      actionSnapshotController === null
+        ? null
+        : new CoworkWorkingTargetProjector(actionSnapshotController),
+    [actionSnapshotController],
   );
 
   const durabilityController = useMemo(
@@ -640,10 +648,15 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
   useEffect(() => {
     props.onActionSnapshotController?.(actionSnapshotController);
     return () => {
+      workingTargetProjector?.dispose();
       actionSnapshotController?.detach();
       props.onActionSnapshotController?.(null);
     };
-  }, [actionSnapshotController, props.onActionSnapshotController]);
+  }, [
+    actionSnapshotController,
+    props.onActionSnapshotController,
+    workingTargetProjector,
+  ]);
 
   useEffect(() => {
     const onOnline = (): void => {
@@ -719,10 +732,12 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
           onReady={(context) => {
             editorRef.current = context.editor;
             actionSnapshotController?.attach(context.editor);
+            workingTargetProjector?.attach(context.editor);
             props.onReady?.(context);
             void checkProjection(context.editor);
           }}
           onTeardown={() => {
+            workingTargetProjector?.detach();
             actionSnapshotController?.detach();
             editorRef.current = null;
             props.onTeardown?.();

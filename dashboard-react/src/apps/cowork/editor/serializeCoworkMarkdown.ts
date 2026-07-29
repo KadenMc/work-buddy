@@ -15,8 +15,8 @@ export interface CoworkMarkdownFidelity {
 /**
  * A canonical Markdown projection plus the serialized editor body before the
  * byte-envelope trailing-newline rule is applied. `bodyStart` is a UTF-16
- * string offset into `markdown`; callers that persist selectors must convert
- * it to the code-point offsets used by Truth.
+ * string offset into `markdown`; exact and block target mapping both use this
+ * boundary before converting to the code-point offsets used by Truth.
  */
 export interface CoworkMarkdownProjection {
   readonly markdown: string;
@@ -93,9 +93,9 @@ const coworkMarkdownFidelity = (document: Y.Doc): {
 
 /**
  * Serialize once and retain the body/envelope boundary needed to translate a
- * block-aligned ProseMirror range into an exact canonical-Markdown selector.
- * This is the explicit mapping seam; ProseMirror positions must never be
- * relabelled as Markdown offsets.
+ * ProseMirror range into an exact canonical-Markdown selector. This is the
+ * explicit mapping seam; ProseMirror positions must never be relabelled as
+ * Markdown offsets.
  */
 export const serializeCoworkEditorMarkdownProjection = (
   editor: Editor,

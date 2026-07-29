@@ -1,4 +1,9 @@
-import type { CoworkCapturedActionSnapshot } from "../targets";
+import type {
+  CoworkCapturedActionSnapshot,
+  CoworkVerifyRecheckTargetAffirmationIntent,
+  CoworkVerifyRecheckTargetAffirmationReceipt,
+  CoworkVerifyRecheckTargetConfirmation,
+} from "../targets";
 
 type FetchLike = typeof fetch;
 
@@ -97,6 +102,7 @@ export class HttpCoworkVerifyClient {
       readonly recheckOfProposalIds?: readonly string[];
       readonly recheckOfRunId?: string;
       readonly recheckIntentId?: string;
+      readonly recheckTargetConfirmation?: CoworkVerifyRecheckTargetConfirmation;
     },
   ): Promise<CoworkVerifyStartReceipt> {
     const response = await this.#fetch(
@@ -113,6 +119,24 @@ export class HttpCoworkVerifyClient {
           recheck_of_proposal_ids: options.recheckOfProposalIds ?? [],
           recheck_of_run_id: options.recheckOfRunId ?? null,
           recheck_intent_id: options.recheckIntentId ?? null,
+          recheck_target_confirmation:
+            options.recheckTargetConfirmation === undefined
+              ? null
+              : {
+                  schema: options.recheckTargetConfirmation.schema,
+                  method: options.recheckTargetConfirmation.method,
+                  affirmed_capture_id:
+                    options.recheckTargetConfirmation.affirmedCaptureId,
+                  affirmed_action_snapshot_id:
+                    options.recheckTargetConfirmation
+                      .affirmedActionSnapshotId,
+                  run_capture_id:
+                    options.recheckTargetConfirmation.runCaptureId,
+                  target_reference_sha256:
+                    options.recheckTargetConfirmation.targetReferenceSha256,
+                  target_text_sha256:
+                    options.recheckTargetConfirmation.targetTextSha256,
+                },
         }),
       },
     );
@@ -144,6 +168,70 @@ export class HttpCoworkVerifyClient {
         payload.coordination_status === "completed"
           ? payload.coordination_status
           : "pending",
+    };
+  }
+
+  async affirmRecheckTarget(
+    capture: CoworkCapturedActionSnapshot,
+    intent: CoworkVerifyRecheckTargetAffirmationIntent,
+  ): Promise<CoworkVerifyRecheckTargetAffirmationReceipt> {
+    const response = await this.#fetch(
+      endpoint(
+        this.#documentId,
+        this.#storeId,
+        "verify/recheck-target-affirmations",
+      ),
+      {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          capture,
+          recheck_intent_id: intent.intentId,
+          source_run_id: intent.sourceRunId,
+          proposal_ids: intent.pendingProposalIds,
+          user_goal: intent.userGoal,
+          protected_intent: intent.protectedIntent,
+        }),
+      },
+    );
+    if (!response.ok) {
+      throw new Error(
+        await errorMessage(
+          response,
+          "Co-work Verify could not affirm this exact Working on passage.",
+        ),
+      );
+    }
+    const payload = (await response.json()) as Record<string, unknown>;
+    if (
+      payload.schema !==
+        "work-buddy.cowork-recheck-target-affirmation-receipt/v1" ||
+      typeof payload.recheck_intent_id !== "string" ||
+      typeof payload.source_run_id !== "string" ||
+      !Array.isArray(payload.pending_proposal_ids) ||
+      typeof payload.affirmed_capture_id !== "string" ||
+      typeof payload.affirmed_action_snapshot_id !== "string" ||
+      typeof payload.target_reference_sha256 !== "string" ||
+      typeof payload.target_text_sha256 !== "string" ||
+      typeof payload.affirmed_at !== "string"
+    ) {
+      throw new Error(
+        "Co-work Verify returned an invalid target-affirmation receipt.",
+      );
+    }
+    return {
+      schema: payload.schema,
+      recheckIntentId: payload.recheck_intent_id,
+      sourceRunId: payload.source_run_id,
+      pendingProposalIds: payload.pending_proposal_ids.filter(
+        (value): value is string => typeof value === "string",
+      ),
+      affirmedCaptureId: payload.affirmed_capture_id,
+      affirmedActionSnapshotId: payload.affirmed_action_snapshot_id,
+      targetReferenceSha256: payload.target_reference_sha256,
+      targetTextSha256: payload.target_text_sha256,
+      affirmedAt: payload.affirmed_at,
     };
   }
 

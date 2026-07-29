@@ -1,39 +1,25 @@
 .wb-cowork-action-bar {
-  display: grid;
+  display: flex;
   flex: 0 0 auto;
-  grid-template-columns:
-    minmax(12rem, 1fr)
-    minmax(10.5rem, auto)
-    minmax(18rem, 1.5fr)
-    minmax(12rem, 0.8fr);
-  grid-template-areas:
-    "working target verify cothink"
-    "status status status status";
   align-items: center;
   gap: var(--wb-space-2) var(--wb-space-4);
-  min-block-size: 3rem;
+  min-block-size: 2.75rem;
   padding: var(--wb-space-2) var(--wb-space-4);
   border-block-end: 1px solid var(--wb-color-border-default);
   background: var(--wb-color-surface-subtle);
 }
 
-.wb-cowork-action-bar__working-context {
-  grid-area: working;
-  display: grid;
+.wb-cowork-action-bar__working,
+.wb-cowork-action-bar__target-actions,
+.wb-cowork-action-bar__range-actions {
+  display: flex;
   align-items: center;
   gap: var(--wb-space-2);
   min-inline-size: 0;
 }
 
-.wb-cowork-action-bar__working,
-.wb-cowork-action-bar__verify,
-.wb-cowork-action-bar__cothink,
-.wb-cowork-action-bar__target,
-.wb-cowork-action-bar__target-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--wb-space-2);
-  min-inline-size: 0;
+.wb-cowork-action-bar__working {
+  flex: 1 1 auto;
 }
 
 .wb-cowork-action-bar__working > strong {
@@ -43,9 +29,12 @@
   white-space: nowrap;
 }
 
+.wb-cowork-action-bar__target-actions {
+  flex: 0 0 auto;
+}
+
 .wb-cowork-action-bar__target-actions .wb-button,
-.wb-cowork-action-bar__verify > .wb-button,
-.wb-cowork-action-bar__cothink > .wb-button {
+.wb-cowork-action-bar__range-actions .wb-button {
   white-space: nowrap;
 }
 
@@ -58,114 +47,59 @@
   white-space: nowrap;
 }
 
-.wb-cowork-action-bar__verify {
-  grid-area: verify;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+.wb-cowork-action-bar__range {
   position: relative;
-  align-content: center;
-  justify-content: flex-start;
-  padding-inline-start: var(--wb-space-3);
-  border-inline-start: 1px solid var(--wb-color-border-default);
-}
-
-.wb-cowork-action-bar__cothink {
-  grid-area: cothink;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-content: center;
-  justify-content: flex-start;
-  padding-inline-start: var(--wb-space-3);
-  border-inline-start: 1px solid var(--wb-color-border-default);
-}
-
-.wb-cowork-action-bar__action-copy {
-  grid-column: 1 / -1;
-  display: flex;
-  flex-direction: column;
-  gap: 0.125rem;
-  min-inline-size: 0;
-}
-
-.wb-cowork-action-bar__verify-summary {
+  flex: 0 0 auto;
   color: var(--wb-color-text-secondary);
   font-size: var(--wb-font-size-xs);
-  line-height: 1.35;
 }
 
-.wb-cowork-action-bar__sharing {
-  max-width: 42rem;
-  color: var(--wb-color-text-secondary);
-  font-size: var(--wb-font-size-xs);
-  line-height: 1.35;
-}
-
-.wb-cowork-action-bar__target .wb-select-field {
-  min-inline-size: 10.5rem;
-}
-
-.wb-cowork-action-bar__target {
-  grid-area: target;
-}
-
-.wb-cowork-action-bar__intent {
-  grid-column: 1;
-  position: relative;
-  color: var(--wb-color-text-secondary);
-  font-size: var(--wb-font-size-xs);
+.wb-cowork-action-bar__range > summary {
+  cursor: pointer;
+  color: var(--wb-color-text-primary);
+  font-weight: var(--wb-font-weight-medium);
   white-space: nowrap;
 }
 
-.wb-cowork-action-bar__intent > summary {
-  cursor: pointer;
-  font-weight: var(--wb-font-weight-medium);
+.wb-cowork-action-bar__range[open] {
+  z-index: 2;
 }
 
-.wb-cowork-action-bar__intent[open] {
-  position: absolute;
-  z-index: 20;
-  inset-block-start: 100%;
-  inline-size: min(28rem, calc(100vw - 2rem));
-  padding: var(--wb-space-3);
+.wb-cowork-action-bar__range[open] > :not(summary) {
+  position: relative;
+}
+
+.wb-cowork-action-bar__range-actions {
+  flex-wrap: wrap;
+}
+
+.wb-cowork-action-bar__range-help {
+  display: inline-grid;
+  inline-size: 1.5rem;
+  block-size: 1.5rem;
+  place-items: center;
   border: 1px solid var(--wb-color-border-default);
-  border-radius: var(--wb-radius-md);
-  background: var(--wb-color-surface-default);
-  box-shadow: var(--wb-shadow-md);
-  white-space: normal;
+  border-radius: 50%;
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-xs);
+  font-weight: var(--wb-font-weight-semibold);
+  cursor: help;
 }
 
-.wb-cowork-action-bar__intent label {
-  display: grid;
-  gap: var(--wb-space-1);
-  margin-block-start: var(--wb-space-2);
-  color: var(--wb-color-text-primary);
-  font-weight: var(--wb-font-weight-medium);
-}
-
-.wb-cowork-action-bar__intent textarea {
-  resize: vertical;
-  min-block-size: 3.5rem;
-  padding: var(--wb-space-2);
-  border: 1px solid var(--wb-color-border-default);
-  border-radius: var(--wb-radius-sm);
-  background: var(--wb-color-surface-default);
-  color: var(--wb-color-text-primary);
-  font: inherit;
-  font-weight: var(--wb-font-weight-normal);
-}
-
-.wb-cowork-action-bar__verify > .wb-button,
-.wb-cowork-action-bar__cothink > .wb-button {
-  grid-column: 2;
-  justify-self: end;
+.wb-cowork-action-bar__range-help:focus-visible {
+  outline: none;
+  box-shadow: var(--wb-shadow-focus);
 }
 
 .wb-cowork-action-bar__status {
-  grid-area: status;
-  min-block-size: 0;
+  flex: 0 1 auto;
+  min-inline-size: 0;
   margin: 0;
+  overflow: hidden;
   color: var(--wb-color-text-secondary);
   font-size: var(--wb-font-size-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .wb-cowork-action-bar__status:empty {
@@ -176,86 +110,286 @@
   color: var(--wb-color-text-danger);
 }
 
-@media (max-width: 80rem) {
-  .wb-cowork-action-bar {
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    grid-template-areas:
-      "working target"
-      "verify cothink"
-      "status status";
-  }
-
-  .wb-cowork-action-bar__verify {
-    padding-block-start: var(--wb-space-2);
-    padding-inline-start: 0;
-    border-block-start: 1px solid var(--wb-color-border-default);
-    border-inline-start: 0;
-  }
-
-  .wb-cowork-action-bar__cothink {
-    padding-block-start: var(--wb-space-2);
-    border-block-start: 1px solid var(--wb-color-border-default);
-  }
+/* The bottom dock is an editor child. Its body takes editor height instead of
+ * floating over the Review/Chat panel beside it. */
+.wb-cowork-action-dock {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  max-block-size: min(60%, 34rem);
+  border-block-start: 1px solid var(--wb-color-border-default);
+  background: var(--wb-color-surface-raised);
 }
 
-@media (max-width: 48rem) {
-  .wb-cowork-action-bar {
-    grid-template-columns: 1fr;
-    grid-template-areas:
-      "working"
-      "target"
-      "verify"
-      "cothink"
-      "status";
-  }
-
-  .wb-cowork-action-bar__working,
-  .wb-cowork-action-bar__working-context,
-  .wb-cowork-action-bar__verify,
-  .wb-cowork-action-bar__cothink,
-  .wb-cowork-action-bar__target,
-  .wb-cowork-action-bar__range {
-    flex-wrap: wrap;
-  }
-
-  .wb-cowork-action-bar__verify,
-  .wb-cowork-action-bar__cothink {
-    padding-block-start: var(--wb-space-2);
-    padding-inline-start: 0;
-    border-block-start: 1px solid var(--wb-color-border-default);
-    border-inline-start: 0;
-  }
+.wb-cowork-action-dock__headers {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.wb-cowork-action-bar__range {
-  max-width: 22rem;
+.wb-cowork-action-dock__trigger {
+  display: flex;
+  min-inline-size: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--wb-space-3);
+  min-block-size: var(--wb-target-size);
+  padding: var(--wb-space-2) var(--wb-space-4);
+  border: 0;
+  border-inline-end: 1px solid var(--wb-color-border-subtle);
+  background: transparent;
+  color: var(--wb-color-text-primary);
+  font: inherit;
+  font-size: var(--wb-font-size-sm);
+  font-weight: var(--wb-font-weight-semibold);
+  cursor: pointer;
+}
+
+.wb-cowork-action-dock__trigger:last-child {
+  border-inline-end: 0;
+}
+
+.wb-cowork-action-dock__trigger::before {
+  content: "›";
+  flex: 0 0 auto;
+  color: var(--wb-color-text-muted);
+  transform: rotate(0deg);
+}
+
+.wb-cowork-action-dock__trigger[aria-expanded="true"] {
+  background: var(--wb-color-surface-selected);
+  box-shadow: inset 0 2px 0 var(--wb-color-accent);
+}
+
+.wb-cowork-action-dock__trigger[aria-expanded="true"]::before {
+  transform: rotate(90deg);
+}
+
+.wb-cowork-action-dock__trigger:focus-visible,
+.wb-cowork-action-bar__range > summary:focus-visible,
+.wb-cowork-action-dock__help:focus-visible {
+  outline: none;
+  box-shadow: var(--wb-shadow-focus);
+}
+
+.wb-cowork-action-dock__trigger-summary {
+  min-inline-size: 0;
+  margin-inline-start: auto;
+  overflow: hidden;
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-xs);
+  font-weight: var(--wb-font-weight-regular);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-cowork-action-dock__panel {
+  display: grid;
+  gap: var(--wb-space-3);
+  min-block-size: 0;
+  padding: var(--wb-space-3) var(--wb-space-4) var(--wb-space-4);
+  overflow: auto;
+  border-block-start: 1px solid var(--wb-color-border-subtle);
+  background: var(--wb-color-surface-default);
+}
+
+.wb-cowork-action-dock__panel[hidden] {
+  display: none;
+}
+
+.wb-cowork-action-dock__run {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--wb-space-3);
+}
+
+.wb-cowork-action-dock__run-copy {
+  display: grid;
+  gap: var(--wb-space-1);
+  min-inline-size: 0;
+}
+
+.wb-cowork-action-dock__run-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--wb-space-2);
+  min-inline-size: 0;
+}
+
+.wb-cowork-action-dock__execution {
+  min-inline-size: 0;
+  margin: 0;
+  font-size: var(--wb-font-size-xs);
+}
+
+.wb-cowork-action-dock__disclosure,
+.wb-cowork-action-dock__panel--cothink p,
+.wb-cowork-action-dock__notice p {
+  margin: 0;
+}
+
+.wb-cowork-action-dock__disclosure {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--wb-space-1) var(--wb-space-3);
+  padding: 0;
+  color: var(--wb-color-text-secondary);
+  list-style: none;
+}
+
+.wb-cowork-action-dock__disclosure li {
   color: var(--wb-color-text-secondary);
   font-size: var(--wb-font-size-xs);
 }
 
-.wb-cowork-action-bar__range summary {
+.wb-cowork-action-dock__disclosure li + li::before {
+  content: "•";
+  margin-inline-end: var(--wb-space-3);
+  color: var(--wb-color-text-muted);
+}
+
+.wb-cowork-action-dock__help {
+  justify-self: start;
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-xs);
+  text-decoration: underline dotted;
+  text-underline-offset: 0.2em;
+  cursor: help;
+}
+
+.wb-cowork-action-dock__intent {
+  display: grid;
+  grid-template-columns: minmax(10rem, 0.7fr) repeat(2, minmax(12rem, 1fr));
+  align-items: end;
+  gap: var(--wb-space-3);
+}
+
+.wb-cowork-action-dock__intent label {
+  display: grid;
+  gap: var(--wb-space-1);
   color: var(--wb-color-text-primary);
-  cursor: pointer;
+  font-size: var(--wb-font-size-xs);
   font-weight: var(--wb-font-weight-medium);
 }
 
-.wb-cowork-action-bar__range p {
-  margin: var(--wb-space-1) 0;
+.wb-cowork-action-dock__bound-target {
+  display: grid;
+  gap: var(--wb-space-1);
+  align-self: stretch;
+  align-content: center;
+  color: var(--wb-color-text-primary);
+  font-size: var(--wb-font-size-xs);
 }
 
-.wb-cowork-action-bar__range-actions {
+.wb-cowork-action-dock__intent textarea {
+  min-block-size: 3.5rem;
+  padding: var(--wb-space-2);
+  resize: vertical;
+  border: 1px solid var(--wb-color-border-default);
+  border-radius: var(--wb-radius-sm);
+  background: var(--wb-color-surface-raised);
+  color: var(--wb-color-text-primary);
+  font: inherit;
+  font-weight: var(--wb-font-weight-normal);
+}
+
+.wb-cowork-action-dock .wb-cowork-verify-setup {
+  margin: 0;
+}
+
+.wb-cowork-action-dock .wb-cowork-verify-history {
+  margin: 0;
+}
+
+.wb-cowork-action-dock__notice {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--wb-space-1);
+  align-items: center;
+  gap: var(--wb-space-3);
+  margin: 0;
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-xs);
+}
+
+.wb-cowork-action-dock__status {
+  min-block-size: 0;
+  margin: 0;
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-xs);
+}
+
+.wb-cowork-action-dock__status:empty {
+  display: none;
+}
+
+.wb-cowork-action-dock__status[role="alert"] {
+  color: var(--wb-color-text-danger);
+}
+
+.wb-cowork-action-dock__panel--cothink {
+  border-inline-start: 3px dashed var(--wb-color-status-info);
+}
+
+@container (max-width: 48rem) {
+  .wb-cowork-action-bar {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .wb-cowork-action-bar__working {
+    flex-basis: 100%;
+  }
+
+  .wb-cowork-action-dock__intent {
+    grid-template-columns: 1fr;
+  }
+}
+
+@container (max-width: 30rem) {
+  .wb-cowork-action-bar__working {
+    flex-wrap: wrap;
+  }
+
+  .wb-cowork-action-bar__working > strong {
+    flex: 1 1 10rem;
+  }
+
+  .wb-cowork-action-dock__headers {
+    grid-template-columns: 1fr;
+  }
+
+  .wb-cowork-action-dock__trigger {
+    border-block-end: 1px solid var(--wb-color-border-subtle);
+    border-inline-end: 0;
+  }
+
+  .wb-cowork-action-dock__trigger:last-child {
+    border-block-end: 0;
+  }
+
+  .wb-cowork-action-dock__run {
+    grid-template-columns: 1fr;
+  }
+
+  .wb-cowork-action-dock__run-actions {
+    align-items: flex-start;
+    flex-direction: column;
+    justify-content: flex-start;
+  }
+
+  .wb-cowork-action-dock__run-actions > .wb-button {
+    justify-self: start;
+  }
 }
 
 @media (forced-colors: active) {
-  .wb-cowork-action-bar {
-    border-block-end: 1px solid CanvasText;
+  .wb-cowork-action-bar,
+  .wb-cowork-action-dock {
+    border-color: CanvasText;
   }
 
-  .wb-cowork-action-bar__verify,
-  .wb-cowork-action-bar__cothink {
-    border-color: CanvasText;
+  .wb-cowork-action-dock__trigger[aria-expanded="true"] {
+    outline: 2px solid Highlight;
   }
 }

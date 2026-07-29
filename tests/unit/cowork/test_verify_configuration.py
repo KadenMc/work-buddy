@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from work_buddy.agent_execution.models import AgentExecutionSelection
 from work_buddy.cowork.verify import (
     CheckDefinitionVersion,
     CriterionActivation,
@@ -20,6 +21,9 @@ from work_buddy.cowork.verify_configuration import (
     create_user_criterion_draft,
     list_effective_verification_configuration,
     set_document_criterion_enabled,
+)
+from work_buddy.cowork.verify_execution import (
+    VERIFY_EXECUTION_PLAN_SCHEMA,
 )
 from work_buddy.truth import documents
 from work_buddy.truth.contracts import Actor
@@ -67,6 +71,60 @@ def test_seeded_criterion_projects_method_origin_limits_and_sharing(store_ctx):
     )
 
     assert projection["schema"] == CONFIGURATION_SCHEMA
+    execution_plan = projection["execution_plan"]
+    assert execution_plan["schema"] == VERIFY_EXECUTION_PLAN_SCHEMA
+    assert execution_plan["authoritative"] is True
+    assert execution_plan["checker"] == {
+        "execution_class": "in_process",
+        "mechanism": "deterministic_exact_match",
+        "model_call": False,
+        "external_egress": False,
+        "content_boundary": "captured_target",
+    }
+    assert execution_plan["coordination"]["selection"] == {
+        "mode": "explicit_at_run_start",
+        "provider_id": None,
+        "model_id": None,
+        "provider_label": None,
+        "model_label": None,
+    }
+    assert execution_plan["coordination"]["content_boundary"] == (
+        "entire_frozen_document"
+    )
+    assert execution_plan["coordination"]["external_egress"] is True
+    assert execution_plan["coordination"]["fallback"] == {
+        "provider_model_fallback": False,
+        "failure_mode": "fail_closed",
+    }
+    assert execution_plan["coordination"]["worker_sessions"] == {
+        "initial": 1,
+        "maximum": 3,
+        "conditional_roles": ["reviser", "post_revision_coordinator"],
+    }
+    assert execution_plan["coordination"]["cost_control"] is None
+    costs = {
+        item["provider_id"]: item
+        for item in execution_plan["coordination"]["provider_cost_controls"]
+    }
+    assert costs["claude-code"] == {
+        "provider_id": "claude-code",
+        "enforcement_class": "hard_ceiling",
+        "ceiling_usd_per_worker_session": 2.0,
+        "basis": "claude_code_max_budget_usd",
+    }
+    assert costs["codex"] == {
+        "provider_id": "codex",
+        "enforcement_class": "unavailable",
+        "ceiling_usd_per_worker_session": None,
+        "basis": "codex_worker_has_no_budget_enforcement",
+    }
+    assert projection["coordination"]["deprecated"] is True
+    assert projection["coordination"]["authoritative_projection"] == (
+        "execution_plan"
+    )
+    assert projection["coordination"]["cost_ceiling_semantics"] == (
+        "requested_launch_budget_not_provider_guarantee"
+    )
     terminology = _criterion(projection, "terminology_exact_match")
     assert terminology["version"] == 1
     assert terminology["author_origin"]["definition_origin"] == "system"
@@ -102,6 +160,61 @@ def test_seeded_criterion_projects_method_origin_limits_and_sharing(store_ctx):
     }
     assert check["availability"]["state"] == "available"
     assert check["binding"]["selected"] is True
+
+
+@pytest.mark.parametrize(
+    ("selection", "enforcement_class", "ceiling"),
+    (
+        (
+            AgentExecutionSelection(
+                provider_id="claude-code",
+                model_id="sonnet",
+                provider_label="Claude Code",
+                model_label="Sonnet",
+            ),
+            "hard_ceiling",
+            2.0,
+        ),
+        (
+            AgentExecutionSelection(
+                provider_id="codex",
+                model_id="gpt-5.6-sol",
+                provider_label="Codex",
+                model_label="GPT-5.6 Sol",
+            ),
+            "unavailable",
+            None,
+        ),
+    ),
+)
+def test_execution_plan_resolves_exact_selection_and_provider_cost_control(
+    store_ctx,
+    selection,
+    enforcement_class,
+    ceiling,
+):
+    document = _document(store_ctx)
+
+    projection = list_effective_verification_configuration(
+        store_ctx["store"],
+        document_id=document.id,
+        execution_selection=selection,
+    )
+
+    coordination = projection["execution_plan"]["coordination"]
+    assert coordination["selection"] == {
+        "mode": "explicit_at_run_start",
+        **selection.to_dict(),
+    }
+    assert coordination["cost_control"]["provider_id"] == (
+        selection.provider_id
+    )
+    assert coordination["cost_control"]["enforcement_class"] == (
+        enforcement_class
+    )
+    assert coordination["cost_control"][
+        "ceiling_usd_per_worker_session"
+    ] == ceiling
 
 
 def test_builtin_setup_can_be_previewed_without_mutating_a_read(store_ctx):
