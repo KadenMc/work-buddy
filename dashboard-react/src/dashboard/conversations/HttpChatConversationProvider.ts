@@ -156,6 +156,16 @@ export class HttpChatConversationProvider implements ChatConversationProvider {
         ...(input.inReplyTo === undefined
           ? {}
           : { in_reply_to: input.inReplyTo }),
+        ...(input.context === undefined
+          ? {}
+          : {
+              context: {
+                kind: input.context.kind,
+                action_snapshot_id: input.context.actionSnapshotId,
+                store_id: input.context.storeId,
+                document_id: input.context.documentId,
+              },
+            }),
       }),
     });
     const payload = await this.readJson(response);
@@ -209,6 +219,7 @@ export class HttpChatConversationProvider implements ChatConversationProvider {
             id: messageId,
             author: "user",
             content: input.value,
+            context: input.context,
           },
         ],
       };

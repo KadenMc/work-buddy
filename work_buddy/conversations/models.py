@@ -30,6 +30,7 @@ class ConversationMessage:
         response: User's answer (filled when user responds).
         status: "sent" | "pending" (awaiting response) | "answered".
         producer: Trusted execution provenance for an agent-authored message.
+        context: Durable typed context explicitly attached to this user turn.
     """
 
     message_id: str = ""
@@ -43,6 +44,7 @@ class ConversationMessage:
     response: str | None = None
     status: str = "sent"
     producer: dict[str, Any] | None = None
+    context: dict[str, Any] | None = None
 
     def is_question(self) -> bool:
         return self.message_type == "question"
@@ -63,6 +65,7 @@ class ConversationMessage:
             "response": self.response,
             "status": self.status,
             "producer": self.producer,
+            "context": self.context,
         }
 
     @classmethod
@@ -81,6 +84,14 @@ class ConversationMessage:
                 producer = None
         if not isinstance(producer, dict):
             producer = None
+        context = row.get("context_json")
+        if isinstance(context, str) and context:
+            try:
+                context = json.loads(context)
+            except (TypeError, ValueError):
+                context = None
+        if not isinstance(context, dict):
+            context = None
         return cls(
             message_id=row["message_id"],
             conversation_id=row["conversation_id"],
@@ -93,6 +104,7 @@ class ConversationMessage:
             response=row.get("response"),
             status=row.get("status", "sent"),
             producer=producer,
+            context=context,
         )
 
 

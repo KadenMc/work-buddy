@@ -10,14 +10,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Inspector } from "./Inspector";
+import { VerificationAttentionFeed } from "./VerificationAttentionFeed";
 import { FilterLens } from "./FilterLens";
 import { MarkBar, type MarkBarTarget } from "./MarkBar";
 import { QueueView, type QueueBindings } from "./QueueView";
 import { RailDriftStrip } from "./RailDriftStrip";
 import { StreamView } from "./StreamView";
 import type {
+  CothinkItem,
+  EvaluationResult,
   StagedClaimDecision,
   StagedDecision,
+  VerificationRecheckIntent,
 } from "./contracts";
 import { useDraftPersistence, useUnsavedChangesGuard } from "./dirty";
 import {
@@ -45,6 +49,12 @@ export interface ReviewPanelProps {
   readonly active?: boolean;
   /** Force the grouped narrow fallback. Otherwise a container query decides. */
   readonly narrow?: boolean;
+  readonly onDiscussCothink?: (
+    item: CothinkItem,
+  ) => void | Promise<void>;
+  readonly onRecheckIntent?: (
+    intent: VerificationRecheckIntent,
+  ) => void | Promise<void>;
   onSubmitted?(): void;
 }
 
@@ -54,6 +64,8 @@ export function ReviewPanel(props: ReviewPanelProps) {
   const { data, status, reload } = useReviewData(props.provider);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [attentionError, setAttentionError] = useState<string | null>(null);
+  const [busyAttentionId, setBusyAttentionId] = useState<string | null>(null);
   const pendingRevealRef = useRef<{
     readonly source: AnchorRectSource;
     readonly id: string;
@@ -269,6 +281,84 @@ export function ReviewPanel(props: ReviewPanelProps) {
     }
   }, [data, props, reload, store, submitting]);
 
+  const revealResult = useCallback(
+    (result: EvaluationResult) => {
+      if (result.quoteAnchor === null || props.anchorRects === undefined) return;
+      props.anchorRects.focusAnchor(result.resultId, "evaluation_result", {
+        scroll: true,
+        flash: true,
+      });
+    },
+    [props.anchorRects],
+  );
+
+  const openCorrection = useCallback(
+    (proposalId: string) => {
+      store.select(proposalId, "proposal");
+      props.anchorRects?.focusAnchor(proposalId, "proposal", {
+        scroll: true,
+        flash: true,
+      });
+    },
+    [props.anchorRects, store],
+  );
+
+  const actOnCothink = useCallback(
+    async (item: CothinkItem, action: "park" | "dismiss") => {
+      if (props.provider.actOnCothink === undefined || busyAttentionId !== null) {
+        return;
+      }
+      setBusyAttentionId(item.itemId);
+      setAttentionError(null);
+      try {
+        await props.provider.actOnCothink(
+          item.itemId,
+          action,
+          item.canonicalSha256,
+        );
+        reload();
+      } catch {
+        setAttentionError("Co-think couldn’t save that choice.");
+      } finally {
+        setBusyAttentionId(null);
+      }
+    },
+    [busyAttentionId, props.provider, reload],
+  );
+
+  const discussCothink = useCallback(
+    async (item: CothinkItem) => {
+      if (
+        props.provider.discussCothink === undefined ||
+        busyAttentionId !== null
+      ) {
+        return;
+      }
+      setBusyAttentionId(item.itemId);
+      setAttentionError(null);
+      try {
+        await props.provider.discussCothink(
+          item.itemId,
+          item.canonicalSha256,
+        );
+        await props.onDiscussCothink?.(item);
+        reload();
+      } catch {
+        setAttentionError(
+          "Co-think couldn’t save that discussion in Chat.",
+        );
+      } finally {
+        setBusyAttentionId(null);
+      }
+    },
+    [
+      busyAttentionId,
+      props.onDiscussCothink,
+      props.provider,
+      reload,
+    ],
+  );
+
   if (status === "loading" || data === null) {
     return (
       <div className="wb-cowork-rail__panel" role="status">
@@ -309,6 +399,52 @@ export function ReviewPanel(props: ReviewPanelProps) {
       data-narrow={narrow ? "true" : undefined}
     >
       <RailDriftStrip title={data.title} drift={data.drift} />
+
+      <VerificationAttentionFeed
+        results={data.evaluationResults}
+        recheckIntents={data.verificationRecheckIntents}
+        cothinkItems={data.cothinkItems}
+        cothinkOutcomes={data.cothinkOutcomes}
+        busyItemId={busyAttentionId}
+        onRevealResult={revealResult}
+        onOpenProposal={openCorrection}
+        onDiscussCothink={
+          props.provider.discussCothink === undefined
+            ? undefined
+            : (item) => {
+                void discussCothink(item);
+              }
+        }
+        onCothinkAction={
+          props.provider.actOnCothink === undefined
+            ? undefined
+            : (item, action) => {
+                void actOnCothink(item, action);
+              }
+        }
+        onRecheckIntent={
+          props.onRecheckIntent === undefined
+            ? undefined
+            : (intent) => {
+                setBusyAttentionId(intent.intentId);
+                setAttentionError(null);
+                void Promise.resolve(props.onRecheckIntent?.(intent))
+                  .catch((cause: unknown) => {
+                    setAttentionError(
+                      cause instanceof Error
+                        ? cause.message
+                        : "The correction recheck could not open in Verify.",
+                    );
+                  })
+                  .finally(() => setBusyAttentionId(null));
+              }
+        }
+      />
+      {attentionError !== null ? (
+        <p className="wb-cowork-rail__sitting-error" role="alert">
+          {attentionError}
+        </p>
+      ) : null}
 
       <div className="wb-cowork-rail__toolbar">
         <div className="wb-cowork-rail__mode" role="group" aria-label="Review layout">

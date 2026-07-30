@@ -75,7 +75,7 @@ _RESULT_BY_VERB = {
 
 # Verbs that apply an accepted edit to the file and materialize this sitting.
 _APPLY_VERBS = frozenset({"confirm", "edit_confirm"})
-# Verbs that require a fresh base (the AOV stale gate, S6): apply and the
+# Verbs that require a fresh base (the stale-base gate, S6): apply and the
 # forward-routing verbs. Reject verbs and defer stay decidable on a stale base.
 _BASE_REQUIRED_VERBS = frozenset({"confirm", "edit_confirm", "redirect", "endorse"})
 _ALL_VERBS = frozenset(_VERB_GESTURE_KIND)

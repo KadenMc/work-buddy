@@ -11,6 +11,7 @@ import type {
   ChatConversationSnapshot,
   ChatMessage,
   ChatPanelStatus,
+  ChatSendInput,
 } from "./contracts";
 import {
   useChatConversation,
@@ -39,6 +40,11 @@ export type ChatInputRecoveryResolver = (
   state: ConversationChatState,
 ) => ChatInputRecovery | undefined;
 
+/** Additive pre-send seam for hosts that explicitly attach durable context. */
+export type ChatSendPreparer = (
+  input: ChatSendInput,
+) => ChatSendInput | Promise<ChatSendInput>;
+
 type SharedConversationPanelProps = Omit<
   ChatPanelProps,
   | "status"
@@ -62,6 +68,8 @@ export type ConversationChatProps = SharedConversationPanelProps & {
   readonly inputRecovery?: ChatInputRecovery | ChatInputRecoveryResolver;
   /** Observe the canonical message list without mounting another chat hook. */
   readonly onMessagesChange?: (messages: readonly ChatMessage[]) => void;
+  /** Prepare an outbound turn before the provider sees it. */
+  readonly prepareSend?: ChatSendPreparer;
 };
 
 function panelStatus(
@@ -83,6 +91,7 @@ export function ConversationChat({
   conversationId,
   inputRecovery,
   onMessagesChange,
+  prepareSend,
   readOnlyReason = "This conversation is closed.",
   ...panelProps
 }: ConversationChatProps) {
@@ -128,7 +137,16 @@ export function ConversationChat({
       status={panelStatus(chat.status, chat.snapshot)}
       messages={messages}
       agentActivity={activity}
-      onSend={(value, inReplyTo) => chat.send(value, inReplyTo)}
+      onSend={async (value, inReplyTo) => {
+        const input: ChatSendInput = { value, inReplyTo };
+        const prepared =
+          prepareSend === undefined ? input : await prepareSend(input);
+        await chat.send(
+          prepared.value,
+          prepared.inReplyTo,
+          prepared.context,
+        );
+      }}
       sending={chat.sending}
       sendErrorMessage={chat.sendError ?? undefined}
       errorMessage={chat.error ?? undefined}

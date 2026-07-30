@@ -18,6 +18,7 @@ import {
 } from "../suggestions";
 import { CoworkSlashMenu } from "../menus";
 import { CoworkLedgerDecorations } from "./ledgerDecorations";
+import { CoworkWorkingTargetDecorations } from "./workingTargetDecorations";
 
 /**
  * The Collaboration fragment field is fixed to `default` in the document-surface
@@ -121,6 +122,7 @@ export const buildEditorExtensions = (document: Y.Doc): AnyExtension[] => [
   WbExpressionMark,
   ...buildSuggestionExtensions(),
   CoworkLedgerDecorations,
+  CoworkWorkingTargetDecorations,
   Markdown,
   Collaboration.configure({
     document,

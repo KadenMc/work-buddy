@@ -10,6 +10,47 @@
     min-width: 0;
   }
 
+  .wb-cowork-chat-msg__context {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--wb-space-1) var(--wb-space-3);
+    align-items: baseline;
+    margin-top: var(--wb-space-3);
+    color: var(--wb-color-text-muted);
+    font-size: var(--wb-font-size-xs);
+  }
+
+  .wb-cowork-chat-msg__context-label {
+    color: var(--wb-color-text);
+    font-weight: var(--wb-font-weight-medium);
+  }
+
+  .wb-cowork-chat-target {
+    display: block;
+    overflow: hidden;
+    padding: var(--wb-space-1) var(--wb-space-2);
+    border: var(--wb-border-width) solid var(--wb-color-border-default);
+    border-radius: var(--wb-radius-pill);
+    background: var(--wb-color-surface-subtle);
+    color: var(--wb-color-text);
+    font-size: var(--wb-font-size-xs);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .wb-cowork-chat-target__prefix {
+    color: var(--wb-color-text-muted);
+  }
+
+  .wb-cowork-chat-target__label {
+    font-weight: var(--wb-font-weight-medium);
+  }
+
+  .wb-cowork-chat-target.is-unavailable {
+    border-color: currentColor;
+    color: var(--wb-color-text-warning);
+  }
+
   /* --- Routing-note delivery notices --------------------------------------- */
 
   .wb-cowork-chat-routing {

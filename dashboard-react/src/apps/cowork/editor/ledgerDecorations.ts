@@ -16,6 +16,7 @@ export type CoworkEditorAnchorKind =
   | "claim"
   | "expression"
   | "provenance"
+  | "evaluation_result"
   | "passage";
 
 export interface CoworkFlagDecoration {
@@ -55,6 +56,16 @@ export interface CoworkProvenanceDecoration {
   readonly approvalGestureId: string | null;
 }
 
+export interface CoworkEvaluationDecoration {
+  readonly resultId: string;
+  readonly quoteAnchor: QuoteAnchor;
+  readonly resultKind:
+    | "conforming"
+    | "nonconforming"
+    | "inconclusive"
+    | "review_comment";
+}
+
 /**
  * One ledger pull projected into the editor. These records are deliberately data-only:
  * the plugin resolves them against the current ProseMirror document and creates
@@ -66,11 +77,13 @@ export interface CoworkLedgerDecorationProjection {
   readonly expressions: readonly CoworkExpressionDecoration[];
   readonly claims: readonly CoworkClaimDecoration[];
   readonly provenance: readonly CoworkProvenanceDecoration[];
+  /** Additive Verify projection; absent inputs are treated as no results. */
+  readonly evaluations?: readonly CoworkEvaluationDecoration[];
 }
 
 export interface CoworkFocusedAnchor {
   readonly id: string;
-  readonly kind: "proposal" | "claim";
+  readonly kind: "proposal" | "claim" | "evaluation_result";
 }
 
 export interface CoworkPassageHighlight {
@@ -116,6 +129,7 @@ const EMPTY_PROJECTION: CoworkLedgerDecorationProjection = Object.freeze({
   expressions: Object.freeze([]),
   claims: Object.freeze([]),
   provenance: Object.freeze([]),
+  evaluations: Object.freeze([]),
 });
 
 export const coworkLedgerDecorationsKey =
@@ -140,7 +154,9 @@ const anchorAttributes = (
   extra: Readonly<Record<string, string>> = {},
 ): Record<string, string> => {
   const active =
-    (kind === "proposal" || kind === "claim") &&
+    (kind === "proposal" ||
+      kind === "claim" ||
+      kind === "evaluation_result") &&
     focused?.kind === kind &&
     focused.id === id;
   return {
@@ -385,6 +401,33 @@ function buildDecorations(
         },
       ),
       `flag:${flag.proposalId}`,
+    );
+    if (decoration !== null) decorations.push(decoration);
+  }
+
+  /*
+   * Evaluation evidence is a view-only annotation from the same authoritative
+   * document pull as its Review card. The double underline distinguishes a
+   * checked observation from proposals and provenance without relying on color.
+   */
+  for (const evaluation of projection.evaluations ?? []) {
+    const range = resolveQuoteAnchor(doc, evaluation.quoteAnchor);
+    if (range === null) continue;
+    const decoration = inlineDecoration(
+      range.from,
+      range.to,
+      anchorAttributes(
+        "evaluation_result",
+        evaluation.resultId,
+        "wb-cowork-evaluation-mark",
+        focused,
+        flashFocused,
+        {
+          "data-wb-decoration": "evaluation-result",
+          "data-wb-result-kind": evaluation.resultKind,
+        },
+      ),
+      `evaluation:${evaluation.resultId}`,
     );
     if (decoration !== null) decorations.push(decoration);
   }

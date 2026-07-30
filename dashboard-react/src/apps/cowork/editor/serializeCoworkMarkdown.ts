@@ -12,19 +12,45 @@ export interface CoworkMarkdownFidelity {
   readonly trailingNewlineCount?: number;
 }
 
+/**
+ * A canonical Markdown projection plus the serialized editor body before the
+ * byte-envelope trailing-newline rule is applied. `bodyStart` is a UTF-16
+ * string offset into `markdown`; exact and block target mapping both use this
+ * boundary before converting to the code-point offsets used by Truth.
+ */
+export interface CoworkMarkdownProjection {
+  readonly markdown: string;
+  readonly body: string;
+  readonly bodyStart: number;
+  readonly fidelity: CoworkMarkdownFidelity;
+}
+
+/** Normalize only line endings, without changing BOM or trailing-newline count. */
+export const normalizeCoworkMarkdownNewlines = (
+  markdown: string,
+  newlineStyle: CoworkNewlineStyle,
+): string => {
+  if (newlineStyle === "crlf") {
+    return markdown.replace(/\r\n|\r|\n/g, "\r\n");
+  }
+  if (newlineStyle === "cr") {
+    return markdown.replace(/\r\n|\r|\n/g, "\r");
+  }
+  if (newlineStyle === "lf") {
+    return markdown.replace(/\r\n|\r/g, "\n");
+  }
+  return markdown;
+};
+
 /** Restore the byte-significant envelope that sits outside the Markdown AST. */
 export const restoreCoworkMarkdownFidelity = (
   markdown: string,
   fidelity: CoworkMarkdownFidelity,
 ): string => {
-  let restored = markdown;
-  if (fidelity.newlineStyle === "crlf") {
-    restored = restored.replace(/\r\n|\r|\n/g, "\r\n");
-  } else if (fidelity.newlineStyle === "cr") {
-    restored = restored.replace(/\r\n|\r|\n/g, "\r");
-  } else if (fidelity.newlineStyle === "lf") {
-    restored = restored.replace(/\r\n|\r/g, "\n");
-  }
+  let restored = normalizeCoworkMarkdownNewlines(
+    markdown,
+    fidelity.newlineStyle,
+  );
   if (fidelity.trailingNewlineCount !== undefined) {
     restored = restored.replace(/(?:\r\n|\r|\n)+$/g, "");
     const newline =
@@ -41,6 +67,66 @@ export const restoreCoworkMarkdownFidelity = (
   return restored;
 };
 
+const coworkMarkdownFidelity = (document: Y.Doc): {
+  readonly frontmatter: string | null;
+  readonly fidelity: CoworkMarkdownFidelity;
+} => {
+  const stored = document.getMap<unknown>("wb-cowork:fidelity");
+  const frontmatterValue = stored.get("frontmatter");
+  const lineEnding = stored.get("newline_style");
+  return {
+    frontmatter:
+      typeof frontmatterValue === "string" ? frontmatterValue : null,
+    fidelity: {
+      newlineStyle:
+        lineEnding === "crlf" || lineEnding === "cr" || lineEnding === "none"
+          ? lineEnding
+          : "lf",
+      utf8Bom: stored.get("utf8_bom") === true,
+      trailingNewlineCount:
+        typeof stored.get("trailing_newline_count") === "number"
+          ? Number(stored.get("trailing_newline_count"))
+          : undefined,
+    },
+  };
+};
+
+/**
+ * Serialize once and retain the body/envelope boundary needed to translate a
+ * ProseMirror range into an exact canonical-Markdown selector. This is the
+ * explicit mapping seam; ProseMirror positions must never be relabelled as
+ * Markdown offsets.
+ */
+export const serializeCoworkEditorMarkdownProjection = (
+  editor: Editor,
+  document: Y.Doc,
+): CoworkMarkdownProjection => {
+  const { frontmatter, fidelity } = coworkMarkdownFidelity(document);
+  const rawBody = createCoworkMarkdownManager().serialize(editor.getJSON());
+  const normalizedFrontmatter =
+    frontmatter === null
+      ? ""
+      : normalizeCoworkMarkdownNewlines(frontmatter, fidelity.newlineStyle);
+  const body = normalizeCoworkMarkdownNewlines(
+    rawBody,
+    fidelity.newlineStyle,
+  );
+  const joined = reattachFrontmatter(
+    frontmatter === null ? null : normalizedFrontmatter,
+    body,
+  );
+  const markdown = restoreCoworkMarkdownFidelity(joined, fidelity);
+  const bomWasAdded =
+    fidelity.utf8Bom &&
+    !joined.startsWith("\ufeff");
+  return {
+    markdown,
+    body,
+    bodyStart: normalizedFrontmatter.length + (bomWasAdded ? 1 : 0),
+    fidelity,
+  };
+};
+
 /**
  * The one live-editor Markdown boundary. Both explicit Save and scratch promotion use
  * this renderer, including the bootstrap-recorded frontmatter, newline, and UTF-8 BOM
@@ -53,23 +139,5 @@ export const serializeCoworkEditorMarkdown = (
   if (document === undefined) {
     return createCoworkMarkdownManager().serialize(editor.getJSON());
   }
-  const fidelity = document.getMap<unknown>("wb-cowork:fidelity");
-  const frontmatterValue = fidelity.get("frontmatter");
-  const frontmatter = typeof frontmatterValue === "string" ? frontmatterValue : null;
-  const markdown = reattachFrontmatter(
-    frontmatter,
-    createCoworkMarkdownManager().serialize(editor.getJSON()),
-  );
-  const lineEnding = fidelity.get("newline_style");
-  return restoreCoworkMarkdownFidelity(markdown, {
-    newlineStyle:
-      lineEnding === "crlf" || lineEnding === "cr" || lineEnding === "none"
-        ? lineEnding
-        : "lf",
-    utf8Bom: fidelity.get("utf8_bom") === true,
-    trailingNewlineCount:
-      typeof fidelity.get("trailing_newline_count") === "number"
-        ? Number(fidelity.get("trailing_newline_count"))
-        : undefined,
-  });
+  return serializeCoworkEditorMarkdownProjection(editor, document).markdown;
 };

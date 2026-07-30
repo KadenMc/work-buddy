@@ -33,6 +33,8 @@ export interface ChatInputRecovery {
   readonly title: string;
   readonly detail: ReactNode;
   readonly action?: ChatInputRecoveryAction;
+  /** Keep freeform input available so authored turns queue while an agent is down. */
+  readonly preserveComposer?: boolean;
 }
 
 export type ChatPanelStateKind = "loading" | "empty" | "error";
@@ -134,6 +136,10 @@ export interface ChatPanelProps {
   readonly sendErrorMessage?: string;
   readonly composerDisabled?: boolean;
   readonly composerPlaceholder?: string;
+  /** Additive context controls rendered by the shared composer. */
+  readonly composerAccessory?: ReactNode;
+  /** Compact additive context rendered in the shared composer footer. */
+  readonly composerFooterAccessory?: ReactNode;
   /** Recoverable state shown in the input region instead of the composer. */
   readonly inputRecovery?: ChatInputRecovery;
   /** Seed the composer draft once on mount, e.g. from a retained unsent draft. */
@@ -193,6 +199,8 @@ export function ChatPanel({
   sendErrorMessage,
   composerDisabled = false,
   composerPlaceholder,
+  composerAccessory,
+  composerFooterAccessory,
   inputRecovery,
   initialValue,
   onDraftChange,
@@ -279,7 +287,7 @@ export function ChatPanel({
           </div>
         ) : inputRecovery !== undefined ? (
           <div className="wb-chat-panel__input-region">
-            {execution === undefined ? null : (
+            {execution === undefined || inputRecovery.preserveComposer === true ? null : (
               <ChatExecutionPicker
                 control={execution}
                 disabled={
@@ -314,6 +322,20 @@ export function ChatPanel({
                 </Button>
               ) : null}
             </InlineAlert>
+            {inputRecovery.preserveComposer === true && onSend !== undefined ? (
+              <ChatComposer
+                onSend={onSend}
+                sending={sending}
+                disabled={composerDisabled === true}
+                placeholder={composerPlaceholder}
+                errorMessage={sendErrorMessage}
+                initialValue={initialValue}
+                onDraftChange={onDraftChange}
+                execution={execution}
+                accessory={composerAccessory}
+                footerAccessory={composerFooterAccessory}
+              />
+            ) : null}
           </div>
         ) : onSend !== undefined ? (
           <ChatComposer
@@ -325,6 +347,8 @@ export function ChatPanel({
             initialValue={initialValue}
             onDraftChange={onDraftChange}
             execution={execution}
+            accessory={composerAccessory}
+            footerAccessory={composerFooterAccessory}
           />
         ) : execution === undefined ? null : (
           <ChatExecutionPicker control={execution} />

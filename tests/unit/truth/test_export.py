@@ -5,12 +5,19 @@ from __future__ import annotations
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from work_buddy.cowork.verify import (
+    instruction_model_check_defaults,
+    terminology_exact_match_defaults,
+)
+from work_buddy.truth import export as truth_export
+from work_buddy.truth import migrations as truth_migrations
 from work_buddy.truth.anchors import CompositeSelector
 from work_buddy.truth.contracts import Actor
 from work_buddy.truth.export import (
@@ -992,8 +999,11 @@ def test_import_rejects_newer_malformed_duplicate_header_and_trailing_records(
             registry=FakeRegistry(),
         )
     duplicate_header = payload.replace(
-        b'"format_version":4',
-        b'"format_version":4,"format_version":4',
+        f'"format_version":{FORMAT_VERSION}'.encode("ascii"),
+        (
+            f'"format_version":{FORMAT_VERSION},'
+            f'"format_version":{FORMAT_VERSION}'
+        ).encode("ascii"),
         1,
     )
     with pytest.raises(TruthImportError, match="malformed JSON"):
@@ -1026,12 +1036,18 @@ def test_older_schema_export_rebuilds_under_a_newer_engine(tmp_path: Path) -> No
 
     assert restored.get_claim(claim.id).canonical_sha256 == claim.canonical_sha256
     with restored.connect() as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert (
+            conn.execute("PRAGMA user_version").fetchone()[0]
+            == truth_migrations.SCHEMA_VERSION
+        )
         assert conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'documents'"
         ).fetchone()
     header = _objects(restored.paths.claims_export.read_bytes())[0]
-    assert header["store_info"]["schema_version"] == 4
+    assert (
+        header["store_info"]["schema_version"]
+        == truth_migrations.SCHEMA_VERSION
+    )
 
 
 def test_staging_failure_is_not_published_and_existing_empty_target_is_restored(
@@ -1182,3 +1198,772 @@ def test_failed_automatic_export_surfaces_after_commit_and_removes_stale_file(
 
     assert store.get_claim(claim_id) is not None
     assert not store.paths.claims_export.exists()
+
+
+def _portable_specialist_job_row(
+    *,
+    role: str = "specialist",
+    assignment: dict[str, Any] | None = None,
+    include_assignment_field: bool = True,
+) -> dict[str, Any]:
+    selection = {
+        "provider_id": "codex",
+        "model_id": "test-model",
+        "provider_label": "Codex",
+        "model_label": "Test model",
+    }
+    request = {
+        "schema": "work-buddy.cowork-coordination-request/v1",
+        "user_goal": "Evaluate one admitted check.",
+        "protected_intent": "Preserve the captured target.",
+        "effective_configuration": None,
+        "effective_configuration_sha256": None,
+        "effective_policy_sha256": None,
+        "active_criterion_ids": [],
+        "prior_disposition_ids": [],
+        "prior_human_review_outcome_ids": [],
+        "recheck_of_run_id": None,
+        "recheck_of_proposal_ids": [],
+        "recheck_intent_id": None,
+        "coordinator_stage": None,
+        "requested_revision_result_ids": [],
+        "candidate_evaluations": [],
+    }
+    if include_assignment_field:
+        request["specialist_assignment"] = assignment
+    payload = {
+        "document_id": "81" * 16,
+        "evaluation_run_id": "82" * 16,
+        "action_snapshot_id": "83" * 16,
+        "plan_snapshot_id": "84" * 16,
+        "role": role,
+        "parent_job_id": None,
+        "authorization_receipt_id": "85" * 16,
+        "context_sha256": "86" * 32,
+        "selection": selection,
+        "request_summary": request,
+    }
+    return {
+        "id": "87" * 16,
+        **{
+            key: payload[key]
+            for key in (
+                "document_id",
+                "evaluation_run_id",
+                "action_snapshot_id",
+                "plan_snapshot_id",
+                "role",
+                "parent_job_id",
+                "authorization_receipt_id",
+                "context_sha256",
+            )
+        },
+        "selection_json": canonical_json(selection),
+        "request_summary_json": canonical_json(request),
+        "canonical_sha256": sha256_bytes(
+            canonical_json(payload).encode("utf-8")
+        ),
+        "created_at": NOW,
+        "created_by_kind": "system",
+        "created_by_ref": "portable-specialist-test",
+        "created_by_meta_json": None,
+    }
+
+
+def _portable_specialist_status_row(
+    refs: dict[str, Any],
+) -> dict[str, Any]:
+    payload = {
+        "coordination_job_id": "87" * 16,
+        "status": "completed",
+        "outcome_kind": "typed_submission_received",
+        "output_sha256": "88" * 32,
+        "error_code": None,
+        "message": None,
+        "consequence_refs": refs,
+    }
+    return {
+        "id": "89" * 16,
+        "coordination_job_id": payload["coordination_job_id"],
+        "status": payload["status"],
+        "outcome_kind": payload["outcome_kind"],
+        "output_sha256": payload["output_sha256"],
+        "error_code": None,
+        "message": None,
+        "consequence_refs_json": canonical_json(refs),
+        "canonical_sha256": sha256_bytes(
+            canonical_json(payload).encode("utf-8")
+        ),
+        "created_at": NOW,
+        "created_by_kind": "system",
+        "created_by_ref": "portable-specialist-test",
+        "created_by_meta_json": None,
+    }
+
+
+def test_import_validation_accepts_portable_specialist_assignment_and_lineage():
+    assignment = {
+        "criterion_definition_version_id": "91" * 16,
+        "check_definition_version_id": "92" * 16,
+        "criterion_check_binding_id": "93" * 16,
+        "sequence": 1,
+        "total": 1,
+        "configuration_sha256": "94" * 32,
+    }
+    job = _portable_specialist_job_row(assignment=assignment)
+    status = _portable_specialist_status_row(
+        {
+            "check_execution_ids": ["95" * 16],
+            "evaluation_result_ids": ["96" * 16],
+        }
+    )
+
+    truth_export._validate_record_values(
+        truth_export._DataRecord(
+            seq=1,
+            record_type="cowork_coordination_job",
+            record_key=job["id"],
+            record=job,
+        )
+    )
+    truth_export._validate_record_values(
+        truth_export._DataRecord(
+            seq=2,
+            record_type="cowork_coordination_status_event",
+            record_key=status["id"],
+            record=status,
+        )
+    )
+
+
+def test_import_validation_keeps_pre_assignment_coordination_bytes_valid():
+    row = _portable_specialist_job_row(include_assignment_field=False)
+
+    truth_export._validate_record_values(
+        truth_export._DataRecord(
+            seq=1,
+            record_type="cowork_coordination_job",
+            record_key=row["id"],
+            record=row,
+        )
+    )
+    assert "specialist_assignment" not in json.loads(
+        row["request_summary_json"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("assignment_update", "match"),
+    [
+        ({"sequence": 0}, "sequence must be at least 1"),
+        ({"sequence": 2}, "sequence cannot exceed total"),
+        (
+            {"configuration_sha256": "not-a-digest"},
+            "configuration_sha256 must be a lowercase SHA-256 digest",
+        ),
+    ],
+)
+def test_import_validation_rejects_invalid_portable_specialist_assignment(
+    assignment_update: dict[str, Any],
+    match: str,
+):
+    assignment = {
+        "criterion_definition_version_id": "91" * 16,
+        "check_definition_version_id": "92" * 16,
+        "criterion_check_binding_id": "93" * 16,
+        "sequence": 1,
+        "total": 1,
+        "configuration_sha256": "94" * 32,
+        **assignment_update,
+    }
+    row = _portable_specialist_job_row(assignment=assignment)
+
+    with pytest.raises(TruthImportError, match=match):
+        truth_export._validate_record_values(
+            truth_export._DataRecord(
+                seq=1,
+                record_type="cowork_coordination_job",
+                record_key=row["id"],
+                record=row,
+            )
+        )
+
+
+def test_import_validation_rejects_malformed_specialist_lineage_refs():
+    row = _portable_specialist_status_row(
+        {
+            "check_execution_ids": ["not-an-id"],
+            "evaluation_result_ids": [],
+        }
+    )
+
+    with pytest.raises(
+        TruthImportError,
+        match="check_execution_ids must be a lowercase 32-hex id",
+    ):
+        truth_export._validate_record_values(
+            truth_export._DataRecord(
+                seq=1,
+                record_type="cowork_coordination_status_event",
+                record_key=row["id"],
+                record=row,
+            )
+        )
+
+
+def _portable_specialist_lineage_records(
+    *,
+    boundary_update: dict[str, Any] | None = None,
+    receipt_update: dict[str, Any] | None = None,
+    assignment_update: dict[str, Any] | None = None,
+    plan_check_update: dict[str, Any] | None = None,
+    binding_configuration: dict[str, Any] | None = None,
+    execution_ref: str = "assigned",
+    result_ref: str = "assigned",
+    producer_job_id: str | None = None,
+    assigned_execution_mode: str = "specialist",
+    include_next_ref: bool = True,
+    next_role: str = "coordinator",
+    next_parent_id: str | None = None,
+    next_stage: str = "initial",
+    extra_assigned_result: bool = False,
+) -> tuple[truth_export._DataRecord, ...]:
+    document_id = "81" * 16
+    run_id = "82" * 16
+    action_id = "83" * 16
+    plan_id = "84" * 16
+    receipt_id = "85" * 16
+    context_sha256 = "86" * 32
+    job_id = "87" * 16
+    coordinator_job_id = "88" * 16
+    coordinator_receipt_id = "8a" * 16
+    coordinator_context_sha256 = "8b" * 32
+    deterministic_defaults = terminology_exact_match_defaults(at=NOW)
+    criterion_id = (
+        "91" * 16
+        if assigned_execution_mode == "specialist"
+        else deterministic_defaults.criterion.id
+    )
+    criterion_kind = (
+        "user_authored"
+        if assigned_execution_mode == "specialist"
+        else deterministic_defaults.criterion.criterion_kind
+    )
+    admitted_check = (
+        instruction_model_check_defaults(at=NOW)
+        if assigned_execution_mode == "specialist"
+        else deterministic_defaults.check
+    )
+    check_id = admitted_check.id
+    binding_id = "93" * 16
+    configuration = {"instructions": "Review the captured target."}
+    configuration_sha256 = sha256_bytes(
+        canonical_json(configuration).encode("utf-8")
+    )
+    assigned_execution_id = "95" * 16
+    assigned_result_id = "96" * 16
+    alternate_criterion_id = "a1" * 16
+    alternate_check_id = "a2" * 16
+    alternate_binding_id = "a3" * 16
+    alternate_execution_id = "a4" * 16
+    alternate_result_id = "a5" * 16
+    target_text_sha256 = "b1" * 32
+    assignment = {
+        "criterion_definition_version_id": criterion_id,
+        "check_definition_version_id": check_id,
+        "criterion_check_binding_id": binding_id,
+        "sequence": 1,
+        "total": 1,
+        "configuration_sha256": configuration_sha256,
+        **(assignment_update or {}),
+    }
+    job = _portable_specialist_job_row(assignment=assignment)
+    request_summary = json.loads(job["request_summary_json"])
+    selection = json.loads(job["selection_json"])
+    authority_context = {
+        field: request_summary[field]
+        for field in (
+            "user_goal",
+            "protected_intent",
+            "effective_configuration",
+            "effective_configuration_sha256",
+            "effective_policy_sha256",
+            "active_criterion_ids",
+            "prior_disposition_ids",
+            "prior_human_review_outcome_ids",
+            "recheck_of_run_id",
+            "recheck_of_proposal_ids",
+            "recheck_intent_id",
+            "coordinator_stage",
+            "requested_revision_result_ids",
+            "specialist_assignment",
+        )
+    }
+    boundary = {
+        "role": "specialist",
+        "job_id": job_id,
+        "document": "captured_target_only",
+        "action_snapshot_id": action_id,
+        "authority_context": authority_context,
+        **(boundary_update or {}),
+    }
+    plan_check = {
+        "criterion_definition_version_id": criterion_id,
+        "check_definition_version_id": check_id,
+        "criterion_check_binding_id": binding_id,
+        "criterion_activation_id": "a6" * 16,
+        "configuration_sha256": configuration_sha256,
+        **(plan_check_update or {}),
+    }
+    assigned_execution = {
+        "id": assigned_execution_id,
+        "evaluation_run_id": run_id,
+        "check_definition_version_id": check_id,
+        "criterion_check_binding_id": binding_id,
+        "input_sha256": target_text_sha256,
+        "producer_json": canonical_json(
+            {
+                "kind": "account_backed_specialist",
+                "job_id": producer_job_id or job_id,
+            }
+        ),
+    }
+    alternate_execution = {
+        "id": alternate_execution_id,
+        "evaluation_run_id": run_id,
+        "check_definition_version_id": alternate_check_id,
+        "criterion_check_binding_id": alternate_binding_id,
+        "input_sha256": target_text_sha256,
+        "producer_json": canonical_json(
+            {
+                "kind": "account_backed_specialist",
+                "job_id": job_id,
+            }
+        ),
+    }
+    execution_id = (
+        assigned_execution_id
+        if execution_ref == "assigned"
+        else alternate_execution_id
+    )
+    result_id = (
+        assigned_result_id if result_ref == "assigned" else alternate_result_id
+    )
+    completed_refs = {
+        "check_execution_ids": [execution_id],
+        "evaluation_result_ids": [result_id],
+    }
+    if include_next_ref:
+        completed_refs["next_job_id"] = coordinator_job_id
+    completed = _portable_specialist_status_row(completed_refs)
+    coordinator_request = deepcopy(request_summary)
+    coordinator_request["specialist_assignment"] = None
+    coordinator_request["coordinator_stage"] = next_stage
+    coordinator_authority_context = {
+        field: coordinator_request[field]
+        for field in authority_context
+    }
+    coordinator_payload = {
+        "document_id": document_id,
+        "evaluation_run_id": run_id,
+        "action_snapshot_id": action_id,
+        "plan_snapshot_id": plan_id,
+        "role": next_role,
+        "parent_job_id": next_parent_id,
+        "authorization_receipt_id": coordinator_receipt_id,
+        "context_sha256": coordinator_context_sha256,
+        "selection": selection,
+        "request_summary": coordinator_request,
+    }
+    coordinator_job = {
+        "id": coordinator_job_id,
+        "document_id": document_id,
+        "evaluation_run_id": run_id,
+        "action_snapshot_id": action_id,
+        "plan_snapshot_id": plan_id,
+        "role": next_role,
+        "parent_job_id": next_parent_id,
+        "authorization_receipt_id": coordinator_receipt_id,
+        "context_sha256": coordinator_context_sha256,
+        "selection_json": canonical_json(selection),
+        "request_summary_json": canonical_json(coordinator_request),
+        "canonical_sha256": sha256_bytes(
+            canonical_json(coordinator_payload).encode("utf-8")
+        ),
+    }
+
+    rows = [
+        ("document", document_id, {"id": document_id}),
+        (
+            "criterion_definition_version",
+            criterion_id,
+            {"id": criterion_id, "criterion_kind": criterion_kind},
+        ),
+        (
+            "criterion_definition_version",
+            alternate_criterion_id,
+            {"id": alternate_criterion_id},
+        ),
+        (
+            "check_definition_version",
+            check_id,
+            {
+                "id": check_id,
+                "canonical_sha256": admitted_check.canonical_sha256,
+                "executor_ref": admitted_check.executor_ref,
+                "mechanism": admitted_check.mechanism,
+                "supported_criterion_kinds_json": (
+                    admitted_check.supported_criterion_kinds_json
+                ),
+            },
+        ),
+        (
+            "check_definition_version",
+            alternate_check_id,
+            {"id": alternate_check_id},
+        ),
+        (
+            "criterion_check_binding",
+            binding_id,
+            {
+                "id": binding_id,
+                "criterion_definition_version_id": criterion_id,
+                "check_definition_version_id": check_id,
+                "configuration_json": canonical_json(
+                    binding_configuration
+                    if binding_configuration is not None
+                    else configuration
+                ),
+            },
+        ),
+        (
+            "criterion_check_binding",
+            alternate_binding_id,
+            {
+                "id": alternate_binding_id,
+                "criterion_definition_version_id": alternate_criterion_id,
+                "check_definition_version_id": alternate_check_id,
+                "configuration_json": canonical_json(
+                    {"instructions": "Alternate check."}
+                ),
+            },
+        ),
+        (
+            "action_snapshot",
+            action_id,
+            {
+                "id": action_id,
+                "document_id": document_id,
+                "document_version_id": None,
+                "target_text_sha256": target_text_sha256,
+            },
+        ),
+        (
+            "evaluation_plan_snapshot",
+            plan_id,
+            {
+                "id": plan_id,
+                "action_snapshot_id": action_id,
+                "plan_json": canonical_json(
+                    {
+                        "schema": "work-buddy.cowork-evaluation-plan/v1",
+                        "action_snapshot_id": action_id,
+                        "checks": [plan_check],
+                    }
+                ),
+            },
+        ),
+        (
+            "evaluation_run",
+            run_id,
+            {
+                "id": run_id,
+                "action_snapshot_id": action_id,
+                "plan_snapshot_id": plan_id,
+            },
+        ),
+        ("check_execution", assigned_execution_id, assigned_execution),
+        ("check_execution", alternate_execution_id, alternate_execution),
+        (
+            "evaluation_result",
+            assigned_result_id,
+            {
+                "id": assigned_result_id,
+                "evaluation_run_id": run_id,
+                "check_execution_id": assigned_execution_id,
+                "criterion_definition_version_id": criterion_id,
+            },
+        ),
+        (
+            "evaluation_result",
+            alternate_result_id,
+            {
+                "id": alternate_result_id,
+                "evaluation_run_id": run_id,
+                "check_execution_id": alternate_execution_id,
+                "criterion_definition_version_id": alternate_criterion_id,
+            },
+        ),
+        *(
+            [
+                (
+                    "evaluation_result",
+                    "a9" * 16,
+                    {
+                        "id": "a9" * 16,
+                        "evaluation_run_id": run_id,
+                        "check_execution_id": assigned_execution_id,
+                        "criterion_definition_version_id": criterion_id,
+                    },
+                )
+            ]
+            if extra_assigned_result
+            else []
+        ),
+        (
+            "model_call_authorization_receipt",
+            receipt_id,
+            {
+                "id": receipt_id,
+                "action_snapshot_id": action_id,
+                "plan_snapshot_id": plan_id,
+                "provider": selection["provider_id"],
+                "model": selection["model_id"],
+                "context_sha256": context_sha256,
+                "content_boundary_json": canonical_json(boundary),
+                "egress_class": "account_backed_agent",
+                "cost_ceiling_usd": 2.0,
+                "retry_limit": 0,
+                "created_by_kind": "human",
+                **(receipt_update or {}),
+            },
+        ),
+        ("cowork_coordination_job", job_id, job),
+        (
+            "model_call_authorization_receipt",
+            coordinator_receipt_id,
+            {
+                "id": coordinator_receipt_id,
+                "action_snapshot_id": action_id,
+                "plan_snapshot_id": plan_id,
+                "provider": selection["provider_id"],
+                "model": selection["model_id"],
+                "context_sha256": coordinator_context_sha256,
+                "content_boundary_json": canonical_json(
+                    {
+                        "role": next_role,
+                        "job_id": coordinator_job_id,
+                        "document": (
+                            "complete_permitted_frozen_projection"
+                        ),
+                        "action_snapshot_id": action_id,
+                        "authority_context": coordinator_authority_context,
+                    }
+                ),
+                "egress_class": "account_backed_agent",
+                "cost_ceiling_usd": 2.0,
+                "retry_limit": 0,
+                "created_by_kind": "human",
+            },
+        ),
+        (
+            "cowork_coordination_job",
+            coordinator_job_id,
+            coordinator_job,
+        ),
+        (
+            "cowork_coordination_status_event",
+            "a7" * 16,
+            {
+                "id": "a7" * 16,
+                "coordination_job_id": job_id,
+                "status": "prepared",
+                "outcome_kind": None,
+                "consequence_refs_json": canonical_json({}),
+            },
+        ),
+        (
+            "cowork_coordination_status_event",
+            "a8" * 16,
+            {
+                "id": "a8" * 16,
+                "coordination_job_id": job_id,
+                "status": "submitted",
+                "outcome_kind": "typed_submission_received",
+                "consequence_refs_json": canonical_json({}),
+            },
+        ),
+        (
+            "cowork_coordination_status_event",
+            completed["id"],
+            completed,
+        ),
+    ]
+    return tuple(
+        truth_export._DataRecord(
+            seq=seq,
+            record_type=record_type,
+            record_key=record_key,
+            record=row,
+        )
+        for seq, (record_type, record_key, row) in enumerate(rows, start=1)
+    )
+
+
+def test_import_foreign_refs_accept_exact_specialist_authorization_and_lineage():
+    truth_export._validate_foreign_refs(
+        _portable_specialist_lineage_records()
+    )
+
+
+@pytest.mark.parametrize(
+    "boundary_update",
+    [
+        {"role": "coordinator"},
+        {"job_id": "c1" * 16},
+        {"document": "complete_permitted_frozen_projection"},
+        {"action_snapshot_id": "c2" * 16},
+        {"authority_context": {"specialist_assignment": None}},
+    ],
+)
+def test_import_foreign_refs_reject_mismatched_specialist_authorization(
+    boundary_update: dict[str, Any],
+):
+    with pytest.raises(
+        TruthImportError,
+        match="exact authorization boundary",
+    ):
+        truth_export._validate_foreign_refs(
+            _portable_specialist_lineage_records(
+                boundary_update=boundary_update
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "receipt_update",
+    [
+        {"cost_ceiling_usd": 1.0},
+        {"retry_limit": 1},
+        {"created_by_kind": "system"},
+    ],
+)
+def test_import_foreign_refs_reject_specialist_authorization_policy_tampering(
+    receipt_update: dict[str, Any],
+):
+    with pytest.raises(
+        TruthImportError,
+        match="exact authorization boundary",
+    ):
+        truth_export._validate_foreign_refs(
+            _portable_specialist_lineage_records(
+                receipt_update=receipt_update
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "assignment_update",
+    [
+        {"sequence": 2, "total": 2},
+        {"total": 2},
+    ],
+)
+def test_import_foreign_refs_reject_specialist_sequence_tampering(
+    assignment_update: dict[str, Any],
+):
+    with pytest.raises(
+        TruthImportError,
+        match="exact admitted specialist sequence",
+    ):
+        truth_export._validate_foreign_refs(
+            _portable_specialist_lineage_records(
+                assignment_update=assignment_update
+            )
+        )
+
+
+def test_import_foreign_refs_rejects_deterministic_check_relabelled_specialist():
+    with pytest.raises(
+        TruthImportError,
+        match="exact admitted specialist sequence",
+    ):
+        truth_export._validate_foreign_refs(
+            _portable_specialist_lineage_records(
+                assigned_execution_mode="deterministic"
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("updates", "match"),
+    [
+        (
+            {"include_next_ref": False},
+            "next job",
+        ),
+        (
+            {"next_role": "reviser"},
+            "initial coordinator",
+        ),
+        (
+            {"next_parent_id": "87" * 16},
+            "initial coordinator",
+        ),
+        (
+            {"next_stage": "post_revision"},
+            "initial coordinator",
+        ),
+        (
+            {"extra_assigned_result": True},
+            "complete result set",
+        ),
+    ],
+)
+def test_import_foreign_refs_rejects_specialist_handoff_tampering(
+    updates: dict[str, Any],
+    match: str,
+):
+    with pytest.raises(TruthImportError, match=match):
+        truth_export._validate_foreign_refs(
+            _portable_specialist_lineage_records(**updates)
+        )
+
+
+@pytest.mark.parametrize(
+    ("updates", "match"),
+    [
+        (
+            {"plan_check_update": {"configuration_sha256": "c3" * 32}},
+            "immutable binding",
+        ),
+        (
+            {
+                "binding_configuration": {
+                    "instructions": "A different immutable configuration."
+                }
+            },
+            "immutable binding",
+        ),
+        (
+            {"execution_ref": "alternate"},
+            "exact job assignment",
+        ),
+        (
+            {"producer_job_id": "c4" * 16},
+            "exact job assignment",
+        ),
+        (
+            {"result_ref": "alternate"},
+            "assigned execution lineage",
+        ),
+    ],
+)
+def test_import_foreign_refs_reject_crossed_specialist_lineage(
+    updates: dict[str, Any],
+    match: str,
+):
+    with pytest.raises(TruthImportError, match=match):
+        truth_export._validate_foreign_refs(
+            _portable_specialist_lineage_records(**updates)
+        )

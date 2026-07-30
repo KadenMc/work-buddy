@@ -155,6 +155,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             response        TEXT,
             status          TEXT NOT NULL DEFAULT 'sent',
             producer        TEXT,
+            context_json    TEXT,
             FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id)
         );
 
@@ -188,9 +189,63 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             PRIMARY KEY (conversation_id, consumer),
             FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id)
         );
+
+        CREATE TABLE IF NOT EXISTS conversation_action_snapshot_receipts (
+            receipt_id         TEXT PRIMARY KEY,
+            conversation_id    TEXT NOT NULL,
+            consumer           TEXT NOT NULL,
+            generation         TEXT NOT NULL,
+            user_message_id    TEXT NOT NULL,
+            action_snapshot_id TEXT NOT NULL,
+            reply_message_id   TEXT,
+            fetched_at         TEXT NOT NULL,
+            fetch_outcome      TEXT NOT NULL DEFAULT 'available',
+            unavailable_code   TEXT,
+            fetch_resolved_at  TEXT,
+            replied_at         TEXT,
+            acked_at           TEXT,
+            UNIQUE (
+                conversation_id,
+                consumer,
+                generation,
+                user_message_id,
+                action_snapshot_id
+            ),
+            FOREIGN KEY (conversation_id)
+                REFERENCES conversations(conversation_id),
+            FOREIGN KEY (user_message_id) REFERENCES messages(message_id),
+            FOREIGN KEY (reply_message_id) REFERENCES messages(message_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_action_snapshot_receipts_delivery
+            ON conversation_action_snapshot_receipts(
+                conversation_id, consumer, generation, user_message_id
+            );
         """
     )
     _ensure_column(conn, "messages", "producer", "producer TEXT")
+    _ensure_column(conn, "messages", "context_json", "context_json TEXT")
+    # Receipts written before fetch outcomes were recorded were minted only
+    # after a successful view read, so ``available`` is the truthful migration
+    # default. New receipts are inserted explicitly as ``pending`` below.
+    _ensure_column(
+        conn,
+        "conversation_action_snapshot_receipts",
+        "fetch_outcome",
+        "fetch_outcome TEXT NOT NULL DEFAULT 'available'",
+    )
+    _ensure_column(
+        conn,
+        "conversation_action_snapshot_receipts",
+        "unavailable_code",
+        "unavailable_code TEXT",
+    )
+    _ensure_column(
+        conn,
+        "conversation_action_snapshot_receipts",
+        "fetch_resolved_at",
+        "fetch_resolved_at TEXT",
+    )
     _ensure_column(
         conn,
         "conversation_agent_leases",
@@ -462,6 +517,7 @@ def add_message(
     conn: sqlite3.Connection | None = None,
     message_id: str | None = None,
     producer: Mapping[str, Any] | None = None,
+    context: Mapping[str, Any] | None = None,
 ) -> ConversationMessage | None:
     """Add a message to a conversation. Returns the message, or None if
     conversation not found.
@@ -495,12 +551,14 @@ def add_message(
             choices=choices,
             status=status,
             producer=dict(producer) if producer is not None else None,
+            context=dict(context) if context is not None else None,
         )
         cursor = conn.execute(
             """INSERT OR IGNORE INTO messages
                (message_id, conversation_id, role, content, created_at,
-                message_type, response_type, choices, response, status, producer)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                message_type, response_type, choices, response, status, producer,
+                context_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 msg.message_id,
                 msg.conversation_id,
@@ -513,6 +571,7 @@ def add_message(
                 None,
                 msg.status,
                 json.dumps(msg.producer) if msg.producer is not None else None,
+                json.dumps(msg.context) if msg.context is not None else None,
             ),
         )
         if cursor.rowcount == 0:
@@ -527,6 +586,7 @@ def add_message(
                 or existing.role != msg.role
                 or existing.content != msg.content
                 or existing.message_type != msg.message_type
+                or existing.context != msg.context
             ):
                 raise sqlite3.IntegrityError(
                     "message_id was reused for different message content"
@@ -549,6 +609,7 @@ def send_agent_message_idempotent(
     message_id: str,
     conn: sqlite3.Connection | None = None,
     producer: Mapping[str, Any] | None = None,
+    context: Mapping[str, Any] | None = None,
 ) -> tuple[ConversationMessage | None, bool]:
     """Send one caller-keyed agent message with first-writer-wins semantics.
 
@@ -581,12 +642,16 @@ def send_agent_message_idempotent(
             response_type="none",
             status="sent",
             producer=dict(producer) if producer is not None else None,
+            context=dict(context) if context is not None else None,
         )
         cursor = conn.execute(
             """INSERT OR IGNORE INTO messages
                (message_id, conversation_id, role, content, created_at,
-                message_type, response_type, choices, response, status, producer)
-               VALUES (?, ?, 'agent', ?, ?, 'text', 'none', NULL, NULL, 'sent', ?)""",
+                message_type, response_type, choices, response, status, producer,
+                context_json)
+               VALUES (
+                   ?, ?, 'agent', ?, ?, 'text', 'none', NULL, NULL, 'sent', ?, ?
+               )""",
             (
                 message_id,
                 conversation_id,
@@ -594,6 +659,9 @@ def send_agent_message_idempotent(
                 now,
                 json.dumps(candidate.producer)
                 if candidate.producer is not None
+                else None,
+                json.dumps(candidate.context)
+                if candidate.context is not None
                 else None,
             ),
         )
@@ -617,6 +685,7 @@ def send_agent_message_idempotent(
         if (
             existing.conversation_id != conversation_id
             or existing.role != "agent"
+            or existing.context != candidate.context
         ):
             raise sqlite3.IntegrityError(
                 "message_id was reused across a conversation or role boundary"
@@ -638,6 +707,7 @@ def _insert_user_message_locked(
     conversation_id: str,
     content: str,
     message_id: str | None = None,
+    context: Mapping[str, Any] | None = None,
 ) -> tuple[ConversationMessage, bool]:
     """Insert one display-visible user message on an active write transaction."""
     now = _now()
@@ -649,12 +719,13 @@ def _insert_user_message_locked(
         created_at=now,
         message_type="text",
         status="sent",
+        context=dict(context) if context is not None else None,
     )
     cursor = conn.execute(
         """INSERT OR IGNORE INTO messages
            (message_id, conversation_id, role, content, created_at,
-            message_type, response_type, choices, response, status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            message_type, response_type, choices, response, status, context_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             user_msg.message_id,
             user_msg.conversation_id,
@@ -666,6 +737,7 @@ def _insert_user_message_locked(
             None,
             None,
             user_msg.status,
+            json.dumps(user_msg.context) if user_msg.context is not None else None,
         ),
     )
     if cursor.rowcount != 0:
@@ -682,6 +754,7 @@ def _insert_user_message_locked(
         or existing.role != "user"
         or existing.content != user_msg.content
         or existing.message_type != "text"
+        or existing.context != user_msg.context
     ):
         raise sqlite3.IntegrityError(
             "message_id was reused for different user message content"
@@ -696,6 +769,7 @@ def respond_to_message_with_user_message(
     conn: sqlite3.Connection | None = None,
     *,
     user_message_id: str | None = None,
+    context: Mapping[str, Any] | None = None,
 ) -> ConversationMessage | None:
     """Answer one exact pending question and return its single user message.
 
@@ -729,6 +803,7 @@ def respond_to_message_with_user_message(
             conversation_id=conversation_id,
             content=response,
             message_id=user_message_id,
+            context=context,
         )
         if not inserted:
             # A replay of the same user-message id is already durable. It must
@@ -768,6 +843,7 @@ def post_user_message(
     conn: sqlite3.Connection | None = None,
     *,
     message_id: str | None = None,
+    context: Mapping[str, Any] | None = None,
 ) -> ConversationMessage | None:
     """Append one ordinary user turn without consuming a pending question."""
     own_conn = conn is None
@@ -786,6 +862,7 @@ def post_user_message(
             conversation_id=conversation_id,
             content=content,
             message_id=message_id,
+            context=context,
         )
         if inserted:
             conn.execute(
@@ -1199,6 +1276,390 @@ def _next_user_message(
     ).fetchone()
 
 
+def _action_snapshot_context(raw_context: object) -> dict[str, Any] | None:
+    context: object = raw_context
+    if isinstance(context, str) and context:
+        try:
+            context = json.loads(context)
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(context, Mapping) or context.get("kind") != "action_snapshot":
+        return None
+    action_snapshot_id = context.get("action_snapshot_id")
+    if not isinstance(action_snapshot_id, str) or not action_snapshot_id:
+        return None
+    return dict(context)
+
+
+def record_action_snapshot_consumption(
+    conversation_id: str,
+    consumer: str,
+    generation: str,
+    message_id: str,
+    action_snapshot_id: str,
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> dict[str, Any]:
+    """Mint a durable receipt for fetching one delivered targeted turn.
+
+    The receipt is bound to the active consumer generation and exact user
+    message, not merely to the immutable action snapshot. Repeating the same
+    fetch returns the same receipt.
+    """
+
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
+        conn.execute("BEGIN IMMEDIATE")
+    try:
+        if not _touch_agent_lease(
+            conn,
+            conversation_id=conversation_id,
+            consumer=consumer,
+            generation=generation,
+        ):
+            raise ConversationLeaseLost("lease_lost")
+        existing = conn.execute(
+            """SELECT * FROM conversation_action_snapshot_receipts
+               WHERE conversation_id = ? AND consumer = ? AND generation = ?
+                 AND user_message_id = ? AND action_snapshot_id = ?""",
+            (
+                conversation_id,
+                consumer,
+                generation,
+                message_id,
+                action_snapshot_id,
+            ),
+        ).fetchone()
+        if existing is not None:
+            if own_conn:
+                conn.commit()
+            return dict(existing)
+
+        delivered = _next_user_message(
+            conn,
+            conversation_id=conversation_id,
+            consumer=consumer,
+        )
+        if delivered is None or str(delivered["message_id"]) != message_id:
+            raise ValueError(
+                "action snapshot fetch must name the currently delivered user message"
+            )
+        context = _action_snapshot_context(delivered["context_json"])
+        if (
+            context is None
+            or context.get("action_snapshot_id") != action_snapshot_id
+        ):
+            raise ValueError(
+                "action snapshot fetch does not match the delivered user message"
+            )
+        receipt_id = _new_id()
+        fetched_at = _now()
+        conn.execute(
+            """INSERT INTO conversation_action_snapshot_receipts
+                   (receipt_id, conversation_id, consumer, generation,
+                    user_message_id, action_snapshot_id, fetched_at,
+                    fetch_outcome)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')""",
+            (
+                receipt_id,
+                conversation_id,
+                consumer,
+                generation,
+                message_id,
+                action_snapshot_id,
+                fetched_at,
+            ),
+        )
+        row = conn.execute(
+            "SELECT * FROM conversation_action_snapshot_receipts "
+            "WHERE receipt_id = ?",
+            (receipt_id,),
+        ).fetchone()
+        assert row is not None
+        if own_conn:
+            conn.commit()
+        return dict(row)
+    except Exception:
+        if own_conn and conn.in_transaction:
+            conn.rollback()
+        raise
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def resolve_action_snapshot_consumption(
+    consumption_receipt_id: str,
+    fetch_outcome: str,
+    *,
+    unavailable_code: str | None = None,
+    conn: sqlite3.Connection,
+) -> dict[str, Any]:
+    """Finalize the first exact frozen-context fetch outcome for a receipt.
+
+    ``pending`` is never returned to an agent. The receipt and its outcome are
+    committed by the same generation-fenced transaction as the capability
+    response. Replays retain the first terminal outcome so the audit record
+    cannot be rewritten after an unavailable explanation or successful use.
+    """
+
+    if fetch_outcome not in {"available", "unavailable"}:
+        raise ValueError("fetch_outcome must be available or unavailable")
+    normalized_code = (
+        unavailable_code.strip()
+        if isinstance(unavailable_code, str) and unavailable_code.strip()
+        else None
+    )
+    if fetch_outcome == "unavailable" and normalized_code is None:
+        raise ValueError("an unavailable fetch requires unavailable_code")
+    if fetch_outcome == "available" and normalized_code is not None:
+        raise ValueError("an available fetch cannot carry unavailable_code")
+
+    resolved_at = _now()
+    conn.execute(
+        """UPDATE conversation_action_snapshot_receipts
+           SET fetch_outcome = ?,
+               unavailable_code = ?,
+               fetch_resolved_at = ?
+           WHERE receipt_id = ? AND fetch_outcome = 'pending'""",
+        (
+            fetch_outcome,
+            normalized_code,
+            resolved_at,
+            consumption_receipt_id,
+        ),
+    )
+    row = conn.execute(
+        """SELECT * FROM conversation_action_snapshot_receipts
+           WHERE receipt_id = ?""",
+        (consumption_receipt_id,),
+    ).fetchone()
+    if row is None:
+        raise ValueError("consumption receipt is unavailable")
+    if str(row["fetch_outcome"]) == "pending":
+        raise ValueError("consumption receipt fetch outcome was not resolved")
+    return dict(row)
+
+
+def _receipt_context(raw_context: object) -> dict[str, Any] | None:
+    """Return a well-formed targeted-reply consumption context."""
+
+    context = _action_snapshot_context(raw_context)
+    if context is None:
+        return None
+    consumption = context.get("consumption")
+    if not isinstance(consumption, Mapping):
+        return None
+    receipt_id = consumption.get("receipt_id")
+    user_message_id = consumption.get("user_message_id")
+    if (
+        not isinstance(receipt_id, str)
+        or not receipt_id
+        or not isinstance(user_message_id, str)
+        or not user_message_id
+    ):
+        return None
+    return context
+
+
+def _same_targeted_reply_semantics(
+    first: Mapping[str, Any],
+    second: Mapping[str, Any],
+) -> bool:
+    """Compare exact target/turn semantics while ignoring receipt identity.
+
+    A generation restart necessarily changes the receipt ID and fetch time.
+    Everything authored about the target—including Co-think discussion
+    context—and the exact delivered user message must remain identical.
+    """
+
+    first_consumption = first.get("consumption")
+    second_consumption = second.get("consumption")
+    if not isinstance(first_consumption, Mapping) or not isinstance(
+        second_consumption,
+        Mapping,
+    ):
+        return False
+    if (
+        first_consumption.get("user_message_id")
+        != second_consumption.get("user_message_id")
+    ):
+        return False
+    first_semantics = dict(first)
+    second_semantics = dict(second)
+    first_semantics.pop("consumption", None)
+    second_semantics.pop("consumption", None)
+    return first_semantics == second_semantics
+
+
+def targeted_reply_context(
+    conversation_id: str,
+    consumer: str,
+    generation: str,
+    reply_message_id: str,
+    consumption_receipt_id: str | None,
+    *,
+    conn: sqlite3.Connection,
+) -> dict[str, Any] | None:
+    """Validate a target receipt and return transcript-visible reply context."""
+
+    receipt_id = (
+        consumption_receipt_id.strip()
+        if isinstance(consumption_receipt_id, str)
+        else ""
+    )
+    delivered = _next_user_message(
+        conn,
+        conversation_id=conversation_id,
+        consumer=consumer,
+    )
+    delivered_context = (
+        None
+        if delivered is None
+        else _action_snapshot_context(delivered["context_json"])
+    )
+    if not receipt_id:
+        if delivered_context is not None:
+            raise ValueError(
+                "targeted reply requires the consumption receipt returned by "
+                "cowork_action_snapshot_get"
+            )
+        return None
+
+    receipt = conn.execute(
+        """SELECT * FROM conversation_action_snapshot_receipts
+           WHERE receipt_id = ? AND conversation_id = ? AND consumer = ?
+             AND generation = ?""",
+        (receipt_id, conversation_id, consumer, generation),
+    ).fetchone()
+    if receipt is None:
+        raise ValueError(
+            "consumption receipt is unavailable for this conversation generation"
+        )
+    fetch_outcome = str(receipt["fetch_outcome"] or "available")
+    if fetch_outcome not in {"available", "unavailable"}:
+        raise ValueError("consumption receipt fetch outcome is not resolved")
+    user_message = conn.execute(
+        """SELECT context_json FROM messages
+           WHERE conversation_id = ? AND message_id = ? AND role = 'user'""",
+        (conversation_id, str(receipt["user_message_id"])),
+    ).fetchone()
+    context = (
+        None
+        if user_message is None
+        else _action_snapshot_context(user_message["context_json"])
+    )
+    if (
+        context is None
+        or context.get("action_snapshot_id")
+        != str(receipt["action_snapshot_id"])
+    ):
+        raise ValueError("consumption receipt no longer matches its targeted turn")
+    bound_reply = receipt["reply_message_id"]
+    if bound_reply is not None and str(bound_reply) != reply_message_id:
+        raise ValueError("consumption receipt is already bound to another reply")
+    if bound_reply is None and (
+        delivered is None
+        or str(delivered["message_id"]) != str(receipt["user_message_id"])
+    ):
+        raise ValueError("consumption receipt is not for the next delivered turn")
+    consumption_context: dict[str, Any] = {
+        "receipt_id": receipt_id,
+        "user_message_id": str(receipt["user_message_id"]),
+        "fetched_at": str(receipt["fetched_at"]),
+        "fetch_outcome": fetch_outcome,
+    }
+    unavailable_code = receipt["unavailable_code"]
+    if fetch_outcome == "unavailable" and isinstance(
+        unavailable_code,
+        str,
+    ):
+        consumption_context["unavailable_code"] = unavailable_code
+    candidate_context = {
+        **context,
+        "consumption": consumption_context,
+    }
+
+    # A stable reply may already have committed under the predecessor
+    # generation while its user-turn acknowledgement did not. Preserve the
+    # first durable message context, but only after proving that its old
+    # receipt and this generation's receipt name the exact same targeted turn
+    # and action context. The caller will bind the new receipt to that message,
+    # preserving both generations in the receipt audit.
+    existing_message = conn.execute(
+        """SELECT conversation_id, role, context_json
+           FROM messages WHERE message_id = ?""",
+        (reply_message_id,),
+    ).fetchone()
+    if existing_message is None:
+        return candidate_context
+    if (
+        str(existing_message["conversation_id"]) != conversation_id
+        or str(existing_message["role"]) != "agent"
+    ):
+        raise ValueError(
+            "stable reply message_id belongs to another conversation or role"
+        )
+    existing_context = _receipt_context(existing_message["context_json"])
+    if existing_context is None or not _same_targeted_reply_semantics(
+        existing_context,
+        candidate_context,
+    ):
+        raise ValueError(
+            "stable reply message_id belongs to a different targeted turn"
+        )
+    existing_consumption = existing_context["consumption"]
+    assert isinstance(existing_consumption, Mapping)
+    existing_receipt_id = str(existing_consumption["receipt_id"])
+    existing_receipt = conn.execute(
+        """SELECT * FROM conversation_action_snapshot_receipts
+           WHERE receipt_id = ? AND conversation_id = ? AND consumer = ?
+             AND user_message_id = ? AND action_snapshot_id = ?""",
+        (
+            existing_receipt_id,
+            conversation_id,
+            consumer,
+            str(receipt["user_message_id"]),
+            str(receipt["action_snapshot_id"]),
+        ),
+    ).fetchone()
+    if existing_receipt is None or (
+        existing_receipt["reply_message_id"] is not None
+        and str(existing_receipt["reply_message_id"]) != reply_message_id
+    ):
+        raise ValueError(
+            "stable targeted reply has no matching durable consumption receipt"
+        )
+    return existing_context
+
+
+def bind_action_snapshot_reply(
+    consumption_receipt_id: str,
+    reply_message_id: str,
+    *,
+    conn: sqlite3.Connection,
+) -> None:
+    """Bind a fetched target receipt to the exact durable assistant reply."""
+
+    now = _now()
+    cursor = conn.execute(
+        """UPDATE conversation_action_snapshot_receipts
+           SET reply_message_id = COALESCE(reply_message_id, ?),
+               replied_at = COALESCE(replied_at, ?)
+           WHERE receipt_id = ?
+             AND (reply_message_id IS NULL OR reply_message_id = ?)""",
+        (
+            reply_message_id,
+            now,
+            consumption_receipt_id,
+            reply_message_id,
+        ),
+    )
+    if cursor.rowcount != 1:
+        raise ValueError("consumption receipt could not be bound to this reply")
+
+
 def receive_user_message(
     conversation_id: str,
     consumer: str,
@@ -1287,15 +1748,99 @@ def receive_user_message(
         )
 
 
+def _action_context_ack_mismatch(
+    conn: sqlite3.Connection,
+    *,
+    conversation_id: str,
+    consumer: str,
+    generation: str,
+    message_id: str,
+    raw_context: object,
+    supplied_action_snapshot_id: str | None,
+    consumption_receipt_id: str | None,
+) -> dict[str, Any] | None:
+    context = _action_snapshot_context(raw_context)
+    expected = (
+        None if context is None else str(context["action_snapshot_id"])
+    )
+    supplied = (
+        supplied_action_snapshot_id.strip()
+        if isinstance(supplied_action_snapshot_id, str)
+        else ""
+    )
+    if expected is None:
+        if not supplied and not consumption_receipt_id:
+            return None
+        return {
+            "status": "action_snapshot_mismatch",
+            "acked": False,
+            "action_snapshot_id": None,
+        }
+    receipt_id = (
+        consumption_receipt_id.strip()
+        if isinstance(consumption_receipt_id, str)
+        else ""
+    )
+    if not receipt_id:
+        return {
+            "status": "action_snapshot_receipt_required",
+            "acked": False,
+            "action_snapshot_id": expected,
+        }
+    receipt = conn.execute(
+        """SELECT * FROM conversation_action_snapshot_receipts
+           WHERE receipt_id = ? AND conversation_id = ? AND consumer = ?
+             AND generation = ? AND user_message_id = ?
+             AND action_snapshot_id = ?""",
+        (
+            receipt_id,
+            conversation_id,
+            consumer,
+            generation,
+            message_id,
+            expected,
+        ),
+    ).fetchone()
+    if receipt is None:
+        return {
+            "status": "action_snapshot_receipt_mismatch",
+            "acked": False,
+            "action_snapshot_id": expected,
+        }
+    if receipt["reply_message_id"] is None:
+        return {
+            "status": "targeted_reply_required",
+            "acked": False,
+            "action_snapshot_id": expected,
+        }
+    if not supplied:
+        supplied = expected
+    if supplied != expected:
+        return {
+            "status": "action_snapshot_mismatch",
+            "acked": False,
+            "action_snapshot_id": expected,
+        }
+    return None
+
+
 def ack_user_message(
     conversation_id: str,
     consumer: str,
     generation: str,
     message_id: str,
     *,
+    action_snapshot_id: str | None = None,
+    consumption_receipt_id: str | None = None,
     conn: sqlite3.Connection | None = None,
 ) -> dict[str, Any]:
-    """Advance a consumer cursor only over its exact current oldest message."""
+    """Advance a cursor only over its exact turn and consumption receipt.
+
+    A targeted turn cannot be acknowledged without the active generation's
+    receipt, already bound to a durable reply for that exact user message and
+    action snapshot. The redundant ``action_snapshot_id`` echo remains
+    accepted for compatibility but never authorizes an acknowledgement.
+    """
     own_conn = conn is None
     if own_conn:
         conn = get_connection()
@@ -1317,6 +1862,33 @@ def ack_user_message(
             (conversation_id, consumer),
         ).fetchone()
         if current is not None and str(current["last_message_id"]) == message_id:
+            delivered = conn.execute(
+                "SELECT context_json FROM messages "
+                "WHERE conversation_id = ? AND message_id = ? AND role = 'user'",
+                (conversation_id, message_id),
+            ).fetchone()
+            mismatch = _action_context_ack_mismatch(
+                conn,
+                conversation_id=conversation_id,
+                consumer=consumer,
+                generation=generation,
+                message_id=message_id,
+                raw_context=(
+                    None if delivered is None else delivered["context_json"]
+                ),
+                supplied_action_snapshot_id=action_snapshot_id,
+                consumption_receipt_id=consumption_receipt_id,
+            )
+            if mismatch is not None:
+                conn.commit()
+                return mismatch
+            if consumption_receipt_id:
+                conn.execute(
+                    """UPDATE conversation_action_snapshot_receipts
+                       SET acked_at = COALESCE(acked_at, ?)
+                       WHERE receipt_id = ?""",
+                    (_now(), consumption_receipt_id),
+                )
             conn.commit()
             return {"status": "acked", "acked": True, "message_id": message_id}
 
@@ -1335,6 +1907,19 @@ def ack_user_message(
                 "acked": False,
                 "next_message_id": str(next_row["message_id"]),
             }
+        mismatch = _action_context_ack_mismatch(
+            conn,
+            conversation_id=conversation_id,
+            consumer=consumer,
+            generation=generation,
+            message_id=message_id,
+            raw_context=next_row["context_json"],
+            supplied_action_snapshot_id=action_snapshot_id,
+            consumption_receipt_id=consumption_receipt_id,
+        )
+        if mismatch is not None:
+            conn.commit()
+            return mismatch
         now = _now()
         conn.execute(
             """INSERT INTO conversation_consumer_cursors
@@ -1352,6 +1937,13 @@ def ack_user_message(
                 now,
             ),
         )
+        if consumption_receipt_id:
+            conn.execute(
+                """UPDATE conversation_action_snapshot_receipts
+                   SET acked_at = COALESCE(acked_at, ?)
+                   WHERE receipt_id = ?""",
+                (now, consumption_receipt_id),
+            )
         conn.commit()
         return {"status": "acked", "acked": True, "message_id": message_id}
     except Exception:

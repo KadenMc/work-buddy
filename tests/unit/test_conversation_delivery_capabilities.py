@@ -43,10 +43,16 @@ def test_durable_delivery_ops_are_discoverable_with_their_runtime_schema(
         "message_id",
         "consumer",
         "generation",
+        "consumption_receipt_id",
     }
     assert all(
         send.parameters[name].get("required", False) is False
-        for name in ("message_id", "consumer", "generation")
+        for name in (
+            "message_id",
+            "consumer",
+            "generation",
+            "consumption_receipt_id",
+        )
     )
 
     ask = capabilities["conversation_ask"]
@@ -71,11 +77,19 @@ def test_durable_delivery_ops_are_discoverable_with_their_runtime_schema(
         "consumer",
         "generation",
         "message_id",
+        "action_snapshot_id",
+        "consumption_receipt_id",
     }
     assert all(
         acknowledge.parameters[name].get("required") is True
-        for name in acknowledge.parameters
+        for name in ("conversation_id", "consumer", "generation", "message_id")
     )
+    assert acknowledge.parameters["action_snapshot_id"].get(
+        "required", False
+    ) is False
+    assert acknowledge.parameters["consumption_receipt_id"].get(
+        "required", False
+    ) is False
 
     assert callable(
         op_registry.get_op("op.wb.conversation_receive")

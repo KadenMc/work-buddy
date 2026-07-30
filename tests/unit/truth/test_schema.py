@@ -172,7 +172,7 @@ def _v1_runner() -> truth_migrations._TruthMigrationRunner:
 def migrated_db(tmp_path: Path):
     path = tmp_path / "store.db"
     conn = _connect(path)
-    assert truth_migrations.migrate(conn, path) == 4
+    assert truth_migrations.migrate(conn, path) == truth_migrations.SCHEMA_VERSION
     _seed_all_tables(conn)
     try:
         yield conn, path
@@ -500,10 +500,116 @@ EXPECTED_COLUMNS = {
         "consequence_sha256", "created_at", "updated_at", "expires_at",
         "committed_at", "receipt_json", "recovery_detail",
     },
+    "criterion_definition_versions": {
+        "id", "stable_key", "version", "title", "description",
+        "criterion_kind", "origin", "configuration_schema_json",
+        "canonical_sha256", "created_at", "created_by_kind",
+        "created_by_ref", "created_by_meta_json",
+    },
+    "check_definition_versions": {
+        "id", "stable_key", "version", "title", "mechanism",
+        "executor_ref", "supported_criterion_kinds_json",
+        "input_schema_json", "output_schema_json", "limitations_json",
+        "origin", "canonical_sha256", "created_at", "created_by_kind",
+        "created_by_ref", "created_by_meta_json",
+    },
+    "criterion_check_bindings": {
+        "id", "criterion_definition_version_id",
+        "check_definition_version_id", "configuration_json",
+        "canonical_sha256", "created_at", "created_by_kind",
+        "created_by_ref", "created_by_meta_json",
+    },
+    "criterion_activations": {
+        "id", "criterion_definition_version_id",
+        "criterion_check_binding_id", "scope_json", "is_enabled",
+        "is_required", "origin", "canonical_sha256", "created_at",
+        "created_by_kind", "created_by_ref", "created_by_meta_json",
+    },
+    "action_snapshots": {
+        "id", "document_id", "document_version_id",
+        "ydoc_snapshot_sha256", "structured_head_sha256",
+        "ydoc_generation_sha256", "baseline_projection_sha256",
+        "projection_sha256", "projection_blob_sha256", "target_kind",
+        "target_selector_json", "target_text_sha256", "target_blob_sha256",
+        "context_boundary_json", "allowed_change_ranges_json",
+        "egress_boundary_json", "canonical_sha256", "created_at",
+        "created_by_kind", "created_by_ref", "created_by_meta_json",
+    },
+    "evaluation_plan_snapshots": {
+        "id", "action_snapshot_id", "plan_json", "canonical_sha256",
+        "created_at", "created_by_kind", "created_by_ref",
+        "created_by_meta_json",
+    },
+    "evaluation_runs": {
+        "id", "action_snapshot_id", "plan_snapshot_id", "run_kind",
+        "status", "canonical_sha256", "started_at", "completed_at",
+        "created_by_kind", "created_by_ref", "created_by_meta_json",
+    },
+    "check_executions": {
+        "id", "evaluation_run_id", "check_definition_version_id",
+        "criterion_check_binding_id", "mechanism", "status",
+        "input_sha256", "output_sha256", "diagnostics_json",
+        "producer_json", "canonical_sha256", "started_at",
+        "completed_at", "created_by_kind", "created_by_ref",
+        "created_by_meta_json",
+    },
+    "evaluation_results": {
+        "id", "evaluation_run_id", "check_execution_id",
+        "criterion_definition_version_id", "result_kind", "severity",
+        "message", "evidence_selector_json", "payload_json",
+        "canonical_sha256", "created_at", "created_by_kind",
+        "created_by_ref", "created_by_meta_json",
+    },
+    "routing_dispositions": {
+        "id", "evaluation_result_id", "decision", "rationale",
+        "policy_snapshot_sha256", "canonical_sha256", "created_at",
+        "created_by_kind", "created_by_ref", "created_by_meta_json",
+    },
+    "result_relations": {
+        "id", "evaluation_result_id", "relation_kind", "target_kind",
+        "target_ref", "canonical_sha256", "created_at",
+        "created_by_kind", "created_by_ref", "created_by_meta_json",
+    },
+    "model_call_authorization_receipts": {
+        "id", "action_snapshot_id", "plan_snapshot_id", "provider",
+        "model", "context_sha256", "content_boundary_json",
+        "egress_class", "cost_ceiling_usd", "retry_limit", "expires_at",
+        "canonical_sha256", "created_at", "created_by_kind",
+        "created_by_ref", "created_by_meta_json",
+    },
+    "cothink_items": {
+        "id", "action_snapshot_id", "subtype", "purpose",
+        "payload_json", "rationale", "delivery_state",
+        "provenance_json", "canonical_sha256", "created_at",
+        "created_by_kind", "created_by_ref", "created_by_meta_json",
+    },
+    "cothink_item_status_events": {
+        "id", "cothink_item_id", "status", "reason", "canonical_sha256",
+        "created_at", "created_by_kind", "created_by_ref",
+        "created_by_meta_json",
+    },
+    "cowork_coordination_jobs": {
+        "id", "document_id", "evaluation_run_id", "action_snapshot_id",
+        "plan_snapshot_id", "role", "parent_job_id",
+        "authorization_receipt_id", "context_sha256", "selection_json",
+        "request_summary_json", "canonical_sha256", "created_at",
+        "created_by_kind", "created_by_ref", "created_by_meta_json",
+    },
+    "cowork_coordination_status_events": {
+        "id", "coordination_job_id", "status", "outcome_kind",
+        "output_sha256", "error_code", "message",
+        "consequence_refs_json", "canonical_sha256", "created_at",
+        "created_by_kind", "created_by_ref", "created_by_meta_json",
+    },
+    "cowork_review_applications": {
+        "id", "document_id", "applied_proposal_ids_json",
+        "canonical_sha256", "committed_at", "created_by_kind",
+        "created_by_ref", "created_by_meta_json",
+    },
 }
 
 
-def test_schema_v4_has_all_committed_tables_columns_indexes_and_triggers(
+def test_schema_has_all_committed_tables_columns_indexes_and_triggers(
     migrated_db,
 ):
     conn, _ = migrated_db
@@ -557,6 +663,11 @@ def test_schema_v4_has_all_committed_tables_columns_indexes_and_triggers(
         "idx_cowork_reimport_document",
         "idx_cowork_retirement_state_expiry",
         "idx_cowork_retirement_document",
+        "idx_cowork_coordination_document",
+        "idx_cowork_coordination_run",
+        "idx_cowork_coordination_parent",
+        "idx_cowork_coordination_status_job",
+        "idx_cowork_review_applications_document",
     } <= set(indexes)
     assert "WHERE status = 'confirmed'" in indexes["uq_claim_status_confirm_gesture"]
 
@@ -564,7 +675,31 @@ def test_schema_v4_has_all_committed_tables_columns_indexes_and_triggers(
         row["name"]
         for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'")
     }
-    assert len(triggers) == 43
+    assert len(triggers) == 77
+    verify_tables = {
+        "criterion_definition_versions",
+        "check_definition_versions",
+        "criterion_check_bindings",
+        "criterion_activations",
+        "action_snapshots",
+        "evaluation_plan_snapshots",
+        "evaluation_runs",
+        "check_executions",
+        "evaluation_results",
+        "routing_dispositions",
+        "result_relations",
+        "model_call_authorization_receipts",
+        "cothink_items",
+        "cothink_item_status_events",
+        "cowork_coordination_jobs",
+        "cowork_coordination_status_events",
+        "cowork_review_applications",
+    }
+    assert {
+        f"{table}_append_only_{operation}"
+        for table in verify_tables
+        for operation in ("update", "delete")
+    } <= triggers
     assert not any(name.startswith("projections_") for name in triggers)
     assert not any(name.startswith("claims_current_") for name in triggers)
     assert truth_migrations.current_version(conn) == truth_migrations.SCHEMA_VERSION
@@ -573,15 +708,152 @@ def test_schema_v4_has_all_committed_tables_columns_indexes_and_triggers(
 def test_reopening_is_idempotent(tmp_path: Path):
     path = tmp_path / "store.db"
     conn = _connect(path)
-    for _ in range(6):
-        assert truth_migrations.migrate(conn, path) == 4
-    assert conn.execute("SELECT COUNT(*) FROM _migration_history").fetchone()[0] == 4
+    for _ in range(7):
+        assert (
+            truth_migrations.migrate(conn, path)
+            == truth_migrations.SCHEMA_VERSION
+        )
+    assert (
+        conn.execute("SELECT COUNT(*) FROM _migration_history").fetchone()[0]
+        == truth_migrations.SCHEMA_VERSION
+    )
     assert (
         conn.execute(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger'"
         ).fetchone()[0]
-        == 43
+        == 77
     )
+    conn.close()
+
+
+def test_v6_migration_backfills_open_cothink_status_append_only(
+    tmp_path: Path,
+    monkeypatch,
+):
+    path = tmp_path / "store.db"
+    conn = _connect(path)
+    current_runner = truth_migrations.TRUTH_MIGRATIONS
+    v5_runner = truth_migrations._TruthMigrationRunner(
+        "truth",
+        migrations=list(current_runner.migrations[:5]),
+    )
+    monkeypatch.setattr(truth_migrations, "TRUTH_MIGRATIONS", v5_runner)
+    assert truth_migrations.migrate(conn, path) == 5
+    _insert_store_info(conn, 5)
+    document_id = "d" * 32
+    action_id = "a" * 32
+    item_id = "c" * 32
+    conn.execute(
+        "INSERT INTO documents "
+        "(id, path, title, document_class, content_sha256, "
+        "ydoc_snapshot_sha256, created_at, created_by_kind, "
+        "created_by_ref, meta_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            document_id,
+            "docs/cothink-v5.md",
+            "Co-think v5",
+            "co_authored",
+            "1" * 64,
+            "2" * 64,
+            NOW,
+            "system",
+            "migration-test",
+            None,
+        ),
+    )
+    conn.execute(
+        "INSERT INTO ledger_records (record_type, record_key) "
+        "VALUES ('document', ?)",
+        (document_id,),
+    )
+    conn.execute(
+        "INSERT INTO action_snapshots "
+        "(id, document_id, document_version_id, ydoc_snapshot_sha256, "
+        "structured_head_sha256, ydoc_generation_sha256, "
+        "baseline_projection_sha256, projection_sha256, "
+        "projection_blob_sha256, target_kind, target_selector_json, "
+        "target_text_sha256, target_blob_sha256, context_boundary_json, "
+        "allowed_change_ranges_json, egress_boundary_json, canonical_sha256, "
+        "created_at, created_by_kind, created_by_ref, created_by_meta_json) "
+        "VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, 'document', ?, ?, ?, ?, ?, ?, "
+        "?, ?, 'system', ?, NULL)",
+        (
+            action_id,
+            document_id,
+            "2" * 64,
+            "3" * 64,
+            "4" * 64,
+            "1" * 64,
+            "1" * 64,
+            "1" * 64,
+            '{"end":0,"kind":"document","start":0}',
+            "1" * 64,
+            "1" * 64,
+            '{"kind":"action_target"}',
+            '[{"end":0,"start":0}]',
+            '{"class":"local_only"}',
+            "5" * 64,
+            NOW,
+            "migration-test",
+        ),
+    )
+    conn.execute(
+        "INSERT INTO ledger_records (record_type, record_key) "
+        "VALUES ('action_snapshot', ?)",
+        (action_id,),
+    )
+    conn.execute(
+        "INSERT INTO cothink_items "
+        "(id, action_snapshot_id, subtype, purpose, payload_json, rationale, "
+        "delivery_state, provenance_json, canonical_sha256, created_at, "
+        "created_by_kind, created_by_ref, created_by_meta_json) "
+        "VALUES (?, ?, 'question', 'Reflect', '{}', 'Useful friction', "
+        "'delivered', '{}', ?, ?, 'system', 'migration-test', NULL)",
+        (item_id, action_id, "6" * 64, NOW),
+    )
+    conn.execute(
+        "INSERT INTO ledger_records (record_type, record_key) "
+        "VALUES ('cothink_item', ?)",
+        (item_id,),
+    )
+    conn.commit()
+
+    monkeypatch.setattr(truth_migrations, "TRUTH_MIGRATIONS", current_runner)
+    assert (
+        truth_migrations.migrate(conn, path, snapshot=False)
+        == truth_migrations.SCHEMA_VERSION
+    )
+    status = conn.execute(
+        "SELECT * FROM cothink_item_status_events WHERE cothink_item_id = ?",
+        (item_id,),
+    ).fetchone()
+    assert status["status"] == "open"
+    assert status["reason"] is None
+    assert status["created_by_kind"] == "system"
+    assert status["created_by_ref"] == "truth-schema-v6"
+    assert (
+        status["created_by_meta_json"]
+        == '{"basis":"pre_lifecycle_item_existence"}'
+    )
+    assert len(status["id"]) == 32
+    assert len(status["canonical_sha256"]) == 64
+    item_seq = conn.execute(
+        "SELECT seq FROM ledger_records "
+        "WHERE record_type = 'cothink_item' AND record_key = ?",
+        (item_id,),
+    ).fetchone()[0]
+    status_seq = conn.execute(
+        "SELECT seq FROM ledger_records "
+        "WHERE record_type = 'cothink_item_status_event' AND record_key = ?",
+        (status["id"],),
+    ).fetchone()[0]
+    assert status_seq > item_seq
+    with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+        conn.execute(
+            "UPDATE cothink_item_status_events SET status = 'parked' "
+            "WHERE id = ?",
+            (status["id"],),
+        )
     conn.close()
 
 
@@ -711,8 +983,14 @@ def test_every_sanctioned_mutation_is_allowed(migrated_db):
     )
 
     conn.execute("BEGIN")
-    conn.execute("UPDATE store_info SET schema_version = 4 WHERE store_id = 'store-1'")
-    assert conn.execute("SELECT schema_version FROM store_info").fetchone()[0] == 4
+    conn.execute(
+        "UPDATE store_info SET schema_version = ? WHERE store_id = 'store-1'",
+        (truth_migrations.SCHEMA_VERSION,),
+    )
+    assert (
+        conn.execute("SELECT schema_version FROM store_info").fetchone()[0]
+        == truth_migrations.SCHEMA_VERSION
+    )
     conn.rollback()
 
 
@@ -996,11 +1274,15 @@ def test_each_version_bump_gets_its_own_snapshot(tmp_path: Path, monkeypatch):
 def test_newer_store_version_is_refused_before_snapshot(tmp_path: Path):
     path = tmp_path / "store.db"
     conn = _connect(path)
-    conn.execute("PRAGMA user_version = 5")
+    future_version = truth_migrations.SCHEMA_VERSION + 1
+    conn.execute(f"PRAGMA user_version = {future_version}")
     conn.commit()
-    with pytest.raises(SchemaVersionTooNew, match="only knows up to v4"):
+    with pytest.raises(
+        SchemaVersionTooNew,
+        match=f"only knows up to v{truth_migrations.SCHEMA_VERSION}",
+    ):
         truth_migrations.migrate(conn, path)
-    assert not (tmp_path / "store.pre-v5.db").exists()
+    assert not (tmp_path / f"store.pre-v{future_version}.db").exists()
     conn.close()
 
 

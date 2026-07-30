@@ -36,9 +36,13 @@ import type {
   CoworkMaterializationState,
   CoworkMaterializeReceipt,
 } from "../materialization/contracts";
-import { CoworkBridgeEditor, useCoworkBridge } from "../bridge";
+import {
+  CoworkBridgeEditor,
+  useCoworkBridge,
+} from "../bridge";
 import {
   CoworkChatAnnotations,
+  CoworkChatTargetingProvider,
   coworkConversationEndpoint,
   coworkConversationExecutionEndpoint,
   useDocumentConversationBinding,
@@ -66,7 +70,19 @@ import {
   createDemoChatProvider,
   isDirty,
   type CoworkRailChat,
+  type VerificationRecheckIntent,
 } from "../rail";
+import {
+  CoworkDocumentActionBar,
+  CoworkDocumentActionDock,
+  type CoworkAffirmVerifyRecheckTargetHandler,
+  type CoworkInvitePerspectiveHandler,
+  type CoworkRunVerifyHandler,
+} from "../targets";
+import {
+  HttpCoworkVerifyClient,
+  useCoworkVerifyExecution,
+} from "../verify";
 import {
   EDITOR_DEFAULT_SIZE,
   EDITOR_MIN_SIZE,
@@ -264,6 +280,8 @@ function CoworkHealthStrip({ health }: { health: CoworkHealthView | null }) {
  */
 function CoworkWorkspaceLayout({
   health,
+  editorTopBar = null,
+  workspaceBottomDock = null,
   editor,
   rail,
   railRef,
@@ -273,6 +291,8 @@ function CoworkWorkspaceLayout({
   paneTabs = null,
 }: {
   readonly health: CoworkHealthView | null;
+  readonly editorTopBar?: ReactNode;
+  readonly workspaceBottomDock?: ReactNode;
   readonly editor: ReactNode;
   readonly rail: ReactNode;
   readonly railRef?: (element: HTMLElement | null) => void;
@@ -301,18 +321,19 @@ function CoworkWorkspaceLayout({
           minSize={EDITOR_MIN_SIZE}
           data-pane-active={!narrow || activePane === "editor"}
         >
-          <HelpTarget content={COWORK_EDITOR_HELP} placement="top">
-            <div
-              id="wb-cowork-mobile-panel-editor"
-              className="wb-cowork__editor-region"
-              role={narrow ? "tabpanel" : undefined}
-              aria-labelledby={narrow ? "wb-cowork-mobile-tab-editor" : undefined}
-              hidden={narrow && activePane !== "editor"}
-              inert={narrow && activePane !== "editor" ? true : undefined}
-            >
-              {editor}
-            </div>
-          </HelpTarget>
+          <div
+            id="wb-cowork-mobile-panel-editor"
+            className="wb-cowork__editor-shell"
+            role={narrow ? "tabpanel" : undefined}
+            aria-labelledby={narrow ? "wb-cowork-mobile-tab-editor" : undefined}
+            hidden={narrow && activePane !== "editor"}
+            inert={narrow && activePane !== "editor" ? true : undefined}
+          >
+            {editorTopBar}
+            <HelpTarget content={COWORK_EDITOR_HELP} placement="top">
+              <div className="wb-cowork__editor-region">{editor}</div>
+            </HelpTarget>
+          </div>
         </Panel>
         <Separator
           className="wb-cowork__rail-separator"
@@ -338,6 +359,7 @@ function CoworkWorkspaceLayout({
           </aside>
         </Panel>
       </Group>
+      {workspaceBottomDock}
     </div>
   );
 }
@@ -460,6 +482,8 @@ export function CoworkLiveWorkspace({
   onMaterializationController,
   onMaterialized,
   conversationBindingClient,
+  onRunVerify,
+  onAffirmRecheckTarget,
 }: {
   readonly documentId: string;
   readonly storeId: string;
@@ -476,6 +500,10 @@ export function CoworkLiveWorkspace({
   readonly onMaterialized?: (receipt: CoworkMaterializeReceipt) => void;
   /** Injectable server-binding client for focused integration tests. */
   readonly conversationBindingClient?: CoworkDocumentConversationBindingClient;
+  /** Exact capture handoff; route transport remains injectable at this boundary. */
+  readonly onRunVerify?: CoworkRunVerifyHandler;
+  readonly onAffirmRecheckTarget?: CoworkAffirmVerifyRecheckTargetHandler;
+  readonly onInvitePerspective?: CoworkInvitePerspectiveHandler;
 }) {
   const workspaceIdentity = `${storeId}\u0000${documentId}`;
   const workspaceIdentityRef = useRef(workspaceIdentity);
@@ -553,6 +581,10 @@ export function CoworkLiveWorkspace({
         ),
     };
   }, [chatExecution, conversation.agent.status]);
+  const verifyExecution = useCoworkVerifyExecution(
+    chatExecution,
+    workspaceIdentity,
+  );
   const chatDraftStorageId = `document:${storeId}:${documentId}`;
   const chatProvider = useMemo(
     () =>
@@ -571,9 +603,14 @@ export function CoworkLiveWorkspace({
           modelId: chatExecution.snapshot.selection.modelId,
           expectedRevision: chatExecution.snapshot.selection.revision,
         };
-  const ensureConversation = useCallback((): void => {
-    void conversation.ensure(selectedExecution);
-  }, [conversation.ensure, selectedExecution]);
+  const verifyClient = useMemo(
+    () => new HttpCoworkVerifyClient({ documentId, storeId }),
+    [documentId, storeId],
+  );
+  const ensureConversation = useCallback(
+    (): Promise<void> => conversation.ensure(selectedExecution),
+    [conversation.ensure, selectedExecution],
+  );
   const chat: CoworkRailChat = useMemo(() => {
     if (
       conversation.phase === "ready" &&
@@ -627,6 +664,8 @@ export function CoworkLiveWorkspace({
   const [activePane, setActivePane] = useState<CoworkWorkspacePane>("editor");
   const editorPaneTabRef = useRef<HTMLButtonElement | null>(null);
   const [passageAnnouncement, setPassageAnnouncement] = useState("");
+  const [armedVerifyRecheck, setArmedVerifyRecheck] =
+    useState<VerificationRecheckIntent | null>(null);
   const selectPane = useCallback(
     (pane: CoworkWorkspacePane): void => {
       setActivePane(pane);
@@ -642,6 +681,9 @@ export function CoworkLiveWorkspace({
     [narrowWorkspace, railStore],
   );
   useEffect(() => setActivePane("editor"), [documentId]);
+  useEffect(() => {
+    setArmedVerifyRecheck(null);
+  }, [documentId, storeId]);
   const navBinding = useCoworkNavBinding();
 
   const bridge = useCoworkBridge({
@@ -688,6 +730,49 @@ export function CoworkLiveWorkspace({
         }
       : {}),
   });
+  const resolvedRunVerify = useMemo<CoworkRunVerifyHandler | undefined>(() => {
+    if (onRunVerify !== undefined) return onRunVerify;
+    return async (capture, intent) => {
+      await verifyClient.startVerify(capture, intent.execution, {
+        userGoal: intent.userGoal,
+        protectedIntent: intent.protectedIntent,
+        recheckOfProposalIds: intent.recheck?.pendingProposalIds,
+        recheckOfRunId: intent.recheck?.sourceRunId,
+        recheckIntentId: intent.recheck?.intentId,
+        recheckTargetConfirmation: intent.recheck?.targetConfirmation,
+      });
+      bridge.reviewProvider.invalidate();
+    };
+  }, [
+    bridge.reviewProvider,
+    onRunVerify,
+    verifyClient,
+  ]);
+  const resolvedAffirmRecheckTarget =
+    useMemo<CoworkAffirmVerifyRecheckTargetHandler>(() => {
+      if (onAffirmRecheckTarget !== undefined) {
+        return onAffirmRecheckTarget;
+      }
+      return async (capture, intent) =>
+        verifyClient.affirmRecheckTarget(capture, intent);
+    }, [onAffirmRecheckTarget, verifyClient]);
+  const recheckIntent = useCallback(
+    (request: VerificationRecheckIntent): Promise<void> => {
+      if (request.status === "fulfilled") return Promise.resolve();
+      setArmedVerifyRecheck(request);
+      setPassageAnnouncement(
+        request.status === "user_action_required"
+          ? "Bound recheck opened in Verify. Set and affirm Working on before running it."
+          : "Bound recheck opened in Verify with its original target. Review it, then run Verify.",
+      );
+      if (narrowWorkspace) {
+        selectPane("editor");
+        window.requestAnimationFrame(() => editorPaneTabRef.current?.focus());
+      }
+      return Promise.resolve();
+    },
+    [narrowWorkspace, selectPane],
+  );
   const scrollToChatAnchor = useCallback(
     (target: ScrollAnchorTarget): void => {
       const announceResult = (found: boolean): void => {
@@ -752,6 +837,27 @@ export function CoworkLiveWorkspace({
     <CoworkWorkspaceLayout
       health={health}
       showHealth={showHealth}
+      editorTopBar={
+        <CoworkDocumentActionBar
+          controller={bridge.actionSnapshotController}
+        />
+      }
+      workspaceBottomDock={
+        <CoworkDocumentActionDock
+          storeId={storeId}
+          documentId={documentId}
+          controller={bridge.actionSnapshotController}
+          reviewProvider={bridge.reviewProvider}
+          readOnly={readOnly}
+          onRunVerify={resolvedRunVerify}
+          onAffirmRecheckTarget={resolvedAffirmRecheckTarget}
+          verifySetup={bridge.verifySetup}
+          verifyCapability={bridge.verifyCapability}
+          execution={verifyExecution}
+          armedRecheck={armedVerifyRecheck}
+          onClearArmedRecheck={() => setArmedVerifyRecheck(null)}
+        />
+      }
       railRef={bridge.railRef}
       narrow={narrowWorkspace}
       activePane={activePane}
@@ -775,22 +881,30 @@ export function CoworkLiveWorkspace({
       }
       editor={<CoworkBridgeEditor {...bridge.editorProps} />}
       rail={
-        <CoworkRail
+        <CoworkChatTargetingProvider
+          storeId={storeId}
           documentId={documentId}
-          reviewProvider={bridge.reviewProvider}
-          chat={chat}
-          anchorRects={bridge.anchorRects}
-          store={railStore}
-          queueBindings={navBinding}
-          chatAnnotations={annotations}
-          chatExecution={presentedChatExecution}
-          onScrollToChatAnchor={scrollToChatAnchor}
-          narrow={narrowWorkspace}
-          reviewVisible={
-            !narrowWorkspace || activePane === "review"
-          }
-          showTabs={!narrowWorkspace}
-        />
+          controller={bridge.actionSnapshotController}
+          agent={conversation.agent}
+        >
+          <CoworkRail
+            documentId={documentId}
+            reviewProvider={bridge.reviewProvider}
+            chat={chat}
+            anchorRects={bridge.anchorRects}
+            store={railStore}
+            queueBindings={navBinding}
+            chatAnnotations={annotations}
+            chatExecution={presentedChatExecution}
+            onScrollToChatAnchor={scrollToChatAnchor}
+            narrow={narrowWorkspace}
+            reviewVisible={
+              !narrowWorkspace || activePane === "review"
+            }
+            showTabs={!narrowWorkspace}
+            onRecheckIntent={recheckIntent}
+          />
+        </CoworkChatTargetingProvider>
       }
     />
   );

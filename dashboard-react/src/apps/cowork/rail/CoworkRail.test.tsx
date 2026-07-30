@@ -16,7 +16,11 @@ import {
   saveRailTab,
 } from "../guards";
 import { CoworkRail } from "./CoworkRail";
-import { InMemoryReviewProvider } from "./InMemoryReviewProvider";
+import {
+  demoReviewData,
+  InMemoryReviewProvider,
+} from "./InMemoryReviewProvider";
+import type { ReviewRailProvider } from "./provider";
 import { createDemoChatProvider } from "./chatFixture";
 
 class MemoryStorage implements Storage {
@@ -65,6 +69,19 @@ function renderRail(storage: Storage = new MemoryStorage()) {
 }
 
 const S1_TLDR = "Add the vault content hash to the cache key.";
+
+const COTHINK_ITEM = {
+  itemId: "cothink-1",
+  subtype: "alternative_perspective" as const,
+  content: "What if this decision should remain reversible?",
+  rationale: "The current draft treats it as permanent.",
+  targetLabel: "Whole document",
+  quoteAnchor: null,
+  status: "open" as const,
+  currentVersion: true,
+  canonicalSha256: "b".repeat(64),
+  createdAt: "2026-07-28T00:00:00Z",
+};
 
 const chatExecution = (
   select: ChatExecutionControl["select"] = vi.fn(async () => {}),
@@ -379,6 +396,57 @@ describe("CoworkRail", () => {
     // A fresh rail with a fresh store, but the same storage, restores the draft.
     renderRail(storage);
     await waitFor(() => expect(screen.getByText("Decision: Accept")).toBeVisible());
+  });
+
+  it("routes an exact Co-think item into Chat before switching tabs", async () => {
+    const discussCothink = vi.fn(async () => ({
+      conversationId: "conv-1",
+      messageId: "discussion-message-1",
+    }));
+    const provider = new InMemoryReviewProvider({
+      data: {
+        ...demoReviewData(),
+        cothinkItems: [COTHINK_ITEM],
+      },
+    }) as InMemoryReviewProvider & ReviewRailProvider;
+    provider.discussCothink = discussCothink;
+
+    render(
+      <CoworkRail
+        documentId="demo-doc"
+        reviewProvider={provider}
+        chat={{
+          kind: "ready",
+          provider: createDemoChatProvider("conv-1"),
+          conversationId: "conv-1",
+          draftStorageId: "conv-1",
+          agent: {
+            status: "running",
+            alive: true,
+            started: true,
+            error: null,
+          },
+          onEnsureAgent: () => {},
+        }}
+        storage={new MemoryStorage()}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByText(COTHINK_ITEM.content)).toBeVisible(),
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Discuss" }));
+
+    await waitFor(() =>
+      expect(discussCothink).toHaveBeenCalledWith(
+        COTHINK_ITEM.itemId,
+        COTHINK_ITEM.canonicalSha256,
+      ),
+    );
+    expect(screen.getByRole("tab", { name: /Chat/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
   });
 
   it("has no accessibility violations on the Review composition", async () => {

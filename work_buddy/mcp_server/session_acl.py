@@ -37,6 +37,7 @@ from typing import Any, Iterable
 _SESSION_ACL: dict[str, frozenset[str]] = {}
 _COWORK_EXECUTION_CAPABILITIES = frozenset(
     {
+        "cowork_action_snapshot_get",
         "cowork_doc_get",
         "cowork_doc_propose_edit",
         "cowork_doc_comment",
@@ -47,6 +48,12 @@ _COWORK_EXECUTION_CAPABILITIES = frozenset(
         "conversation_ack",
     }
 )
+_COWORK_VERIFY_JOB_CAPABILITIES = frozenset(
+    {
+        "cowork_verify_job_get",
+        "cowork_verify_job_submit",
+    }
+)
 
 
 def _builtin_session_acl(session_id: str | None) -> frozenset[str] | None:
@@ -54,8 +61,14 @@ def _builtin_session_acl(session_id: str | None) -> frozenset[str] | None:
 
     from work_buddy.cowork.execution_identity import (
         cowork_generation_from_session,
+        cowork_verify_job_from_session,
     )
 
+    # Verify workers are intentionally narrower than the persistent document
+    # agent.  The submit operation derives and validates the bound role from
+    # the transport session; a caller-provided role cannot widen this ACL.
+    if cowork_verify_job_from_session(session_id) is not None:
+        return _COWORK_VERIFY_JOB_CAPABILITIES
     if cowork_generation_from_session(session_id) is None:
         return None
     return _COWORK_EXECUTION_CAPABILITIES

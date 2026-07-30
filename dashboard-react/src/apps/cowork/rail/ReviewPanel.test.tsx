@@ -81,6 +81,39 @@ describe("ReviewPanel", () => {
     expect(screen.getByText(S1_TLDR)).toBeVisible();
   });
 
+  it("keeps Verify configuration and run history out of Review", async () => {
+    const data = demoReviewData();
+    const provider = new InMemoryReviewProvider({
+      data: {
+        ...data,
+        evaluationRuns: [
+          {
+            runId: "run-1",
+            status: "completed",
+            purpose: "document_review",
+            targetLabel: "Whole document",
+            coverageLabel: "Complete exact-string scan",
+            currentVersion: true,
+            resultCount: 1,
+            surfacedResultCount: 0,
+            coordinationStatus: "completed",
+            providerLabel: "Codex",
+            providerId: "codex",
+            modelLabel: "GPT-5.6",
+            modelId: "gpt-5.6",
+            createdAt: "2026-07-28T00:00:00Z",
+            finishedAt: "2026-07-28T00:00:01Z",
+          },
+        ],
+      },
+    });
+    renderPanel({ provider });
+    await waitFor(() => expect(screen.getByText(S1_TLDR)).toBeVisible());
+
+    expect(screen.queryByText("Verify setup")).not.toBeInTheDocument();
+    expect(screen.queryByText("Verify runs")).not.toBeInTheDocument();
+  });
+
   it("stages a decision, then submits the sitting", async () => {
     renderPanel();
     await waitFor(() => expect(screen.getByText(S1_TLDR)).toBeVisible());

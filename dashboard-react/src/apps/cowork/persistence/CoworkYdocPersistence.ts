@@ -121,6 +121,11 @@ export class CoworkYdocPersistence {
     return this.#docSha256;
   }
 
+  /** Stable logical CRDT lineage observed during hydration. */
+  get ydocGeneration(): string {
+    return this.#ydocGeneration;
+  }
+
   /** Number of local update batches that have not been acknowledged remotely. */
   get pendingBatchCount(): number {
     return this.#pendingBatches.filter((entry) => !entry.acknowledged).length;

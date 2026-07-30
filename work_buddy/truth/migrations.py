@@ -19,7 +19,7 @@ from work_buddy.storage.migrations import (
 
 logger = get_logger(__name__)
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 7
 
 # Redacted spans retain their immutable identity/hash but not their quote or
 # quote context.  Keep the selector valid JSON (and valid for the existing
@@ -999,6 +999,511 @@ def _m004_cowork_lifecycle_intents(conn: sqlite3.Connection) -> None:
         conn.execute(statement)
 
 
+def _m005_cowork_verify_cothink(conn: sqlite3.Connection) -> None:
+    """Add the portable, append-only Co-work Verify and Co-think ledger.
+
+    The records in this migration describe durable product facts: immutable
+    definitions, exact action inputs, resolved plans, completed work, routing
+    decisions, and advisory Co-think contributions. Queue leases and other
+    restart machinery remain runtime state and deliberately do not live here.
+    """
+
+    statements = (
+        """
+        CREATE TABLE criterion_definition_versions (
+            id                        TEXT PRIMARY KEY,
+            stable_key                TEXT NOT NULL,
+            version                   INTEGER NOT NULL CHECK(version > 0),
+            title                     TEXT NOT NULL,
+            description               TEXT NOT NULL,
+            criterion_kind            TEXT NOT NULL,
+            origin                    TEXT NOT NULL,
+            configuration_schema_json TEXT NOT NULL,
+            canonical_sha256          TEXT NOT NULL UNIQUE,
+            created_at                TEXT NOT NULL,
+            created_by_kind           TEXT NOT NULL,
+            created_by_ref            TEXT,
+            created_by_meta_json       TEXT,
+            UNIQUE(stable_key, version)
+        )
+        """,
+        """
+        CREATE TABLE check_definition_versions (
+            id                             TEXT PRIMARY KEY,
+            stable_key                     TEXT NOT NULL,
+            version                        INTEGER NOT NULL CHECK(version > 0),
+            title                          TEXT NOT NULL,
+            mechanism                      TEXT NOT NULL,
+            executor_ref                   TEXT NOT NULL,
+            supported_criterion_kinds_json TEXT NOT NULL,
+            input_schema_json              TEXT NOT NULL,
+            output_schema_json             TEXT NOT NULL,
+            limitations_json               TEXT NOT NULL,
+            origin                         TEXT NOT NULL,
+            canonical_sha256               TEXT NOT NULL UNIQUE,
+            created_at                     TEXT NOT NULL,
+            created_by_kind                TEXT NOT NULL,
+            created_by_ref                 TEXT,
+            created_by_meta_json            TEXT,
+            UNIQUE(stable_key, version)
+        )
+        """,
+        """
+        CREATE TABLE criterion_check_bindings (
+            id                              TEXT PRIMARY KEY,
+            criterion_definition_version_id TEXT NOT NULL
+                REFERENCES criterion_definition_versions(id),
+            check_definition_version_id     TEXT NOT NULL
+                REFERENCES check_definition_versions(id),
+            configuration_json              TEXT NOT NULL,
+            canonical_sha256                TEXT NOT NULL UNIQUE,
+            created_at                      TEXT NOT NULL,
+            created_by_kind                 TEXT NOT NULL,
+            created_by_ref                  TEXT,
+            created_by_meta_json             TEXT
+        )
+        """,
+        """
+        CREATE TABLE criterion_activations (
+            id                              TEXT PRIMARY KEY,
+            criterion_definition_version_id TEXT NOT NULL
+                REFERENCES criterion_definition_versions(id),
+            criterion_check_binding_id      TEXT NOT NULL
+                REFERENCES criterion_check_bindings(id),
+            scope_json                      TEXT NOT NULL,
+            is_enabled                      INTEGER NOT NULL
+                CHECK(is_enabled IN (0, 1)),
+            is_required                     INTEGER NOT NULL
+                CHECK(is_required IN (0, 1)),
+            origin                          TEXT NOT NULL,
+            canonical_sha256                TEXT NOT NULL,
+            created_at                      TEXT NOT NULL,
+            created_by_kind                 TEXT NOT NULL,
+            created_by_ref                  TEXT,
+            created_by_meta_json             TEXT
+        )
+        """,
+        """
+        CREATE TABLE action_snapshots (
+            id                         TEXT PRIMARY KEY,
+            document_id                TEXT NOT NULL REFERENCES documents(id),
+            document_version_id        TEXT REFERENCES document_versions(id),
+            ydoc_snapshot_sha256       TEXT NOT NULL,
+            structured_head_sha256     TEXT NOT NULL,
+            ydoc_generation_sha256     TEXT NOT NULL,
+            baseline_projection_sha256 TEXT NOT NULL,
+            projection_sha256          TEXT NOT NULL,
+            projection_blob_sha256     TEXT NOT NULL,
+            target_kind                TEXT NOT NULL,
+            target_selector_json       TEXT NOT NULL,
+            target_text_sha256         TEXT NOT NULL,
+            target_blob_sha256         TEXT NOT NULL,
+            context_boundary_json      TEXT NOT NULL,
+            allowed_change_ranges_json TEXT NOT NULL,
+            egress_boundary_json       TEXT NOT NULL,
+            canonical_sha256           TEXT NOT NULL UNIQUE,
+            created_at                 TEXT NOT NULL,
+            created_by_kind            TEXT NOT NULL,
+            created_by_ref             TEXT,
+            created_by_meta_json        TEXT
+        )
+        """,
+        """
+        CREATE TABLE evaluation_plan_snapshots (
+            id                   TEXT PRIMARY KEY,
+            action_snapshot_id   TEXT NOT NULL REFERENCES action_snapshots(id),
+            plan_json            TEXT NOT NULL,
+            canonical_sha256     TEXT NOT NULL UNIQUE,
+            created_at           TEXT NOT NULL,
+            created_by_kind      TEXT NOT NULL,
+            created_by_ref       TEXT,
+            created_by_meta_json TEXT
+        )
+        """,
+        """
+        CREATE TABLE evaluation_runs (
+            id                   TEXT PRIMARY KEY,
+            action_snapshot_id   TEXT NOT NULL REFERENCES action_snapshots(id),
+            plan_snapshot_id     TEXT NOT NULL
+                REFERENCES evaluation_plan_snapshots(id),
+            run_kind             TEXT NOT NULL,
+            status               TEXT NOT NULL,
+            canonical_sha256     TEXT NOT NULL UNIQUE,
+            started_at           TEXT NOT NULL,
+            completed_at         TEXT,
+            created_by_kind      TEXT NOT NULL,
+            created_by_ref       TEXT,
+            created_by_meta_json TEXT
+        )
+        """,
+        """
+        CREATE TABLE check_executions (
+            id                          TEXT PRIMARY KEY,
+            evaluation_run_id           TEXT NOT NULL REFERENCES evaluation_runs(id),
+            check_definition_version_id TEXT NOT NULL
+                REFERENCES check_definition_versions(id),
+            criterion_check_binding_id  TEXT NOT NULL
+                REFERENCES criterion_check_bindings(id),
+            mechanism                   TEXT NOT NULL,
+            status                      TEXT NOT NULL,
+            input_sha256                TEXT NOT NULL,
+            output_sha256               TEXT,
+            diagnostics_json            TEXT NOT NULL,
+            producer_json               TEXT NOT NULL,
+            canonical_sha256            TEXT NOT NULL UNIQUE,
+            started_at                  TEXT NOT NULL,
+            completed_at                TEXT,
+            created_by_kind             TEXT NOT NULL,
+            created_by_ref              TEXT,
+            created_by_meta_json         TEXT
+        )
+        """,
+        """
+        CREATE TABLE evaluation_results (
+            id                              TEXT PRIMARY KEY,
+            evaluation_run_id               TEXT NOT NULL
+                REFERENCES evaluation_runs(id),
+            check_execution_id              TEXT NOT NULL
+                REFERENCES check_executions(id),
+            criterion_definition_version_id TEXT NOT NULL
+                REFERENCES criterion_definition_versions(id),
+            result_kind                     TEXT NOT NULL,
+            severity                        TEXT NOT NULL,
+            message                         TEXT NOT NULL,
+            evidence_selector_json          TEXT,
+            payload_json                    TEXT NOT NULL,
+            canonical_sha256                TEXT NOT NULL UNIQUE,
+            created_at                      TEXT NOT NULL,
+            created_by_kind                 TEXT NOT NULL,
+            created_by_ref                  TEXT,
+            created_by_meta_json             TEXT
+        )
+        """,
+        """
+        CREATE TABLE routing_dispositions (
+            id                     TEXT PRIMARY KEY,
+            evaluation_result_id   TEXT NOT NULL REFERENCES evaluation_results(id),
+            decision               TEXT NOT NULL,
+            rationale              TEXT NOT NULL,
+            policy_snapshot_sha256 TEXT,
+            canonical_sha256       TEXT NOT NULL,
+            created_at             TEXT NOT NULL,
+            created_by_kind        TEXT NOT NULL,
+            created_by_ref         TEXT,
+            created_by_meta_json    TEXT
+        )
+        """,
+        """
+        CREATE TABLE result_relations (
+            id                   TEXT PRIMARY KEY,
+            evaluation_result_id TEXT NOT NULL REFERENCES evaluation_results(id),
+            relation_kind        TEXT NOT NULL,
+            target_kind          TEXT NOT NULL,
+            target_ref           TEXT NOT NULL,
+            canonical_sha256     TEXT NOT NULL UNIQUE,
+            created_at           TEXT NOT NULL,
+            created_by_kind      TEXT NOT NULL,
+            created_by_ref       TEXT,
+            created_by_meta_json TEXT
+        )
+        """,
+        """
+        CREATE TABLE model_call_authorization_receipts (
+            id                    TEXT PRIMARY KEY,
+            action_snapshot_id    TEXT NOT NULL REFERENCES action_snapshots(id),
+            plan_snapshot_id      TEXT REFERENCES evaluation_plan_snapshots(id),
+            provider              TEXT NOT NULL,
+            model                 TEXT NOT NULL,
+            context_sha256        TEXT NOT NULL,
+            content_boundary_json TEXT NOT NULL,
+            egress_class          TEXT NOT NULL,
+            cost_ceiling_usd      REAL NOT NULL CHECK(cost_ceiling_usd >= 0),
+            retry_limit           INTEGER NOT NULL CHECK(retry_limit >= 0),
+            expires_at            TEXT NOT NULL,
+            canonical_sha256      TEXT NOT NULL UNIQUE,
+            created_at            TEXT NOT NULL,
+            created_by_kind       TEXT NOT NULL,
+            created_by_ref        TEXT,
+            created_by_meta_json  TEXT
+        )
+        """,
+        """
+        CREATE TABLE cothink_items (
+            id                   TEXT PRIMARY KEY,
+            action_snapshot_id   TEXT NOT NULL REFERENCES action_snapshots(id),
+            subtype              TEXT NOT NULL,
+            purpose              TEXT NOT NULL,
+            payload_json         TEXT NOT NULL,
+            rationale            TEXT NOT NULL,
+            delivery_state       TEXT NOT NULL,
+            provenance_json      TEXT NOT NULL,
+            canonical_sha256     TEXT NOT NULL UNIQUE,
+            created_at           TEXT NOT NULL,
+            created_by_kind      TEXT NOT NULL,
+            created_by_ref       TEXT,
+            created_by_meta_json TEXT
+        )
+        """,
+        "CREATE INDEX idx_criterion_definitions_key "
+        "ON criterion_definition_versions(stable_key, version)",
+        "CREATE INDEX idx_check_definitions_key "
+        "ON check_definition_versions(stable_key, version)",
+        "CREATE INDEX idx_criterion_bindings_criterion "
+        "ON criterion_check_bindings(criterion_definition_version_id)",
+        "CREATE INDEX idx_criterion_activations_criterion "
+        "ON criterion_activations(criterion_definition_version_id, created_at, id)",
+        "CREATE INDEX idx_action_snapshots_document "
+        "ON action_snapshots(document_id, created_at, id)",
+        "CREATE INDEX idx_evaluation_plans_action "
+        "ON evaluation_plan_snapshots(action_snapshot_id)",
+        "CREATE INDEX idx_evaluation_runs_action "
+        "ON evaluation_runs(action_snapshot_id, started_at, id)",
+        "CREATE INDEX idx_check_executions_run "
+        "ON check_executions(evaluation_run_id, started_at, id)",
+        "CREATE INDEX idx_evaluation_results_run "
+        "ON evaluation_results(evaluation_run_id, created_at, id)",
+        "CREATE INDEX idx_routing_dispositions_result "
+        "ON routing_dispositions(evaluation_result_id, created_at, id)",
+        "CREATE INDEX idx_result_relations_result "
+        "ON result_relations(evaluation_result_id, created_at, id)",
+        "CREATE INDEX idx_model_authorizations_action "
+        "ON model_call_authorization_receipts(action_snapshot_id, created_at, id)",
+        "CREATE INDEX idx_cothink_items_action "
+        "ON cothink_items(action_snapshot_id, created_at, id)",
+    )
+    for statement in statements:
+        conn.execute(statement)
+
+    immutable_tables = (
+        "criterion_definition_versions",
+        "check_definition_versions",
+        "criterion_check_bindings",
+        "criterion_activations",
+        "action_snapshots",
+        "evaluation_plan_snapshots",
+        "evaluation_runs",
+        "check_executions",
+        "evaluation_results",
+        "routing_dispositions",
+        "result_relations",
+        "model_call_authorization_receipts",
+        "cothink_items",
+    )
+    for table in immutable_tables:
+        conn.execute(
+            f"""
+            CREATE TRIGGER {table}_append_only_update
+            BEFORE UPDATE ON {table}
+            BEGIN
+                SELECT RAISE(ABORT, 'append-only');
+            END
+            """
+        )
+        conn.execute(
+            f"""
+            CREATE TRIGGER {table}_append_only_delete
+            BEFORE DELETE ON {table}
+            BEGIN
+                SELECT RAISE(ABORT, 'append-only');
+            END
+            """
+        )
+
+
+def _m006_cothink_item_lifecycle(conn: sqlite3.Connection) -> None:
+    """Add the durable Co-think item lifecycle event stream.
+
+    Every pre-v6 item receives one deterministic ``open`` event. The backfill
+    preserves the immutable item and appends migration facts after the
+    pre-existing ledger rather than rewriting history.
+    """
+
+    import hashlib
+    import json
+
+    conn.execute(
+        """
+        CREATE TABLE cothink_item_status_events (
+            id                   TEXT PRIMARY KEY,
+            cothink_item_id      TEXT NOT NULL REFERENCES cothink_items(id),
+            status               TEXT NOT NULL
+                CHECK(status IN ('open', 'parked', 'dismissed')),
+            reason               TEXT,
+            canonical_sha256     TEXT NOT NULL UNIQUE,
+            created_at           TEXT NOT NULL,
+            created_by_kind      TEXT NOT NULL,
+            created_by_ref       TEXT,
+            created_by_meta_json TEXT
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX idx_cothink_item_status_item "
+        "ON cothink_item_status_events(cothink_item_id, created_at, id)"
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER cothink_item_status_events_append_only_update
+        BEFORE UPDATE ON cothink_item_status_events
+        BEGIN
+            SELECT RAISE(ABORT, 'append-only');
+        END
+        """
+    )
+    conn.execute(
+        """
+        CREATE TRIGGER cothink_item_status_events_append_only_delete
+        BEFORE DELETE ON cothink_item_status_events
+        BEGIN
+            SELECT RAISE(ABORT, 'append-only');
+        END
+        """
+    )
+
+    seed = b"work-buddy:cothink-item-status:v1\0"
+    rows = conn.execute(
+        "SELECT id, created_at FROM cothink_items ORDER BY rowid"
+    ).fetchall()
+    for row in rows:
+        item_id = str(row[0])
+        event_id = hashlib.sha256(seed + item_id.encode("utf-8")).hexdigest()[:32]
+        payload = {
+            "cothink_item_id": item_id,
+            "reason": None,
+            "status": "open",
+        }
+        canonical = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+        digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        conn.execute(
+            "INSERT INTO cothink_item_status_events "
+            "(id, cothink_item_id, status, reason, canonical_sha256, "
+            "created_at, created_by_kind, created_by_ref, created_by_meta_json) "
+            "VALUES (?, ?, 'open', NULL, ?, ?, ?, ?, ?)",
+            (
+                event_id,
+                item_id,
+                digest,
+                row[1],
+                "system",
+                "truth-schema-v6",
+                '{"basis":"pre_lifecycle_item_existence"}',
+            ),
+        )
+        conn.execute(
+            "INSERT INTO ledger_records (record_type, record_key) VALUES (?, ?)",
+            ("cothink_item_status_event", event_id),
+        )
+
+
+def _m007_portable_cowork_coordination(conn: sqlite3.Connection) -> None:
+    """Add sanitized, append-only Verify/Co-think coordination history."""
+
+    statements = (
+        """
+        CREATE TABLE cowork_coordination_jobs (
+            id                       TEXT PRIMARY KEY,
+            document_id              TEXT NOT NULL REFERENCES documents(id),
+            evaluation_run_id        TEXT REFERENCES evaluation_runs(id),
+            action_snapshot_id       TEXT NOT NULL REFERENCES action_snapshots(id),
+            plan_snapshot_id         TEXT REFERENCES evaluation_plan_snapshots(id),
+            role                     TEXT NOT NULL
+                CHECK(role IN ('specialist', 'reviser', 'coordinator', 'cothink')),
+            parent_job_id            TEXT REFERENCES cowork_coordination_jobs(id),
+            authorization_receipt_id TEXT NOT NULL
+                REFERENCES model_call_authorization_receipts(id),
+            context_sha256           TEXT NOT NULL,
+            selection_json           TEXT NOT NULL,
+            request_summary_json     TEXT NOT NULL,
+            canonical_sha256         TEXT NOT NULL UNIQUE,
+            created_at               TEXT NOT NULL,
+            created_by_kind          TEXT NOT NULL,
+            created_by_ref           TEXT,
+            created_by_meta_json     TEXT
+        )
+        """,
+        """
+        CREATE TABLE cowork_coordination_status_events (
+            id                    TEXT PRIMARY KEY,
+            coordination_job_id   TEXT NOT NULL REFERENCES cowork_coordination_jobs(id),
+            status                TEXT NOT NULL CHECK(status IN (
+                'prepared', 'launching', 'running', 'submitted',
+                'completed', 'unavailable', 'failed'
+            )),
+            outcome_kind          TEXT CHECK(outcome_kind IS NULL OR outcome_kind IN (
+                'typed_submission_received', 'routing_completed',
+                'revision_requested', 'revision_candidate_prepared',
+                'correction_routing_completed', 'completed_with_item',
+                'completed_no_useful_item', 'unavailable'
+            )),
+            output_sha256         TEXT,
+            error_code            TEXT,
+            message               TEXT,
+            consequence_refs_json TEXT NOT NULL,
+            canonical_sha256      TEXT NOT NULL UNIQUE,
+            created_at            TEXT NOT NULL,
+            created_by_kind       TEXT NOT NULL,
+            created_by_ref        TEXT,
+            created_by_meta_json  TEXT
+        )
+        """,
+        """
+        CREATE TABLE cowork_review_applications (
+            id                        TEXT PRIMARY KEY,
+            document_id               TEXT NOT NULL REFERENCES documents(id),
+            applied_proposal_ids_json TEXT NOT NULL,
+            canonical_sha256          TEXT NOT NULL UNIQUE,
+            committed_at              TEXT NOT NULL,
+            created_by_kind           TEXT NOT NULL,
+            created_by_ref            TEXT,
+            created_by_meta_json      TEXT
+        )
+        """,
+        "CREATE INDEX idx_cowork_coordination_document "
+        "ON cowork_coordination_jobs(document_id, created_at, id)",
+        "CREATE INDEX idx_cowork_coordination_run "
+        "ON cowork_coordination_jobs(evaluation_run_id, created_at, id)",
+        "CREATE INDEX idx_cowork_coordination_parent "
+        "ON cowork_coordination_jobs(parent_job_id)",
+        "CREATE INDEX idx_cowork_coordination_status_job "
+        "ON cowork_coordination_status_events("
+        "coordination_job_id, created_at, id)",
+        "CREATE INDEX idx_cowork_review_applications_document "
+        "ON cowork_review_applications(document_id, committed_at, id)",
+    )
+    for statement in statements:
+        conn.execute(statement)
+
+    for table in (
+        "cowork_coordination_jobs",
+        "cowork_coordination_status_events",
+        "cowork_review_applications",
+    ):
+        conn.execute(
+            f"""
+            CREATE TRIGGER {table}_append_only_update
+            BEFORE UPDATE ON {table}
+            BEGIN
+                SELECT RAISE(ABORT, 'append-only');
+            END
+            """
+        )
+        conn.execute(
+            f"""
+            CREATE TRIGGER {table}_append_only_delete
+            BEFORE DELETE ON {table}
+            BEGIN
+                SELECT RAISE(ABORT, 'append-only');
+            END
+            """
+        )
+
+
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     row = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
@@ -1094,6 +1599,21 @@ TRUTH_MIGRATIONS = _TruthMigrationRunner(
             4,
             "recoverable co-work sitting and lifecycle intents",
             _m004_cowork_lifecycle_intents,
+        ),
+        Migration(
+            5,
+            "portable co-work verify and co-think ledger",
+            _m005_cowork_verify_cothink,
+        ),
+        Migration(
+            6,
+            "co-think item lifecycle events",
+            _m006_cothink_item_lifecycle,
+        ),
+        Migration(
+            7,
+            "portable co-work coordination history",
+            _m007_portable_cowork_coordination,
         ),
     ],
 )

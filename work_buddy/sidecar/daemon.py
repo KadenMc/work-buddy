@@ -945,7 +945,11 @@ def run(foreground: bool = True) -> None:
     # --- Initialize retry sweep ---
     from work_buddy.sidecar.retry_sweep import RetrySweep
 
-    retry_sweep = RetrySweep(config=cfg, event_log=event_log)
+    retry_sweep = RetrySweep(
+        config=cfg,
+        event_log=event_log,
+        reconcile_internal=True,
+    )
 
     # --- Save initial state ---
     state.last_tick_at = time.time()

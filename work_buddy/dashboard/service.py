@@ -4662,14 +4662,63 @@ def api_conversation_respond(conversation_id: str):
     data = request.get_json(silent=True) or {}
     value = data.get("value", "")
     in_reply_to = data.get("in_reply_to", data.get("inReplyTo"))
+    context = data.get("context")
     if not value and value is not False:
         return jsonify({"error": "Missing 'value' in request body"}), 400
     if in_reply_to is not None and (
         not isinstance(in_reply_to, str) or not in_reply_to.strip()
     ):
         return jsonify({"error": "'in_reply_to' must be a nonempty string"}), 400
+    if context is not None and not isinstance(context, dict):
+        return jsonify({"error": "'context' must be an object"}), 400
+    if context is not None and in_reply_to is not None:
+        return (
+            jsonify(
+                {
+                    "error": (
+                        "Document context cannot be attached to a structured "
+                        "question response."
+                    )
+                }
+            ),
+            400,
+        )
 
     try:
+        if context is not None:
+            # The Co-work path acquires the document lifecycle lock before
+            # opening Truth or conversations. Keep this branch ahead of the
+            # ordinary conversation lookup so targeted sends cannot invert the
+            # lifecycle -> Truth/Y.Doc -> conversations order.
+            from work_buddy.cowork.chat_targets import (
+                CoworkChatTargetError,
+                post_targeted_chat_message,
+            )
+
+            try:
+                msg = post_targeted_chat_message(
+                    conversation_id=conversation_id,
+                    content=str(value),
+                    context=context,
+                )
+            except CoworkChatTargetError as exc:
+                return (
+                    jsonify(
+                        {
+                            "error": str(exc),
+                            "code": exc.code,
+                        }
+                    ),
+                    exc.status,
+                )
+            return jsonify(
+                {
+                    "sent": True,
+                    "message_id": msg.message_id,
+                    "context": msg.context,
+                }
+            )
+
         from work_buddy.conversations.store import (
             get_conversation,
             post_user_message,

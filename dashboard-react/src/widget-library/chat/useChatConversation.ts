@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type {
+  ChatActionSnapshotContext,
   ChatConversationProvider,
   ChatConversationSnapshot,
   ChatSendInput,
@@ -27,7 +28,11 @@ export interface UseChatConversationResult {
   /** Set when the most recent send failed, cleared on the next attempt. */
   readonly sendError: string | null;
   /** Submit a human message or answer. Rejects on failure so a composer can retain its draft. */
-  send(value: string, inReplyTo?: string): Promise<void>;
+  send(
+    value: string,
+    inReplyTo?: string,
+    context?: ChatActionSnapshotContext,
+  ): Promise<void>;
   /** Re-run the initial load after an error. */
   retry(): void;
 }
@@ -169,7 +174,11 @@ export function useChatConversation(
   }, [provider, conversationId, reloadToken]);
 
   const send = useCallback(
-    async (value: string, inReplyTo?: string) => {
+    async (
+      value: string,
+      inReplyTo?: string,
+      context?: ChatActionSnapshotContext,
+    ) => {
       // Capture the binding this send belongs to. A send resolving after the
       // hook has rebound to another provider or conversation must not write
       // its snapshot or error over the current binding's state.
@@ -189,7 +198,7 @@ export function useChatConversation(
       if (active.loadInFlight) active.refreshQueued = true;
       setSending(true);
       setSendError(null);
-      const input: ChatSendInput = { value, inReplyTo };
+      const input: ChatSendInput = { value, inReplyTo, context };
       try {
         const next = await provider.sendMessage(conversationId, input);
         if (

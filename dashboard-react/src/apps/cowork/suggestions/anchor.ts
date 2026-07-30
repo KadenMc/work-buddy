@@ -14,7 +14,7 @@ import type { QuoteAnchor } from "./types";
  * the prefix and suffix context. A quote that occurs once resolves. A quote that occurs
  * several times resolves only when exactly one occurrence matches the surrounding context,
  * otherwise the anchor is reported lost so the proposal expires toward re-review, never
- * acceptance (AOV).
+ * acceptance.
  */
 
 interface TextIndex {

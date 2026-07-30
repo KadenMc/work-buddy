@@ -21,6 +21,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Protocol
 from urllib.parse import urlparse
 
@@ -52,12 +53,69 @@ from work_buddy.truth.store import TruthStore
 
 
 FORMAT_NAME = "work-buddy.truth-ledger"
-FORMAT_VERSION = 4
+FORMAT_VERSION = 7
 OLDEST_FORMAT_VERSION = 1
 _IMPORT_STAGING_PREFIX = ".wbuddy-cowork-import-"
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _RECORD_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+_ACTION_TARGET_KINDS = frozenset({"document", "text_quote"})
+_ROUTING_DECISIONS = frozenset(
+    {"surface", "route_to_correction", "suppress", "defer", "supersede"}
+)
+_RESULT_RELATION_KINDS = frozenset(
+    {"addresses", "rechecks", "supersedes", "derived_from", "related"}
+)
+_RESULT_RELATION_TARGET_KINDS = frozenset(
+    {"evaluation_result", "evaluation_run", "proposal", "cothink_item", "external"}
+)
+_COTHINK_DELIVERY_STATES = frozenset({"queued", "delivered", "unavailable"})
+_COTHINK_ITEM_STATUSES = frozenset({"open", "parked", "dismissed"})
+_COTHINK_ITEM_TRANSITIONS = {
+    "open": frozenset({"parked", "dismissed"}),
+    "parked": frozenset({"dismissed"}),
+    "dismissed": frozenset(),
+}
+_COTHINK_STATUS_DOMAIN = b"work-buddy:cothink-item-status:v1\0"
+_COORDINATION_ROLES = frozenset(
+    {"specialist", "reviser", "coordinator", "cothink"}
+)
+_COORDINATION_STATUSES = frozenset(
+    {
+        "prepared",
+        "launching",
+        "running",
+        "submitted",
+        "completed",
+        "unavailable",
+        "failed",
+    }
+)
+_COORDINATION_OUTCOMES = frozenset(
+    {
+        "typed_submission_received",
+        "routing_completed",
+        "revision_requested",
+        "revision_candidate_prepared",
+        "correction_routing_completed",
+        "completed_with_item",
+        "completed_no_useful_item",
+        "unavailable",
+    }
+)
+_COORDINATION_TRANSITIONS = {
+    "prepared": frozenset(
+        {"launching", "running", "submitted", "unavailable", "failed"}
+    ),
+    "launching": frozenset(
+        {"running", "submitted", "unavailable", "failed"}
+    ),
+    "running": frozenset({"submitted", "unavailable", "failed"}),
+    "submitted": frozenset({"completed", "failed"}),
+    "completed": frozenset(),
+    "unavailable": frozenset(),
+    "failed": frozenset(),
+}
 
 
 class TruthExportError(InvariantViolation):
@@ -398,6 +456,306 @@ _RECORD_COLUMNS: Mapping[str, tuple[str, tuple[str, ...]]] = {
             "detail",
         ),
     ),
+    "criterion_definition_version": (
+        "criterion_definition_versions",
+        (
+            "id",
+            "stable_key",
+            "version",
+            "title",
+            "description",
+            "criterion_kind",
+            "origin",
+            "configuration_schema_json",
+            "canonical_sha256",
+            "created_at",
+            "created_by_kind",
+            "created_by_ref",
+            "created_by_meta_json",
+        ),
+    ),
+    "check_definition_version": (
+        "check_definition_versions",
+        (
+            "id",
+            "stable_key",
+            "version",
+            "title",
+            "mechanism",
+            "executor_ref",
+            "supported_criterion_kinds_json",
+            "input_schema_json",
+            "output_schema_json",
+            "limitations_json",
+            "origin",
+            "canonical_sha256",
+            "created_at",
+            "created_by_kind",
+            "created_by_ref",
+            "created_by_meta_json",
+        ),
+    ),
+    "criterion_check_binding": (
+        "criterion_check_bindings",
+        (
+            "id",
+            "criterion_definition_version_id",
+            "check_definition_version_id",
+            "configuration_json",
+            "canonical_sha256",
+            "created_at",
+            "created_by_kind",
+            "created_by_ref",
+            "created_by_meta_json",
+        ),
+    ),
+    "criterion_activation": (
+        "criterion_activations",
+        (
+            "id",
+            "criterion_definition_version_id",
+            "criterion_check_binding_id",
+            "scope_json",
+            "is_enabled",
+            "is_required",
+            "origin",
+            "canonical_sha256",
+            "created_at",
+            "created_by_kind",
+            "created_by_ref",
+            "created_by_meta_json",
+        ),
+    ),
+    "action_snapshot": (
+        "action_snapshots",
+        (
+            "id",
+            "document_id",
+            "document_version_id",
+            "ydoc_snapshot_sha256",
+            "structured_head_sha256",
+            "ydoc_generation_sha256",
+            "baseline_projection_sha256",
+            "projection_sha256",
+            "projection_blob_sha256",
+            "target_kind",
+            "target_selector_json",
+            "target_text_sha256",
+            "target_blob_sha256",
+            "context_boundary_json",
+            "allowed_change_ranges_json",
+            "egress_boundary_json",
+            "canonical_sha256",
+            "created_at",
+            "created_by_kind",
+            "created_by_ref",
+            "created_by_meta_json",
+        ),
+    ),
+    "evaluation_plan_snapshot": (
+        "evaluation_plan_snapshots",
+        (
+            "id",
+            "action_snapshot_id",
+            "plan_json",
+            "canonical_sha256",
+            "created_at",
+            "created_by_kind",
+            "created_by_ref",
+            "created_by_meta_json",
+        ),
+    ),
+    "evaluation_run": (
+        "evaluation_runs",
+        (
+            "id",
+            "action_snapshot_id",
+            "plan_snapshot_id",
+            "run_kind",
+            "status",
+            "canonical_sha256",
+            "started_at",
+            "completed_at",
+            "created_by_kind",
+            "created_by_ref",
+            "created_by_meta_json",
+        ),
+    ),
+    "check_execution": (
+        "check_executions",
+        (
+            "id",
+            "evaluation_run_id",
+            "check_definition_version_id",
+            "criterion_check_binding_id",
+            "mechanism",
+            "status",
+            "input_sha256",
+            "output_sha256",
+            "diagnostics_json",
+            "producer_json",
+            "canonical_sha256",
+            "started_at",
+            "completed_at",
+            "created_by_kind",
+            "created_by_ref",
+            "created_by_meta_json",
+        ),
+    ),
+    "evaluation_result": (
+        "evaluation_results",
+        (
+            "id",
+            "evaluation_run_id",
+            "check_execution_id",
+            "criterion_definition_version_id",
+            "result_kind",
+            "severity",
+            "message",
+            "evidence_selector_json",
+            "payload_json",
+            "canonical_sha256",
+            "created_at",
+            "created_by_kind",
+            "created_by_ref",
+            "created_by_meta_json",
+        ),
+    ),
+    "routing_disposition": (
+        "routing_dispositions",
+        (
+            "id",
+            "evaluation_result_id",
+            "decision",
+            "rationale",
+            "policy_snapshot_sha256",
+            "canonical_sha256",
+            "created_at",
+            "created_by_kind",
+            "created_by_ref",
+            "created_by_meta_json",
+        ),
+    ),
+    "result_relation": (
+        "result_relations",
+        (
+            "id",
+            "evaluation_result_id",
+            "relation_kind",
+            "target_kind",
+            "target_ref",
+            "canonical_sha256",
+            "created_at",
+            "created_by_kind",
+            "created_by_ref",
+            "created_by_meta_json",
+        ),
+    ),
+    "model_call_authorization_receipt": (
+        "model_call_authorization_receipts",
+        (
+            "id",
+            "action_snapshot_id",
+            "plan_snapshot_id",
+            "provider",
+            "model",
+            "context_sha256",
+            "content_boundary_json",
+            "egress_class",
+            "cost_ceiling_usd",
+            "retry_limit",
+            "expires_at",
+            "canonical_sha256",
+            "created_at",
+            "created_by_kind",
+            "created_by_ref",
+            "created_by_meta_json",
+        ),
+    ),
+    "cothink_item": (
+        "cothink_items",
+        (
+            "id",
+            "action_snapshot_id",
+            "subtype",
+            "purpose",
+            "payload_json",
+            "rationale",
+            "delivery_state",
+            "provenance_json",
+            "canonical_sha256",
+            "created_at",
+            "created_by_kind",
+            "created_by_ref",
+            "created_by_meta_json",
+        ),
+    ),
+    "cothink_item_status_event": (
+        "cothink_item_status_events",
+        (
+            "id",
+            "cothink_item_id",
+            "status",
+            "reason",
+            "canonical_sha256",
+            "created_at",
+            "created_by_kind",
+            "created_by_ref",
+            "created_by_meta_json",
+        ),
+    ),
+    "cowork_coordination_job": (
+        "cowork_coordination_jobs",
+        (
+            "id",
+            "document_id",
+            "evaluation_run_id",
+            "action_snapshot_id",
+            "plan_snapshot_id",
+            "role",
+            "parent_job_id",
+            "authorization_receipt_id",
+            "context_sha256",
+            "selection_json",
+            "request_summary_json",
+            "canonical_sha256",
+            "created_at",
+            "created_by_kind",
+            "created_by_ref",
+            "created_by_meta_json",
+        ),
+    ),
+    "cowork_coordination_status_event": (
+        "cowork_coordination_status_events",
+        (
+            "id",
+            "coordination_job_id",
+            "status",
+            "outcome_kind",
+            "output_sha256",
+            "error_code",
+            "message",
+            "consequence_refs_json",
+            "canonical_sha256",
+            "created_at",
+            "created_by_kind",
+            "created_by_ref",
+            "created_by_meta_json",
+        ),
+    ),
+    "cowork_review_application": (
+        "cowork_review_applications",
+        (
+            "id",
+            "document_id",
+            "applied_proposal_ids_json",
+            "canonical_sha256",
+            "committed_at",
+            "created_by_kind",
+            "created_by_ref",
+            "created_by_meta_json",
+        ),
+    ),
 }
 
 _ID_KEY_TYPES = frozenset(
@@ -419,6 +777,23 @@ _ID_KEY_TYPES = frozenset(
         "proposal",
         "proposal_status_event",
         "doc_event",
+        "criterion_definition_version",
+        "check_definition_version",
+        "criterion_check_binding",
+        "criterion_activation",
+        "action_snapshot",
+        "evaluation_plan_snapshot",
+        "evaluation_run",
+        "check_execution",
+        "evaluation_result",
+        "routing_disposition",
+        "result_relation",
+        "model_call_authorization_receipt",
+        "cothink_item",
+        "cothink_item_status_event",
+        "cowork_coordination_job",
+        "cowork_coordination_status_event",
+        "cowork_review_application",
     }
 )
 
@@ -559,6 +934,22 @@ def _finite_confidence(value: Any, label: str) -> None:
         raise TruthImportError(f"{label} must be a number from 0 to 1")
     if not math.isfinite(float(value)) or not 0 <= float(value) <= 1:
         raise TruthImportError(f"{label} must be a finite number from 0 to 1")
+
+
+def _actor_record(row: Mapping[str, Any], label: str) -> None:
+    if row["created_by_kind"] not in VALID_ACTOR_KINDS:
+        raise TruthImportError(f"{label} has an invalid actor kind")
+    _json_value(
+        row.get("created_by_meta_json"),
+        f"{label}.created_by_meta_json",
+        mapping=True,
+    )
+
+
+def _portable_record(row: Mapping[str, Any], label: str) -> None:
+    _digest(row["canonical_sha256"], f"{label}.canonical_sha256")
+    _timestamp(row["created_at"], f"{label}.created_at")
+    _actor_record(row, label)
 
 
 def _timestamp(value: Any, label: str) -> None:
@@ -912,25 +1303,688 @@ def _validate_record_values(item: _DataRecord) -> None:
         _timestamp(row["at"], "doc_event.at")
         return
 
+    if record_type == "criterion_definition_version":
+        _positive_int(row["version"], "criterion definition version")
+        for field in ("stable_key", "title", "description", "criterion_kind", "origin"):
+            _nonempty_text(row[field], f"criterion definition.{field}")
+        _json_value(
+            row["configuration_schema_json"],
+            "criterion definition.configuration_schema_json",
+            mapping=True,
+        )
+        _portable_record(row, "criterion definition")
+        return
+
+    if record_type == "check_definition_version":
+        _positive_int(row["version"], "check definition version")
+        for field in (
+            "stable_key",
+            "title",
+            "mechanism",
+            "executor_ref",
+            "origin",
+        ):
+            _nonempty_text(row[field], f"check definition.{field}")
+        supported = _json_value(
+            row["supported_criterion_kinds_json"],
+            "check definition.supported_criterion_kinds_json",
+        )
+        if not isinstance(supported, list) or not supported:
+            raise TruthImportError(
+                "check definition supported criterion kinds must be a nonempty list"
+            )
+        for field in (
+            "input_schema_json",
+            "output_schema_json",
+            "limitations_json",
+        ):
+            _json_value(row[field], f"check definition.{field}")
+        _portable_record(row, "check definition")
+        return
+
+    if record_type == "criterion_check_binding":
+        _json_value(
+            row["configuration_json"],
+            "criterion check binding.configuration_json",
+            mapping=True,
+        )
+        _portable_record(row, "criterion check binding")
+        return
+
+    if record_type == "criterion_activation":
+        _json_value(
+            row["scope_json"],
+            "criterion activation.scope_json",
+            mapping=True,
+        )
+        if row["is_enabled"] not in {0, 1} or row["is_required"] not in {0, 1}:
+            raise TruthImportError("criterion activation booleans must be 0 or 1")
+        _nonempty_text(row["origin"], "criterion activation.origin")
+        _portable_record(row, "criterion activation")
+        return
+
+    if record_type == "action_snapshot":
+        for field in (
+            "ydoc_snapshot_sha256",
+            "structured_head_sha256",
+            "ydoc_generation_sha256",
+            "baseline_projection_sha256",
+            "projection_sha256",
+            "projection_blob_sha256",
+            "target_text_sha256",
+            "target_blob_sha256",
+        ):
+            _digest(row[field], f"action snapshot.{field}")
+        if row["projection_sha256"] != row["projection_blob_sha256"]:
+            raise TruthImportError(
+                "action snapshot projection blob must match projection_sha256"
+            )
+        if row["target_text_sha256"] != row["target_blob_sha256"]:
+            raise TruthImportError(
+                "action snapshot target blob must match target_text_sha256"
+            )
+        if row["target_kind"] not in _ACTION_TARGET_KINDS:
+            raise TruthImportError("action snapshot has an invalid target kind")
+        _json_value(
+            row["target_selector_json"],
+            "action snapshot.target_selector_json",
+            mapping=True,
+        )
+        _json_value(
+            row["context_boundary_json"],
+            "action snapshot.context_boundary_json",
+            mapping=True,
+        )
+        allowed = _json_value(
+            row["allowed_change_ranges_json"],
+            "action snapshot.allowed_change_ranges_json",
+        )
+        if not isinstance(allowed, list):
+            raise TruthImportError(
+                "action snapshot allowed change ranges must be a list"
+            )
+        _json_value(
+            row["egress_boundary_json"],
+            "action snapshot.egress_boundary_json",
+            mapping=True,
+        )
+        _portable_record(row, "action snapshot")
+        return
+
+    if record_type == "evaluation_plan_snapshot":
+        _json_value(
+            row["plan_json"],
+            "evaluation plan snapshot.plan_json",
+            mapping=True,
+        )
+        _portable_record(row, "evaluation plan snapshot")
+        return
+
+    if record_type == "evaluation_run":
+        _nonempty_text(row["run_kind"], "evaluation run.run_kind")
+        _nonempty_text(row["status"], "evaluation run.status")
+        _timestamp(row["started_at"], "evaluation run.started_at")
+        if row["completed_at"] is not None:
+            _timestamp(row["completed_at"], "evaluation run.completed_at")
+        _digest(row["canonical_sha256"], "evaluation run.canonical_sha256")
+        _actor_record(row, "evaluation run")
+        return
+
+    if record_type == "check_execution":
+        for field in ("mechanism", "status"):
+            _nonempty_text(row[field], f"check execution.{field}")
+        _digest(row["input_sha256"], "check execution.input_sha256")
+        if row["output_sha256"] is not None:
+            _digest(row["output_sha256"], "check execution.output_sha256")
+        _json_value(
+            row["diagnostics_json"],
+            "check execution.diagnostics_json",
+            mapping=True,
+        )
+        _json_value(
+            row["producer_json"],
+            "check execution.producer_json",
+            mapping=True,
+        )
+        _timestamp(row["started_at"], "check execution.started_at")
+        if row["completed_at"] is not None:
+            _timestamp(row["completed_at"], "check execution.completed_at")
+        _digest(row["canonical_sha256"], "check execution.canonical_sha256")
+        _actor_record(row, "check execution")
+        return
+
+    if record_type == "evaluation_result":
+        for field in ("result_kind", "severity", "message"):
+            _nonempty_text(row[field], f"evaluation result.{field}")
+        if row["evidence_selector_json"] is not None:
+            _json_value(
+                row["evidence_selector_json"],
+                "evaluation result.evidence_selector_json",
+                mapping=True,
+            )
+        _json_value(
+            row["payload_json"],
+            "evaluation result.payload_json",
+            mapping=True,
+        )
+        _portable_record(row, "evaluation result")
+        return
+
+    if record_type == "routing_disposition":
+        if row["decision"] not in _ROUTING_DECISIONS:
+            raise TruthImportError("routing disposition has an invalid decision")
+        _nonempty_text(row["rationale"], "routing disposition.rationale")
+        if row["policy_snapshot_sha256"] is not None:
+            _digest(
+                row["policy_snapshot_sha256"],
+                "routing disposition.policy_snapshot_sha256",
+            )
+        _portable_record(row, "routing disposition")
+        return
+
+    if record_type == "result_relation":
+        if row["relation_kind"] not in _RESULT_RELATION_KINDS:
+            raise TruthImportError("result relation has an invalid relation kind")
+        if row["target_kind"] not in _RESULT_RELATION_TARGET_KINDS:
+            raise TruthImportError("result relation has an invalid target kind")
+        _nonempty_text(row["target_ref"], "result relation.target_ref")
+        _portable_record(row, "result relation")
+        return
+
+    if record_type == "model_call_authorization_receipt":
+        for field in ("provider", "model", "egress_class"):
+            _nonempty_text(row[field], f"model authorization.{field}")
+        _digest(row["context_sha256"], "model authorization.context_sha256")
+        _json_value(
+            row["content_boundary_json"],
+            "model authorization.content_boundary_json",
+            mapping=True,
+        )
+        cost = row["cost_ceiling_usd"]
+        if (
+            isinstance(cost, bool)
+            or not isinstance(cost, (int, float))
+            or not math.isfinite(float(cost))
+            or float(cost) < 0
+        ):
+            raise TruthImportError(
+                "model authorization cost ceiling must be a finite nonnegative number"
+            )
+        _positive_int(
+            row["retry_limit"],
+            "model authorization.retry_limit",
+            allow_zero=True,
+        )
+        _timestamp(row["expires_at"], "model authorization.expires_at")
+        _portable_record(row, "model authorization")
+        return
+
+    if record_type == "cothink_item":
+        for field in ("subtype", "purpose", "rationale"):
+            _nonempty_text(row[field], f"Co-think item.{field}")
+        if row["delivery_state"] not in _COTHINK_DELIVERY_STATES:
+            raise TruthImportError("Co-think item has an invalid delivery state")
+        _json_value(row["payload_json"], "Co-think item.payload_json", mapping=True)
+        _json_value(
+            row["provenance_json"],
+            "Co-think item.provenance_json",
+            mapping=True,
+        )
+        _portable_record(row, "Co-think item")
+        return
+
+    if record_type == "cothink_item_status_event":
+        if row["status"] not in _COTHINK_ITEM_STATUSES:
+            raise TruthImportError("Co-think status event has an invalid status")
+        if row["reason"] is not None:
+            _nonempty_text(row["reason"], "Co-think status event.reason")
+        _portable_record(row, "Co-think status event")
+        return
+
+    if record_type == "cowork_coordination_job":
+        if row["role"] not in _COORDINATION_ROLES:
+            raise TruthImportError("coordination job has an invalid role")
+        _digest(row["context_sha256"], "coordination job.context_sha256")
+        selection = _json_value(
+            row["selection_json"],
+            "coordination job.selection_json",
+            mapping=True,
+        )
+        _require_exact_keys(
+            selection,
+            {
+                "provider_id",
+                "model_id",
+                "provider_label",
+                "model_label",
+            },
+            "coordination job selection",
+        )
+        for field in ("provider_id", "model_id"):
+            _nonempty_text(
+                selection[field],
+                f"coordination job selection.{field}",
+            )
+        for field in ("provider_label", "model_label"):
+            if not isinstance(selection[field], str):
+                raise TruthImportError(
+                    f"coordination job selection.{field} must be text"
+                )
+        request = _json_value(
+            row["request_summary_json"],
+            "coordination job.request_summary_json",
+            mapping=True,
+        )
+        request_keys = {
+            "schema",
+            "user_goal",
+            "protected_intent",
+            "effective_configuration",
+            "effective_configuration_sha256",
+            "effective_policy_sha256",
+            "active_criterion_ids",
+            "prior_disposition_ids",
+            "prior_human_review_outcome_ids",
+            "recheck_of_run_id",
+            "recheck_of_proposal_ids",
+            "recheck_intent_id",
+            "coordinator_stage",
+            "requested_revision_result_ids",
+            "candidate_evaluations",
+        }
+        if "recheck_target_confirmation" in request:
+            request_keys.add("recheck_target_confirmation")
+        if "specialist_assignment" in request:
+            request_keys.add("specialist_assignment")
+        _require_exact_keys(
+            request,
+            request_keys,
+            "coordination job request summary",
+        )
+        if request["schema"] != "work-buddy.cowork-coordination-request/v1":
+            raise TruthImportError(
+                "coordination job request summary has an invalid schema"
+            )
+        for field in ("user_goal", "protected_intent"):
+            _nonempty_text(
+                request[field],
+                f"coordination job request summary.{field}",
+            )
+        configuration = request["effective_configuration"]
+        if configuration is not None and not isinstance(configuration, dict):
+            raise TruthImportError(
+                "coordination effective_configuration must be an object or null"
+            )
+        for field in (
+            "effective_configuration_sha256",
+            "effective_policy_sha256",
+        ):
+            if request[field] is not None:
+                _digest(
+                    request[field],
+                    f"coordination job request summary.{field}",
+                )
+        for field in (
+            "active_criterion_ids",
+            "prior_disposition_ids",
+            "prior_human_review_outcome_ids",
+            "recheck_of_proposal_ids",
+            "requested_revision_result_ids",
+        ):
+            values = request[field]
+            if not isinstance(values, list):
+                raise TruthImportError(
+                    f"coordination job request summary.{field} must be a list"
+                )
+            normalized = [
+                _record_id(
+                    value,
+                    f"coordination job request summary.{field}",
+                )
+                for value in values
+            ]
+            if len(normalized) != len(set(normalized)):
+                raise TruthImportError(
+                    f"coordination job request summary.{field} has duplicates"
+                )
+        if request["recheck_of_run_id"] is not None:
+            _record_id(
+                request["recheck_of_run_id"],
+                "coordination job request summary.recheck_of_run_id",
+            )
+        if request["recheck_intent_id"] is not None:
+            _digest(
+                request["recheck_intent_id"],
+                "coordination job request summary.recheck_intent_id",
+            )
+        confirmation = request.get("recheck_target_confirmation")
+        if confirmation is not None:
+            if not isinstance(confirmation, dict):
+                raise TruthImportError(
+                    "coordination job request summary."
+                    "recheck_target_confirmation must be an object or null"
+                )
+            _require_exact_keys(
+                confirmation,
+                {
+                    "schema",
+                    "method",
+                    "affirmed_capture_id",
+                    "affirmed_action_snapshot_id",
+                    "run_capture_id",
+                    "target_reference_sha256",
+                    "target_text_sha256",
+                },
+                "coordination job recheck target confirmation",
+            )
+            if (
+                confirmation["schema"]
+                != "work-buddy.cowork-recheck-target-confirmation/v1"
+                or confirmation["method"]
+                != "user_affirmed_working_target"
+            ):
+                raise TruthImportError(
+                    "coordination job recheck target confirmation has an "
+                    "unsupported method"
+                )
+            for field in (
+                "affirmed_capture_id",
+                "affirmed_action_snapshot_id",
+                "run_capture_id",
+            ):
+                _nonempty_text(
+                    confirmation[field],
+                    f"coordination job recheck target confirmation.{field}",
+                )
+            if (
+                confirmation["affirmed_capture_id"]
+                == confirmation["run_capture_id"]
+            ):
+                raise TruthImportError(
+                    "coordination job recheck target confirmation requires "
+                    "separate captures"
+                )
+            for field in (
+                "target_reference_sha256",
+                "target_text_sha256",
+            ):
+                _digest(
+                    confirmation[field],
+                    f"coordination job recheck target confirmation.{field}",
+                )
+        if request["coordinator_stage"] not in {
+            None,
+            "initial",
+            "post_revision",
+        }:
+            raise TruthImportError(
+                "coordination job request summary has an invalid stage"
+            )
+        try:
+            from work_buddy.cowork.verify_candidate_evaluation import (
+                CandidateEvaluationError,
+                sanitize_candidate_evaluations,
+            )
+
+            candidate_evaluations = sanitize_candidate_evaluations(
+                request["candidate_evaluations"]
+            )
+        except CandidateEvaluationError as exc:
+            raise TruthImportError(str(exc)) from exc
+        if candidate_evaluations != request["candidate_evaluations"]:
+            raise TruthImportError(
+                "coordination job candidate evaluations are not canonical"
+            )
+        specialist_assignment = request.get("specialist_assignment")
+        if row["role"] != "specialist":
+            if specialist_assignment is not None:
+                raise TruthImportError(
+                    "non-specialist coordination cannot retain a "
+                    "specialist_assignment"
+                )
+        elif specialist_assignment is not None:
+            if not isinstance(specialist_assignment, dict):
+                raise TruthImportError(
+                    "coordination job specialist_assignment must be an "
+                    "object or null"
+                )
+            _require_exact_keys(
+                specialist_assignment,
+                {
+                    "criterion_definition_version_id",
+                    "check_definition_version_id",
+                    "criterion_check_binding_id",
+                    "sequence",
+                    "total",
+                    "configuration_sha256",
+                },
+                "coordination job specialist_assignment",
+            )
+            for field in (
+                "criterion_definition_version_id",
+                "check_definition_version_id",
+                "criterion_check_binding_id",
+            ):
+                _record_id(
+                    specialist_assignment[field],
+                    f"coordination job specialist_assignment.{field}",
+                )
+            sequence = _positive_int(
+                specialist_assignment["sequence"],
+                "coordination job specialist_assignment.sequence",
+            )
+            total = _positive_int(
+                specialist_assignment["total"],
+                "coordination job specialist_assignment.total",
+            )
+            if sequence > total:
+                raise TruthImportError(
+                    "coordination job specialist_assignment.sequence "
+                    "cannot exceed total"
+                )
+            _digest(
+                specialist_assignment["configuration_sha256"],
+                "coordination job "
+                "specialist_assignment.configuration_sha256",
+            )
+        payload = {
+            "document_id": row["document_id"],
+            "evaluation_run_id": row["evaluation_run_id"],
+            "action_snapshot_id": row["action_snapshot_id"],
+            "plan_snapshot_id": row["plan_snapshot_id"],
+            "role": row["role"],
+            "parent_job_id": row["parent_job_id"],
+            "authorization_receipt_id": row[
+                "authorization_receipt_id"
+            ],
+            "context_sha256": row["context_sha256"],
+            "selection": selection,
+            "request_summary": request,
+        }
+        if (
+            sha256_bytes(canonical_json(payload).encode("utf-8"))
+            != row["canonical_sha256"]
+        ):
+            raise TruthImportError(
+                "coordination job canonical hash does not match"
+            )
+        _portable_record(row, "coordination job")
+        return
+
+    if record_type == "cowork_coordination_status_event":
+        status = row["status"]
+        outcome = row["outcome_kind"]
+        if status not in _COORDINATION_STATUSES:
+            raise TruthImportError("coordination status event has an invalid status")
+        if outcome is not None and outcome not in _COORDINATION_OUTCOMES:
+            raise TruthImportError(
+                "coordination status event has an invalid outcome"
+            )
+        if status in {"prepared", "launching", "running"} and outcome is not None:
+            raise TruthImportError(
+                "nonterminal coordination state cannot have an outcome"
+            )
+        if status == "submitted" and outcome != "typed_submission_received":
+            raise TruthImportError(
+                "submitted coordination state requires its typed outcome"
+            )
+        if status in {"unavailable", "failed"} and outcome != "unavailable":
+            raise TruthImportError(
+                "unavailable coordination state requires unavailable outcome"
+            )
+        if status == "completed" and outcome in {None, "unavailable"}:
+            raise TruthImportError(
+                "completed coordination state requires a completed outcome"
+            )
+        if row["output_sha256"] is not None:
+            _digest(
+                row["output_sha256"],
+                "coordination status event.output_sha256",
+            )
+        if status in {"unavailable", "failed"}:
+            _nonempty_text(
+                row["error_code"],
+                "coordination status event.error_code",
+            )
+            _nonempty_text(
+                row["message"],
+                "coordination status event.message",
+            )
+        elif row["error_code"] is not None or row["message"] is not None:
+            raise TruthImportError(
+                "successful coordination status retained error content"
+            )
+        refs = _json_value(
+            row["consequence_refs_json"],
+            "coordination status event.consequence_refs_json",
+            mapping=True,
+        )
+        if not set(refs) <= {
+            "next_job_id",
+            "cothink_item_id",
+            "proposal_ids",
+            "disposition_ids",
+            "requested_revision_result_ids",
+            "check_execution_ids",
+            "evaluation_result_ids",
+        }:
+            raise TruthImportError(
+                "coordination status event has unsupported consequence refs"
+            )
+        for field in ("next_job_id", "cothink_item_id"):
+            if field in refs:
+                _record_id(
+                    refs[field],
+                    f"coordination status event.{field}",
+                )
+        for field in (
+            "proposal_ids",
+            "disposition_ids",
+            "requested_revision_result_ids",
+            "check_execution_ids",
+            "evaluation_result_ids",
+        ):
+            values = refs.get(field, [])
+            if not isinstance(values, list):
+                raise TruthImportError(
+                    f"coordination status event.{field} must be a list"
+                )
+            normalized = [
+                _record_id(
+                    value,
+                    f"coordination status event.{field}",
+                )
+                for value in values
+            ]
+            if len(normalized) != len(set(normalized)):
+                raise TruthImportError(
+                    f"coordination status event.{field} has duplicates"
+                )
+        payload = {
+            "coordination_job_id": row["coordination_job_id"],
+            "status": status,
+            "outcome_kind": outcome,
+            "output_sha256": row["output_sha256"],
+            "error_code": row["error_code"],
+            "message": row["message"],
+            "consequence_refs": refs,
+        }
+        if (
+            sha256_bytes(canonical_json(payload).encode("utf-8"))
+            != row["canonical_sha256"]
+        ):
+            raise TruthImportError(
+                "coordination status event canonical hash does not match"
+            )
+        _portable_record(row, "coordination status event")
+        return
+
+    if record_type == "cowork_review_application":
+        proposal_ids = _json_value(
+            row["applied_proposal_ids_json"],
+            "review application.applied_proposal_ids_json",
+        )
+        if not isinstance(proposal_ids, list) or not proposal_ids:
+            raise TruthImportError(
+                "review application requires applied proposal ids"
+            )
+        normalized = [
+            _record_id(value, "review application proposal id")
+            for value in proposal_ids
+        ]
+        if len(normalized) != len(set(normalized)):
+            raise TruthImportError(
+                "review application proposal ids contain duplicates"
+            )
+        _timestamp(
+            row["committed_at"],
+            "review application.committed_at",
+        )
+        payload = {
+            "document_id": row["document_id"],
+            "applied_proposal_ids": proposal_ids,
+            "committed_at": row["committed_at"],
+        }
+        if (
+            sha256_bytes(canonical_json(payload).encode("utf-8"))
+            != row["canonical_sha256"]
+        ):
+            raise TruthImportError(
+                "review application canonical hash does not match"
+            )
+        _digest(
+            row["canonical_sha256"],
+            "review application.canonical_sha256",
+        )
+        _actor_record(row, "review application")
+        return
+
 
 def _validate_foreign_refs(records: tuple[_DataRecord, ...]) -> None:
     index = {(item.record_type, item.record_key): item.seq for item in records}
+    record_by_identity = {
+        (item.record_type, item.record_key): item.record for item in records
+    }
+    cothink_status_by_item: dict[str, str] = {}
+    coordination_status_by_job: dict[str, str] = {}
 
     def require_prior(
         record_type: str,
         key: Any,
         before: int,
         label: str,
-    ) -> None:
+    ) -> Mapping[str, Any]:
         if record_type in _ID_KEY_TYPES or record_type == "link_retraction":
             normalized_key = _record_id(key, label)
         else:
             normalized_key = _nonempty_text(key, label)
-        seq = index.get((record_type, normalized_key))
+        identity = (record_type, normalized_key)
+        seq = index.get(identity)
         if seq is None:
             raise TruthImportError(f"{label} references a missing {record_type}")
         if seq >= before:
             raise TruthImportError(f"{label} must reference an earlier ledger record")
+        return record_by_identity[identity]
 
     for item in records:
         row = item.record
@@ -1014,6 +2068,787 @@ def _validate_foreign_refs(records: tuple[_DataRecord, ...]) -> None:
             require_prior(
                 "document", row["document_id"], item.seq, "doc_event.document_id"
             )
+        elif item.record_type == "criterion_check_binding":
+            require_prior(
+                "criterion_definition_version",
+                row["criterion_definition_version_id"],
+                item.seq,
+                "criterion_check_binding.criterion_definition_version_id",
+            )
+            require_prior(
+                "check_definition_version",
+                row["check_definition_version_id"],
+                item.seq,
+                "criterion_check_binding.check_definition_version_id",
+            )
+        elif item.record_type == "criterion_activation":
+            require_prior(
+                "criterion_definition_version",
+                row["criterion_definition_version_id"],
+                item.seq,
+                "criterion_activation.criterion_definition_version_id",
+            )
+            require_prior(
+                "criterion_check_binding",
+                row["criterion_check_binding_id"],
+                item.seq,
+                "criterion_activation.criterion_check_binding_id",
+            )
+        elif item.record_type == "action_snapshot":
+            require_prior(
+                "document",
+                row["document_id"],
+                item.seq,
+                "action_snapshot.document_id",
+            )
+            if row["document_version_id"] is not None:
+                require_prior(
+                    "document_version",
+                    row["document_version_id"],
+                    item.seq,
+                    "action_snapshot.document_version_id",
+                )
+        elif item.record_type == "evaluation_plan_snapshot":
+            require_prior(
+                "action_snapshot",
+                row["action_snapshot_id"],
+                item.seq,
+                "evaluation_plan_snapshot.action_snapshot_id",
+            )
+        elif item.record_type == "evaluation_run":
+            require_prior(
+                "action_snapshot",
+                row["action_snapshot_id"],
+                item.seq,
+                "evaluation_run.action_snapshot_id",
+            )
+            require_prior(
+                "evaluation_plan_snapshot",
+                row["plan_snapshot_id"],
+                item.seq,
+                "evaluation_run.plan_snapshot_id",
+            )
+        elif item.record_type == "check_execution":
+            require_prior(
+                "evaluation_run",
+                row["evaluation_run_id"],
+                item.seq,
+                "check_execution.evaluation_run_id",
+            )
+            require_prior(
+                "check_definition_version",
+                row["check_definition_version_id"],
+                item.seq,
+                "check_execution.check_definition_version_id",
+            )
+            require_prior(
+                "criterion_check_binding",
+                row["criterion_check_binding_id"],
+                item.seq,
+                "check_execution.criterion_check_binding_id",
+            )
+        elif item.record_type == "evaluation_result":
+            require_prior(
+                "evaluation_run",
+                row["evaluation_run_id"],
+                item.seq,
+                "evaluation_result.evaluation_run_id",
+            )
+            require_prior(
+                "check_execution",
+                row["check_execution_id"],
+                item.seq,
+                "evaluation_result.check_execution_id",
+            )
+            require_prior(
+                "criterion_definition_version",
+                row["criterion_definition_version_id"],
+                item.seq,
+                "evaluation_result.criterion_definition_version_id",
+            )
+        elif item.record_type == "routing_disposition":
+            require_prior(
+                "evaluation_result",
+                row["evaluation_result_id"],
+                item.seq,
+                "routing_disposition.evaluation_result_id",
+            )
+        elif item.record_type == "result_relation":
+            require_prior(
+                "evaluation_result",
+                row["evaluation_result_id"],
+                item.seq,
+                "result_relation.evaluation_result_id",
+            )
+            target_type = {
+                "evaluation_result": "evaluation_result",
+                "evaluation_run": "evaluation_run",
+                "proposal": "proposal",
+                "cothink_item": "cothink_item",
+            }.get(row["target_kind"])
+            if target_type is not None:
+                require_prior(
+                    target_type,
+                    row["target_ref"],
+                    item.seq,
+                    "result_relation.target_ref",
+                )
+        elif item.record_type == "model_call_authorization_receipt":
+            require_prior(
+                "action_snapshot",
+                row["action_snapshot_id"],
+                item.seq,
+                "model authorization.action_snapshot_id",
+            )
+            if row["plan_snapshot_id"] is not None:
+                require_prior(
+                    "evaluation_plan_snapshot",
+                    row["plan_snapshot_id"],
+                    item.seq,
+                    "model authorization.plan_snapshot_id",
+                )
+        elif item.record_type == "cothink_item":
+            require_prior(
+                "action_snapshot",
+                row["action_snapshot_id"],
+                item.seq,
+                "cothink_item.action_snapshot_id",
+            )
+        elif item.record_type == "cothink_item_status_event":
+            item_id = row["cothink_item_id"]
+            require_prior(
+                "cothink_item",
+                item_id,
+                item.seq,
+                "cothink_item_status_event.cothink_item_id",
+            )
+            previous = cothink_status_by_item.get(item_id)
+            if previous is None:
+                if row["status"] != "open":
+                    raise TruthImportError(
+                        "first Co-think item status must be open"
+                    )
+            elif row["status"] not in _COTHINK_ITEM_TRANSITIONS.get(
+                previous,
+                frozenset(),
+            ):
+                raise TruthImportError(
+                    f"invalid Co-think item status transition: "
+                    f"{previous} -> {row['status']}"
+                )
+            cothink_status_by_item[item_id] = row["status"]
+        elif item.record_type == "cowork_coordination_job":
+            require_prior(
+                "document",
+                row["document_id"],
+                item.seq,
+                "coordination job.document_id",
+            )
+            action_record = require_prior(
+                "action_snapshot",
+                row["action_snapshot_id"],
+                item.seq,
+                "coordination job.action_snapshot_id",
+            )
+            if action_record["document_id"] != row["document_id"]:
+                raise TruthImportError(
+                    "coordination job action snapshot belongs to another document"
+                )
+            request_summary = json.loads(row["request_summary_json"])
+            confirmation = request_summary.get(
+                "recheck_target_confirmation"
+            )
+            if isinstance(confirmation, dict):
+                require_prior(
+                    "action_snapshot",
+                    confirmation["affirmed_action_snapshot_id"],
+                    item.seq,
+                    "coordination job recheck target affirmation",
+                )
+            specialist_assignment = request_summary.get(
+                "specialist_assignment"
+            )
+            specialist_binding: Mapping[str, Any] | None = None
+            if isinstance(specialist_assignment, dict):
+                require_prior(
+                    "criterion_definition_version",
+                    specialist_assignment[
+                        "criterion_definition_version_id"
+                    ],
+                    item.seq,
+                    "coordination job specialist criterion",
+                )
+                require_prior(
+                    "check_definition_version",
+                    specialist_assignment["check_definition_version_id"],
+                    item.seq,
+                    "coordination job specialist check",
+                )
+                specialist_binding = require_prior(
+                    "criterion_check_binding",
+                    specialist_assignment["criterion_check_binding_id"],
+                    item.seq,
+                    "coordination job specialist binding",
+                )
+            run_record: Mapping[str, Any] | None = None
+            if row["evaluation_run_id"] is not None:
+                run_record = require_prior(
+                    "evaluation_run",
+                    row["evaluation_run_id"],
+                    item.seq,
+                    "coordination job.evaluation_run_id",
+                )
+            plan_record: Mapping[str, Any] | None = None
+            if row["plan_snapshot_id"] is not None:
+                plan_record = require_prior(
+                    "evaluation_plan_snapshot",
+                    row["plan_snapshot_id"],
+                    item.seq,
+                    "coordination job.plan_snapshot_id",
+                )
+            parent_record: Mapping[str, Any] | None = None
+            if row["parent_job_id"] is not None:
+                parent_record = require_prior(
+                    "cowork_coordination_job",
+                    row["parent_job_id"],
+                    item.seq,
+                    "coordination job.parent_job_id",
+                )
+                if (
+                    parent_record["document_id"] != row["document_id"]
+                    or parent_record["action_snapshot_id"]
+                    != row["action_snapshot_id"]
+                    or parent_record["evaluation_run_id"]
+                    != row["evaluation_run_id"]
+                ):
+                    raise TruthImportError(
+                        "coordination parent job has incompatible lineage"
+                    )
+            receipt_record = require_prior(
+                "model_call_authorization_receipt",
+                row["authorization_receipt_id"],
+                item.seq,
+                "coordination job.authorization_receipt_id",
+            )
+            if row["role"] == "cothink":
+                if (
+                    row["evaluation_run_id"] is not None
+                    or row["plan_snapshot_id"] is not None
+                ):
+                    raise TruthImportError(
+                        "Co-think coordination cannot bind an evaluation run or plan"
+                    )
+            elif (
+                row["evaluation_run_id"] is None
+                or row["plan_snapshot_id"] is None
+            ):
+                raise TruthImportError(
+                    "Verify coordination requires an evaluation run and plan"
+                )
+            if plan_record is not None and (
+                plan_record["action_snapshot_id"] != row["action_snapshot_id"]
+            ):
+                raise TruthImportError(
+                    "coordination job plan belongs to another action snapshot"
+                )
+            if run_record is not None and (
+                run_record["action_snapshot_id"] != row["action_snapshot_id"]
+                or run_record["plan_snapshot_id"] != row["plan_snapshot_id"]
+            ):
+                raise TruthImportError(
+                    "coordination job run does not match its action and plan"
+                )
+            selection = json.loads(row["selection_json"])
+            try:
+                authorization_boundary = json.loads(
+                    receipt_record["content_boundary_json"]
+                )
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise TruthImportError(
+                    "coordination authorization boundary is invalid"
+                ) from exc
+            expected_boundary_fields = {
+                "role",
+                "job_id",
+                "document",
+                "action_snapshot_id",
+                "authority_context",
+            }
+            expected_document_boundary = (
+                "captured_target_only"
+                if row["role"] == "specialist"
+                else "complete_permitted_frozen_projection"
+            )
+            expected_authority_context = {
+                "user_goal": request_summary["user_goal"],
+                "protected_intent": request_summary["protected_intent"],
+                "effective_configuration": request_summary[
+                    "effective_configuration"
+                ],
+                "effective_configuration_sha256": request_summary[
+                    "effective_configuration_sha256"
+                ],
+                "effective_policy_sha256": request_summary[
+                    "effective_policy_sha256"
+                ],
+                "active_criterion_ids": request_summary[
+                    "active_criterion_ids"
+                ],
+                "prior_disposition_ids": request_summary[
+                    "prior_disposition_ids"
+                ],
+                "prior_human_review_outcome_ids": request_summary[
+                    "prior_human_review_outcome_ids"
+                ],
+                "recheck_of_run_id": request_summary["recheck_of_run_id"],
+                "recheck_of_proposal_ids": request_summary[
+                    "recheck_of_proposal_ids"
+                ],
+                "recheck_intent_id": request_summary["recheck_intent_id"],
+                "coordinator_stage": request_summary["coordinator_stage"],
+                "requested_revision_result_ids": request_summary[
+                    "requested_revision_result_ids"
+                ],
+            }
+            if "specialist_assignment" in request_summary:
+                expected_authority_context["specialist_assignment"] = (
+                    request_summary["specialist_assignment"]
+                )
+            if "recheck_target_confirmation" in request_summary:
+                expected_authority_context["recheck_target_confirmation"] = (
+                    request_summary["recheck_target_confirmation"]
+                )
+            from work_buddy.cowork.verify_jobs import (
+                MAX_VERIFY_JOB_BUDGET_USD,
+            )
+
+            if (
+                receipt_record["action_snapshot_id"]
+                != row["action_snapshot_id"]
+                or receipt_record["plan_snapshot_id"]
+                != row["plan_snapshot_id"]
+                or receipt_record["provider"] != selection["provider_id"]
+                or receipt_record["model"] != selection["model_id"]
+                or receipt_record["context_sha256"] != row["context_sha256"]
+                or receipt_record["egress_class"] != "account_backed_agent"
+                or receipt_record["cost_ceiling_usd"]
+                != MAX_VERIFY_JOB_BUDGET_USD
+                or receipt_record["retry_limit"] != 0
+                or receipt_record["created_by_kind"] != "human"
+                or not isinstance(authorization_boundary, dict)
+                or set(authorization_boundary) != expected_boundary_fields
+                or authorization_boundary.get("role") != row["role"]
+                or authorization_boundary.get("job_id") != row["id"]
+                or authorization_boundary.get("document")
+                != expected_document_boundary
+                or authorization_boundary.get("action_snapshot_id")
+                != row["action_snapshot_id"]
+                or not isinstance(
+                    authorization_boundary.get("authority_context"),
+                    dict,
+                )
+                or canonical_json(
+                    authorization_boundary["authority_context"]
+                )
+                != canonical_json(expected_authority_context)
+            ):
+                raise TruthImportError(
+                    "coordination job does not match its exact authorization "
+                    "boundary"
+                )
+            if isinstance(specialist_assignment, dict):
+                if plan_record is None or specialist_binding is None:
+                    raise TruthImportError(
+                        "specialist assignment has no frozen plan lineage"
+                    )
+                from work_buddy.cowork.verify import admitted_check_executor
+
+                plan_payload = json.loads(plan_record["plan_json"])
+                plan_checks = (
+                    plan_payload.get("checks")
+                    if isinstance(plan_payload, dict)
+                    else None
+                )
+                plan_fields = {
+                    "criterion_definition_version_id",
+                    "check_definition_version_id",
+                    "criterion_check_binding_id",
+                    "criterion_activation_id",
+                    "configuration_sha256",
+                }
+                if (
+                    not isinstance(plan_payload, dict)
+                    or plan_payload.get("schema")
+                    != "work-buddy.cowork-evaluation-plan/v1"
+                    or plan_payload.get("action_snapshot_id")
+                    != row["action_snapshot_id"]
+                    or not isinstance(plan_checks, list)
+                ):
+                    raise TruthImportError(
+                        "specialist assignment has an invalid frozen plan"
+                    )
+                specialist_entries: list[dict[str, Any]] = []
+                for plan_check in plan_checks:
+                    if (
+                        not isinstance(plan_check, dict)
+                        or set(plan_check) != plan_fields
+                    ):
+                        raise TruthImportError(
+                            "specialist assignment has an invalid frozen plan "
+                            "check"
+                        )
+                    criterion_record = require_prior(
+                        "criterion_definition_version",
+                        plan_check["criterion_definition_version_id"],
+                        item.seq,
+                        "coordination plan criterion",
+                    )
+                    check_record = require_prior(
+                        "check_definition_version",
+                        plan_check["check_definition_version_id"],
+                        item.seq,
+                        "coordination plan check",
+                    )
+                    binding_record = require_prior(
+                        "criterion_check_binding",
+                        plan_check["criterion_check_binding_id"],
+                        item.seq,
+                        "coordination plan binding",
+                    )
+                    if (
+                        binding_record["criterion_definition_version_id"]
+                        != criterion_record["id"]
+                        or binding_record["check_definition_version_id"]
+                        != check_record["id"]
+                        or sha256_bytes(
+                            binding_record["configuration_json"].encode(
+                                "utf-8"
+                            )
+                        )
+                        != plan_check["configuration_sha256"]
+                    ):
+                        raise TruthImportError(
+                            "coordination plan check does not match its "
+                            "immutable binding"
+                        )
+                    executor = admitted_check_executor(
+                        SimpleNamespace(
+                            id=check_record["id"],
+                            canonical_sha256=check_record[
+                                "canonical_sha256"
+                            ],
+                            executor_ref=check_record["executor_ref"],
+                            mechanism=check_record["mechanism"],
+                            supported_criterion_kinds_json=check_record[
+                                "supported_criterion_kinds_json"
+                            ],
+                        ),
+                        criterion_kind=criterion_record["criterion_kind"],
+                    )
+                    if executor is None:
+                        raise TruthImportError(
+                            "coordination plan contains an unadmitted check"
+                        )
+                    if executor.execution_mode == "account_backed_specialist":
+                        specialist_entries.append(
+                            {
+                                "criterion_definition_version_id": (
+                                    criterion_record["id"]
+                                ),
+                                "check_definition_version_id": check_record[
+                                    "id"
+                                ],
+                                "criterion_check_binding_id": binding_record[
+                                    "id"
+                                ],
+                                "configuration_sha256": plan_check[
+                                    "configuration_sha256"
+                                ],
+                            }
+                        )
+                sequence = specialist_assignment["sequence"]
+                expected_assignment = (
+                    None
+                    if sequence > len(specialist_entries)
+                    else {
+                        **specialist_entries[sequence - 1],
+                        "sequence": sequence,
+                        "total": len(specialist_entries),
+                    }
+                )
+                if (
+                    expected_assignment is None
+                    or specialist_assignment != expected_assignment
+                ):
+                    raise TruthImportError(
+                        "specialist assignment does not match the exact "
+                        "admitted specialist sequence in its frozen plan"
+                    )
+                if sequence == 1:
+                    if parent_record is not None:
+                        raise TruthImportError(
+                            "first specialist assignment cannot have a parent "
+                            "job"
+                        )
+                else:
+                    parent_request = (
+                        {}
+                        if parent_record is None
+                        else json.loads(parent_record["request_summary_json"])
+                    )
+                    parent_assignment = parent_request.get(
+                        "specialist_assignment"
+                    )
+                    if (
+                        parent_record is None
+                        or parent_record["role"] != "specialist"
+                        or parent_record["evaluation_run_id"]
+                        != row["evaluation_run_id"]
+                        or parent_record["plan_snapshot_id"]
+                        != row["plan_snapshot_id"]
+                        or not isinstance(parent_assignment, dict)
+                        or parent_assignment.get("sequence") != sequence - 1
+                        or parent_assignment.get("total")
+                        != specialist_assignment["total"]
+                    ):
+                        raise TruthImportError(
+                            "specialist parent does not match the previous "
+                            "frozen assignment"
+                        )
+        elif item.record_type == "cowork_coordination_status_event":
+            job_id = row["coordination_job_id"]
+            coordination_job = require_prior(
+                "cowork_coordination_job",
+                job_id,
+                item.seq,
+                "coordination status event.coordination_job_id",
+            )
+            previous = coordination_status_by_job.get(job_id)
+            if previous is None:
+                if row["status"] != "prepared":
+                    raise TruthImportError(
+                        "first coordination status must be prepared"
+                    )
+            elif row["status"] not in _COORDINATION_TRANSITIONS[previous]:
+                raise TruthImportError(
+                    "invalid coordination status transition: "
+                    f"{previous} -> {row['status']}"
+                )
+            refs = json.loads(row["consequence_refs_json"])
+            next_job_record: Mapping[str, Any] | None = None
+            if "next_job_id" in refs:
+                next_job_record = require_prior(
+                    "cowork_coordination_job",
+                    refs["next_job_id"],
+                    item.seq,
+                    "coordination status event.next_job_id",
+                )
+            if "cothink_item_id" in refs:
+                require_prior(
+                    "cothink_item",
+                    refs["cothink_item_id"],
+                    item.seq,
+                    "coordination status event.cothink_item_id",
+                )
+            for proposal_id in refs.get("proposal_ids", []):
+                require_prior(
+                    "proposal",
+                    proposal_id,
+                    item.seq,
+                    "coordination status event.proposal_ids",
+                )
+            for disposition_id in refs.get("disposition_ids", []):
+                require_prior(
+                    "routing_disposition",
+                    disposition_id,
+                    item.seq,
+                    "coordination status event.disposition_ids",
+                )
+            for result_id in refs.get(
+                "requested_revision_result_ids",
+                [],
+            ):
+                require_prior(
+                    "evaluation_result",
+                    result_id,
+                    item.seq,
+                    "coordination status event.requested_revision_result_ids",
+                )
+            execution_records: dict[str, Mapping[str, Any]] = {}
+            for execution_id in refs.get("check_execution_ids", []):
+                execution_records[execution_id] = require_prior(
+                    "check_execution",
+                    execution_id,
+                    item.seq,
+                    "coordination status event.check_execution_ids",
+                )
+            result_records: dict[str, Mapping[str, Any]] = {}
+            for result_id in refs.get("evaluation_result_ids", []):
+                result_records[result_id] = require_prior(
+                    "evaluation_result",
+                    result_id,
+                    item.seq,
+                    "coordination status event.evaluation_result_ids",
+                )
+            request_summary = json.loads(
+                coordination_job["request_summary_json"]
+            )
+            specialist_assignment = request_summary.get(
+                "specialist_assignment"
+            )
+            if isinstance(specialist_assignment, dict):
+                if row["status"] == "completed" and (
+                    row["outcome_kind"] != "typed_submission_received"
+                    or len(execution_records) != 1
+                    or not result_records
+                ):
+                    raise TruthImportError(
+                        "completed specialist coordination must retain one "
+                        "assigned execution and its results"
+                    )
+                action_record = require_prior(
+                    "action_snapshot",
+                    coordination_job["action_snapshot_id"],
+                    item.seq,
+                    "specialist coordination action snapshot",
+                )
+                for execution in execution_records.values():
+                    try:
+                        producer = json.loads(execution["producer_json"])
+                    except (TypeError, json.JSONDecodeError) as exc:
+                        raise TruthImportError(
+                            "specialist execution producer is invalid"
+                        ) from exc
+                    if (
+                        execution["evaluation_run_id"]
+                        != coordination_job["evaluation_run_id"]
+                        or execution["check_definition_version_id"]
+                        != specialist_assignment[
+                            "check_definition_version_id"
+                        ]
+                        or execution["criterion_check_binding_id"]
+                        != specialist_assignment[
+                            "criterion_check_binding_id"
+                        ]
+                        or execution["input_sha256"]
+                        != action_record["target_text_sha256"]
+                        or not isinstance(producer, dict)
+                        or producer.get("kind")
+                        != "account_backed_specialist"
+                        or producer.get("job_id") != coordination_job["id"]
+                    ):
+                        raise TruthImportError(
+                            "specialist execution does not match its exact "
+                            "job assignment"
+                        )
+                for result in result_records.values():
+                    if (
+                        result["evaluation_run_id"]
+                        != coordination_job["evaluation_run_id"]
+                        or result["criterion_definition_version_id"]
+                        != specialist_assignment[
+                            "criterion_definition_version_id"
+                        ]
+                        or result["check_execution_id"]
+                        not in execution_records
+                    ):
+                        raise TruthImportError(
+                            "specialist result does not match its assigned "
+                            "execution lineage"
+                        )
+                if row["status"] == "completed":
+                    execution_id = next(iter(execution_records))
+                    complete_result_ids = {
+                        record_key
+                        for (record_type, record_key), record in (
+                            record_by_identity.items()
+                        )
+                        if record_type == "evaluation_result"
+                        and record["check_execution_id"] == execution_id
+                    }
+                    if set(result_records) != complete_result_ids:
+                        raise TruthImportError(
+                            "specialist completion does not retain the "
+                            "complete result set for its execution"
+                        )
+                    if (
+                        next_job_record is None
+                        or next_job_record["document_id"]
+                        != coordination_job["document_id"]
+                        or next_job_record["action_snapshot_id"]
+                        != coordination_job["action_snapshot_id"]
+                        or next_job_record["evaluation_run_id"]
+                        != coordination_job["evaluation_run_id"]
+                        or next_job_record["plan_snapshot_id"]
+                        != coordination_job["plan_snapshot_id"]
+                    ):
+                        raise TruthImportError(
+                            "specialist next job does not preserve its exact "
+                            "run and plan lineage"
+                        )
+                    sequence = specialist_assignment["sequence"]
+                    total = specialist_assignment["total"]
+                    next_request = json.loads(
+                        next_job_record["request_summary_json"]
+                    )
+                    if sequence < total:
+                        next_assignment = next_request.get(
+                            "specialist_assignment"
+                        )
+                        if (
+                            next_job_record["role"] != "specialist"
+                            or next_job_record["parent_job_id"]
+                            != coordination_job["id"]
+                            or not isinstance(next_assignment, dict)
+                            or next_assignment.get("sequence") != sequence + 1
+                            or next_assignment.get("total") != total
+                        ):
+                            raise TruthImportError(
+                                "specialist handoff does not target the next "
+                                "frozen assignment"
+                            )
+                    elif (
+                        next_job_record["role"] != "coordinator"
+                        or next_job_record["parent_job_id"] is not None
+                        or next_request.get("coordinator_stage") != "initial"
+                    ):
+                        raise TruthImportError(
+                            "final specialist handoff does not target the "
+                            "initial coordinator"
+                        )
+            elif execution_records or result_records:
+                raise TruthImportError(
+                    "coordination status carries specialist execution lineage "
+                    "without a specialist assignment"
+                )
+            coordination_status_by_job[job_id] = row["status"]
+        elif item.record_type == "cowork_review_application":
+            require_prior(
+                "document",
+                row["document_id"],
+                item.seq,
+                "review application.document_id",
+            )
+            for proposal_id in json.loads(
+                row["applied_proposal_ids_json"]
+            ):
+                require_prior(
+                    "proposal",
+                    proposal_id,
+                    item.seq,
+                    "review application.applied_proposal_ids",
+                )
+
+    item_ids = {
+        item.record_key
+        for item in records
+        if item.record_type == "cothink_item"
+    }
+    missing_status = item_ids - set(cothink_status_by_item)
+    if missing_status:
+        raise TruthImportError(
+            "Co-think item is missing its initial open status event"
+        )
 
 
 def _validate_bundle(bundle: _Bundle) -> StoreProfile:
@@ -1064,6 +2899,9 @@ def _validate_bundle(bundle: _Bundle) -> StoreProfile:
         elif item.record_type == "document_version":
             referenced_blobs.add(row["projection_sha256"])
             referenced_blobs.add(row["ydoc_snapshot_sha256"])
+        elif item.record_type == "action_snapshot":
+            referenced_blobs.add(row["projection_blob_sha256"])
+            referenced_blobs.add(row["target_blob_sha256"])
     if referenced_blobs != set(blob_map):
         missing = sorted(referenced_blobs - set(blob_map))
         extra = sorted(set(blob_map) - referenced_blobs)
@@ -1250,6 +3088,21 @@ def _collect_export_bundle(
                     if sha256_bytes(content) != digest:
                         raise TruthExportError(
                             f"document version blob does not match {field}"
+                        )
+                    blobs[digest] = content
+            elif item.record_type == "action_snapshot":
+                for field in ("projection_blob_sha256", "target_blob_sha256"):
+                    digest = str(item.record[field])
+                    path = store.resolve_blob_path("blobs/" + digest)
+                    try:
+                        content = path.read_bytes()
+                    except OSError as exc:
+                        raise TruthExportError(
+                            f"action snapshot blob is unavailable: {path}"
+                        ) from exc
+                    if sha256_bytes(content) != digest:
+                        raise TruthExportError(
+                            f"action snapshot blob does not match {field}"
                         )
                     blobs[digest] = content
         if owns_transaction:
@@ -1445,18 +3298,66 @@ def _upcast_records(
     source_version: int,
 ) -> list[_DataRecord]:
     if source_version >= 4:
-        return records
-    upgraded: list[_DataRecord] = []
-    for item in records:
-        row = dict(item.record)
-        if item.record_type == "proposal":
-            row.setdefault("base_structured_head_sha256", None)
+        upgraded = list(records)
+    else:
+        upgraded = []
+        for item in records:
+            row = dict(item.record)
+            if item.record_type == "proposal":
+                row.setdefault("base_structured_head_sha256", None)
+            upgraded.append(
+                _DataRecord(
+                    seq=item.seq,
+                    record_type=item.record_type,
+                    record_key=item.record_key,
+                    record=row,
+                )
+            )
+    if source_version >= 6:
+        return upgraded
+
+    status_item_ids = {
+        item.record["cothink_item_id"]
+        for item in upgraded
+        if item.record_type == "cothink_item_status_event"
+    }
+    next_seq = max((item.seq for item in upgraded), default=0)
+    for item in tuple(upgraded):
+        if (
+            item.record_type != "cothink_item"
+            or item.record_key in status_item_ids
+        ):
+            continue
+        next_seq += 1
+        item_id = item.record_key
+        event_id = sha256_bytes(
+            _COTHINK_STATUS_DOMAIN + item_id.encode("utf-8")
+        )[:32]
+        canonical_payload = {
+            "cothink_item_id": item_id,
+            "status": "open",
+            "reason": None,
+        }
         upgraded.append(
             _DataRecord(
-                seq=item.seq,
-                record_type=item.record_type,
-                record_key=item.record_key,
-                record=row,
+                seq=next_seq,
+                record_type="cothink_item_status_event",
+                record_key=event_id,
+                record={
+                    "id": event_id,
+                    "cothink_item_id": item_id,
+                    "status": "open",
+                    "reason": None,
+                    "canonical_sha256": sha256_bytes(
+                        canonical_json(canonical_payload).encode("utf-8")
+                    ),
+                    "created_at": item.record["created_at"],
+                    "created_by_kind": "system",
+                    "created_by_ref": "truth-schema-v6",
+                    "created_by_meta_json": canonical_json(
+                        {"basis": "pre_lifecycle_item_existence"}
+                    ),
+                },
             )
         )
     return upgraded
@@ -1500,10 +3401,10 @@ def _parse_v1(objects: list[dict[str, Any]]) -> _Bundle:
 
 
 def _parse_v2_plus(objects: list[dict[str, Any]], version: int) -> _Bundle:
-    # v4 framing is byte-identical to v2/v3 (header line, per-record lines ordered
-    # by seq, blob section sorted by digest, hashed end footer). Only the record
-    # registries grow, so one parser serves both. The stream is tagged with its
-    # source format_version so an import reports the format it upcast from.
+    # The v2+ framing is stable: one header, ledger records ordered by seq,
+    # blobs sorted by digest, and a hashed end footer. Record registries may
+    # grow without changing that framing, and source_format_version preserves
+    # which portable contract was upcast.
     header = objects[0]
     footer = objects[-1]
     _require_exact_keys(

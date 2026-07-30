@@ -24,6 +24,9 @@ parameters:
   generation:
     type: string
     description: Optional live lease generation. Supply together with consumer; a stale or revoked generation returns lease_lost without sending.
+  consumption_receipt_id:
+    type: string
+    description: Exact receipt returned by cowork_action_snapshot_get; required while replying to a targeted turn
 mutates_state: true
 retry_policy: manual
 tags:
@@ -49,3 +52,17 @@ different conversation or role is rejected.
 conversation drivers. They must be supplied together. The send and lease check
 share one transaction, so a stopped, rotated, or closed generation cannot emit
 a late message.
+
+When the consumer's oldest unacknowledged turn carries an action snapshot,
+`conversation_send` requires the exact generation/message-bound
+`consumption_receipt_id` minted by `cowork_action_snapshot_get`. The reply is
+durably linked to that receipt and carries transcript-visible consumed-target
+provenance. Supplying an action snapshot identifier without fetching it cannot
+authorize a reply.
+
+If a generation restarts after the deterministic reply committed but before
+the user turn was acknowledged, the successor must fetch the exact delivered
+turn again and replay the same stable `message_id` with its new receipt. The
+existing reply is reused only when the complete action/discussion context and
+exact user message are identical. Both generation-bound receipts are linked to
+the one durable reply; a different target or turn is rejected.

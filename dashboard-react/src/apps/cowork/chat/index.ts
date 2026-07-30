@@ -32,11 +32,23 @@ export {
 } from "./useDocumentConversationBinding";
 
 export {
+  CoworkChatTargetingProvider,
+  useOptionalCoworkChatTargeting,
+  type CoworkChatTargeting,
+} from "./CoworkChatTargeting";
+
+export {
+  HttpCoworkChatActionSnapshotClient,
+  type CoworkChatActionSnapshotClient,
+} from "./HttpCoworkChatActionSnapshotClient";
+
+export {
   CoworkChatPanel,
   type CoworkChatPanelProps,
 } from "./CoworkChatPanel";
 
 export {
+  CoworkActionSnapshotProvenance,
   CoworkPassageAction,
   CoworkRoutingNotices,
   type CoworkPassageActionProps,

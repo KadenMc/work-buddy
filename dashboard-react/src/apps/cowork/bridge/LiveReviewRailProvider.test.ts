@@ -99,6 +99,13 @@ const build = (options?: {
   readonly doc?: R2DocPayload;
   readonly getSittingWorkspace?: () => CoworkSittingWorkspace | null;
   readonly sittingTransport?: CoworkSittingTransport;
+  readonly onSittingCommitted?: (
+    requests: Parameters<
+      NonNullable<
+        ConstructorParameters<typeof LiveReviewRailProvider>[0]["onSittingCommitted"]
+      >
+    >[0],
+  ) => void;
 }) =>
   new LiveReviewRailProvider({
     docClient: docClientReturning(options?.doc ?? payload([proposal({})])),
@@ -107,6 +114,7 @@ const build = (options?: {
     sittingTransport: options?.sittingTransport ?? new InMemoryCoworkSittingTransport(),
     getSittingWorkspace:
       options?.getSittingWorkspace ?? (() => workspaceRecording().workspace),
+    onSittingCommitted: options?.onSittingCommitted,
   });
 
 describe("LiveReviewRailProvider", () => {
@@ -227,6 +235,73 @@ describe("LiveReviewRailProvider", () => {
     expect(reload).toHaveBeenCalledTimes(1);
   });
 
+  it("creates a runnable Verify check and invalidates the projection", async () => {
+    const createVerifyCheck = vi.fn(async () => ({}) as never);
+    const provider = new LiveReviewRailProvider({
+      docClient: {
+        fetchDoc: async () => payload([]),
+        createVerifyCheck,
+      },
+      documentId: "doc-1",
+      storeId: "store-1",
+      sittingTransport: new InMemoryCoworkSittingTransport(),
+      getSittingWorkspace: () => workspaceRecording().workspace,
+    });
+    const reload = vi.fn();
+    provider.subscribe(reload);
+    const check = {
+      title: "State the positive claim",
+      description: "Prefer direct positive descriptions.",
+      evaluationInstructions: "Identify negative-definition framing.",
+      limitations: ["Negation can be necessary."],
+    };
+
+    await provider.createVerifyCheck(check);
+
+    expect(createVerifyCheck).toHaveBeenCalledWith(check);
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not finish a check mutation until the subscribed projection reloads", async () => {
+    const refreshed = deferred<R2DocPayload>();
+    const fetchDoc = vi.fn(() => refreshed.promise);
+    const createVerifyCheck = vi.fn(async () => ({}) as never);
+    const provider = new LiveReviewRailProvider({
+      docClient: {
+        fetchDoc,
+        createVerifyCheck,
+      },
+      documentId: "doc-1",
+      storeId: "store-1",
+      sittingTransport: new InMemoryCoworkSittingTransport(),
+      getSittingWorkspace: () => workspaceRecording().workspace,
+    });
+    provider.subscribe(() => {
+      void provider.load();
+    });
+
+    let settled = false;
+    const mutation = provider
+      .createVerifyCheck({
+        title: "State the positive claim",
+        description: "Prefer direct positive descriptions.",
+        evaluationInstructions: "Identify negative-definition framing.",
+        limitations: [],
+      })
+      .then(() => {
+        settled = true;
+      });
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(fetchDoc).toHaveBeenCalledTimes(1);
+    expect(settled).toBe(false);
+
+    refreshed.resolve(payload([]));
+    await mutation;
+    expect(settled).toBe(true);
+  });
+
   it("submitSitting delegates through the prepared workspace", async () => {
     const { workspace, events } = workspaceRecording();
     const provider = build({ getSittingWorkspace: () => workspace });
@@ -242,6 +317,119 @@ describe("LiveReviewRailProvider", () => {
 
     expect(events).toEqual(["prepared:s1", "refreshed"]);
     expect(result.results[0]?.result).toBe("applied");
+  });
+
+  it("publishes only durable recheck intents from the refreshed R2 pull", async () => {
+    const onSittingCommitted = vi.fn();
+    const provider = build({
+      doc: {
+        ...payload([proposal({ proposal_id: "s1" })]),
+        evaluation_results: [
+          {
+            result_id: "result-1",
+            run_id: "run-1",
+            kind: "nonconforming",
+            criterion_label: "Preferred terminology",
+            criterion_statement: "Use the preferred term.",
+            check_label: "Exact match",
+            method_label: "Deterministic exact match",
+            explanation: "Use document target.",
+            quote_anchor: { exact: "Co-work scope", prefix: "", suffix: "" },
+            coverage_label: "Frozen target",
+            limitations: [],
+            current_version: true,
+            disposition: "surface_proposal",
+            canonical_sha256: "result-sha",
+            proposal_ids: ["s1"],
+            created_at: "2026-07-17T12:00:00Z",
+          },
+        ],
+        evaluation_run_summaries: [
+          {
+            run_id: "run-1",
+            status: "completed",
+            purpose: "Preferred terminology",
+            target_label: "Whole document",
+            coverage_label: "Complete exact-string coverage",
+            current_version: true,
+            result_count: 1,
+            surfaced_result_count: 1,
+            coordination_status: "completed",
+            provider_label: "Codex",
+            provider_id: "codex",
+            model_label: "GPT-5.6",
+            model_id: "gpt-5.6",
+            created_at: "2026-07-17T12:00:00Z",
+            finished_at: "2026-07-17T12:01:00Z",
+          },
+        ],
+        verification_recheck_intents: [
+          {
+            id: "recheck-intent-1",
+            sitting_id: "sitting-1",
+            document_id: "doc-1",
+            source_run_id: "run-1",
+            proposal_ids: ["s1"],
+            pending_proposal_ids: ["s1"],
+            fulfilled_by_run_ids: [],
+            committed_at: "2026-07-17T12:02:00Z",
+            user_goal: "Recheck the applied terminology correction.",
+            protected_intent: "Preserve substantive meaning.",
+            status: "pending_capture",
+            original_action_target: {
+              action_snapshot_id: "action-1",
+              source: "whole_document",
+              label: "Whole document",
+              kind: "document",
+              selector: { kind: "document" },
+              target_text_sha256: "target-sha",
+              target_reference: null,
+              target_reference_sha256: null,
+            },
+            execution: {
+              provider_id: "codex",
+              model_id: "gpt-5.6",
+              provider_label: "Codex",
+              model_label: "GPT-5.6",
+            },
+            requires: {
+              fresh_action_snapshot: true,
+              fresh_model_call_authorization: true,
+              same_target_source: true,
+              same_target_reference: true,
+              exact_target_resolution: true,
+              user_affirmed_exact_target_required: false,
+              on_unresolved: "user_action_required",
+              allow_widen_to_whole_document: false,
+            },
+          },
+        ],
+      },
+      onSittingCommitted,
+    });
+    await provider.load();
+
+    await provider.submitSitting({
+      baseDocSha256: "base-sha",
+      proposalDecisions: [
+        { proposalId: "s1", verb: "confirm", canonicalSha256: "canon-s1" },
+      ],
+      claimDecisions: [],
+    });
+
+    expect(onSittingCommitted).toHaveBeenCalledWith([
+      expect.objectContaining({
+        intentId: "recheck-intent-1",
+        sourceRunId: "run-1",
+        pendingProposalIds: ["s1"],
+        execution: {
+          providerId: "codex",
+          modelId: "gpt-5.6",
+          providerLabel: "Codex",
+          modelLabel: "GPT-5.6",
+        },
+      }),
+    ]);
   });
 
   it("throws when the editor workspace is not ready", async () => {

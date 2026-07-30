@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -9,6 +9,7 @@ import { dashboardRegistry } from "../../app/dashboardRegistry";
 import { ThemeProvider } from "../../theme/ThemeProvider";
 import { DashboardTestRuntime } from "../../test/DashboardTestRuntime";
 import { DashboardAnnouncer } from "../accessibility/DashboardAnnouncer";
+import type { ReconcileResult } from "../contributions/contracts";
 import { CustomizeModeProvider } from "../customize";
 import { CustomizeViewToggle } from "../customize/CustomizeViewToggle";
 import { DashboardEventProvider } from "../events/DashboardEventProvider";
@@ -27,6 +28,21 @@ const media = (matches: boolean): MediaQueryList =>
     removeEventListener: vi.fn(),
     dispatchEvent: vi.fn(() => true),
   }) as unknown as MediaQueryList;
+
+class MockEventSource extends EventTarget {
+  static latest: MockEventSource | undefined;
+
+  constructor(_url: string | URL) {
+    super();
+    MockEventSource.latest = this;
+  }
+
+  close(): void {}
+
+  emitOpen(): void {
+    this.dispatchEvent(new Event("open"));
+  }
+}
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -167,4 +183,55 @@ describe("ViewHost", () => {
     await userEvent.click(customizeToggle);
     expect(screen.getByText("Arranging layout")).toBeVisible();
   }, 20_000);
+
+  it("announces background reconciliation without inserting a toolbar row", async () => {
+    MockEventSource.latest = undefined;
+    vi.stubGlobal("matchMedia", vi.fn(() => media(false)));
+    vi.stubGlobal("EventSource", MockEventSource as unknown as typeof EventSource);
+
+    let resolveReconcile!: (result: ReconcileResult) => void;
+    const pendingReconcile = new Promise<ReconcileResult>((resolve) => {
+      resolveReconcile = resolve;
+    });
+    const provider = new InMemoryJournalProvider();
+    const reconcile = vi.spyOn(provider, "reconcile").mockReturnValue(pendingReconcile);
+
+    const rendered = render(
+      <MemoryRouter initialEntries={["/journal"]}>
+        <ThemeProvider initialPreference={{ scheme: "light", skinId: "wb.default" }}>
+          <DashboardEventProvider>
+            <DashboardAnnouncer>
+              <DashboardTestRuntime>
+                <ViewHost
+                  registry={dashboardRegistry}
+                  definition={JOURNAL_VIEW_DEFINITION}
+                  provider={provider}
+                  personalizationRepository={new InMemoryPersonalizationRepository()}
+                />
+              </DashboardTestRuntime>
+            </DashboardAnnouncer>
+          </DashboardEventProvider>
+        </ThemeProvider>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByRole("region", { name: "Quick Capture" })).toBeVisible(),
+    );
+    await waitFor(() => expect(MockEventSource.latest).toBeDefined());
+
+    act(() => MockEventSource.latest?.emitOpen());
+
+    await waitFor(() => expect(reconcile).toHaveBeenCalledOnce());
+    const status = await screen.findByRole("status", { name: "Refreshing…" });
+    expect(status).toHaveClass("wb-visually-hidden");
+    expect(
+      within(rendered.container).queryByRole("toolbar", { name: "View controls" }),
+    ).not.toBeInTheDocument();
+
+    act(() => resolveReconcile({ changed: false }));
+    await waitFor(() =>
+      expect(screen.queryByRole("status", { name: "Refreshing…" })).not.toBeInTheDocument(),
+    );
+  });
 });

@@ -13,6 +13,7 @@ const EMPTY_LEDGER_PROJECTION: CoworkLedgerDecorationProjection = {
   expressions: [],
   claims: [],
   provenance: [],
+  evaluations: [],
 };
 
 /**
@@ -83,6 +84,17 @@ export const ledgerDecorationProjectionFromReview = (
         : span.producer.sessionId || span.producer.model,
     approvalGestureId: span.approvalGestureId,
   })),
+  evaluations: data.evaluationResults.flatMap((result) =>
+    result.quoteAnchor === null
+      ? []
+      : [
+          {
+            resultId: result.resultId,
+            quoteAnchor: result.quoteAnchor,
+            resultKind: result.kind,
+          },
+        ],
+  ),
 });
 
 /**

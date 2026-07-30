@@ -18,11 +18,13 @@ Design notes:
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from work_buddy.logging_config import get_logger
+from work_buddy.markdown_db.storage_helpers import file_lock
 
 logger = get_logger(__name__)
 
@@ -44,12 +46,19 @@ class RetrySweep:
     - locked_until is None or expired (prevent double-dispatch)
     """
 
-    def __init__(self, config: dict[str, Any] | None = None, event_log: Any | None = None) -> None:
+    def __init__(
+        self,
+        config: dict[str, Any] | None = None,
+        event_log: Any | None = None,
+        *,
+        reconcile_internal: bool = False,
+    ) -> None:
         self._event_log = event_log
         self._config = config or {}
         rq = self._config.get("sidecar", {}).get("retry_queue", {})
         self._enabled = rq.get("enabled", True)
         self._max_age_minutes = rq.get("max_retry_age_minutes", 30)
+        self._reconcile_internal = reconcile_internal
 
     def sweep(self) -> list[dict[str, Any]]:
         """Scan and process all ready-to-retry operations.
@@ -61,6 +70,19 @@ class RetrySweep:
             return []
 
         ops_dir = _get_operations_dir()
+        if self._reconcile_internal:
+            try:
+                from work_buddy.sidecar.internal_operations import (
+                    reconcile_internal_operations,
+                )
+
+                reconcile_internal_operations(operations_dir=ops_dir)
+            except Exception:
+                logger.warning(
+                    "Internal operation reconciliation failed.",
+                    exc_info=True,
+                )
+
         if not ops_dir.exists():
             return []
 
@@ -68,24 +90,9 @@ class RetrySweep:
         results: list[dict[str, Any]] = []
 
         for path in ops_dir.glob("op_*.json"):
-            try:
-                record = json.loads(path.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
+            record = self._claim_ready(path, now)
+            if record is None:
                 continue
-
-            if not self._is_ready(record, now):
-                continue
-
-            # Acquire lease (prevent concurrent execution). LLM submissions
-            # set ``lease_seconds`` higher because local inference can take
-            # several minutes; default 90s remains for everything else.
-            lease_seconds = int(record.get("lease_seconds") or 90)
-            record["status"] = "running"
-            record["locked_until"] = (
-                now + timedelta(seconds=lease_seconds)
-            ).isoformat()
-            record["attempt"] = record.get("attempt", 1) + 1
-            _write_record(record)
 
             if self._event_log:
                 self._event_log.emit(
@@ -125,13 +132,44 @@ class RetrySweep:
 
         return results
 
+    def _claim_ready(
+        self,
+        path: Path,
+        now: datetime,
+    ) -> dict[str, Any] | None:
+        """Reload and claim one record while holding its cross-process lock."""
+
+        try:
+            with file_lock(path, timeout=0.5, poll=0.02):
+                try:
+                    record = json.loads(path.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    return None
+                if not self._is_ready(record, now):
+                    return None
+                lease_seconds = int(record.get("lease_seconds") or 90)
+                record["status"] = "running"
+                record["locked_until"] = (
+                    now + timedelta(seconds=lease_seconds)
+                ).isoformat()
+                record["lease_token"] = uuid.uuid4().hex
+                record["attempt"] = record.get("attempt", 1) + 1
+                _write_record(record)
+                return record
+        except TimeoutError:
+            return None
+
     def _is_ready(self, record: dict[str, Any], now: datetime) -> bool:
         """Check whether this operation should be dispatched now."""
         # Accept both the new ``queued`` field and the deprecated
         # ``queued_for_retry`` alias for transitional compatibility.
         if not (record.get("queued") or record.get("queued_for_retry")):
             return False
-        if record.get("status") not in ("failed",):
+        internal_recovery = (
+            record.get("type") == "internal"
+            and record.get("status") == "running"
+        )
+        if record.get("status") != "failed" and not internal_recovery:
             return False
 
         retry_at = record.get("retry_at")
@@ -143,7 +181,10 @@ class RetrySweep:
         except (ValueError, TypeError):
             return False
 
-        if record.get("attempt", 1) >= record.get("max_retries", 5):
+        if (
+            not internal_recovery
+            and record.get("attempt", 1) >= record.get("max_retries", 5)
+        ):
             return False
 
         # Check lease — don't retry if another sweep is already executing
@@ -157,7 +198,7 @@ class RetrySweep:
 
         # Don't retry operations older than max age
         created = record.get("created_at")
-        if created:
+        if created and record.get("type") != "internal":
             try:
                 age = now - datetime.fromisoformat(created)
                 if age > timedelta(minutes=self._max_age_minutes):
@@ -346,6 +387,8 @@ class RetrySweep:
         modify-write capability would re-read the now-late-committed
         file and add a second insertion → double-write.
         """
+        if record.get("type") == "internal":
+            return self._replay_internal(record)
         try:
             from work_buddy.mcp_server.registry import (
                 Capability,
@@ -599,8 +642,48 @@ class RetrySweep:
                 "transient": error_class == "transient",
             }
 
+    def _replay_internal(self, record: dict[str, Any]) -> dict[str, Any]:
+        """Execute a closed internal handler outside the capability registry."""
+
+        try:
+            from work_buddy.sidecar.internal_operations import (
+                InternalOperationRetry,
+                execute_internal_operation,
+            )
+
+            result = execute_internal_operation(record)
+        except Exception as exc:
+            from work_buddy.sidecar.internal_operations import (
+                InternalOperationRetry,
+            )
+
+            error = f"{type(exc).__name__}: {exc}"
+            record["status"] = "failed"
+            record["error"] = error
+            record["locked_until"] = None
+            record["lease_token"] = None
+            _write_record(record)
+            return {
+                "success": False,
+                "error": error,
+                "transient": isinstance(exc, InternalOperationRetry),
+            }
+
+        record["status"] = "completed"
+        record["result"] = result
+        record["error"] = None
+        record["completed_at"] = datetime.now(timezone.utc).isoformat()
+        record["locked_until"] = None
+        record["lease_token"] = None
+        record["queued"] = False
+        record["queued_for_retry"] = False
+        _write_record(record)
+        return {"success": True, "result": result}
+
     def _on_success(self, record: dict[str, Any], replay_result: dict[str, Any]) -> None:
         """Notify the originating agent session that the retry succeeded."""
+        if record.get("type") == "internal":
+            return
         session_id = record.get("originating_session_id")
         result_preview = str(replay_result.get("result", ""))[:500]
 
@@ -644,6 +727,22 @@ class RetrySweep:
         user via surfaces only for retry-reason ops (background submits and
         scheduled jobs fail quietly — the agent session gets the ping and
         decides whether to escalate)."""
+        if record.get("type") == "internal":
+            try:
+                from work_buddy.sidecar.internal_operations import (
+                    internal_operation_exhausted,
+                )
+
+                internal_operation_exhausted(
+                    record,
+                    str(replay_result.get("error") or "internal dispatch failed"),
+                )
+            except Exception:
+                logger.warning(
+                    "Internal operation exhaustion hook failed.",
+                    exc_info=True,
+                )
+
         # Mark as permanently failed
         record["queued"] = False
         record["queued_for_retry"] = False  # legacy alias
@@ -750,6 +849,7 @@ class RetrySweep:
         record["status"] = "failed"
         record["retry_at"] = (now + timedelta(seconds=delay)).isoformat()
         record["locked_until"] = None
+        record["lease_token"] = None
         record["error"] = error
 
         history = record.get("retry_history", [])

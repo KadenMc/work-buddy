@@ -716,6 +716,146 @@ test.describe.serial("Co-work live lifecycle", () => {
     );
   });
 
+  test("AC-05A: Working on and sibling docks keep editor, Verify, Review, and Chat concerns separated", async ({
+    page,
+  }) => {
+    const quote = "A line preserved exactly.";
+    await gotoCowork(
+      page,
+      `?store_id=${ordinaryStoreId}&document_id=${importedDocumentId}`,
+    );
+    const editor = await waitForEditor(page);
+    const verifyTrigger = page.getByRole("button", {
+      name: "Verify",
+      exact: true,
+    });
+    const cothinkTrigger = page.getByRole("button", {
+      name: "Co-think",
+      exact: true,
+    });
+    const verifyPanel = page.locator("#wb-cowork-dock-panel-verify");
+    const cothinkPanel = page.locator("#wb-cowork-dock-panel-cothink");
+    const reviewPanel = page.locator("#wb-cowork-rail-panel-review");
+
+    await expect(verifyTrigger).toHaveAttribute("aria-expanded", "false");
+    await expect(cothinkTrigger).toHaveAttribute("aria-expanded", "false");
+    await expect(verifyPanel).not.toBeVisible();
+    await expect(cothinkPanel).not.toBeVisible();
+    await expect(
+      page.locator(".wb-cowork > .wb-cowork-action-dock"),
+    ).toHaveCount(1);
+    await expect(
+      page.locator(".wb-cowork__editor-panel .wb-cowork-action-dock"),
+    ).toHaveCount(0);
+    const workspaceBox = await page.locator(".wb-cowork").boundingBox();
+    const dockBox = await page
+      .locator(".wb-cowork > .wb-cowork-action-dock")
+      .boundingBox();
+    expect(workspaceBox).not.toBeNull();
+    expect(dockBox).not.toBeNull();
+    expect(Math.abs((dockBox?.x ?? 0) - (workspaceBox?.x ?? 0))).toBeLessThan(1);
+    expect(
+      Math.abs((dockBox?.width ?? 0) - (workspaceBox?.width ?? 0)),
+    ).toBeLessThan(1);
+    await expect(reviewPanel).not.toContainText("Verify setup");
+    await expect(
+      reviewPanel.getByRole("button", { name: "Run Verify", exact: true }),
+    ).toHaveCount(0);
+
+    await page.getByText(quote, { exact: true }).selectText();
+    const setBySelection = page.getByRole("button", {
+      name: "Set by selection",
+      exact: true,
+    });
+    await expect(setBySelection).toBeEnabled();
+    await setBySelection.click();
+    await expect(
+      editor.locator('[data-wb-working-target="true"]'),
+    ).toHaveText(quote);
+    await expect(
+      editor.locator('[data-wb-working-target-boundary="start"]'),
+    ).toHaveCount(1);
+    await expect(
+      editor.locator('[data-wb-working-target-boundary="end"]'),
+    ).toHaveCount(1);
+    await expect(
+      page.getByRole("region", { name: "Working on" }),
+    ).toContainText("4 words");
+
+    await verifyTrigger.click();
+    await expect(verifyTrigger).toHaveAttribute("aria-expanded", "true");
+    await expect(verifyPanel).toBeVisible();
+    await expect(
+      verifyPanel.getByRole("button", { name: "Run Verify", exact: true }),
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(
+      verifyPanel.getByRole("region", {
+        name: "Verification checks",
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(verifyPanel).not.toContainText("Sessions ·");
+    await expect(verifyPanel).not.toContainText(
+      "What should Verify accomplish?",
+    );
+    await expect(
+      verifyPanel.getByRole("button", { name: "Add check", exact: true }),
+    ).toBeVisible();
+    await verifyPanel.getByText("Checks", { exact: true }).click();
+    await expect(
+      verifyPanel.getByRole("checkbox").first(),
+    ).toBeVisible();
+
+    await verifyPanel
+      .getByRole("button", { name: "Add check", exact: true })
+      .click();
+    await expect(
+      verifyPanel.getByRole("region", {
+        name: "Add verification check",
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(
+      verifyPanel.getByRole("button", { name: "Run Verify", exact: true }),
+    ).toHaveCount(0);
+    const checkName = verifyPanel.getByRole("textbox", {
+      name: "Name",
+      exact: true,
+    });
+    await checkName.fill("Keep this draft while switching sibling docks.");
+    await cothinkTrigger.click();
+    await expect(verifyTrigger).toHaveAttribute("aria-expanded", "false");
+    await expect(cothinkTrigger).toHaveAttribute("aria-expanded", "true");
+    await expect(verifyPanel).not.toBeVisible();
+    await expect(cothinkPanel).toBeVisible();
+    await expect(cothinkPanel).toHaveText("Planned");
+    await verifyTrigger.click();
+    await expect(cothinkPanel).not.toBeVisible();
+    await expect(checkName).toHaveValue(
+      "Keep this draft while switching sibling docks.",
+    );
+    await verifyPanel
+      .getByRole("button", { name: "Close add check", exact: true })
+      .click();
+    await expect(
+      verifyPanel.getByRole("button", { name: "Run Verify", exact: true }),
+    ).toBeVisible();
+    await verifyTrigger.click();
+    await expect(verifyPanel).not.toBeVisible();
+
+    await page.getByRole("tab", { name: /^Chat/ }).click();
+    const chatPanel = page.locator("#wb-cowork-rail-panel-chat");
+    await expect(chatPanel).toBeVisible();
+    await expect(
+      chatPanel.locator('[aria-label^="About:"]'),
+    ).toContainText("About:");
+    await expect(chatPanel).not.toContainText(
+      "Use Working on for this message",
+    );
+
+    await page.getByRole("button", { name: "Clear", exact: true }).click();
+  });
+
   test("AC-05B: failed agent start keeps feedback visible until an explicit restart", async ({
     page,
     request,
@@ -1480,6 +1620,15 @@ test.describe.serial("Co-work live lifecycle", () => {
     await page.setViewportSize({ width: 390, height: 844 });
     const tabs = page.getByRole("tablist", { name: "Co-work panes" });
     await expect(tabs).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Verify", exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Co-think", exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Verify", exact: true }),
+    ).toHaveAttribute("aria-expanded", "false");
     const editorTab = tabs.getByRole("tab", { name: "Editor" });
     const reviewTab = tabs.getByRole("tab", { name: "Review" });
     const chatTab = tabs.getByRole("tab", { name: "Chat" });

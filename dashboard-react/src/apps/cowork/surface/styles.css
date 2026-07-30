@@ -10,6 +10,7 @@
   flex-direction: column;
   block-size: 100%;
   min-block-size: 0;
+  container-type: inline-size;
   background: var(--wb-color-surface-canvas);
   color: var(--wb-color-text-primary);
   font-family: var(--wb-font-sans);
@@ -744,10 +745,21 @@
   block-size: 100%;
 }
 
+.wb-cowork__editor-shell {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  inline-size: 100%;
+  min-inline-size: 0;
+  min-block-size: 0;
+  block-size: 100%;
+  container-type: inline-size;
+}
+
 .wb-cowork__editor-region {
   flex: 1 1 auto;
   min-inline-size: 0;
-  block-size: 100%;
+  min-block-size: 0;
   overflow: auto;
   padding: var(--wb-space-5);
   background: var(--wb-color-surface-canvas);
@@ -763,7 +775,7 @@
 }
 
 .wb-cowork__rail[hidden],
-.wb-cowork__editor-region[hidden] {
+.wb-cowork__editor-shell[hidden] {
   display: none;
 }
 
@@ -1062,6 +1074,18 @@
 }
 
 /*
+ * Verify evidence: a double underline says "evaluated observation" without
+ * borrowing tracked-change, flag, or claim-provenance semantics.
+ */
+.wb-cowork-evaluation-mark {
+  text-decoration-line: underline;
+  text-decoration-style: double;
+  text-decoration-color: var(--wb-color-status-info);
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 3px;
+}
+
+/*
  * State 2 provenance tint: an AI-written, human-confirmed span. Accent token plus a
  * left rule and a stamp, so the signal is not carried by color alone.
  */
@@ -1123,6 +1147,9 @@
   .wb-cowork-expression-mark,
   .wb-cowork-claim-anchor {
     text-decoration: underline dashed CanvasText;
+  }
+  .wb-cowork-evaluation-mark {
+    text-decoration: underline double Highlight;
   }
   .wb-cowork-suggestion--insertion {
     text-decoration: underline solid LinkText;

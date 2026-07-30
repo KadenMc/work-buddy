@@ -1,4 +1,5 @@
 export type {
+  ChatActionSnapshotContext,
   ChatAgentActivity,
   ChatAgentLiveness,
   ChatAuthorRole,
@@ -22,6 +23,7 @@ export type {
   ChatUnsubscribe,
   RawChatConversation,
   RawChatConversationPayload,
+  RawChatActionSnapshotContext,
   RawChatMessage,
   RawChatMessageProducer,
 } from "./contracts";
@@ -68,6 +70,7 @@ export {
 export {
   ConversationChat,
   type ChatInputRecoveryResolver,
+  type ChatSendPreparer,
   type ConversationChatProps,
   type ConversationChatState,
 } from "./ConversationChat";

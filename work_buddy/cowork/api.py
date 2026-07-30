@@ -487,12 +487,27 @@ def api_doc_get(document_id: str):
             document.id,
             conn=conn,
         )
-        readiness_view = readiness.classify_document(
+        document_readiness = readiness.classify_document(
             store,
             document,
             read_only=_is_read_only(),
             conn=conn,
-        ).to_dict()
+        )
+        readiness_view = document_readiness.to_dict()
+        # The additive Verify/Co-think projection is part of this document
+        # read. Keep every ledger read on the same explicit snapshot so the
+        # client cannot observe a capability/result/configuration mixture
+        # assembled from different database moments.
+        from work_buddy.cowork.verify_projection import document_additions
+
+        verify_additions = document_additions(
+            store,
+            document,
+            read_only=_is_read_only(),
+            document_readiness=document_readiness,
+            active=lifecycle == "active",
+            conn=conn,
+        )
     span_by_id = {row["id"]: row for row in span_rows}
     current_file_sha256 = _current_file_sha256(store, document)
     state = _drift_from_hash(document, current_file_sha256)
@@ -535,6 +550,9 @@ def api_doc_get(document_id: str):
         "provenance_spans": _provenance_spans(span_rows),
         "events_cursor": events[-1].id if events else "",
     }
+    # Additive capability handshake. Older dashboard bundles ignore these
+    # fields; newer bundles fail closed when an older server omits them.
+    payload.update(verify_additions)
     return jsonify(payload)
 
 
@@ -1712,19 +1730,23 @@ def register_routes(app):
     app.register_blueprint(cowork_blueprint)
     from work_buddy.cowork.bootstrap_api import bootstrap_blueprint
     from work_buddy.cowork.catalog_api import catalog_blueprint
+    from work_buddy.cowork.chat_api import chat_blueprint
     from work_buddy.cowork.folder_api import cowork_folder_blueprint
     from work_buddy.cowork.materialization_api import materialization_blueprint
     from work_buddy.cowork.reimport_api import reimport_blueprint
     from work_buddy.cowork.retirement_api import retirement_blueprint
     from work_buddy.cowork.sitting_api import sitting_blueprint
+    from work_buddy.cowork.verify_api import verify_blueprint
 
     app.register_blueprint(bootstrap_blueprint)
     app.register_blueprint(catalog_blueprint)
+    app.register_blueprint(chat_blueprint)
     app.register_blueprint(cowork_folder_blueprint)
     app.register_blueprint(materialization_blueprint)
     app.register_blueprint(reimport_blueprint)
     app.register_blueprint(retirement_blueprint)
     app.register_blueprint(sitting_blueprint)
+    app.register_blueprint(verify_blueprint)
     return app
 
 

@@ -33,6 +33,8 @@ from typing import Any
 from work_buddy.conversations.store import (
     ConversationLeaseLost,
     conversation_agent_write_guard,
+    record_action_snapshot_consumption,
+    resolve_action_snapshot_consumption,
 )
 from work_buddy.cowork import conversations, feedback
 from work_buddy.cowork.document_agent import document_agent_consumer
@@ -145,8 +147,8 @@ def _document_agent_write_fence(
         conversation_id,
         consumer,
         generation,
-    ):
-        yield
+    ) as conn:
+        yield conn
 
 
 # --------------------------------------------------------------------------
@@ -451,6 +453,133 @@ def cowork_doc_get(
         "expressions": expr_payload,
         "feedback": feedback_payload,
     }
+
+
+def cowork_action_snapshot_get(
+    store_id: str,
+    document_id: str,
+    action_snapshot_id: str,
+    message_id: str,
+    agent_session_id: str | None = None,
+) -> dict[str, Any]:
+    """Fetch a frozen Chat target and mint its exact delivery receipt."""
+
+    from work_buddy.cowork.chat_targets import (
+        CoworkChatTargetError,
+        action_snapshot_view,
+    )
+    from work_buddy.cowork.execution_identity import (
+        cowork_generation_from_session,
+    )
+
+    store = _open_store(store_id)
+    _require_document_surface(store)
+    conversation_id = conversations.find_document_conversation(
+        document_id=document_id,
+        store_id=store.store_id,
+    )
+    session_generation = cowork_generation_from_session(agent_session_id)
+    consumer = (
+        document_agent_consumer(store.store_id, document_id)
+        if session_generation is not None
+        else None
+    )
+    if (
+        session_generation is None
+        or consumer is None
+        or conversation_id is None
+    ):
+        raise InvariantViolation(
+            "action snapshot fetch requires a bound document-agent generation"
+        )
+
+    def unavailable_result(
+        receipt: Mapping[str, Any],
+        unavailable_code: str,
+    ) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "status": "action_snapshot_unavailable",
+            "unavailable_code": unavailable_code,
+            "message": (
+                "The exact frozen document context is unavailable or failed "
+                "integrity validation."
+            ),
+            "action_snapshot_id": action_snapshot_id,
+            "document_id": document_id,
+            "store_id": store.store_id,
+            "consumption_receipt_id": receipt["receipt_id"],
+            "fetch_outcome": str(receipt["fetch_outcome"]),
+            "message_id": message_id,
+            "consumer": consumer,
+            "generation": session_generation,
+        }
+
+    try:
+        with _document_agent_write_fence(
+            store_id=store.store_id,
+            document_id=document_id,
+            conversation_id=conversation_id,
+            consumer=consumer,
+            generation=session_generation,
+            agent_session_id=agent_session_id,
+        ) as lease_conn:
+            receipt = record_action_snapshot_consumption(
+                conversation_id,
+                consumer,
+                session_generation,
+                message_id,
+                action_snapshot_id,
+                conn=lease_conn,
+            )
+            if str(receipt["fetch_outcome"]) == "unavailable":
+                result = unavailable_result(
+                    receipt,
+                    str(
+                        receipt["unavailable_code"]
+                        or "action_snapshot_unavailable"
+                    ),
+                )
+            else:
+                try:
+                    view = action_snapshot_view(
+                        store,
+                        document_id=document_id,
+                        action_snapshot_id=action_snapshot_id,
+                    )
+                except CoworkChatTargetError as exc:
+                    if exc.code != "action_snapshot_unavailable":
+                        raise
+                    receipt = resolve_action_snapshot_consumption(
+                        str(receipt["receipt_id"]),
+                        "unavailable",
+                        unavailable_code=exc.code,
+                        conn=lease_conn,
+                    )
+                    result = unavailable_result(receipt, exc.code)
+                else:
+                    receipt = resolve_action_snapshot_consumption(
+                        str(receipt["receipt_id"]),
+                        "available",
+                        conn=lease_conn,
+                    )
+                    result = {
+                        **view,
+                        "consumption_receipt_id": receipt["receipt_id"],
+                        "fetch_outcome": str(receipt["fetch_outcome"]),
+                        "message_id": message_id,
+                        "consumer": consumer,
+                        "generation": session_generation,
+                    }
+        return result
+    except ConversationLeaseLost:
+        return {
+            "ok": False,
+            "status": "lease_lost",
+            "document_id": document_id,
+            "store_id": store.store_id,
+            "action_snapshot_id": action_snapshot_id,
+        }
 
 
 # --------------------------------------------------------------------------
@@ -773,6 +902,53 @@ def cowork_doc_expression_mark(
 
 
 # --------------------------------------------------------------------------
+# Least-authority Co-work Verify worker capabilities.
+# --------------------------------------------------------------------------
+
+
+def cowork_verify_job_get(
+    job_id: str,
+    agent_session_id: str | None = None,
+) -> dict[str, Any]:
+    """Return only the immutable context bound to this worker transport.
+
+    The caller-supplied job id is never authority.  The orchestration layer
+    derives job and role from the gateway-injected session identity and rejects
+    any mismatch before resolving the project store or document content.
+    """
+
+    from work_buddy.cowork.verify_orchestration import get_worker_job
+
+    return get_worker_job(
+        job_id=job_id,
+        agent_session_id=agent_session_id,
+    )
+
+
+def cowork_verify_job_submit(
+    job_id: str,
+    payload: Mapping[str, Any],
+    agent_session_id: str | None = None,
+) -> dict[str, Any]:
+    """Submit one typed role output through the only authoritative path."""
+
+    from work_buddy.cowork.verify_events import emit_verify_completion_event
+    from work_buddy.cowork.verify_orchestration import submit_worker_job
+    from work_buddy.cowork.verify_runtime import get_job
+
+    job = get_job(job_id)
+    result = submit_worker_job(
+        job_id=job_id,
+        payload=payload,
+        agent_session_id=agent_session_id,
+    )
+    event = emit_verify_completion_event(job, result)
+    if event is not None:
+        result = {**result, "event": event}
+    return result
+
+
+# --------------------------------------------------------------------------
 # Registration.
 # --------------------------------------------------------------------------
 
@@ -786,6 +962,11 @@ def register_ops(*, replace: bool = True) -> None:
     register_op("op.wb.cowork_doc_list", cowork_doc_list, replace=replace)
     register_op("op.wb.cowork_doc_get", cowork_doc_get, replace=replace)
     register_op(
+        "op.wb.cowork_action_snapshot_get",
+        cowork_action_snapshot_get,
+        replace=replace,
+    )
+    register_op(
         "op.wb.cowork_doc_propose_edit", cowork_doc_propose_edit, replace=replace
     )
     register_op("op.wb.cowork_doc_comment", cowork_doc_comment, replace=replace)
@@ -794,16 +975,29 @@ def register_ops(*, replace: bool = True) -> None:
         cowork_doc_expression_mark,
         replace=replace,
     )
+    register_op(
+        "op.wb.cowork_verify_job_get",
+        cowork_verify_job_get,
+        replace=replace,
+    )
+    register_op(
+        "op.wb.cowork_verify_job_submit",
+        cowork_verify_job_submit,
+        replace=replace,
+    )
 
 
 register_ops()
 
 
 __all__ = [
+    "cowork_action_snapshot_get",
     "cowork_doc_comment",
     "cowork_doc_expression_mark",
     "cowork_doc_get",
     "cowork_doc_list",
     "cowork_doc_propose_edit",
+    "cowork_verify_job_get",
+    "cowork_verify_job_submit",
     "register_ops",
 ]

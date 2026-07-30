@@ -24,7 +24,11 @@ export { MarkBar, type MarkBarProps, type MarkBarTarget } from "./MarkBar";
 export { ProposalCard, type ProposalCardProps } from "./ProposalCard";
 export { ClaimCard, type ClaimCardProps } from "./ClaimCard";
 export { Inspector, type InspectorProps } from "./Inspector";
-
+export {
+  VerificationAttentionFeed,
+  type VerificationAttentionFeedProps,
+  type CothinkAction,
+} from "./VerificationAttentionFeed";
 export { RailStore, isDirty } from "./store";
 export type {
   RailState,
@@ -50,6 +54,7 @@ export type {
   SittingSubmission,
   ReviewInvalidationListener,
   ReviewUnsubscribe,
+  ReviewAnchorKind,
 } from "./provider";
 
 export {
@@ -115,4 +120,15 @@ export type {
   ProposalKind,
   ProposalChangeType,
   CoworkEpistemicState,
+  CoworkVerifyCapability,
+  EvaluationRunSummary,
+  EvaluationRunStatus,
+  EvaluationResult,
+  EvaluationResultKind,
+  EvaluationDisposition,
+  VerificationRecheckIntent,
+  VerificationRecheckStatus,
+  CothinkItem,
+  CothinkItemStatus,
+  CothinkOutcome,
 } from "./contracts";

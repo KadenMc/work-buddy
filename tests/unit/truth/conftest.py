@@ -108,7 +108,7 @@ def _document_profile(store_id: str | None = None) -> dict[str, Any]:
 
 @pytest.fixture
 def document_store(truth_root: Path) -> tuple[Any, StorePaths]:
-    """A real schema-v4 store with the document_surface profile enabled.
+    """A current-schema store with the document_surface profile enabled.
 
     Returns (store, StorePaths). Creation applies every current migration, including
     document-version history and the Co-work lifecycle intent tables.

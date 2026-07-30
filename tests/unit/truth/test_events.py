@@ -7,7 +7,7 @@ import pytest
 from work_buddy.truth.events import TRUTH_EVENT_TYPES, emit_truth_event
 
 
-TWELVE_DOC_EVENT_TYPES = (
+DOC_EVENT_TYPES = (
     "truth.doc_registered",
     "truth.doc_imported",
     "truth.doc_materialized",
@@ -20,6 +20,13 @@ TWELVE_DOC_EVENT_TYPES = (
     "truth.doc_proposal_expired",
     "truth.doc_expression_marked",
     "truth.doc_feedback_captured",
+    "truth.doc_verify_run_started",
+    "truth.doc_verify_job_completed",
+    "truth.doc_verify_configuration_changed",
+    "truth.doc_cothink_started",
+    "truth.doc_cothink_item_added",
+    "truth.doc_cothink_outcome_recorded",
+    "truth.doc_cothink_item_status_changed",
 )
 
 
@@ -100,14 +107,13 @@ def test_truth_event_rejects_unknown_type_and_partial_subject() -> None:
         )
 
 
-def test_frozenset_carries_exactly_the_twelve_doc_event_names() -> None:
+def test_frozenset_carries_exactly_the_document_event_names() -> None:
     # The frozenset is the SINGLE SOURCE OF TRUTH for truth.doc_* names.
     doc_names = {name for name in TRUTH_EVENT_TYPES if name.startswith("truth.doc_")}
-    assert doc_names == set(TWELVE_DOC_EVENT_TYPES)
-    assert len(TWELVE_DOC_EVENT_TYPES) == 12
+    assert doc_names == set(DOC_EVENT_TYPES)
 
 
-@pytest.mark.parametrize("event_type", TWELVE_DOC_EVENT_TYPES)
+@pytest.mark.parametrize("event_type", DOC_EVENT_TYPES)
 def test_each_doc_event_publishes_with_a_doc_subject_uri(
     monkeypatch, event_type: str
 ) -> None:

@@ -53,6 +53,11 @@ import {
   createCoworkSessionDurabilityController,
   registeredSessionDurabilityKey,
 } from "../session/CoworkSessionDurability";
+import {
+  DefaultCoworkActionSnapshotController,
+  type CoworkActionSnapshotController,
+} from "../targets";
+import { CoworkWorkingTargetProjector } from "./CoworkWorkingTargetProjector";
 
 /** What the host reports up once the canonical editor is mounted. */
 export interface CoworkEditorReadyContext {
@@ -96,6 +101,10 @@ export interface CoworkBridgeEditorProps {
   ) => void;
   readonly onMaterialized?: (receipt: CoworkMaterializeReceipt) => void;
   readonly onSittingWorkspace?: (workspace: CoworkSittingWorkspace | null) => void;
+  /** Narrow editor-owned exact-action capture seam lifted to the keyed live session. */
+  readonly onActionSnapshotController?: (
+    controller: CoworkActionSnapshotController | null,
+  ) => void;
   /** Latest authoritative R2 proposals, used only on the isolated sitting clone. */
   readonly getProposalCatalog?: () => readonly ProposalInput[];
   readonly onSittingServerRefreshed?: () => void;
@@ -240,6 +249,27 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
   const materializationStateRef = useRef(materializationState);
   const readOnlyRef = useRef(props.readOnly ?? false);
   readOnlyRef.current = props.readOnly ?? false;
+
+  const actionSnapshotController = useMemo(
+    () =>
+      props.documentId === undefined || props.storeId === undefined
+        ? null
+        : new DefaultCoworkActionSnapshotController({
+            document: props.document,
+            documentId: props.documentId,
+            storeId: props.storeId,
+            persistence,
+            getEditGeneration: () => editGeneration.current,
+          }),
+    [persistence, props.document, props.documentId, props.storeId],
+  );
+  const workingTargetProjector = useMemo(
+    () =>
+      actionSnapshotController === null
+        ? null
+        : new CoworkWorkingTargetProjector(actionSnapshotController),
+    [actionSnapshotController],
+  );
 
   const durabilityController = useMemo(
     () =>
@@ -616,6 +646,19 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
   }, [props.onSittingWorkspace, sittingWorkspace]);
 
   useEffect(() => {
+    props.onActionSnapshotController?.(actionSnapshotController);
+    return () => {
+      workingTargetProjector?.dispose();
+      actionSnapshotController?.detach();
+      props.onActionSnapshotController?.(null);
+    };
+  }, [
+    actionSnapshotController,
+    props.onActionSnapshotController,
+    workingTargetProjector,
+  ]);
+
+  useEffect(() => {
     const onOnline = (): void => {
       if (persistence.pendingBatchCount > 0 || persistence.lastError !== null) {
         void retrySync();
@@ -688,10 +731,14 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
           {...props}
           onReady={(context) => {
             editorRef.current = context.editor;
+            actionSnapshotController?.attach(context.editor);
+            workingTargetProjector?.attach(context.editor);
             props.onReady?.(context);
             void checkProjection(context.editor);
           }}
           onTeardown={() => {
+            workingTargetProjector?.detach();
+            actionSnapshotController?.detach();
             editorRef.current = null;
             props.onTeardown?.();
           }}

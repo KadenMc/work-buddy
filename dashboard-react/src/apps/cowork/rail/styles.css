@@ -28,6 +28,177 @@
   border: 0;
 }
 
+/* ---------- Verify + Co-think attention layer ---------- */
+
+.wb-cowork-attention {
+  display: grid;
+  gap: var(--wb-space-3);
+  padding: var(--wb-space-3) var(--wb-space-4);
+  border-block-end: 1px solid var(--wb-color-border-subtle);
+}
+
+.wb-cowork-verify-history {
+  padding: var(--wb-space-2) var(--wb-space-3);
+  border: 1px solid var(--wb-color-border-subtle);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-surface-raised);
+}
+
+.wb-cowork-verify-history > summary {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--wb-space-3);
+  cursor: pointer;
+  font-weight: var(--wb-font-weight-medium);
+}
+
+.wb-cowork-verify-history__summary {
+  color: var(--wb-color-text-secondary);
+  font-weight: var(--wb-font-weight-regular);
+}
+
+.wb-cowork-verify-history__list {
+  display: grid;
+  gap: var(--wb-space-2);
+  margin: var(--wb-space-3) 0 0;
+  padding-inline-start: var(--wb-space-5);
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-sm);
+}
+
+.wb-cowork-verify-history__inspection {
+  display: grid;
+  gap: var(--wb-space-2);
+  margin-block-start: var(--wb-space-2);
+  padding: var(--wb-space-3);
+  border: 1px solid var(--wb-color-border-subtle);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-surface-inset);
+  font-size: var(--wb-font-size-xs);
+}
+
+.wb-cowork-verify-history__inspection :is(p, ul) {
+  margin: 0;
+}
+
+.wb-cowork-verify-history__list li {
+  display: grid;
+  grid-template-columns: minmax(5.5rem, auto) 1fr;
+  gap: var(--wb-space-1) var(--wb-space-3);
+}
+
+.wb-cowork-verify-history__status {
+  color: var(--wb-color-text-strong);
+  font-weight: var(--wb-font-weight-medium);
+}
+
+.wb-cowork-attention-card {
+  display: grid;
+  gap: var(--wb-space-2);
+  padding: var(--wb-space-3);
+  border: 1px solid var(--wb-color-border-subtle);
+  border-inline-start: 3px solid var(--wb-color-status-info);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-surface-raised);
+}
+
+.wb-cowork-attention-card--cothink {
+  border-inline-start-style: dashed;
+}
+
+.wb-cowork-attention-card[data-result-kind="nonconforming"] {
+  border-inline-start-color: var(--wb-color-status-warning);
+}
+
+.wb-cowork-attention-card[data-result-kind="inconclusive"] {
+  border-inline-start-style: dotted;
+}
+
+.wb-cowork-attention-card header,
+.wb-cowork-attention-card p,
+.wb-cowork-attention-card blockquote,
+.wb-cowork-attention-card h3 {
+  margin: 0;
+}
+
+.wb-cowork-attention-card h3 {
+  font-size: var(--wb-font-size-md);
+}
+
+.wb-cowork-attention-card__eyebrow {
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-xs);
+  font-weight: var(--wb-font-weight-semibold);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.wb-cowork-attention-card__criterion {
+  font-weight: var(--wb-font-weight-medium);
+}
+
+.wb-cowork-attention-card blockquote {
+  padding: var(--wb-space-2) var(--wb-space-3);
+  border-inline-start: 2px solid var(--wb-color-border-strong);
+  color: var(--wb-color-text-secondary);
+}
+
+.wb-cowork-attention-card__facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--wb-space-2);
+  margin: 0;
+  font-size: var(--wb-font-size-xs);
+}
+
+.wb-cowork-attention-card__facts div {
+  min-inline-size: 0;
+}
+
+.wb-cowork-attention-card__facts dt {
+  color: var(--wb-color-text-secondary);
+}
+
+.wb-cowork-attention-card__facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.wb-cowork-attention-card__rationale,
+.wb-cowork-attention-card__version {
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-sm);
+}
+
+.wb-cowork-attention-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--wb-space-2);
+}
+
+.wb-cowork-attention-card__actions button {
+  min-block-size: var(--wb-target-size);
+  padding: var(--wb-space-1) var(--wb-space-3);
+  border: 1px solid var(--wb-color-border-strong);
+  border-radius: var(--wb-radius-control);
+  background: transparent;
+  color: var(--wb-color-text-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.wb-cowork-attention-card__actions button:focus-visible,
+.wb-cowork-verify-history > summary:focus-visible {
+  outline: none;
+  box-shadow: var(--wb-shadow-focus);
+}
+
+@media (max-width: 28rem) {
+  .wb-cowork-attention-card__facts {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* ---------- tabs ---------- */
 /*
  * Underline tablist. The selected tab carries the accent underline as its forced-colors cue
