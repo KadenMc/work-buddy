@@ -16,6 +16,8 @@ from work_buddy.cowork import (
     retirement,
     sitting_lifecycle,
 )
+from work_buddy.cowork.file_importers import MARKDOWN_MAX_SOURCE_BYTES
+from work_buddy.cowork.lifecycle_state import inspect_lifecycle_state
 from work_buddy.truth import documents, proposals, ydoc_store
 from work_buddy.truth.anchors import CompositeSelector
 from work_buddy.truth.identity import canonical_json, sha256_bytes
@@ -52,6 +54,44 @@ def _ready(
         snapshot_sha256=sha256_bytes(snapshot),
         ydoc_schema=bootstrap.YDOC_SCHEMA,
         actor=HUMAN,
+    )
+    return documents.get_document(store, receipt["document_id"]), source, snapshot
+
+
+def _ready_import(
+    store_ctx,
+    *,
+    path: str = "imports/lifecycle.md",
+    source: bytes = b"# Lifecycle\n\nOriginal sentence.\n",
+    key: str = "lifecycle-import-ready-0001",
+):
+    store = store_ctx["store"]
+    target = store_ctx["root"] / path
+    target.parent.mkdir(parents=True)
+    target.write_bytes(source)
+    intent, _ = bootstrap.prepare_bootstrap(
+        store,
+        metadata={
+            "mode": "import",
+            "path": path,
+            "title": "Imported lifecycle",
+            "expected_file_sha256": sha256_bytes(source),
+            "idempotency_key": key,
+        },
+        source=None,
+        actor=HUMAN,
+    )
+    snapshot = b"YDOC:" + source
+    receipt = bootstrap.commit_bootstrap(
+        store,
+        bootstrap_id=intent.id,
+        snapshot=snapshot,
+        source_sha256=intent.source_sha256,
+        snapshot_sha256=sha256_bytes(snapshot),
+        ydoc_schema=bootstrap.YDOC_SCHEMA,
+        actor=HUMAN,
+        projection=source,
+        projection_sha256=sha256_bytes(source),
     )
     return documents.get_document(store, receipt["document_id"]), source, snapshot
 
@@ -136,6 +176,119 @@ def test_sitting_prepare_is_pure_and_commit_is_atomic_and_idempotent(store_ctx):
     assert canonical_json(repeated) == canonical_json(receipt)
     assert events == receipt["post_commit_events"]
     assert _gesture_count(store) == 1
+
+
+def test_detached_sitting_replaces_exact_durable_update_tail(store_ctx):
+    store = store_ctx["store"]
+    document, source, _old_snapshot = _ready_import(store_ctx)
+    base_head = ydoc_store.current_structured_head(
+        store,
+        document_id=document.id,
+        snapshot_sha256=document.ydoc_snapshot_sha256,
+    )
+    _cursor, edited_head = ydoc_store.append_update_cas(
+        store,
+        document_id=document.id,
+        snapshot_sha256=document.ydoc_snapshot_sha256,
+        update=b"durable-human-edit-before-review",
+        expected_structured_head_sha256=base_head,
+    )
+    proposal = _proposal(store, document, edited_head)
+    intent, created = sitting_lifecycle.prepare_sitting(
+        store,
+        document_id=document.id,
+        actor=HUMAN,
+        items=[
+            {
+                "proposal_id": proposal.id,
+                "verb": "confirm",
+                "canonical_sha256": proposal.canonical_sha256,
+            }
+        ],
+        expected_file_sha256=document.content_sha256,
+        expected_structured_head_sha256=edited_head,
+        idempotency_key="detached-sitting-after-edit-0001",
+    )
+    assert created and intent.has_apply
+
+    rendered = b"# Lifecycle\n\nReplacement sentence.\n"
+    replacement_snapshot = b"YDOC:" + rendered
+    receipt, _events = sitting_lifecycle.commit_sitting(
+        store,
+        document_id=document.id,
+        intent_id=intent.id,
+        actor=HUMAN,
+        snapshot=replacement_snapshot,
+        snapshot_sha256=sha256_bytes(replacement_snapshot),
+        rendered_markdown=rendered.decode(),
+        rendered_sha256=sha256_bytes(rendered),
+    )
+
+    refreshed = documents.get_document(store, document.id)
+    assert receipt["results"][0]["result"] == "applied"
+    assert receipt["source_writeback"] == "never"
+    assert refreshed.ydoc_snapshot_sha256 == sha256_bytes(replacement_snapshot)
+    assert refreshed.content_sha256 == sha256_bytes(rendered)
+    assert not ydoc_store.update_tail_present(store, document_id=document.id)
+    assert (store_ctx["root"] / document.path).read_bytes() == source
+
+
+def test_file_backed_sitting_replaces_exact_durable_update_tail(store_ctx):
+    store = store_ctx["store"]
+    document, _source, _old_snapshot = _ready(
+        store_ctx,
+        path="docs/review-after-edit.md",
+        key="file-backed-sitting-after-edit-ready-0001",
+    )
+    base_head = ydoc_store.current_structured_head(
+        store,
+        document_id=document.id,
+        snapshot_sha256=document.ydoc_snapshot_sha256,
+    )
+    _cursor, edited_head = ydoc_store.append_update_cas(
+        store,
+        document_id=document.id,
+        snapshot_sha256=document.ydoc_snapshot_sha256,
+        update=b"durable-human-edit-before-file-backed-review",
+        expected_structured_head_sha256=base_head,
+    )
+    proposal = _proposal(store, document, edited_head)
+    intent, created = sitting_lifecycle.prepare_sitting(
+        store,
+        document_id=document.id,
+        actor=HUMAN,
+        items=[
+            {
+                "proposal_id": proposal.id,
+                "verb": "confirm",
+                "canonical_sha256": proposal.canonical_sha256,
+            }
+        ],
+        expected_file_sha256=document.content_sha256,
+        expected_structured_head_sha256=edited_head,
+        idempotency_key="file-backed-sitting-after-edit-0001",
+    )
+    assert created and intent.has_apply
+
+    rendered = b"# Lifecycle\n\nReplacement sentence.\n"
+    replacement_snapshot = b"YDOC:" + rendered
+    receipt, _events = sitting_lifecycle.commit_sitting(
+        store,
+        document_id=document.id,
+        intent_id=intent.id,
+        actor=HUMAN,
+        snapshot=replacement_snapshot,
+        snapshot_sha256=sha256_bytes(replacement_snapshot),
+        rendered_markdown=rendered.decode(),
+        rendered_sha256=sha256_bytes(rendered),
+    )
+
+    refreshed = documents.get_document(store, document.id)
+    assert receipt["results"][0]["result"] == "applied"
+    assert refreshed.ydoc_snapshot_sha256 == sha256_bytes(replacement_snapshot)
+    assert refreshed.content_sha256 == sha256_bytes(rendered)
+    assert not ydoc_store.update_tail_present(store, document_id=document.id)
+    assert (store_ctx["root"] / document.path).read_bytes() == rendered
 
 
 def test_sitting_edit_confirm_admits_and_commits_empty_deletion(store_ctx):
@@ -327,6 +480,203 @@ def test_reimport_blocks_unmaterialized_structured_tail(store_ctx):
             idempotency_key="reimport-tail-0001",
         )
     assert caught.value.code == "unmaterialized_structured_edits"
+
+
+def test_reimport_rejects_detached_sources_at_prepare_and_commit(
+    store_ctx,
+    monkeypatch,
+):
+    store = store_ctx["store"]
+    document, source, _ = _ready_import(
+        store_ctx,
+        path="imports/no-refresh.md",
+        key="detached-no-refresh-import-0001",
+    )
+    target = store_ctx["root"] / document.path
+    changed_source = b"# Changed external source\n"
+    target.write_bytes(changed_source)
+
+    with pytest.raises(reimport.ReimportError) as prepare_error:
+        reimport.prepare_reimport(
+            store,
+            document_id=document.id,
+            actor=HUMAN,
+            idempotency_key="detached-no-refresh-prepare-0001",
+        )
+    assert prepare_error.value.code == "source_writeback_forbidden"
+    assert prepare_error.value.status == 409
+
+    # Simulate a legacy prepared intent that predates the migration which
+    # marked imports as detached. Commit repeats the guard and cannot refresh
+    # the managed copy even when such an intent survives.
+    original_source_is_detached = documents.source_is_detached
+    monkeypatch.setattr(documents, "source_is_detached", lambda _document: False)
+    legacy_intent, _ = reimport.prepare_reimport(
+        store,
+        document_id=document.id,
+        actor=HUMAN,
+        idempotency_key="detached-no-refresh-legacy-0001",
+    )
+    monkeypatch.setattr(
+        documents,
+        "source_is_detached",
+        original_source_is_detached,
+    )
+    replacement_snapshot = b"opaque-forbidden-detached-refresh"
+    replacement_sha256 = sha256_bytes(replacement_snapshot)
+    with pytest.raises(reimport.ReimportError) as commit_error:
+        reimport.commit_reimport(
+            store,
+            document_id=document.id,
+            intent_id=legacy_intent.id,
+            actor=HUMAN,
+            replacement_snapshot=replacement_snapshot,
+            replacement_snapshot_sha256=replacement_sha256,
+        )
+    assert commit_error.value.code == "source_writeback_forbidden"
+    assert commit_error.value.status == 409
+    assert not store.resolve_blob_path(f"blobs/{replacement_sha256}").exists()
+    assert documents.get_document(store, document.id).content_sha256 == sha256_bytes(
+        source
+    )
+    assert target.read_bytes() == changed_source
+
+
+def test_retired_import_path_stays_reserved_while_a_copied_source_can_get_new_identity(
+    store_ctx, client
+):
+    store = store_ctx["store"]
+    document, source, _snapshot = _ready_import(
+        store_ctx,
+        path="imports/retired-source.md",
+        key="retired-source-import-0001",
+    )
+    target = store_ctx["root"] / document.path
+    documents.retire_document(store, document_id=document.id, actor=HUMAN)
+    with store._read_connection() as conn:
+        history_before = [
+            tuple(row)
+            for row in conn.execute(
+                "SELECT id, kind, detail FROM doc_events "
+                "WHERE document_id = ? ORDER BY rowid",
+                (document.id,),
+            ).fetchall()
+        ]
+        path_key_before = conn.execute(
+            "SELECT path_key FROM document_path_keys WHERE document_id = ?",
+            (document.id,),
+        ).fetchone()[0]
+
+    with pytest.raises(bootstrap.BootstrapError) as blocked:
+        bootstrap.prepare_bootstrap(
+            store,
+            metadata={
+                "mode": "import",
+                "path": document.path,
+                "expected_file_sha256": sha256_bytes(source),
+                "idempotency_key": "retired-source-reimport-0001",
+            },
+            source=None,
+            actor=HUMAN,
+        )
+
+    assert blocked.value.code == "retired_path"
+    assert blocked.value.status == 409
+    assert blocked.value.retryable is False
+    assert blocked.value.details == {
+        "document_id": document.id,
+        "lifecycle": "retired",
+        "path_reuse": "forbidden",
+        "recovery_action": "choose_different_path",
+    }
+    assert target.read_bytes() == source
+    assert documents.current_lifecycle(store, document.id) == "retired"
+
+    changed_source = b"# Retired source changed outside Co-work\n"
+    target.write_bytes(changed_source)
+    changed_response = client.post(
+        f"/api/truth/doc/bootstrap?store_id={store.store_id}",
+        data={
+            "metadata": json.dumps(
+                {
+                    "mode": "import",
+                    "path": document.path,
+                    "expected_file_sha256": sha256_bytes(changed_source),
+                    "idempotency_key": "retired-source-changed-reimport-0001",
+                }
+            )
+        },
+        content_type="multipart/form-data",
+    )
+    assert changed_response.status_code == 409
+    changed_error = changed_response.get_json()["error"]
+    assert changed_error["code"] == "retired_path"
+    assert changed_error["retryable"] is False
+    assert changed_error["details"] == blocked.value.details
+    assert target.read_bytes() == changed_source
+
+    with store._read_connection() as conn:
+        assert [
+            tuple(row)
+            for row in conn.execute(
+                "SELECT id, kind, detail FROM doc_events "
+                "WHERE document_id = ? ORDER BY rowid",
+                (document.id,),
+            ).fetchall()
+        ] == history_before
+        assert conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT path_key FROM document_path_keys WHERE document_id = ?",
+            (document.id,),
+        ).fetchone()[0] == path_key_before
+
+    copied_path = "imports/retired-source-copy.md"
+    copied_target = store_ctx["root"] / copied_path
+    copied_target.write_bytes(changed_source)
+    new_intent, created = bootstrap.prepare_bootstrap(
+        store,
+        metadata={
+            "mode": "import",
+            "path": copied_path,
+            "expected_file_sha256": sha256_bytes(changed_source),
+            "idempotency_key": "retired-source-copy-import-0001",
+        },
+        source=None,
+        actor=HUMAN,
+    )
+    assert created is True
+    assert new_intent.document_id != document.id
+    assert new_intent.path_key != path_key_before
+    assert copied_target.read_bytes() == changed_source
+    assert bootstrap.cancel_bootstrap(
+        store, bootstrap_id=new_intent.id, actor=HUMAN
+    )
+
+
+def test_oversized_detached_source_does_not_break_managed_lifecycle(store_ctx):
+    store = store_ctx["store"]
+    document, _source, _snapshot = _ready_import(
+        store_ctx,
+        path="imports/oversized-lifecycle.md",
+        key="oversized-lifecycle-import-0001",
+    )
+    target = store_ctx["root"] / document.path
+    with target.open("wb") as stream:
+        stream.truncate(MARKDOWN_MAX_SOURCE_BYTES + 1)
+
+    state = inspect_lifecycle_state(store, document)
+    assert state.initialization_state == "ready"
+    assert state.current_file_sha256 is None
+    assert state.file_path == target.resolve()
+    intent, created = retirement.prepare_retirement(
+        store,
+        document_id=document.id,
+        actor=HUMAN,
+        idempotency_key="retire-oversized-detached-0001",
+    )
+    assert created is True
+    assert intent.document_id == document.id
+    assert target.stat().st_size == MARKDOWN_MAX_SOURCE_BYTES + 1
 
 
 def test_retirement_requires_prepared_clean_confirmation_and_retains_file(

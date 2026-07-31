@@ -39,4 +39,9 @@ export type CoworkMaterializationState =
 export interface CoworkMaterializationController {
   save(): Promise<void>;
   retrySync(): Promise<void>;
+  /**
+   * Persist and compact the live structured document before a lifecycle
+   * operation. This must never materialize or otherwise write the source file.
+   */
+  settleForLifecycle(): Promise<void>;
 }

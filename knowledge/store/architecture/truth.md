@@ -1,7 +1,7 @@
 ---
 name: Truth
 kind: concept
-description: Scoped, provenance-aware claim stores with append-only history, human confirmation authority, registered documents with tracked-edit proposals, deterministic recovery, and integrity enforcement.
+description: Scoped, provenance-aware claim stores with append-only history, human confirmation authority, document content attestations, tracked-edit proposals, deterministic recovery, and integrity enforcement.
 tags:
 - truth
 - claims
@@ -31,7 +31,7 @@ dev_notes: |-
 
   The executable contract inventory is `tests/unit/truth/INVARIANT_COVERAGE.md`; declarative end-to-end workloads live in `tests/fixtures/truth/`. Released schema fixtures are immutable compatibility inputs: add a new versioned fixture instead of regenerating an old one.
 
-  Document surface constants and seams: `SCHEMA_VERSION` and export `FORMAT_VERSION` are both 4, with export upcast support back to 1. Schema v4 adds append-only `document_versions`, structured-head compare-and-swap fields, lifecycle operation tables, and durable operation receipts on top of the original document, span, expression, proposal, status, and event tables. The `truth.doc_*` event vocabulary's single source of truth is the frozenset in `work_buddy/truth/events.py`. Engine modules: `documents.py` (registration and immutable version recording), `proposals.py` (decision funnel; rejecting decisions funnel through `_redact_if_policy`, which nulls content and scrubs the consumed gesture `payload_excerpt` in the same transaction), `expressions.py` (role-typed claim ties, minted on plain accept only), and `ydoc_store.py` (structured heads, bounded update admission, durable snapshots, and compaction). Co-work owns the higher-level drift, reimport, materialization, retirement, recovery, and sitting orchestration. Integrity's gesture-subject resolver matches proposals on `canonical_sha256` and exempts the reject_as_false closure-to-negation confirm shape from the claim-subject gesture checks. `proposals.quote_exact` is nullable to admit content redaction, following the `evidence_spans` pattern.
+  Document surface constants and seams: `SCHEMA_VERSION` and export `FORMAT_VERSION` are both 8, with export upcast support back to 1. Schema v8 adds append-only `document_provenance_attestations`, backfills imported sources with `writeback_policy=never`, and gives historical detached imports a deterministic system-attested unknown-authorship/unknown-review record rather than inventing provenance. These extend the document versions, lifecycle intents, Verify, Co-think, and coordination history introduced in v3-v7. The `truth.doc_*` event vocabulary's single source of truth is the frozenset in `work_buddy/truth/events.py`. Engine modules: `documents.py` (registration, source-writeback policy, retained import-source references, and immutable version recording), `provenance.py` (canonical provenance-attestation validation), `proposals.py` (decision funnel; rejecting decisions funnel through `_redact_if_policy`, which nulls content and scrubs the consumed gesture `payload_excerpt` in the same transaction), `expressions.py` (role-typed claim ties, minted on plain accept only), and `ydoc_store.py` (structured heads, bounded update admission, durable snapshots, and compaction). Co-work owns importer policy, attestation capture, supported import normalization, paste delivery/recovery, drift, reimport, materialization, retirement, recovery, and sitting orchestration. A retained import-source blob is soft-required: new imports capture it and pin it through refcounts, while an upgraded historical hash-only import produces a portable integrity warning rather than becoming unreadable. Integrity's gesture-subject resolver matches proposals on `canonical_sha256` and exempts the reject_as_false closure-to-negation confirm shape from the claim-subject gesture checks. `proposals.quote_exact` is nullable to admit content redaction, following the `evidence_spans` pattern.
 ---
 
 Truth is work-buddy's durable kernel for recording what a claim says, which evidence supports it, who or what produced it, what a human decided, and how that state changed over time. The canonical implementation namespace is `work_buddy.truth`. The phrase **truth layer** remains a design and discovery alias rather than a separate canonical subsystem name.
@@ -65,9 +65,11 @@ document surface also keep sidecar-local collaborative runtime state. Accepted
 updates are protected by an expected structured-head digest and bounded before
 admission; compaction publishes a new durable snapshot without changing the
 logical head. Append-only document versions and referenced snapshots ride the
-portable export. Truth stores therefore travel with the Folder, project, or
-purpose directory they describe. They are not another shared claim database
-under work-buddy's configured data root.
+portable export together with frozen-target document provenance attestations
+and exact retained file-import source blobs when available. Historical imports
+may carry only the source digest. Truth stores therefore travel with the Folder,
+project, or purpose directory they describe. They are not another shared claim
+database under work-buddy's configured data root.
 
 The machine registry at `<data_root>/db/truth_registry.db` records known sidecar paths, permanent store IDs, profiles, titles, last-seen timestamps, and reachability. It is an inventory and health index, not a second source of Truth. Registry access revalidates reachable rows against the sidecar, and duplicate reachable paths for one permanent store identity fail closed.
 
@@ -75,7 +77,14 @@ The machine registry at `<data_root>/db/truth_registry.db` records known sidecar
 
 ## Evidence, claims, and history
 
-The durable model records evidence and addressable evidence spans, claims, typed links, derivations, review gestures, append-only status events, and, for stores that enable the document surface, registered documents with their own addressable spans, prose-to-claim expressions, and tracked-edit proposals with append-only decision history. Engine-assigned ledger sequence provides one global transaction order. Valid time, transaction order, and human decision time remain distinct so historical and as-of queries do not depend on a mutable current-state row.
+The durable model records evidence and addressable evidence spans, claims,
+typed links, derivations, review gestures, append-only status events, and, for
+stores that enable the document surface, registered documents with their own
+addressable spans, prose-to-claim expressions, tracked-edit proposals with
+append-only decision history, and authorship and human-review attestations.
+Engine-assigned ledger sequence provides one global transaction order. Valid
+time, transaction order, and human decision time remain distinct so historical
+and as-of queries do not depend on a mutable current-state row.
 
 `claims_current` is a rebuildable projection over durable history. It may be discarded and deterministically regenerated without changing the ledger. Conflicts, supersession, retraction, review requirements, source integrity, and target fingerprints are derived without erasing the facts that led to the current view.
 
@@ -89,15 +98,61 @@ Premise authority follows the weakest link: every required premise must resolve 
 
 ## Documents and tracked edits
 
-Scoped stores can register the documents their claims explain. A registered document binds a permanent identity to a safe relative path and title; Co-work does not require the user to choose a predefined document type. Its addressable spans let prose anchor to the ledger. Expressions tie a span to a claim with a typed role (quote, paraphrase, summary, or instantiation), so a reader can ask what facts operate underneath a sentence.
+Scoped stores can register the documents their claims explain. A registered
+document binds a permanent identity to a safe relative path and title; Co-work
+does not require the user to choose a predefined document type. Its addressable
+spans let prose anchor to the ledger. Expressions tie a span to a claim with a
+typed role (quote, paraphrase, summary, or instantiation), so a reader can ask
+what facts operate underneath a sentence.
+
+A document's structured head and managed projection are canonical Co-work
+state. A file selected through **From file** is instead a source artifact:
+Markdown is the only supported importer today, supported import normalization
+may make the managed projection bytes differ from the source bytes, and the
+exact source hash remains distinct from the projection hash. Imported sources
+carry `writeback_policy=never`; document editing, proposal application,
+retirement, and recovery never rewrite them. Current imports retain the exact
+source bytes in the content-addressed blob store, independently when
+normalization produces a different projection. If source and projection match,
+their roles may share the same blob digest without becoming the same semantic
+field.
+
+Document provenance attestations keep source, authorship, human review, basis,
+and attester separate. An import targets one immutable document version and its
+structured head. A text paste targets an exact document span and a
+compare-and-swap checked structured head; its idempotency key is also bound to
+the exact quote selector. Records are append-only and corrections use explicit
+supersession. A human-review attestation records that a person reports having
+reviewed the content; it does not verify claims, certify correctness, or equal a
+proposal-acceptance gesture.
+
+Person identity strength is explicit. `local_actor_ref` is a durable ref in the
+current unauthenticated local dashboard, `claimed_name` is a typed name supplied
+by the attester, and `account_ref` is reserved for a future authenticated
+participant directory. The current Co-work adapter resolves **Me** only to
+`local_actor_ref` and does not mint `account_ref`.
+
+Truth makes the span plus attestation atomic within its own write transaction
+after the structured-head precondition succeeds. It does not make the earlier
+browser Yjs edit, local-storage intent journal, IndexedDB provenance outbox, and
+Truth write one distributed transaction. Co-work's journal/outbox is a recovery
+barrier for that cross-store delivery gap, not an atomicity guarantee. See
+`cowork/content-provenance`.
 
 Agents never edit a registered document's content directly. An agent edit arrives as a tracked-edit proposal whose canonical payload is hash-bound, and every decision on a proposal is a human gesture with the same single-use exact-review authority as claim confirmation: accept, accept with an amended replacement, reason-classed rejection, or dismissal. `replacement: ""` is an explicit deletion of the anchored passage; `replacement: null` remains a flag with no textual edit. A deletion cannot carry claim references or mint expressions because no accepted passage remains to express them. A plain accept of a non-deletion edit mints the expression rows carried by the proposal's claim references. An amended accept skips that minting because the applied replacement is no longer the reviewed text. When the store's content gate directs it, a rejecting decision redacts the proposal's readable content in the same transaction, records the redaction through the proposal's own status history, and scrubs the consumed gesture receipt so no readable excerpt survives.
 
-Out-of-band edits are first-class: drift detection notices a document whose file diverged from its last materialized fingerprint and blocks overwrite. Reimport prepares and validates a replacement snapshot before atomically appending a new document version; it never rewrites history. Retirement is terminal for a document identity but preserves the file, versions, and ledger history.
+Out-of-band edits are first-class for a document with a file writeback target:
+drift detection notices when that file diverges from its last materialized
+fingerprint and blocks overwrite. Reimport prepares and validates a replacement
+snapshot before atomically appending a new document version; it never rewrites
+history. A non-writeback import source is not treated as a live projection or
+reimport target. Retirement is terminal for a document identity but preserves
+source artifacts, writeback files, versions, managed projections, attestations,
+and ledger history.
 
 ## Lifecycle events
 
-Represented lifecycle transitions publish durable `truth.*` events after the Truth transaction succeeds. The vocabulary is `truth.store_created`, `truth.evidence_captured`, `truth.span_marked`, `truth.claim_proposed`, `truth.claim_confirmed`, `truth.claim_rejected`, `truth.claim_challenged`, `truth.claim_superseded`, `truth.claim_redacted`, and `truth.sweep_completed`. The document surface adds `truth.doc_registered`, `truth.doc_imported`, `truth.doc_materialized`, `truth.doc_drift_detected`, `truth.doc_reimported`, `truth.doc_retired`, `truth.doc_proposed`, `truth.doc_proposal_decided`, `truth.doc_proposal_applied`, `truth.doc_proposal_expired`, `truth.doc_expression_marked`, and `truth.doc_feedback_captured`. Deduplicated or otherwise unchanged outcomes emit no event. A confirmation attempt that fails closed into `needs_review` also emits no misleading `truth.claim_confirmed` event because no separate event is defined for that status.
+Represented lifecycle transitions publish durable `truth.*` events after the Truth transaction succeeds. The vocabulary is `truth.store_created`, `truth.evidence_captured`, `truth.span_marked`, `truth.claim_proposed`, `truth.claim_confirmed`, `truth.claim_rejected`, `truth.claim_challenged`, `truth.claim_superseded`, `truth.claim_redacted`, and `truth.sweep_completed`. The document surface adds `truth.doc_registered`, `truth.doc_imported`, `truth.doc_materialized`, `truth.doc_drift_detected`, `truth.doc_reimported`, `truth.doc_retired`, `truth.doc_proposed`, `truth.doc_proposal_decided`, `truth.doc_proposal_applied`, `truth.doc_proposal_expired`, `truth.doc_expression_marked`, `truth.doc_feedback_captured`, and `truth.doc_provenance_attested`. Deduplicated or otherwise unchanged outcomes emit no event. A confirmation attempt that fails closed into `needs_review` also emits no misleading `truth.claim_confirmed` event because no separate event is defined for that status.
 
 These events are an observer surface, not a write authority. Publication results are returned to the caller, but a dispatcher failure never rolls back or changes the committed Truth state.
 
@@ -105,9 +160,24 @@ These events are an observer surface, not a write authority. Publication results
 
 Integrity sweeps and as-of queries read the durable ledger rather than trusting the projection. Errors represent conditions that make publication or recovery unsafe; portable warnings preserve unresolved conditions that may require another store or later human review.
 
-`claims.jsonl` is a deterministic, lossless recovery format, not a human-facing projection. Export preserves stable IDs, store identity, append order, document versions, structured-head references, and referenced blobs. Import validates the entire stream in a staged sidecar, upcasts supported older formats, rebuilds derived state, and atomically publishes only after the staged store reproduces the validated recovery export.
+`claims.jsonl` is a deterministic, lossless recovery format, not a human-facing
+projection. Export preserves stable IDs, store identity, append order, document
+versions, structured-head references, provenance attestations, supersession
+links, required projection/snapshot blobs, and retained import-source blobs when
+available. Import validates the entire stream in a staged sidecar, recomputes
+attestation canonical hashes, checks frozen target links, upcasts supported
+older formats, rebuilds derived state, and atomically publishes only after the
+staged store reproduces the validated recovery export. A missing retained
+source blob is allowed only as a soft historical condition and is reported as
+`document-source-blob-unavailable`; required projection or snapshot blobs still
+fail closed.
 
-Integrity resolution understands the document surface. Proposal-subject gestures and proposal redactions are validated against proposal history, so a store that carries tracked-edit decisions round-trips through export and staged import.
+Integrity resolution understands the document surface. Proposal-subject
+gestures and proposal redactions are validated against proposal history, and
+provenance attestations must point to an earlier version or span belonging to
+the same document. Their recorded structured head and any superseded
+attestation must match the frozen target. Tracked-edit decisions and content
+provenance therefore round-trip through export and staged import.
 
 The machine backup pipeline discovers scoped stores through the registry. For each reachable store it stages `truth_stores/<store_id>/store.yaml` and `truth_stores/<store_id>/claims.jsonl`. The manifest records included, unreachable, and errored stores explicitly. Backups never copy a scoped store's live `store.db`, because the deterministic portable export is the recovery contract.
 

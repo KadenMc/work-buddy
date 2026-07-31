@@ -150,7 +150,7 @@ Every scope below is browsable with `mcp__work-buddy__wb_run("agent_docs", {"sco
 | `notifications/` | Notify, request, consent, surfaces |
 | `events/` | Durable in-process delivery spine for event-shaped facts — CloudEvents-superset envelope, SQLite log (dedup + offsets + DLQ), one drain thread, consent gate; `event_publish` to emit, plus user-authored **pull sources** (poll → diff → CEL condition → notify) authored via `/wb-event-new` |
 | `truth/` | Scoped evidence, claims, registered documents with tracked-edit proposals, human confirmation, provenance, revision, registry, and integrity sweeps |
-| `cowork/` | Co-work Folder and document lifecycle: setup, catalog, create/register/scratch, durable editing, explicit Markdown writes, drift/reimport/retirement, sittings, feedback, conversations, and `cowork_doc_*` proposal capabilities |
+| `cowork/` | Co-work Folder and document lifecycle: setup, catalog, create/register/scratch, source-safe **From file** import, durable editing, explicit Markdown writes, frozen-target content provenance, drift/reimport/retirement, sittings, feedback, conversations, and `cowork_doc_*` proposal capabilities |
 | `services/` | Messaging, memory (Hindsight), dashboard, sidecar |
 | `settings/` | Registry-driven settings, Apps-based placement, authority, persistence, Journal policy |
 | `features/` | Preferences and feature opt-in |

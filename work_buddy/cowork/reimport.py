@@ -13,13 +13,16 @@ from typing import Any, Mapping
 from work_buddy.artifacts.io import atomic_write_bytes
 from work_buddy.cowork.lifecycle_state import inspect_lifecycle_state
 from work_buddy.cowork.policy import document_surface_allowed
+from work_buddy.cowork.source_observation import (
+    SourceObservationError,
+    read_document_source,
+)
 from work_buddy.truth import documents, proposals, ydoc_store
 from work_buddy.truth.contracts import Actor, InvariantViolation
 from work_buddy.truth.identity import canonical_json, new_id, sha256_bytes
-from work_buddy.truth.store import TruthStore, _valid_digest
+from work_buddy.truth.store import DocumentRecord, TruthStore, _valid_digest
 
 
-MAX_SOURCE_BYTES = 16 * 1024 * 1024
 MAX_SNAPSHOT_BYTES = ydoc_store.MAX_OPAQUE_SEGMENT_BYTES
 INTENT_TTL = timedelta(minutes=15)
 
@@ -204,6 +207,24 @@ def _remove_verified_stage(store: TruthStore, intent: ReimportIntent) -> bool:
     return True
 
 
+def _require_file_backed_source(document: DocumentRecord) -> None:
+    """Reject the legacy replacement workflow for detached import sources."""
+
+    if documents.source_is_detached(document):
+        raise ReimportError(
+            "source_writeback_forbidden",
+            (
+                "From file keeps its own managed Co-work copy. Reimport cannot "
+                "replace that copy from a changed source file."
+            ),
+            status=409,
+            details={
+                "source_writeback": documents.SOURCE_WRITEBACK_NEVER,
+                "recovery_action": "open_existing_managed_copy",
+            },
+        )
+
+
 def prepare_reimport(
     store: TruthStore,
     *,
@@ -224,6 +245,9 @@ def prepare_reimport(
         prior = _intent(row)
         if prior.document_id != document_id:
             raise ReimportError("idempotency_conflict", "idempotency key was used for another reimport", status=409)
+        _require_file_backed_source(
+            documents.get_document(store, prior.document_id)
+        )
         return prior, False
 
     initial = documents.get_document(store, document_id)
@@ -235,6 +259,7 @@ def prepare_reimport(
         document = documents.get_document(store, document_id)
         if documents.current_lifecycle(store, document.id) != "active":
             raise ReimportError("document_retired", "retired documents cannot be reimported", status=409)
+        _require_file_backed_source(document)
         if not document_surface_allowed(store, document):
             raise ReimportError(
                 "policy_forbidden",
@@ -244,9 +269,17 @@ def prepare_reimport(
         state = inspect_lifecycle_state(store, document)
         if state.initialization_state != "ready" or state.structured_head_sha256 is None:
             raise ReimportError("document_not_ready", f"document is {state.initialization_state}", status=409)
-        if state.current_file_sha256 is None:
-            raise ReimportError("missing_file", "external Markdown file is missing", status=409)
-        if state.drift_state != "drifted":
+        try:
+            current_source = read_document_source(store, document)
+        except SourceObservationError as exc:
+            raise ReimportError(
+                exc.code,
+                str(exc),
+                status=exc.status,
+                details=exc.details,
+                retryable=exc.retryable,
+            ) from exc
+        if current_source.sha256 == document.content_sha256:
             raise ReimportError("no_external_drift", "external Markdown matches Co-work", status=409)
         if state.unmaterialized_structured_edits:
             raise ReimportError(
@@ -260,12 +293,9 @@ def prepare_reimport(
                 "The structured document is not initialized.",
                 status=409,
             )
-        source = state.file_path.read_bytes()
-        if len(source) > MAX_SOURCE_BYTES:
-            raise ReimportError("source_too_large", "Markdown source exceeds the size limit", status=413)
-        source_sha = sha256_bytes(source)
-        if source_sha != state.current_file_sha256:
-            raise ReimportError("stale_file", "external Markdown changed while preparing", status=409)
+        assert current_source.data is not None
+        source = current_source.data
+        source_sha = current_source.sha256
         intent_id = new_id()
         staged = _stage_path(store, intent_id)
         atomic_write_bytes(staged, source)
@@ -388,6 +418,7 @@ def commit_reimport(
                 "Retired documents cannot be replaced in Co-work.",
                 status=409,
             )
+        _require_file_backed_source(document)
         if not document_surface_allowed(store, document):
             raise ReimportError(
                 "policy_forbidden",

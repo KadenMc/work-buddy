@@ -6,7 +6,12 @@ import { X } from "@phosphor-icons/react/X";
 import { Menu, MenuItem, MenuTrigger, Popover, type Key } from "react-aria-components";
 
 import { Button } from "../../../ui";
-import type { CoworkFolderSummary, CoworkViewModel } from "../contracts";
+import {
+  coworkDocumentCanWriteBackSource,
+  type CoworkDocumentSummary,
+  type CoworkFolderSummary,
+  type CoworkViewModel,
+} from "../contracts";
 import type { CoworkSyncStatus } from "../persistence/CoworkYdocPersistence";
 import type { CoworkMaterializationState } from "../materialization/contracts";
 import { coworkErrorMessage } from "../providers/errors";
@@ -19,7 +24,7 @@ interface CoworkDocumentBarProps {
   readonly closingFolder?: boolean;
   readonly onOpenPicker: () => void;
   readonly onCreate: () => void;
-  readonly onRegister: () => void;
+  readonly onImportFile: () => void;
   readonly onCloseSession: () => void;
   readonly onPromoteScratch: () => void;
   readonly promotionBusy?: boolean;
@@ -71,11 +76,12 @@ export const coworkScratchPromotionBlockedReason = (
 
 const registeredStatusLabel = (
   model: CoworkViewModel,
+  document: CoworkDocumentSummary,
   syncStatus?: CoworkSyncStatus,
   state?: CoworkMaterializationState,
 ): string => {
   const sync = syncStatus ?? (model.readOnly ? "read_only" : "hydrating");
-  if (sync === "read_only" || state?.kind === "read_only") return "Read-only";
+  if (sync === "read_only") return "Read-only";
   if (sync === "hydrating" || state === undefined || state.kind === "checking") {
     return "Loading…";
   }
@@ -89,6 +95,8 @@ const registeredStatusLabel = (
   if (sync === "saved_on_device" || sync === "offline") return "Saved in this browser";
   if (sync === "conflict") return "Sync conflict";
   if (sync === "error") return "Couldn’t save";
+  if (document.sourceWriteback === "never") return "Saved in Co-work";
+  if (state.kind === "read_only") return "Read-only";
   if (state.kind === "unsaved") return "Unsaved changes";
   if (state.kind === "conflict") {
     return state.error.code === "stale_file" ? "File changed outside Co-work" : "Save conflict";
@@ -115,7 +123,7 @@ export function CoworkDocumentBar({
   closingFolder = false,
   onOpenPicker,
   onCreate,
-  onRegister,
+  onImportFile,
   onCloseSession,
   onPromoteScratch,
   promotionBusy = false,
@@ -153,10 +161,13 @@ export function CoworkDocumentBar({
     !folderActionBusy &&
     onRemoveDocument !== undefined &&
     document?.permissions?.retire !== false &&
-    document?.driftState === "clean" &&
     syncStatus === "clean" &&
-    materializationState?.kind === "up_to_date";
+    (document?.sourceWriteback === "never" ||
+      (document?.driftState === "clean" &&
+        materializationState?.kind === "up_to_date"));
   const canOpenDocuments = folder !== null || model.scratches.length > 0;
+  const canWriteBackSource =
+    document !== null && coworkDocumentCanWriteBackSource(document);
   const createBlockedReason =
     folder === null
       ? null
@@ -167,13 +178,13 @@ export function CoworkDocumentBar({
           : null;
   const importBlockedReason =
     folder === null
-      ? "Open a folder before creating a document from Markdown."
+      ? "Open a folder before importing a file."
       : model.readOnly
         ? "Read-only mode. New folder documents aren’t available."
         : !folder.permissions.import
-          ? "This folder doesn’t allow documents from Markdown."
-          : !model.folderChooser.markdownAvailable
-            ? "Markdown file selection isn’t available here."
+          ? "This folder doesn’t allow file imports."
+          : !model.folderChooser.importAvailable
+            ? "File import isn’t available here."
             : null;
   const folderTriggerRef = useRef<HTMLButtonElement>(null);
   const hadFolderRef = useRef(folder !== null);
@@ -229,13 +240,19 @@ export function CoworkDocumentBar({
           onClick={onOpenPicker}
           disabled={!canOpenDocuments || folderControlBusy}
           title={
-            document?.path ??
+            document?.sourceWriteback === "never"
+              ? `Imported from ${document.path}. Co-work will not change the source file.`
+              : document?.path ??
             (scratch === null ? "Open document" : "Saved in this browser")
           }
         >
           <span>{document?.title ?? scratch?.title ?? "Open document"}</span>
           {document !== null ? (
-            <small>{document.path}</small>
+            <small>
+              {document.sourceWriteback === "never"
+                ? `Import source: ${document.path}`
+                : document.path}
+            </small>
           ) : null}
         </Button>
       </div>
@@ -245,7 +262,12 @@ export function CoworkDocumentBar({
           {model.openingTarget !== null
             ? "Loading document…"
             : document !== null
-              ? registeredStatusLabel(model, syncStatus, materializationState)
+              ? registeredStatusLabel(
+                  model,
+                  document,
+                  syncStatus,
+                  materializationState,
+                )
               : scratch !== null
                 ? localStatusLabel(syncStatus)
                 : ""}
@@ -314,7 +336,7 @@ export function CoworkDocumentBar({
               </span>
             ) : null}
           </>
-        ) : document !== null && document.permissions?.materialize !== false ? (
+        ) : canWriteBackSource ? (
           syncStatus === "clean" ? (
             <Button
               size="small"
@@ -346,7 +368,7 @@ export function CoworkDocumentBar({
           size="small"
           onClick={() => {
             if (importBlockedReason !== null) return;
-            onRegister();
+            onImportFile();
           }}
           disabled={folderActionBusy}
           aria-disabled={importBlockedReason !== null || undefined}
@@ -357,10 +379,10 @@ export function CoworkDocumentBar({
           }
           title={
             importBlockedReason ??
-            "Create a new document from an existing Markdown file."
+            "Import a supported file into a new Co-work document. Markdown is supported today."
           }
         >
-          New from Markdown
+          From file
         </Button>
         {importBlockedReason !== null ? (
           <span

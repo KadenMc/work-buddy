@@ -8,7 +8,10 @@ import {
 } from "../editor/extensions";
 import { serializeCoworkEditorMarkdown } from "../editor/serializeCoworkMarkdown";
 import { sha256Hex } from "../persistence/hashing";
-import { bootstrapCoworkYdoc } from "./bootstrapCoworkYdoc";
+import {
+  bootstrapCoworkYdoc,
+  exposeMarkdownCommentText,
+} from "./bootstrapCoworkYdoc";
 
 interface CorpusCase {
   readonly name: string;
@@ -85,6 +88,103 @@ describe("bootstrapCoworkYdoc", () => {
     const result = await bootstrapCoworkYdoc(new Uint8Array([0xc3, 0x28]));
     expect(result).toMatchObject({ ok: false, code: "invalid_utf8" });
   });
+
+  it("coerces hard-wrapped scholarly prose when Markdown is only an import source", async () => {
+    const source =
+      "---\r\nsection: introduction\r\n---\r\n\r\n" +
+      "An assistant drafts a methods\r\nsection while the researcher reviews the evidence.\r\n";
+    const bytes = new TextEncoder().encode(source);
+
+    const strict = await bootstrapCoworkYdoc(bytes);
+    expect(strict).toMatchObject({ ok: false, code: "unsupported_markdown" });
+
+    const imported = await bootstrapCoworkYdoc(bytes, {
+      allowNormalization: true,
+    });
+    expect(imported).toMatchObject({ ok: true });
+    if (!imported.ok) return;
+
+    const document = new Y.Doc();
+    Y.applyUpdate(document, imported.snapshot);
+    expect(
+      document.getMap("wb-cowork:fidelity").get("normalized_on_import"),
+    ).toBe(true);
+    const editor = new Editor({ extensions: buildEditorExtensions(document) });
+    expect(
+      new TextDecoder().decode(imported.projection).replace(/\s+/gu, " "),
+    ).toContain(
+      "An assistant drafts a methods section while the researcher reviews the evidence.",
+    );
+    expect(
+      serializeCoworkEditorMarkdown(editor, document).replace(/\s+/gu, " "),
+    ).toContain(
+      "An assistant drafts a methods section while the researcher reviews the evidence.",
+    );
+    editor.destroy();
+    document.destroy();
+  });
+
+  it("exposes comments without rewriting frontmatter or literal code contexts", () => {
+    const source =
+      '---\ndescription: "<!-- YAML literal -->"\n---\n' +
+      "Before<!-- visible note -->after.\n\n" +
+      "Use `<!-- inline literal -->` here.\n\n" +
+      "```html\n<!-- fenced literal -->\n```\n\n" +
+      "    <!-- indented literal -->\n";
+
+    expect(exposeMarkdownCommentText(source)).toBe(
+      '---\ndescription: "<!-- YAML literal -->"\n---\n' +
+        "Before visible note after.\n\n" +
+        "Use `<!-- inline literal -->` here.\n\n" +
+        "```html\n<!-- fenced literal -->\n```\n\n" +
+        "    <!-- indented literal -->\n",
+    );
+  });
+
+  it("keeps comment-looking code literal in the managed import projection", async () => {
+    const source =
+      '---\ndescription: "<!-- YAML literal -->"\n---\n' +
+      "Before<!-- visible note -->after.\n\n" +
+      "Use `<!-- inline literal -->` here.\n\n" +
+      "```html\n<!-- fenced literal -->\n```\n";
+    const result = await bootstrapCoworkYdoc(
+      new TextEncoder().encode(source),
+      { allowNormalization: true },
+    );
+    expect(result).toMatchObject({ ok: true, normalized: true });
+    if (!result.ok) return;
+
+    const projection = new TextDecoder().decode(result.projection);
+    expect(projection).toContain('description: "<!-- YAML literal -->"');
+    expect(projection).toContain("Before visible note after.");
+    expect(projection).toContain("`<!-- inline literal -->`");
+    expect(projection).toContain("<!-- fenced literal -->");
+  });
+
+  it.each(
+    CORPUS.filter((entry) => entry.expected === "unsupported"),
+  )(
+    "intelligently coerces an import without discarding its meaningful text: $name",
+    async ({ source }) => {
+      const result = await bootstrapCoworkYdoc(
+        new TextEncoder().encode(source),
+        { allowNormalization: true },
+      );
+      expect(result).toMatchObject({ ok: true, normalized: true });
+      if (!result.ok) return;
+      const projection = new TextDecoder().decode(result.projection);
+      const meaningfulWords =
+        source.match(/[\p{L}\p{N}_]{2,}/gu)?.filter(
+          (word) => !["custom", "element"].includes(word),
+        ) ?? [];
+      for (const word of meaningfulWords) {
+        expect(projection).toContain(word);
+      }
+      expect(result.projectionSha256).toBe(
+        await sha256Hex(result.projection),
+      );
+    },
+  );
 
   it.each(CORPUS)("handles corpus file: $name ($filePath)", async ({ source, expected, newline, bom }) => {
     const bytes = new TextEncoder().encode(source);

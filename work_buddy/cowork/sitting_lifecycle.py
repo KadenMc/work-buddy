@@ -268,8 +268,22 @@ def prepare_sitting(
         state = inspect_lifecycle_state(store, document)
         if state.initialization_state != "ready" or state.structured_head_sha256 is None:
             raise SittingError("document_not_ready", f"document is {state.initialization_state}", status=409)
-        if state.current_file_sha256 != expected_file:
-            raise SittingError("stale_file", "Markdown file changed before sitting prepare", status=409, details={"current_file_sha256": state.current_file_sha256})
+        expected_projection = (
+            document.content_sha256
+            if documents.source_is_detached(document)
+            else state.current_file_sha256
+        )
+        if expected_projection != expected_file:
+            raise SittingError(
+                "stale_file",
+                (
+                    "Co-work projection changed before sitting prepare"
+                    if documents.source_is_detached(document)
+                    else "Markdown file changed before sitting prepare"
+                ),
+                status=409,
+                details={"current_file_sha256": expected_projection},
+            )
         if state.structured_head_sha256 != expected_head:
             raise SittingError("stale_structured_head", "structured document changed before sitting prepare", status=409, details={"server_structured_head_sha256": state.structured_head_sha256})
         if document.ydoc_snapshot_sha256 is None:
@@ -547,23 +561,45 @@ def commit_sitting(
             if entry["item"]["verb"] in {"dismiss", "reject_plain", "reject_as_false", "reject_as_preference"}
         }
         try:
-            receipt = materialization.publish_projection(
-                store,
-                document_id=document_id,
-                rendered_markdown=rendered_markdown,
-                rendered_sha256=rendered_sha,
-                expected_file_sha256=intent.expected_file_sha256,
-                expected_structured_head_sha256=intent.expected_structured_head_sha256,
-                snapshot_sha256=intent.expected_snapshot_sha256,
-                actor=actor,
-                replacement_snapshot=snapshot,
-                replacement_snapshot_sha256=new_snapshot_sha,
-                version_kind="materialized",
-                version_detail=f"sitting:{intent.id}",
-                commit_callback=_commit_callback,
-                lock_preflight=_lock_preflight,
-                resolving_flag_proposal_ids=resolving_flags,
-            )
+            if documents.source_is_detached(document):
+                receipt = materialization.commit_managed_projection(
+                    store,
+                    document_id=document_id,
+                    rendered_markdown=rendered_markdown,
+                    rendered_sha256=rendered_sha,
+                    expected_structured_head_sha256=(
+                        intent.expected_structured_head_sha256
+                    ),
+                    snapshot_sha256=intent.expected_snapshot_sha256,
+                    actor=actor,
+                    replacement_snapshot=snapshot,
+                    replacement_snapshot_sha256=new_snapshot_sha,
+                    version_kind="materialized",
+                    version_detail=f"managed_projection:sitting:{intent.id}",
+                    commit_callback=_commit_callback,
+                    lock_preflight=_lock_preflight,
+                    resolving_flag_proposal_ids=resolving_flags,
+                )
+            else:
+                receipt = materialization.publish_projection(
+                    store,
+                    document_id=document_id,
+                    rendered_markdown=rendered_markdown,
+                    rendered_sha256=rendered_sha,
+                    expected_file_sha256=intent.expected_file_sha256,
+                    expected_structured_head_sha256=(
+                        intent.expected_structured_head_sha256
+                    ),
+                    snapshot_sha256=intent.expected_snapshot_sha256,
+                    actor=actor,
+                    replacement_snapshot=snapshot,
+                    replacement_snapshot_sha256=new_snapshot_sha,
+                    version_kind="materialized",
+                    version_detail=f"sitting:{intent.id}",
+                    commit_callback=_commit_callback,
+                    lock_preflight=_lock_preflight,
+                    resolving_flag_proposal_ids=resolving_flags,
+                )
         except materialization.MaterializationError as exc:
             raise SittingError(exc.code, str(exc), status=exc.status, details=exc.details, retryable=exc.retryable) from exc
         return receipt, _receipt_events(receipt)
@@ -606,8 +642,21 @@ def commit_sitting(
                 status=403,
             )
         state = inspect_lifecycle_state(store, document)
-        if state.current_file_sha256 != intent.expected_file_sha256:
-            raise SittingError("stale_file", "Markdown file changed before sitting commit", status=409)
+        expected_projection = (
+            document.content_sha256
+            if documents.source_is_detached(document)
+            else state.current_file_sha256
+        )
+        if expected_projection != intent.expected_file_sha256:
+            raise SittingError(
+                "stale_file",
+                (
+                    "Co-work projection changed before sitting commit"
+                    if documents.source_is_detached(document)
+                    else "Markdown file changed before sitting commit"
+                ),
+                status=409,
+            )
         if state.structured_head_sha256 != intent.expected_structured_head_sha256 or document.ydoc_snapshot_sha256 != intent.expected_snapshot_sha256:
             raise SittingError("stale_structured_head", "structured document changed before sitting commit", status=409)
         at = _now()

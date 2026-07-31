@@ -7,13 +7,14 @@ import type {
 } from "../../../dashboard/contributions/contracts";
 import { createWidgetIntent } from "../../../widget-library/shared";
 import { Button, InlineAlert } from "../../../ui";
-import type {
-  CoworkDocumentSummary,
-  CoworkFolderSummary,
-  CoworkViewModel,
-  CoworkWorkspaceInput,
+import {
+  COWORK_INTENTS,
+  coworkDocumentCanWriteBackSource,
+  type CoworkDocumentSummary,
+  type CoworkFolderSummary,
+  type CoworkViewModel,
+  type CoworkWorkspaceInput,
 } from "../contracts";
-import { COWORK_INTENTS } from "../contracts";
 import {
   CoworkDocumentBar,
   coworkReimportLocalBlockedReason,
@@ -52,8 +53,8 @@ const normalizeModel = (input: CoworkWorkspaceInput): CoworkViewModel => ({
   folderChooser: {
     available: input.folderChooser?.available ?? true,
     kind: input.folderChooser?.kind ?? "host",
-    markdownAvailable:
-      input.folderChooser?.markdownAvailable ??
+    importAvailable:
+      input.folderChooser?.importAvailable ??
       input.folderChooser?.available ??
       true,
     locationAvailable:
@@ -89,7 +90,7 @@ const activeFolder = (model: CoworkViewModel): CoworkFolderSummary | null =>
     ? model.folderSelection.folder
     : model.folders.find((folder) => folder.storeId === model.activeFolderStoreId) ?? null;
 
-type LifecycleDialog = "create" | "register" | "repair" | null;
+type LifecycleDialog = "create" | "import" | "repair" | null;
 
 interface PendingFolderAction {
   readonly action: string;
@@ -260,7 +261,7 @@ export default function CoworkWorkspaceWidget({
     if (
       model.readOnly ||
       (next === "create" && !folder.permissions.create) ||
-      (next === "register" && !folder.permissions.import)
+      (next === "import" && !folder.permissions.import)
     ) {
       return;
     }
@@ -509,6 +510,12 @@ export default function CoworkWorkspaceWidget({
   }, [backgroundCatalogRefreshPaused, dispatch, session.kind, sessionKey]);
 
   const saveMarkdown = useCallback(async (): Promise<void> => {
+    if (
+      session.kind !== "registered" ||
+      !coworkDocumentCanWriteBackSource(session.document)
+    ) {
+      return;
+    }
     const controller = materializationController.current;
     if (controller === null) {
       setLocalNotice("The document is still loading. Try Save again in a moment.");
@@ -516,7 +523,7 @@ export default function CoworkWorkspaceWidget({
     }
     setLocalNotice(null);
     await controller.save();
-  }, []);
+  }, [session]);
 
   const retrySync = useCallback(async (): Promise<void> => {
     if (session.kind === "scratch") {
@@ -526,9 +533,18 @@ export default function CoworkWorkspaceWidget({
     await materializationController.current?.retrySync();
   }, [session.kind]);
 
+  const settleRetirementLifecycle = useCallback(async (): Promise<void> => {
+    const controller = materializationController.current;
+    if (controller === null) {
+      throw new Error("The document is still loading. Try again in a moment.");
+    }
+    await controller.settleForLifecycle();
+  }, []);
+
   useEffect(() => {
     if (
       session.kind !== "registered" ||
+      !coworkDocumentCanWriteBackSource(session.document) ||
       sessionIsInert ||
       pickerOpen ||
       dialog !== null
@@ -544,7 +560,7 @@ export default function CoworkWorkspaceWidget({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [dialog, pickerOpen, saveMarkdown, session.kind, sessionIsInert]);
+  }, [dialog, pickerOpen, saveMarkdown, session, sessionIsInert]);
 
   const launcher = (
     <CoworkLauncher
@@ -603,7 +619,7 @@ export default function CoworkWorkspaceWidget({
             openLifecycleDialog("create");
           }
         }}
-        onRegister={() => openLifecycleDialog("register")}
+        onImportFile={() => openLifecycleDialog("import")}
         onCloseSession={() =>
           void dispatch(
             session.kind === "scratch"
@@ -777,7 +793,7 @@ export default function CoworkWorkspaceWidget({
           mode={dialog}
           folder={folder}
           client={client}
-          markdownPickerAvailable={model.folderChooser.markdownAvailable}
+          filePickerAvailable={model.folderChooser.importAvailable}
           locationPickerAvailable={model.folderChooser.locationAvailable}
           initialTitle={pendingPromotion?.title}
           initialContent={pendingPromotion?.content}
@@ -827,6 +843,7 @@ export default function CoworkWorkspaceWidget({
           storeId={session.storeId}
           document={session.document}
           client={client}
+          onSettleLifecycle={settleRetirementLifecycle}
           onClose={() => setRetirementOpen(false)}
           onRetired={async () => {
             setRetirementOpen(false);

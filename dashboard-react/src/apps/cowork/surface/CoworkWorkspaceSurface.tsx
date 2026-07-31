@@ -25,11 +25,14 @@ import {
   type ChatExecutionSelectionInput,
   type ChatExecutionSwitchConfirmation,
 } from "../../../widget-library/chat";
-import type {
-  CoworkDocumentSummary,
-  CoworkDriftState,
-  CoworkViewModel,
+import {
+  coworkDocumentCanWriteBackSource,
+  type CoworkDocumentSummary,
+  type CoworkDriftState,
+  type CoworkViewModel,
 } from "../contracts";
+import type { CoworkPasteProvenanceRecorder } from "../provenance";
+import { CoworkHttpClient } from "../providers/CoworkHttpClient";
 import type { CoworkSyncStatus } from "../persistence/CoworkYdocPersistence";
 import type {
   CoworkMaterializationController,
@@ -119,11 +122,15 @@ export const coworkExecutionSwitchConfirmation = (
  * editor copy is the pane's own description, kept here as help rather than seeded into the
  * document where it would read as fabricated content.
  */
-const COWORK_EDITOR_HELP: HelpContent = {
+export const coworkEditorHelp = (
+  document: Pick<CoworkDocumentSummary, "sourceWriteback"> | null = null,
+): HelpContent => ({
   summary: "Write and edit your document here.",
   details:
-    "Your work is saved safely in this browser as you edit. Agent suggestions appear separately for review, and Save updates the Markdown file in your folder.",
-};
+    document?.sourceWriteback === "never"
+      ? "Your work is saved safely in Co-work as you edit. Agent suggestions appear separately for review, and the file you imported remains unchanged."
+      : "Your work is saved safely in this browser as you edit. Agent suggestions appear separately for review, and Save updates the Markdown file in your folder.",
+});
 
 const COWORK_HEALTH_HELP: HelpContent = {
   summary: "Document health at a glance.",
@@ -282,6 +289,7 @@ function CoworkWorkspaceLayout({
   health,
   editorTopBar = null,
   workspaceBottomDock = null,
+  editorHelp = coworkEditorHelp(),
   editor,
   rail,
   railRef,
@@ -293,6 +301,7 @@ function CoworkWorkspaceLayout({
   readonly health: CoworkHealthView | null;
   readonly editorTopBar?: ReactNode;
   readonly workspaceBottomDock?: ReactNode;
+  readonly editorHelp?: HelpContent;
   readonly editor: ReactNode;
   readonly rail: ReactNode;
   readonly railRef?: (element: HTMLElement | null) => void;
@@ -330,7 +339,7 @@ function CoworkWorkspaceLayout({
             inert={narrow && activePane !== "editor" ? true : undefined}
           >
             {editorTopBar}
-            <HelpTarget content={COWORK_EDITOR_HELP} placement="top">
+            <HelpTarget content={editorHelp} placement="top">
               <div className="wb-cowork__editor-region">{editor}</div>
             </HelpTarget>
           </div>
@@ -482,6 +491,7 @@ export function CoworkLiveWorkspace({
   onMaterializationController,
   onMaterialized,
   conversationBindingClient,
+  pasteProvenanceRecorder,
   onRunVerify,
   onAffirmRecheckTarget,
 }: {
@@ -500,6 +510,8 @@ export function CoworkLiveWorkspace({
   readonly onMaterialized?: (receipt: CoworkMaterializeReceipt) => void;
   /** Injectable server-binding client for focused integration tests. */
   readonly conversationBindingClient?: CoworkDocumentConversationBindingClient;
+  /** Injectable exact-span paste recorder; live mode uses the same-origin API. */
+  readonly pasteProvenanceRecorder?: CoworkPasteProvenanceRecorder;
   /** Exact capture handoff; route transport remains injectable at this boundary. */
   readonly onRunVerify?: CoworkRunVerifyHandler;
   readonly onAffirmRecheckTarget?: CoworkAffirmVerifyRecheckTargetHandler;
@@ -685,6 +697,12 @@ export function CoworkLiveWorkspace({
     setArmedVerifyRecheck(null);
   }, [documentId, storeId]);
   const navBinding = useCoworkNavBinding();
+  const provenanceClient = useMemo(() => new CoworkHttpClient(), []);
+  const defaultPasteProvenanceRecorder =
+    useCallback<CoworkPasteProvenanceRecorder>(
+      (request) => provenanceClient.recordPasteProvenance(request).then(() => undefined),
+      [provenanceClient],
+    );
 
   const bridge = useCoworkBridge({
     documentId,
@@ -693,10 +711,12 @@ export function CoworkLiveWorkspace({
     onSyncStatus,
     currentFileSha256: document.currentFileSha256,
     initialDriftState: document.driftState,
-    canMaterialize: document.permissions?.materialize !== false,
+    canMaterialize: coworkDocumentCanWriteBackSource(document),
     onMaterializationState,
     onMaterializationController,
     onMaterialized,
+    pasteProvenanceRecorder:
+      pasteProvenanceRecorder ?? defaultPasteProvenanceRecorder,
     onRoutingDelivery: (delivery) => {
       annotations.annotateRoutingDelivery(delivery);
       if (
@@ -836,6 +856,7 @@ export function CoworkLiveWorkspace({
   return (
     <CoworkWorkspaceLayout
       health={health}
+      editorHelp={coworkEditorHelp(document)}
       showHealth={showHealth}
       editorTopBar={
         <CoworkDocumentActionBar

@@ -37,17 +37,23 @@ from work_buddy.cowork import (
     feedback,
     lifecycle_lock,
     lifecycle_state,
+    provenance,
     readiness,
+    source_observation,
     transport,
 )
-from work_buddy.cowork.paths import CoworkPathError, resolve_markdown_path
+from work_buddy.cowork.paths import (
+    CoworkPathError,
+    resolve_document_source_path,
+    resolve_markdown_path,
+)
 from work_buddy.cowork.policy import document_surface_allowed
 from work_buddy.truth import documents, expressions, proposals, queries
 from work_buddy.truth.anchors import CompositeSelector
 from work_buddy.truth.contracts import Actor, InvariantViolation
 from work_buddy.truth.events import emit_truth_event
 from work_buddy.truth.expressions import ensure_document_span
-from work_buddy.truth.identity import parse_truth_uri, sha256_bytes
+from work_buddy.truth.identity import parse_truth_uri
 from work_buddy.truth.registry import TruthStoreRegistry
 from work_buddy.truth.store import DocumentRecord, TruthStore
 
@@ -59,6 +65,9 @@ cowork_blueprint = Blueprint("cowork", __name__)
 # dashboard surface must NOT reuse it: a real dashboard user threads through
 # instead (I17). Kept here only to document the boundary it must not cross.
 _MCP_HUMAN_REF = "work-buddy-user"
+_AUTOMATIC_PASTE_MAX_CHARS = 599
+_PROVENANCE_EXACT_MAX_CHARS = 1_000_000
+_PROVENANCE_CONTEXT_MAX_CHARS = 2_048
 
 # ---------------------------------------------------------------------------
 # Store resolution, identity, gating, and small response helpers.
@@ -114,6 +123,13 @@ def dashboard_user_ref(headers=None) -> str:
 
 def _actor_for_request() -> Actor:
     return Actor("human", dashboard_user_ref(request.headers))
+
+
+@cowork_blueprint.get("/api/truth/cowork/current-actor")
+def api_cowork_current_actor():
+    """Expose the immutable identity binding used by provenance ``Me`` values."""
+
+    return jsonify(provenance.actor_binding(_actor_for_request()))
 
 
 def _fail(message: str, status: int = 400):
@@ -187,19 +203,12 @@ def _emit(
 
 
 def _current_file_sha256(store: TruthStore, document: DocumentRecord) -> str | None:
-    try:
-        target = resolve_markdown_path(store, document.path).path
-    except CoworkPathError:
-        return None
-    if not target.is_file():
-        return None
-    try:
-        return sha256_bytes(target.read_bytes())
-    except OSError:
-        return None
+    return source_observation.observe_document_source_sha256(store, document)
 
 
 def _drift_from_hash(document: DocumentRecord, current: str | None) -> str:
+    if documents.source_is_detached(document):
+        return "clean"
     if current is None:
         return "missing"
     return "clean" if current == document.content_sha256 else "drifted"
@@ -396,7 +405,7 @@ def api_doc_list():
                 store, document, read_only=read_only
             ).to_dict()
             try:
-                resolve_markdown_path(store, document.path)
+                resolve_document_source_path(store, document)
             except CoworkPathError:
                 readiness_view.update(
                     {
@@ -415,15 +424,31 @@ def api_doc_list():
                 )
             if readiness_view["permissions"]["repair"]:
                 repairable_count += 1
-            current_file_sha256 = _current_file_sha256(store, document)
+            observed_source_sha256 = _current_file_sha256(store, document)
+            current_file_sha256 = (
+                document.content_sha256
+                if documents.source_is_detached(document)
+                else observed_source_sha256
+            )
+            import_source_sha256 = (
+                documents.retained_file_import_source_sha256(document.meta_json)
+                if documents.source_is_detached(document)
+                else None
+            )
             entry = {
                 "document_id": document.id,
                 "path": document.path,
                 "title": document.title or "",
                 "document_class": document.document_class,
                 "profile": document.document_class,
+                "source_writeback": documents.source_writeback_policy(document),
                 "lifecycle": lifecycle,
                 "current_file_sha256": current_file_sha256,
+                "import_source_sha256": import_source_sha256,
+                "observed_source_file_sha256": observed_source_sha256,
+                # Compatibility alias retained while clients move to the
+                # explicit observed-source field above.
+                "source_file_sha256": observed_source_sha256,
                 "last_materialized_sha256": document.content_sha256,
                 "drift_state": (
                     "unknown"
@@ -508,8 +533,23 @@ def api_doc_get(document_id: str):
             active=lifecycle == "active",
             conn=conn,
         )
+        authorship_attestations = provenance.list_attestations(
+            store,
+            document.id,
+            conn=conn,
+        )
     span_by_id = {row["id"]: row for row in span_rows}
-    current_file_sha256 = _current_file_sha256(store, document)
+    observed_source_sha256 = _current_file_sha256(store, document)
+    current_file_sha256 = (
+        document.content_sha256
+        if documents.source_is_detached(document)
+        else observed_source_sha256
+    )
+    import_source_sha256 = (
+        documents.retained_file_import_source_sha256(document.meta_json)
+        if documents.source_is_detached(document)
+        else None
+    )
     state = _drift_from_hash(document, current_file_sha256)
 
     payload = {
@@ -519,6 +559,9 @@ def api_doc_get(document_id: str):
         "title": document.title or "",
         "profile": document.document_class,
         "document_class": document.document_class,
+        "source_writeback": documents.source_writeback_policy(document),
+        "import_source_sha256": import_source_sha256,
+        "observed_source_file_sha256": observed_source_sha256,
         "lifecycle": lifecycle,
         "initialization_state": readiness_view["initialization_state"],
         "structured_head_sha256": readiness_view["structured_head_sha256"],
@@ -529,6 +572,11 @@ def api_doc_get(document_id: str):
             "ydoc_snapshot_sha256": document.ydoc_snapshot_sha256,
             "last_materialized_sha256": document.content_sha256,
             "current_file_sha256": current_file_sha256,
+            "import_source_sha256": import_source_sha256,
+            "observed_source_file_sha256": observed_source_sha256,
+            # Compatibility alias retained while clients move to the
+            # explicit observed-source field above.
+            "source_file_sha256": observed_source_sha256,
         },
         "drift": {"state": state, "diff_available": False},
         "open_proposals": [
@@ -548,6 +596,7 @@ def api_doc_get(document_id: str):
             claim_states,
         ),
         "provenance_spans": _provenance_spans(span_rows),
+        "authorship_attestations": authorship_attestations,
         "events_cursor": events[-1].id if events else "",
     }
     # Additive capability handshake. Older dashboard bundles ignore these
@@ -1309,6 +1358,207 @@ def api_doc_ydoc_push(document_id: str):
 
 
 # ---------------------------------------------------------------------------
+# Authorship and human-review attestations.
+# ---------------------------------------------------------------------------
+
+
+@cowork_blueprint.post("/api/truth/doc/<document_id>/authorship-attestations")
+def api_doc_authorship_attestation(document_id: str):
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    store, error = _resolve_store(request.args.get("store_id"))
+    if error:
+        return error
+    gate = _document_surface_or_403(store)
+    if gate:
+        return gate
+    document, doc_error = _resolve_document(store, document_id)
+    if doc_error:
+        return doc_error
+    if not document_surface_allowed(store, document):
+        return _fail(
+            "This document is not available in Co-work for this folder.",
+            403,
+        )
+
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return _fail("request body must be a JSON object", 400)
+    span = body.get("span")
+    attestation = body.get("attestation")
+    expected_head = body.get("expected_structured_head_sha256")
+    idempotency_key = body.get("idempotency_key")
+    basis_kind = body.get("basis_kind", "user_attestation")
+    if not isinstance(span, dict):
+        return _fail("span must be an object", 400)
+    exact = span.get("exact")
+    prefix = span.get("prefix", "")
+    suffix = span.get("suffix", "")
+    if not isinstance(exact, str) or not exact:
+        return _fail("span.exact is required", 400)
+    if not isinstance(prefix, str) or not isinstance(suffix, str):
+        return _fail("span.prefix and span.suffix must be strings", 400)
+    if len(exact) > _PROVENANCE_EXACT_MAX_CHARS:
+        return _fail("span.exact is too large", 413)
+    if (
+        len(prefix) > _PROVENANCE_CONTEXT_MAX_CHARS
+        or len(suffix) > _PROVENANCE_CONTEXT_MAX_CHARS
+    ):
+        return _fail("span context is too large", 413)
+    if not isinstance(attestation, dict):
+        return _fail("attestation must be an object", 400)
+    if not isinstance(expected_head, str) or not expected_head:
+        return _fail("expected_structured_head_sha256 is required", 400)
+    if not isinstance(idempotency_key, str) or not idempotency_key:
+        return _fail("idempotency_key is required", 400)
+    if basis_kind not in {
+        "automatic_short_text_attribution",
+        "user_attestation",
+    }:
+        return _fail("basis_kind is invalid", 400)
+
+    actor = _actor_for_request()
+    try:
+        normalized_attestation = provenance.normalize_attestation(
+            attestation,
+            actor=actor,
+        )
+        if basis_kind == "automatic_short_text_attribution":
+            expected_contributor = {
+                "kind": "human",
+                "ref": actor.ref,
+            }
+            contributors = normalized_attestation["authorship"]["contributors"]
+            if (
+                len(exact) > _AUTOMATIC_PASTE_MAX_CHARS
+                or normalized_attestation["authorship"]["kind"] != "human"
+                or len(contributors) != 1
+                or contributors[0].get("kind") != expected_contributor["kind"]
+                or contributors[0].get("ref") != expected_contributor["ref"]
+                or normalized_attestation["human_review"]["status"]
+                != "not_applicable"
+                or normalized_attestation["human_review"]["reviewers"]
+            ):
+                return _fail(
+                    "automatic short-text attribution is only available for "
+                    "short text authored by the acting user",
+                    400,
+                )
+        from work_buddy.consent import user_initiated
+
+        with user_initiated("dashboard.cowork.provenance_attestation"):
+            record, span_id = provenance.record_span_attestation(
+                store,
+                document_id=document.id,
+                exact=exact,
+                prefix=prefix,
+                suffix=suffix,
+                attestation=attestation,
+                actor=actor,
+                idempotency_key=idempotency_key,
+                source={"kind": "paste", "format": "plain_text"},
+                basis_kind=basis_kind,
+                expected_structured_head_sha256=expected_head,
+            )
+    except provenance.ProvenanceActorBindingError as exc:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": {
+                        "code": exc.code,
+                        "message": str(exc),
+                        "details": {},
+                        # The frozen determination must be revisited by the
+                        # user; blind transport retry under another actor can
+                        # never make this request safe.
+                        "retryable": False,
+                    },
+                }
+            ),
+            exc.status,
+        )
+    except provenance.ProvenanceConflictError as exc:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": {
+                        "code": exc.code,
+                        "message": str(exc),
+                        "details": exc.details,
+                        "retryable": exc.retryable,
+                    },
+                }
+            ),
+            exc.status,
+        )
+    except InvariantViolation as exc:
+        message = str(exc)
+        stale = "target changed" in message
+        forbidden = "not available in Co-work" in message
+        conflict = any(
+            marker in message
+            for marker in (
+                "retired document",
+                "recovery",
+                "pending",
+                "idempotency_key",
+            )
+        )
+        status = 403 if forbidden else 409 if stale or conflict else 400
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": {
+                        "code": (
+                            "provenance_target_changed"
+                            if stale
+                            else "provenance_state_conflict"
+                            if conflict
+                            else "invalid_provenance_attestation"
+                        ),
+                        "message": message,
+                        "details": {},
+                        "retryable": stale or "pending" in message,
+                    },
+                }
+            ),
+            status,
+        )
+
+    _emit(
+        "truth.doc_provenance_attested",
+        store.store_id,
+        {
+            "document_id": document.id,
+            "attestation_id": record.id,
+            "document_span_id": span_id,
+            "target_structured_head_sha256": (
+                record.target_structured_head_sha256
+            ),
+            "basis_kind": record.basis_kind,
+        },
+        event_id=f"truth-doc-provenance-{record.id}",
+    )
+    return (
+        jsonify(
+            {
+                "ok": True,
+                "attestation_id": record.id,
+                "document_span_id": span_id,
+                "target_structured_head_sha256": (
+                    record.target_structured_head_sha256
+                ),
+            }
+        ),
+        201,
+    )
+
+
+# ---------------------------------------------------------------------------
 # R5 marks (the sitting).
 # ---------------------------------------------------------------------------
 
@@ -1350,6 +1600,7 @@ def api_doc_drift(document_id: str):
     if doc_error:
         return doc_error
     state = lifecycle_state.inspect_lifecycle_state(store, document)
+    source_detached = documents.source_is_detached(document)
     baseline = state.materialized_version
     baseline_etag = (
         f'"{document.content_sha256}"' if state.baseline_available else None
@@ -1362,7 +1613,7 @@ def api_doc_drift(document_id: str):
     return jsonify(
         {
             "ok": True,
-            "state": state.drift_state,
+            "state": "clean" if source_detached else state.drift_state,
             "last_materialized_sha256": document.content_sha256,
             "materialized_file_sha256": document.content_sha256,
             "current_file_sha256": state.current_file_sha256,
@@ -1389,11 +1640,14 @@ def api_doc_drift(document_id: str):
                 "source_url": f"/api/truth/doc/{document.id}/source?store_id={store.store_id}&version=current",
             },
             "diff": None,
-            "diff_available": state.baseline_available
+            "diff_available": not source_detached
+            and state.baseline_available
             and state.current_file_sha256 is not None,
-            "can_reimport": state.drift_state == "drifted"
+            "can_reimport": not source_detached
+            and state.drift_state == "drifted"
             and not state.unmaterialized_structured_edits
             and state.initialization_state == "ready",
+            "source_writeback": documents.source_writeback_policy(document),
         }
     )
 

@@ -36,14 +36,14 @@ from work_buddy.conversations.store import (
     record_action_snapshot_consumption,
     resolve_action_snapshot_consumption,
 )
-from work_buddy.cowork import conversations, feedback
+from work_buddy.cowork import conversations, feedback, provenance, source_observation
 from work_buddy.cowork.document_agent import document_agent_consumer
 from work_buddy.mcp_server.op_registry import register_op
 from work_buddy.truth import documents, expressions, proposals, ydoc_store
 from work_buddy.truth.anchors import CompositeSelector, parse_selector
 from work_buddy.truth.contracts import InvariantViolation
 from work_buddy.truth.events import emit_truth_event
-from work_buddy.truth.identity import new_id, sha256_bytes
+from work_buddy.truth.identity import new_id
 from work_buddy.truth.registry import TruthStoreRegistry
 from work_buddy.truth.store import EXPRESSION_ROLES, TruthStore
 
@@ -220,16 +220,8 @@ def _claim_refs_view(claim_refs_json: str | None) -> list[dict[str, str]]:
     return view
 
 
-def _current_file_sha256(store: TruthStore, path: str) -> str | None:
-    from work_buddy.cowork.paths import CoworkPathError, resolve_markdown_path
-
-    try:
-        target = resolve_markdown_path(store, path).path
-    except CoworkPathError:
-        return None
-    if not target.is_file():
-        return None
-    return sha256_bytes(target.read_bytes())
+def _current_file_sha256(store: TruthStore, document: Any) -> str | None:
+    return source_observation.observe_document_source_sha256(store, document)
 
 
 def _proposal_view(
@@ -319,13 +311,23 @@ def cowork_doc_list(store_id: str, profile: str | None = None) -> dict[str, Any]
     docs_payload: list[dict[str, Any]] = []
     with store._read_connection() as conn:
         for document in documents.list_documents(store, conn=conn):
-            current_file = _current_file_sha256(store, document.path)
+            observed_source = _current_file_sha256(store, document)
+            import_source = documents.retained_file_import_source_sha256(
+                document.meta_json
+            )
+            current_file = (
+                document.content_sha256
+                if documents.source_is_detached(document)
+                else observed_source
+            )
             state = documents.drift_state(
                 store,
                 document.id,
                 current_file_sha256=current_file,
                 conn=conn,
             )
+            if documents.source_is_detached(document):
+                state = "clean"
             open_props = proposals.open_proposals(
                 store, document_id=document.id, conn=conn
             )
@@ -339,7 +341,15 @@ def cowork_doc_list(store_id: str, profile: str | None = None) -> dict[str, Any]
                     "path": document.path,
                     "title": document.title,
                     "document_class": document.document_class,
+                    "source_writeback": documents.source_writeback_policy(
+                        document
+                    ),
                     "current_file_sha256": current_file,
+                    "import_source_sha256": import_source,
+                    "observed_source_file_sha256": observed_source,
+                    # Compatibility alias for callers that predate the
+                    # recorded-vs-observed source distinction.
+                    "source_file_sha256": observed_source,
                     "last_materialized_sha256": document.content_sha256,
                     "drift_state": state,
                     "open_proposal_count": edit_count,
@@ -403,13 +413,23 @@ def cowork_doc_get(
                     document_id,
                     conn=conn,
                 )
-                current_file = _current_file_sha256(store, document.path)
+                observed_source = _current_file_sha256(store, document)
+                import_source = documents.retained_file_import_source_sha256(
+                    document.meta_json
+                )
+                current_file = (
+                    document.content_sha256
+                    if documents.source_is_detached(document)
+                    else observed_source
+                )
                 state = documents.drift_state(
                     store,
                     document.id,
                     current_file_sha256=current_file,
                     conn=conn,
                 )
+                if documents.source_is_detached(document):
+                    state = "clean"
                 open_props = proposals.open_proposals(
                     store, document_id=document.id, conn=conn
                 )
@@ -429,6 +449,11 @@ def cowork_doc_get(
                     conversation_id=conversation_id,
                     conn=conn,
                 )
+                provenance_payload = provenance.list_attestations(
+                    store,
+                    document.id,
+                    conn=conn,
+                )
     except ConversationLeaseLost:
         return {
             "ok": False,
@@ -443,15 +468,24 @@ def cowork_doc_get(
         "path": document.path,
         "title": document.title,
         "document_class": document.document_class,
+        "source_writeback": documents.source_writeback_policy(document),
+        "import_source_sha256": import_source,
+        "observed_source_file_sha256": observed_source,
         "hashes": {
             "ydoc_snapshot_sha256": document.ydoc_snapshot_sha256,
             "last_materialized_sha256": document.content_sha256,
             "current_file_sha256": current_file,
+            "import_source_sha256": import_source,
+            "observed_source_file_sha256": observed_source,
+            # Compatibility alias for callers that predate the
+            # recorded-vs-observed source distinction.
+            "source_file_sha256": observed_source,
         },
         "drift": {"state": state, "diff_available": state == "drifted"},
         "open_proposals": open_payload,
         "expressions": expr_payload,
         "feedback": feedback_payload,
+        "authorship_attestations": provenance_payload,
     }
 
 

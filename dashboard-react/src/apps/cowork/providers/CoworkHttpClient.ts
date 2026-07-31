@@ -11,13 +11,20 @@ import type {
 } from "../contracts";
 import { buildEditorExtensions } from "../editor/extensions";
 import { HttpCoworkYdocTransport } from "../persistence/HttpCoworkYdocTransport";
+import type {
+  CoworkPasteProvenanceRequest,
+  CoworkProvenanceActorIdentity,
+  CoworkProvenanceDetermination,
+} from "../provenance";
 import { CoworkHttpError, normalizeCoworkError } from "./errors";
 
 type JsonRecord = Record<string, unknown>;
 
 export const COWORK_FOLDER_PICKER_INTENT_HEADER = "X-Work-Buddy-Intent";
 export const COWORK_FOLDER_PICKER_INTENT = "cowork-folder-picker";
+/** @deprecated Used only by chooseMarkdownFile compatibility calls. */
 export const COWORK_MARKDOWN_PICKER_INTENT = "cowork-markdown-picker";
+export const COWORK_IMPORT_PICKER_INTENT = "cowork-import-picker";
 export const COWORK_LOCATION_PICKER_INTENT = "cowork-location-picker";
 
 const record = (value: unknown): JsonRecord =>
@@ -47,6 +54,56 @@ const normalizeNativePathResult = (
   return { cancelled: false, path: payload.path };
 };
 
+const IMPORTER_ID = /^[a-z][a-z0-9._-]{0,63}\/v[1-9][0-9]{0,8}$/u;
+const SOURCE_FORMAT = /^[a-z][a-z0-9._-]{0,39}$/u;
+const MEDIA_TYPE =
+  /^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}\/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}$/u;
+const IMPORT_SUFFIX = /^\.[A-Za-z0-9][A-Za-z0-9._+-]{0,15}$/u;
+
+const normalizeImportDescriptor = (
+  value: unknown,
+): CoworkImportDescriptor | null => {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const source = value as JsonRecord;
+  const importerId = text(source.importer_id);
+  const displayName = text(source.display_name);
+  const sourceFormat = text(source.source_format);
+  const mediaType = text(source.media_type);
+  const rawSuffixes = source.suffixes;
+  const maxSourceBytes = source.max_source_bytes;
+  if (
+    !IMPORTER_ID.test(importerId) ||
+    displayName.length === 0 ||
+    displayName !== displayName.trim() ||
+    Array.from(displayName).length > 80 ||
+    /[\u0000-\u001f]/u.test(displayName) ||
+    !SOURCE_FORMAT.test(sourceFormat) ||
+    !MEDIA_TYPE.test(mediaType) ||
+    !Array.isArray(rawSuffixes) ||
+    rawSuffixes.length === 0 ||
+    rawSuffixes.some(
+      (suffix) => typeof suffix !== "string" || !IMPORT_SUFFIX.test(suffix),
+    ) ||
+    new Set(rawSuffixes.map((suffix) => String(suffix).toLocaleLowerCase("en-US")))
+      .size !== rawSuffixes.length ||
+    typeof maxSourceBytes !== "number" ||
+    !Number.isSafeInteger(maxSourceBytes) ||
+    maxSourceBytes <= 0
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    importerId,
+    displayName,
+    sourceFormat,
+    mediaType,
+    suffixes: Object.freeze(rawSuffixes.map((suffix) => String(suffix))),
+    maxSourceBytes,
+  });
+};
+
 export interface CoworkFolderListResult {
   readonly readOnly: boolean;
   readonly folders: readonly CoworkFolderSummary[];
@@ -64,6 +121,39 @@ export interface CoworkNativePathResult {
   /** Folder-relative path. An empty path is the active Folder root. */
   readonly path: string;
 }
+
+export interface CoworkImportDescriptor {
+  /** Exact versioned converter contract selected by the server. */
+  readonly importerId: string;
+  readonly displayName: string;
+  readonly sourceFormat: string;
+  readonly mediaType: string;
+  readonly suffixes: readonly string[];
+  readonly maxSourceBytes: number;
+}
+
+interface CoworkSelectedImportPathResult extends CoworkNativePathResult {
+  readonly cancelled: false;
+  /** Format/version-neutral converter identity selected by the server registry. */
+  readonly importerId: string;
+  /** Source media type supplied to that converter; not an editor projection type. */
+  readonly mediaType: string;
+  /** Hash of the unchanged selected source file. */
+  readonly sourceSha256: string;
+  /** Server-authoritative source-format and admission descriptor. */
+  readonly importer: CoworkImportDescriptor;
+}
+
+export type CoworkImportPathResult =
+  | CoworkSelectedImportPathResult
+  | {
+      readonly cancelled: true;
+      readonly path: "";
+      readonly importerId: "";
+      readonly mediaType: "";
+      readonly sourceSha256: "";
+      readonly importer: null;
+    };
 
 export type CoworkInspectionStatus =
   | "inspection_pending"
@@ -120,9 +210,18 @@ export interface CoworkBootstrapMetadata {
   readonly path: string;
   readonly title?: string;
   readonly initialSourceSha256?: string;
+  readonly importerId?: string;
+  readonly sourceMediaType?: string;
+  readonly authorshipAttestation?: CoworkProvenanceDetermination;
   readonly expectedFileSha256?: string | null;
   readonly documentId?: string | null;
   readonly idempotencyKey: string;
+}
+
+export interface CoworkPasteProvenanceReceipt {
+  readonly attestationId: string;
+  readonly documentSpanId: string;
+  readonly targetStructuredHeadSha256: string;
 }
 
 export interface CoworkDriftSource {
@@ -256,12 +355,34 @@ export const normalizeDocumentSummary = (value: unknown): CoworkDocumentSummary 
   const suppliedTitle = text(source.title).trim();
   const pathParts = path.split(/[\\/]/u);
   const fallbackTitle = pathParts[pathParts.length - 1] || path || "Untitled document";
+  const hasSnakeCaseWriteback = Object.prototype.hasOwnProperty.call(
+    source,
+    "source_writeback",
+  );
+  const hasCamelCaseWriteback = Object.prototype.hasOwnProperty.call(
+    source,
+    "sourceWriteback",
+  );
+  const rawSourceWriteback = hasSnakeCaseWriteback
+    ? source.source_writeback
+    : hasCamelCaseWriteback
+      ? source.sourceWriteback
+      : undefined;
   return {
     documentId: text(source.document_id ?? source.documentId),
     path,
     title: suppliedTitle.length > 0 ? suppliedTitle : fallbackTitle,
     profile: text(source.profile ?? source.document_class, "co_authored"),
     documentClass: text(source.document_class ?? source.documentClass, "co_authored"),
+    // Absence identifies a legacy payload from before this field existed.
+    // Once a server supplies the field, accept only the exact known values
+    // and fail closed for malformed or future values.
+    sourceWriteback:
+      !hasSnakeCaseWriteback && !hasCamelCaseWriteback
+        ? "same_file"
+        : rawSourceWriteback === "same_file"
+          ? "same_file"
+          : "never",
     lifecycle: text(source.lifecycle, "active") as "active" | "retired",
     initializationState: initialization,
     structuredHeadSha256: nullableText(
@@ -285,6 +406,21 @@ export const normalizeDocumentSummary = (value: unknown): CoworkDocumentSummary 
       source.current_file_sha256 ??
         source.currentFileSha256 ??
         hashes.current_file_sha256,
+    ),
+    importSourceSha256: nullableText(
+      source.import_source_sha256 ??
+        source.importSourceSha256 ??
+        hashes.import_source_sha256 ??
+        hashes.importSourceSha256,
+    ),
+    observedSourceFileSha256: nullableText(
+      source.observed_source_file_sha256 ??
+        source.observedSourceFileSha256 ??
+        source.source_file_sha256 ??
+        source.sourceFileSha256 ??
+        hashes.observed_source_file_sha256 ??
+        hashes.observedSourceFileSha256 ??
+        hashes.source_file_sha256,
     ),
     projectionBlobAvailable: bool(
       source.projection_blob_available ?? source.projectionBlobAvailable,
@@ -375,6 +511,30 @@ export class CoworkHttpClient {
     return record(payload);
   }
 
+  async currentActor(): Promise<CoworkProvenanceActorIdentity> {
+    const payload = await this.#json("/api/truth/cowork/current-actor");
+    const ref = text(payload.ref).trim();
+    const identityStatus = text(payload.identity_status);
+    if (
+      payload.kind !== "human" ||
+      ref.length === 0 ||
+      (identityStatus !== "local_actor_ref" &&
+        identityStatus !== "account_ref")
+    ) {
+      throw new CoworkHttpError({
+        code: "invalid_current_actor_response",
+        message:
+          "Co-work couldn’t bind this action to the current identity.",
+        retryable: true,
+      });
+    }
+    return {
+      kind: "human",
+      ref,
+      identity_status: identityStatus,
+    };
+  }
+
   async listFolders(includeIneligible = false): Promise<CoworkFolderListResult> {
     const payload = await this.#json(
       `/api/truth/cowork/folders?include_ineligible=${includeIneligible ? "1" : "0"}`,
@@ -390,8 +550,11 @@ export class CoworkHttpClient {
       chooser: {
         available,
         kind: text(chooser.kind, "host"),
-        markdownAvailable: bool(
-          chooser.markdown_available ?? chooser.markdownAvailable,
+        importAvailable: bool(
+          chooser.import_available ??
+            chooser.importAvailable ??
+            chooser.markdown_available ??
+            chooser.markdownAvailable,
           available,
         ),
         locationAvailable: bool(
@@ -419,6 +582,10 @@ export class CoworkHttpClient {
     };
   }
 
+  /**
+   * @deprecated Compatibility seam for older embedders. The From file
+   * workflow uses chooseImportFile and its typed importer identity.
+   */
   async chooseMarkdownFile(storeId: string): Promise<CoworkNativePathResult> {
     const payload = await this.#json("/api/truth/cowork/files/choose-markdown", {
       method: "POST",
@@ -429,6 +596,55 @@ export class CoworkHttpClient {
       body: JSON.stringify({ store_id: storeId }),
     });
     return normalizeNativePathResult(payload, "Markdown");
+  }
+
+  async chooseImportFile(storeId: string): Promise<CoworkImportPathResult> {
+    const payload = await this.#json("/api/truth/cowork/files/choose-import", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        [COWORK_FOLDER_PICKER_INTENT_HEADER]: COWORK_IMPORT_PICKER_INTENT,
+      },
+      body: JSON.stringify({ store_id: storeId }),
+    });
+    const selected = normalizeNativePathResult(payload, "file");
+    if (selected.cancelled) {
+      return {
+        cancelled: true,
+        path: "",
+        importerId: "",
+        mediaType: "",
+        sourceSha256: "",
+        importer: null,
+      };
+    }
+    const importerId = text(payload.importer_id);
+    const mediaType = text(payload.media_type);
+    const sourceSha256 = text(payload.source_sha256);
+    const importer = normalizeImportDescriptor(payload.importer);
+    if (
+      importerId.length === 0 ||
+      mediaType.length === 0 ||
+      !/^[0-9a-f]{64}$/u.test(sourceSha256) ||
+      importer === null ||
+      importer.importerId !== importerId ||
+      importer.mediaType !== mediaType
+    ) {
+      throw new CoworkHttpError({
+        code: "invalid_picker_response",
+        message:
+          "The file picker did not return a valid, versioned importer descriptor.",
+        retryable: true,
+      });
+    }
+    return {
+      cancelled: false,
+      path: selected.path,
+      importerId,
+      mediaType,
+      sourceSha256,
+      importer,
+    };
   }
 
   async chooseLocation(storeId: string): Promise<CoworkNativePathResult> {
@@ -660,6 +876,15 @@ export class CoworkHttpClient {
           ? {}
           : { initial_source_sha256: metadata.initialSourceSha256 }),
         expected_file_sha256: metadata.expectedFileSha256 ?? null,
+        ...(metadata.importerId === undefined
+          ? {}
+          : { importer_id: metadata.importerId }),
+        ...(metadata.sourceMediaType === undefined
+          ? {}
+          : { source_media_type: metadata.sourceMediaType }),
+        ...(metadata.authorshipAttestation === undefined
+          ? {}
+          : { authorship_attestation: metadata.authorshipAttestation }),
         document_id: metadata.documentId ?? null,
         idempotency_key: metadata.idempotencyKey,
       }),
@@ -711,21 +936,77 @@ export class CoworkHttpClient {
     prepared: CoworkBootstrapPrepared,
     snapshot: Uint8Array,
     snapshotSha256: string,
+    projection: Uint8Array,
+    projectionSha256: string,
   ): Promise<CoworkDocumentSummary> {
+    const form = new FormData();
+    form.append(
+      "metadata",
+      JSON.stringify({
+        source_sha256: prepared.sourceSha256,
+        snapshot_sha256: snapshotSha256,
+        projection_sha256: projectionSha256,
+        ydoc_schema: prepared.ydocSchema,
+      }),
+    );
+    form.append(
+      "snapshot",
+      new Blob([snapshot as BlobPart], { type: "application/octet-stream" }),
+    );
+    form.append(
+      "projection",
+      new Blob([projection as BlobPart], { type: "text/markdown;charset=utf-8" }),
+    );
     const payload = await this.#json(
       `/api/truth/doc/bootstrap/${encodeURIComponent(prepared.bootstrapId)}?store_id=${encodeURIComponent(storeId)}`,
       {
         method: "PUT",
-        headers: {
-          "Content-Type": "application/octet-stream",
-          "X-WB-Source-Sha256": prepared.sourceSha256,
-          "X-WB-Snapshot-Sha256": snapshotSha256,
-          "X-WB-Ydoc-Schema": prepared.ydocSchema,
-        },
-        body: snapshot as BodyInit,
+        body: form,
       },
     );
     return normalizeDocumentSummary(payload.document ?? payload);
+  }
+
+  async recordPasteProvenance(
+    request: CoworkPasteProvenanceRequest,
+  ): Promise<CoworkPasteProvenanceReceipt> {
+    const payload = await this.#json(
+      `/api/truth/doc/${encodeURIComponent(request.documentId)}/authorship-attestations?store_id=${encodeURIComponent(request.storeId)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          span: request.anchor,
+          attestation: request.attestation,
+          basis_kind: request.basisKind,
+          expected_structured_head_sha256:
+            request.expectedStructuredHeadSha256,
+          idempotency_key: request.idempotencyKey,
+        }),
+      },
+    );
+    const attestationId = text(payload.attestation_id);
+    const documentSpanId = text(payload.document_span_id);
+    const targetStructuredHeadSha256 = text(
+      payload.target_structured_head_sha256,
+    );
+    if (
+      attestationId.length === 0 ||
+      documentSpanId.length === 0 ||
+      targetStructuredHeadSha256 !== request.expectedStructuredHeadSha256
+    ) {
+      throw new CoworkHttpError({
+        code: "invalid_provenance_response",
+        message:
+          "Co-work could not confirm where the pasted text was recorded.",
+        retryable: true,
+      });
+    }
+    return {
+      attestationId,
+      documentSpanId,
+      targetStructuredHeadSha256,
+    };
   }
 
   async cancelBootstrap(storeId: string, bootstrapId: string): Promise<void> {

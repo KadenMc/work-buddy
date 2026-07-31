@@ -175,9 +175,16 @@ def test_qt_helper_requests_platform_native_dialogs(
         == "C:\\Selected.md"
     )
     assert observed["file_dialog"][1:] == (
-        "New from Markdown",
+        "From file",
         str(tmp_path.resolve()),
         folder_picker_helper.MARKDOWN_FILE_FILTER,
+    )
+
+    assert folder_picker_helper._choose_native_file(tmp_path) == "C:\\Selected.md"
+    assert observed["file_dialog"][1:] == (
+        "From file",
+        str(tmp_path.resolve()),
+        folder_picker_helper.SUPPORTED_FILE_FILTER,
     )
 
     assert folder_picker_helper._choose_native_location(tmp_path) == "C:\\Selected"
@@ -215,6 +222,37 @@ def test_helper_cli_binds_mode_and_validated_start(
     assert json.loads(capsys.readouterr().out) == {
         "protocol": folder_picker_helper.PICKER_PROTOCOL,
         "mode": folder_picker_helper.PICKER_MODE_MARKDOWN,
+        "path": str(tmp_path / "notes.md"),
+    }
+
+
+def test_helper_cli_supports_the_generic_file_mode(
+    monkeypatch,
+    tmp_path,
+    capsys,
+) -> None:
+    observed: dict[str, object] = {}
+
+    def choose(start):
+        observed["start"] = start
+        return str(tmp_path / "notes.md")
+
+    monkeypatch.setattr(folder_picker_helper, "_choose_native_file", choose)
+
+    result = folder_picker_helper.main(
+        [
+            "--mode",
+            folder_picker_helper.PICKER_MODE_FILE,
+            "--start",
+            str(tmp_path),
+        ]
+    )
+
+    assert result == 0
+    assert observed["start"] == tmp_path.resolve()
+    assert json.loads(capsys.readouterr().out) == {
+        "protocol": folder_picker_helper.PICKER_PROTOCOL,
+        "mode": folder_picker_helper.PICKER_MODE_FILE,
         "path": str(tmp_path / "notes.md"),
     }
 

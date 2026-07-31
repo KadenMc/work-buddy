@@ -47,8 +47,10 @@ from work_buddy.truth.identity import (
 )
 from work_buddy.truth.migrations import (
     REDACTED_SELECTOR_JSON,
+    backfill_v8_legacy_import_provenance,
     current_version,
     migrate,
+    needs_v8_legacy_import_provenance_backfill,
 )
 from work_buddy.truth.profiles import (
     StoreProfile,
@@ -357,6 +359,31 @@ class DocumentSpanRecord:
     created_at: str
     created_by_kind: str
     created_by_ref: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentProvenanceAttestationRecord:
+    id: str
+    document_id: str
+    target_kind: str
+    document_version_id: str | None
+    document_span_id: str | None
+    target_structured_head_sha256: str
+    authorship_kind: str
+    human_contributors_json: str
+    review_status: str
+    human_reviewers_json: str
+    source_kind: str
+    source_json: str
+    basis_kind: str
+    basis_ref: str | None
+    supersedes_id: str | None
+    idempotency_key: str
+    canonical_sha256: str
+    created_at: str
+    attested_by_kind: str
+    attested_by_ref: str | None
+    attested_by_meta_json: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -756,6 +783,7 @@ class TruthStore:
         # older engine leaves a future store byte-for-byte untouched.
         conn = store._open_connection(configure_storage=False)
         migrated = False
+        compatibility_backfilled = False
         try:
             try:
                 starting_version = int(
@@ -763,6 +791,17 @@ class TruthStore:
                 )
                 version = migrate(conn, paths.db)
                 migrated = version != starting_version
+                if needs_v8_legacy_import_provenance_backfill(conn):
+                    conn.execute("BEGIN IMMEDIATE")
+                    try:
+                        compatibility_backfilled = bool(
+                            backfill_v8_legacy_import_provenance(conn)
+                        )
+                        conn.execute("COMMIT")
+                    except Exception:
+                        if conn.in_transaction:
+                            conn.execute("ROLLBACK")
+                        raise
             except SchemaVersionTooNew as exc:
                 raise StoreVersionError(str(exc)) from exc
             rows = conn.execute("SELECT * FROM store_info").fetchall()
@@ -790,10 +829,11 @@ class TruthStore:
         # cleanup is attempted even if projection recovery reports a hook error,
         # so one failed observer cannot strand sensitive bytes indefinitely.
         try:
-            if migrated:
+            if migrated or compatibility_backfilled:
                 # Migration is itself a committed state change and retains its
                 # normal hook even if another recovery caller just cleared a
-                # redaction marker.
+                # redaction marker. The same applies to an idempotent
+                # compatibility backfill for an early current-schema store.
                 store._run_on_commit()
             else:
                 store.recover_pending_redactions()
@@ -1868,7 +1908,7 @@ class TruthStore:
         live_only: bool = True,
         conn: sqlite3.Connection | None = None,
     ) -> int:
-        """Count every evidence/document/version reference to a content blob."""
+        """Count every evidence/document/version/import-source blob reference."""
         normalized = _valid_digest(digest, "content_sha256")
         evidence_sql = (
             "SELECT COUNT(*) FROM evidence WHERE content_sha256 = ? "
@@ -1886,10 +1926,28 @@ class TruthStore:
             "OR target_blob_sha256 = ?)"
         )
         params = (normalized,) * 7
+
+        def count_with_import_sources(read_conn: sqlite3.Connection) -> int:
+            count = int(read_conn.execute(sql, params).fetchone()[0])
+            # Do not depend on SQLite JSON1 for a deletion-safety decision.
+            # Parsing through the document-source contract also prevents
+            # unrelated hashes in meta_json from pinning arbitrary blobs.
+            from work_buddy.truth.documents import (
+                retained_file_import_source_sha256,
+            )
+
+            source_refs = sum(
+                retained_file_import_source_sha256(row["meta_json"]) == normalized
+                for row in read_conn.execute(
+                    "SELECT meta_json FROM documents"
+                ).fetchall()
+            )
+            return count + source_refs
+
         if conn is not None:
-            return int(conn.execute(sql, params).fetchone()[0])
+            return count_with_import_sources(conn)
         with self._read_connection() as read_conn:
-            return int(read_conn.execute(sql, params).fetchone()[0])
+            return count_with_import_sources(read_conn)
 
     def capture_evidence(
         self,
@@ -2659,6 +2717,19 @@ class TruthStore:
             )
         )
 
+    def _get_document_version_locked(
+        self,
+        conn: sqlite3.Connection,
+        version_id: str,
+    ) -> DocumentVersionRecord | None:
+        return _row(
+            DocumentVersionRecord,
+            conn.execute(
+                "SELECT * FROM document_versions WHERE id = ?",
+                (version_id,),
+            ).fetchone(),
+        )
+
     def _advance_document_pointers_locked(
         self,
         conn: sqlite3.Connection,
@@ -2748,6 +2819,255 @@ class TruthStore:
                 (document_id, span_sha256),
             ).fetchone(),
         )
+
+    def _insert_document_provenance_attestation_locked(
+        self,
+        conn: sqlite3.Connection,
+        record: DocumentProvenanceAttestationRecord,
+    ) -> DocumentProvenanceAttestationRecord:
+        """Append one canonical attestation after validating its frozen target."""
+
+        from work_buddy.truth.provenance import (
+            attestation_canonical_sha256_from_record,
+            validate_attestation_components,
+        )
+
+        self._require_transaction(conn)
+        identifier = _valid_record_id(record.id, "provenance attestation id")
+        document_id = _valid_record_id(record.document_id, "document_id")
+        document = self._get_document_locked(conn, document_id)
+        if document is None:
+            raise InvariantViolation(f"document does not exist: {document_id}")
+        version_id = (
+            None
+            if record.document_version_id is None
+            else _valid_record_id(
+                record.document_version_id,
+                "document_version_id",
+            )
+        )
+        span_id = (
+            None
+            if record.document_span_id is None
+            else _valid_record_id(record.document_span_id, "document_span_id")
+        )
+        validate_attestation_components(
+            target_kind=record.target_kind,
+            document_version_id=version_id,
+            document_span_id=span_id,
+            authorship_kind=record.authorship_kind,
+            human_contributors=record.human_contributors_json,
+            review_status=record.review_status,
+            human_reviewers=record.human_reviewers_json,
+            source_kind=record.source_kind,
+            source=record.source_json,
+            basis_kind=record.basis_kind,
+            basis_ref=record.basis_ref,
+            attested_by_kind=record.attested_by_kind,
+            attested_by_ref=record.attested_by_ref,
+            attested_by_meta=record.attested_by_meta_json,
+        )
+        target_head = _valid_digest(
+            record.target_structured_head_sha256,
+            "target_structured_head_sha256",
+        )
+        if record.target_kind == "document_version":
+            assert version_id is not None
+            version = self._get_document_version_locked(conn, version_id)
+            if version is None or version.document_id != document_id:
+                raise InvariantViolation(
+                    "document_version target does not belong to the document"
+                )
+            if version.structured_head_sha256 != target_head:
+                raise InvariantViolation(
+                    "target_structured_head_sha256 does not match the "
+                    "document version"
+                )
+        else:
+            assert span_id is not None
+            span = self._get_document_span_locked(conn, span_id)
+            if span is None or span.document_id != document_id:
+                raise InvariantViolation(
+                    "document_span target does not belong to the document"
+                )
+
+        supersedes_id = (
+            None
+            if record.supersedes_id is None
+            else _valid_record_id(record.supersedes_id, "supersedes_id")
+        )
+        if supersedes_id is not None:
+            if supersedes_id == identifier:
+                raise InvariantViolation(
+                    "provenance attestation cannot supersede itself"
+                )
+            prior = self._get_document_provenance_attestation_locked(
+                conn,
+                supersedes_id,
+            )
+            if prior is None:
+                raise InvariantViolation(
+                    f"superseded attestation does not exist: {supersedes_id}"
+                )
+            if (
+                prior.document_id != document_id
+                or prior.target_kind != record.target_kind
+                or prior.document_version_id != version_id
+                or prior.document_span_id != span_id
+            ):
+                raise InvariantViolation(
+                    "superseded attestation must describe the same frozen target"
+                )
+            if _parse_time(
+                prior.created_at,
+                "superseded attestation created_at",
+            ) > _parse_time(record.created_at, "attestation created_at"):
+                raise InvariantViolation(
+                    "superseded attestation cannot be newer than its replacement"
+                )
+
+        canonical = _valid_digest(
+            record.canonical_sha256,
+            "provenance canonical_sha256",
+        )
+        values = {
+            field: getattr(record, field)
+            for field in DocumentProvenanceAttestationRecord.__dataclass_fields__
+        }
+        if attestation_canonical_sha256_from_record(values) != canonical:
+            raise InvariantViolation(
+                "provenance canonical_sha256 does not match the attestation"
+            )
+        _require_text(record.idempotency_key, "idempotency_key")
+        _timestamp(record.created_at, "provenance attestation created_at")
+
+        conn.execute(
+            "INSERT INTO document_provenance_attestations "
+            "(id, document_id, target_kind, document_version_id, "
+            "document_span_id, target_structured_head_sha256, authorship_kind, "
+            "human_contributors_json, review_status, human_reviewers_json, "
+            "source_kind, source_json, basis_kind, basis_ref, supersedes_id, "
+            "idempotency_key, canonical_sha256, created_at, attested_by_kind, "
+            "attested_by_ref, attested_by_meta_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                identifier,
+                document_id,
+                record.target_kind,
+                version_id,
+                span_id,
+                target_head,
+                record.authorship_kind,
+                record.human_contributors_json,
+                record.review_status,
+                record.human_reviewers_json,
+                record.source_kind,
+                record.source_json,
+                record.basis_kind,
+                record.basis_ref,
+                supersedes_id,
+                record.idempotency_key,
+                canonical,
+                record.created_at,
+                record.attested_by_kind,
+                record.attested_by_ref,
+                record.attested_by_meta_json,
+            ),
+        )
+        self._insert_ledger_record_locked(
+            conn,
+            "document_provenance_attestation",
+            identifier,
+        )
+        return record
+
+    def _get_document_provenance_attestation_locked(
+        self,
+        conn: sqlite3.Connection,
+        attestation_id: str,
+    ) -> DocumentProvenanceAttestationRecord | None:
+        return _row(
+            DocumentProvenanceAttestationRecord,
+            conn.execute(
+                "SELECT * FROM document_provenance_attestations WHERE id = ?",
+                (attestation_id,),
+            ).fetchone(),
+        )
+
+    def _document_provenance_attestations_locked(
+        self,
+        conn: sqlite3.Connection,
+        document_id: str,
+    ) -> tuple[DocumentProvenanceAttestationRecord, ...]:
+        return tuple(
+            DocumentProvenanceAttestationRecord(**dict(row))
+            for row in conn.execute(
+                "SELECT * FROM document_provenance_attestations "
+                "WHERE document_id = ? ORDER BY created_at, rowid",
+                (document_id,),
+            )
+        )
+
+    def append_document_provenance_attestation(
+        self,
+        record: DocumentProvenanceAttestationRecord,
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> DocumentProvenanceAttestationRecord:
+        """Append a fully specified provenance attestation."""
+
+        if not isinstance(record, DocumentProvenanceAttestationRecord):
+            raise TypeError(
+                "record must be a DocumentProvenanceAttestationRecord"
+            )
+        with self.write_transaction(conn) as write_conn:
+            return self._insert_document_provenance_attestation_locked(
+                write_conn,
+                record,
+            )
+
+    def get_document_provenance_attestation(
+        self,
+        attestation_id: str,
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> DocumentProvenanceAttestationRecord | None:
+        """Return one provenance attestation by durable id."""
+
+        identifier = _valid_record_id(
+            attestation_id,
+            "provenance attestation id",
+        )
+        if conn is not None:
+            return self._get_document_provenance_attestation_locked(
+                conn,
+                identifier,
+            )
+        with self._read_connection() as read_conn:
+            return self._get_document_provenance_attestation_locked(
+                read_conn,
+                identifier,
+            )
+
+    def list_document_provenance_attestations(
+        self,
+        document_id: str,
+        *,
+        conn: sqlite3.Connection | None = None,
+    ) -> tuple[DocumentProvenanceAttestationRecord, ...]:
+        """Return all provenance assertions, including superseded history."""
+
+        identifier = _valid_record_id(document_id, "document_id")
+        if conn is not None:
+            return self._document_provenance_attestations_locked(
+                conn,
+                identifier,
+            )
+        with self._read_connection() as read_conn:
+            return self._document_provenance_attestations_locked(
+                read_conn,
+                identifier,
+            )
 
     def _insert_expression_locked(
         self,

@@ -8,6 +8,7 @@ doc_event log. Lifecycle is never an UPDATEd status column (PRD section 5, I12).
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from collections.abc import Mapping
@@ -42,6 +43,11 @@ from work_buddy.truth.store import (
 # projects the document as retired.
 _LIFECYCLE_KINDS = frozenset({"registered", "reimported", "retired"})
 _YDOC_GENERATION_DOMAIN = b"cowork-ydoc-generation/v1\0"
+SOURCE_WRITEBACK_SAME_FILE = "same_file"
+SOURCE_WRITEBACK_NEVER = "never"
+RETAINED_FILE_IMPORT_SOURCE_KINDS = frozenset(
+    {"file_import", "imported_markdown"}
+)
 
 
 def document_path_key(path: str) -> str:
@@ -112,6 +118,83 @@ def _producer_meta_json(actor: Actor, extra: Mapping[str, Any] | None = None) ->
             if value is not None:
                 data[key] = value
     return canonical_json(data) if data else None
+
+
+def source_writeback_policy(document: DocumentRecord) -> str:
+    """Return whether Co-work may materialize into the document's source path.
+
+    Historical and explicitly created documents remain file-backed. Documents
+    initialized through From file carry a durable ``never`` policy:
+    their selected file is an import source, not a Save target.
+    """
+
+    try:
+        meta = json.loads(document.meta_json) if document.meta_json else {}
+    except (TypeError, json.JSONDecodeError):
+        return SOURCE_WRITEBACK_NEVER
+    if not isinstance(meta, dict):
+        return SOURCE_WRITEBACK_NEVER
+    source = meta.get("source")
+    if source is None:
+        return SOURCE_WRITEBACK_SAME_FILE
+    if not isinstance(source, dict):
+        return SOURCE_WRITEBACK_NEVER
+    policy = source.get("writeback_policy")
+    if policy is None:
+        return SOURCE_WRITEBACK_NEVER
+    # Only the one explicit writeback policy is permissive. Corrupt or future
+    # unknown values fail closed instead of turning an acquisition source into
+    # a Save target.
+    return (
+        SOURCE_WRITEBACK_SAME_FILE
+        if policy == SOURCE_WRITEBACK_SAME_FILE
+        else SOURCE_WRITEBACK_NEVER
+    )
+
+
+def source_is_detached(document: DocumentRecord) -> bool:
+    """True when the selected file was only an import source."""
+
+    return source_writeback_policy(document) == SOURCE_WRITEBACK_NEVER
+
+
+def retained_file_import_source_sha256(meta_json: str | None) -> str | None:
+    """Return the retained source-blob digest declared by document metadata.
+
+    A source digest is a live blob reference only when all of these conditions
+    hold: ``source`` is an object, its kind is ``file_import`` or the historical
+    ``imported_markdown`` spelling, its writeback policy is ``never``, and its
+    SHA-256 is a canonical lowercase digest. This deliberately excludes normal
+    file-backed documents and arbitrary hashes in producer metadata.
+
+    The reference is *soft-required*: newly captured imports retain the exact
+    source bytes and therefore export that blob, while historical imports may
+    have only the digest. A missing historical blob does not make the document
+    unreadable or its export non-portable; integrity inspection reports that
+    reduced recovery fidelity as a warning.
+    """
+
+    try:
+        meta = json.loads(meta_json) if meta_json else {}
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(meta, dict):
+        return None
+    source = meta.get("source")
+    if not isinstance(source, dict):
+        return None
+    if source.get("kind") not in RETAINED_FILE_IMPORT_SOURCE_KINDS:
+        return None
+    if source.get("writeback_policy") != SOURCE_WRITEBACK_NEVER:
+        return None
+    digest = source.get("sha256")
+    if (
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+    ):
+        return None
+    return digest
 
 
 def register_document(
@@ -213,6 +296,7 @@ def register_ready_document(
     structured_head_sha256: str,
     actor: Actor,
     mode: str,
+    document_meta: Mapping[str, Any] | None = None,
     at: str | None = None,
     document_id: str | None = None,
     version_id: str | None = None,
@@ -257,7 +341,7 @@ def register_ready_document(
     # failure is harmless and is removed only by a proven refcount sweep.
     store._store_blob_bytes(projection_digest, projection)
 
-    meta_json = _producer_meta_json(actor)
+    meta_json = _producer_meta_json(actor, document_meta)
     record = DocumentRecord(
         id=identifier,
         path=relative_path,
@@ -574,9 +658,9 @@ def record_materialization(
     if document.ydoc_snapshot_sha256 is not None:
         from work_buddy.truth import ydoc_store
 
-        from work_buddy.cowork.paths import resolve_markdown_path
+        from work_buddy.cowork.paths import resolve_writeback_target
 
-        target = resolve_markdown_path(store, document.path).path
+        target = resolve_writeback_target(store, document).path
         if target.is_file():
             projection_bytes = target.read_bytes()
             if sha256_bytes(projection_bytes) == digest:
@@ -632,9 +716,9 @@ def advance_snapshot(
     structured_head = ydoc_store.structured_head_from_segments(snapshot, ())
     projection_blob = store.resolve_blob_path(f"blobs/{document.content_sha256}")
     if not projection_blob.is_file():
-        from work_buddy.cowork.paths import resolve_markdown_path
+        from work_buddy.cowork.paths import resolve_document_source_path
 
-        target = resolve_markdown_path(store, document.path).path
+        target = resolve_document_source_path(store, document).path
         if target.is_file():
             content = target.read_bytes()
             if sha256_bytes(content) == document.content_sha256:
@@ -763,9 +847,9 @@ def drift_state(
     document = get_document(store, identifier, conn=conn)
     observed = current_file_sha256
     if observed is None:
-        from work_buddy.cowork.paths import resolve_markdown_path
+        from work_buddy.cowork.paths import resolve_document_source_path
 
-        target = resolve_markdown_path(store, document.path).path
+        target = resolve_document_source_path(store, document).path
         if not target.is_file():
             return "missing"
         observed = sha256_bytes(target.read_bytes())
@@ -838,6 +922,9 @@ def mark_session(
 
 
 __all__ = [
+    "RETAINED_FILE_IMPORT_SOURCE_KINDS",
+    "SOURCE_WRITEBACK_NEVER",
+    "SOURCE_WRITEBACK_SAME_FILE",
     "advance_snapshot",
     "commit_document_version",
     "current_lifecycle",
@@ -853,7 +940,10 @@ __all__ = [
     "record_materialization",
     "register_document",
     "register_ready_document",
+    "retained_file_import_source_sha256",
     "repair_document_snapshot",
     "reimport_document",
     "retire_document",
+    "source_is_detached",
+    "source_writeback_policy",
 ]

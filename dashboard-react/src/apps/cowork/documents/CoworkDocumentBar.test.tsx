@@ -10,6 +10,7 @@ const document = {
   path: "notes/doc.md",
   title: "Document",
   profile: "co_authored",
+  sourceWriteback: "same_file" as const,
   driftState: "clean" as const,
   openProposalCount: 0,
   openFlagCount: 0,
@@ -27,7 +28,7 @@ const model: CoworkViewModel = {
   folderChooser: {
     available: true,
     kind: "host",
-    markdownAvailable: true,
+    importAvailable: true,
     locationAvailable: true,
   },
   folderSelection: { kind: "none" },
@@ -71,7 +72,7 @@ const baseProps = {
   onCloseFolder: vi.fn(),
   onOpenPicker: vi.fn(),
   onCreate: vi.fn(),
-  onRegister: vi.fn(),
+  onImportFile: vi.fn(),
   onCloseSession: vi.fn(),
   onPromoteScratch: vi.fn(),
 };
@@ -95,6 +96,72 @@ describe("CoworkDocumentBar Save", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Unsaved changes");
     await user.click(screen.getByRole("button", { name: "Save" }));
     expect(onSaveMarkdown).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats imported Markdown as a durable Co-work copy without source Save", () => {
+    const importedDocument = {
+      ...document,
+      sourceWriteback: "never" as const,
+      permissions: { ...document.permissions, materialize: false },
+    };
+    const importedModel: CoworkViewModel = {
+      ...model,
+      catalog: { ...model.catalog, documents: [importedDocument] },
+      activeSession: {
+        kind: "registered",
+        storeId: "store-1",
+        document: importedDocument,
+      },
+      document: importedDocument,
+    };
+    render(
+      <CoworkDocumentBar
+        {...baseProps}
+        model={importedModel}
+        syncStatus="clean"
+        materializationState={{
+          kind: "read_only",
+          reason: "Source writeback is disabled.",
+        }}
+        onSaveMarkdown={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent("Saved in Co-work");
+    expect(screen.getByText("Import source: notes/doc.md")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+  });
+
+  it("fails closed when source writeback is not explicitly allowed", () => {
+    const documentWithoutPolicy = {
+      ...document,
+      sourceWriteback: undefined,
+    };
+    const unsafeModel: CoworkViewModel = {
+      ...model,
+      catalog: { ...model.catalog, documents: [documentWithoutPolicy] },
+      activeSession: {
+        kind: "registered",
+        storeId: "store-1",
+        document: documentWithoutPolicy,
+      },
+      document: documentWithoutPolicy,
+    };
+
+    render(
+      <CoworkDocumentBar
+        {...baseProps}
+        model={unsafeModel}
+        syncStatus="clean"
+        materializationState={{
+          kind: "unsaved",
+          fileSha256: "a".repeat(64),
+        }}
+        onSaveMarkdown={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
   });
 
   it("keeps external-write conflicts visible and disables unsafe overwrite", () => {
@@ -377,7 +444,7 @@ describe("CoworkDocumentBar Save", () => {
     expect(screen.queryByText(/Open another Folder/i)).toBeNull();
   });
 
-  it("keeps New and New from Markdown in the toolbar across Folder states", () => {
+  it("keeps New and From file in the toolbar across Folder states", () => {
     const noFolderModel: CoworkViewModel = {
       ...model,
       activeFolderStoreId: null,
@@ -392,11 +459,11 @@ describe("CoworkDocumentBar Save", () => {
 
     expect(screen.getByRole("button", { name: "New" })).toBeEnabled();
     const unavailableImport = screen.getByRole("button", {
-      name: "New from Markdown",
+      name: "From file",
     });
     expect(unavailableImport).toHaveAttribute("aria-disabled", "true");
     expect(unavailableImport).toHaveAccessibleDescription(
-      "Open a folder before creating a document from Markdown.",
+      "Open a folder before importing a file.",
     );
     unavailableImport.focus();
     expect(unavailableImport).toHaveFocus();
@@ -413,7 +480,7 @@ describe("CoworkDocumentBar Save", () => {
 
     expect(screen.getByRole("button", { name: "New" })).toBeEnabled();
     expect(
-      screen.getByRole("button", { name: "New from Markdown" }),
+      screen.getByRole("button", { name: "From file" }),
     ).toBeEnabled();
     expect(screen.getByRole("button", { name: "Close folder" })).toBeVisible();
   });

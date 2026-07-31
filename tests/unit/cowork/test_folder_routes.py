@@ -16,6 +16,7 @@ from flask import Flask
 from work_buddy.cowork.folder_api import (
     FolderAccessPolicy,
     FolderTokenStore,
+    IMPORT_PICKER_INTENT_VALUE,
     LOCATION_PICKER_INTENT_VALUE,
     MARKDOWN_PICKER_INTENT_VALUE,
     MAX_FOLDER_PATH_CHARS,
@@ -23,14 +24,24 @@ from work_buddy.cowork.folder_api import (
     PICKER_INTENT_VALUE,
     create_folder_blueprint,
 )
+from work_buddy.cowork.file_importers import (
+    FileImporter,
+    FileImporterRegistry,
+    MARKDOWN_FILE_IMPORTER,
+    MARKDOWN_MAX_SOURCE_BYTES,
+)
 from work_buddy.cowork.native_folder_chooser import NativeFolderChooserError
 from work_buddy.cowork.project_store import FolderLifecycleError, ProjectStoreManager
+from work_buddy.truth.identity import sha256_bytes
 from work_buddy.truth.registry import TruthStoreRegistry
 
 
 PICKER_HEADERS = {PICKER_INTENT_HEADER: PICKER_INTENT_VALUE}
 MARKDOWN_PICKER_HEADERS = {
     PICKER_INTENT_HEADER: MARKDOWN_PICKER_INTENT_VALUE
+}
+IMPORT_PICKER_HEADERS = {
+    PICKER_INTENT_HEADER: IMPORT_PICKER_INTENT_VALUE
 }
 LOCATION_PICKER_HEADERS = {
     PICKER_INTENT_HEADER: LOCATION_PICKER_INTENT_VALUE
@@ -98,8 +109,10 @@ def _client(
     tmp_path: Path,
     *,
     chooser=None,
+    import_chooser=None,
     markdown_chooser=None,
     location_chooser=None,
+    importer_registry=None,
     read_only=lambda: False,
     scan_budget: int = 2_000,
 ):
@@ -113,8 +126,14 @@ def _client(
         manager=manager,
         registry_factory=lambda: registry,
         chooser=chooser,
+        import_chooser=import_chooser,
         markdown_chooser=markdown_chooser,
         location_chooser=location_chooser,
+        **(
+            {}
+            if importer_registry is None
+            else {"importer_registry": importer_registry}
+        ),
         access_policy=FolderAccessPolicy((tmp_path,)),
         read_only=read_only,
     )
@@ -352,9 +371,193 @@ def test_markdown_picker_returns_a_safe_folder_relative_path(
     assert starts == [folder.resolve()]
 
 
+@pytest.mark.parametrize("suffix", [".md", ".markdown", ".MD"])
+def test_import_picker_returns_a_typed_markdown_importer(
+    tmp_path: Path,
+    suffix: str,
+) -> None:
+    selected: dict[str, Path] = {}
+    starts: list[Path] = []
+
+    def choose(start):
+        starts.append(Path(start))
+        return selected["path"]
+
+    client, manager, registry = _client(
+        tmp_path,
+        import_chooser=choose,
+    )
+    folder, store_id = _initialize_active_folder(tmp_path, manager, registry)
+    source = folder / "research" / f"paper{suffix}"
+    source.parent.mkdir()
+    source.write_text("# Existing\n", encoding="utf-8")
+    source_sha256 = sha256_bytes(source.read_bytes())
+    selected["path"] = source
+
+    response = client.post(
+        "/api/truth/cowork/files/choose-import",
+        headers=IMPORT_PICKER_HEADERS,
+        json={"store_id": store_id},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "ok": True,
+        "cancelled": False,
+        "path": f"research/paper{suffix}",
+        "importer_id": "markdown/v1",
+        "media_type": "text/markdown",
+        "source_sha256": source_sha256,
+        "importer": {
+            "importer_id": "markdown/v1",
+            "display_name": "Markdown",
+            "source_format": "markdown",
+            "media_type": "text/markdown",
+            "suffixes": [".md", ".markdown"],
+            "max_source_bytes": MARKDOWN_MAX_SOURCE_BYTES,
+        },
+    }
+    assert starts == [folder.resolve()]
+
+
+def test_import_picker_is_driven_by_an_injected_importer_registry(
+    tmp_path: Path,
+) -> None:
+    selected: dict[str, Path] = {}
+    synthetic = FileImporter(
+        "fixture/v1",
+        (".wbtest",),
+        "application/x-wbtest",
+        4096,
+        display_name="Fixture document",
+        source_format="fixture",
+    )
+    client, manager, registry = _client(
+        tmp_path,
+        import_chooser=lambda _start: selected["path"],
+        importer_registry=FileImporterRegistry(
+            (MARKDOWN_FILE_IMPORTER, synthetic)
+        ),
+    )
+    folder, store_id = _initialize_active_folder(tmp_path, manager, registry)
+    source = folder / "research" / "paper.wbtest"
+    source.parent.mkdir()
+    source.write_bytes(b"synthetic future-format source")
+    selected["path"] = source
+
+    response = client.post(
+        "/api/truth/cowork/files/choose-import",
+        headers=IMPORT_PICKER_HEADERS,
+        json={"store_id": store_id},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "ok": True,
+        "cancelled": False,
+        "path": "research/paper.wbtest",
+        "importer_id": "fixture/v1",
+        "media_type": "application/x-wbtest",
+        "source_sha256": sha256_bytes(source.read_bytes()),
+        "importer": {
+            "importer_id": "fixture/v1",
+            "display_name": "Fixture document",
+            "source_format": "fixture",
+            "media_type": "application/x-wbtest",
+            "suffixes": [".wbtest"],
+            "max_source_bytes": 4096,
+        },
+    }
+
+
+def test_import_picker_rejects_unsupported_files_without_changing_legacy_route(
+    tmp_path: Path,
+) -> None:
+    selected: dict[str, Path] = {}
+    chooser = lambda _start: selected["path"]
+    client, manager, registry = _client(
+        tmp_path,
+        import_chooser=chooser,
+        markdown_chooser=chooser,
+    )
+    folder, store_id = _initialize_active_folder(tmp_path, manager, registry)
+    unsupported = folder / "paper.docx"
+    unsupported.write_bytes(b"not-a-word-file")
+    selected["path"] = unsupported
+
+    generic = client.post(
+        "/api/truth/cowork/files/choose-import",
+        headers=IMPORT_PICKER_HEADERS,
+        json={"store_id": store_id},
+    )
+    legacy = client.post(
+        "/api/truth/cowork/files/choose-markdown",
+        headers=MARKDOWN_PICKER_HEADERS,
+        json={"store_id": store_id},
+    )
+
+    assert generic.status_code == 422
+    assert generic.get_json()["error"]["code"] == "unsupported_file_type"
+    assert legacy.status_code == 422
+    assert legacy.get_json()["error"]["code"] == "invalid_markdown_file"
+
+
+def test_import_picker_rejects_oversized_source_before_hashing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected: dict[str, Path] = {}
+    client, manager, registry = _client(
+        tmp_path,
+        import_chooser=lambda _start: selected["path"],
+    )
+    folder, store_id = _initialize_active_folder(tmp_path, manager, registry)
+    source = folder / "oversized.md"
+    with source.open("wb") as stream:
+        stream.truncate(MARKDOWN_MAX_SOURCE_BYTES + 1)
+    selected["path"] = source
+
+    def unexpected_hash(_payload: bytes) -> str:
+        raise AssertionError("oversized picker source must not be hashed")
+
+    monkeypatch.setattr(
+        "work_buddy.cowork.folder_api.sha256_bytes",
+        unexpected_hash,
+    )
+
+    response = client.post(
+        "/api/truth/cowork/files/choose-import",
+        headers=IMPORT_PICKER_HEADERS,
+        json={"store_id": store_id},
+    )
+
+    assert response.status_code == 413
+    assert response.get_json() == {
+        "ok": False,
+        "error": {
+            "code": "import_source_too_large",
+            "message": (
+                "That file is too large to import. "
+                f"The current limit is {MARKDOWN_MAX_SOURCE_BYTES} bytes."
+            ),
+            "retryable": False,
+            "details": {
+                "importer_id": "markdown/v1",
+                "max_source_bytes": MARKDOWN_MAX_SOURCE_BYTES,
+                "source_byte_length": MARKDOWN_MAX_SOURCE_BYTES + 1,
+            },
+        },
+    }
+
+
 @pytest.mark.parametrize(
     ("endpoint", "headers", "chooser_name"),
     [
+        (
+            "/api/truth/cowork/files/choose-import",
+            IMPORT_PICKER_HEADERS,
+            "import",
+        ),
         (
             "/api/truth/cowork/files/choose-markdown",
             MARKDOWN_PICKER_HEADERS,
@@ -434,6 +637,11 @@ def test_location_picker_returns_root_and_nested_relative_locations(
     ("endpoint", "headers", "chooser_name"),
     [
         (
+            "/api/truth/cowork/files/choose-import",
+            IMPORT_PICKER_HEADERS,
+            "import",
+        ),
+        (
             "/api/truth/cowork/files/choose-markdown",
             MARKDOWN_PICKER_HEADERS,
             "markdown",
@@ -501,6 +709,11 @@ def test_scoped_pickers_require_direct_same_origin_browser_intent(
     ("endpoint", "headers", "chooser_name"),
     [
         (
+            "/api/truth/cowork/files/choose-import",
+            IMPORT_PICKER_HEADERS,
+            "import",
+        ),
+        (
             "/api/truth/cowork/files/choose-markdown",
             MARKDOWN_PICKER_HEADERS,
             "markdown",
@@ -559,6 +772,11 @@ def test_scoped_pickers_preserve_process_level_failure_codes(
 @pytest.mark.parametrize(
     ("endpoint", "headers", "chooser_name"),
     [
+        (
+            "/api/truth/cowork/files/choose-import",
+            IMPORT_PICKER_HEADERS,
+            "import",
+        ),
         (
             "/api/truth/cowork/files/choose-markdown",
             MARKDOWN_PICKER_HEADERS,

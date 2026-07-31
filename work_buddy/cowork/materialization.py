@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Collection, Mapping
 
 from work_buddy.artifacts.io import atomic_write_bytes
-from work_buddy.cowork.paths import CoworkPathError, resolve_markdown_path
+from work_buddy.cowork.paths import CoworkPathError, resolve_writeback_target
 from work_buddy.cowork.policy import document_surface_allowed
 from work_buddy.cowork.readiness import classify_document
 from work_buddy.truth import documents, proposals, ydoc_store
@@ -288,7 +288,7 @@ def recover_materialization_intent_locked(
 ) -> MaterializationIntent:
     initial = _load_intent(store, intent_id)
     document = documents.get_document(store, initial.document_id)
-    resolved = resolve_markdown_path(store, document.path)
+    resolved = resolve_writeback_target(store, document)
     return _recover_intent_locked(
         store, initial, target=resolved.path
     )
@@ -308,6 +308,218 @@ def recover_materialization_intent(
         return recover_materialization_intent_locked(
             store, intent_id
         )
+
+
+def commit_managed_projection(
+    store: TruthStore,
+    *,
+    document_id: str,
+    rendered_markdown: str,
+    rendered_sha256: str,
+    expected_structured_head_sha256: str,
+    snapshot_sha256: str,
+    actor: Actor,
+    replacement_snapshot: bytes,
+    replacement_snapshot_sha256: str,
+    version_kind: str = "materialized",
+    version_detail: str | None = None,
+    commit_callback: Callable[
+        [sqlite3.Connection, Mapping[str, Any]], Mapping[str, Any] | None
+    ]
+    | None = None,
+    lock_preflight: Callable[[], Mapping[str, Any] | None] | None = None,
+    resolving_flag_proposal_ids: Collection[str] = (),
+) -> dict[str, Any]:
+    """Advance an imported document without writing back to its source file.
+
+    From file creates a durable structured Co-work document from an acquisition
+    source whose authorship and human-review state are attested separately.
+    Review decisions still need an atomic projection + snapshot commit, but
+    that projection remains an internal content-addressed version. The selected
+    source file is never a publication target.
+    """
+
+    _actor_ref(actor)
+    if not isinstance(rendered_markdown, str):
+        raise MaterializationError("invalid_markdown", "rendered_markdown must be text")
+    rendered = rendered_markdown.encode("utf-8")
+    if len(rendered) > MAX_RENDERED_BYTES:
+        raise MaterializationError(
+            "rendered_too_large",
+            "rendered Markdown exceeds the size limit",
+            status=413,
+        )
+    rendered_digest = _valid_digest(rendered_sha256, "rendered_sha256")
+    expected_head = _valid_digest(
+        expected_structured_head_sha256, "expected_structured_head_sha256"
+    )
+    expected_snapshot = _valid_digest(snapshot_sha256, "snapshot_sha256")
+    replacement_digest = _valid_digest(
+        replacement_snapshot_sha256, "replacement_snapshot_sha256"
+    )
+    if sha256_bytes(rendered) != rendered_digest:
+        raise MaterializationError(
+            "rendered_hash_mismatch", "rendered Markdown hash does not match"
+        )
+
+    initial = documents.get_document(store, document_id)
+    with ydoc_store.document_lock(
+        store,
+        document_id,
+        path_key=documents.document_path_key(initial.path),
+    ):
+        # A previous managed projection may have stopped after staging its
+        # replacement marker. Finish a committed pointer or discard an
+        # uncommitted marker before any idempotency/preflight decision.
+        ydoc_store.recover_compaction_locked(
+            store,
+            document_id=document_id,
+        )
+        if lock_preflight is not None:
+            prior_receipt = lock_preflight()
+            if prior_receipt is not None:
+                return dict(prior_receipt)
+        document = documents.get_document(store, document_id)
+        if not documents.source_is_detached(document):
+            raise MaterializationError(
+                "managed_projection_forbidden",
+                "Only source-detached imports use managed projection commits.",
+                status=409,
+            )
+        if documents.current_lifecycle(store, document.id) != "active":
+            raise MaterializationError(
+                "document_retired",
+                "Retired documents cannot be changed in Co-work.",
+                status=409,
+            )
+        if not document_surface_allowed(store, document):
+            raise MaterializationError(
+                "policy_forbidden",
+                "This document is not available in Co-work for this folder.",
+                status=403,
+            )
+        readiness = classify_document(store, document)
+        if readiness.initialization_state != "ready":
+            raise MaterializationError(
+                "document_not_ready",
+                f"document is {readiness.initialization_state}",
+                status=409,
+            )
+        if document.ydoc_snapshot_sha256 != expected_snapshot:
+            raise MaterializationError(
+                "snapshot_mismatch",
+                "Y.Doc snapshot changed before review commit",
+                status=409,
+                details={"server_snapshot_sha256": document.ydoc_snapshot_sha256},
+            )
+        # Review applies a complete replacement snapshot. Keep the durable
+        # update tail in the CAS calculation: prepare_snapshot_replacement_locked
+        # will only rotate it after proving this exact live head is still current.
+        live_head = ydoc_store.current_structured_head(
+            store,
+            document_id=document.id,
+            snapshot_sha256=expected_snapshot,
+        )
+        if live_head != expected_head:
+            raise MaterializationError(
+                "stale_structured_head",
+                "structured document changed before review commit",
+                status=409,
+                details={"server_structured_head_sha256": live_head},
+            )
+        if store.profile.gate.block_materialize_on_flags:
+            resolving_flags = frozenset(resolving_flag_proposal_ids)
+            flags = [
+                item
+                for item in proposals.open_proposals(
+                    store, document_id=document.id
+                )
+                if item.replacement is None and item.id not in resolving_flags
+            ]
+            if flags:
+                raise MaterializationError(
+                    "open_flags_block_save",
+                    "Resolve open review flags before applying changes",
+                    status=409,
+                    details={"open_flag_count": len(flags)},
+                )
+
+        # Content-addressed projection storage may safely precede the pointer
+        # transaction; an orphan is harmless and later refcount cleanup owns it.
+        store._store_blob_bytes(rendered_digest, rendered)
+        replacement = ydoc_store.prepare_snapshot_replacement_locked(
+            store,
+            document_id=document.id,
+            snapshot=replacement_snapshot,
+            expected_new_snapshot_sha256=replacement_digest,
+            expected_current_snapshot_sha256=expected_snapshot,
+            expected_current_structured_head_sha256=live_head,
+        )
+        version_id = new_id()
+        receipt = {
+            "ok": True,
+            "materialization_intent_id": None,
+            # Compatibility name consumed by the sitting client. For a
+            # source-detached import this is an internal projection digest,
+            # never a hash of bytes written to the selected source.
+            "new_file_sha256": rendered_digest,
+            "structured_head_sha256": replacement.structured_head_sha256,
+            "snapshot_sha256": replacement.snapshot_sha256,
+            "document_version_id": version_id,
+            "materialized_at": _now(),
+            "drift_state": "clean",
+            "source_writeback": documents.SOURCE_WRITEBACK_NEVER,
+        }
+        conn = store.connect()
+        committed = False
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            if commit_callback is not None:
+                additions = commit_callback(conn, receipt)
+                if additions:
+                    receipt.update(dict(additions))
+            documents.commit_document_version(
+                store,
+                document_id=document.id,
+                kind=version_kind,
+                projection_sha256=rendered_digest,
+                ydoc_snapshot_sha256=replacement.snapshot_sha256,
+                structured_head_sha256=replacement.structured_head_sha256,
+                actor=actor,
+                at=receipt["materialized_at"],
+                detail=version_detail,
+                version_id=version_id,
+                conn=conn,
+            )
+            conn.execute("COMMIT")
+            committed = True
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            ydoc_store.abort_snapshot_replacement_locked(
+                store,
+                document_id=document.id,
+                expected_snapshot_sha256=replacement.snapshot_sha256,
+            )
+            raise
+        finally:
+            conn.close()
+        if committed:
+            try:
+                ydoc_store.finish_snapshot_replacement_locked(
+                    store,
+                    document_id=document.id,
+                    expected_snapshot_sha256=replacement.snapshot_sha256,
+                )
+            except Exception as exc:
+                raise MaterializationError(
+                    "recovery_required",
+                    "The structured change committed but its update log requires recovery.",
+                    status=409,
+                    retryable=True,
+                ) from exc
+            store._run_on_commit()
+        return receipt
 
 
 def publish_projection(
@@ -399,8 +611,9 @@ def publish_projection(
         reusable_intent: MaterializationIntent | None = None
         if prior is not None:
             try:
-                prior_target = resolve_markdown_path(
-                    store, initial_document.path
+                prior_target = resolve_writeback_target(
+                    store,
+                    initial_document,
                 ).path
             except CoworkPathError as exc:
                 raise MaterializationError(
@@ -433,6 +646,12 @@ def publish_projection(
             if prior_receipt is not None:
                 return dict(prior_receipt)
         document = documents.get_document(store, document_id)
+        if documents.source_is_detached(document):
+            raise MaterializationError(
+                "source_writeback_forbidden",
+                "This document was created with From file. Co-work will not change its source file.",
+                status=409,
+            )
         if documents.current_lifecycle(store, document.id) != "active":
             raise MaterializationError(
                 "document_retired",
@@ -459,7 +678,15 @@ def publish_projection(
                 status=409,
                 details={"server_snapshot_sha256": document.ydoc_snapshot_sha256},
             )
-        if ydoc_store.update_tail_present(store, document_id=document.id):
+        # An ordinary Save cannot publish while opaque updates remain outside
+        # its snapshot. A sitting supplies a complete replacement snapshot,
+        # however, and prepare_snapshot_replacement_locked CAS-binds that
+        # replacement to the exact live structured head before rotating the
+        # durable update tail.
+        if (
+            replacement_snapshot is None
+            and ydoc_store.update_tail_present(store, document_id=document.id)
+        ):
             raise MaterializationError(
                 "update_tail_present",
                 "compact pending structured edits before Save",
@@ -505,7 +732,7 @@ def publish_projection(
                 )
 
         try:
-            resolved = resolve_markdown_path(store, document.path)
+            resolved = resolve_writeback_target(store, document)
         except CoworkPathError as exc:
             raise MaterializationError("invalid_path", str(exc), status=409) from exc
         current_hash = _hash_file(resolved.path)
@@ -576,7 +803,7 @@ def publish_projection(
             raise MaterializationError("staging_failed", "staged Markdown failed verification", status=500)
 
         # Re-resolve under the operation lock immediately before publication.
-        resolved = resolve_markdown_path(store, document.path)
+        resolved = resolve_writeback_target(store, document)
         with store.write_transaction() as conn:
             conn.execute(
                 "UPDATE cowork_materialization_intents SET state = 'publishing', "
@@ -829,7 +1056,7 @@ def recover_materializations(store: TruthStore) -> dict[str, int]:
                 path_key=documents.document_path_key(document.path),
                 timeout=0.01,
             ):
-                resolved = resolve_markdown_path(store, document.path)
+                resolved = resolve_writeback_target(store, document)
                 recovered = _recover_intent_locked(
                     store,
                     _load_intent(store, candidate.id),
@@ -856,6 +1083,7 @@ __all__ = [
     "MAX_RENDERED_BYTES",
     "MaterializationError",
     "MaterializationIntent",
+    "commit_managed_projection",
     "publish_projection",
     "recover_materialization_intent",
     "recover_materialization_intent_locked",

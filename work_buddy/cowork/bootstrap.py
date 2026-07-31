@@ -11,8 +11,25 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from work_buddy.artifacts.io import atomic_write_bytes
-from work_buddy.cowork.paths import CoworkPathError, resolve_markdown_path
+from work_buddy.cowork import provenance
+from work_buddy.cowork.file_importers import (
+    DEFAULT_FILE_IMPORTERS,
+    MARKDOWN_IMPORTER_ID,
+    MARKDOWN_MAX_SOURCE_BYTES,
+    MARKDOWN_MEDIA_TYPE,
+    FileImporter,
+)
+from work_buddy.cowork.paths import (
+    CoworkPathError,
+    resolve_document_source_path,
+    resolve_markdown_path,
+    resolve_relative_file_path,
+)
 from work_buddy.cowork.readiness import classify_document
+from work_buddy.cowork.source_observation import (
+    SourceObservationError,
+    read_bounded_regular_file,
+)
 from work_buddy.truth import documents, ydoc_store
 from work_buddy.truth.contracts import Actor, InvariantViolation
 from work_buddy.truth.identity import canonical_json, new_id, sha256_bytes
@@ -20,7 +37,9 @@ from work_buddy.truth.store import TruthStore, _valid_digest
 
 
 YDOC_SCHEMA = "cowork-yjs/v1"
-MAX_SOURCE_BYTES = 16 * 1024 * 1024
+# Compatibility alias for callers that predate importer-specific source limits.
+MAX_SOURCE_BYTES = MARKDOWN_MAX_SOURCE_BYTES
+MAX_CANONICAL_PROJECTION_BYTES = 16 * 1024 * 1024
 MAX_SNAPSHOT_BYTES = ydoc_store.MAX_OPAQUE_SEGMENT_BYTES
 BOOTSTRAP_TTL = timedelta(minutes=30)
 _KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$")
@@ -59,6 +78,9 @@ class BootstrapIntent:
     source_sha256: str
     source_byte_length: int
     expected_file_sha256: str | None
+    importer_id: str | None
+    source_media_type: str | None
+    import_attestation_sha256: str | None
     snapshot_sha256: str | None
     structured_head_sha256: str | None
     staged_path: str | None
@@ -109,6 +131,81 @@ def _stage_path(store: TruthStore, intent_id: str) -> Path:
     return store.paths.sidecar / _stage_relative(intent_id)
 
 
+def _attestation_stage_path(store: TruthStore, intent_id: str) -> Path:
+    return _stage_path(store, intent_id).with_name("authorship-attestation.json")
+
+
+def _default_import_attestation() -> dict[str, Any]:
+    return {
+        "schema": provenance.INPUT_ATTESTATION_SCHEMA,
+        "authorship": {"kind": "unknown", "contributors": []},
+        "human_review": {"status": "not_applicable", "reviewers": []},
+    }
+
+
+def _import_attestation(metadata: Mapping[str, Any], actor: Actor) -> dict[str, Any]:
+    raw = metadata.get("authorship_attestation")
+    if raw is None:
+        return _default_import_attestation()
+    if not isinstance(raw, Mapping):
+        raise BootstrapError(
+            "invalid_authorship_attestation",
+            "authorship_attestation must be an object",
+        )
+    # Validate now, before staging or file I/O. Keep the frozen client form in
+    # staging so commit can revalidate the exact actor binding rather than
+    # resolving ``current_user`` against whichever actor happens to replay it.
+    try:
+        provenance.normalize_attestation(raw, actor=actor)
+    except provenance.ProvenanceActorBindingError as exc:
+        raise BootstrapError(exc.code, str(exc), status=exc.status) from exc
+    except InvariantViolation as exc:
+        raise BootstrapError("invalid_authorship_attestation", str(exc)) from exc
+    return dict(raw)
+
+
+def _read_staged_attestation(
+    store: TruthStore,
+    intent: BootstrapIntent,
+) -> dict[str, Any]:
+    path = _attestation_stage_path(store, intent.id)
+    if not path.is_file():
+        if intent.import_attestation_sha256 is None:
+            # Compatibility only for prepared imports created before v8 added
+            # provenance-aware staging. New imports always bind this sidecar.
+            return _default_import_attestation()
+        raise BootstrapError(
+            "staged_attestation_missing",
+            "The staged authorship details are unavailable.",
+            status=409,
+        )
+    try:
+        payload = path.read_bytes()
+        if (
+            intent.import_attestation_sha256 is None
+            or sha256_bytes(payload) != intent.import_attestation_sha256
+        ):
+            raise BootstrapError(
+                "staged_attestation_corrupt",
+                "The staged authorship details failed integrity verification.",
+                status=409,
+            )
+        value = json.loads(payload)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise BootstrapError(
+            "staged_attestation_corrupt",
+            "The staged authorship details failed integrity verification.",
+            status=409,
+        ) from exc
+    if not isinstance(value, dict):
+        raise BootstrapError(
+            "staged_attestation_corrupt",
+            "The staged authorship details failed integrity verification.",
+            status=409,
+        )
+    return value
+
+
 def _intent_from_row(row: Any) -> BootstrapIntent:
     return BootstrapIntent(**dict(row))
 
@@ -139,6 +236,137 @@ def _authorize_profile(store: TruthStore) -> None:
         )
 
 
+def _importer_for_request(
+    path: str,
+    metadata: Mapping[str, Any],
+) -> FileImporter:
+    """Resolve browser assertions through the authoritative importer registry."""
+
+    importer_id = str(
+        metadata.get("importer_id") or MARKDOWN_IMPORTER_ID
+    ).strip()
+    importer = DEFAULT_FILE_IMPORTERS.importer_by_id(importer_id)
+    if importer is None:
+        raise BootstrapError(
+            "unsupported_file_type",
+            "This version of Co-work does not support that file importer.",
+            status=415,
+            details={"importer_id": importer_id},
+        )
+    if DEFAULT_FILE_IMPORTERS.resolve_binding(
+        path,
+        importer_id=importer.importer_id,
+    ) is None:
+        raise BootstrapError(
+            "importer_path_mismatch",
+            "The selected file does not match its declared importer.",
+            status=415,
+            details={
+                "importer_id": importer.importer_id,
+                "supported_suffixes": list(importer.suffixes),
+            },
+        )
+    claimed_media_type = str(metadata.get("source_media_type") or "").strip()
+    if claimed_media_type and claimed_media_type != importer.media_type:
+        raise BootstrapError(
+            "importer_media_type_mismatch",
+            "The selected file media type does not match its importer.",
+            status=415,
+            details={
+                "importer_id": importer.importer_id,
+                "expected_media_type": importer.media_type,
+            },
+        )
+    return importer
+
+
+def _importer_for_intent(intent: BootstrapIntent) -> FileImporter:
+    importer_id = intent.importer_id or MARKDOWN_IMPORTER_ID
+    importer = DEFAULT_FILE_IMPORTERS.importer_by_id(importer_id)
+    if importer is None:
+        raise BootstrapError(
+            "importer_unavailable",
+            "The importer used to prepare this file is no longer available.",
+            status=409,
+            details={"importer_id": importer_id},
+        )
+    if (
+        DEFAULT_FILE_IMPORTERS.resolve_binding(
+            intent.normalized_path,
+            importer_id=importer.importer_id,
+        )
+        is None
+        or (intent.source_media_type or importer.media_type)
+        != importer.media_type
+    ):
+        raise BootstrapError(
+            "staged_importer_mismatch",
+            "The prepared importer binding failed integrity validation.",
+            status=409,
+        )
+    return importer
+
+
+def importer_descriptor(intent: BootstrapIntent) -> dict[str, object] | None:
+    """Return the authoritative source descriptor frozen by an import intent."""
+
+    if intent.mode != "import":
+        return None
+    return _importer_for_intent(intent).descriptor()
+
+
+def maximum_source_upload_bytes() -> int:
+    """Bound HTTP staging before importer-specific admission runs."""
+
+    return max(MAX_SOURCE_BYTES, DEFAULT_FILE_IMPORTERS.maximum_source_bytes)
+
+
+def _resolve_intent_path(
+    store: TruthStore,
+    intent: BootstrapIntent,
+):
+    if intent.mode == "import":
+        _importer_for_intent(intent)
+        return resolve_relative_file_path(store, intent.normalized_path)
+    if intent.mode == "repair":
+        try:
+            document = documents.get_document(store, intent.document_id)
+        except InvariantViolation:
+            return resolve_markdown_path(store, intent.normalized_path)
+        return resolve_document_source_path(store, document)
+    return resolve_markdown_path(
+        store,
+        intent.normalized_path,
+        for_create=True,
+    )
+
+
+def _read_bounded_regular_file(
+    path: Path,
+    *,
+    maximum: int,
+    source_label: str,
+) -> bytes:
+    """Adapt the shared external-source reader to the bootstrap error contract."""
+
+    try:
+        result = read_bounded_regular_file(
+            path,
+            maximum=maximum,
+            source_label=source_label,
+        )
+    except SourceObservationError as exc:
+        raise BootstrapError(
+            exc.code,
+            str(exc),
+            status=exc.status,
+            details=exc.details,
+            retryable=exc.retryable,
+        ) from exc
+    assert result.data is not None
+    return result.data
+
+
 def _source_for_prepare(
     store: TruthStore,
     *,
@@ -146,6 +374,8 @@ def _source_for_prepare(
     resolved: Any,
     metadata: Mapping[str, Any],
     source: bytes | None,
+    max_source_bytes: int,
+    source_label: str,
 ) -> tuple[bytes, str | None, str | None]:
     declared = str(metadata.get("initial_source_sha256") or "").strip().lower()
     expected = str(metadata.get("expected_file_sha256") or "").strip().lower() or None
@@ -154,6 +384,16 @@ def _source_for_prepare(
 
     if mode == "create":
         payload = bytes(source or b"")
+        if len(payload) > max_source_bytes:
+            raise BootstrapError(
+                "source_too_large",
+                f"{source_label} exceeds the size limit",
+                status=413,
+                details={
+                    "max_source_bytes": max_source_bytes,
+                    "source_byte_length": len(payload),
+                },
+            )
         if resolved.path.exists():
             raise BootstrapError("path_conflict", "document path already exists", status=409)
         digest = sha256_bytes(payload)
@@ -162,18 +402,21 @@ def _source_for_prepare(
         return payload, digest, None
 
     if not resolved.path.is_file():
-        raise BootstrapError("source_not_found", "Markdown source does not exist", status=404)
-    try:
-        payload = resolved.path.read_bytes()
-    except OSError as exc:
         raise BootstrapError(
-            "source_unavailable", "Markdown source cannot be read", status=409, retryable=True
-        ) from exc
+            "source_not_found",
+            f"{source_label} does not exist",
+            status=404,
+        )
+    payload = _read_bounded_regular_file(
+        resolved.path,
+        maximum=max_source_bytes,
+        source_label=source_label,
+    )
     digest = sha256_bytes(payload)
     if expected is not None and digest != expected:
         raise BootstrapError(
             "source_changed",
-            "Markdown source changed before bootstrap",
+            f"{source_label} changed before bootstrap",
             status=409,
             details={"current_file_sha256": digest},
         )
@@ -226,23 +469,43 @@ def _prepare_bootstrap_locked(
         raise BootstrapError("invalid_document_class", "ordinary documents are co-authored")
 
     path = str(metadata.get("path") or "")
-    try:
-        resolved = resolve_markdown_path(store, path, for_create=mode == "create")
-    except CoworkPathError as exc:
-        raise BootstrapError("invalid_path", str(exc)) from exc
+    existing_document_id = str(metadata.get("document_id") or "").strip() or None
+    document = None
+    importer = None
+    if mode == "repair":
+        if existing_document_id is None:
+            raise BootstrapError("document_id_required", "repair requires document_id")
+        document = documents.get_document(store, existing_document_id)
+        try:
+            resolved = resolve_document_source_path(store, document)
+        except CoworkPathError as exc:
+            raise BootstrapError("invalid_path", str(exc)) from exc
+        if path != resolved.normalized:
+            raise BootstrapError("path_mismatch", "repair path does not match document")
+    else:
+        if existing_document_id is not None:
+            raise BootstrapError(
+                "unexpected_document_id",
+                "create/import mints the document identifier",
+            )
+        if mode == "import":
+            importer = _importer_for_request(path, metadata)
+        try:
+            resolved = (
+                resolve_relative_file_path(store, path)
+                if importer is not None
+                else resolve_markdown_path(store, path, for_create=True)
+            )
+        except CoworkPathError as exc:
+            raise BootstrapError("invalid_path", str(exc)) from exc
     title_raw = metadata.get("title")
     title = None if title_raw is None else str(title_raw).strip()
     if title is not None and (not title or len(title) > 240):
         raise BootstrapError("invalid_title", "title must contain 1-240 characters")
     key = _idempotency_key(metadata.get("idempotency_key"))
 
-    existing_document_id = str(metadata.get("document_id") or "").strip() or None
     if mode == "repair":
-        if existing_document_id is None:
-            raise BootstrapError("document_id_required", "repair requires document_id")
-        document = documents.get_document(store, existing_document_id)
-        if document.path != resolved.normalized:
-            raise BootstrapError("path_mismatch", "repair path does not match document")
+        assert document is not None
         readiness = classify_document(store, document)
         if readiness.initialization_state != "bootstrap_required":
             raise BootstrapError(
@@ -250,33 +513,76 @@ def _prepare_bootstrap_locked(
                 f"document is {readiness.initialization_state}, not safely repairable",
                 status=409,
             )
+        if (
+            documents.source_is_detached(document)
+            and documents.retained_file_import_source_sha256(
+                document.meta_json
+            )
+            != document.content_sha256
+        ):
+            raise BootstrapError(
+                "repair_not_supported",
+                (
+                    "This imported document cannot be repaired from its source "
+                    "file because its managed copy was normalized during import."
+                ),
+                status=409,
+                details={
+                    "source_writeback": documents.SOURCE_WRITEBACK_NEVER,
+                    "normalized_projection": True,
+                },
+            )
         document_id = document.id
     else:
-        if existing_document_id is not None:
-            raise BootstrapError(
-                "unexpected_document_id", "create/import mints the document identifier"
-            )
         with store._read_connection() as conn:
             occupied = conn.execute(
                 "SELECT d.id FROM documents d JOIN document_path_keys k "
                 "ON k.document_id = d.id WHERE k.path_key = ?",
                 (resolved.path_key,),
             ).fetchone()
+            occupied_lifecycle = (
+                None
+                if occupied is None
+                else documents.current_lifecycle(store, occupied[0], conn=conn)
+            )
         if occupied is not None:
+            if occupied_lifecycle == "retired":
+                raise BootstrapError(
+                    "retired_path",
+                    (
+                        "This file already has a retired Co-work copy. Its "
+                        "history is preserved, so this path cannot be reused."
+                    ),
+                    status=409,
+                    details={
+                        "document_id": occupied[0],
+                        "lifecycle": "retired",
+                        "path_reuse": "forbidden",
+                        "recovery_action": "choose_different_path",
+                    },
+                )
             raise BootstrapError(
                 "already_registered",
-                "Markdown path is already registered",
+                "That file is already registered",
                 status=409,
                 details={"document_id": occupied[0]},
             )
         document_id = new_id()
 
+    source_limit = (
+        importer.max_source_bytes
+        if importer is not None
+        else MAX_SOURCE_BYTES
+    )
+    source_label = "The selected source file" if mode == "import" else "Markdown source"
     payload, source_digest, expected_file = _source_for_prepare(
         store,
         mode=mode,
         resolved=resolved,
         metadata=metadata,
         source=source,
+        max_source_bytes=source_limit,
+        source_label=source_label,
     )
     if mode == "repair" and source_digest != document.content_sha256:
         raise BootstrapError(
@@ -284,9 +590,13 @@ def _prepare_bootstrap_locked(
             "current file no longer matches the document projection pointer",
             status=409,
         )
-    if len(payload) > MAX_SOURCE_BYTES:
-        raise BootstrapError("source_too_large", "Markdown source exceeds the size limit", status=413)
     assert source_digest is not None
+    importer_id = None
+    source_media_type = None
+    if mode == "import":
+        assert importer is not None
+        importer_id = importer.importer_id
+        source_media_type = importer.media_type
     canonical_request = {
         "mode": mode,
         "path": resolved.normalized,
@@ -296,6 +606,16 @@ def _prepare_bootstrap_locked(
         "source_sha256": source_digest,
         "expected_file_sha256": expected_file,
     }
+    import_attestation = (
+        _import_attestation(metadata, actor) if mode == "import" else None
+    )
+    if import_attestation is not None:
+        assert importer is not None
+        canonical_request["importer_id"] = importer_id
+        canonical_request["source_media_type"] = source_media_type
+        canonical_request["source_format"] = importer.source_format
+        canonical_request["max_source_bytes"] = importer.max_source_bytes
+        canonical_request["authorship_attestation"] = import_attestation
     request_digest = sha256_bytes(canonical_json(canonical_request).encode("utf-8"))
 
     with store._read_connection() as conn:
@@ -319,19 +639,35 @@ def _prepare_bootstrap_locked(
     created = _timestamp(now)
     expires = _timestamp(now + BOOTSTRAP_TTL)
     stage = _stage_path(store, intent_id)
-    stage.parent.mkdir(parents=True, exist_ok=False)
-    atomic_write_bytes(stage, payload)
+    attestation_payload = (
+        canonical_json(import_attestation).encode("utf-8")
+        if import_attestation is not None
+        else None
+    )
+    attestation_sha256 = (
+        sha256_bytes(attestation_payload)
+        if attestation_payload is not None
+        else None
+    )
     try:
+        stage.parent.mkdir(parents=True, exist_ok=False)
+        atomic_write_bytes(stage, payload)
+        if attestation_payload is not None:
+            atomic_write_bytes(
+                _attestation_stage_path(store, intent_id),
+                attestation_payload,
+            )
         with store.write_transaction() as conn:
             conn.execute(
                 "INSERT INTO cowork_bootstrap_intents ("
                 "id, idempotency_key, actor_ref, request_sha256, mode, state, "
                 "document_id, normalized_path, path_key, title, document_class, "
                 "source_sha256, source_byte_length, expected_file_sha256, "
+                "importer_id, source_media_type, import_attestation_sha256, "
                 "snapshot_sha256, structured_head_sha256, staged_path, created_at, "
                 "updated_at, expires_at, committed_at, receipt_json, recovery_detail"
                 ") VALUES (?, ?, ?, ?, ?, 'prepared', ?, ?, ?, ?, 'co_authored', "
-                "?, ?, ?, NULL, NULL, ?, ?, ?, ?, NULL, NULL, NULL)",
+                "?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, NULL, NULL, NULL)",
                 (
                     intent_id,
                     key,
@@ -345,6 +681,9 @@ def _prepare_bootstrap_locked(
                     source_digest,
                     len(payload),
                     expected_file,
+                    importer_id,
+                    source_media_type,
+                    attestation_sha256,
                     _stage_relative(intent_id),
                     created,
                     created,
@@ -353,6 +692,7 @@ def _prepare_bootstrap_locked(
             )
     except Exception:
         stage.unlink(missing_ok=True)
+        _attestation_stage_path(store, intent_id).unlink(missing_ok=True)
         try:
             stage.parent.rmdir()
         except OSError:
@@ -402,6 +742,7 @@ def _publish_create(path: Path, payload: bytes) -> None:
 def _remove_stage(store: TruthStore, intent_id: str) -> None:
     path = _stage_path(store, intent_id)
     path.unlink(missing_ok=True)
+    _attestation_stage_path(store, intent_id).unlink(missing_ok=True)
     try:
         path.parent.rmdir()
     except OSError:
@@ -430,15 +771,41 @@ def _recovered_receipt(
     except InvariantViolation:
         return None
     version = documents.current_document_version(store, document.id)
+    source_matches = document.content_sha256 == intent.source_sha256
+    if intent.mode == "import":
+        try:
+            document_meta = (
+                json.loads(document.meta_json) if document.meta_json else {}
+            )
+        except (TypeError, json.JSONDecodeError):
+            document_meta = {}
+        source_meta = (
+            document_meta.get("source")
+            if isinstance(document_meta, dict)
+            else None
+        )
+        source_matches = (
+            isinstance(source_meta, dict)
+            and source_meta.get("sha256") == intent.source_sha256
+            and source_meta.get("writeback_policy")
+            == documents.SOURCE_WRITEBACK_NEVER
+            and source_meta.get("importer_id")
+            == (intent.importer_id or MARKDOWN_IMPORTER_ID)
+        )
     if (
         version is None
-        or document.content_sha256 != intent.source_sha256
+        or not source_matches
         or document.ydoc_snapshot_sha256 != intent.snapshot_sha256
         or version.projection_sha256 != document.content_sha256
         or version.ydoc_snapshot_sha256 != document.ydoc_snapshot_sha256
         or version.structured_head_sha256 != intent.structured_head_sha256
     ):
         return None
+    recovered_importer = (
+        _importer_for_intent(intent)
+        if intent.mode == "import"
+        else None
+    )
     return {
         "ok": True,
         "mode": intent.mode,
@@ -450,9 +817,26 @@ def _recovered_receipt(
         "snapshot_sha256": document.ydoc_snapshot_sha256,
         "structured_head_sha256": version.structured_head_sha256,
         "projection_sha256": document.content_sha256,
+        # Compatibility field: detached documents use their internal
+        # projection head as the sitting CAS baseline. The external source is
+        # exposed separately and is never a writeback target.
         "current_file_sha256": document.content_sha256,
+        "source_file_sha256": intent.source_sha256,
+        "source_importer": (
+            recovered_importer.descriptor()
+            if recovered_importer is not None
+            else None
+        ),
         "document_version_id": version.id,
         "drift_state": "clean",
+        "source_writeback": documents.source_writeback_policy(document),
+        "permissions": {
+            "open": True,
+            "edit": True,
+            "materialize": not documents.source_is_detached(document),
+            "repair": False,
+            "retire": True,
+        },
     }
 
 
@@ -516,18 +900,44 @@ def _recover_bootstrap_locked(
                 (now, intent.id),
             )
         return get_intent(store, intent.id)
-    resolved = resolve_markdown_path(
-        store, intent.normalized_path, for_create=intent.mode == "create"
-    )
+    resolved = _resolve_intent_path(store, intent)
     safe = False
     if intent.mode == "create":
         if not resolved.path.exists():
             safe = True
-        elif resolved.path.is_file() and sha256_bytes(resolved.path.read_bytes()) == intent.source_sha256:
-            resolved.path.unlink()
-            safe = True
-    elif resolved.path.is_file() and sha256_bytes(resolved.path.read_bytes()) == intent.source_sha256:
-        safe = True
+        else:
+            try:
+                current = _read_bounded_regular_file(
+                    resolved.path,
+                    maximum=MAX_SOURCE_BYTES,
+                    source_label="The created Markdown file",
+                )
+            except BootstrapError:
+                pass
+            else:
+                if sha256_bytes(current) == intent.source_sha256:
+                    resolved.path.unlink()
+                    safe = True
+    else:
+        source_limit = (
+            _importer_for_intent(intent).max_source_bytes
+            if intent.mode == "import"
+            else MAX_SOURCE_BYTES
+        )
+        try:
+            current = _read_bounded_regular_file(
+                resolved.path,
+                maximum=source_limit,
+                source_label=(
+                    "The selected source file"
+                    if intent.mode == "import"
+                    else "Markdown source"
+                ),
+            )
+        except BootstrapError:
+            pass
+        else:
+            safe = sha256_bytes(current) == intent.source_sha256
     with store.write_transaction() as conn:
         conn.execute(
             "UPDATE cowork_bootstrap_intents SET state = ?, updated_at = ?, "
@@ -564,6 +974,8 @@ def commit_bootstrap(
     snapshot_sha256: str,
     ydoc_schema: str,
     actor: Actor,
+    projection: bytes | None = None,
+    projection_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Commit an initialized opaque snapshot and make the document visible."""
 
@@ -580,6 +992,23 @@ def commit_bootstrap(
     declared_snapshot = _valid_digest(snapshot_sha256, "snapshot_sha256")
     if sha256_bytes(snapshot_bytes) != declared_snapshot:
         raise BootstrapError("snapshot_hash_mismatch", "Y.Doc snapshot hash does not match")
+    projection_bytes = None if projection is None else bytes(projection)
+    if projection_bytes is not None:
+        if len(projection_bytes) > MAX_CANONICAL_PROJECTION_BYTES:
+            raise BootstrapError(
+                "projection_too_large",
+                "Co-work document projection exceeds the size limit",
+                status=413,
+            )
+        declared_projection = _valid_digest(
+            projection_sha256 or "",
+            "projection_sha256",
+        )
+        if sha256_bytes(projection_bytes) != declared_projection:
+            raise BootstrapError(
+                "projection_hash_mismatch",
+                "Co-work projection hash does not match",
+            )
 
     initial_intent = get_intent(store, bootstrap_id)
     with ydoc_store.document_lock(
@@ -603,22 +1032,80 @@ def commit_bootstrap(
         if declared_source != intent.source_sha256:
             raise BootstrapError("source_hash_mismatch", "source hash does not match prepared bytes", status=409)
         intent, source = read_staged_source(store, bootstrap_id=bootstrap_id, actor=actor)
-        try:
-            resolved = resolve_markdown_path(
-                store, intent.normalized_path, for_create=intent.mode == "create"
+        if projection_bytes is None:
+            # Compatibility for older bootstrap clients, whose initialized
+            # projection was required to be byte-identical to the source.
+            projection_bytes = source
+            declared_projection = intent.source_sha256
+        if intent.mode != "import" and projection_bytes != source:
+            raise BootstrapError(
+                "projection_not_lossless",
+                "Create and repair require a projection identical to the source bytes.",
+                status=409,
             )
+        import_attestation = (
+            _read_staged_attestation(store, intent)
+            if intent.mode == "import"
+            else None
+        )
+        if import_attestation is not None:
+            try:
+                provenance.normalize_attestation(
+                    import_attestation,
+                    actor=actor,
+                )
+            except provenance.ProvenanceActorBindingError as exc:
+                raise BootstrapError(
+                    exc.code,
+                    str(exc),
+                    status=exc.status,
+                ) from exc
+            except InvariantViolation as exc:
+                # A new prepared intent was validated before its hash-bound
+                # sidecar was staged. Failure here therefore means a legacy or
+                # otherwise unusable staged determination, not user input that
+                # is safe to reinterpret.
+                raise BootstrapError(
+                    "staged_attestation_corrupt",
+                    "The staged authorship details failed validation.",
+                    status=409,
+                ) from exc
+        try:
+            resolved = _resolve_intent_path(store, intent)
         except CoworkPathError as exc:
             raise BootstrapError("invalid_path", str(exc), status=409) from exc
         if resolved.path_key != intent.path_key:
             raise BootstrapError("path_changed", "document path identity changed", status=409)
         if intent.mode != "create":
             if not resolved.path.is_file():
-                raise BootstrapError("source_not_found", "Markdown source disappeared", status=409)
-            current = sha256_bytes(resolved.path.read_bytes())
+                raise BootstrapError(
+                    "source_not_found",
+                    "The source file disappeared before import.",
+                    status=409,
+                )
+            source_limit = (
+                _importer_for_intent(intent).max_source_bytes
+                if intent.mode == "import"
+                else MAX_SOURCE_BYTES
+            )
+            current_bytes = _read_bounded_regular_file(
+                resolved.path,
+                maximum=source_limit,
+                source_label=(
+                    "The selected source file"
+                    if intent.mode == "import"
+                    else "Markdown source"
+                ),
+            )
+            current = sha256_bytes(current_bytes)
             if current != intent.source_sha256:
                 raise BootstrapError(
                     "source_changed",
-                    "Markdown source changed before commit",
+                    (
+                        "The selected source file changed before import."
+                        if intent.mode == "import"
+                        else "The Markdown source changed before repair."
+                    ),
                     status=409,
                     details={"current_file_sha256": current},
                 )
@@ -628,6 +1115,11 @@ def commit_bootstrap(
         ydoc_store.write_snapshot(
             store, snapshot=snapshot_bytes, expected_sha256=declared_snapshot
         )
+        # Imported files are detached acquisition sources. Retain their exact
+        # bytes as a source artifact even when the structured projection was
+        # intelligently normalized during conversion.
+        if intent.mode == "import" and intent.source_sha256 != declared_projection:
+            store._store_blob_bytes(intent.source_sha256, source)
         structured_head = ydoc_store.structured_head_from_segments(snapshot_bytes, ())
         now = _timestamp(_now())
         with store.write_transaction() as conn:
@@ -644,25 +1136,81 @@ def commit_bootstrap(
             resolved = resolve_markdown_path(store, intent.normalized_path, for_create=True)
             _publish_create(resolved.path, source)
             created_file = True
+            try:
+                published_sha256 = sha256_bytes(resolved.path.read_bytes())
+            except OSError as exc:
+                raise BootstrapError(
+                    "create_publication_changed",
+                    "The newly created file could not be verified before registration.",
+                    status=409,
+                ) from exc
+            if published_sha256 != intent.source_sha256:
+                raise BootstrapError(
+                    "create_publication_changed",
+                    "The newly created file changed before registration.",
+                    status=409,
+                    details={"current_file_sha256": published_sha256},
+                )
 
         conn = store.connect()
         committed = False
+        import_attestation_record = None
         try:
             conn.execute("BEGIN IMMEDIATE")
             if intent.mode in {"create", "import"}:
+                committed_importer = (
+                    _importer_for_intent(intent)
+                    if intent.mode == "import"
+                    else None
+                )
+                document_meta = (
+                    {
+                        "source": {
+                            "kind": "file_import",
+                            "path": intent.normalized_path,
+                            "sha256": intent.source_sha256,
+                            "writeback_policy": documents.SOURCE_WRITEBACK_NEVER,
+                            "importer_id": committed_importer.importer_id,
+                            "format": committed_importer.source_format,
+                            "media_type": committed_importer.media_type,
+                        }
+                    }
+                    if intent.mode == "import"
+                    else None
+                )
                 record, version, _ = documents.register_ready_document(
                     store,
                     path=intent.normalized_path,
                     title=intent.title,
                     document_class="co_authored",
-                    projection_bytes=source,
+                    projection_bytes=projection_bytes,
                     ydoc_snapshot_sha256=declared_snapshot,
                     structured_head_sha256=structured_head,
                     actor=actor,
                     mode=intent.mode,
+                    document_meta=document_meta,
                     document_id=intent.document_id,
                     conn=conn,
                 )
+                if intent.mode == "import":
+                    assert import_attestation is not None
+                    assert committed_importer is not None
+                    import_attestation_record = provenance.record_document_attestation(
+                        store,
+                        document_id=record.id,
+                        document_version_id=version.id,
+                        attestation=import_attestation,
+                        source={
+                            "kind": "file_import",
+                            "format": committed_importer.source_format,
+                            "media_type": committed_importer.media_type,
+                            "path": intent.normalized_path,
+                            "sha256": intent.source_sha256,
+                        },
+                        actor=actor,
+                        idempotency_key=f"bootstrap:{intent.id}",
+                        conn=conn,
+                    )
             else:
                 record, version, _ = documents.repair_document_snapshot(
                     store,
@@ -685,8 +1233,29 @@ def commit_bootstrap(
                 "structured_head_sha256": structured_head,
                 "projection_sha256": record.content_sha256,
                 "current_file_sha256": record.content_sha256,
+                "source_file_sha256": (
+                    intent.source_sha256 if intent.mode == "import" else None
+                ),
+                "source_importer": (
+                    committed_importer.descriptor()
+                    if committed_importer is not None
+                    else None
+                ),
                 "document_version_id": version.id,
+                "authorship_attestation_id": (
+                    import_attestation_record.id
+                    if import_attestation_record is not None
+                    else None
+                ),
                 "drift_state": "clean",
+                "source_writeback": documents.source_writeback_policy(record),
+                "permissions": {
+                    "open": True,
+                    "edit": True,
+                    "materialize": not documents.source_is_detached(record),
+                    "repair": False,
+                    "retire": True,
+                },
             }
             receipt_json = canonical_json(receipt)
             cursor = conn.execute(
@@ -823,12 +1392,15 @@ __all__ = [
     "BOOTSTRAP_TTL",
     "BootstrapError",
     "BootstrapIntent",
+    "MAX_CANONICAL_PROJECTION_BYTES",
     "MAX_SNAPSHOT_BYTES",
     "MAX_SOURCE_BYTES",
     "YDOC_SCHEMA",
     "cancel_bootstrap",
     "commit_bootstrap",
     "get_intent",
+    "importer_descriptor",
+    "maximum_source_upload_bytes",
     "prepare_bootstrap",
     "read_staged_source",
     "recover_bootstrap_intent",

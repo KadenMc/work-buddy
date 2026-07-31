@@ -24,7 +24,8 @@ load_builtin_ops()
 
 import work_buddy.cowork.ops as cowork_ops  # noqa: E402
 import work_buddy.mcp_server.ops.truth_ops as truth_ops  # noqa: E402
-from work_buddy.truth import documents, expressions, proposals  # noqa: E402
+from work_buddy.cowork.file_importers import MARKDOWN_MAX_SOURCE_BYTES  # noqa: E402
+from work_buddy.truth import documents, expressions, proposals, ydoc_store  # noqa: E402
 from work_buddy.truth.contracts import Actor, InvariantViolation  # noqa: E402
 from work_buddy.truth.events import TruthEventEmission  # noqa: E402
 from work_buddy.truth.identity import new_id, sha256_bytes  # noqa: E402
@@ -206,6 +207,9 @@ def test_list_and_get_report_document_and_open_layer(cowork: dict[str, object]) 
     assert entry["document_class"] == "co_authored"
     assert entry["drift_state"] == "clean"
     assert entry["current_file_sha256"] == content_sha
+    assert entry["import_source_sha256"] is None
+    assert entry["observed_source_file_sha256"] == content_sha
+    assert entry["source_file_sha256"] == content_sha
     assert entry["last_materialized_sha256"] == content_sha
     assert entry["open_proposal_count"] == 0
     assert entry["open_flag_count"] == 0
@@ -214,9 +218,88 @@ def test_list_and_get_report_document_and_open_layer(cowork: dict[str, object]) 
     assert got["document_id"] == doc_id
     assert got["drift"]["state"] == "clean"
     assert got["hashes"]["current_file_sha256"] == content_sha
+    assert got["import_source_sha256"] is None
+    assert got["observed_source_file_sha256"] == content_sha
+    assert got["hashes"]["import_source_sha256"] is None
+    assert got["hashes"]["observed_source_file_sha256"] == content_sha
+    assert got["hashes"]["source_file_sha256"] == content_sha
     assert got["open_proposals"] == []
     assert got["expressions"] == []
     assert got["feedback"] == []
+
+
+def test_list_and_get_distinguish_recorded_import_from_observed_source(
+    cowork: dict[str, object],
+) -> None:
+    store = cowork["store"]
+    store_id = str(cowork["store_id"])
+    source_path = store.paths.root / "docs/fixture.md"
+    source_path.parent.mkdir(parents=True)
+    imported_source = b"# Imported source\n"
+    source_path.write_bytes(imported_source)
+    imported_source_sha256 = sha256_bytes(imported_source)
+    snapshot = b"YDOC-OPS-DETACHED-IMPORT"
+    snapshot_sha256 = ydoc_store.write_snapshot(store, snapshot=snapshot)
+    structured_head_sha256 = ydoc_store.structured_head_from_segments(
+        snapshot,
+        (),
+    )
+    document, _, _ = documents.register_ready_document(
+        store,
+        path="docs/fixture.md",
+        title="Fixture",
+        document_class="co_authored",
+        projection_bytes=imported_source,
+        ydoc_snapshot_sha256=snapshot_sha256,
+        structured_head_sha256=structured_head_sha256,
+        actor=HUMAN,
+        mode="import",
+        document_meta={
+            "source": {
+                "kind": "file_import",
+                "writeback_policy": "never",
+                "sha256": imported_source_sha256,
+                "importer_id": "markdown/v1",
+                "media_type": "text/markdown",
+            }
+        },
+        at=NOW,
+    )
+    changed_source = b"# Source changed after import\n"
+    observed_source_sha256 = sha256_bytes(changed_source)
+    source_path.write_bytes(changed_source)
+
+    listed = cowork_ops.cowork_doc_list(store_id)["docs"][0]
+    assert listed["source_writeback"] == "never"
+    assert listed["current_file_sha256"] == imported_source_sha256
+    assert listed["import_source_sha256"] == imported_source_sha256
+    assert listed["observed_source_file_sha256"] == observed_source_sha256
+    assert listed["source_file_sha256"] == observed_source_sha256
+    assert listed["drift_state"] == "clean"
+
+    got = cowork_ops.cowork_doc_get(store_id, document.id)
+    assert got["source_writeback"] == "never"
+    assert got["import_source_sha256"] == imported_source_sha256
+    assert got["observed_source_file_sha256"] == observed_source_sha256
+    assert got["hashes"]["current_file_sha256"] == imported_source_sha256
+    assert got["hashes"]["import_source_sha256"] == imported_source_sha256
+    assert (
+        got["hashes"]["observed_source_file_sha256"]
+        == observed_source_sha256
+    )
+    assert got["hashes"]["source_file_sha256"] == observed_source_sha256
+    assert got["drift"]["state"] == "clean"
+
+    with source_path.open("wb") as stream:
+        stream.truncate(MARKDOWN_MAX_SOURCE_BYTES + 1)
+    oversized_listed = cowork_ops.cowork_doc_list(store_id)["docs"][0]
+    oversized_got = cowork_ops.cowork_doc_get(store_id, document.id)
+    assert oversized_listed["current_file_sha256"] == imported_source_sha256
+    assert oversized_listed["observed_source_file_sha256"] is None
+    assert oversized_listed["drift_state"] == "clean"
+    assert oversized_got["hashes"]["current_file_sha256"] == imported_source_sha256
+    assert oversized_got["observed_source_file_sha256"] is None
+    assert oversized_got["drift"]["state"] == "clean"
 
 
 def test_cowork_execution_session_cannot_read_another_document(

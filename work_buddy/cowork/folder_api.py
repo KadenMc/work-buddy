@@ -15,6 +15,11 @@ from urllib.parse import urlsplit
 
 from flask import Blueprint, jsonify, request
 
+from work_buddy.cowork.file_importers import (
+    DEFAULT_FILE_IMPORTERS,
+    FileImportSelection,
+    FileImporterRegistry,
+)
 from work_buddy.cowork.paths import CoworkPathError, resolve_markdown_path
 from work_buddy.cowork.project_store import (
     DEFAULT_TOKEN_TTL_SECONDS,
@@ -25,10 +30,12 @@ from work_buddy.cowork.project_store import (
 from work_buddy.cowork.native_folder_chooser import (
     NativeFolderChooserError,
     default_host_folder_chooser,
+    default_host_import_chooser,
     default_host_location_chooser,
     default_host_markdown_chooser,
 )
 from work_buddy.truth.contracts import StorePaths
+from work_buddy.truth.identity import sha256_bytes
 from work_buddy.truth.registry import TruthStoreRegistry
 
 
@@ -36,6 +43,7 @@ logger = logging.getLogger(__name__)
 
 PICKER_INTENT_HEADER = "X-Work-Buddy-Intent"
 PICKER_INTENT_VALUE = "cowork-folder-picker"
+IMPORT_PICKER_INTENT_VALUE = "cowork-import-picker"
 MARKDOWN_PICKER_INTENT_VALUE = "cowork-markdown-picker"
 LOCATION_PICKER_INTENT_VALUE = "cowork-location-picker"
 MAX_FOLDER_PATH_CHARS = 32_767
@@ -524,6 +532,102 @@ def _admit_markdown_selection(root: Path, selected: str | Path) -> str:
     return admitted.normalized
 
 
+def _admit_import_selection(
+    root: Path,
+    selected: str | Path,
+    *,
+    importer_registry: FileImporterRegistry,
+) -> FileImportSelection:
+    """Admit one source file and identify its versioned importer."""
+
+    resolved, relative = _contained_picker_selection(
+        root,
+        selected,
+        outside_code="file_outside_folder",
+        unavailable_code="file_unavailable",
+        invalid_code="invalid_import_file",
+        managed_code="invalid_import_file",
+        item_label="a file",
+    )
+    if not relative:
+        raise FolderLifecycleError(
+            "invalid_import_file",
+            "Choose a supported file inside the active folder.",
+            status=422,
+        )
+    if not resolved.is_file():
+        raise FolderLifecycleError(
+            "file_unavailable",
+            "That file is no longer available.",
+            status=409,
+            retryable=True,
+        )
+    importer = importer_registry.importer_for_path(resolved)
+    if importer is None:
+        supported = ", ".join(importer_registry.supported_suffixes)
+        raise FolderLifecycleError(
+            "unsupported_file_type",
+            f"Co-work can currently import files ending in {supported}.",
+            status=422,
+        )
+    try:
+        source_byte_length = resolved.stat().st_size
+    except OSError as exc:
+        raise FolderLifecycleError(
+            "file_unavailable",
+            "That file is no longer available.",
+            status=409,
+            retryable=True,
+        ) from exc
+    if source_byte_length > importer.max_source_bytes:
+        raise FolderLifecycleError(
+            "import_source_too_large",
+            (
+                "That file is too large to import. "
+                f"The current limit is {importer.max_source_bytes} bytes."
+            ),
+            status=413,
+            details={
+                "importer_id": importer.importer_id,
+                "max_source_bytes": importer.max_source_bytes,
+                "source_byte_length": source_byte_length,
+            },
+        )
+    try:
+        with resolved.open("rb") as stream:
+            source_bytes = stream.read(importer.max_source_bytes + 1)
+    except OSError as exc:
+        raise FolderLifecycleError(
+            "file_unavailable",
+            "That file is no longer available.",
+            status=409,
+            retryable=True,
+        ) from exc
+    # Re-check the bytes actually read in case the source grew after stat().
+    if len(source_bytes) > importer.max_source_bytes:
+        raise FolderLifecycleError(
+            "import_source_too_large",
+            (
+                "That file is too large to import. "
+                f"The current limit is {importer.max_source_bytes} bytes."
+            ),
+            status=413,
+            details={
+                "importer_id": importer.importer_id,
+                "max_source_bytes": importer.max_source_bytes,
+                "source_byte_length": len(source_bytes),
+            },
+        )
+    source_sha256 = sha256_bytes(source_bytes)
+    selection = importer_registry.selection_for_path(
+        resolved,
+        relative_path=relative,
+        source_sha256=source_sha256,
+    )
+    assert selection is not None
+    return selection
+
+
 def _admit_location_selection(root: Path, selected: str | Path) -> str:
     resolved, relative = _contained_picker_selection(
         root,
@@ -562,8 +666,10 @@ def create_folder_blueprint(
     manager: ProjectStoreManager | None = None,
     registry_factory: Callable[[], TruthStoreRegistry] = TruthStoreRegistry,
     chooser: HostFolderChooser | None = None,
+    import_chooser: HostScopedPathChooser | None = None,
     markdown_chooser: HostScopedPathChooser | None = None,
     location_chooser: HostScopedPathChooser | None = None,
+    importer_registry: FileImporterRegistry = DEFAULT_FILE_IMPORTERS,
     access_policy: FolderAccessPolicy | None = None,
     read_only: Callable[[], bool] = _dashboard_read_only,
 ) -> Blueprint:
@@ -571,6 +677,10 @@ def create_folder_blueprint(
 
     manager = manager or ProjectStoreManager()
     access_policy = access_policy or FolderAccessPolicy(_default_allowed_roots())
+    # Either injected chooser can serve both routes while older embedders move
+    # from the Markdown-specific boundary to the generic import boundary.
+    import_chooser = import_chooser or markdown_chooser
+    markdown_chooser = markdown_chooser or import_chooser
     tokens = FolderTokenStore(
         manager.data_root / "runtime" / "cowork-folder-tokens"
     )
@@ -626,6 +736,7 @@ def create_folder_blueprint(
                 "chooser": {
                     "available": chooser is not None,
                     "kind": "host_native" if chooser is not None else "unavailable",
+                    "import_available": import_chooser is not None,
                     "markdown_available": markdown_chooser is not None,
                     "location_available": location_chooser is not None,
                 },
@@ -708,6 +819,49 @@ def create_folder_blueprint(
             )
         except NativeFolderChooserError as exc:
             return native_picker_error(exc, label="Markdown")
+        except FolderLifecycleError as exc:
+            return _error(exc)
+
+    @blueprint.post("/api/truth/cowork/files/choose-import")
+    def files_choose_import():
+        if not _has_local_picker_intent(IMPORT_PICKER_INTENT_VALUE):
+            return _error(
+                FolderLifecycleError(
+                    "folder_picker_intent_required",
+                    "File selection must be started from Co-work.",
+                    status=403,
+                )
+            )
+        if import_chooser is None:
+            return _error(
+                FolderLifecycleError(
+                    "folder_chooser_unavailable",
+                    "File selection is unavailable here.",
+                    status=503,
+                )
+            )
+        try:
+            root = _active_store_root(
+                _body(),
+                registry_factory=registry_factory,
+            )
+            selected = import_chooser(root)
+            if selected is None:
+                return jsonify({"ok": True, "cancelled": True})
+            admitted = _admit_import_selection(
+                root,
+                selected,
+                importer_registry=importer_registry,
+            )
+            return jsonify(
+                {
+                    "ok": True,
+                    "cancelled": False,
+                    **admitted.to_dict(),
+                }
+            )
+        except NativeFolderChooserError as exc:
+            return native_picker_error(exc, label="file")
         except FolderLifecycleError as exc:
             return _error(exc)
 
@@ -902,6 +1056,7 @@ def create_folder_blueprint(
 
 cowork_folder_blueprint = create_folder_blueprint(
     chooser=default_host_folder_chooser(),
+    import_chooser=default_host_import_chooser(),
     markdown_chooser=default_host_markdown_chooser(),
     location_chooser=default_host_location_chooser(),
 )
@@ -912,6 +1067,7 @@ __all__ = [
     "FolderTokenStore",
     "HostFolderChooser",
     "HostScopedPathChooser",
+    "IMPORT_PICKER_INTENT_VALUE",
     "LOCATION_PICKER_INTENT_VALUE",
     "MARKDOWN_PICKER_INTENT_VALUE",
     "PICKER_INTENT_HEADER",

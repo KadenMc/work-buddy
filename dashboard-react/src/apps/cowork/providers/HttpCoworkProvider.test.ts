@@ -225,7 +225,7 @@ describe("HttpCoworkProvider", () => {
           chooser: {
             available: true,
             kind: "host_native",
-            markdown_available: true,
+            import_available: true,
             location_available: true,
           },
         });

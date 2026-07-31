@@ -23,12 +23,17 @@ export interface CoworkDocumentSummary {
   readonly title: string;
   readonly profile: string;
   readonly documentClass?: string;
+  readonly sourceWriteback?: "same_file" | "never";
   readonly lifecycle?: "active" | "retired";
   readonly initializationState?: CoworkInitializationState;
   readonly structuredHeadSha256?: string | null;
   readonly snapshotSha256?: string | null;
   readonly projectionSha256?: string | null;
   readonly currentFileSha256?: string | null;
+  /** Exact source bytes captured when a detached From file document was created. */
+  readonly importSourceSha256?: string | null;
+  /** Source file bytes currently observed at the import path, when still readable. */
+  readonly observedSourceFileSha256?: string | null;
   readonly projectionBlobAvailable?: boolean;
   readonly driftState: CoworkDriftState;
   readonly openProposalCount: number;
@@ -37,6 +42,17 @@ export interface CoworkDocumentSummary {
   readonly permissions?: CoworkDocumentPermissions;
   readonly disabledReason?: string | null;
 }
+
+/**
+ * Source-file writes are an explicit two-part capability. Legacy server
+ * payloads are normalized before reaching this boundary; unnormalized or
+ * malformed documents fail closed.
+ */
+export const coworkDocumentCanWriteBackSource = (
+  document: CoworkDocumentSummary,
+): boolean =>
+  document.sourceWriteback === "same_file" &&
+  document.permissions?.materialize === true;
 
 export interface CoworkApiError {
   readonly code: string;
@@ -58,14 +74,14 @@ export interface CoworkFolderPermissions {
 export interface CoworkFolderChooserAvailability {
   readonly available: boolean;
   readonly kind: string;
-  readonly markdownAvailable: boolean;
+  readonly importAvailable: boolean;
   readonly locationAvailable: boolean;
 }
 
 export interface CoworkFolderChooserInput {
   readonly available: boolean;
   readonly kind: string;
-  readonly markdownAvailable?: boolean;
+  readonly importAvailable?: boolean;
   readonly locationAvailable?: boolean;
 }
 

@@ -181,6 +181,49 @@ def test_prune_keeps_referenced_snapshot(document_store, register_document):
     assert blob.exists()
 
 
+def test_prune_keeps_detached_file_import_source(document_store):
+    store, _ = document_store
+    source_bytes = b"# Exact source\r\n\r\nBefore projection normalization.\r\n"
+    source_digest = ydoc_store.write_snapshot(store, snapshot=source_bytes)
+    projection = b"# Exact source\n\nBefore projection normalization.\n"
+    snapshot = b"YDOC-NORMALIZED-SOURCE"
+    snapshot_digest = ydoc_store.write_snapshot(store, snapshot=snapshot)
+    documents.register_ready_document(
+        store,
+        path="docs/normalized-import.md",
+        title="Normalized import",
+        document_class="co_authored",
+        projection_bytes=projection,
+        ydoc_snapshot_sha256=snapshot_digest,
+        structured_head_sha256=ydoc_store.structured_head_from_segments(
+            snapshot,
+            (),
+        ),
+        actor=HUMAN,
+        mode="import",
+        document_meta={
+            "source": {
+                "kind": "file_import",
+                "path": "incoming/source.md",
+                "sha256": source_digest,
+                "writeback_policy": "never",
+            }
+        },
+        at=NOW,
+    )
+
+    blob = store.resolve_blob_path(f"blobs/{source_digest}")
+    assert store.blob_reference_count(source_digest) == 1
+    assert (
+        ydoc_store.prune_snapshot_blob(
+            store,
+            snapshot_sha256=source_digest,
+        )
+        is False
+    )
+    assert blob.read_bytes() == source_bytes
+
+
 def test_snapshot_advance_updates_document_pointer(document_store, register_document):
     store, _ = document_store
     document_id, _, first = register_document(store)

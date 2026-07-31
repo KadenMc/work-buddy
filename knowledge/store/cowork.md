@@ -1,8 +1,8 @@
 ---
 name: Co-work
 kind: concept
-description: The human-and-agent surface for living documents, organized around ordinary folders with durable editing, explicit file writes, and proposal review.
-summary: A user opens an ordinary folder, Co-work inspects it without mutation, and a one-time confirmation discloses the .wbuddy support data before setup. An invariant toolbar owns New, New from Markdown, folder selection, document selection, and explicit folder closing. The launcher and document picker show only the active folder's registered documents while a folder is open, and only browser-local documents when no folder is open; every row states its location. Co-work restores the selected folder and document from the URL, keeps structured editing state durable through an offline-capable outbox, binds each document to one durable conversation with exact feedback anchors, writes Markdown only through an explicit human action, detects outside file changes before overwrite, and routes agent contributions through human-reviewed proposals.
+description: The human-and-agent surface for living documents, with durable editing, source-safe file import, explicit file writes, content provenance, and proposal review.
+summary: A user opens an ordinary folder, Co-work inspects it without mutation, and a one-time confirmation discloses the .wbuddy support data before setup. An invariant toolbar owns New, From file, folder selection, document selection, and explicit folder closing. From file uses a format-neutral importer boundary with Markdown support today; it creates a managed Co-work document without rewriting the source artifact. Co-work keeps structured editing state durable through an offline-capable outbox, records frozen-target authorship and human-review attestations for imported and pasted text, binds each document to one durable conversation with exact feedback anchors, and routes agent contributions through human-reviewed proposals.
 tags:
 - cowork
 - documents
@@ -16,13 +16,13 @@ aliases:
 - document surface
 - living documents
 dev_notes: |
-  Native filesystem results are treated as untrusted input even though the picker runs on the host. Scoped Markdown and destination routes resolve the selected filesystem identity, derive the returned relative path from that resolved identity, and reapply containment plus the `.wbuddy` exclusion. This is load-bearing on Windows, where an 8.3 alias such as `WBUDDY~1` can otherwise disguise the managed directory. Registered Markdown identity is case-insensitive for Windows folder roots and case-sensitive for POSIX roots; the server remains authoritative for races and unusual Unicode identities.
+  Native filesystem results are treated as untrusted input even though the picker runs on the host. Scoped import-file and destination routes resolve the selected filesystem identity, derive the returned relative path from that resolved identity, and reapply containment plus the `.wbuddy` exclusion. This is load-bearing on Windows, where an 8.3 alias such as `WBUDDY~1` can otherwise disguise the managed directory. Registered path identity is case-insensitive for Windows folder roots and case-sensitive for POSIX roots; the server remains authoritative for races and unusual Unicode identities.
 
   The Windows helper protocol is versioned and mode-bound. macOS cancellation returns an explicit protocol-and-mode-bound success marker; every nonzero `osascript` exit remains a genuine picker error. All picker modes share one non-blocking process lock.
 
   First-time setup is a focus-managed modal and disables stale document chrome from any previously active folder. If the short-lived inspection token expires after the user confirms setup, the provider refreshes inspection and retries initialization exactly once on that same click. Do not turn that bounded retry into a loop.
 
-  Native folder, Markdown-file, and destination-folder picker availability are distinct server capabilities and must remain distinct through the client model. Permission and availability checks are repeated at intent dispatch boundaries, not left to disabled controls alone. In read-only mode, ordinary folder setup is informational and cannot initialize. A browser-local document remains local when the dashboard is read-only, its active folder denies create, or it has no folder and folder selection is unavailable.
+  Native folder, supported-import-file, and destination-folder picker availability are distinct server capabilities and must remain distinct through the client model. `chooser.import_available` is the canonical transport field and `folderChooser.importAvailable` is the canonical client property; `markdown_available` may still be emitted or accepted as a legacy compatibility alias. Permission and availability checks are repeated at intent dispatch boundaries, not left to disabled controls alone. In read-only mode, ordinary folder setup is informational and cannot initialize. A browser-local document remains local when the dashboard is read-only, its active folder denies create, or it has no folder and folder selection is unavailable.
 
   `wb.cowork.folder.close@1` is a dedicated navigation intent. It is not the folder-selection `cancel` action: cancel restores the context that existed before a transient picker or inspection, while **Close folder** deliberately clears the active folder and catalog. A registered session must pass the device-durability leave barrier first; an active browser-local document is folder-independent and remains open. Closing never unregisters a folder, retires a document, mutates `.wbuddy`, or changes Markdown.
 
@@ -40,7 +40,9 @@ dev_notes: |
 
   Origin filtering is not persistence isolation: a later human Yjs update can causally depend on an earlier filtered struct. Never project a pending proposal into the live collaborative Y.Doc, even under a non-human origin. Sitting materialization starts from a clean clone of the canonical structured head, joins admitted decisions to the authoritative proposal catalog by ID and canonical hash, resolves every materializing anchor against that initial clone, rejects missing, mismatched, unresolved, duplicate, or overlapping edits, and applies confirmed changes in reverse document order. Explicit Save fails closed if tracked-suggestion schema artifacts somehow appear in the live document.
 
-  Successful and response-recovery sitting paths do not adopt the prepared clone directly. They pull the authoritative committed state, verify its structured head, advance the current Markdown file hash, and then refresh the review projection. The canonical-state guard runs before preparation and after the server refresh. If a human edit advances the local generation while the sitting is in flight, the new file baseline is retained but the editor remains unsaved rather than falsely claiming to be current.
+  Successful and response-recovery sitting paths do not adopt the prepared clone directly. They pull the authoritative committed state, verify its structured head, advance the managed projection, and then refresh the review projection. A document with `source.writeback_policy=never` commits that projection internally and never publishes it over the import source artifact. The canonical-state guard runs before preparation and after the server refresh. If a human edit advances the local generation while the sitting is in flight, the new baseline is retained but the editor remains unsaved rather than falsely claiming to be current.
+
+  Paste persistence and paste provenance are related but cannot be committed in one browser transaction: Yjs state, the synchronous local-storage intent journal, the document-scoped IndexedDB provenance outbox, and the server Truth store are separate authorities. The journal is the smallest recovery barrier across that gap, not an atomicity claim. Never delete a frozen provenance request before a confirmed server receipt, and never retarget one implicitly after an absent, ambiguous, or changed target. An actor-binding rejection is the exception that requires explicit recovery: refetch the current actor, invalidate every stale frozen request, rotate its idempotency key, reset its determination to unknown, and require a fresh user attestation before sending.
 ---
 
 # Co-work
@@ -66,7 +68,7 @@ authenticated remote surface; a network-bound dashboard must not expose folder
 contents by implication. The guard also requires a local browser-visible Host
 and rejects forwarding/Tailscale proxy markers, because a loopback reverse
 proxy is not itself proof of a local user. Opening host UI has an additional
-boundary: every native folder, Markdown-file, and destination picker route
+boundary: every native folder, import-file, and destination picker route
 requires its exact Co-work intent header, rejects cross-site browser provenance
 or a mismatched Origin, and the dashboard denies framing so another site cannot
 place the controls in a clickjacking frame.
@@ -77,7 +79,7 @@ With no folder open, the toolbar's **folder** control opens the native picker
 directly. On Windows the dashboard launches a fixed
 `python -I -m work_buddy.cowork.folder_picker_helper` command with only bounded,
 validated mode and starting-directory arguments. That isolated PySide6 process
-asks Qt for the operating system's native directory or Markdown-file dialog and
+asks Qt for the operating system's native directory or supported-file dialog and
 returns the selection through a small versioned JSON protocol. It does not
 invoke a command shell or compile PowerShell/C# at runtime. A one-pixel Qt owner
 supplies a modal/topmost ownership hint so Windows can surface the native dialog
@@ -93,12 +95,12 @@ When the dashboard itself is read-only, the modal instead explains that Co-work
 is not set up in the folder, offers only **Close**, and changes no files.
 
 The document bar keeps the same foundational controls in every resting state:
-the folder control, **Open document**, **New from Markdown**, and NotePencil
-**New**. With no folder, New starts an ordinary browser-local document; with a
-folder, it opens the contained create flow. New from Markdown remains in
-the same toolbar position and is disabled with a specific explanation until an
-import-capable folder and native Markdown picker are available. These creation
-actions never appear in the launcher body or inside the Open document dialog.
+the folder control, **Open document**, **From file**, and NotePencil **New**.
+With no folder, New starts an ordinary browser-local document; with a folder, it
+opens the contained create flow. From file remains in the same toolbar position
+and is disabled with a specific explanation until an import-capable folder and
+native file picker are available. These creation actions never appear in the
+launcher body or inside the Open document dialog.
 
 The launcher has one **Documents** list whose contents follow the current
 context. With a folder open, it contains only ready registered documents from
@@ -123,15 +125,48 @@ open without folder context. A successful registered or idle close navigates to
 `?mode=launcher`; a durability failure leaves the folder, document, catalog, and
 URL in place.
 
-**New from Markdown** opens the operating system's native file picker, rooted
-at the active folder and filtered to `.md` and `.markdown`. The server accepts
-only a real, contained, non-managed Markdown path after resolving its filesystem
-identity; aliases cannot be used to enter `.wbuddy`. Co-work creates its
-collaborative document representation from the existing bytes and continues to
-use the original file; it does not copy, move, or rewrite the Markdown during
-registration. If the file is already registered, Co-work opens that document.
-If Markdown-file selection is unavailable on the host, the action is disabled
-with a visible explanation rather than failing after a click.
+**From file** opens the operating system's native file picker, rooted at the
+active folder. Its outer contract is format-neutral and returns a versioned
+importer identity and media type. The only importer today is `markdown/v1`,
+which accepts UTF-8 `.md` and `.markdown` files as `text/markdown`, up to its
+16 MiB source limit. Each importer owns path acceptance, media type, title
+derivation, source limits, and conversion; adding a later Word importer does not
+change the outer picker, bootstrap, or provenance flow. The server accepts only
+a real, contained, non-managed path after resolving its filesystem identity;
+aliases cannot be used to enter `.wbuddy`. Its validated importer descriptor is
+authoritative: the browser chooses a converter by the exact versioned importer
+ID and stops before commit if that version is unavailable, rather than inferring
+a converter from a suffix or caller-supplied media type.
+
+Subsequent observation of a detached source is governed by that persisted
+importer descriptor too. Co-work reads only a regular file, does not follow
+links or reparse points, and enforces the importer's source-size limit while
+hashing. Routine document lists, reads, and drift checks report the observed
+source digest as unknown when the source is unsafe, unavailable, changed during
+the read, or oversized; the managed Co-work document remains usable. An
+explicit request for the current external source returns a typed failure instead
+of hiding the reason.
+
+The Markdown importer performs supported import normalization into the
+structured editor model. Formatting details such as hard line wrapping may
+therefore differ in the managed projection even though the source artifact's
+meaning is retained. Co-work records the exact source artifact hash separately
+from the managed projection hash and retains the exact selected bytes in its
+content-addressed store. Portable Truth export carries those bytes when they
+were captured; historical import records may remain hash-only. The imported
+document has `source.writeback_policy=never`: editing, accepting a proposal,
+Ctrl+S, retirement, or recovery never copies, moves, or rewrites the original
+file.
+
+If that path is already registered as a detached import and the newly selected
+bytes match the recorded import hash, Co-work opens the existing managed
+document. If the file changed, or a historical record has no comparable import
+hash, Co-work warns and offers to open the existing Co-work copy without
+refreshing it from the file. It never silently adopts the changed file as a
+replacement version. If file selection is unavailable on the host, **From
+file** is disabled with a visible explanation rather than failing after a
+click. The canonical availability property is `importAvailable`;
+`markdown_available` remains a legacy compatibility alias.
 
 For a newly created document, **Save in** defaults to the active folder and
 **Change** opens the native destination-folder picker. The filename is derived
@@ -160,17 +195,33 @@ document type. Additional browser-local documents are numbered
 The selected folder and document are encoded in the URL, so reload, history
 navigation, and a shared local link restore the same working context. Document
 selection and folder closing do not imply a file write. Retiring a document
-removes it from the active catalog while preserving its Markdown file and
-durable history.
+removes it from the active catalog while preserving any source artifact,
+writeback file, managed projections, and durable history.
+For a detached import, removal first retries and flushes pending edits, validates
+the canonical head, and compacts the Yjs tail into a durable internal snapshot.
+It may therefore retain a newer structured head than its latest managed
+projection, but it never invokes the external Save that the document is
+intentionally forbidden to perform.
+The retired identity permanently reserves its original path. Selecting that
+exact source through **From file** offers **Choose another file** rather than
+opening or replacing retired history; copying or renaming the source produces a
+distinct path that can be imported as a new document.
 
 ## Editing and persistence
 
-A Co-work document has two related representations:
+A Co-work document has two canonical representations:
 
 - the authoritative structured collaborative head used by the editor, with
   monotonic versions and compare-and-swap protection; and
-- the Markdown file in the selected folder, which is materialized only through
-  the explicit **Save** action.
+- a versioned managed Markdown projection rendered from that structured head.
+
+A document created in Co-work may use its folder-relative Markdown path as an
+explicit Save target. A document created through **From file** instead keeps the
+selected file only as a source artifact and never writes back to it. The source
+artifact hash, exact retained source bytes, managed projection hash, and
+structured-head hash remain separate facts. If source and projection bytes are
+identical they can share one content-addressed blob without collapsing those
+roles.
 
 Local edits enter an IndexedDB outbox before transport. The provider can reload
 them after a browser refresh or temporary disconnection and acknowledges them
@@ -194,16 +245,64 @@ generation as a server-checked precondition under the document lock, so an
 opaque update cannot cross a replacement boundary even when snapshot bytes
 happen to hash identically.
 
-Before writing Markdown, Co-work compares the registered file fingerprint with
-the current file. An outside change blocks overwrite and offers an explicit
-reimport path. Reimport prepares the catalog and structured head off-model, then
-replaces the visible document atomically; failure leaves the current editor
-intact. An ambiguous commit response is retried with the exact retained
-idempotent payload rather than rereading staged source that may already have
-been consumed. If another tab retires the active document, catalog
-reconciliation first makes local edits device-durable and then revokes the
-writable session. Recovery and quarantine paths fail closed when persisted
-state cannot be validated.
+Before writing to a configured Save target, Co-work compares the registered file
+fingerprint with the current file. An outside change blocks overwrite and offers
+an explicit reimport path. These drift and reimport rules do not treat a
+non-writeback import source as a live projection or Save target. Reimport
+prepares the catalog and structured head off-model, then replaces the visible
+document atomically; failure leaves the current editor intact. An ambiguous
+commit response is retried with the exact retained idempotent payload rather than
+rereading staged source that may already have been consumed. If another tab
+retires the active document, catalog reconciliation first makes local edits
+device-durable and then revokes the writable session. Recovery and quarantine
+paths fail closed when persisted state cannot be validated.
+
+## Content provenance
+
+Co-work records authorship and human review as separate, append-only
+attestations. **From file** uses a provenance determination before commit and
+binds it to the exact imported document version. A text-bearing paste binds the
+same dimensions to an exact quote-anchored span and one structured-head digest.
+Authorship can be human, AI, mixed, or unknown. For AI or mixed authorship,
+human review records whether a person reviewed the content and can identify
+that reviewer.
+
+A paste opens the shared provenance form when it contains multiple top-level
+blocks, a list, task list, code block, blockquote, or table, or at least 600
+Unicode characters in one ordinary block. A shorter, single ordinary block is
+automatically attributed to the current local user and explicitly marked with
+the `automatic_short_text_attribution` basis. That is a low-friction heuristic,
+not proof of clipboard authorship. This slice records text that the editor
+actually inserted; it does not attest image-only or attachment-only clipboard
+content or preserve original clipboard HTML.
+
+A paste over 1,000,000 Unicode characters is stopped before entering Yjs or the
+provenance delivery stores and asks the user to paste in smaller sections. This
+keeps every accepted edit within the exact-span limit the server can record.
+
+Pending paste attribution uses a document-scoped IndexedDB FIFO outbox
+plus a synchronous local-storage intent journal. After editor hydration, Co-work
+reconciles the journal, requires the full quote anchor to identify one current
+passage, flushes the Yjs edit, freezes the complete request against that exact
+structured head, and retries it unchanged until receipt. Yjs and the provenance
+record are not one atomic transaction; the journal makes the cross-store gap
+recoverable. A changed, absent, or ambiguous target remains visible for explicit
+recovery rather than being attached elsewhere.
+
+The attestation says what the acting person reports about the content. It does
+not prove authorship, verify a claim, certify correctness, or approve the text.
+A server-derived actor binding identifies **Me**. Co-work freezes its ref and
+identity status at capture and revalidates both on delivery, so an account
+switch cannot silently reassign a pending import or paste. The current local
+dashboard uses `identity_status=local_actor_ref` but has no authenticated
+multi-user boundary. A typed other-person name remains
+`identity_status=claimed_name`, not an account identity. The schema reserves
+`identity_status=account_ref` for a future authenticated participant directory;
+the current dashboard does not mint it. If a queued paste reaches the server
+after the actor binding changes, Co-work refetches the actor and requires a
+fresh explicit determination for every pending entry rather than silently
+rebinding or repeatedly resending stale attribution. See
+`cowork/content-provenance`.
 
 ## Conversation and feedback
 
@@ -296,9 +395,10 @@ context. Accepting or amending a proposal applies only the admitted,
 hash-matched proposal payload to an isolated clone of the canonical structured
 document before that sitting is committed; unresolved review display never
 mutates the live collaborative document. Explicit **Save** also refuses to
-compact a live document containing tracked-suggestion artifacts. The document's
-Markdown file is written through the materialization engine, never directly by
-an agent, and the claims a document expresses live in the folder's scoped Truth
-ledger through expression links. Internally, the engine still uses terms such
-as scope root, store ID, and Truth store; the dashboard consistently calls the
-thing the user selected a **folder**.
+compact a live document containing tracked-suggestion artifacts. The managed
+projection is committed through the materialization engine, never directly by
+an agent; only a document with a writeback target may publish that projection to
+a file. The claims a document expresses live in the folder's scoped Truth ledger
+through expression links. Internally, the engine still uses terms such as scope
+root, store ID, and Truth store; the dashboard consistently calls the thing the
+user selected a **folder**.

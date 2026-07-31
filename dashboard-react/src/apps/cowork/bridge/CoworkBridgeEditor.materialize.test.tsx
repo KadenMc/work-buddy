@@ -604,6 +604,110 @@ describe("CoworkBridgeEditor explicit Markdown Save", () => {
     expect(saveRequests[0].expected_ydoc_head_sha256).not.toBe(initialServerHead);
   }, 25_000);
 
+  it("settles and compacts a detached document without writing its source file", async () => {
+    const initialized = await bootstrapCoworkYdoc(
+      new TextEncoder().encode("Initial text"),
+    );
+    if (!initialized.ok) throw new Error(initialized.message);
+    const server = new InMemoryCoworkYdocTransport();
+    const empty = await server.pull({});
+    await server.push({
+      batch: initialized.snapshot,
+      baseSha256: empty.docSha256,
+      baseStructuredHeadSha256: empty.structuredHeadSha256,
+      baseYdocGeneration: empty.ydocGeneration,
+      compaction: {
+        snapshot: initialized.snapshot,
+        snapshotSha256: initialized.snapshotSha256,
+      },
+    });
+    let failNextUpdate = true;
+    let compactionCount = 0;
+    const transport: CoworkYdocTransport = {
+      pull: (request) => server.pull(request),
+      push: async (request) => {
+        if (request.compaction !== undefined) {
+          compactionCount += 1;
+          return server.push(request);
+        }
+        if (failNextUpdate) {
+          failNextUpdate = false;
+          throw new TypeError("offline");
+        }
+        return server.push(request);
+      },
+    };
+    const materializationFetch = vi.fn(async () => {
+      throw new Error("Detached lifecycle settlement must not materialize");
+    });
+    const controllerRef: { current: CoworkMaterializationController | null } = {
+      current: null,
+    };
+    const statuses: string[] = [];
+    const document = new Y.Doc();
+
+    render(
+      <CoworkBridgeEditor
+        document={document}
+        transport={transport}
+        seedMarkdown=""
+        documentId={`detached-settle-${Date.now()}`}
+        storeId="detached-settle-store"
+        currentFileSha256={initialized.sourceSha256}
+        initialDriftState="clean"
+        canMaterialize={false}
+        materializationClient={
+          new HttpCoworkMaterializationClient(
+            materializationFetch as typeof fetch,
+          )
+        }
+        onSyncStatus={(status) => statuses.push(status)}
+        onMaterializationController={(controller) => {
+          controllerRef.current = controller;
+        }}
+      />,
+    );
+    const textbox = await screen.findByRole(
+      "textbox",
+      { name: "Document editor" },
+      { timeout: 10_000 },
+    );
+    await waitFor(() => expect(controllerRef.current).not.toBeNull());
+
+    act(() => {
+      document.transact(() => {
+        const paragraph = document.getXmlFragment("default").get(0);
+        if (!(paragraph instanceof Y.XmlElement)) throw new Error("missing paragraph");
+        paragraph.insert(paragraph.length, [new Y.XmlText(" lifecycle edit")]);
+      }, ySyncPluginKey);
+    });
+    await waitFor(() =>
+      expect(textbox.textContent).toContain("Initial text lifecycle edit"),
+    );
+    await waitFor(() => expect(statuses).toContain("offline"));
+    const controller = controllerRef.current;
+    if (controller === null) throw new Error("materialization controller was not ready");
+
+    await act(async () => controller.settleForLifecycle());
+
+    expect(materializationFetch).not.toHaveBeenCalled();
+    expect(compactionCount).toBe(1);
+    expect(server.pendingBatchCount).toBe(0);
+    expect(server.hasSnapshot).toBe(true);
+    const persisted = await server.pull({});
+    const persistedDocument = new Y.Doc();
+    if (persisted.snapshot !== null) {
+      Y.applyUpdate(persistedDocument, persisted.snapshot);
+    }
+    for (const batch of persisted.batches) {
+      Y.applyUpdate(persistedDocument, batch);
+    }
+    expect(persistedDocument.getXmlFragment("default").toString()).toContain(
+      "Initial text lifecycle edit",
+    );
+    persistedDocument.destroy();
+  }, 25_000);
+
   it("mounts with exact durable offline edits after a registered document reload", async () => {
     const initialized = await bootstrapCoworkYdoc(new Uint8Array());
     if (!initialized.ok) throw new Error(initialized.message);

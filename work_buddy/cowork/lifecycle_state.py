@@ -6,8 +6,9 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-from work_buddy.cowork.paths import resolve_markdown_path
+from work_buddy.cowork.paths import CoworkPathError, resolve_document_source_path
 from work_buddy.cowork.readiness import classify_document
+from work_buddy.cowork.source_observation import observe_document_source_sha256
 from work_buddy.truth import documents, ydoc_store
 from work_buddy.truth.identity import sha256_bytes
 from work_buddy.truth.store import DocumentRecord, DocumentVersionRecord, TruthStore
@@ -22,7 +23,7 @@ _MATERIALIZED_KINDS = frozenset(
 class LifecycleState:
     document: DocumentRecord
     initialization_state: str
-    file_path: Path
+    file_path: Path | None
     current_file_sha256: str | None
     structured_head_sha256: str | None
     update_tail_present: bool
@@ -74,10 +75,11 @@ def inspect_lifecycle_state(
     document: DocumentRecord,
 ) -> LifecycleState:
     readiness = classify_document(store, document)
-    resolved = resolve_markdown_path(store, document.path)
-    current_hash = None
-    if resolved.path.is_file():
-        current_hash = sha256_bytes(resolved.path.read_bytes())
+    try:
+        file_path = resolve_document_source_path(store, document).path
+    except CoworkPathError:
+        file_path = None
+    current_hash = observe_document_source_sha256(store, document)
     tail = False
     head = None
     if document.ydoc_snapshot_sha256 is not None:
@@ -98,7 +100,7 @@ def inspect_lifecycle_state(
     return LifecycleState(
         document=document,
         initialization_state=readiness.initialization_state,
-        file_path=resolved.path,
+        file_path=file_path,
         current_file_sha256=current_hash,
         structured_head_sha256=head,
         update_tail_present=tail,

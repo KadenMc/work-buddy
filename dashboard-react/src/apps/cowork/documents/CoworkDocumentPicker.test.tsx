@@ -103,7 +103,7 @@ describe("CoworkDocumentPicker activation", () => {
   it("contains document selection only, without duplicated creation actions", () => {
     renderPicker();
 
-    expect(screen.queryByRole("button", { name: "New from Markdown" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "From file" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Create new document" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Change Folder" })).toBeNull();
   });

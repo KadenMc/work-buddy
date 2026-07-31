@@ -10,7 +10,14 @@ from pathlib import Path
 
 from flask import Blueprint, Response, jsonify, request
 
-from work_buddy.cowork.paths import CoworkPathError, resolve_markdown_path
+from work_buddy.cowork.paths import (
+    CoworkPathError,
+    resolve_markdown_path,
+)
+from work_buddy.cowork.source_observation import (
+    SourceObservationError,
+    read_document_source,
+)
 from work_buddy.truth import documents
 from work_buddy.truth.contracts import InvariantViolation
 from work_buddy.truth.identity import sha256_bytes
@@ -260,22 +267,28 @@ def api_doc_source(document_id: str):
                 "The retained materialized baseline is unavailable.",
                 404,
             )
+        try:
+            data = target.read_bytes()
+        except OSError:
+            return _error(
+                "folder_unreachable",
+                "Co-work could not read that source file.",
+                503,
+                retryable=True,
+            )
     else:
         try:
-            target = resolve_markdown_path(store, document.path).path
-        except CoworkPathError as exc:
-            return _error("invalid_path", str(exc), 422, field="path")
-        if not target.is_file():
-            return _error("source_not_found", "Markdown source does not exist.", 404)
-    try:
-        data = target.read_bytes()
-    except OSError:
-        return _error(
-            "folder_unreachable",
-            "Co-work could not read that Markdown file.",
-            503,
-            retryable=True,
-        )
+            source = read_document_source(store, document)
+        except SourceObservationError as exc:
+            return _error(
+                exc.code,
+                str(exc),
+                exc.status,
+                retryable=exc.retryable,
+                details=exc.details,
+            )
+        assert source.data is not None
+        data = source.data
     if version == "materialized" and sha256_bytes(data) != document.content_sha256:
         return _error("corrupt_document", "Materialized baseline failed its digest check.", 422)
     response = Response(data, mimetype="application/octet-stream")

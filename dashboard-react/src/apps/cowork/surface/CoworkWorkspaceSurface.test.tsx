@@ -21,6 +21,7 @@ import CoworkWorkspaceWidget, {
   reimportReceiptMatchesDocument,
 } from "../widget/CoworkWorkspaceWidget";
 import {
+  coworkEditorHelp,
   coworkExecutionSwitchConfirmation,
   resolveFixtureMode,
 } from "./CoworkWorkspaceSurface";
@@ -115,6 +116,19 @@ describe("Co-work execution switch impact", () => {
   });
 });
 
+describe("Co-work editor hover help", () => {
+  it("does not promise source-file Save for a detached import", () => {
+    const detached = coworkEditorHelp({ sourceWriteback: "never" });
+    expect(detached.details).toContain("file you imported remains unchanged");
+    expect(detached.details).not.toContain("Save updates");
+
+    const fileBacked = coworkEditorHelp({ sourceWriteback: "same_file" });
+    expect(fileBacked.details).toContain(
+      "Save updates the Markdown file in your folder",
+    );
+  });
+});
+
 describe("CoworkWorkspaceWidget default (empty) mode", () => {
   const originalUrl = window.location.href;
   beforeEach(() => window.history.replaceState({}, "", "/app/cowork"));
@@ -131,7 +145,7 @@ describe("CoworkWorkspaceWidget default (empty) mode", () => {
     expect(screen.getByRole("button", { name: "Open folder" })).toBeVisible();
     expect(screen.getByRole("button", { name: "New" })).toBeVisible();
     expect(
-      screen.getByRole("button", { name: "New from Markdown" }),
+      screen.getByRole("button", { name: "From file" }),
     ).toBeVisible();
     expect(screen.getByText("No documents yet.")).toBeVisible();
     expect(screen.queryByText("Choose a Folder for Co-work")).toBeNull();
@@ -877,9 +891,17 @@ const LIVE_DOCUMENT: CoworkDocumentSummary = {
   path: "docs/live.md",
   title: "Live doc",
   profile: "co_authored",
+  sourceWriteback: "same_file",
   driftState: "clean",
   openProposalCount: 0,
   openFlagCount: 0,
+  permissions: {
+    open: true,
+    edit: true,
+    materialize: true,
+    repair: true,
+    retire: true,
+  },
 };
 
 const LIVE_FOLDER = {
@@ -1665,10 +1687,10 @@ describe("CoworkWorkspaceWidget live mode", () => {
     });
     expect(within(launcher).queryByRole("button", { name: "New" })).toBeNull();
     expect(
-      within(launcher).queryByRole("button", { name: "New from Markdown" }),
+      within(launcher).queryByRole("button", { name: "From file" }),
     ).toBeNull();
     expect(screen.getByRole("button", { name: "New" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "New from Markdown" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "From file" })).toBeVisible();
 
     await user.click(screen.getByRole("button", { name: "Close folder" }));
     expect(emit).toHaveBeenCalledWith(
@@ -1713,7 +1735,7 @@ describe("CoworkWorkspaceWidget live mode", () => {
     expect(reimportReceiptMatchesDocument(receipt, committedDocument)).toBe(true);
   });
 
-  it("keeps New from Markdown unavailable when the host cannot open that picker", async () => {
+  it("keeps From file unavailable when the host cannot open the importer", async () => {
     const user = userEvent.setup();
     const emit = vi.fn(noopEmit);
     window.history.replaceState({}, "", "/app/cowork?store_id=live-store");
@@ -1725,7 +1747,7 @@ describe("CoworkWorkspaceWidget live mode", () => {
         folderChooser: {
           available: true,
           kind: "host_native",
-          markdownAvailable: false,
+          importAvailable: false,
           locationAvailable: true,
         },
         folderSelection: { kind: "initialized", folder: LIVE_FOLDER },
@@ -1746,23 +1768,23 @@ describe("CoworkWorkspaceWidget live mode", () => {
       emit,
     );
 
-    const fromMarkdown = screen.getByRole("button", {
-      name: "New from Markdown",
+    const fromFile = screen.getByRole("button", {
+      name: "From file",
     });
-    expect(fromMarkdown).toHaveAttribute("aria-disabled", "true");
-    expect(fromMarkdown).toBeEnabled();
-    fromMarkdown.focus();
-    expect(fromMarkdown).toHaveFocus();
-    expect(fromMarkdown).toHaveAccessibleDescription(
-      "Markdown file selection isn’t available here.",
+    expect(fromFile).toHaveAttribute("aria-disabled", "true");
+    expect(fromFile).toBeEnabled();
+    fromFile.focus();
+    expect(fromFile).toHaveFocus();
+    expect(fromFile).toHaveAccessibleDescription(
+      "File import isn’t available here.",
     );
     expect(
-      screen.getByText("Markdown file selection isn’t available here."),
+      screen.getByText("File import isn’t available here."),
     ).toBeVisible();
 
-    await user.click(fromMarkdown);
+    await user.click(fromFile);
     expect(
-      screen.queryByRole("dialog", { name: "New document from Markdown" }),
+      screen.queryByRole("dialog", { name: "From file" }),
     ).toBeNull();
     expect(emit).not.toHaveBeenCalled();
   });
@@ -1810,7 +1832,7 @@ describe("CoworkWorkspaceWidget live mode", () => {
     expect(openDocumentButton.querySelector("svg")).toBeNull();
     expect(screen.queryByRole("button", { name: "New document" })).toBeNull();
     expect(screen.getByRole("button", { name: "New" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "New from Markdown" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "From file" })).toBeVisible();
 
     await user.click(openDocumentButton);
 
