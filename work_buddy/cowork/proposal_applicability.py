@@ -10,6 +10,7 @@ guessing.
 
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -21,18 +22,21 @@ from work_buddy.truth.store import DocumentRecord, TruthStore
 
 
 ApplicabilityStatus = Literal["applicable", "target_changed", "unknown"]
+_PROJECTION_BOUND_VERSION_KINDS = frozenset(
+    {"initial_import", "materialized", "reimported", "repaired"}
+)
 
 
 @dataclass(frozen=True, slots=True)
 class CurrentProjection:
-    """One receipt-bound canonical Markdown projection of the live Y.Doc."""
+    """One canonical Markdown projection bound to the live Y.Doc state."""
 
     text: str
     projection_sha256: str
     structured_head_sha256: str
     snapshot_sha256: str
     generation_sha256: str
-    receipt_id: str
+    binding_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,11 +77,15 @@ def load_current_projection(
     document: DocumentRecord,
     *,
     structured_head_sha256: str | None,
+    conn: sqlite3.Connection | None = None,
 ) -> tuple[CurrentProjection | None, str]:
-    """Load the projection whose receipt matches every live Y.Doc identity.
+    """Load a projection that matches every live Y.Doc identity.
 
-    Returning a typed unavailable reason lets Review avoid inventing a stale
-    claim when no current projection can be proven.
+    A client compaction receipt is the normal proof. A document version is an
+    equivalent fallback when its projection, snapshot, and structured head are
+    exactly the current atomically committed tuple. Returning a typed
+    unavailable reason lets Review avoid inventing a stale claim when neither
+    proof exists.
     """
 
     snapshot = document.ydoc_snapshot_sha256
@@ -87,24 +95,49 @@ def load_current_projection(
         store,
         document_id=document.id,
     )
-    if receipt is None:
-        return None, "projection_receipt_unavailable"
-    generation = documents.current_ydoc_generation(store, document.id)
-    if (
-        receipt.document_id != document.id
-        or receipt.ydoc_snapshot_sha256 != snapshot
-        or receipt.structured_head_sha256 != structured_head_sha256
-        or receipt.ydoc_generation_sha256 != generation
-    ):
-        return None, "projection_receipt_outdated"
-    path = store.resolve_blob_path(f"blobs/{receipt.projection_sha256}")
+    generation = documents.current_ydoc_generation(
+        store,
+        document.id,
+        conn=conn,
+    )
+    receipt_matches = (
+        receipt is not None
+        and receipt.document_id == document.id
+        and receipt.ydoc_snapshot_sha256 == snapshot
+        and receipt.structured_head_sha256 == structured_head_sha256
+        and receipt.ydoc_generation_sha256 == generation
+    )
+    if receipt_matches:
+        projection_sha256 = receipt.projection_sha256
+        binding_id = receipt.id
+    else:
+        version = documents.current_document_version(
+            store,
+            document.id,
+            conn=conn,
+        )
+        if (
+            version is None
+            or version.kind not in _PROJECTION_BOUND_VERSION_KINDS
+            or version.projection_sha256 != document.content_sha256
+            or version.ydoc_snapshot_sha256 != snapshot
+            or version.structured_head_sha256 != structured_head_sha256
+        ):
+            return None, (
+                "projection_receipt_unavailable"
+                if receipt is None
+                else "projection_receipt_outdated"
+            )
+        projection_sha256 = version.projection_sha256
+        binding_id = version.id
+    path = store.resolve_blob_path(f"blobs/{projection_sha256}")
     if not path.is_file():
         return None, "projection_blob_unavailable"
     try:
         raw = path.read_bytes()
     except OSError:
         return None, "projection_blob_unavailable"
-    if sha256_bytes(raw) != receipt.projection_sha256:
+    if sha256_bytes(raw) != projection_sha256:
         return None, "projection_blob_invalid"
     try:
         text = raw.decode("utf-8")
@@ -113,11 +146,11 @@ def load_current_projection(
     return (
         CurrentProjection(
             text=text,
-            projection_sha256=receipt.projection_sha256,
-            structured_head_sha256=receipt.structured_head_sha256,
-            snapshot_sha256=receipt.ydoc_snapshot_sha256,
-            generation_sha256=receipt.ydoc_generation_sha256,
-            receipt_id=receipt.id,
+            projection_sha256=projection_sha256,
+            structured_head_sha256=structured_head_sha256,
+            snapshot_sha256=snapshot,
+            generation_sha256=generation,
+            binding_id=binding_id,
         ),
         "available",
     )
@@ -135,7 +168,7 @@ def assess_proposal_applicability(
 
     A matching structured head is a complete same-document proof. Proposals
     without a structured head retain their materialized-baseline compatibility.
-    Otherwise the original quote must resolve uniquely in the receipt-bound
+    Otherwise the original quote must resolve uniquely in the state-bound
     current projection.
     """
 

@@ -1,13 +1,15 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { StrictMode, useState } from "react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { asWidgetInstanceId } from "../../contributions/contracts";
 import { DurableCell } from "./DurableCell";
 import { DurableWidgetHost, type DurableEntry } from "./DurableWidgetHost";
+import { DurableHostContext } from "./durableContext";
 
 const INSTANCE = asWidgetInstanceId("wb.test.durable-instance");
+const OTHER_INSTANCE = asWidgetInstanceId("wb.test.other-durable-instance");
 
 /**
  * A stand-in for a live durable widget. It carries React state (the counter),
@@ -50,6 +52,64 @@ function Harness({
 const entryList = (): DurableEntry[] => [{ instanceId: INSTANCE, node: <Probe /> }];
 
 describe("DurableWidgetHost", () => {
+  it("does not reparent a durable widget during an ordinary parent rerender", () => {
+    const entries = entryList();
+    const appendChild = vi.spyOn(Node.prototype, "appendChild");
+    const { rerender } = render(<Harness showCell entries={entries} />);
+
+    const probe = screen.getByTestId("probe");
+    const cell = document.querySelector(".wb-durable-cell");
+    const wrapper = document.querySelector(".wb-durable-slot");
+    expect(cell?.contains(probe)).toBe(true);
+    expect(wrapper).not.toBeNull();
+
+    // Moving the permanent wrapper through the offstage stash resets nested
+    // browser scroll positions even though React and DOM identity survive.
+    // A data-only parent rerender must leave that wrapper exactly where it is.
+    const transcript = probe as HTMLElement;
+    transcript.scrollTop = 137;
+    const wrapperMovesBefore = appendChild.mock.calls.filter(
+      ([child]) => child === wrapper,
+    ).length;
+
+    rerender(<Harness showCell entries={entries} />);
+
+    expect(document.querySelector(".wb-durable-cell")).toBe(cell);
+    expect(document.querySelector(".wb-durable-slot")).toBe(wrapper);
+    expect(cell?.contains(probe)).toBe(true);
+    expect(transcript.scrollTop).toBe(137);
+    expect(
+      appendChild.mock.calls.filter(([child]) => child === wrapper),
+    ).toHaveLength(wrapperMovesBefore);
+    appendChild.mockRestore();
+  });
+
+  it("releases and adopts only when the cell identity actually changes", () => {
+    const adopt = vi.fn();
+    const release = vi.fn();
+    const handle = { adopt, release };
+    const { rerender, unmount } = render(
+      <DurableHostContext.Provider value={handle}>
+        <DurableCell instanceId={INSTANCE} />
+      </DurableHostContext.Provider>,
+    );
+    const cell = document.querySelector(".wb-durable-cell");
+    expect(adopt).toHaveBeenCalledWith(INSTANCE, cell);
+    expect(release).not.toHaveBeenCalled();
+
+    rerender(
+      <DurableHostContext.Provider value={handle}>
+        <DurableCell instanceId={OTHER_INSTANCE} />
+      </DurableHostContext.Provider>,
+    );
+
+    expect(release).toHaveBeenCalledWith(INSTANCE, cell);
+    expect(adopt).toHaveBeenLastCalledWith(OTHER_INSTANCE, cell);
+
+    unmount();
+    expect(release).toHaveBeenLastCalledWith(OTHER_INSTANCE, cell);
+  });
+
   it("keeps the same DOM node, React state, and uncontrolled input across a keyed remount of the cell parent", async () => {
     const user = userEvent.setup();
     const entries = entryList();

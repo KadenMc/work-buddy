@@ -676,6 +676,7 @@ def prepare_snapshot_replacement_locked(
     expected_new_snapshot_sha256: str,
     expected_current_snapshot_sha256: str,
     expected_current_structured_head_sha256: str,
+    projection_sha256: str | None = None,
 ) -> SnapshotReplacement:
     """Stage a complete replacement snapshot while the caller holds the doc lock.
 
@@ -698,6 +699,11 @@ def prepare_snapshot_replacement_locked(
         expected_current_structured_head_sha256,
         "expected_current_structured_head_sha256",
     )
+    projection_digest = (
+        None
+        if projection_sha256 is None
+        else _valid_digest(projection_sha256, "projection_sha256")
+    )
     document = documents.get_document(store, document_id)
     if document.ydoc_snapshot_sha256 != expected_snapshot:
         raise StructuredHeadConflict("the current Y.Doc snapshot changed")
@@ -718,6 +724,20 @@ def prepare_snapshot_replacement_locked(
     )
     new_snapshot = read_snapshot(store, snapshot_sha256=digest)
     new_head = structured_head_from_segments(new_snapshot, ())
+    projection_receipt = (
+        None
+        if projection_digest is None
+        else ProjectionReceipt(
+            id=secrets.token_hex(32),
+            document_id=_document_ref(document_id),
+            ydoc_snapshot_sha256=digest,
+            structured_head_sha256=new_head,
+            ydoc_generation_sha256=documents.current_ydoc_generation(
+                store, document_id
+            ),
+            projection_sha256=projection_digest,
+        )
+    )
     old_log_path = _update_log_path(store, document_id)
     old_log = old_log_path.read_bytes() if old_log_path.is_file() else b""
     new_epoch = secrets.token_hex(16)
@@ -728,6 +748,10 @@ def prepare_snapshot_replacement_locked(
         "old_epoch": _read_epoch(store, document_id),
         "new_epoch": new_epoch,
     }
+    if projection_receipt is not None:
+        marker["projection_receipt"] = _projection_receipt_payload(
+            projection_receipt
+        )
     atomic_write_bytes(
         _marker_path(store, document_id, create=True),
         json.dumps(marker, sort_keys=True, separators=(",", ":")).encode("utf-8"),

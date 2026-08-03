@@ -26,6 +26,8 @@ dev_notes: |-
 
   Durable widgets live in `dashboard-react/src/dashboard/widgets/durable/`: a keep-alive host above the grid owns one permanent wrapper per instance, portals the live `WidgetHost` in once, and light placeholder cells re-home the wrapper with appendChild when the grid remounts. The durable path pins `interactionMode` to operate (the draft-scope re-key is also structurally unreachable because durable forbids drafts) and maps a failed re-hydration with a previous good snapshot to a stale banner instead of unmounting. The navbar entry seam is `dashboard-react/src/dashboard/customize/` (a registration-handle controller; only the grid view host registers). Validation enforces durable implies single-instance and no drafts. Contract prose lives in `dashboard-react/ARCHITECTURE.md`.
 
+  The placeholder cell's callback ref must keep the same identity across ordinary parent renders. React cleans up a changed callback ref before invoking its replacement; on the durable path that unnecessary release/adopt cycle reparents the permanent wrapper through the offstage stash, and Chromium resets descendant scroll positions during the move. Memoize the ref on the host operations and widget-instance identity so real unmounts, instance changes, and host changes still release and adopt normally. Regression coverage must prove that a data-only parent rerender performs no wrapper append/reparent and preserves nested `scrollTop`.
+
   Draft repositories use schema-versioned records, compare-and-swap revisions, retention metadata, and cross-tab signaling. Production uses IndexedDB; tests inject in-memory repositories. Arrange and Preview safety is enforced by the host from declared intent effects, not by inspecting DOM elements or HTTP methods.
 ---
 

@@ -19,6 +19,10 @@ from work_buddy.cowork import (
 )
 from work_buddy.cowork.file_importers import MARKDOWN_MAX_SOURCE_BYTES
 from work_buddy.cowork.lifecycle_state import inspect_lifecycle_state
+from work_buddy.cowork.proposal_applicability import (
+    assess_proposal_applicability,
+    load_current_projection,
+)
 from work_buddy.truth import documents, proposals, ydoc_store
 from work_buddy.truth.anchors import CompositeSelector
 from work_buddy.truth.identity import canonical_json, sha256_bytes
@@ -97,14 +101,21 @@ def _ready_import(
     return documents.get_document(store, receipt["document_id"]), source, snapshot
 
 
-def _proposal(store, document, head, *, replacement="Replacement sentence."):
+def _proposal(
+    store,
+    document,
+    head,
+    *,
+    exact="Original sentence.",
+    replacement="Replacement sentence.",
+):
     return proposals.propose_edit(
         store,
         document_id=document.id,
         base_content_sha256=document.content_sha256,
         base_structured_head_sha256=head,
-        selector=CompositeSelector(exact="Original sentence."),
-        quote_exact="Original sentence.",
+        selector=CompositeSelector(exact=exact),
+        quote_exact=exact,
         replacement=replacement,
         rationale="Focused lifecycle test.",
         tldr="Replace sentence.",
@@ -402,7 +413,147 @@ def test_sitting_reanchors_after_an_unrelated_structured_edit(store_ctx):
     )
 
     assert receipt["results"][0]["result"] == "applied"
+    projection_receipt = ydoc_store.current_projection_receipt(
+        store,
+        document_id=document.id,
+    )
+    assert projection_receipt is not None
+    assert projection_receipt.projection_sha256 == sha256_bytes(rendered)
     assert (store_ctx["root"] / document.path).read_bytes() == rendered
+
+
+def test_accepting_one_imported_proposal_keeps_other_targets_verifiable(store_ctx):
+    store = store_ctx["store"]
+    source = b"# Lifecycle\n\nFirst target. Second target.\n"
+    document, _source, snapshot = _ready_import(
+        store_ctx,
+        source=source,
+        key="lifecycle-import-proposal-receipt-0001",
+    )
+    initial_head = ydoc_store.current_structured_head(
+        store,
+        document_id=document.id,
+        snapshot_sha256=document.ydoc_snapshot_sha256,
+    )
+    first = _proposal(
+        store,
+        document,
+        initial_head,
+        exact="First target.",
+        replacement="First replacement.",
+    )
+    second = _proposal(
+        store,
+        document,
+        initial_head,
+        exact="Second target.",
+        replacement="Second replacement.",
+    )
+    pushed, status = transport.push_ydoc(
+        store,
+        document,
+        HUMAN,
+        body=transport.frame_segments([b"", snapshot, source]),
+        base_structured_head_sha256=initial_head,
+        base_ydoc_generation=documents.current_ydoc_generation(store, document.id),
+        compacted_snapshot_sha256=sha256_bytes(snapshot),
+        compacted_projection_sha256=sha256_bytes(source),
+    )
+    assert status == 200
+
+    intent, created = sitting_lifecycle.prepare_sitting(
+        store,
+        document_id=document.id,
+        actor=HUMAN,
+        items=[
+            {
+                "proposal_id": first.id,
+                "verb": "confirm",
+                "canonical_sha256": first.canonical_sha256,
+            }
+        ],
+        expected_file_sha256=document.content_sha256,
+        expected_structured_head_sha256=pushed["structured_head_sha256"],
+        idempotency_key="sitting-import-proposal-receipt-0001",
+    )
+    assert created is True
+
+    rendered = b"# Lifecycle\n\nFirst replacement. Second target.\n"
+    final_snapshot = b"YDOC:" + rendered
+    receipt, _events = sitting_lifecycle.commit_sitting(
+        store,
+        document_id=document.id,
+        intent_id=intent.id,
+        actor=HUMAN,
+        snapshot=final_snapshot,
+        snapshot_sha256=sha256_bytes(final_snapshot),
+        rendered_markdown=rendered.decode(),
+        rendered_sha256=sha256_bytes(rendered),
+    )
+    refreshed = documents.get_document(store, document.id)
+    projection_receipt = ydoc_store.current_projection_receipt(
+        store,
+        document_id=document.id,
+    )
+    current_projection, projection_reason = load_current_projection(
+        store,
+        refreshed,
+        structured_head_sha256=receipt["structured_head_sha256"],
+    )
+    applicability = assess_proposal_applicability(
+        second,
+        refreshed,
+        structured_head_sha256=receipt["structured_head_sha256"],
+        current_projection=current_projection,
+        projection_unavailable_reason=projection_reason,
+    )
+
+    assert receipt["results"][0]["result"] == "applied"
+    assert projection_receipt is not None
+    assert projection_receipt.projection_sha256 == sha256_bytes(rendered)
+    assert projection_receipt.ydoc_snapshot_sha256 == sha256_bytes(final_snapshot)
+    assert projection_reason == "available"
+    assert current_projection is not None
+    assert current_projection.text == rendered.decode()
+    assert (applicability.status, applicability.reason) == (
+        "applicable",
+        "reanchored",
+    )
+    materialized_version = documents.current_document_version(store, document.id)
+    assert materialized_version is not None
+    assert materialized_version.kind == "materialized"
+
+    # Reproduce the state written by snapshot replacement before it carried
+    # projection receipts: the new epoch survived, but the receipt did not.
+    ydoc_store._write_epoch(
+        store,
+        document.id,
+        ydoc_store._read_epoch(store, document.id),
+    )
+    assert ydoc_store.current_projection_receipt(
+        store,
+        document_id=document.id,
+    ) is None
+    recovered_projection, recovered_reason = load_current_projection(
+        store,
+        refreshed,
+        structured_head_sha256=receipt["structured_head_sha256"],
+    )
+    recovered_applicability = assess_proposal_applicability(
+        second,
+        refreshed,
+        structured_head_sha256=receipt["structured_head_sha256"],
+        current_projection=recovered_projection,
+        projection_unavailable_reason=recovered_reason,
+    )
+
+    assert recovered_reason == "available"
+    assert recovered_projection is not None
+    assert recovered_projection.text == rendered.decode()
+    assert (
+        recovered_applicability.status,
+        recovered_applicability.reason,
+    ) == ("applicable", "reanchored")
 
 
 def test_sitting_file_race_leaves_ledger_and_structured_state_unchanged(store_ctx):

@@ -454,6 +454,7 @@ def commit_managed_projection(
             expected_new_snapshot_sha256=replacement_digest,
             expected_current_snapshot_sha256=expected_snapshot,
             expected_current_structured_head_sha256=live_head,
+            projection_sha256=rendered_digest,
         )
         version_id = new_id()
         receipt = {
@@ -881,6 +882,11 @@ def publish_projection(
             )
 
         if replacement_snapshot is not None:
+            # Snapshot replacement rotates the Y.Doc cursor state. Persist the
+            # exact rendered projection before staging that rotation so its
+            # recovery marker can carry a receipt for the replacement state.
+            # An orphaned content-addressed blob is harmless on rollback.
+            store._store_blob_bytes(rendered_digest, rendered)
             try:
                 replacement = ydoc_store.prepare_snapshot_replacement_locked(
                     store,
@@ -889,6 +895,7 @@ def publish_projection(
                     expected_new_snapshot_sha256=committed_snapshot,
                     expected_current_snapshot_sha256=expected_snapshot,
                     expected_current_structured_head_sha256=live_head,
+                    projection_sha256=rendered_digest,
                 )
                 replacement_prepared = True
                 if (
@@ -921,7 +928,8 @@ def publish_projection(
                 )
                 raise
 
-        store._store_blob_bytes(rendered_digest, rendered)
+        if replacement_snapshot is None:
+            store._store_blob_bytes(rendered_digest, rendered)
         receipt = {
             "ok": True,
             "materialization_intent_id": intent_id,

@@ -520,6 +520,12 @@ def api_doc_get(document_id: str):
             conn=conn,
         )
         readiness_view = document_readiness.to_dict()
+        current_projection, projection_reason = load_current_projection(
+            store,
+            document,
+            structured_head_sha256=readiness_view["structured_head_sha256"],
+            conn=conn,
+        )
         # The additive Verify/Co-think projection is part of this document
         # read. Keep every ledger read on the same explicit snapshot so the
         # client cannot observe a capability/result/configuration mixture
@@ -552,12 +558,6 @@ def api_doc_get(document_id: str):
         else None
     )
     state = _drift_from_hash(document, current_file_sha256)
-    current_projection, projection_reason = load_current_projection(
-        store,
-        document,
-        structured_head_sha256=readiness_view["structured_head_sha256"],
-    )
-
     payload = {
         "document_id": document.id,
         "store_id": store.store_id,

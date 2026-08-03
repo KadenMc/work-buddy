@@ -313,16 +313,16 @@ def prepare_sitting(
         if sittings.DECISION_SURFACE not in store.profile.gate.confirmation_surfaces:
             raise SittingError("policy_forbidden", "dashboard review is not an allowed confirmation surface", status=403)
 
-        current_projection, projection_reason = load_current_projection(
-            store,
-            document,
-            structured_head_sha256=expected_head,
-        )
-
         admitted: list[dict[str, Any]] = []
         failed: list[dict[str, Any]] = []
         seen: set[str] = set()
         with store._read_connection() as conn:
+            current_projection, projection_reason = load_current_projection(
+                store,
+                document,
+                structured_head_sha256=expected_head,
+                conn=conn,
+            )
             for index, item in enumerate(items):
                 proposal_id = str(item.get("proposal_id") or "").strip()
                 if proposal_id in seen:

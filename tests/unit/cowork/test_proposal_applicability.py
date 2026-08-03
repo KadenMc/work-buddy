@@ -24,7 +24,7 @@ def _projection(text: str, *, head: str = "b" * 64) -> CurrentProjection:
         structured_head_sha256=head,
         snapshot_sha256="d" * 64,
         generation_sha256="e" * 64,
-        receipt_id="f" * 64,
+        binding_id="f" * 64,
     )
 
 

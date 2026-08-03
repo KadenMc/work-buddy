@@ -453,6 +453,7 @@ def cowork_doc_get(
                     store,
                     document,
                     structured_head_sha256=live_structured_head,
+                    conn=conn,
                 )
                 open_payload = [
                     _proposal_view(

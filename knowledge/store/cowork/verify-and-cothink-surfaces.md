@@ -33,6 +33,18 @@ dev_notes: |-
   document GET endpoint's existing explicit SQLite snapshot connection; do not
   open independent read connections while assembling one response. SSE is only
   an invalidation nudge; the client always re-pulls authoritative state.
+
+  Proposal applicability depends on a provable current Markdown projection of the
+  live structured state. Normal client compaction carries a projection receipt.
+  Any sitting that replaces the Y.Doc snapshot must persist the exact rendered
+  projection and carry a fresh receipt in the crash-recovery marker so publishing
+  the rotated epoch also publishes the projection/snapshot/head/generation tuple.
+  For documents affected before that receipt existed, recovery may use only the
+  latest projection-bound document version when its projection pointer, snapshot,
+  and structured head all exactly match the current document. Do not use a
+  receipt-less `snapshot_compacted` version for this fallback: its version
+  projection may be the materialized baseline rather than the live Y.Doc
+  projection. Load this proof inside the document read's existing SQLite snapshot.
 ---
 
 ## Dashboard HTTP
