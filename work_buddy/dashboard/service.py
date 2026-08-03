@@ -4634,8 +4634,28 @@ def api_conversation_get(conversation_id: str):
                     conversation_id,
                     consumer=consumer,
                 )
-                conversation["agent_alive"] = status.alive
-                conversation["agent_status"] = status.status
+                messages = result.get("messages")
+                last_message = (
+                    messages[-1]
+                    if isinstance(messages, list) and messages
+                    else None
+                )
+                # A durable authored turn with no driver lease is a completed
+                # no-response outcome, not an indefinitely running request.
+                # This covers refused/failed best-effort wakes while keeping
+                # pre-send bound conversations in their neutral not-started
+                # state.
+                no_response = (
+                    status.status == "not_started"
+                    and isinstance(last_message, dict)
+                    and last_message.get("role") == "user"
+                )
+                conversation["agent_alive"] = (
+                    False if no_response else status.alive
+                )
+                conversation["agent_status"] = (
+                    "stopped" if no_response else status.status
+                )
                 conversation["agent_error"] = status.error
             else:
                 conversation["agent_alive"] = is_alive(conversation_id)
@@ -4643,6 +4663,42 @@ def api_conversation_get(conversation_id: str):
     except Exception as exc:
         logger.error("Conversation get failed for %s: %s", conversation_id, exc)
         return jsonify({"error": str(exc)}), 500
+
+
+def _wake_persisted_cowork_turn(conversation_id: str) -> object | None:
+    """Best-effort wake after the authored turn is already durable."""
+
+    try:
+        from work_buddy.consent import user_initiated
+        from work_buddy.cowork.document_agent import ensure_bound_document_agent
+
+        with user_initiated("dashboard.cowork.chat_turn"):
+            status = ensure_bound_document_agent(conversation_id)
+        if status is None:
+            logger.warning(
+                "Document-agent wake produced no driver after chat turn: "
+                "conversation=%s",
+                conversation_id,
+            )
+        elif getattr(status, "status", None) != "running":
+            logger.warning(
+                "Document-agent wake did not reach running after chat turn: "
+                "conversation=%s status=%s",
+                conversation_id,
+                getattr(status, "status", None),
+            )
+        return status
+    except Exception:
+        # Message persistence is the response contract, so a nested spawn
+        # failure must never turn a successful authored send into 500. The
+        # conversation projection derives a terminal no-response state from
+        # the durable user turn plus the absence of a driver lease.
+        logger.exception(
+            "Document-agent wake failed after chat turn persisted: "
+            "conversation=%s",
+            conversation_id,
+        )
+        return None
 
 
 @app.post("/api/conversations/<conversation_id>/respond")
@@ -4711,6 +4767,10 @@ def api_conversation_respond(conversation_id: str):
                     ),
                     exc.status,
                 )
+            # post_targeted_chat_message has released the document lifecycle
+            # lock after committing the exact frozen-context reference. Wake
+            # under a fresh ordered boundary so no lock is inverted.
+            _wake_persisted_cowork_turn(conversation_id)
             return jsonify(
                 {
                     "sent": True,
@@ -4744,6 +4804,8 @@ def api_conversation_respond(conversation_id: str):
                     ),
                     409,
                 )
+            if conversation.source == "cowork_document":
+                _wake_persisted_cowork_turn(conversation_id)
             return jsonify(
                 {
                     "responded": True,
@@ -4760,6 +4822,8 @@ def api_conversation_respond(conversation_id: str):
         msg = post_user_message(conversation_id, str(value))
         if msg is None:
             return jsonify({"error": "Conversation not found or closed"}), 404
+        if conversation.source == "cowork_document":
+            _wake_persisted_cowork_turn(conversation_id)
         return jsonify({"sent": True, "message_id": msg.message_id})
     except Exception as exc:
         logger.error(

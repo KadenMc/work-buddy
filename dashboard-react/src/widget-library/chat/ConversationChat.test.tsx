@@ -3,10 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { expectNoAccessibilityViolations } from "../../test/setup";
-import {
-  ConversationChat,
-  type ConversationChatState,
-} from "./ConversationChat";
+import { ConversationChat } from "./ConversationChat";
 import { InMemoryChatProvider } from "./InMemoryChatProvider";
 import type {
   ChatConversationProvider,
@@ -135,51 +132,19 @@ describe("ConversationChat", () => {
     expect(screen.queryByRole("textbox")).toBeNull();
   });
 
-  it("resolves a recoverable input state from typed conversation state", async () => {
-    const question: ChatMessage = {
-      id: "question-7",
-      author: "assistant",
-      content: "Proceed?",
-      pending: true,
-      question: { responseType: "boolean" },
-    };
-    const resolver = vi.fn((state: ConversationChatState) =>
-      state.agentActivity === "stopped"
-        ? {
-            tone: "warning" as const,
-            title: "Chat paused.",
-            detail: "Your messages are still here.",
-            action: {
-              label: "Restart chat",
-              onAction: vi.fn(),
-            },
-          }
-        : undefined,
-    );
+  it("keeps feature-specific document context out of the shared surface", async () => {
     render(
       <ConversationChat
-        provider={provider("c1", {
-          agentLiveness: "stopped",
-          messages: [question],
-        })}
+        provider={provider("c1")}
         conversationId="c1"
         title="Project chat"
-        inputRecovery={resolver}
       />,
     );
 
-    expect(await screen.findByText("Chat paused.")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Yes" })).toBeDisabled();
-    expect(
-      screen.queryByText("Chat paused. Your messages are still here."),
-    ).toBeNull();
-    expect(resolver).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        conversationId: "c1",
-        loadStatus: "ready",
-        agentActivity: "stopped",
-      }),
-    );
+    expect(await screen.findByText("How can I help?")).toBeVisible();
+    expect(screen.queryByText(/Working on/i)).toBeNull();
+    expect(screen.queryByText(/Frozen version/i)).toBeNull();
+    expect(screen.queryByText(/^About:/i)).toBeNull();
   });
 
   it("resets internally-owned draft state when the conversation identity changes", async () => {

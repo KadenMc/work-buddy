@@ -1425,10 +1425,9 @@ describe("CoworkWorkspaceWidget live mode", () => {
     saveRailTab(window.localStorage, "live-doc", "review");
   });
 
-  it("restarts a stopped Chat and immediately refreshes its liveness", async () => {
+  it("keeps a stopped Chat writable without exposing restart controls", async () => {
     const fallback = liveFetch();
-    let restarted = false;
-    let conversationReads = 0;
+    let lifecyclePosts = 0;
     const fetchImpl = vi.fn(
       async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
         const url = String(input);
@@ -1438,29 +1437,26 @@ describe("CoworkWorkspaceWidget live mode", () => {
             "/api/truth/doc/live-doc/conversation?store_id=live-store",
           )
         ) {
-          if (method === "POST") restarted = true;
+          if (method === "POST") lifecyclePosts += 1;
           return jsonResponse({
             ok: true,
             conversation_id: LIVE_CONVERSATION_ID,
             created: false,
-            agent: restarted
-              ? { ...LIVE_AGENT, started: true }
-              : {
-                  status: "stopped",
-                  alive: false,
-                  started: true,
-                  error: null,
-                },
+            agent: {
+              status: "stopped",
+              alive: false,
+              started: true,
+              error: null,
+            },
           });
         }
         if (url === `/api/conversations/${LIVE_CONVERSATION_ID}`) {
-          conversationReads += 1;
           return jsonResponse({
             conversation: {
               conversation_id: LIVE_CONVERSATION_ID,
               title: "Document conversation",
               status: "open",
-              agent_alive: restarted,
+              agent_alive: false,
             },
             messages: [],
           });
@@ -1471,20 +1467,10 @@ describe("CoworkWorkspaceWidget live mode", () => {
     renderLive(noopEmit, fetchImpl as unknown as typeof fetch);
 
     await userEvent.click(screen.getByRole("tab", { name: /Chat/ }));
-    expect(await screen.findByText("Chat paused.")).toBeVisible();
-    const readsBeforeRestart = conversationReads;
-
-    await userEvent.click(
-      screen.getByRole("button", { name: "Restart chat" }),
-    );
-
-    await waitFor(() => expect(restarted).toBe(true));
-    await waitFor(() =>
-      expect(conversationReads).toBeGreaterThan(readsBeforeRestart),
-    );
-    await waitFor(() =>
-      expect(screen.queryByText("Chat paused.")).not.toBeInTheDocument(),
-    );
+    expect(await screen.findByPlaceholderText("Type a message…")).toBeEnabled();
+    expect(screen.queryByRole("button", { name: /Restart chat/i })).toBeNull();
+    expect(screen.queryByText("Chat paused.")).toBeNull();
+    expect(lifecyclePosts).toBe(0);
     saveRailTab(window.localStorage, "live-doc", "review");
   });
 
@@ -1608,14 +1594,18 @@ describe("CoworkWorkspaceWidget live mode", () => {
     saveRailTab(window.localStorage, "live-doc", "review");
   });
 
-  it("starts only from the explicit Chat action, then loads the returned opaque id", async () => {
+  it("prepares from Chat selection, then loads the returned opaque id", async () => {
     const baseFetch = liveFetch();
     const ensuredId = "server-issued-after-click-72";
     const fetchImpl = vi.fn(
       async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
         const url = String(input);
         const method = (init?.method ?? "GET").toUpperCase();
-        if (url.includes("/api/truth/doc/live-doc/conversation")) {
+        if (
+          url.includes(
+            "/api/truth/doc/live-doc/conversation?store_id=live-store",
+          )
+        ) {
           if (method === "GET") {
             return jsonResponse({
               ok: true,
@@ -1628,11 +1618,22 @@ describe("CoworkWorkspaceWidget live mode", () => {
               },
             });
           }
+        }
+        if (
+          url.includes(
+            "/api/truth/doc/live-doc/conversation/bind?store_id=live-store",
+          )
+        ) {
           return jsonResponse({
             ok: true,
             conversation_id: ensuredId,
             created: true,
-            agent: { ...LIVE_AGENT, started: true },
+            agent: {
+              status: "not_started",
+              alive: null,
+              started: false,
+              error: null,
+            },
           });
         }
         if (url === `/api/conversations/${ensuredId}`) {
@@ -1673,24 +1674,15 @@ describe("CoworkWorkspaceWidget live mode", () => {
     ).toBe(false);
 
     await userEvent.click(screen.getByRole("tab", { name: /Chat/ }));
-    expect(
-      fetchImpl.mock.calls.some(
-        ([input, init]) =>
-          String(input).includes("/conversation?store_id=live-store") &&
-          init?.method === "POST",
-      ),
-    ).toBe(false);
-    await userEvent.click(
-      await screen.findByRole("button", { name: "Start chat" }),
-    );
     expect(await screen.findByText("Chat started from this click.")).toBeVisible();
     expect(
       fetchImpl.mock.calls.some(
         ([input, init]) =>
-          String(input).includes("/conversation?store_id=live-store") &&
+          String(input).includes("/conversation/bind?store_id=live-store") &&
           init?.method === "POST",
       ),
     ).toBe(true);
+    expect(screen.queryByRole("button", { name: /Start chat/i })).toBeNull();
     expect(
       fetchImpl.mock.calls.some(
         ([input]) => String(input) === `/api/conversations/${ensuredId}`,
@@ -1704,16 +1696,15 @@ describe("CoworkWorkspaceWidget live mode", () => {
     saveRailTab(window.localStorage, "live-doc", "review");
   });
 
-  it("selects before first start and POSTs that confirmed pair and revision", async () => {
+  it("selects a model after preparation without sending lifecycle instructions", async () => {
     const baseFetch = liveFetch();
     const startedConversationId = "server-issued-codex-chat";
     const patchBodies: unknown[] = [];
-    const postBodies: unknown[] = [];
+    const bindRequests: RequestInit[] = [];
     let execution = executionPayload();
     const fetchImpl = vi.fn(
       async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
         const url = String(input);
-        const method = (init?.method ?? "GET").toUpperCase();
         if (
           url.includes(
             "/api/truth/doc/live-doc/conversation/execution?store_id=live-store",
@@ -1727,6 +1718,26 @@ describe("CoworkWorkspaceWidget live mode", () => {
           );
           return jsonResponse({
             ok: true,
+            conversation_id: startedConversationId,
+            execution,
+            agent: {
+              status: "not_started",
+              alive: null,
+              started: false,
+              error: null,
+            },
+          });
+        }
+        if (
+          url.includes(
+            "/api/truth/doc/live-doc/conversation/bind?store_id=live-store",
+          )
+        ) {
+          bindRequests.push(init ?? {});
+          return jsonResponse({
+            ok: true,
+            conversation_id: startedConversationId,
+            created: true,
             execution,
             agent: {
               status: "not_started",
@@ -1741,16 +1752,6 @@ describe("CoworkWorkspaceWidget live mode", () => {
             "/api/truth/doc/live-doc/conversation?store_id=live-store",
           )
         ) {
-          if (method === "POST") {
-            postBodies.push(JSON.parse(String(init?.body)));
-            return jsonResponse({
-              ok: true,
-              conversation_id: startedConversationId,
-              created: false,
-              execution,
-              agent: { ...LIVE_AGENT, started: true },
-            });
-          }
           return jsonResponse({
             ok: true,
             conversation_id: null,
@@ -1770,21 +1771,9 @@ describe("CoworkWorkspaceWidget live mode", () => {
               conversation_id: startedConversationId,
               title: "Chat about this document",
               status: "open",
-              agent_alive: true,
+              agent_alive: null,
             },
-            messages: [
-              {
-                message_id: "codex-ready",
-                role: "agent",
-                content: "Codex chat is ready.",
-                producer: {
-                  provider_id: "codex",
-                  model_id: "gpt-5.6",
-                  provider_label: "Codex",
-                  model_label: "GPT-5.6",
-                },
-              },
-            ],
+            messages: [],
           });
         }
         return baseFetch(input, init);
@@ -1817,18 +1806,10 @@ describe("CoworkWorkspaceWidget live mode", () => {
       },
     ]);
 
-    await userEvent.click(screen.getByRole("button", { name: "Start chat" }));
-    expect(await screen.findByText("Codex chat is ready.")).toBeVisible();
-    expect(postBodies).toEqual([
-      {
-        provider_id: "codex",
-        model_id: "gpt-5.6",
-        expected_revision: "execution:codex",
-      },
-    ]);
-    expect(
-      screen.getByLabelText("Produced by Codex, GPT-5.6"),
-    ).toBeVisible();
+    expect(bindRequests).toHaveLength(1);
+    expect(bindRequests[0]?.body).toBeUndefined();
+    expect(screen.queryByRole("button", { name: /Start chat/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Restart chat/i })).toBeNull();
     saveRailTab(window.localStorage, "live-doc", "review");
   });
 

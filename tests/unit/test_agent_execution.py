@@ -22,6 +22,7 @@ from work_buddy.agent_execution.claude_worker import (
     _retry_cleanup,
     run_worker as run_claude_worker,
 )
+from work_buddy.agent_execution.identity import prompt_with_execution_identity
 from work_buddy.agent_execution.codex import (
     CodexConfigIsolationError,
     CodexProvider,
@@ -51,6 +52,35 @@ from work_buddy.agent_execution.models import (
     UnknownProviderError,
 )
 from work_buddy.agent_execution.registry import ProviderRegistry
+
+
+def test_claude_execution_identity_uses_only_toolsearch_for_bootstrap(
+    tmp_path: Path,
+) -> None:
+    request = AgentSpawnRequest(
+        name="cowork-document",
+        prompt="Handle the durable inbox.",
+        selection=AgentExecutionSelection("claude-code", "sonnet"),
+        session_id="cowork-generation-a",
+        working_directory=tmp_path,
+    )
+
+    claude_prompt = prompt_with_execution_identity(
+        request,
+        harness_id="claudecode",
+    )
+    codex_prompt = prompt_with_execution_identity(
+        request,
+        harness_id="codexcli",
+    )
+
+    assert "Only Claude Code's ToolSearch is initially available" in claude_prompt
+    assert "`mcp__work-buddy__wb_init`" in claude_prompt
+    assert "`mcp__work-buddy__wb_search`" in claude_prompt
+    assert "Do not load or use any non-Work-Buddy tool" in claude_prompt
+    assert "session_id=\"cowork-generation-a\"" in claude_prompt
+    assert "harness_id=\"claudecode\"" in claude_prompt
+    assert "ToolSearch" not in codex_prompt
 
 
 def _isolated_effective_codex_config(
@@ -501,7 +531,7 @@ def test_claude_worker_uses_empty_neutral_cwd_and_no_session_persistence(
     assert "--no-session-persistence" in argv
     assert "--no-chrome" in argv
     assert argv.count("--disable-slash-commands") == 1
-    assert argv[argv.index("--tools") + 1] == ""
+    assert argv[argv.index("--tools") + 1] == "ToolSearch"
     assert "--bare" not in argv
     assert "private brief" not in argv
     mcp_config = json.loads(argv[argv.index("--mcp-config") + 1])

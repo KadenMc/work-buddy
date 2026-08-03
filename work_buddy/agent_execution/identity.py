@@ -22,8 +22,19 @@ def prompt_with_execution_identity(
 
     session_json = json.dumps(request.session_id, ensure_ascii=True)
     harness_json = json.dumps(harness_id, ensure_ascii=True)
+    bootstrap = ""
+    if harness_id == "claudecode":
+        bootstrap = (
+            "Only Claude Code's ToolSearch is initially available. Use it to "
+            "load the exact `mcp__work-buddy__wb_init` tool before calling "
+            "that tool. After initialization, use ToolSearch only to load "
+            "`mcp__work-buddy__*` tools required by the document-agent brief; "
+            "load `mcp__work-buddy__wb_search` before capability discovery. "
+            "Do not load or use any non-Work-Buddy tool.\n"
+        )
     return (
         "## Work Buddy execution identity\n\n"
+        f"{bootstrap}"
         "Before calling any other Work Buddy tool, call `wb_init` exactly once "
         "with these exact arguments:\n"
         f"- `session_id={session_json}`\n"

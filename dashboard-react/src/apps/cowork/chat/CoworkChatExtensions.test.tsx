@@ -30,11 +30,12 @@ describe("CoworkActionSnapshotProvenance", () => {
     );
 
     const provenance = screen.getByLabelText(
-      "Frozen document context: Introduction",
+      "Couldn’t open Working on: Introduction",
     );
     expect(provenance).toHaveTextContent(
       "Couldn’t open Working on: Introduction",
     );
     expect(provenance).not.toHaveTextContent("Used Working on");
+    expect(provenance).not.toHaveTextContent("Frozen version");
   });
 });

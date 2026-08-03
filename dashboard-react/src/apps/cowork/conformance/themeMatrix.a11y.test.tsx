@@ -116,7 +116,6 @@ function renderRail(preference: ThemePreference) {
             started: true,
             error: null,
           },
-          onEnsureAgent: () => {},
         }}
       />
     </ThemeProvider>,

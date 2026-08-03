@@ -24,6 +24,11 @@ export interface ChatComposerProps {
   readonly disabled?: boolean;
   /** Externally-driven pending state (the provider send is in flight). */
   readonly sending?: boolean;
+  /**
+   * Prevent another submission while preserving the textbox for drafting the
+   * next turn, e.g. while an acknowledged message awaits its reply.
+   */
+  readonly submissionDisabled?: boolean;
   readonly placeholder?: string;
   /** Accessible label for the input. Visually hidden by default. */
   readonly label?: string;
@@ -49,6 +54,7 @@ export function ChatComposer({
   onSend,
   disabled = false,
   sending = false,
+  submissionDisabled = false,
   placeholder = "Type a message…",
   label = "Message",
   errorMessage,
@@ -69,6 +75,7 @@ export function ChatComposer({
   const canSend =
     !effectiveDisabled &&
     !isSending &&
+    !submissionDisabled &&
     !executionBlocksSend &&
     draft.trim().length > 0;
 
@@ -115,6 +122,7 @@ export function ChatComposer({
       value.length === 0 ||
       effectiveDisabled ||
       isSending ||
+      submissionDisabled ||
       executionBlocksSend
     ) {
       return;
@@ -184,7 +192,7 @@ export function ChatComposer({
           ) : (
             <ChatExecutionPicker
               control={execution}
-              disabled={effectiveDisabled || isSending}
+              disabled={effectiveDisabled || isSending || submissionDisabled}
             />
           )}
           <Button

@@ -296,7 +296,7 @@ describe("ChatMessageList", () => {
     expect(onRespond).not.toHaveBeenCalled();
   });
 
-  it("shows the typing indicator and the agent-stopped notice", () => {
+  it("shows the working and terminal no-response states", () => {
     const { rerender } = render(
       <ChatMessageList
         messages={[msg("m1", "working", "assistant")]}
@@ -312,12 +312,10 @@ describe("ChatMessageList", () => {
         agentActivity="stopped"
       />,
     );
-    expect(
-      screen.getByText("Chat paused. Your messages are still here."),
-    ).toBeInTheDocument();
+    expect(screen.getByText("No response received.")).toBeInTheDocument();
   });
 
-  it("allows a host recovery state to suppress the passive stopped notice", () => {
+  it("allows a host to suppress the passive no-response notice", () => {
     render(
       <ChatMessageList
         messages={[msg("m1", "working", "assistant")]}
@@ -325,9 +323,7 @@ describe("ChatMessageList", () => {
         showStoppedNotice={false}
       />,
     );
-    expect(
-      screen.queryByText("Chat paused. Your messages are still here."),
-    ).toBeNull();
+    expect(screen.queryByText("No response received.")).toBeNull();
   });
 
   it("has no accessibility violations", async () => {

@@ -237,10 +237,10 @@ const base = (
 });
 
 describe("deriveAgentActivity", () => {
-  it("reports stopped when the driver process exited", () => {
+  it("does not report a failure when an idle driver exits before any turn", () => {
     expect(
       deriveAgentActivity(base({ agentLiveness: "stopped" })),
-    ).toBe("stopped");
+    ).toBe("idle");
   });
 
   it("is idle for a closed conversation regardless of liveness", () => {
@@ -267,14 +267,25 @@ describe("deriveAgentActivity", () => {
     ).toBe("idle");
   });
 
-  it("shows thinking while a live agent holds the last turn as text", () => {
+  it("is idle after an assistant reply even while its long-lived driver is alive", () => {
     expect(
       deriveAgentActivity(
         base({
           messages: [{ id: "m1", author: "assistant", content: "Looking..." }],
         }),
       ),
-    ).toBe("thinking");
+    ).toBe("idle");
+  });
+
+  it("reports no response when the driver exits with the human holding the turn", () => {
+    expect(
+      deriveAgentActivity(
+        base({
+          agentLiveness: "stopped",
+          messages: [{ id: "m1", author: "user", content: "hello?" }],
+        }),
+      ),
+    ).toBe("stopped");
   });
 
   it("shows thinking after the human replies even with no registered driver", () => {

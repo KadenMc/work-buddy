@@ -102,13 +102,18 @@ describe("HttpCoworkDocumentConversationBindingClient", () => {
     ]);
   });
 
-  it("uses POST only for an explicit ensure and preserves the returned id", async () => {
+  it("prepares a binding without starting a model", async () => {
     const fetchImpl = vi.fn(async () =>
       jsonResponse({
         ok: true,
         conversation_id: "server-issued-a4e9",
         created: true,
-        agent: { ...RUNNING_AGENT, started: true },
+        agent: {
+          status: "not_started",
+          alive: null,
+          started: false,
+          error: null,
+        },
       }),
     );
     const client = new HttpCoworkDocumentConversationBindingClient(
@@ -118,7 +123,7 @@ describe("HttpCoworkDocumentConversationBindingClient", () => {
     const binding = await client.ensure("doc-1", "store-1");
 
     expect(fetchImpl).toHaveBeenCalledWith(
-      "/api/truth/doc/doc-1/conversation?store_id=store-1",
+      "/api/truth/doc/doc-1/conversation/bind?store_id=store-1",
       {
         method: "POST",
         headers: { Accept: "application/json" },
@@ -126,46 +131,42 @@ describe("HttpCoworkDocumentConversationBindingClient", () => {
     );
     expect(binding.conversationId).toBe("server-issued-a4e9");
     expect(binding.created).toBe(true);
-    expect(binding.agent.started).toBe(true);
+    expect(binding.agent).toMatchObject({
+      status: "not_started",
+      started: false,
+    });
   });
 
-  it("starts with the selected provider/model pair in the same POST", async () => {
+  it("does not send model-selection or lifecycle instructions while preparing", async () => {
     const fetchImpl = vi.fn(async () =>
       jsonResponse({
         ok: true,
         conversation_id: "server-issued-codex",
         created: true,
-        agent: { ...RUNNING_AGENT, started: true },
+        agent: {
+          status: "not_started",
+          alive: null,
+          started: false,
+          error: null,
+        },
       }),
     );
     const client = new HttpCoworkDocumentConversationBindingClient(
       fetchImpl as unknown as typeof fetch,
     );
 
-    await client.ensure("doc-1", "store-1", {
-      providerId: "codex",
-      modelId: "gpt-5.6",
-      expectedRevision: "",
-    });
+    await client.ensure("doc-1", "store-1");
 
     expect(fetchImpl).toHaveBeenCalledWith(
-      "/api/truth/doc/doc-1/conversation?store_id=store-1",
+      "/api/truth/doc/doc-1/conversation/bind?store_id=store-1",
       {
         method: "POST",
-        headers: {
-          Accept: "application/json",
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          provider_id: "codex",
-          model_id: "gpt-5.6",
-          expected_revision: "",
-        }),
+        headers: { Accept: "application/json" },
       },
     );
   });
 
-  it("preserves authoritative execution from a start conflict", async () => {
+  it("preserves authoritative execution from a preparation failure", async () => {
     const client = new HttpCoworkDocumentConversationBindingClient(
       vi.fn(async () =>
         jsonResponse(
@@ -205,11 +206,7 @@ describe("HttpCoworkDocumentConversationBindingClient", () => {
     );
 
     const caught = await client
-      .ensure("doc-1", "store-1", {
-        providerId: "claude-code",
-        modelId: "sonnet",
-        expectedRevision: "revision:stale",
-      })
+      .ensure("doc-1", "store-1")
       .catch((error: unknown) => error);
 
     expect(caught).toBeInstanceOf(

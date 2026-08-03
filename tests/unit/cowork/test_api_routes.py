@@ -10,6 +10,7 @@ import io
 import json
 import os
 import struct
+from contextlib import contextmanager
 
 import pytest
 
@@ -1287,6 +1288,180 @@ def test_conversation_get_is_read_only_and_post_lazily_creates_real_binding(
     assert repeated["created"] is False
 
 
+def test_conversation_bind_mounts_chat_without_running_or_fencing_a_model(
+    client,
+    seeded,
+    fake_document_agent,
+    monkeypatch,
+):
+    from work_buddy import consent
+
+    boundaries: list[str] = []
+
+    @contextmanager
+    def _observed_user_action(label):
+        boundaries.append(label)
+        yield
+
+    def _unexpected_fence(**_kwargs):
+        raise AssertionError("binding Chat must not fence a document agent")
+
+    monkeypatch.setattr(consent, "user_initiated", _observed_user_action)
+    monkeypatch.setattr(
+        document_agent,
+        "fence_document_agent",
+        _unexpected_fence,
+    )
+    url = _url(
+        f"/api/truth/doc/{seeded['document'].id}/conversation/bind",
+        seeded["store_id"],
+    )
+    conn = conversation_store.get_connection()
+    try:
+        before_conversations = conn.execute(
+            "SELECT COUNT(*) FROM conversations"
+        ).fetchone()[0]
+        before_leases = conn.execute(
+            "SELECT COUNT(*) FROM conversation_agent_leases"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    bound = client.post(url)
+
+    assert bound.status_code == 200
+    payload = bound.get_json()
+    assert payload["ok"] is True
+    assert payload["created"] is True
+    assert payload["conversation_id"]
+    assert payload["agent"] == {
+        "status": "not_started",
+        "alive": None,
+        "started": False,
+        "error": None,
+    }
+    assert payload["feedback"] == []
+    assert payload["execution"]["selection"]["persisted"] is True
+    assert payload["execution"]["selection"]["revision"]
+    assert fake_document_agent == []
+
+    repeated = client.post(url)
+
+    assert repeated.status_code == 200
+    repeated_payload = repeated.get_json()
+    assert repeated_payload["conversation_id"] == payload["conversation_id"]
+    assert repeated_payload["created"] is False
+    assert repeated_payload["agent"]["status"] == "not_started"
+    assert (
+        repeated_payload["execution"]["selection"]["revision"]
+        == payload["execution"]["selection"]["revision"]
+    )
+    assert fake_document_agent == []
+    assert boundaries == [
+        "dashboard.cowork.conversation_bind",
+        "dashboard.cowork.conversation_bind",
+    ]
+    conn = conversation_store.get_connection()
+    try:
+        assert (
+            conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
+            == before_conversations + 1
+        )
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM conversation_agent_leases"
+            ).fetchone()[0]
+            == before_leases
+        )
+    finally:
+        conn.close()
+
+
+def test_conversation_bind_rejects_a_closed_canonical_conversation(
+    client,
+    seeded,
+    fake_document_agent,
+):
+    binding = conversations.ensure_document_conversation(
+        document_id=seeded["document"].id,
+        store_id=seeded["store_id"],
+    )
+    assert conversation_store.close_conversation(binding.conversation_id)
+
+    response = client.post(
+        _url(
+            f"/api/truth/doc/{seeded['document'].id}/conversation/bind",
+            seeded["store_id"],
+        )
+    )
+
+    assert response.status_code == 409
+    assert response.get_json()["error"] == {
+        "code": "conversation_closed",
+        "message": (
+            "This document's conversation is closed and cannot be reopened."
+        ),
+        "details": {},
+        "retryable": False,
+    }
+    assert fake_document_agent == []
+
+
+@pytest.mark.parametrize(
+    ("gate", "expected_status", "expected_error"),
+    [
+        ("read_only", 403, "Dashboard is in read-only mode"),
+        ("retired", 409, "Chat cannot be opened for a retired document."),
+        (
+            "surface",
+            403,
+            "This document is not available in Co-work for this folder.",
+        ),
+    ],
+)
+def test_conversation_bind_preserves_document_mutation_gates(
+    client,
+    seeded,
+    fake_document_agent,
+    monkeypatch,
+    gate,
+    expected_status,
+    expected_error,
+):
+    if gate == "read_only":
+        monkeypatch.setattr(api, "_is_read_only", lambda: True)
+    elif gate == "retired":
+        monkeypatch.setattr(
+            api.documents,
+            "current_lifecycle",
+            lambda *_args, **_kwargs: "retired",
+        )
+    else:
+        monkeypatch.setattr(
+            api,
+            "document_surface_allowed",
+            lambda *_args, **_kwargs: False,
+        )
+
+    response = client.post(
+        _url(
+            f"/api/truth/doc/{seeded['document'].id}/conversation/bind",
+            seeded["store_id"],
+        )
+    )
+
+    assert response.status_code == expected_status
+    assert response.get_json()["error"] == expected_error
+    assert (
+        conversations.find_document_conversation(
+            document_id=seeded["document"].id,
+            store_id=seeded["store_id"],
+        )
+        is None
+    )
+    assert fake_document_agent == []
+
+
 def test_conversation_catalog_refresh_is_explicit(
     client,
     seeded,
@@ -1477,6 +1652,7 @@ def test_execution_routes_fail_closed_for_a_corrupt_saved_selection(
     base = f"/api/truth/doc/{seeded['document'].id}/conversation"
     responses = (
         client.get(_url(base, seeded["store_id"])),
+        client.post(_url(f"{base}/bind", seeded["store_id"])),
         client.patch(
             _url(f"{base}/execution", seeded["store_id"]),
             json={
@@ -1522,6 +1698,7 @@ def test_execution_routes_fail_closed_for_malformed_conversation_metadata(
     base = f"/api/truth/doc/{seeded['document'].id}/conversation"
     responses = (
         client.get(_url(base, seeded["store_id"])),
+        client.post(_url(f"{base}/bind", seeded["store_id"])),
         client.post(_url(base, seeded["store_id"])),
         client.patch(
             _url(f"{base}/execution", seeded["store_id"]),

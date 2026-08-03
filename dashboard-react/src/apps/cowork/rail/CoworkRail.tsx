@@ -85,9 +85,6 @@ export type CoworkRailChat =
       /** Stable document-scoped key, available before a conversation id exists. */
       readonly draftStorageId: string;
       readonly agent: CoworkDocumentAgent;
-      readonly ensuringAgent?: boolean;
-      readonly ensureError?: string | null;
-      readonly onEnsureAgent: () => void | Promise<void>;
     }
   | {
       readonly kind: "loading";
@@ -100,14 +97,11 @@ export type CoworkRailChat =
   | {
       readonly kind: "idle";
       readonly draftStorageId: string;
-      readonly onStart: () => void | Promise<void>;
     }
   | {
       readonly kind: "error";
       readonly draftStorageId: string;
       readonly error: string;
-      readonly action?: "start" | "restart";
-      readonly onRetry: () => void | Promise<void>;
     };
 
 function CoworkConversationGate({
@@ -135,15 +129,10 @@ function CoworkConversationGate({
     return (
       <ChatPanelState
         label="Chat about this document"
-        kind="empty"
-        title="Chat hasn’t started."
-        detail="Start chat to ask about this document."
-        action={{
-          label: "Start chat",
-          onAction: chat.onStart,
-          requiresExecution: true,
-        }}
+        kind="loading"
+        title="Preparing chat…"
         execution={execution}
+        executionDisabled
       />
     );
   }
@@ -151,14 +140,10 @@ function CoworkConversationGate({
     <ChatPanelState
       label="Chat about this document"
       kind="error"
-      title="Chat couldn’t connect."
+      title="Chat isn’t available."
       detail={chat.error}
-      action={{
-        label: chat.action === "restart" ? "Restart chat" : "Start chat",
-        onAction: chat.onRetry,
-        requiresExecution: true,
-      }}
       execution={execution}
+      executionDisabled
     />
   );
 }
@@ -196,17 +181,6 @@ export function CoworkRail(props: CoworkRailProps) {
       .some((message) => message.author === "assistant");
 
   const continueCothinkInChat = async (): Promise<void> => {
-    if (
-      props.chat.kind === "ready" &&
-      (props.chat.agent.status !== "running" ||
-        props.chat.agent.alive === false)
-    ) {
-      await props.chat.onEnsureAgent();
-    } else if (props.chat.kind === "idle") {
-      await props.chat.onStart();
-    } else if (props.chat.kind === "error") {
-      await props.chat.onRetry();
-    }
     store.setTab("chat");
     props.onChatSelected?.();
   };
@@ -301,10 +275,6 @@ export function CoworkRail(props: CoworkRailProps) {
             conversationId={props.chat.conversationId}
             annotations={props.chatAnnotations}
             onScrollToAnchor={props.onScrollToChatAnchor}
-            agent={props.chat.agent}
-            ensuringAgent={props.chat.ensuringAgent}
-            ensureError={props.chat.ensureError}
-            onEnsureAgent={props.chat.onEnsureAgent}
             onMessagesChange={setMessages}
             execution={props.chatExecution}
             composerInitialValue={

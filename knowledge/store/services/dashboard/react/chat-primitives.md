@@ -22,9 +22,9 @@ dev_notes: |-
 
   The autoscroll effect keys on message COUNT, so a last message whose content grows in place will not re-stick a pinned view (the house store appends discrete messages). An unread boundary seeded at the first message is legitimate, the separator renders above index 0.
 
-  The shared package must never import an App domain. `renderMessageAccessory` is deliberately additive rather than a whole-message renderer: canonical message content stays under house ownership, the accessory follows it, and built-in question controls remain last. `transcriptAppendix` stays inside the transcript scroller. Recovery replaces the composer and suppresses the passive stopped notice so hosts do not create conflicting controls or nested live announcements.
+  The shared package must never import an App domain. `renderMessageAccessory` is deliberately additive rather than a whole-message renderer: canonical message content stays under house ownership, the accessory follows it, and built-in question controls remain last. `transcriptAppendix` stays inside the transcript scroller. Labels such as Working on, About, and action-snapshot identity belong to a host adapter; the generic surface must not render them by default.
 
-  `ConversationChat` keys the panel by opaque conversation id so composer state cannot leak when a mounted host changes conversations. Keep host-persisted drafts scoped at least as narrowly. The shared availability decision disables both freeform composition and structured Yes/No or choice responses while sending, read-only, stopped, explicitly disabled, or recovering; do not gate only the text composer.
+  `ConversationChat` keys the panel by opaque conversation id so composer state cannot leak when a mounted host changes conversations. Keep host-persisted drafts scoped at least as narrowly. While an acknowledged user turn awaits a reply, keep the textbox available for drafting but disable Send, Enter submission, the execution picker, and structured Yes/No or choice responses. A terminal stopped/no-response state restores submission; do not require a host lifecycle control.
 
   Keep transport out of `widget-library/chat`. The generic same-origin HTTP implementation lives at `dashboard-react/src/dashboard/conversations/`; App adapters inject it through the provider seam.
 
@@ -41,11 +41,11 @@ Reusable React chat components for conversational surfaces in the React dashboar
 
 ## Components
 
-- **ConversationChat**: the canonical connected conversation surface. It binds a stable provider and opaque conversation id, owns loading, retry, send errors, activity, and message observation, and composes `ChatPanel`. It may resolve a typed input-recovery state, but it knows nothing about the host App's domain.
+- **ConversationChat**: the canonical connected conversation surface. It binds a stable provider and opaque conversation id, owns loading, retry, send errors, activity, locally-authored turn reveal, and message observation, and composes `ChatPanel`. It knows nothing about the host App's domain.
 - **ChatPanel**: message log plus composer with a header slot and the standard host states, including a read-only banner. Forwards the composer's optional `initialValue` and `onDraftChange` draft seam, so a host can retain the unsent draft across reloads.
 - **ChatPanelState**: the canonical loading, empty, or error shell for a host that does not yet have a ready conversation. The host supplies state kind, direct copy, and at most one action without recreating panel markup or importing private chat styles.
-- **ChatMessageList**: author attribution, timestamps, unread boundary with scroll lock and jump-to-latest, inline choice and boolean answers, typing indicator and agent-stopped notice.
-- **ChatComposer**: Enter submits, Shift plus Enter inserts a newline, the draft is retained on send failure. It grows with its content and enables its own scrollbar only after reaching the CSS height cap. Optional draft-observation seam: `initialValue` seeds the draft once on mount and `onDraftChange` fires on every edit (empty string after a successful send), so a host can persist the unsent draft and arm an unsaved-work guard while the composer keeps owning the text state.
+- **ChatMessageList**: author attribution, timestamps, unread boundary with scroll lock and jump-to-latest, inline choice and boolean answers, typing indicator, and the terminal **No response received.** notice. A turn authored in the mounted surface is brought into view even when ordinary incoming-message scroll lock is active.
+- **ChatComposer**: Enter submits, Shift plus Enter inserts a newline, and the draft is retained on send failure. After delivery acknowledgement, the draft clears because the canonical user bubble is visible. While that turn awaits a reply, the textbox can hold the next draft but submission and execution selection remain disabled. It grows with its content and enables its own scrollbar only after reaching the CSS height cap. Optional draft-observation seam: `initialValue` seeds the draft once on mount and `onDraftChange` fires on every edit (empty string after a successful send), so a host can persist the unsent draft and arm an unsaved-work guard while the composer keeps owning the text state.
 - **ChatExecutionPicker**: an optional, compact **Run with** control that shows
   one atomic provider/model choice grouped by provider. Server-authored
   availability and descriptions stay visible and accessible; unavailable
@@ -60,16 +60,15 @@ than forking it:
   canonical message's content and before any built-in answer controls;
 - `transcriptAppendix` adds auxiliary content at the end of the scrollable
   transcript;
-- typed input recovery temporarily replaces sending with one explanation and,
-  when recovery is possible, one action; and
 - `onMessagesChange` lets a host observe canonical messages for surrounding UI
   such as an unread tab marker.
 
 These are React composition seams, not persisted widget input. The shared
 surface continues to own message identity, ordering, author semantics,
 questions, scrolling, loading, retry, sending, and accessibility. A host
-cannot replace the whole message renderer. When input is unavailable, both the
-composer and any structured Yes/No or choice controls are unavailable.
+cannot replace the whole message renderer. App-specific context appears only
+through explicit accessories, so a non-Co-work consumer does not inherit
+Co-work's About/Working on labels or internal action-snapshot metadata.
 
 `ConversationChat` is a reusable surface inside dashboard Apps. It is not, by
 itself, a separately placeable Dashboard Core widget. A cohesive durable App
@@ -103,9 +102,11 @@ selection and composition.
 
 Feature-owned preparation that runs before transport send reports through the
 same inline error surface and retains the draft; it must not fail only in the
-console. The house HTTP provider also exposes explicit invalidation for host
-lifecycle actions such as agent restart, so a mounted transcript can refresh
-liveness immediately without remounting or waiting for its polling interval.
+console. Activity mapping treats a latest user turn with a live or unknown
+driver as waiting for a reply, an explicit stopped driver as terminal, and a
+latest assistant turn as idle even when its long-lived driver remains active.
+The terminal presentation is informational and recoverable through ordinary
+composition; there is no shared Start or Restart control.
 
 Message identity: the endpoint serializes message ids as `message_id`, which the mapping prefers. A bare `id` is accepted as a fixture-side fallback and a positional id is the last resort.
 
@@ -120,6 +121,10 @@ No HTTP wiring lives in the package. Live transports implement the conversation
 and, optionally, execution-profile seams. `InMemoryChatProvider` is the
 conversation test and development fixture. The generic same-origin execution
 adapter lives in `dashboard-react/src/dashboard/conversations/` and normalizes
-server envelopes without owning App lifecycle policy. The components consume
-the appearance system's semantic tokens only, honor forced-colors and
-reduced-motion with non-color encodings, and are keyboard complete.
+server envelopes without owning App lifecycle policy. Its conversation adapter
+treats a successful POST message id as the delivery boundary: it keeps that
+acknowledged user turn in every stale read until the server projection returns
+the same id, preventing a disappearing bubble or accidental duplicate send.
+The components consume the appearance system's semantic tokens only, honor
+forced-colors and reduced-motion with non-color encodings, and are keyboard
+complete.

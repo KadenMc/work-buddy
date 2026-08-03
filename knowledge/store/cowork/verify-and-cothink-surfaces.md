@@ -164,7 +164,18 @@ The Review rail:
 
 The Chat composer has one compact **About:** chip. Ordinary authored messages
 inherit the current Working on target and capture its exact version at send
-time; there is no separate sticky target switch.
+time; there is no separate sticky target switch. This chip belongs to the
+Co-work adapter: the reusable Chat widget remains general-purpose and does not
+show Working on, About, or internal action-snapshot/version identifiers unless
+a host explicitly supplies an accessory.
+
+Opening Chat creates or reuses its binding and pins the displayed execution
+selection without running a model. Sending an authored message and choosing
+**Discuss** on a Co-think item both wake the document agent automatically. The
+acknowledged user turn remains visible while read projections catch up, Send is
+disabled while a reply is pending, and a wake that produces no response reaches
+the terminal **No response received.** state with ordinary composition restored.
+No Start or Restart control is exposed.
 
 After a Verify-linked proposal is applied, Review projects a durable
 **Correction ready to recheck** card. Its action is a contextual handoff: it

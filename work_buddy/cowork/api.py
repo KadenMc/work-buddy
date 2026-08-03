@@ -642,7 +642,7 @@ def _project_execution(conversation_id: str | None):
 
 
 def _pin_projected_execution(conversation_id: str):
-    """Return the conversation target, pinning the default on first start."""
+    """Return the conversation target, pinning its displayed default once."""
     state = _project_execution(conversation_id)
     if state.persisted:
         return state
@@ -961,6 +961,107 @@ def api_doc_conversation_get(document_id: str):
         {
             "ok": True,
             "conversation_id": conversation_id,
+            "agent": agent_status.to_dict(),
+            "feedback": feedback_payload,
+            "execution": execution_snapshot,
+        }
+    )
+
+
+@cowork_blueprint.post("/api/truth/doc/<document_id>/conversation/bind")
+def api_doc_conversation_bind(document_id: str):
+    """Bind the conversation and its displayed model without running it.
+
+    Opening Chat needs a durable conversation id so the shared conversation
+    widget can mount, but selecting that pane is not itself a request to run a
+    model. This endpoint owns the canonical binding and pins the model selection
+    returned to the picker so the first authored turn cannot silently run on a
+    different default. Agent startup remains attached to an authored turn (or
+    another explicit action).
+    """
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    store, error = _resolve_store(request.args.get("store_id"))
+    if error:
+        return error
+    gate = _document_surface_or_403(store)
+    if gate:
+        return gate
+
+    from work_buddy.consent import user_initiated
+
+    binding = None
+    try:
+        # Binding participates in the same cross-database lifecycle boundary
+        # as conversation start. Retirement must not commit and then miss a
+        # conversation created by a concurrent Chat-pane gesture.
+        with lifecycle_lock.document_lifecycle_lock(
+            store.store_id,
+            document_id,
+        ):
+            document, doc_error = _resolve_document(store, document_id)
+            if doc_error:
+                return doc_error
+            if documents.current_lifecycle(store, document.id) != "active":
+                return _fail(
+                    "Chat cannot be opened for a retired document.",
+                    409,
+                )
+            if not document_surface_allowed(store, document):
+                return _fail(
+                    "This document is not available in Co-work for this folder.",
+                    403,
+                )
+            with user_initiated("dashboard.cowork.conversation_bind"):
+                binding = conversations.ensure_document_conversation(
+                    document_id=document.id,
+                    store_id=store.store_id,
+                )
+                bound_status = _conversation_status(binding.conversation_id)
+                if bound_status is None or bound_status == "closed":
+                    return _execution_error(
+                        ValueError(
+                            "This document's conversation is closed and "
+                            "cannot be reopened."
+                        ),
+                        status=409,
+                        code="conversation_closed",
+                        retryable=False,
+                        conversation_id=binding.conversation_id,
+                    )
+                consumer = document_agent.document_agent_consumer(
+                    store.store_id,
+                    document.id,
+                )
+                agent_status = document_agent.inspect_document_agent(
+                    binding.conversation_id,
+                    consumer=consumer,
+                )
+                feedback_payload = feedback.feedback_items(
+                    store,
+                    document_id=document.id,
+                    conversation_id=binding.conversation_id,
+                )
+                # Binding is the configuration boundary: make the selection
+                # shown by this response authoritative without claiming a
+                # lease, fencing a driver, or invoking a model.
+                _pin_projected_execution(binding.conversation_id)
+                execution_snapshot = _execution_snapshot(binding.conversation_id)
+    except conversation_execution.ConversationExecutionCorrupt as exc:
+        return _execution_error(
+            exc,
+            conversation_id=(
+                None if binding is None else binding.conversation_id
+            ),
+        )
+    except InvariantViolation as exc:
+        return _fail(str(exc), 400)
+    return jsonify(
+        {
+            "ok": True,
+            "conversation_id": binding.conversation_id,
+            "created": binding.created,
             "agent": agent_status.to_dict(),
             "feedback": feedback_payload,
             "execution": execution_snapshot,

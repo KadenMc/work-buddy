@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from work_buddy.agent_execution import registry as execution_registry
+from work_buddy.agent_execution.models import AgentExecutionSelection
+from work_buddy.conversations import execution as conversation_execution
 from work_buddy.conversations import store as conversation_store
 from work_buddy.cowork import document_agent
 
@@ -86,6 +91,129 @@ def test_prompt_binds_authority_delivery_and_durable_anchor_recovery() -> None:
     assert "generation='generation-a'" in prompt
     assert '"message_id": "user-new"' in prompt
     assert '"exact": "Selected sentence."' in prompt
+
+
+def test_bound_wake_reuses_selected_execution_and_preserves_lock_order(
+    document_agent_store,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del document_agent_store
+    from work_buddy.cowork import lifecycle_lock, policy
+    from work_buddy.truth import documents as truth_documents
+    from work_buddy.truth import registry as truth_registry
+
+    conversation = _conversation()
+    selected = AgentExecutionSelection(
+        provider_id="codex",
+        model_id="gpt-selected",
+        provider_label="Codex",
+        model_label="Selected model",
+    )
+    conversation_execution.set_execution(
+        conversation.conversation_id,
+        selected.to_dict(),
+        expected_revision=None,
+    )
+    monkeypatch.setattr(
+        execution_registry,
+        "default_selection",
+        lambda: AgentExecutionSelection(
+            provider_id="claude-code",
+            model_id="sonnet",
+            provider_label="Claude Code",
+            model_label="Sonnet",
+        ),
+    )
+
+    events: list[str] = []
+    original_get = conversation_store.get_conversation
+
+    def _get_conversation(conversation_id: str):
+        events.append("conversations")
+        return original_get(conversation_id)
+
+    @contextmanager
+    def _lifecycle_guard(store_id: str, document_id: str):
+        assert (store_id, document_id) == ("store-a", "doc-a")
+        events.append("lifecycle-enter")
+        try:
+            yield
+        finally:
+            events.append("lifecycle-exit")
+
+    class _Registry:
+        def open_store(self, store_id: str):
+            assert store_id == "store-a"
+            events.append("truth-store")
+            return SimpleNamespace(store_id=store_id)
+
+    document = SimpleNamespace(id="doc-a")
+
+    def _ensure(**kwargs: Any):
+        events.append("ensure")
+        assert kwargs["execution"] == selected
+        return document_agent.DocumentAgentStatus(
+            status="running",
+            alive=True,
+            started=True,
+            error=None,
+        )
+
+    monkeypatch.setattr(conversation_store, "get_conversation", _get_conversation)
+    monkeypatch.setattr(lifecycle_lock, "document_lifecycle_lock", _lifecycle_guard)
+    monkeypatch.setattr(truth_registry, "TruthStoreRegistry", _Registry)
+    monkeypatch.setattr(
+        truth_documents,
+        "get_document",
+        lambda _store, _document_id: (
+            events.append("truth-document") or document
+        ),
+    )
+    monkeypatch.setattr(
+        truth_documents,
+        "current_lifecycle",
+        lambda _store, _document_id: (
+            events.append("truth-lifecycle") or "active"
+        ),
+    )
+    monkeypatch.setattr(
+        policy,
+        "document_surface_allowed",
+        lambda _store, _document: events.append("truth-policy") or True,
+    )
+    monkeypatch.setattr(document_agent, "ensure_document_agent", _ensure)
+
+    status = document_agent.ensure_bound_document_agent(
+        conversation.conversation_id
+    )
+
+    assert status is not None and status.status == "running"
+    assert events == [
+        "conversations",
+        "lifecycle-enter",
+        "truth-store",
+        "truth-document",
+        "truth-lifecycle",
+        "truth-policy",
+        "conversations",
+        "ensure",
+        "lifecycle-exit",
+    ]
+
+
+def test_bound_wake_ignores_general_purpose_conversation(
+    document_agent_store,
+) -> None:
+    del document_agent_store
+    conversation = conversation_store.create_conversation(
+        title="General chat",
+        source="house_agent",
+    )
+
+    assert (
+        document_agent.ensure_bound_document_agent(conversation.conversation_id)
+        is None
+    )
 
 
 def test_ensure_spawns_once_and_reuses_live_persisted_generation(

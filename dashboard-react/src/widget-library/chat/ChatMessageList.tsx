@@ -42,6 +42,8 @@ export interface ChatMessageListProps {
   readonly initialUnreadFromMessageId?: string | null;
   /** Fired when the reader reaches the latest message and unread clears. */
   readonly onReachLatest?: () => void;
+  /** Changes after a send authored in this mounted surface. */
+  readonly revealLatestMessageToken?: number;
   /** Shown when the conversation has no messages yet. */
   readonly emptyLabel?: string;
 }
@@ -76,6 +78,7 @@ export function ChatMessageList({
   showStoppedNotice = true,
   initialUnreadFromMessageId,
   onReachLatest,
+  revealLatestMessageToken,
   emptyLabel = "No messages yet.",
 }: ChatMessageListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -110,6 +113,24 @@ export function ChatMessageList({
     if (element !== null) element.scrollTop = element.scrollHeight;
     setReadCount(messageCount);
   }, [messageCount]);
+
+  // A locally-authored send is never hidden behind scroll lock. Other incoming
+  // messages still respect the reader's position and accumulate as unread.
+  const previousRevealToken = useRef(revealLatestMessageToken);
+  useLayoutEffect(() => {
+    if (
+      revealLatestMessageToken === undefined ||
+      previousRevealToken.current === revealLatestMessageToken
+    ) {
+      return;
+    }
+    previousRevealToken.current = revealLatestMessageToken;
+    const element = scrollRef.current;
+    if (element !== null) element.scrollTop = element.scrollHeight;
+    setPinned(true);
+    pinnedRef.current = true;
+    setReadCount(messageCount);
+  }, [messageCount, revealLatestMessageToken]);
 
   // On a seeded-unread mount, open at the boundary rather than the bottom.
   useLayoutEffect(() => {
@@ -278,8 +299,7 @@ export function ChatMessageList({
 
       {agentActivity === "stopped" && showStoppedNotice ? (
         <InlineAlert tone="danger" role="status" className="wb-chat-stopped">
-          <span aria-hidden="true">■ </span>
-          Chat paused. Your messages are still here.
+          No response received.
         </InlineAlert>
       ) : null}
 

@@ -26,9 +26,9 @@ dev_notes: |
 
   `wb.cowork.folder.close@1` is a dedicated navigation intent. It is not the folder-selection `cancel` action: cancel restores the context that existed before a transient picker or inspection, while **Close folder** deliberately clears the active folder and catalog. A registered session must pass the device-durability leave barrier first; an active browser-local document is folder-independent and remains open. Closing never unregisters a folder, retires a document, mutates `.wbuddy`, or changes Markdown.
 
-  A document conversation ID is opaque and server-issued. GET binding inspection is read-only; only explicit Chat activation, feedback submission, or a routing decision may create the binding and ensure its driver. The driver receives durable user turns through a generation-scoped lease/cursor inbox and acknowledges each message only after handling it. Driver writes, questions, proposals, and comments carry the same generation fence so a stopped, restarted, or retired generation cannot mutate the document.
+  A document conversation ID is opaque and server-issued. GET binding inspection is read-only. Preparing Chat may create the canonical binding and pin the displayed execution selection, but it must not start a model. Persisting an authored Chat, feedback, routing, or Co-think discussion turn automatically wakes or starts the driver. The driver receives durable user turns through a generation-scoped lease/cursor inbox and acknowledges each message only after handling it. Driver writes, questions, proposals, and comments carry the same generation fence so a stopped, restarted, or retired generation cannot mutate the document.
 
-  The provider/model selection is durable conversation authority, not browser settings. The first explicit start pins the projected server default. A live change is one revision-checked atomic pair and restarts only the document driver; transcript, draft, binding, and document state remain. Copy producer attribution from the exact active lease, never from request fields or the conversation's current selection.
+  The provider/model selection is durable conversation authority, not browser settings. Non-executing Chat binding pins the validated server default returned to the picker, so the first authored turn cannot run on an undisplayed target. A live change is one revision-checked atomic pair and restarts only the document driver; transcript, draft, binding, and document state remain. Copy producer attribution from the exact active lease, never from request fields or the conversation's current selection.
 
   On a changed selection, raw lease status is the fencing authority: any persisted `starting` or `running` lease must be stopped before the new selection is launched even if a stale heartbeat or failed liveness probe projects it as stopped. The write guard accepts raw active leases, so using only presentation status would leave the old generation authorized.
 
@@ -312,9 +312,11 @@ rebinding or repeatedly resending stale attribution. See
 Every registered document has at most one durable conversation binding. The
 binding ID is an opaque server-issued identifier; the dashboard never derives
 one from the document or folder ID. Opening or reloading a document performs a
-read-only binding lookup and does not start an agent. The first explicit Chat
-action, selected-text feedback submission, redirect, or endorsement can create
-the binding and ensure one document agent.
+read-only binding lookup and does not start an agent. Preparing the Chat pane can
+create or reuse that binding and pin its displayed model selection, but still
+does not run a model. Persisting an authored Chat message, selected-text
+feedback, redirect, endorsement, or Co-think discussion automatically wakes or
+starts one document agent.
 
 The Chat header's optional **Run with** picker selects one provider/model pair
 for that durable conversation. Claude Code uses the user's signed-in Claude
@@ -324,21 +326,23 @@ not imply API billing, store a browser-only preference, or silently fall back to
 another provider.
 
 Before the conversation exists, the picker shows the server default without
-creating anything. The first explicit Chat start pins that validated pair.
-Changing an active conversation asks for confirmation, then restarts only the
-assistant driver. The messages and unsent draft stay. The selection is
-revisioned so two open surfaces cannot silently overwrite each other, and
-assistant messages retain the provider/model that actually produced them.
-Read-only documents may inspect the saved selection but cannot change it or
-start a new Chat driver.
+creating anything. Chat preparation pins the validated pair returned to the
+picker without starting the assistant driver. Changing an active conversation
+asks for confirmation, then restarts only that driver. The messages and unsent
+draft stay. The selection is revisioned so two open surfaces cannot silently
+overwrite each other, and assistant messages retain the provider/model that
+actually produced them. Read-only documents may inspect the saved selection but
+cannot change it or send a turn that starts a new driver.
 
 Selected-text feedback is saved verbatim as human-authored evidence, anchored to
 the exact document passage, and posted as an ordinary user turn in that same
 conversation. The response returns the real conversation and message IDs so the
 chat can attach the anchor to the exact transcript message, including when two
-feedback notes contain identical text. If agent startup fails after persistence,
-the feedback remains visible and the user can explicitly restart Chat; the
-dashboard does not claim that the authored feedback failed or silently retry it.
+feedback notes contain identical text. If the automatic wake fails after
+persistence, the authored turn and feedback remain visible, Chat reaches **No
+response received.**, and ordinary composition becomes available again. A later
+authored turn makes another bounded wake attempt; there is no user-facing
+Restart lifecycle control.
 
 **Jump to passage** reveals the editor on a narrow screen, scrolls the anchored
 quote into view, and briefly highlights it without replacing the editor's
@@ -357,7 +361,7 @@ arguments, or prompt. See `architecture/agent-execution` for provider isolation,
 catalog, persistence, and process-ownership details.
 
 Redirect and endorsement notices distinguish three outcomes: saved and sent to
-a running agent, saved in Chat but awaiting restart, or not saved. A review
+a running agent, saved in Chat but not answered, or not saved. A review
 gesture can remain committed even if its follow-up chat delivery fails, so the
 dashboard reports the conversation write and agent state returned by the server
 rather than inferring success from the gesture itself.

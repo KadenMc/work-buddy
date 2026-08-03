@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 
 import pytest
 
@@ -139,9 +140,11 @@ def test_targeted_turn_uses_exact_cowork_context_dispatch(
     monkeypatch,
 ) -> None:
     from work_buddy.cowork import chat_targets
+    from work_buddy.dashboard import service
 
     conversation = _conversation()
     received: dict[str, object] = {}
+    wake_calls: list[str] = []
     durable_context = {
         "kind": "action_snapshot",
         "action_snapshot_id": "action-targeted",
@@ -160,6 +163,11 @@ def test_targeted_turn_uses_exact_cowork_context_dispatch(
         )
 
     monkeypatch.setattr(chat_targets, "post_targeted_chat_message", _post)
+    monkeypatch.setattr(
+        service,
+        "_wake_persisted_cowork_turn",
+        lambda conversation_id: wake_calls.append(conversation_id),
+    )
     response = dashboard_client.post(
         f"/api/conversations/{conversation.conversation_id}/respond",
         json={
@@ -174,11 +182,102 @@ def test_targeted_turn_uses_exact_cowork_context_dispatch(
         "content": "Use the exact working passage.",
         "context": durable_context,
     }
+    assert wake_calls == [conversation.conversation_id]
     assert response.get_json() == {
         "sent": True,
         "message_id": "targeted-user-message",
         "context": durable_context,
     }
+
+
+def test_cowork_send_wakes_after_persistence_inside_user_boundary(
+    dashboard_client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from work_buddy import consent
+    from work_buddy.cowork import document_agent
+
+    conversation = _conversation()
+    events: list[str] = []
+
+    @contextmanager
+    def _user_boundary(source: str):
+        assert source == "dashboard.cowork.chat_turn"
+        events.append("boundary-enter")
+        try:
+            yield
+        finally:
+            events.append("boundary-exit")
+
+    def _ensure(conversation_id: str):
+        bundle = store.get_conversation_with_messages(conversation_id)
+        assert bundle is not None
+        assert bundle["messages"][-1]["content"] == "Wake from this turn."
+        events.append("ensure")
+        return None
+
+    monkeypatch.setattr(consent, "user_initiated", _user_boundary)
+    monkeypatch.setattr(document_agent, "ensure_bound_document_agent", _ensure)
+
+    response = dashboard_client.post(
+        f"/api/conversations/{conversation.conversation_id}/respond",
+        json={"value": "Wake from this turn."},
+    )
+
+    assert response.status_code == 200
+    assert events == ["boundary-enter", "ensure", "boundary-exit"]
+    projected = dashboard_client.get(
+        f"/api/conversations/{conversation.conversation_id}"
+    )
+    assert projected.status_code == 200
+    projected_conversation = projected.get_json()["conversation"]
+    assert projected_conversation["agent_alive"] is False
+    assert projected_conversation["agent_status"] == "stopped"
+
+
+def test_cowork_send_stays_successful_when_wake_fails(
+    dashboard_client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from work_buddy.cowork import document_agent
+
+    conversation = _conversation()
+
+    def _fail(_conversation_id: str):
+        raise RuntimeError("throwaway wake failure")
+
+    monkeypatch.setattr(document_agent, "ensure_bound_document_agent", _fail)
+    response = dashboard_client.post(
+        f"/api/conversations/{conversation.conversation_id}/respond",
+        json={"value": "Keep this durable."},
+    )
+
+    assert response.status_code == 200
+    bundle = store.get_conversation_with_messages(conversation.conversation_id)
+    assert bundle is not None
+    assert bundle["messages"][-1]["content"] == "Keep this durable."
+    projected = dashboard_client.get(
+        f"/api/conversations/{conversation.conversation_id}"
+    )
+    assert projected.status_code == 200
+    projected_conversation = projected.get_json()["conversation"]
+    assert projected_conversation["agent_alive"] is False
+    assert projected_conversation["agent_status"] == "stopped"
+
+
+def test_bound_cowork_conversation_without_a_turn_stays_not_started(
+    dashboard_client,
+) -> None:
+    conversation = _conversation()
+
+    response = dashboard_client.get(
+        f"/api/conversations/{conversation.conversation_id}"
+    )
+
+    assert response.status_code == 200
+    projected = response.get_json()["conversation"]
+    assert projected["agent_alive"] is None
+    assert projected["agent_status"] == "not_started"
 
 
 def test_targeted_context_cannot_answer_a_structured_question(

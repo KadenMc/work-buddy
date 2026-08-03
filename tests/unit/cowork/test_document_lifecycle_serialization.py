@@ -210,8 +210,8 @@ def _retirement_wins_race(
     return retire_response, operation_response
 
 
-@pytest.mark.parametrize("kind", ["start", "feedback"])
-def test_retirement_wins_before_start_or_feedback_creates_any_artifact(
+@pytest.mark.parametrize("kind", ["start", "bind", "feedback"])
+def test_retirement_wins_before_chat_mutation_creates_any_artifact(
     store_ctx,
     client,
     fake_document_agent,
@@ -254,10 +254,11 @@ def test_retirement_wins_before_start_or_feedback_creates_any_artifact(
 
     monkeypatch.setattr(api, "_resolve_document", _observed_resolve)
 
-    if kind == "start":
+    if kind in {"start", "bind"}:
         def _operation(thread_client):
+            suffix = "/bind" if kind == "bind" else ""
             return thread_client.post(
-                f"/api/truth/doc/{document.id}/conversation"
+                f"/api/truth/doc/{document.id}/conversation{suffix}"
                 f"?store_id={store.store_id}"
             )
     else:

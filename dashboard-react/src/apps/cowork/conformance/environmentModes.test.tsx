@@ -79,7 +79,6 @@ function renderRail() {
             started: true,
             error: null,
           },
-          onEnsureAgent: () => {},
         }}
         storage={new MemoryStorage()}
       />

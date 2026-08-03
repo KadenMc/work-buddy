@@ -67,11 +67,13 @@ instead of falling back to a different runtime or model.
 ## Conversation authority
 
 For Co-work, the conversations database durably owns the selected execution
-profile. A read projects the configured Claude Code default without writing;
-the first explicit Chat start or confirmed selection pins the validated pair.
-Changes use an opaque revision and compare-and-swap. Repeating the same pair is
-idempotent, while a stale conflicting change returns the current authoritative
-snapshot.
+profile. Before a conversation is bound, a read projects the configured default
+without writing. Preparing the Chat surface creates or reuses its canonical
+conversation and atomically pins the validated pair returned to the picker,
+without starting a model. An authored turn is the execution boundary that
+wakes or starts the selected driver. Confirmed changes use an opaque revision
+and compare-and-swap. Repeating the same pair is idempotent, while a stale
+conflicting change returns the current authoritative snapshot.
 
 Changing the pair while a document agent is active restarts only that driver.
 The durable conversation, transcript, pending human draft, document binding,
@@ -92,6 +94,13 @@ session identity and enforces an immutable Co-work ACL for the selected folder,
 document, conversation, lease consumer, and generation. Global status,
 workflow, result-retrieval, and unrelated document operations are unavailable.
 A restarted or retired generation loses all inbox and mutation authority.
+
+Claude begins with only its built-in ToolSearch, uses that bootstrap to load the
+exact Work Buddy initialization and capability tools named by its execution
+identity, and receives a strict MCP configuration containing only Work Buddy.
+The private brief forbids loading other tools. This bootstrap is required for
+the driver to initialize and consume its durable inbox; disabling every tool
+would start a process that could never participate in the conversation.
 
 Claude Code runs with an empty neutral working directory, no session
 persistence, browser/IDE integration, project instruction files, auto-memory,

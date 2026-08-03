@@ -87,6 +87,13 @@ Co-think items may still appear in Review.
 Ordinary Chat messages use the shared Working on target and show it as one
 compact **About:** chip in the composer. The target is frozen for that message;
 changing Working on or editing the document afterward does not rewrite it.
+The About chip is a Co-work adapter extension, not a default of the reusable
+Chat widget, and internal action-snapshot/version identifiers are not shown.
+Opening Chat prepares its binding and displayed execution selection without
+running a model. Sending a message or choosing **Discuss** on a Co-think item is
+the authored action that wakes the document agent automatically. While a reply
+is pending, Send is disabled but the next draft may be composed; a failed or
+empty wake resolves to **No response received.** rather than a Restart workflow.
 
 ## Current end-to-end behavior
 

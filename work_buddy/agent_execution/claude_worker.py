@@ -202,7 +202,7 @@ def run_worker(
             _work_buddy_mcp_config(session_id),
             "--strict-mcp-config",
             "--tools",
-            "",
+            "ToolSearch",
             "--disable-slash-commands",
             "--no-chrome",
         ),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from typing import Any
 
@@ -44,6 +45,7 @@ from work_buddy.truth.contracts import InvariantViolation
 
 
 verify_blueprint = Blueprint("cowork_verify", __name__)
+logger = logging.getLogger(__name__)
 
 
 def _body() -> dict[str, Any]:
@@ -486,6 +488,9 @@ def api_cothink_item_action(
             from work_buddy.cowork.chat_targets import (
                 post_cothink_discussion_message,
             )
+            from work_buddy.cowork.document_agent import (
+                ensure_bound_document_agent,
+            )
 
             with user_initiated("dashboard.cowork.cothink_item_discuss"):
                 conversation_id, message = post_cothink_discussion_message(
@@ -494,6 +499,19 @@ def api_cothink_item_action(
                     item_id=item.id,
                     canonical_sha256=item.canonical_sha256,
                 )
+                try:
+                    # The discussion turn is already durable and its original
+                    # lifecycle guard has been released. Reacquire through the
+                    # shared bound-conversation wake path; startup is a
+                    # recoverable consequence, never part of send success.
+                    ensure_bound_document_agent(conversation_id)
+                except Exception:
+                    logger.exception(
+                        "Document-agent wake failed after Co-think discussion "
+                        "persisted: conversation=%s item=%s",
+                        conversation_id,
+                        item.id,
+                    )
             return jsonify(
                 {
                     "ok": True,

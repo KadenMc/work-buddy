@@ -4,16 +4,13 @@
  * Conversation ids are opaque ids issued by the house conversation store. A
  * document id is never a conversation id and must not be used to manufacture
  * one in the browser. GET discovers an existing binding without side effects;
- * POST is the present-user-intent boundary that may create the binding and
- * start or restart its document agent.
+ * POST /bind is the preparation boundary that may create the binding without
+ * starting a model. Sending a message is the separate execution boundary.
  */
 
 import type { FeedbackCapture } from "./contracts";
 import { normalizeChatExecutionSnapshot } from "../../../dashboard/conversations";
-import type {
-  ChatExecutionSelectionInput,
-  ChatExecutionSnapshot,
-} from "../../../widget-library/chat";
+import type { ChatExecutionSnapshot } from "../../../widget-library/chat";
 
 export type CoworkDocumentAgentStatus =
   | "not_started"
@@ -46,7 +43,6 @@ export interface CoworkDocumentConversationBindingClient {
   ensure(
     documentId: string,
     storeId: string,
-    execution?: ChatExecutionSelectionInput,
   ): Promise<CoworkDocumentConversationBinding>;
 }
 
@@ -248,6 +244,12 @@ export const coworkConversationEndpoint = (
 ): string =>
   `/api/truth/doc/${encodeURIComponent(documentId)}/conversation?store_id=${encodeURIComponent(storeId)}`;
 
+export const coworkConversationBindEndpoint = (
+  documentId: string,
+  storeId: string,
+): string =>
+  `/api/truth/doc/${encodeURIComponent(documentId)}/conversation/bind?store_id=${encodeURIComponent(storeId)}`;
+
 export const coworkConversationExecutionEndpoint = (
   documentId: string,
   storeId: string,
@@ -275,36 +277,22 @@ export class HttpCoworkDocumentConversationBindingClient
   ensure(
     documentId: string,
     storeId: string,
-    execution?: ChatExecutionSelectionInput,
   ): Promise<CoworkDocumentConversationBinding> {
-    return this.#request(documentId, storeId, "POST", execution);
+    return this.#request(documentId, storeId, "POST");
   }
 
   async #request(
     documentId: string,
     storeId: string,
     method: "GET" | "POST",
-    execution?: ChatExecutionSelectionInput,
   ): Promise<CoworkDocumentConversationBinding> {
     const response = await this.#fetch(
-      coworkConversationEndpoint(documentId, storeId),
+      method === "GET"
+        ? coworkConversationEndpoint(documentId, storeId)
+        : coworkConversationBindEndpoint(documentId, storeId),
       {
         method,
-        headers: {
-          Accept: "application/json",
-          ...(execution === undefined
-            ? {}
-            : { "Content-Type": "application/json" }),
-        },
-        ...(execution === undefined
-          ? {}
-          : {
-              body: JSON.stringify({
-                provider_id: execution.providerId,
-                model_id: execution.modelId,
-                expected_revision: execution.expectedRevision,
-              }),
-            }),
+        headers: { Accept: "application/json" },
       },
     );
     const payload = await readJson(response);
@@ -323,7 +311,7 @@ export class HttpCoworkDocumentConversationBindingClient
         errorMessage(payload.error) ??
           (method === "GET"
             ? "Chat could not be loaded."
-            : "Chat couldn’t start. Try again."),
+            : "Chat could not be prepared. Try again."),
         authoritativeExecution,
       );
     }
