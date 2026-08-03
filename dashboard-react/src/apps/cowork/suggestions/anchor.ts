@@ -1,5 +1,6 @@
 import type { Node } from "@tiptap/pm/model";
 
+import { createCoworkMarkdownManager } from "../editor/extensions";
 import type { QuoteAnchor } from "./types";
 
 /**
@@ -56,16 +57,54 @@ export const buildTextIndex = (doc: Node): TextIndex => {
   return { flat, charPositions };
 };
 
-/** Every start offset of `needle` in `haystack` (overlapping matches included). */
-const allOccurrences = (haystack: string, needle: string): number[] => {
-  const found: number[] = [];
+interface TextMatch {
+  readonly offset: number;
+  readonly length: number;
+}
+
+/** Every occurrence of `needle` in `haystack` (overlapping matches included). */
+const exactOccurrences = (haystack: string, needle: string): TextMatch[] => {
+  const found: TextMatch[] = [];
   if (needle.length === 0) return found;
   let from = 0;
   for (;;) {
     const at = haystack.indexOf(needle, from);
     if (at === -1) return found;
-    found.push(at);
+    found.push({ offset: at, length: needle.length });
     from = at + 1;
+  }
+};
+
+const escapeRegExp = (value: string): string =>
+  value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+
+/** Exact-first, then whitespace-tolerant, matching the server anchor firewall. */
+const textOccurrences = (haystack: string, needle: string): TextMatch[] => {
+  const exact = exactOccurrences(haystack, needle);
+  if (exact.length > 0) return exact;
+  const parts = needle.split(/\s+/u).filter((part) => part.length > 0);
+  if (parts.length === 0) return [];
+  const pattern = new RegExp(parts.map(escapeRegExp).join("\\s+"), "gu");
+  return Array.from(haystack.matchAll(pattern), (match) => ({
+    offset: match.index,
+    length: match[0].length,
+  }));
+};
+
+/**
+ * Proposal selectors describe canonical Markdown, while ProseMirror exposes
+ * visible text. Parse a Markdown fragment through Co-work's one canonical
+ * parser so blockquote prefixes, emphasis delimiters, links, and hard-break
+ * syntax become the same visible-text index as the live editor.
+ */
+const visibleMarkdownText = (doc: Node, markdown: string): string => {
+  if (markdown.length === 0) return "";
+  try {
+    const parsed = createCoworkMarkdownManager().parse(markdown);
+    const parsedDoc = doc.type.schema.nodeFromJSON(parsed);
+    return buildTextIndex(parsedDoc).flat;
+  } catch {
+    return markdown;
   }
 };
 
@@ -106,19 +145,28 @@ export const resolveQuoteAnchor = (
   if (anchor.exact.length === 0) return null;
 
   const index = buildTextIndex(doc);
-  const occurrences = allOccurrences(index.flat, anchor.exact);
+  let exact = anchor.exact;
+  let prefix = anchor.prefix;
+  let suffix = anchor.suffix;
+  let occurrences = textOccurrences(index.flat, exact);
+  if (occurrences.length === 0) {
+    exact = visibleMarkdownText(doc, anchor.exact);
+    prefix = visibleMarkdownText(doc, anchor.prefix);
+    suffix = visibleMarkdownText(doc, anchor.suffix);
+    occurrences = textOccurrences(index.flat, exact);
+  }
   if (occurrences.length === 0) return null;
   if (occurrences.length === 1) {
-    return rangeFor(index, occurrences[0], anchor.exact.length);
+    return rangeFor(index, occurrences[0].offset, occurrences[0].length);
   }
 
   const contextual = occurrences.filter(
-    (offset) =>
-      prefixMatches(index.flat, offset, anchor.prefix) &&
-      suffixMatches(index.flat, offset + anchor.exact.length, anchor.suffix),
+    (match) =>
+      prefixMatches(index.flat, match.offset, prefix) &&
+      suffixMatches(index.flat, match.offset + match.length, suffix),
   );
   if (contextual.length === 1) {
-    return rangeFor(index, contextual[0], anchor.exact.length);
+    return rangeFor(index, contextual[0].offset, contextual[0].length);
   }
   return null;
 };

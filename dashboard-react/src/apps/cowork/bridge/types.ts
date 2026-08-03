@@ -34,6 +34,15 @@ export interface R2ClaimRef {
   readonly role?: "quote" | "paraphrase" | "summary" | "instantiation";
 }
 
+export interface R2ProposalApplicability {
+  readonly status: "applicable" | "target_changed" | "unknown";
+  readonly reason: string;
+  readonly resolved_start?: number;
+  readonly resolved_end?: number;
+  readonly current_projection_sha256?: string;
+  readonly current_structured_head_sha256?: string;
+}
+
 /** One open proposal as delivered by R2 doc-get. */
 export interface R2Proposal {
   readonly proposal_id: string;
@@ -46,6 +55,8 @@ export interface R2Proposal {
   readonly epistemic_state: "ai_proposed";
   readonly base_doc_sha256: string;
   readonly canonical_sha256: string;
+  /** Target-level placement proof; base_ok remains a rolling compatibility alias. */
+  readonly applicability?: R2ProposalApplicability;
   readonly base_ok: boolean;
   readonly status: "open" | "redraft_pending";
   readonly fixes_ref: string | null;

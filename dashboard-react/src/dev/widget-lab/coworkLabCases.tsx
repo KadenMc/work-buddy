@@ -3,7 +3,7 @@
  * widget, which the reusable-widget cases deliberately skip: a durable widget is a single
  * app-owned keep-alive instance with its own live state, not a snapshot-hydrated reusable
  * type. This section renders the review-rail family directly at the states a reviewer needs
- * to eyeball: each card type, each verb group, the stale-base disabled state, and the
+ * to eyeball: each card type, each verb group, the unavailable-target state, and the
  * narrow grouped fallback. It draws on the same shipped demo scene the rail tests use, so
  * the lab and the tests never drift.
  */
@@ -49,7 +49,12 @@ const claim: ReviewClaim = (() => {
   if (first === undefined) throw new Error("The demo scene must carry a claim.");
   return first;
 })();
-const staleBase: ReviewProposal = { ...insertion, proposalId: "stale-1", baseOk: false };
+const staleBase: ReviewProposal = {
+  ...insertion,
+  proposalId: "stale-1",
+  baseOk: false,
+  applicability: { status: "target_changed", reason: "target_missing" },
+};
 
 const noop = () => undefined;
 
@@ -104,7 +109,7 @@ export function CoworkLabSection() {
       <h2 id="widget-lab-cowork">Co-work review states</h2>
       <p>
         The single-surface review rail family at the states that matter for
-        conformance: every card type, every verb group, the stale-base disabled
+        conformance: every card type, every verb group, the unavailable-target
         state, and the narrow grouped fallback.
       </p>
 

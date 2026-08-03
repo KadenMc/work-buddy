@@ -38,6 +38,11 @@ from work_buddy.conversations.store import (
 )
 from work_buddy.cowork import conversations, feedback, provenance, source_observation
 from work_buddy.cowork.document_agent import document_agent_consumer
+from work_buddy.cowork.proposal_applicability import (
+    CurrentProjection,
+    assess_proposal_applicability,
+    load_current_projection,
+)
 from work_buddy.mcp_server.op_registry import register_op
 from work_buddy.truth import documents, expressions, proposals, ydoc_store
 from work_buddy.truth.anchors import CompositeSelector, parse_selector
@@ -228,8 +233,20 @@ def _proposal_view(
     proposal: Any,
     document: Any,
     store: TruthStore,
+    *,
+    live_structured_head: str | None = None,
+    current_projection: CurrentProjection | None = None,
+    projection_unavailable_reason: str = "projection_unavailable",
 ) -> dict[str, Any]:
-    live_structured_head = _structured_head_for_document(store, document)
+    if live_structured_head is None:
+        live_structured_head = _structured_head_for_document(store, document)
+    applicability = assess_proposal_applicability(
+        proposal,
+        document,
+        structured_head_sha256=live_structured_head,
+        current_projection=current_projection,
+        projection_unavailable_reason=projection_unavailable_reason,
+    )
     return {
         "proposal_id": proposal.id,
         "kind": "edit" if proposal.replacement is not None else "flag",
@@ -242,13 +259,8 @@ def _proposal_view(
         "base_doc_sha256": proposal.base_content_sha256,
         "base_structured_head_sha256": proposal.base_structured_head_sha256,
         "canonical_sha256": proposal.canonical_sha256,
-        "base_ok": (
-            proposal.base_content_sha256 == document.content_sha256
-            and (
-                proposal.base_structured_head_sha256 is None
-                or proposal.base_structured_head_sha256 == live_structured_head
-            )
-        ),
+        "base_ok": applicability.applicable,
+        "applicability": applicability.to_wire(),
         "claim_refs": _claim_refs_view(proposal.claim_refs_json),
         "created_at": proposal.created_at,
     }
@@ -375,8 +387,9 @@ def cowork_doc_get(
 
     Content itself rides the binary Y.Doc transport, so this carries meta plus
     the ledger-canonical review layer. Drift is the pure read projection, so a
-    get never appends a doc_event. ``base_ok`` on each proposal reports whether
-    it is still based on the current document content.
+    get never appends a doc_event. ``applicability`` reports whether each
+    proposal's original passage can be placed safely in the current canonical
+    projection; ``base_ok`` is its rolling compatibility alias.
     """
     store = _open_store(store_id)
     _require_document_surface(store)
@@ -433,8 +446,23 @@ def cowork_doc_get(
                 open_props = proposals.open_proposals(
                     store, document_id=document.id, conn=conn
                 )
+                live_structured_head = _structured_head_for_document(
+                    store, document
+                )
+                current_projection, projection_reason = load_current_projection(
+                    store,
+                    document,
+                    structured_head_sha256=live_structured_head,
+                )
                 open_payload = [
-                    _proposal_view(item, document, store)
+                    _proposal_view(
+                        item,
+                        document,
+                        store,
+                        live_structured_head=live_structured_head,
+                        current_projection=current_projection,
+                        projection_unavailable_reason=projection_reason,
+                    )
                     for item in open_props
                 ]
                 expr_payload = [

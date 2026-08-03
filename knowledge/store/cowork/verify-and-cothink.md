@@ -119,8 +119,11 @@ empty wake resolves to **No response received.** rather than a Restart workflow.
    to the post-revision coordinator.
 7. The post-revision coordinator may route a correction only when that proof
    passes. The domain service then creates an ordinary immutable proposal.
-8. A human confirms, amends, rejects, redirects, endorses, or defers through
-   the existing review sitting. Only the sitting may apply the exact payload.
+8. A human confirms, amends, rejects, redirects, endorses, dismisses, or defers
+   through the existing review sitting. Only confirm or amend applies text, so
+   only those choices require the proposal's original target to remain safely
+   locatable. Other decisions remain available when placement is missing,
+   ambiguous, or temporarily unverifiable.
 9. An applied Verify-linked correction creates a persistent recheck card.
    Review hands that context into the Verify dock; it does not launch a run.
    The dock preserves the original provider/model, goal, protected intent,

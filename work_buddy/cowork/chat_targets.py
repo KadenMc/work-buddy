@@ -419,6 +419,7 @@ def post_targeted_chat_message(
     conversation_id: str,
     content: str,
     context: Mapping[str, Any],
+    message_id: str | None = None,
 ) -> ConversationMessage:
     """Append a targeted turn even when its bound agent must be restarted."""
 
@@ -487,6 +488,7 @@ def post_targeted_chat_message(
         message = post_user_message(
             conversation_id,
             content,
+            message_id=message_id,
             context=durable_context,
         )
         if message is None:

@@ -16,6 +16,25 @@ import { deriveAgentActivity } from "./mapping";
 
 const EMPTY_MESSAGES: readonly ChatMessage[] = [];
 
+let fallbackMessageSequence = 0;
+
+const newUserMessageId = (): string => {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return `chat-user-${globalThis.crypto.randomUUID()}`;
+  }
+  fallbackMessageSequence += 1;
+  return `chat-user-${Date.now().toString(36)}-${fallbackMessageSequence.toString(36)}`;
+};
+
+interface PendingSendEnvelope {
+  readonly provider: ChatConversationProvider;
+  readonly conversationId: string;
+  readonly value: string;
+  readonly inReplyTo?: string;
+  readonly messageId: string;
+  prepared?: ChatSendInput;
+}
+
 const errorMessage = (error: unknown): string =>
   error instanceof Error && error.message.trim().length > 0
     ? error.message
@@ -72,6 +91,7 @@ export function ConversationChat({
   const chat = useChatConversation(provider, conversationId);
   const activeBinding = useRef({ provider, conversationId });
   activeBinding.current = { provider, conversationId };
+  const pendingSendRef = useRef<PendingSendEnvelope | null>(null);
   const [prepareError, setPrepareError] = useState<string | null>(null);
   const [revealLatestMessageToken, setRevealLatestMessageToken] = useState(0);
   const messages = chat.snapshot?.messages ?? EMPTY_MESSAGES;
@@ -84,6 +104,7 @@ export function ConversationChat({
   useEffect(() => {
     setPrepareError(null);
     setRevealLatestMessageToken(0);
+    pendingSendRef.current = null;
   }, [conversationId, provider]);
 
   return (
@@ -99,11 +120,41 @@ export function ConversationChat({
         const expectedProvider = provider;
         const expectedConversationId = conversationId;
         setPrepareError(null);
-        const input: ChatSendInput = { value, inReplyTo };
+        let pending = pendingSendRef.current;
+        if (
+          pending === null ||
+          pending.provider !== expectedProvider ||
+          pending.conversationId !== expectedConversationId ||
+          pending.value !== value ||
+          pending.inReplyTo !== inReplyTo
+        ) {
+          pending = {
+            provider: expectedProvider,
+            conversationId: expectedConversationId,
+            value,
+            inReplyTo,
+            messageId: newUserMessageId(),
+          };
+          pendingSendRef.current = pending;
+        }
         let prepared: ChatSendInput;
         try {
-          prepared =
-            prepareSend === undefined ? input : await prepareSend(input);
+          if (pending.prepared === undefined) {
+            const input: ChatSendInput = {
+              value,
+              inReplyTo,
+              messageId: pending.messageId,
+            };
+            const candidate =
+              prepareSend === undefined ? input : await prepareSend(input);
+            // The shared surface owns retry identity. A host may enrich the
+            // send but cannot accidentally drop or replace that identity.
+            pending.prepared = {
+              ...candidate,
+              messageId: pending.messageId,
+            };
+          }
+          prepared = pending.prepared;
         } catch (error) {
           if (
             activeBinding.current.provider === expectedProvider &&
@@ -117,7 +168,11 @@ export function ConversationChat({
           prepared.value,
           prepared.inReplyTo,
           prepared.context,
+          prepared.messageId,
         );
+        if (pendingSendRef.current === pending) {
+          pendingSendRef.current = null;
+        }
         if (
           activeBinding.current.provider === expectedProvider &&
           activeBinding.current.conversationId === expectedConversationId

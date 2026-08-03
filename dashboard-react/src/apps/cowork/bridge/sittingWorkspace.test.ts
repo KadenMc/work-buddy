@@ -225,6 +225,46 @@ describe("prepareCoworkSittingDocument", () => {
     prepared.dispose();
   });
 
+  it("materializes a canonical Markdown hard-break proposal", async () => {
+    const document = await seedDocument("The methods  \r\nsection follows.");
+    const proposal = editProposal(
+      "prop-hard-break",
+      "methods  \r\nsection",
+      "methods section",
+      { prefix: "The ", suffix: " follows." },
+    );
+
+    const prepared = await prepareCoworkSittingDocument(
+      document,
+      [decision(proposal, "confirm")],
+      [proposal],
+      1,
+    );
+
+    expect(prepared.commit.rendered_markdown).toBe("The methods section follows.");
+    prepared.dispose();
+  });
+
+  it("materializes a hard break inside a Markdown blockquote", async () => {
+    const document = await seedDocument("> Keep the idea at  \r\n> the centre.");
+    const proposal = editProposal(
+      "prop-blockquote-break",
+      "at  \r\n> the centre.",
+      "at the centre.",
+      { prefix: "idea ", suffix: "" },
+    );
+
+    const prepared = await prepareCoworkSittingDocument(
+      document,
+      [decision(proposal, "confirm")],
+      [proposal],
+      1,
+    );
+
+    expect(prepared.commit.rendered_markdown).toBe("> Keep the idea at the centre.");
+    prepared.dispose();
+  });
+
   it("fails closed when an admitted proposal is missing from the catalog", async () => {
     const document = await seedDocument("The quick brown fox");
     const proposal = editProposal("prop-1", "quick", "slow");

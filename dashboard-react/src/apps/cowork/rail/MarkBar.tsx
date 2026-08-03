@@ -2,8 +2,8 @@
  * The mark bar. It renders the verb set for the selected item and stages one
  * per-item decision (section 1.5). Edit proposals get the seven edit verbs,
  * flags get Endorse / Dismiss / Redirect, claims get the six committed claim
- * verbs. On a stale-base proposal only the reject family and Defer are
- * decidable, and the rest are disabled with a stated reason (S6). Verbs that
+ * verbs. When an edit's original passage cannot be placed, only Accept and
+ * Amend are disabled with a stated reason. Verbs that
  * need a replacement, a redirect note, or a verbatim negation collect it inline
  * before staging (S3), so a durable decision is never minted from a mis-click.
  */
@@ -164,7 +164,11 @@ export function MarkBar(props: MarkBarProps) {
     });
   };
 
-  const staleBase = target.kind === "proposal" && !target.proposal.baseOk;
+  const targetUnavailable =
+    target.kind === "proposal" &&
+    ((target.proposal.applicability !== undefined &&
+      target.proposal.applicability.status !== "applicable") ||
+      (target.proposal.applicability === undefined && !target.proposal.baseOk));
 
   return (
     <section className="wb-cowork-rail__markbar" aria-label="Decide">
@@ -175,10 +179,10 @@ export function MarkBar(props: MarkBarProps) {
         </span>
       </p>
 
-      {staleBase ? (
+      {targetUnavailable ? (
         <p className="wb-cowork-rail__stale-note" role="status">
-          The document changed after this was proposed, so it can only be rejected
-          or deferred.
+          The original passage cannot be placed safely. Accept and Amend are
+          unavailable; other review decisions still work.
         </p>
       ) : null}
 

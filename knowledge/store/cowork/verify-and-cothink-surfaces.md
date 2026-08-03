@@ -158,7 +158,11 @@ The Review rail:
 
 - surfaces only coordinator-dispositioned results;
 - uses evidence-first cards and exact passage navigation;
-- sends correction proposals through the ordinary sitting; and
+- sends correction proposals through the ordinary sitting;
+- assesses corrections against their current target rather than treating an
+  unrelated whole-document change as automatic staleness;
+- requires safe target placement only for **Accept** and **Amend**, while
+  record-level review decisions remain available; and
 - labels historical Co-think cards and actions separately from evaluation
   results.
 
@@ -199,3 +203,6 @@ whole document.
 Clean conforming results remain quiet in the attention feed. Results against an
 earlier structured head are labeled as an earlier version instead of being
 presented as current.
+That label describes an evaluation result's frozen run context. Proposal
+applicability is separate: a resulting correction may remain actionable after
+unrelated edits when its original target reanchors uniquely.

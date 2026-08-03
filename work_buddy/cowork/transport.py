@@ -329,6 +329,12 @@ def push_ydoc(
                 raise InvariantViolation(
                     "compacted projection does not match its declared digest"
                 )
+            # The compaction receipt names this content address.  Persist the
+            # verified UTF-8 bytes before publishing that receipt so proposal
+            # applicability can later prove the exact live Markdown target.
+            # A failed CAS may leave an unreferenced content-addressed blob,
+            # which is harmless and preferable to a receipt with no payload.
+            store._store_blob_bytes(projection_digest, projection)
     else:
         batch, snapshot = raw_body, None
         projection_digest = None

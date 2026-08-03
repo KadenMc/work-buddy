@@ -513,6 +513,7 @@ def accept_proposal(
     at: str | None = None,
     conn: sqlite3.Connection | None = None,
     current_structured_head_sha256: str | None = None,
+    applicability_prevalidated: bool = False,
 ) -> ProposalDecisionResult:
     """Consume a confirm (accept) or edit_confirm (amend) gesture, status 'applied'.
 
@@ -534,7 +535,10 @@ def accept_proposal(
         if document is None:
             raise InvariantViolation("proposal references a missing document")
         structured_stale = False
-        if proposal.base_structured_head_sha256 is not None:
+        if (
+            not applicability_prevalidated
+            and proposal.base_structured_head_sha256 is not None
+        ):
             if current_structured_head_sha256 is not None:
                 live_head = _valid_digest(
                     current_structured_head_sha256,
@@ -552,10 +556,14 @@ def accept_proposal(
                     snapshot_sha256=document.ydoc_snapshot_sha256,
                 )
                 structured_stale = live_head != proposal.base_structured_head_sha256
-        if structured_stale or proposal.base_content_sha256 != document.content_sha256:
+        content_baseline_stale = (
+            not applicability_prevalidated
+            and proposal.base_structured_head_sha256 is None
+            and proposal.base_content_sha256 != document.content_sha256
+        )
+        if structured_stale or content_baseline_stale:
             raise TransitionError(
-                "stale-base proposal cannot be applied, decidable only via "
-                "reject or defer"
+                "proposal target could not be proven against the current document"
             )
         gesture = _verify_and_consume(
             lifecycle,

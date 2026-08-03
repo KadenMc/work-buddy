@@ -76,7 +76,7 @@ describe("CoworkRail family accessibility", () => {
     await expectNoAccessibilityViolations(container);
   });
 
-  it("clears axe on a stale-base proposal card", async () => {
+  it("clears axe on a proposal with a missing original passage", async () => {
     const { container } = render(
       inList(
         <ProposalCard
@@ -86,8 +86,8 @@ describe("CoworkRail family accessibility", () => {
         />,
       ),
     );
-    // The stale state is announced in text, not by colour alone.
-    expect(screen.getByText(/based on an older version/i)).toBeVisible();
+    // The target problem is announced in text, not by colour alone.
+    expect(screen.getByText(/original passage is no longer present/i)).toBeVisible();
     await expectNoAccessibilityViolations(container);
   });
 

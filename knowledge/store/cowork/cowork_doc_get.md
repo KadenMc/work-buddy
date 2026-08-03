@@ -83,6 +83,15 @@ entry includes the claim's current `claim_status` and `claim_kind`. External,
 malformed, or otherwise unresolvable references return `null` for that metadata
 instead of promoting an unknown claim or failing the document read.
 
+Each open proposal includes typed `applicability`: `applicable` when its
+original passage is safely actionable, `target_changed` when that passage is
+missing or ambiguous, and `unknown` when no current projection proof is
+available. Reanchored results may include the current projection and structured
+head hashes plus resolved offsets. `base_ok` remains only a rolling
+compatibility alias for `applicability.status == "applicable"`; it no longer
+means that the proposal's whole-document base hash equals the managed-file
+baseline.
+
 Provenance classification is conservative. `ai_confirmed` requires the durable
 combination of agent-authored proposal provenance and a human-accepted
 replacement span. An authorship and human-review attestation for imported or

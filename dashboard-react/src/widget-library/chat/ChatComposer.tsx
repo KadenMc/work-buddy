@@ -66,6 +66,7 @@ export function ChatComposer({
 }: ChatComposerProps) {
   const [draft, setDraft] = useState(initialValue);
   const [busy, setBusy] = useState(false);
+  const submittingRef = useRef(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const isSending = sending || busy;
   const effectiveDisabled =
@@ -122,11 +123,16 @@ export function ChatComposer({
       value.length === 0 ||
       effectiveDisabled ||
       isSending ||
+      submittingRef.current ||
       submissionDisabled ||
       executionBlocksSend
     ) {
       return;
     }
+    // React state does not update synchronously. Guard the imperative submit
+    // path too, so Enter plus click (or two submit events in one tick) cannot
+    // dispatch the same draft twice before the disabled state renders.
+    submittingRef.current = true;
     setBusy(true);
     try {
       await onSend(value);
@@ -138,6 +144,7 @@ export function ChatComposer({
     } catch {
       // Retain the draft. The panel surfaces the failure through errorMessage.
     } finally {
+      submittingRef.current = false;
       setBusy(false);
     }
   };

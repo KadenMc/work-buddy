@@ -121,6 +121,12 @@ export interface ChatConversationSnapshot {
 export interface ChatSendInput {
   readonly value: string;
   readonly inReplyTo?: string;
+  /**
+   * Caller-stable identity for this authored turn. Providers must preserve it
+   * across transport retries so an uncertain acknowledgement cannot duplicate
+   * the durable message.
+   */
+  readonly messageId?: string;
   /** Omitted for ordinary Chat; present only after explicit context capture. */
   readonly context?: ChatActionSnapshotContext;
 }

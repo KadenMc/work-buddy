@@ -298,6 +298,10 @@ def test_capture_compaction_returns_exact_projection_receipt(seeded):
     assert status == 200
     assert payload["projection_sha256"] == document.content_sha256
     assert payload["compacted_projection_sha256"] == projection_sha256
+    assert (
+        store.resolve_blob_path(f"blobs/{projection_sha256}").read_bytes()
+        == projection
+    )
     assert ydoc_store.projection_receipt_matches(
         store,
         receipt_id=payload["projection_receipt_id"],

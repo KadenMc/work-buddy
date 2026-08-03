@@ -42,6 +42,10 @@ class ConversationLeaseLost(RuntimeError):
     """The supplied consumer generation no longer owns an open conversation."""
 
 
+class UserMessageIdConflictError(sqlite3.IntegrityError):
+    """A caller-stable user-message id was reused for a different payload."""
+
+
 # ---------------------------------------------------------------------------
 # Connection / schema
 # ---------------------------------------------------------------------------
@@ -749,17 +753,35 @@ def _insert_user_message_locked(
     if row is None:
         raise sqlite3.IntegrityError("user message insert was ignored unexpectedly")
     existing = ConversationMessage.from_row(dict(row))
+    return _validate_user_message_replay(
+        existing,
+        conversation_id=user_msg.conversation_id,
+        content=user_msg.content,
+        context=user_msg.context,
+    ), False
+
+
+def _validate_user_message_replay(
+    existing: ConversationMessage,
+    *,
+    conversation_id: str,
+    content: str,
+    context: Mapping[str, Any] | None,
+) -> ConversationMessage:
+    """Return an identical caller-keyed replay or raise a typed conflict."""
+
+    expected_context = dict(context) if context is not None else None
     if (
-        existing.conversation_id != user_msg.conversation_id
+        existing.conversation_id != conversation_id
         or existing.role != "user"
-        or existing.content != user_msg.content
+        or existing.content != content
         or existing.message_type != "text"
-        or existing.context != user_msg.context
+        or existing.context != expected_context
     ):
-        raise sqlite3.IntegrityError(
+        raise UserMessageIdConflictError(
             "message_id was reused for different user message content"
         )
-    return existing, False
+    return existing
 
 
 def respond_to_message_with_user_message(
@@ -788,6 +810,26 @@ def respond_to_message_with_user_message(
             if own_conn:
                 conn.rollback()
             return None
+
+        # A transport retry can arrive after the original request answered the
+        # question but before its HTTP acknowledgement reached the caller.
+        # Recognize that durable authored turn before consulting pending state;
+        # this also prevents a replay from consuming a newer question.
+        if user_message_id is not None:
+            replay_row = conn.execute(
+                "SELECT * FROM messages WHERE message_id = ?",
+                (user_message_id,),
+            ).fetchone()
+            if replay_row is not None:
+                replay = _validate_user_message_replay(
+                    ConversationMessage.from_row(dict(replay_row)),
+                    conversation_id=conversation_id,
+                    content=response,
+                    context=context,
+                )
+                if own_conn:
+                    conn.commit()
+                return replay
         question = conn.execute(
             """SELECT * FROM messages
                WHERE message_id = ? AND conversation_id = ? AND status = 'pending'""",

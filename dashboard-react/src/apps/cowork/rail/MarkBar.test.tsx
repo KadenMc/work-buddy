@@ -186,7 +186,7 @@ describe("MarkBar edit verbs", () => {
     });
   });
 
-  it("disables all but reject and defer on a stale base and states the reason", () => {
+  it("disables only text mutation when the original passage cannot be placed", () => {
     const cbs = handlers();
     render(
       <MarkBar
@@ -194,10 +194,10 @@ describe("MarkBar edit verbs", () => {
         {...cbs}
       />,
     );
-    expect(screen.getByText(/document changed after this was proposed/i)).toBeVisible();
+    expect(screen.getByText(/original passage cannot be placed safely/i)).toBeVisible();
     expect(screen.getByRole("button", { name: "Accept" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Amend" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Redirect" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Redirect" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Reject" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Defer" })).toBeEnabled();
   });

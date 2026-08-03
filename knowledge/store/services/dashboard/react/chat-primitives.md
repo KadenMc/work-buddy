@@ -26,6 +26,12 @@ dev_notes: |-
 
   `ConversationChat` keys the panel by opaque conversation id so composer state cannot leak when a mounted host changes conversations. Keep host-persisted drafts scoped at least as narrowly. While an acknowledged user turn awaits a reply, keep the textbox available for drafting but disable Send, Enter submission, the execution picker, and structured Yes/No or choice responses. A terminal stopped/no-response state restores submission; do not require a host lifecycle control.
 
+  `ConversationChat` owns one caller-stable `messageId` per logical authored
+  turn. It allocates the ID before host preparation, prevents `prepareSend`
+  from replacing it, and retains the exact prepared envelope across an
+  uncertain transport retry. Clear that envelope only after acknowledged
+  success or when the provider, conversation, or submitted draft changes.
+
   Keep transport out of `widget-library/chat`. The generic same-origin HTTP implementation lives at `dashboard-react/src/dashboard/conversations/`; App adapters inject it through the provider seam.
 
   Keep `ChatConversationProvider` and `ChatExecutionProfileProvider` separate. Transcript loading/sending must not acquire provider discovery, selection, revision, or agent-restart semantics. A host opts into execution controls explicitly and owns the consequence copy for a live switch.
@@ -45,7 +51,7 @@ Reusable React chat components for conversational surfaces in the React dashboar
 - **ChatPanel**: message log plus composer with a header slot and the standard host states, including a read-only banner. Forwards the composer's optional `initialValue` and `onDraftChange` draft seam, so a host can retain the unsent draft across reloads.
 - **ChatPanelState**: the canonical loading, empty, or error shell for a host that does not yet have a ready conversation. The host supplies state kind, direct copy, and at most one action without recreating panel markup or importing private chat styles.
 - **ChatMessageList**: author attribution, timestamps, unread boundary with scroll lock and jump-to-latest, inline choice and boolean answers, typing indicator, and the terminal **No response received.** notice. A turn authored in the mounted surface is brought into view even when ordinary incoming-message scroll lock is active.
-- **ChatComposer**: Enter submits, Shift plus Enter inserts a newline, and the draft is retained on send failure. After delivery acknowledgement, the draft clears because the canonical user bubble is visible. While that turn awaits a reply, the textbox can hold the next draft but submission and execution selection remain disabled. It grows with its content and enables its own scrollbar only after reaching the CSS height cap. Optional draft-observation seam: `initialValue` seeds the draft once on mount and `onDraftChange` fires on every edit (empty string after a successful send), so a host can persist the unsent draft and arm an unsaved-work guard while the composer keeps owning the text state.
+- **ChatComposer**: Enter submits, Shift plus Enter inserts a newline, and the draft is retained on send failure. After delivery acknowledgement, the draft clears because the canonical user bubble is visible. While that turn awaits a reply, the textbox can hold the next draft but submission and execution selection remain disabled. A synchronous submit guard prevents Enter-plus-click or two same-tick submit events from dispatching one draft twice before React paints the disabled state. It grows with its content and enables its own scrollbar only after reaching the CSS height cap. Optional draft-observation seam: `initialValue` seeds the draft once on mount and `onDraftChange` fires on every edit (empty string after a successful send), so a host can persist the unsent draft and arm an unsaved-work guard while the composer keeps owning the text state.
 - **ChatExecutionPicker**: an optional, compact **Run with** control that shows
   one atomic provider/model choice grouped by provider. Server-authored
   availability and descriptions stay visible and accessible; unavailable
@@ -108,7 +114,15 @@ latest assistant turn as idle even when its long-lived driver remains active.
 The terminal presentation is informational and recoverable through ordinary
 composition; there is no shared Start or Restart control.
 
-Message identity: the endpoint serializes message ids as `message_id`, which the mapping prefers. A bare `id` is accepted as a fixture-side fallback and a positional id is the last resort.
+Outbound message identity is caller-stable. The shared surface generates
+`message_id` once per logical authored turn before host preparation and reuses
+the exact prepared envelope after an uncertain acknowledgement. An identical
+server replay returns the original durable user turn; reuse for different
+conversation content or context returns typed `message_id_conflict`. An exact
+question-response retry is recognized from its durable user-message ID before
+pending-question lookup, so it cannot consume a later question. Inbound mapping
+still prefers `message_id`, accepts bare `id` only as a fixture fallback, and
+uses positional identity last.
 
 Assistant messages may include server-verified producer provenance. The shared
 mapping renders its provider/model labels from the durable message, never from

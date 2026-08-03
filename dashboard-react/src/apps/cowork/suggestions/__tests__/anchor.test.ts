@@ -73,4 +73,45 @@ describe("resolveQuoteAnchor", () => {
     });
     expect(range).not.toBeNull();
   });
+
+  it("maps canonical Markdown hard-break whitespace to visible editor text", () => {
+    editor = makeSuggestionEditor({ content: "<p>the methods<br>section follows</p>" });
+    const range = resolveQuoteAnchor(editor.state.doc, {
+      exact: "methods  \r\nsection",
+      prefix: "the ",
+      suffix: " follows",
+    });
+    expect(range).not.toBeNull();
+    const resolved = range as { from: number; to: number };
+    expect(editor.state.doc.textBetween(resolved.from, resolved.to, "\n", "\n").replace(/\s+/gu, " "))
+      .toBe("methods section");
+  });
+
+  it("maps canonical blockquote continuation syntax without guessing", () => {
+    editor = makeSuggestionEditor({
+      content: "<blockquote><p>Keep the idea at<br>the centre.</p></blockquote>",
+    });
+    const range = resolveQuoteAnchor(editor.state.doc, {
+      exact: "at  \r\n> the centre.",
+      prefix: "idea ",
+      suffix: "",
+    });
+    expect(range).not.toBeNull();
+    const resolved = range as { from: number; to: number };
+    expect(editor.state.doc.textBetween(resolved.from, resolved.to, "\n", "\n").replace(/\s+/gu, " "))
+      .toBe("at the centre.");
+  });
+
+  it("keeps Markdown-visible fallback ambiguous when context cannot choose", () => {
+    editor = makeSuggestionEditor({
+      content: "<blockquote><p>at<br>the centre. then at<br>the centre.</p></blockquote>",
+    });
+    expect(
+      resolveQuoteAnchor(editor.state.doc, {
+        exact: "at  \n> the centre.",
+        prefix: "",
+        suffix: "",
+      }),
+    ).toBeNull();
+  });
 });

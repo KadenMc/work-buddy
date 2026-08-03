@@ -171,6 +171,7 @@ describe("HttpChatConversationProvider", () => {
 
     const snapshot = await provider.sendMessage("c1", {
       value: "please tighten this",
+      messageId: "chat-user-stable-1",
     });
 
     const postCall = fetchImpl.mock.calls.find(
@@ -179,7 +180,10 @@ describe("HttpChatConversationProvider", () => {
     expect(postCall?.[0]).toBe("/api/conversations/c1/respond");
     expect(
       JSON.parse((postCall?.[1] as RequestInit).body as string),
-    ).toEqual({ value: "please tighten this" });
+    ).toEqual({
+      value: "please tighten this",
+      message_id: "chat-user-stable-1",
+    });
     expect(snapshot.messages.map((message) => message.content)).toEqual([
       "please tighten this",
       "On it.",

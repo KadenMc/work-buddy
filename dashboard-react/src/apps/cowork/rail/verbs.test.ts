@@ -90,7 +90,7 @@ describe("verb label to gesture-kind mapping (section 1.5)", () => {
   });
 });
 
-describe("base_ok stale-gate decidability (S6)", () => {
+describe("proposal target applicability", () => {
   it("allows every verb on a fresh base", () => {
     const fresh = proposal({ baseOk: true });
     for (const verb of EDIT_VERBS) {
@@ -98,12 +98,12 @@ describe("base_ok stale-gate decidability (S6)", () => {
     }
   });
 
-  it("allows only reject and defer on a stale base", () => {
+  it("blocks only text mutation when the target is unavailable", () => {
     const stale = proposal({ baseOk: false });
     expect(isVerbDecidable(stale, "confirm")).toBe(false);
     expect(isVerbDecidable(stale, "edit_confirm")).toBe(false);
-    expect(isVerbDecidable(stale, "redirect")).toBe(false);
-    expect(isVerbDecidable(stale, "endorse")).toBe(false);
+    expect(isVerbDecidable(stale, "redirect")).toBe(true);
+    expect(isVerbDecidable(stale, "endorse")).toBe(true);
     expect(isVerbDecidable(stale, "reject_plain")).toBe(true);
     expect(isVerbDecidable(stale, "reject_as_false")).toBe(true);
     expect(isVerbDecidable(stale, "reject_as_preference")).toBe(true);

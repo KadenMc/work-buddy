@@ -283,8 +283,10 @@ describe("CoworkChatPanel", () => {
     const post = fetchMock.mock.calls.find(
       (call) => call[1]?.method === "POST",
     );
-    expect(JSON.parse((post?.[1] as RequestInit).body as string)).toEqual({
+    const postedBody = JSON.parse((post?.[1] as RequestInit).body as string);
+    expect(postedBody).toEqual({
       value: "Focus here.",
+      message_id: expect.stringMatching(/^chat-user-/u),
       context: {
         kind: "action_snapshot",
         action_snapshot_id: context.actionSnapshotId,

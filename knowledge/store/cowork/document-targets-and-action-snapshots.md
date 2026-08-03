@@ -132,6 +132,22 @@ derive Markdown from the snapshot; that would require a server-side Yjs runtime
 and the canonical serializer. The browser remains the trusted serializer while
 the server owns concurrency, durable binding, target containment, and egress.
 
+## Review applicability
+
+The operational projection receipt is also Review's proof boundary. Before a
+sitting, the editor compacts the current Y.Doc snapshot and canonical Markdown
+together. The server stores the verified UTF-8 projection bytes
+content-addressably before publishing the receipt. The receipt is current only
+while its document, Y.Doc generation, snapshot, structured head, and projection
+digest all match live state.
+
+A proposal drafted against another structured head may still apply when its
+immutable quote selector reanchors uniquely in that receipt-bound projection
+using exact-first, whitespace-tolerant matching. A missing or ambiguous target
+is reported as a target-placement problem. A missing, invalid, or outdated
+projection receipt yields unknown applicability instead of claiming that the
+whole document is simply older.
+
 ## Chat consumption
 
 An ordinary authored Chat message inherits Working on and stores a safe

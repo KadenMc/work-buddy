@@ -3,7 +3,7 @@
  * same way in the stream, the groups, and the queue). The card is selectable
  * (selecting it points the mark bar at it), it names its anchor with a
  * scroll-to affordance (the degrade path when true alignment is not wired), and
- * it surfaces the stale-base and staged-decision states with a non-color
+ * it surfaces target-placement and staged-decision states with a non-color
  * encoding as well as color (SP-6 G3).
  */
 
@@ -35,6 +35,27 @@ function kindToken(proposal: ReviewProposal): string {
   return "insertion";
 }
 
+function placementMessage(proposal: ReviewProposal): string | null {
+  if (proposal.applicability?.status === "target_changed") {
+    if (proposal.applicability.reason === "target_ambiguous") {
+      return "Original passage now appears more than once";
+    }
+    if (proposal.applicability.reason === "target_missing") {
+      return "Original passage is no longer present";
+    }
+    return "Original passage changed";
+  }
+  if (proposal.applicability?.status === "unknown") {
+    return "Original passage could not be verified";
+  }
+  // Compatibility with a server that predates typed applicability. Avoid the
+  // false claim that the whole document is simply an older version.
+  if (proposal.applicability === undefined && !proposal.baseOk) {
+    return "Original passage could not be located safely";
+  }
+  return null;
+}
+
 export function ProposalCard({
   proposal,
   selected,
@@ -44,6 +65,7 @@ export function ProposalCard({
   cardRef,
 }: ProposalCardProps) {
   const token = kindToken(proposal);
+  const placementProblem = placementMessage(proposal);
   return (
     <li
       ref={cardRef}
@@ -51,7 +73,7 @@ export function ProposalCard({
       data-kind={token}
       data-selected={selected ? "true" : undefined}
       data-staged={staged !== undefined ? "true" : undefined}
-      data-stale={!proposal.baseOk ? "true" : undefined}
+      data-stale={placementProblem !== null ? "true" : undefined}
     >
       <div className="wb-cowork-rail__card-head">
         <span className="wb-cowork-rail__card-kind" data-kind={token}>
@@ -107,9 +129,9 @@ export function ProposalCard({
 
       <p className="wb-cowork-rail__card-rationale">{proposal.rationale}</p>
 
-      {!proposal.baseOk ? (
+      {placementProblem !== null ? (
         <p className="wb-cowork-rail__card-badge is-stale">
-          Based on an older version — reject or defer
+          {placementProblem}
         </p>
       ) : null}
 

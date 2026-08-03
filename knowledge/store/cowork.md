@@ -28,6 +28,12 @@ dev_notes: |
 
   A document conversation ID is opaque and server-issued. GET binding inspection is read-only. Preparing Chat may create the canonical binding and pin the displayed execution selection, but it must not start a model. Persisting an authored Chat, feedback, routing, or Co-think discussion turn automatically wakes or starts the driver. The driver receives durable user turns through a generation-scoped lease/cursor inbox and acknowledges each message only after handling it. Driver writes, questions, proposals, and comments carry the same generation fence so a stopped, restarted, or retired generation cannot mutate the document.
 
+  The shared Chat surface assigns one caller-stable message ID before Co-work
+  freezes target context. An uncertain delivery retries the exact prepared
+  content, context, and ID. Identical replay returns the original durable turn;
+  conflicting reuse is rejected. Distinct authored sends remain distinct even
+  when their text happens to match.
+
   The provider/model selection is durable conversation authority, not browser settings. Non-executing Chat binding pins the validated server default returned to the picker, so the first authored turn cannot run on an undisplayed target. A live change is one revision-checked atomic pair and restarts only the document driver; transcript, draft, binding, and document state remain. Copy producer attribution from the exact active lease, never from request fields or the conversation's current selection.
 
   On a changed selection, raw lease status is the fencing authority: any persisted `starting` or `running` lease must be stopped before the new selection is launched even if a stale heartbeat or failed liveness probe projects it as stopped. The write guard accepts raw active leases, so using only presentation status would leave the old generation authorized.
@@ -41,6 +47,12 @@ dev_notes: |
   Origin filtering is not persistence isolation: a later human Yjs update can causally depend on an earlier filtered struct. Never project a pending proposal into the live collaborative Y.Doc, even under a non-human origin. Sitting materialization starts from a clean clone of the canonical structured head, joins admitted decisions to the authoritative proposal catalog by ID and canonical hash, resolves every materializing anchor against that initial clone, rejects missing, mismatched, unresolved, duplicate, or overlapping edits, and applies confirmed changes in reverse document order. Explicit Save fails closed if tracked-suggestion schema artifacts somehow appear in the live document.
 
   Successful and response-recovery sitting paths do not adopt the prepared clone directly. They pull the authoritative committed state, verify its structured head, advance the managed projection, and then refresh the review projection. A document with `source.writeback_policy=never` commits that projection internally and never publishes it over the import source artifact. The canonical-state guard runs before preparation and after the server refresh. If a human edit advances the local generation while the sitting is in flight, the new baseline is retained but the editor remains unsaved rather than falsely claiming to be current.
+
+  Before sitting admission, the editor publishes the exact current Y.Doc
+  snapshot and canonical Markdown together, with bounded recapture if an edit
+  races the checkpoint. The server persists the verified projection blob before
+  its receipt and may pass an internal prevalidated applicability proof only
+  while the sitting's expected-head and snapshot checks still hold.
 
   Paste persistence and paste provenance are related but cannot be committed in one browser transaction: Yjs state, the synchronous local-storage intent journal, the document-scoped IndexedDB provenance outbox, and the server Truth store are separate authorities. The journal is the smallest recovery barrier across that gap, not an atomicity claim. Never delete a frozen provenance request before a confirmed server receipt, and never retarget one implicitly after an absent, ambiguous, or changed target. An actor-binding rejection is the exception that requires explicit recovery: refetch the current actor, invalidate every stale frozen request, rotate its idempotency key, reset its determination to unknown, and require a fresh user attestation before sending.
 ---
@@ -200,6 +212,11 @@ navigation, and a shared local link restore the same working context. Document
 selection and folder closing do not imply a file write. Retiring a document
 removes it from the active catalog while preserving any source artifact,
 writeback file, managed projections, and durable history.
+After a route resolves, the dashboard uses the first eight characters of
+`store_id` only when that prefix uniquely identifies one entry in the
+authoritative Folder catalog. Exact full IDs remain valid, and a collision
+keeps the full ID. The prefix is presentation-only: provider state and every
+API request use the full permanent store identity.
 For a detached import, removal first retries and flushes pending edits, validates
 the canonical head, and compacts the Yjs tail into a durable internal snapshot.
 It may therefore retain a newer structured head than its latest managed
@@ -354,6 +371,13 @@ the old one from sending messages, asking questions, proposing edits, or adding
 comments. Ordinary composer messages never answer a pending structured question
 implicitly; a structured response names the exact question it answers.
 
+Each authored Chat turn receives one caller-stable message ID before Co-work
+freezes its target context. If delivery acknowledgement is uncertain, the exact
+prepared content, context, and ID are retried together. An identical replay
+resolves to the existing durable turn rather than creating another inbox item.
+This delivery idempotency complements the generation-scoped lease and cursor;
+it does not collapse distinct user sends merely because their text matches.
+
 The driver runs outside the selected folder and receives document authority only
 through a generation-scoped, server-enforced MCP session. Neither provider gets
 the folder path or project instructions through its working directory, command
@@ -409,3 +433,12 @@ a file. The claims a document expresses live in the folder's scoped Truth ledger
 through expression links. Internally, the engine still uses terms such as scope
 root, store ID, and Truth store; the dashboard consistently calls the thing the
 user selected a **folder**.
+
+Proposal base hashes remain immutable drafting lineage; they are not a
+whole-document applicability veto. Review accepts a matching structured head
+as current and otherwise requires the immutable quote selector to resolve
+uniquely against a receipt-bound current canonical Markdown projection. An
+unrelated edit may therefore move a proposal without invalidating it. A
+missing, ambiguous, or unverifiable passage blocks only **Accept** and
+**Amend**. **Reject**, **Dismiss**, **Defer**, **Redirect**, and **Endorse**
+remain proposal-level decisions because they do not apply text.

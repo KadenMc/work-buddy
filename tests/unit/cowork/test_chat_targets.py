@@ -275,6 +275,7 @@ def test_targeted_turn_is_bound_to_running_agent_and_exact_snapshot(
     message = chat_targets.post_targeted_chat_message(
         conversation_id=binding.conversation_id,
         content="Please focus on this frozen version.",
+        message_id="caller-stable-targeted-turn",
         context={
             "kind": "action_snapshot",
             "action_snapshot_id": context["action_snapshot_id"],
@@ -282,6 +283,18 @@ def test_targeted_turn_is_bound_to_running_agent_and_exact_snapshot(
             "document_id": seeded["document"].id,
         },
     )
+    replay = chat_targets.post_targeted_chat_message(
+        conversation_id=binding.conversation_id,
+        content="Please focus on this frozen version.",
+        message_id="caller-stable-targeted-turn",
+        context={
+            "kind": "action_snapshot",
+            "action_snapshot_id": context["action_snapshot_id"],
+            "store_id": seeded["store_id"],
+            "document_id": seeded["document"].id,
+        },
+    )
+    assert replay.message_id == message.message_id
     assert message.context == context
     received = conversation_store.receive_user_message(
         binding.conversation_id,

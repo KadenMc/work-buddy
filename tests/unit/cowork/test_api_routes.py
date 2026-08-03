@@ -231,8 +231,50 @@ def test_get_returns_open_proposals_and_hashes(client, seeded, make_proposal):
     assert entry["proposal_id"] == proposal.id
     assert entry["canonical_sha256"] == proposal.canonical_sha256
     assert entry["base_ok"] is True
+    assert entry["applicability"] == {
+        "status": "applicable",
+        "reason": "same_materialized_baseline",
+        "current_structured_head_sha256": payload["structured_head_sha256"],
+    }
     assert entry["quote_anchor"]["exact"] == DOC_QUOTE
     assert entry["kind"] == "edit"
+
+
+def test_get_uses_live_structured_head_not_materialized_baseline_for_applicability(
+    client, seeded
+):
+    store = seeded["store"]
+    document = seeded["document"]
+    head = ydoc_store.current_structured_head(
+        store,
+        document_id=document.id,
+        snapshot_sha256=document.ydoc_snapshot_sha256,
+    )
+    proposal = proposals.propose_edit(
+        store,
+        document_id=document.id,
+        base_content_sha256=sha256_text("a newer browser projection"),
+        base_structured_head_sha256=head,
+        selector=CompositeSelector(exact=DOC_QUOTE),
+        quote_exact=DOC_QUOTE,
+        replacement="A clearer sentence.",
+        actor=AGENT,
+        at=NOW,
+    )
+
+    response = client.get(
+        _url(f"/api/truth/doc/{document.id}", store.store_id)
+    )
+
+    assert response.status_code == 200
+    entry = next(
+        item
+        for item in response.get_json()["open_proposals"]
+        if item["proposal_id"] == proposal.id
+    )
+    assert entry["base_ok"] is True
+    assert entry["applicability"]["status"] == "applicable"
+    assert entry["applicability"]["reason"] == "same_structured_head"
 
 
 def test_list_and_get_distinguish_recorded_import_source_from_observed_file(

@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -95,6 +95,25 @@ describe("ChatComposer", () => {
 
     await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
     expect(input).toHaveValue("keep me");
+  });
+
+  it("guards two submit events in the same render turn", async () => {
+    let acknowledge: (() => void) | undefined;
+    const pending = new Promise<void>((resolve) => {
+      acknowledge = resolve;
+    });
+    const onSend = vi.fn(() => pending);
+    render(<ChatComposer onSend={onSend} initialValue="one durable turn" />);
+    const form = screen.getByRole("textbox").closest("form");
+    expect(form).not.toBeNull();
+
+    act(() => {
+      form?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      form?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+
+    expect(onSend).toHaveBeenCalledTimes(1);
+    await act(async () => acknowledge?.());
   });
 
   it("seeds from initialValue and reports the live draft, empty after send", async () => {

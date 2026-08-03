@@ -215,6 +215,9 @@ export class HttpChatConversationProvider implements ChatConversationProvider {
       // plain composer turn omits it and remains an ordinary user message.
       body: JSON.stringify({
         value: input.value,
+        ...(input.messageId === undefined
+          ? {}
+          : { message_id: input.messageId }),
         ...(input.inReplyTo === undefined
           ? {}
           : { in_reply_to: input.inReplyTo }),

@@ -76,9 +76,9 @@ _RESULT_BY_VERB = {
 
 # Verbs that apply an accepted edit to the file and materialize this sitting.
 _APPLY_VERBS = frozenset({"confirm", "edit_confirm"})
-# Verbs that require a fresh base (the stale-base gate, S6): apply and the
-# forward-routing verbs. Reject verbs and defer stay decidable on a stale base.
-_BASE_REQUIRED_VERBS = frozenset({"confirm", "edit_confirm", "redirect", "endorse"})
+# Only verbs that mutate the document require a safely located target.
+# Redirect and Endorse act on the proposal record, not its text placement.
+_BASE_REQUIRED_VERBS = frozenset({"confirm", "edit_confirm"})
 _ALL_VERBS = frozenset(_VERB_GESTURE_KIND)
 
 _DECISION_ERRORS = (TransitionError, GestureError, InvariantViolation)
@@ -149,6 +149,7 @@ def _dispatch(
     at: str | None,
     conn: sqlite3.Connection | None = None,
     current_structured_head_sha256: str | None = None,
+    applicability_prevalidated: bool = False,
 ) -> Any:
     proposal_id = proposal.id
     if verb == "confirm":
@@ -160,6 +161,7 @@ def _dispatch(
             at=at,
             conn=conn,
             current_structured_head_sha256=current_structured_head_sha256,
+            applicability_prevalidated=applicability_prevalidated,
         )
     if verb == "edit_confirm":
         return proposals.accept_proposal(
@@ -171,6 +173,7 @@ def _dispatch(
             at=at,
             conn=conn,
             current_structured_head_sha256=current_structured_head_sha256,
+            applicability_prevalidated=applicability_prevalidated,
         )
     if verb == "reject_plain":
         return proposals.reject_proposal(
@@ -306,6 +309,7 @@ def decide_one(
     at: str | None = None,
     conn: sqlite3.Connection | None = None,
     current_structured_head_sha256: str | None = None,
+    applicability_prevalidated: bool = False,
 ) -> ItemOutcome:
     """Validate, mint one gesture, and commit one mark, independent of the rest."""
     proposal_id = str(item.get("proposal_id") or "").strip()
@@ -332,14 +336,12 @@ def decide_one(
             document_id=document.id,
             snapshot_sha256=document.ydoc_snapshot_sha256,
         )
-    structured_base_ok = (
-        proposal.base_structured_head_sha256 is None
-        or observed_head == proposal.base_structured_head_sha256
-    )
-    base_ok = (
-        proposal.base_content_sha256 == document.content_sha256
-        and structured_base_ok
-    )
+    if applicability_prevalidated:
+        base_ok = True
+    elif proposal.base_structured_head_sha256 is not None:
+        base_ok = observed_head == proposal.base_structured_head_sha256
+    else:
+        base_ok = proposal.base_content_sha256 == document.content_sha256
 
     # I6 single-use binding: the shown hash must still equal the live payload.
     if supplied != proposal.canonical_sha256:
@@ -407,6 +409,7 @@ def decide_one(
             at,
             conn=conn,
             current_structured_head_sha256=observed_head,
+            applicability_prevalidated=applicability_prevalidated,
         )
     except _DECISION_ERRORS as exc:
         return _error(proposal_id, verb, base_ok, str(exc))

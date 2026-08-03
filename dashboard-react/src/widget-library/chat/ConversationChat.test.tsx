@@ -9,6 +9,7 @@ import type {
   ChatConversationProvider,
   ChatConversationSnapshot,
   ChatMessage,
+  ChatSendInput,
 } from "./contracts";
 
 const assistantMessage: ChatMessage = {
@@ -103,6 +104,7 @@ describe("ConversationChat", () => {
     expect(sendMessage).toHaveBeenCalledWith("c1", {
       value: "true",
       inReplyTo: "question-7",
+      messageId: expect.stringMatching(/^chat-user-/),
     });
   });
 
@@ -211,6 +213,56 @@ describe("ConversationChat", () => {
       ),
     ).toBeNull();
     expect(prepareSend).toHaveBeenCalledTimes(2);
+    expect(prepareSend.mock.calls[0]?.[0].messageId).toBe(
+      prepareSend.mock.calls[1]?.[0].messageId,
+    );
+  });
+
+  it("reuses the prepared envelope and message identity after an uncertain send", async () => {
+    const snapshot: ChatConversationSnapshot = {
+      conversationId: "c1",
+      status: "open",
+      agentLiveness: "alive",
+      messages: [],
+    };
+    const sendMessage = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Acknowledgement was lost."))
+      .mockResolvedValue(snapshot);
+    const chatProvider: ChatConversationProvider = {
+      loadConversation: vi.fn(async () => snapshot),
+      sendMessage,
+      subscribe: vi.fn(() => () => {}),
+    };
+    const prepareSend = vi.fn(async (input: ChatSendInput) => ({
+      ...input,
+      value: `${input.value} (prepared)`,
+    }));
+    render(
+      <ConversationChat
+        provider={chatProvider}
+        conversationId="c1"
+        title="Project chat"
+        prepareSend={prepareSend}
+      />,
+    );
+    const input = await screen.findByRole("textbox");
+    await userEvent.type(input, "Keep this exact turn");
+
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(await screen.findByText("Acknowledgement was lost.")).toBeVisible();
+    expect(input).toHaveValue("Keep this exact turn");
+
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(input).toHaveValue(""));
+
+    expect(prepareSend).toHaveBeenCalledTimes(1);
+    expect(sendMessage).toHaveBeenCalledTimes(2);
+    const first = sendMessage.mock.calls[0]?.[1];
+    const second = sendMessage.mock.calls[1]?.[1];
+    expect(first).toEqual(second);
+    expect(first?.messageId).toMatch(/^chat-user-/);
+    expect(first?.value).toBe("Keep this exact turn (prepared)");
   });
 
   it("has no accessibility violations with additive extensions", async () => {

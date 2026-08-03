@@ -15,6 +15,7 @@ from work_buddy.cowork import (
     reimport,
     retirement,
     sitting_lifecycle,
+    transport,
 )
 from work_buddy.cowork.file_importers import MARKDOWN_MAX_SOURCE_BYTES
 from work_buddy.cowork.lifecycle_state import inspect_lifecycle_state
@@ -332,6 +333,70 @@ def test_sitting_edit_confirm_admits_and_commits_empty_deletion(store_ctx):
         actor=HUMAN,
         snapshot=new_snapshot,
         snapshot_sha256=sha256_bytes(new_snapshot),
+        rendered_markdown=rendered.decode(),
+        rendered_sha256=sha256_bytes(rendered),
+    )
+
+    assert receipt["results"][0]["result"] == "applied"
+    assert (store_ctx["root"] / document.path).read_bytes() == rendered
+
+
+def test_sitting_reanchors_after_an_unrelated_structured_edit(store_ctx):
+    store = store_ctx["store"]
+    document, _source, _ = _ready(
+        store_ctx,
+        key="lifecycle-ready-reanchored-proposal",
+    )
+    old_head = ydoc_store.current_structured_head(
+        store,
+        document_id=document.id,
+        snapshot_sha256=document.ydoc_snapshot_sha256,
+    )
+    proposal = _proposal(store, document, old_head)
+    current_projection = b"# Lifecycle\n\nUnrelated preface. Original sentence.\n"
+    current_snapshot = b"YDOC:" + current_projection
+    pushed, status = transport.push_ydoc(
+        store,
+        document,
+        HUMAN,
+        body=transport.frame_segments([b"", current_snapshot, current_projection]),
+        base_structured_head_sha256=old_head,
+        base_ydoc_generation=documents.current_ydoc_generation(store, document.id),
+        compacted_snapshot_sha256=sha256_bytes(current_snapshot),
+        compacted_projection_sha256=sha256_bytes(current_projection),
+    )
+    assert status == 200
+    current_head = pushed["structured_head_sha256"]
+
+    intent, created = sitting_lifecycle.prepare_sitting(
+        store,
+        document_id=document.id,
+        actor=HUMAN,
+        items=[
+            {
+                "proposal_id": proposal.id,
+                "verb": "confirm",
+                "canonical_sha256": proposal.canonical_sha256,
+            }
+        ],
+        expected_file_sha256=document.content_sha256,
+        expected_structured_head_sha256=current_head,
+        idempotency_key="sitting-reanchored-proposal-0001",
+    )
+
+    assert created is True
+    assert intent.failed == ()
+    assert intent.admitted[0]["item"]["_applicability"]["reason"] == "reanchored"
+
+    rendered = b"# Lifecycle\n\nUnrelated preface. Replacement sentence.\n"
+    final_snapshot = b"YDOC:" + rendered
+    receipt, _ = sitting_lifecycle.commit_sitting(
+        store,
+        document_id=document.id,
+        intent_id=intent.id,
+        actor=HUMAN,
+        snapshot=final_snapshot,
+        snapshot_sha256=sha256_bytes(final_snapshot),
         rendered_markdown=rendered.decode(),
         rendered_sha256=sha256_bytes(rendered),
     )

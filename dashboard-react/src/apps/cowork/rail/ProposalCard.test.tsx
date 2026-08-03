@@ -78,9 +78,15 @@ describe("ProposalCard", () => {
     expect(document.querySelector(".wb-cowork-rail__card-quote")).toBeNull();
   });
 
-  it("shows the stale-base badge with a non-color text label when base_ok is false", () => {
-    renderCard({ proposal: proposal({ baseOk: false }) });
-    expect(screen.getByText("Based on an older version — reject or defer")).toBeVisible();
+  it("names the concrete target-placement problem without claiming whole-document staleness", () => {
+    renderCard({
+      proposal: proposal({
+        baseOk: false,
+        applicability: { status: "target_changed", reason: "target_missing" },
+      }),
+    });
+    expect(screen.getByText("Original passage is no longer present")).toBeVisible();
+    expect(screen.queryByText(/older version/iu)).toBeNull();
   });
 
   it("shows the staged verb badge", () => {

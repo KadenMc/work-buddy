@@ -69,6 +69,93 @@ def test_cowork_composer_turn_does_not_consume_pending_question(
     assert still_pending.message_id == pending.message_id
 
 
+def test_caller_stable_message_id_replays_once_and_conflicts_on_new_payload(
+    dashboard_client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from work_buddy.dashboard import service
+
+    conversation = _conversation()
+    monkeypatch.setattr(service, "_wake_persisted_cowork_turn", lambda _id: None)
+    endpoint = f"/api/conversations/{conversation.conversation_id}/respond"
+    authored = {
+        "value": "Persist this exact turn once.",
+        "message_id": "chat-user-stable-retry",
+    }
+
+    first = dashboard_client.post(endpoint, json=authored)
+    replay = dashboard_client.post(endpoint, json=authored)
+
+    assert first.status_code == replay.status_code == 200
+    assert first.get_json()["message_id"] == "chat-user-stable-retry"
+    assert replay.get_json()["message_id"] == "chat-user-stable-retry"
+    bundle = store.get_conversation_with_messages(conversation.conversation_id)
+    assert bundle is not None
+    user_turns = [
+        message for message in bundle["messages"] if message["role"] == "user"
+    ]
+    assert [message["message_id"] for message in user_turns] == [
+        "chat-user-stable-retry"
+    ]
+
+    conflict = dashboard_client.post(
+        endpoint,
+        json={
+            "value": "A different turn must not reuse that identity.",
+            "message_id": "chat-user-stable-retry",
+        },
+    )
+    assert conflict.status_code == 409
+    assert conflict.get_json()["code"] == "message_id_conflict"
+
+
+def test_exact_question_response_replays_after_acknowledgement_loss(
+    dashboard_client,
+) -> None:
+    conversation = _conversation(source="house_agent")
+    question = store.add_message(
+        conversation.conversation_id,
+        "agent",
+        "Proceed?",
+        message_type="question",
+        response_type="boolean",
+    )
+    assert question is not None
+    endpoint = f"/api/conversations/{conversation.conversation_id}/respond"
+    authored = {
+        "value": "yes",
+        "in_reply_to": question.message_id,
+        "message_id": "chat-user-question-retry",
+    }
+
+    first = dashboard_client.post(endpoint, json=authored)
+    replay = dashboard_client.post(endpoint, json=authored)
+
+    assert first.status_code == replay.status_code == 200
+    assert replay.get_json()["message_id"] == "chat-user-question-retry"
+    bundle = store.get_conversation_with_messages(conversation.conversation_id)
+    assert bundle is not None
+    assert [
+        message["message_id"]
+        for message in bundle["messages"]
+        if message["role"] == "user"
+    ] == ["chat-user-question-retry"]
+
+
+@pytest.mark.parametrize("message_id", ["", "   ", 42])
+def test_message_id_must_be_a_nonempty_string(
+    dashboard_client,
+    message_id: object,
+) -> None:
+    conversation = _conversation(source="house_agent")
+    response = dashboard_client.post(
+        f"/api/conversations/{conversation.conversation_id}/respond",
+        json={"value": "Hello", "message_id": message_id},
+    )
+    assert response.status_code == 400
+    assert "message_id" in response.get_json()["error"]
+
+
 def test_exact_reply_is_conversation_scoped_and_single_winner(
     dashboard_client,
 ) -> None:
@@ -172,6 +259,7 @@ def test_targeted_turn_uses_exact_cowork_context_dispatch(
         f"/api/conversations/{conversation.conversation_id}/respond",
         json={
             "value": "Use the exact working passage.",
+            "message_id": "targeted-user-stable-id",
             "context": durable_context,
         },
     )
@@ -181,6 +269,7 @@ def test_targeted_turn_uses_exact_cowork_context_dispatch(
         "conversation_id": conversation.conversation_id,
         "content": "Use the exact working passage.",
         "context": durable_context,
+        "message_id": "targeted-user-stable-id",
     }
     assert wake_calls == [conversation.conversation_id]
     assert response.get_json() == {

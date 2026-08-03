@@ -48,6 +48,11 @@ from work_buddy.cowork.paths import (
     resolve_markdown_path,
 )
 from work_buddy.cowork.policy import document_surface_allowed
+from work_buddy.cowork.proposal_applicability import (
+    ProposalApplicability,
+    assess_proposal_applicability,
+    load_current_projection,
+)
 from work_buddy.truth import documents, expressions, proposals, queries
 from work_buddy.truth.anchors import CompositeSelector
 from work_buddy.truth.contracts import Actor, InvariantViolation
@@ -244,7 +249,7 @@ def _open_proposal_entry(
     proposal,
     document: DocumentRecord,
     *,
-    structured_head_sha256: str | None,
+    applicability: ProposalApplicability,
 ) -> dict:
     refs = json.loads(proposal.claim_refs_json) if proposal.claim_refs_json else []
     return {
@@ -259,14 +264,10 @@ def _open_proposal_entry(
         "base_doc_sha256": proposal.base_content_sha256,
         "base_structured_head_sha256": proposal.base_structured_head_sha256,
         "canonical_sha256": proposal.canonical_sha256,
-        "base_ok": (
-            proposal.base_content_sha256 == document.content_sha256
-            and (
-                proposal.base_structured_head_sha256 is None
-                or proposal.base_structured_head_sha256
-                == structured_head_sha256
-            )
-        ),
+        # Compatibility alias for older dashboard bundles.  New clients use
+        # the typed target-level result below.
+        "base_ok": applicability.applicable,
+        "applicability": applicability.to_wire(),
         "status": "open",
         "fixes_ref": None,
         "claim_refs": refs,
@@ -551,6 +552,11 @@ def api_doc_get(document_id: str):
         else None
     )
     state = _drift_from_hash(document, current_file_sha256)
+    current_projection, projection_reason = load_current_projection(
+        store,
+        document,
+        structured_head_sha256=readiness_view["structured_head_sha256"],
+    )
 
     payload = {
         "document_id": document.id,
@@ -583,9 +589,15 @@ def api_doc_get(document_id: str):
             _open_proposal_entry(
                 item,
                 document,
-                structured_head_sha256=readiness_view[
-                    "structured_head_sha256"
-                ],
+                applicability=assess_proposal_applicability(
+                    item,
+                    document,
+                    structured_head_sha256=readiness_view[
+                        "structured_head_sha256"
+                    ],
+                    current_projection=current_projection,
+                    projection_unavailable_reason=projection_reason,
+                ),
             )
             for item in open_props
         ],

@@ -129,6 +129,42 @@ const widgetRequest = {
 describe("HttpCoworkProvider", () => {
   beforeEach(() => localStorage.clear());
 
+  it.each([
+    ["an existing full-ID URL", "465142ba386b4f6d84be621efe1425ca"],
+    ["a unique short-ID URL", "465142ba"],
+  ])("resolves %s to a full internal store identity", async (_label, urlStoreId) => {
+    const fullStoreId = "465142ba386b4f6d84be621efe1425ca";
+    const location = new MemoryLocation(`?store_id=${urlStoreId}`);
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith("/api/truth/cowork/folders?")) {
+        return json({
+          read_only: false,
+          folders: [{ ...folder, store_id: fullStoreId }],
+          diagnostics: [],
+        });
+      }
+      if (url.startsWith("/api/truth/doc/list?")) {
+        expect(new URL(url, "http://work-buddy.test").searchParams.get("store_id")).toBe(
+          fullStoreId,
+        );
+        return json({ docs: [] });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const provider = new HttpCoworkProvider({
+      location,
+      storage: localStorage,
+      client: new CoworkHttpClient(fetchImpl as typeof fetch),
+    });
+
+    const snapshot = await provider.loadView();
+
+    expect(snapshot.model.activeFolderStoreId).toBe(fullStoreId);
+    expect(snapshot.model.routeTarget).toEqual({ kind: "launcher", storeId: fullStoreId });
+    expect(location.search).toBe("?store_id=465142ba");
+  });
+
   it("keeps inspection tokens private and waits for confirmation before initializing a Folder", async () => {
     const location = new MemoryLocation();
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

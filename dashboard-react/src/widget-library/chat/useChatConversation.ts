@@ -32,6 +32,7 @@ export interface UseChatConversationResult {
     value: string,
     inReplyTo?: string,
     context?: ChatActionSnapshotContext,
+    messageId?: string,
   ): Promise<void>;
   /** Re-run the initial load after an error. */
   retry(): void;
@@ -178,6 +179,7 @@ export function useChatConversation(
       value: string,
       inReplyTo?: string,
       context?: ChatActionSnapshotContext,
+      messageId?: string,
     ) => {
       // Capture the binding this send belongs to. A send resolving after the
       // hook has rebound to another provider or conversation must not write
@@ -198,7 +200,7 @@ export function useChatConversation(
       if (active.loadInFlight) active.refreshQueued = true;
       setSending(true);
       setSendError(null);
-      const input: ChatSendInput = { value, inReplyTo, context };
+      const input: ChatSendInput = { value, inReplyTo, context, messageId };
       try {
         const next = await provider.sendMessage(conversationId, input);
         if (

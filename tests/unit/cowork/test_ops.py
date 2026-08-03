@@ -424,6 +424,7 @@ def test_propose_edit_opens_a_proposal_and_emits(cowork: dict[str, object]) -> N
     view = got["open_proposals"][0]
     assert view["kind"] == "edit"
     assert view["base_ok"] is True
+    assert view["applicability"]["status"] == "applicable"
     assert view["quote_anchor"]["exact"] == QUOTE
     assert view["producer"]["session_id"] == SESSION_ID
 

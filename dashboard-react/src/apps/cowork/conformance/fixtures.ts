@@ -1,8 +1,8 @@
 /**
  * Deterministic rail fixtures for the conformance suite. They derive from the
  * shipped demo scene so the proof exercises the same shapes the surface renders,
- * with one addition the demo scene lacks: a stale-base proposal, whose mark bar
- * disables every accept-family verb (S6). No production shape is invented here.
+ * with one addition the demo scene lacks: a proposal whose original passage is
+ * no longer present. No production shape is invented here.
  */
 
 import {
@@ -45,11 +45,16 @@ export const deletionProposal = (): ReviewProposal => proposalOfKind("deletion")
 export const flagProposal = (): ReviewProposal => proposalOfKind("flag");
 
 /**
- * A stale-base edit proposal. The document moved on since it was drafted, so
- * `baseOk` is false and only the reject family and Defer stay decidable.
+ * An edit whose immutable original passage no longer resolves. Accept and
+ * Amend are unavailable; record-level review decisions remain decidable.
  */
 export function staleBaseProposal(): ReviewProposal {
-  return { ...insertionProposal(), proposalId: "stale-1", baseOk: false };
+  return {
+    ...insertionProposal(),
+    proposalId: "stale-1",
+    baseOk: false,
+    applicability: { status: "target_changed", reason: "target_missing" },
+  };
 }
 
 /** The full demo review layer, for whole-rail renders. */
