@@ -32,6 +32,7 @@ from work_buddy.truth.contracts import (
     VALID_ACTOR_KINDS,
     VALID_STATUSES,
 )
+from work_buddy.truth.documents import retained_file_import_source_sha256
 from work_buddy.truth.identity import (
     canonical_json,
     claim_sha256,
@@ -49,11 +50,15 @@ from work_buddy.truth.profiles import (
     normalize_store_id,
     validate_profile,
 )
+from work_buddy.truth.provenance import (
+    attestation_canonical_sha256_from_record,
+    validate_attestation_components,
+)
 from work_buddy.truth.store import TruthStore
 
 
 FORMAT_NAME = "work-buddy.truth-ledger"
-FORMAT_VERSION = 7
+FORMAT_VERSION = 8
 OLDEST_FORMAT_VERSION = 1
 _IMPORT_STAGING_PREFIX = ".wbuddy-cowork-import-"
 
@@ -384,6 +389,32 @@ _RECORD_COLUMNS: Mapping[str, tuple[str, tuple[str, ...]]] = {
             "created_at",
             "created_by_kind",
             "created_by_ref",
+        ),
+    ),
+    "document_provenance_attestation": (
+        "document_provenance_attestations",
+        (
+            "id",
+            "document_id",
+            "target_kind",
+            "document_version_id",
+            "document_span_id",
+            "target_structured_head_sha256",
+            "authorship_kind",
+            "human_contributors_json",
+            "review_status",
+            "human_reviewers_json",
+            "source_kind",
+            "source_json",
+            "basis_kind",
+            "basis_ref",
+            "supersedes_id",
+            "idempotency_key",
+            "canonical_sha256",
+            "created_at",
+            "attested_by_kind",
+            "attested_by_ref",
+            "attested_by_meta_json",
         ),
     ),
     "expression": (
@@ -773,6 +804,7 @@ _ID_KEY_TYPES = frozenset(
         "document",
         "document_version",
         "document_span",
+        "document_provenance_attestation",
         "expression",
         "proposal",
         "proposal_status_event",
@@ -1220,6 +1252,48 @@ def _validate_record_values(item: _DataRecord) -> None:
         if row["actor_kind"] not in VALID_ACTOR_KINDS:
             raise TruthImportError("document version actor kind is invalid")
         _timestamp(row["created_at"], "document_version.created_at")
+        return
+
+    if record_type == "document_provenance_attestation":
+        _digest(
+            row["target_structured_head_sha256"],
+            "document provenance target_structured_head_sha256",
+        )
+        _digest(
+            row["canonical_sha256"],
+            "document provenance canonical_sha256",
+        )
+        _nonempty_text(
+            row["idempotency_key"],
+            "document provenance idempotency_key",
+        )
+        if row["basis_ref"] is not None:
+            _nonempty_text(row["basis_ref"], "document provenance basis_ref")
+        _timestamp(row["created_at"], "document provenance created_at")
+        try:
+            validate_attestation_components(
+                target_kind=row["target_kind"],
+                document_version_id=row["document_version_id"],
+                document_span_id=row["document_span_id"],
+                authorship_kind=row["authorship_kind"],
+                human_contributors=row["human_contributors_json"],
+                review_status=row["review_status"],
+                human_reviewers=row["human_reviewers_json"],
+                source_kind=row["source_kind"],
+                source=row["source_json"],
+                basis_kind=row["basis_kind"],
+                basis_ref=row["basis_ref"],
+                attested_by_kind=row["attested_by_kind"],
+                attested_by_ref=row["attested_by_ref"],
+                attested_by_meta=row["attested_by_meta_json"],
+            )
+            recomputed = attestation_canonical_sha256_from_record(row)
+        except InvariantViolation as exc:
+            raise TruthImportError(str(exc)) from exc
+        if recomputed != row["canonical_sha256"]:
+            raise TruthImportError(
+                "document provenance canonical_sha256 does not match its record"
+            )
         return
 
     if record_type == "expression":
@@ -2046,6 +2120,53 @@ def _validate_foreign_refs(records: tuple[_DataRecord, ...]) -> None:
             require_prior(
                 "document", row["document_id"], item.seq, "document_version.document_id"
             )
+        elif item.record_type == "document_provenance_attestation":
+            require_prior(
+                "document",
+                row["document_id"],
+                item.seq,
+                "document provenance.document_id",
+            )
+            target_type = row["target_kind"]
+            target_key = (
+                row["document_version_id"]
+                if target_type == "document_version"
+                else row["document_span_id"]
+            )
+            target = require_prior(
+                target_type,
+                target_key,
+                item.seq,
+                f"document provenance.{target_type}_id",
+            )
+            if target["document_id"] != row["document_id"]:
+                raise TruthImportError(
+                    "document provenance target belongs to another document"
+                )
+            if (
+                target_type == "document_version"
+                and target["structured_head_sha256"]
+                != row["target_structured_head_sha256"]
+            ):
+                raise TruthImportError(
+                    "document provenance target head does not match its version"
+                )
+            if row["supersedes_id"] is not None:
+                prior = require_prior(
+                    "document_provenance_attestation",
+                    row["supersedes_id"],
+                    item.seq,
+                    "document provenance.supersedes_id",
+                )
+                if (
+                    prior["document_id"] != row["document_id"]
+                    or prior["target_kind"] != row["target_kind"]
+                    or prior["document_version_id"] != row["document_version_id"]
+                    or prior["document_span_id"] != row["document_span_id"]
+                ):
+                    raise TruthImportError(
+                        "document provenance supersession changes its frozen target"
+                    )
         elif item.record_type == "expression":
             require_prior(
                 "document_span",
@@ -2887,24 +3008,28 @@ def _validate_bundle(bundle: _Bundle) -> StoreProfile:
             raise TruthImportError("blob bytes do not match content_sha256")
         blob_map[digest] = blob.content
 
-    referenced_blobs: set[str] = set()
+    required_blobs: set[str] = set()
+    optional_source_blobs: set[str] = set()
     for item in bundle.records:
         row = item.record
         if item.record_type == "evidence":
             if row["redacted_at"] is None and row["content_path"] is not None:
-                referenced_blobs.add(row["content_sha256"])
+                required_blobs.add(row["content_sha256"])
         elif item.record_type == "document":
             if row["ydoc_snapshot_sha256"] is not None:
-                referenced_blobs.add(row["ydoc_snapshot_sha256"])
+                required_blobs.add(row["ydoc_snapshot_sha256"])
+            source_digest = retained_file_import_source_sha256(row["meta_json"])
+            if source_digest is not None:
+                optional_source_blobs.add(source_digest)
         elif item.record_type == "document_version":
-            referenced_blobs.add(row["projection_sha256"])
-            referenced_blobs.add(row["ydoc_snapshot_sha256"])
+            required_blobs.add(row["projection_sha256"])
+            required_blobs.add(row["ydoc_snapshot_sha256"])
         elif item.record_type == "action_snapshot":
-            referenced_blobs.add(row["projection_blob_sha256"])
-            referenced_blobs.add(row["target_blob_sha256"])
-    if referenced_blobs != set(blob_map):
-        missing = sorted(referenced_blobs - set(blob_map))
-        extra = sorted(set(blob_map) - referenced_blobs)
+            required_blobs.add(row["projection_blob_sha256"])
+            required_blobs.add(row["target_blob_sha256"])
+    missing = sorted(required_blobs - set(blob_map))
+    extra = sorted(set(blob_map) - required_blobs - optional_source_blobs)
+    if missing or extra:
         if missing:
             raise TruthImportError(f"export is missing live blobs: {missing}")
         raise TruthImportError(f"export contains unreferenced blobs: {extra}")
@@ -3057,24 +3182,47 @@ def _collect_export_bundle(
                 blobs[digest] = content
             elif item.record_type == "document":
                 snapshot_digest = item.record["ydoc_snapshot_sha256"]
-                if snapshot_digest is None:
-                    continue
-                digest = str(snapshot_digest)
-                # Content-addressed Y.Doc snapshots live in blobs/ and export
-                # exactly like evidence blobs, deduped by content address. The
-                # runtime/ update log is never serialized (PRD section 5).
-                path = store.resolve_blob_path("blobs/" + digest)
-                try:
-                    content = path.read_bytes()
-                except OSError as exc:
-                    raise TruthExportError(
-                        f"live ydoc snapshot blob is unavailable: {path}"
-                    ) from exc
-                if sha256_bytes(content) != digest:
-                    raise TruthExportError(
-                        "live ydoc snapshot blob does not match ydoc_snapshot_sha256"
-                    )
-                blobs[digest] = content
+                if snapshot_digest is not None:
+                    digest = str(snapshot_digest)
+                    # Content-addressed Y.Doc snapshots live in blobs/ and export
+                    # exactly like evidence blobs, deduped by content address. The
+                    # runtime/ update log is never serialized (PRD section 5).
+                    path = store.resolve_blob_path("blobs/" + digest)
+                    try:
+                        content = path.read_bytes()
+                    except OSError as exc:
+                        raise TruthExportError(
+                            f"live ydoc snapshot blob is unavailable: {path}"
+                        ) from exc
+                    if sha256_bytes(content) != digest:
+                        raise TruthExportError(
+                            "live ydoc snapshot blob does not match "
+                            "ydoc_snapshot_sha256"
+                        )
+                    blobs[digest] = content
+
+                # Exact import-source bytes are retained independently from the
+                # normalized projection. They are included whenever available.
+                # Historical imports can legitimately carry hash-only metadata,
+                # so absence is intentionally non-fatal.
+                source_digest = retained_file_import_source_sha256(
+                    item.record["meta_json"]
+                )
+                if source_digest is not None and source_digest not in blobs:
+                    path = store.resolve_blob_path("blobs/" + source_digest)
+                    if path.exists():
+                        try:
+                            content = path.read_bytes()
+                        except OSError as exc:
+                            raise TruthExportError(
+                                f"retained import source blob is unavailable: {path}"
+                            ) from exc
+                        if sha256_bytes(content) != source_digest:
+                            raise TruthExportError(
+                                "retained import source blob does not match "
+                                "document source sha256"
+                            )
+                        blobs[source_digest] = content
             elif item.record_type == "document_version":
                 for field in ("projection_sha256", "ydoc_snapshot_sha256"):
                     digest = str(item.record[field])
@@ -3313,53 +3461,110 @@ def _upcast_records(
                     record=row,
                 )
             )
-    if source_version >= 6:
-        return upgraded
-
-    status_item_ids = {
-        item.record["cothink_item_id"]
-        for item in upgraded
-        if item.record_type == "cothink_item_status_event"
-    }
-    next_seq = max((item.seq for item in upgraded), default=0)
-    for item in tuple(upgraded):
-        if (
-            item.record_type != "cothink_item"
-            or item.record_key in status_item_ids
-        ):
-            continue
-        next_seq += 1
-        item_id = item.record_key
-        event_id = sha256_bytes(
-            _COTHINK_STATUS_DOMAIN + item_id.encode("utf-8")
-        )[:32]
-        canonical_payload = {
-            "cothink_item_id": item_id,
-            "status": "open",
-            "reason": None,
+    if source_version < 6:
+        status_item_ids = {
+            item.record["cothink_item_id"]
+            for item in upgraded
+            if item.record_type == "cothink_item_status_event"
         }
-        upgraded.append(
-            _DataRecord(
-                seq=next_seq,
-                record_type="cothink_item_status_event",
-                record_key=event_id,
-                record={
-                    "id": event_id,
-                    "cothink_item_id": item_id,
-                    "status": "open",
-                    "reason": None,
-                    "canonical_sha256": sha256_bytes(
-                        canonical_json(canonical_payload).encode("utf-8")
-                    ),
-                    "created_at": item.record["created_at"],
-                    "created_by_kind": "system",
-                    "created_by_ref": "truth-schema-v6",
-                    "created_by_meta_json": canonical_json(
-                        {"basis": "pre_lifecycle_item_existence"}
-                    ),
-                },
+        next_seq = max((item.seq for item in upgraded), default=0)
+        for item in tuple(upgraded):
+            if (
+                item.record_type != "cothink_item"
+                or item.record_key in status_item_ids
+            ):
+                continue
+            next_seq += 1
+            item_id = item.record_key
+            event_id = sha256_bytes(
+                _COTHINK_STATUS_DOMAIN + item_id.encode("utf-8")
+            )[:32]
+            canonical_payload = {
+                "cothink_item_id": item_id,
+                "status": "open",
+                "reason": None,
+            }
+            upgraded.append(
+                _DataRecord(
+                    seq=next_seq,
+                    record_type="cothink_item_status_event",
+                    record_key=event_id,
+                    record={
+                        "id": event_id,
+                        "cothink_item_id": item_id,
+                        "status": "open",
+                        "reason": None,
+                        "canonical_sha256": sha256_bytes(
+                            canonical_json(canonical_payload).encode("utf-8")
+                        ),
+                        "created_at": item.record["created_at"],
+                        "created_by_kind": "system",
+                        "created_by_ref": "truth-schema-v6",
+                        "created_by_meta_json": canonical_json(
+                            {"basis": "pre_lifecycle_item_existence"}
+                        ),
+                    },
+                )
             )
-        )
+
+    if source_version < 8:
+        imported_versions: dict[str, Mapping[str, Any]] = {}
+        for item in upgraded:
+            if item.record_type != "document_version":
+                continue
+            row = item.record
+            if row.get("kind") == "initial_import" and row.get("detail") == "import":
+                imported_versions.setdefault(str(row["document_id"]), row)
+        if imported_versions:
+            patched: list[_DataRecord] = []
+            for item in upgraded:
+                if (
+                    item.record_type != "document"
+                    or item.record_key not in imported_versions
+                ):
+                    patched.append(item)
+                    continue
+                version = imported_versions[item.record_key]
+                row = dict(item.record)
+                raw_meta = row.get("meta_json")
+                try:
+                    meta = json.loads(raw_meta) if raw_meta else {}
+                except (TypeError, json.JSONDecodeError) as exc:
+                    raise TruthImportError(
+                        "imported document meta_json is invalid"
+                    ) from exc
+                if not isinstance(meta, dict):
+                    raise TruthImportError(
+                        "imported document meta_json must contain an object"
+                    )
+                existing_source = meta.get("source")
+                if (
+                    existing_source is not None
+                    and not isinstance(existing_source, dict)
+                ):
+                    raise TruthImportError(
+                        "imported document source metadata must contain an object"
+                    )
+                source = dict(existing_source or {})
+                source.update(
+                    {
+                        "kind": "file_import",
+                        "path": row["path"],
+                        "sha256": version["projection_sha256"],
+                        "writeback_policy": "never",
+                    }
+                )
+                meta["source"] = source
+                row["meta_json"] = canonical_json(meta)
+                patched.append(
+                    _DataRecord(
+                        seq=item.seq,
+                        record_type=item.record_type,
+                        record_key=item.record_key,
+                        record=row,
+                    )
+                )
+            upgraded = patched
     return upgraded
 
 

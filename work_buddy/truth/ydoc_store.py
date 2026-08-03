@@ -685,7 +685,7 @@ def compact_and_advance(
     update-log rotation.
     """
 
-    from work_buddy.cowork.paths import resolve_markdown_path
+    from work_buddy.cowork.paths import resolve_document_source_path
     from work_buddy.truth import documents
     from work_buddy.truth.contracts import Actor
 
@@ -724,7 +724,7 @@ def compact_and_advance(
 
         projection_blob = store.resolve_blob_path(f"blobs/{document.content_sha256}")
         if not projection_blob.is_file():
-            resolved = resolve_markdown_path(store, document.path)
+            resolved = resolve_document_source_path(store, document)
             if resolved.path.is_file():
                 current_bytes = resolved.path.read_bytes()
                 if sha256_bytes(current_bytes) == document.content_sha256:
@@ -781,39 +781,25 @@ def compact_and_advance(
 
 
 def prune_snapshot_blob(store: TruthStore, *, snapshot_sha256: str) -> bool:
-    """Remove a snapshot blob once no documents row references it.
+    """Remove a content-addressed blob once no durable row references it.
 
-    Follows the evidence-blob refcount discipline: the deletion runs while
-    BEGIN IMMEDIATE excludes captures/redactions that could change the refcount,
-    and a shared digest (also referenced by evidence) is retained. Returns True
-    only when a blob was actually removed.
+    Follows the store-wide blob refcount discipline: the deletion runs while
+    BEGIN IMMEDIATE excludes captures/redactions that could change the
+    refcount. Shared evidence, document/version, action-snapshot, and retained
+    import-source references all keep the blob live. Returns True only when a
+    blob was actually removed.
     """
     digest = _valid_digest(snapshot_sha256, "snapshot_sha256")
     cleanup = store._open_connection()
     removed = False
     try:
         cleanup.execute("BEGIN IMMEDIATE")
-        document_refs = int(
-            cleanup.execute(
-                "SELECT COUNT(*) FROM documents WHERE ydoc_snapshot_sha256 = ?",
-                (digest,),
-            ).fetchone()[0]
+        references = store.blob_reference_count(
+            digest,
+            live_only=False,
+            conn=cleanup,
         )
-        version_refs = int(
-            cleanup.execute(
-                "SELECT COUNT(*) FROM document_versions "
-                "WHERE ydoc_snapshot_sha256 = ? OR projection_sha256 = ?",
-                (digest, digest),
-            ).fetchone()[0]
-        )
-        evidence_refs = int(
-            cleanup.execute(
-                "SELECT COUNT(*) FROM evidence WHERE content_sha256 = ? "
-                "AND content_path IS NOT NULL",
-                (digest,),
-            ).fetchone()[0]
-        )
-        if document_refs == 0 and version_refs == 0 and evidence_refs == 0:
+        if references == 0:
             blob = store.resolve_blob_path(f"blobs/{digest}")
             existed = blob.exists()
             blob.unlink(missing_ok=True)

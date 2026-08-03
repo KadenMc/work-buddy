@@ -19,7 +19,7 @@ from work_buddy.truth.store import TruthStore
 
 INTENT_TTL = timedelta(minutes=15)
 CONSEQUENCE = (
-    "Remove this document from Co-work. Its Markdown file and full history will remain."
+    "Remove this document from Co-work. Its source file and full Co-work history will remain."
 )
 
 
@@ -139,6 +139,31 @@ def _require_no_recovery(store: TruthStore, document_id: str) -> None:
         )
 
 
+def _require_exportable_detached_head(
+    *,
+    document_id: str,
+    detached: bool,
+    update_tail_present: bool,
+) -> None:
+    """Keep retirement from stranding opaque edits outside portable history."""
+
+    if detached and update_tail_present:
+        raise RetirementError(
+            "retirement_compaction_required",
+            (
+                "Co-work is still preserving recent edits in its managed copy. "
+                "Keep the document open until saving finishes, then retry removal."
+            ),
+            status=409,
+            retryable=True,
+            details={
+                "document_id": document_id,
+                "recovery_action": "compact_current_structured_head",
+                "retry_after_compaction": True,
+            },
+        )
+
+
 def prepare_retirement(
     store: TruthStore,
     *,
@@ -180,16 +205,46 @@ def prepare_retirement(
         state = inspect_lifecycle_state(store, document)
         if state.initialization_state != "ready" or state.structured_head_sha256 is None:
             raise RetirementError("document_not_ready", "This document must be repaired before removal.", status=409)
-        if state.drift_state == "missing":
+        detached = documents.source_is_detached(document)
+        _require_exportable_detached_head(
+            document_id=document.id,
+            detached=detached,
+            update_tail_present=state.update_tail_present,
+        )
+        if not detached and state.drift_state == "missing":
             raise RetirementError("missing_file", "The Markdown file is missing; resolve it before removal.", status=409)
-        if state.drift_state == "drifted":
+        if not detached and state.drift_state == "drifted":
             raise RetirementError("external_changes", "Review or replace the external Markdown changes before removal.", status=409)
-        if state.unmaterialized_structured_edits:
-            raise RetirementError("unsaved_edits", "Save the latest Co-work edits before removal.", status=409)
+        # A detached import has no external Markdown Save target. Once the live
+        # editor has compacted its opaque update tail above, a newer internal
+        # snapshot may still differ from the last managed projection version;
+        # that is durable Co-work state and does not require source writeback.
+        if state.unmaterialized_structured_edits and not detached:
+            raise RetirementError(
+                "unsaved_edits",
+                "Save the latest Co-work edits before removal.",
+                status=409,
+            )
         if not state.baseline_available:
-            raise RetirementError("baseline_unavailable", "The last saved Markdown baseline must be repaired before removal.", status=409)
-        if document.ydoc_snapshot_sha256 is None or state.current_file_sha256 is None:
+            raise RetirementError(
+                "baseline_unavailable",
+                (
+                    "The retained Co-work version must be repaired before removal."
+                    if detached
+                    else "The last saved Markdown baseline must be repaired before removal."
+                ),
+                status=409,
+            )
+        if document.ydoc_snapshot_sha256 is None or (
+            not detached and state.current_file_sha256 is None
+        ):
             raise RetirementError("document_not_ready", "This document is not ready for removal.", status=409)
+        expected_file_sha256 = (
+            document.content_sha256
+            if detached
+            else state.current_file_sha256
+        )
+        assert expected_file_sha256 is not None
         now = _now()
         intent_id = new_id()
         with store.write_transaction() as conn:
@@ -200,7 +255,7 @@ def prepare_retirement(
                     key,
                     actor_ref,
                     document.id,
-                    state.current_file_sha256,
+                    expected_file_sha256,
                     document.content_sha256,
                     document.ydoc_snapshot_sha256,
                     state.structured_head_sha256,
@@ -287,13 +342,31 @@ def _commit_retirement_locked(
             )
         _require_no_recovery(store, document_id)
         state = inspect_lifecycle_state(store, document)
+        detached = documents.source_is_detached(document)
+        _require_exportable_detached_head(
+            document_id=document.id,
+            detached=detached,
+            update_tail_present=state.update_tail_present,
+        )
+        detached_ready = (
+            detached
+            and state.initialization_state == "ready"
+            and state.baseline_available
+            and not state.update_tail_present
+            and document.content_sha256 == intent.expected_file_sha256
+        )
+        file_backed_ready = (
+            not detached
+            and state.clean_materialized
+            and state.baseline_available
+            and state.current_file_sha256 == intent.expected_file_sha256
+        )
         if (
-            not state.clean_materialized
-            or not state.baseline_available
-            or state.current_file_sha256 != intent.expected_file_sha256
+            not (detached_ready or file_backed_ready)
             or document.content_sha256 != intent.expected_projection_sha256
             or document.ydoc_snapshot_sha256 != intent.expected_snapshot_sha256
-            or state.structured_head_sha256 != intent.expected_structured_head_sha256
+            or state.structured_head_sha256
+            != intent.expected_structured_head_sha256
         ):
             raise RetirementError(
                 "confirmation_stale",

@@ -19,7 +19,7 @@ from work_buddy.storage.migrations import (
 
 logger = get_logger(__name__)
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 # Redacted spans retain their immutable identity/hash but not their quote or
 # quote context.  Keep the selector valid JSON (and valid for the existing
@@ -1504,6 +1504,373 @@ def _m007_portable_cowork_coordination(conn: sqlite3.Connection) -> None:
         )
 
 
+def _m008_document_provenance_attestations(
+    conn: sqlite3.Connection,
+) -> None:
+    """Add durable, target-bound authorship and human-review attestations.
+
+    Existing imports predate the distinction between an acquisition source
+    and a Save target.  Backfill those documents while the narrow document
+    update trigger is temporarily replaced inside this migration transaction.
+    """
+
+    import json
+
+    # v3 created bootstrap intents before From file carried a provenance
+    # determination.  Persist the importer contract and the digest of the
+    # staged determination so a commit cannot silently substitute or lose
+    # either one.  Rows prepared by older code remain NULL and are the only
+    # imports eligible for the legacy Unknown fallback.
+    bootstrap_columns = {
+        str(row[1])
+        for row in conn.execute(
+            "PRAGMA table_info(cowork_bootstrap_intents)"
+        ).fetchall()
+    }
+    for name in (
+        "importer_id",
+        "source_media_type",
+        "import_attestation_sha256",
+    ):
+        if name not in bootstrap_columns:
+            conn.execute(
+                f"ALTER TABLE cowork_bootstrap_intents ADD COLUMN {name} TEXT"
+            )
+
+    statements = (
+        """
+        CREATE TABLE document_provenance_attestations (
+            id                            TEXT PRIMARY KEY,
+            document_id                   TEXT NOT NULL REFERENCES documents(id),
+            target_kind                   TEXT NOT NULL CHECK(
+                target_kind IN ('document_version', 'document_span')
+            ),
+            document_version_id           TEXT REFERENCES document_versions(id),
+            document_span_id              TEXT REFERENCES document_spans(id),
+            target_structured_head_sha256 TEXT NOT NULL,
+            authorship_kind               TEXT NOT NULL CHECK(
+                authorship_kind IN ('human', 'ai', 'mixed', 'unknown')
+            ),
+            human_contributors_json       TEXT NOT NULL,
+            review_status                 TEXT NOT NULL CHECK(
+                review_status IN (
+                    'reviewed', 'not_reviewed', 'not_applicable', 'unknown'
+                )
+            ),
+            human_reviewers_json          TEXT NOT NULL,
+            source_kind                   TEXT NOT NULL CHECK(
+                source_kind IN (
+                    'file_import', 'paste', 'direct_entry',
+                    'proposal_acceptance', 'legacy'
+                )
+            ),
+            source_json                   TEXT NOT NULL,
+            basis_kind                    TEXT NOT NULL CHECK(
+                basis_kind IN (
+                    'user_attestation', 'automatic_short_text_attribution',
+                    'proposal_acceptance', 'migration_backfill', 'legacy'
+                )
+            ),
+            basis_ref                     TEXT,
+            supersedes_id                 TEXT
+                REFERENCES document_provenance_attestations(id),
+            idempotency_key               TEXT NOT NULL,
+            canonical_sha256              TEXT NOT NULL UNIQUE,
+            created_at                    TEXT NOT NULL,
+            attested_by_kind              TEXT NOT NULL,
+            attested_by_ref               TEXT,
+            attested_by_meta_json         TEXT,
+            CHECK (
+                (
+                    target_kind = 'document_version'
+                    AND document_version_id IS NOT NULL
+                    AND document_span_id IS NULL
+                )
+                OR
+                (
+                    target_kind = 'document_span'
+                    AND document_span_id IS NOT NULL
+                    AND document_version_id IS NULL
+                )
+            )
+        )
+        """,
+        "CREATE INDEX idx_document_provenance_document "
+        "ON document_provenance_attestations(document_id, created_at, id)",
+        "CREATE INDEX idx_document_provenance_version "
+        "ON document_provenance_attestations(document_version_id)",
+        "CREATE INDEX idx_document_provenance_span "
+        "ON document_provenance_attestations(document_span_id)",
+        "CREATE INDEX idx_document_provenance_supersedes "
+        "ON document_provenance_attestations(supersedes_id)",
+        "CREATE UNIQUE INDEX uq_document_provenance_idempotency "
+        "ON document_provenance_attestations("
+        "document_id, attested_by_kind, ifnull(attested_by_ref, ''), "
+        "idempotency_key)",
+        """
+        CREATE TRIGGER document_provenance_attestations_append_only_update
+        BEFORE UPDATE ON document_provenance_attestations
+        BEGIN
+            SELECT RAISE(ABORT, 'append-only');
+        END
+        """,
+        """
+        CREATE TRIGGER document_provenance_attestations_append_only_delete
+        BEFORE DELETE ON document_provenance_attestations
+        BEGIN
+            SELECT RAISE(ABORT, 'append-only');
+        END
+        """,
+    )
+    for statement in statements:
+        conn.execute(statement)
+
+    imported_rows = conn.execute(
+        """
+        SELECT d.id, d.path, d.meta_json, v.projection_sha256
+        FROM documents AS d
+        JOIN document_versions AS v ON v.document_id = d.id
+        WHERE v.kind = 'initial_import' AND v.detail = 'import'
+        ORDER BY d.id, v.created_at, v.rowid
+        """
+    ).fetchall()
+    first_import_by_document: dict[str, tuple[str, str, str | None, str]] = {}
+    for row in imported_rows:
+        document_id = str(row[0])
+        first_import_by_document.setdefault(
+            document_id,
+            (
+                document_id,
+                str(row[1]),
+                None if row[2] is None else str(row[2]),
+                str(row[3]),
+            ),
+        )
+
+    conn.execute("DROP TRIGGER IF EXISTS documents_append_only_update")
+    for document_id, path, raw_meta, source_sha256 in (
+        first_import_by_document.values()
+    ):
+        try:
+            meta = json.loads(raw_meta) if raw_meta else {}
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise sqlite3.IntegrityError(
+                f"imported document {document_id} has invalid meta_json"
+            ) from exc
+        if not isinstance(meta, dict):
+            raise sqlite3.IntegrityError(
+                f"imported document {document_id} meta_json is not an object"
+            )
+        existing_source = meta.get("source")
+        if existing_source is not None and not isinstance(existing_source, dict):
+            raise sqlite3.IntegrityError(
+                f"imported document {document_id} source metadata is not an object"
+            )
+        source = dict(existing_source or {})
+        source.update(
+            {
+                "kind": "file_import",
+                "path": path,
+                "sha256": source_sha256,
+                "writeback_policy": "never",
+            }
+        )
+        meta["source"] = source
+        conn.execute(
+            "UPDATE documents SET meta_json = ? WHERE id = ?",
+            (
+                json.dumps(
+                    meta,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                    allow_nan=False,
+                ),
+                document_id,
+            ),
+        )
+
+    conn.execute(
+        """
+        CREATE TRIGGER documents_append_only_update
+        BEFORE UPDATE ON documents
+        WHEN NOT (
+            NEW.id IS OLD.id
+            AND NEW.path IS OLD.path
+            AND NEW.title IS OLD.title
+            AND NEW.document_class IS OLD.document_class
+            AND NEW.created_at IS OLD.created_at
+            AND NEW.created_by_kind IS OLD.created_by_kind
+            AND NEW.created_by_ref IS OLD.created_by_ref
+            AND NEW.meta_json IS OLD.meta_json
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'append-only');
+        END
+        """
+    )
+
+
+def _v8_legacy_import_provenance_rows(
+    conn: sqlite3.Connection,
+) -> list[sqlite3.Row]:
+    if not _table_exists(conn, "document_provenance_attestations"):
+        return []
+    return list(
+        conn.execute(
+            """
+            SELECT d.id AS document_id, d.path, d.meta_json,
+                   v.id AS version_id, v.structured_head_sha256, v.created_at
+            FROM documents AS d
+            JOIN document_versions AS v ON v.document_id = d.id
+            WHERE v.kind = 'initial_import'
+              AND v.detail = 'import'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM document_provenance_attestations AS p
+                  WHERE p.target_kind = 'document_version'
+                    AND p.document_version_id = v.id
+              )
+            ORDER BY d.id, v.created_at, v.rowid
+            """
+        )
+    )
+
+
+def _v8_legacy_import_source(row: sqlite3.Row) -> dict[str, str] | None:
+    import json
+
+    try:
+        meta = json.loads(row["meta_json"]) if row["meta_json"] else {}
+    except (TypeError, json.JSONDecodeError):
+        return None
+    source_meta = meta.get("source") if isinstance(meta, dict) else None
+    if not isinstance(source_meta, dict):
+        return None
+    if (
+        source_meta.get("kind") not in {"file_import", "imported_markdown"}
+        or source_meta.get("writeback_policy") != "never"
+    ):
+        return None
+    source_sha256 = source_meta.get("sha256")
+    if (
+        not isinstance(source_sha256, str)
+        or len(source_sha256) != 64
+        or any(ch not in "0123456789abcdef" for ch in source_sha256)
+    ):
+        return None
+    return {
+        "kind": "file_import",
+        "path": str(row["path"]),
+        "sha256": source_sha256,
+    }
+
+
+def needs_v8_legacy_import_provenance_backfill(
+    conn: sqlite3.Connection,
+) -> bool:
+    """Read-only compatibility probe used to avoid a write lock per open."""
+
+    return any(
+        _v8_legacy_import_source(row) is not None
+        for row in _v8_legacy_import_provenance_rows(conn)
+    )
+
+
+def backfill_v8_legacy_import_provenance(
+    conn: sqlite3.Connection,
+) -> int:
+    """Append deterministic Unknown attestations omitted by early v8 builds.
+
+    This compatibility backfill intentionally lives outside the hashed v8
+    migration function. Some local stores already ran that migration while
+    the feature was under development, so changing its recorded code hash
+    would make those otherwise valid stores impossible to open.
+
+    The caller owns the transaction. Repeated calls append nothing.
+    """
+
+    from work_buddy.truth.identity import canonical_json, sha256_text
+    from work_buddy.truth.provenance import (
+        ATTESTATION_SCHEMA,
+        attestation_canonical_sha256,
+    )
+
+    inserted = 0
+    for row in _v8_legacy_import_provenance_rows(conn):
+        source = _v8_legacy_import_source(row)
+        if source is None:
+            continue
+
+        document_id = str(row["document_id"])
+        version_id = str(row["version_id"])
+        target_head = str(row["structured_head_sha256"])
+        basis_ref = "truth-schema-v8:legacy-file-import"
+        canonical = attestation_canonical_sha256(
+            document_id=document_id,
+            target_kind="document_version",
+            document_version_id=version_id,
+            document_span_id=None,
+            target_structured_head_sha256=target_head,
+            authorship_kind="unknown",
+            human_contributors=[],
+            review_status="unknown",
+            human_reviewers=[],
+            source_kind="file_import",
+            source=source,
+            basis_kind="migration_backfill",
+            basis_ref=basis_ref,
+            supersedes_id=None,
+            attested_by_kind="system",
+            attested_by_ref=None,
+            attested_by_meta=None,
+        )
+        identifier = sha256_text(
+            canonical_json(
+                {
+                    "schema": ATTESTATION_SCHEMA,
+                    "document_id": document_id,
+                    "document_version_id": version_id,
+                    "basis_kind": "migration_backfill",
+                }
+            )
+        )[:32]
+        conn.execute(
+            """
+            INSERT INTO document_provenance_attestations (
+                id, document_id, target_kind, document_version_id,
+                document_span_id, target_structured_head_sha256,
+                authorship_kind, human_contributors_json, review_status,
+                human_reviewers_json, source_kind, source_json, basis_kind,
+                basis_ref, supersedes_id, idempotency_key, canonical_sha256,
+                created_at, attested_by_kind, attested_by_ref,
+                attested_by_meta_json
+            ) VALUES (
+                ?, ?, 'document_version', ?, NULL, ?,
+                'unknown', '[]', 'unknown', '[]', 'file_import', ?,
+                'migration_backfill', ?, NULL, ?, ?, ?, 'system', NULL, NULL
+            )
+            """,
+            (
+                identifier,
+                document_id,
+                version_id,
+                target_head,
+                canonical_json(source),
+                basis_ref,
+                f"migration:v8:file-import:{version_id}",
+                canonical,
+                str(row["created_at"]),
+            ),
+        )
+        conn.execute(
+            "INSERT INTO ledger_records (record_type, record_key) VALUES (?, ?)",
+            ("document_provenance_attestation", identifier),
+        )
+        inserted += 1
+    return inserted
+
+
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     row = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
@@ -1614,6 +1981,11 @@ TRUTH_MIGRATIONS = _TruthMigrationRunner(
             7,
             "portable co-work coordination history",
             _m007_portable_cowork_coordination,
+        ),
+        Migration(
+            8,
+            "document provenance attestations and import-source safety",
+            _m008_document_provenance_attestations,
         ),
     ],
 )

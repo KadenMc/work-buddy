@@ -49,6 +49,17 @@ def _projection_blob_available(store: TruthStore, digest: str) -> bool:
         return False
 
 
+def _repair_source_matches_projection(document: DocumentRecord) -> bool:
+    """Whether the legacy repair workflow can reproduce this managed copy."""
+
+    if not documents.source_is_detached(document):
+        return True
+    return (
+        documents.retained_file_import_source_sha256(document.meta_json)
+        == document.content_sha256
+    )
+
+
 def classify_document(
     store: TruthStore,
     document: DocumentRecord,
@@ -108,9 +119,17 @@ def classify_document(
     permissions = {
         "open": openable,
         "edit": openable and not read_only,
-        "materialize": openable and not read_only,
+        "materialize": (
+            openable
+            and not read_only
+            and not documents.source_is_detached(document)
+        ),
         "repair": (
-            state == "bootstrap_required" and active and allowed and not read_only
+            state == "bootstrap_required"
+            and active
+            and allowed
+            and not read_only
+            and _repair_source_matches_projection(document)
         ),
         "retire": active and allowed and not read_only,
     }

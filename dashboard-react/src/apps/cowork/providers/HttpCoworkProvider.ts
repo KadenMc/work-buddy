@@ -180,7 +180,7 @@ export class HttpCoworkProvider implements ViewProvider {
       folderChooser: {
         available: true,
         kind: "host",
-        markdownAvailable: true,
+        importAvailable: true,
         locationAvailable: true,
       },
       folderSelection: { kind: "none" },

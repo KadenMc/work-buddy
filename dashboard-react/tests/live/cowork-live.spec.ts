@@ -133,15 +133,15 @@ const chooseFolder = async (
   await page.getByRole("button", { name: buttonName, exact: true }).click();
 };
 
-const chooseMarkdown = async (
+const chooseImportFile = async (
   page: Page,
   relativePath: string,
 ): Promise<void> => {
   await page.route(
-    "**/api/truth/cowork/files/choose-markdown",
+    "**/api/truth/cowork/files/choose-import",
     async (route) => {
       expect(route.request().headers()["x-work-buddy-intent"]).toBe(
-        "cowork-markdown-picker",
+        "cowork-import-picker",
       );
       expect(route.request().postDataJSON()).toEqual({ store_id: ordinaryStoreId });
       await route.fulfill({
@@ -151,12 +151,24 @@ const chooseMarkdown = async (
           ok: true,
           cancelled: false,
           path: relativePath,
+          importer_id: "markdown/v1",
+          media_type: "text/markdown",
+          source_sha256: fixture.source.sha256,
+          importer: {
+            importer_id: "markdown/v1",
+            display_name: "Markdown",
+            source_format: "markdown",
+            media_type: "text/markdown",
+            suffixes: [".md", ".markdown"],
+            max_source_bytes: 16 * 1024 * 1024,
+          },
         }),
       });
     },
     { times: 1 },
   );
-  await page.getByRole("button", { name: "New from Markdown", exact: true }).click();
+  await page.getByRole("button", { name: "From file", exact: true }).click();
+  await page.getByRole("button", { name: "Import", exact: true }).click();
 };
 
 const chooseLocation = async (
@@ -502,7 +514,7 @@ test.describe.serial("Co-work live lifecycle", () => {
     await expect(
       page.getByRole("button", { name: fixture.ordinary.name, exact: true }).first(),
     ).toBeVisible();
-    await chooseMarkdown(page, fixture.source.relative_path);
+    await chooseImportFile(page, fixture.source.relative_path);
     const editor = await waitForEditor(page);
     await expect(editor).toContainText("Imported note");
     await expect(editor).toContainText("A line preserved exactly.");

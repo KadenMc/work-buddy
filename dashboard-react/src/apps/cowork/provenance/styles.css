@@ -1,0 +1,18 @@
+.wb-cowork-provenance-form {
+  display: grid;
+  gap: var(--wb-space-4);
+}
+
+.wb-cowork-provenance-dialog__description {
+  margin: 0;
+  color: var(--wb-color-text-secondary);
+}
+
+.wb-cowork-provenance-dialog__excerpt {
+  margin: 0;
+  padding: var(--wb-space-3);
+  border-inline-start: 3px solid var(--wb-color-border-subtle);
+  color: var(--wb-color-text-secondary);
+  background: var(--wb-color-surface-subtle);
+  overflow-wrap: anywhere;
+}

@@ -1,4 +1,4 @@
-"""Safe folder-relative Markdown path resolution for Co-work.
+"""Safe folder-relative file path resolution for Co-work.
 
 All Co-work file operations use this module rather than joining caller input
 onto a folder path directly.  The returned path is suitable for an immediate
@@ -33,12 +33,17 @@ class CoworkPathError(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
-class ResolvedMarkdownPath:
-    """Immutable result of a contained Markdown path resolution."""
+class ResolvedRelativeFilePath:
+    """Immutable result of a contained folder-relative file resolution."""
 
     normalized: str
     path: Path
     path_key: str
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedMarkdownPath(ResolvedRelativeFilePath):
+    """Compatibility result type for a contained Markdown path."""
 
 
 def _folder_root(store_or_root: Any) -> Path:
@@ -72,48 +77,68 @@ def _is_reparse_or_symlink(path: Path) -> bool:
     return bool(attributes & reparse)
 
 
-def _validate_relative_path(relative_path: str) -> tuple[str, tuple[str, ...]]:
+def _validate_relative_path(
+    relative_path: str,
+    *,
+    path_label: str,
+    allowed_suffixes: frozenset[str] | None = None,
+) -> tuple[str, tuple[str, ...]]:
     if not isinstance(relative_path, str):
-        raise CoworkPathError("Markdown path must be a string")
+        raise CoworkPathError(f"{path_label} path must be a string")
     if not relative_path:
-        raise CoworkPathError("Markdown path cannot be empty")
+        raise CoworkPathError(f"{path_label} path cannot be empty")
     if relative_path != relative_path.strip():
-        raise CoworkPathError("Markdown path cannot have leading or trailing whitespace")
+        raise CoworkPathError(
+            f"{path_label} path cannot have leading or trailing whitespace"
+        )
     if "\\" in relative_path:
-        raise CoworkPathError("Markdown path must use forward slashes")
+        raise CoworkPathError(f"{path_label} path must use forward slashes")
     if relative_path.startswith(("/", "//")) or _DRIVE_PREFIX.match(relative_path):
-        raise CoworkPathError("Markdown path must be folder-relative")
+        raise CoworkPathError(f"{path_label} path must be folder-relative")
     if any(ord(character) < 32 or ord(character) == 127 for character in relative_path):
-        raise CoworkPathError("Markdown path contains a control character")
+        raise CoworkPathError(f"{path_label} path contains a control character")
 
     raw_parts = tuple(relative_path.split("/"))
     if any(part in {"", ".", ".."} for part in raw_parts):
-        raise CoworkPathError("Markdown path contains an empty, dot, or dot-dot segment")
+        raise CoworkPathError(
+            f"{path_label} path contains an empty, dot, or dot-dot segment"
+        )
     if any(part.casefold() in _RESERVED_COMPONENTS for part in raw_parts):
-        raise CoworkPathError("Markdown path enters a Work Buddy managed namespace")
+        raise CoworkPathError(
+            f"{path_label} path enters a Work Buddy managed namespace"
+        )
     if any("\x00" in part for part in raw_parts):
-        raise CoworkPathError("Markdown path contains NUL")
+        raise CoworkPathError(f"{path_label} path contains NUL")
     if any(any(character in _WINDOWS_FORBIDDEN for character in part) for part in raw_parts):
-        raise CoworkPathError("Markdown path contains a reserved filename character")
+        raise CoworkPathError(
+            f"{path_label} path contains a reserved filename character"
+        )
     if any(part.endswith((" ", ".")) for part in raw_parts):
-        raise CoworkPathError("Markdown path has a segment ending in a space or dot")
+        raise CoworkPathError(
+            f"{path_label} path has a segment ending in a space or dot"
+        )
     if any(part.split(".", 1)[0].casefold() in _WINDOWS_DEVICE_NAMES for part in raw_parts):
-        raise CoworkPathError("Markdown path uses a reserved device name")
+        raise CoworkPathError(f"{path_label} path uses a reserved device name")
 
     normalized_parts = tuple(unicodedata.normalize("NFC", part) for part in raw_parts)
     normalized = "/".join(normalized_parts)
-    if Path(normalized_parts[-1]).suffix.casefold() not in _MARKDOWN_SUFFIXES:
+    if (
+        allowed_suffixes is not None
+        and Path(normalized_parts[-1]).suffix.casefold() not in allowed_suffixes
+    ):
         raise CoworkPathError("Co-work documents must use .md or .markdown")
     return normalized, normalized_parts
 
 
-def _assert_contained(root: Path, candidate: Path) -> None:
+def _assert_contained(root: Path, candidate: Path, *, path_label: str) -> None:
     try:
         common = Path(os.path.commonpath((str(root), str(candidate))))
     except ValueError as exc:
-        raise CoworkPathError("Markdown path is on a different filesystem root") from exc
+        raise CoworkPathError(
+            f"{path_label} path is on a different filesystem root"
+        ) from exc
     if common != root:
-        raise CoworkPathError("Markdown path escapes the selected folder")
+        raise CoworkPathError(f"{path_label} path escapes the selected folder")
 
 
 def _path_key(normalized: str) -> str:
@@ -122,13 +147,15 @@ def _path_key(normalized: str) -> str:
     return normalized.casefold() if os.name == "nt" else normalized
 
 
-def resolve_markdown_path(
+def _resolve_relative_file_path(
     store_or_root: Any,
     relative_path: str,
     *,
     for_create: bool = False,
-) -> ResolvedMarkdownPath:
-    """Resolve one safe folder-relative Markdown path.
+    path_label: str,
+    allowed_suffixes: frozenset[str] | None = None,
+) -> ResolvedRelativeFilePath:
+    """Resolve one safe folder-relative file path.
 
     ``for_create`` permits the final path to be absent but requires every
     existing ancestor to be a real directory. Symlinks and Windows reparse
@@ -140,9 +167,13 @@ def resolve_markdown_path(
     """
 
     root = _folder_root(store_or_root)
-    normalized, parts = _validate_relative_path(relative_path)
+    normalized, parts = _validate_relative_path(
+        relative_path,
+        path_label=path_label,
+        allowed_suffixes=allowed_suffixes,
+    )
     lexical = root.joinpath(*parts)
-    _assert_contained(root, lexical)
+    _assert_contained(root, lexical, path_label=path_label)
 
     cursor = root
     for index, part in enumerate(parts):
@@ -160,24 +191,112 @@ def resolve_markdown_path(
                 continue
             break
         if _is_reparse_or_symlink(cursor):
-            raise CoworkPathError("Markdown path crosses a symlink or reparse point")
+            raise CoworkPathError(
+                f"{path_label} path crosses a symlink or reparse point"
+            )
         if not is_final and not cursor.is_dir():
-            raise CoworkPathError("Markdown path has a non-directory parent")
+            raise CoworkPathError(f"{path_label} path has a non-directory parent")
 
     # Resolve every existing prefix once more. ``strict=False`` follows any
     # alias that appeared between lstat calls; containment therefore fails
     # closed even during a narrow TOCTOU window. Mutators re-run under lock.
     resolved = lexical.resolve(strict=False)
-    _assert_contained(root, resolved)
-    return ResolvedMarkdownPath(
+    _assert_contained(root, resolved, path_label=path_label)
+    return ResolvedRelativeFilePath(
         normalized=normalized,
         path=resolved,
         path_key=_path_key(normalized),
     )
 
 
+def resolve_relative_file_path(
+    store_or_root: Any,
+    relative_path: str,
+    *,
+    for_create: bool = False,
+) -> ResolvedRelativeFilePath:
+    """Resolve a safe contained file path without imposing a source format."""
+
+    return _resolve_relative_file_path(
+        store_or_root,
+        relative_path,
+        for_create=for_create,
+        path_label="File",
+    )
+
+
+def resolve_markdown_path(
+    store_or_root: Any,
+    relative_path: str,
+    *,
+    for_create: bool = False,
+) -> ResolvedMarkdownPath:
+    """Resolve one safe folder-relative Markdown path.
+
+    This compatibility wrapper preserves the Markdown-only admission and error
+    contract while sharing every containment check with the generic resolver.
+    """
+
+    resolved = _resolve_relative_file_path(
+        store_or_root,
+        relative_path,
+        for_create=for_create,
+        path_label="Markdown",
+        allowed_suffixes=_MARKDOWN_SUFFIXES,
+    )
+    return ResolvedMarkdownPath(
+        normalized=resolved.normalized,
+        path=resolved.path,
+        path_key=resolved.path_key,
+    )
+
+
+def resolve_document_source_path(
+    store_or_root: Any,
+    document: Any,
+) -> ResolvedRelativeFilePath:
+    """Resolve the external path associated with a persisted document.
+
+    Ordinary file-backed documents remain Markdown-only. A detached import's
+    path names its acquisition source and can therefore use any format admitted
+    by the importer registry that created it.
+    """
+
+    from work_buddy.truth.documents import source_is_detached
+
+    relative_path = getattr(document, "path", None)
+    if source_is_detached(document):
+        return resolve_relative_file_path(store_or_root, relative_path)
+    return resolve_markdown_path(store_or_root, relative_path)
+
+
+def resolve_writeback_target(
+    store_or_root: Any,
+    document: Any,
+    *,
+    for_create: bool = False,
+) -> ResolvedMarkdownPath:
+    """Resolve a Markdown Save target after enforcing source-writeback policy."""
+
+    from work_buddy.truth.documents import source_is_detached
+
+    if source_is_detached(document):
+        raise CoworkPathError(
+            "An imported source file cannot be used as a Co-work writeback target"
+        )
+    return resolve_markdown_path(
+        store_or_root,
+        getattr(document, "path", None),
+        for_create=for_create,
+    )
+
+
 __all__ = [
     "CoworkPathError",
     "ResolvedMarkdownPath",
+    "ResolvedRelativeFilePath",
+    "resolve_document_source_path",
     "resolve_markdown_path",
+    "resolve_relative_file_path",
+    "resolve_writeback_target",
 ]

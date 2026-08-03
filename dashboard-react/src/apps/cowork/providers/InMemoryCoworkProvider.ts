@@ -16,7 +16,7 @@ const DEMO_MODEL: CoworkViewModel = {
   folderChooser: {
     available: true,
     kind: "fixture",
-    markdownAvailable: true,
+    importAvailable: true,
     locationAvailable: true,
   },
   folderSelection: { kind: "none" },

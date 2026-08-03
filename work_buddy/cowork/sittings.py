@@ -20,8 +20,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from work_buddy.truth import documents, proposals
 from work_buddy.artifacts.io import atomic_write_bytes
+from work_buddy.cowork.paths import resolve_writeback_target
+from work_buddy.truth import documents, proposals
 from work_buddy.truth.contracts import (
     Actor,
     GestureError,
@@ -460,7 +461,7 @@ def _materialize(
     # re-derives markdown (no server serializer, S5/C3).
     if sha256_text(rendered) != declared:
         raise MaterializeHashMismatch(declared)
-    target = store.paths.root / document.path
+    target = resolve_writeback_target(store, document).path
     target.parent.mkdir(parents=True, exist_ok=True)
     atomic_write_bytes(target, rendered.encode("utf-8"))
     documents.record_materialization(
@@ -534,7 +535,7 @@ def apply_sitting(
             if outcome.applied:
                 outcome.result["materialized"] = True
         materialize_block = {
-            "file_path": str(store.paths.root / document.path),
+            "file_path": str(resolve_writeback_target(store, document).path),
             "new_file_sha256": new_sha256,
         }
         events.append(

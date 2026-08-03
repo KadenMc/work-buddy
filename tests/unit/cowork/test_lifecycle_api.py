@@ -8,7 +8,7 @@ import json
 from flask import Flask
 
 from work_buddy.cowork import api as cowork_api
-from work_buddy.cowork import bootstrap_api, materialization_api
+from work_buddy.cowork import bootstrap, bootstrap_api, materialization_api
 from work_buddy.truth.identity import sha256_bytes
 
 
@@ -72,6 +72,80 @@ def test_bootstrap_binary_http_round_trip(store_ctx, monkeypatch):
     assert payload["initialization_state"] == "ready"
     assert payload["document_class"] == "co_authored"
     assert (store_ctx["root"] / "docs" / "browser.md").read_bytes() == source
+
+
+def test_bootstrap_http_bounds_snapshot_and_projection_uploads(
+    store_ctx,
+    monkeypatch,
+):
+    client = _client(store_ctx, monkeypatch)
+    source = b"# Bounded\n"
+    prepared = client.post(
+        "/api/truth/doc/bootstrap?store_id=test",
+        data={
+            "metadata": json.dumps(
+                {
+                    "mode": "create",
+                    "path": "docs/bounded.md",
+                    "idempotency_key": "bounded-bootstrap-0001",
+                }
+            ),
+            "source": (io.BytesIO(source), "source.md"),
+        },
+        content_type="multipart/form-data",
+    ).get_json()
+    url = (
+        f"/api/truth/doc/bootstrap/{prepared['bootstrap_id']}?store_id=test"
+    )
+
+    monkeypatch.setattr(bootstrap, "MAX_SNAPSHOT_BYTES", 4)
+    large_snapshot = b"12345"
+    snapshot_rejected = client.put(
+        url,
+        data={
+            "metadata": json.dumps(
+                {
+                    "source_sha256": sha256_bytes(source),
+                    "snapshot_sha256": sha256_bytes(large_snapshot),
+                    "projection_sha256": sha256_bytes(source),
+                    "ydoc_schema": "cowork-yjs/v1",
+                }
+            ),
+            "snapshot": (io.BytesIO(large_snapshot), "snapshot.bin"),
+            "projection": (io.BytesIO(source), "projection.md"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert snapshot_rejected.status_code == 413
+    assert (
+        snapshot_rejected.get_json()["error"]["code"]
+        == "snapshot_too_large"
+    )
+
+    snapshot = b"1234"
+    monkeypatch.setattr(bootstrap, "MAX_CANONICAL_PROJECTION_BYTES", 4)
+    projection_rejected = client.put(
+        url,
+        data={
+            "metadata": json.dumps(
+                {
+                    "source_sha256": sha256_bytes(source),
+                    "snapshot_sha256": sha256_bytes(snapshot),
+                    "projection_sha256": sha256_bytes(source),
+                    "ydoc_schema": "cowork-yjs/v1",
+                }
+            ),
+            "snapshot": (io.BytesIO(snapshot), "snapshot.bin"),
+            "projection": (io.BytesIO(source), "projection.md"),
+        },
+        content_type="multipart/form-data",
+    )
+    assert projection_rejected.status_code == 413
+    assert (
+        projection_rejected.get_json()["error"]["code"]
+        == "projection_too_large"
+    )
+    assert not (store_ctx["root"] / "docs" / "bounded.md").exists()
 
 
 def test_bootstrap_error_envelope_and_materialize(store_ctx, monkeypatch):

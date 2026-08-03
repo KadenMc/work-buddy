@@ -372,6 +372,29 @@ EXPECTED_COLUMNS = {
         "created_by_kind",
         "created_by_ref",
     },
+    "document_provenance_attestations": {
+        "id",
+        "document_id",
+        "target_kind",
+        "document_version_id",
+        "document_span_id",
+        "target_structured_head_sha256",
+        "authorship_kind",
+        "human_contributors_json",
+        "review_status",
+        "human_reviewers_json",
+        "source_kind",
+        "source_json",
+        "basis_kind",
+        "basis_ref",
+        "supersedes_id",
+        "idempotency_key",
+        "canonical_sha256",
+        "created_at",
+        "attested_by_kind",
+        "attested_by_ref",
+        "attested_by_meta_json",
+    },
     "expressions": {
         "id",
         "document_span_id",
@@ -445,6 +468,9 @@ EXPECTED_COLUMNS = {
         "source_sha256",
         "source_byte_length",
         "expected_file_sha256",
+        "importer_id",
+        "source_media_type",
+        "import_attestation_sha256",
         "snapshot_sha256",
         "structured_head_sha256",
         "staged_path",
@@ -654,6 +680,11 @@ def test_schema_has_all_committed_tables_columns_indexes_and_triggers(
         "idx_document_versions_document",
         "idx_document_versions_projection",
         "idx_document_versions_snapshot",
+        "idx_document_provenance_document",
+        "idx_document_provenance_version",
+        "idx_document_provenance_span",
+        "idx_document_provenance_supersedes",
+        "uq_document_provenance_idempotency",
         "idx_cowork_bootstrap_state_expiry",
         "uq_cowork_bootstrap_live_path",
         "idx_cowork_materialization_state",
@@ -675,7 +706,7 @@ def test_schema_has_all_committed_tables_columns_indexes_and_triggers(
         row["name"]
         for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'")
     }
-    assert len(triggers) == 77
+    assert len(triggers) == 79
     verify_tables = {
         "criterion_definition_versions",
         "check_definition_versions",
@@ -694,6 +725,7 @@ def test_schema_has_all_committed_tables_columns_indexes_and_triggers(
         "cowork_coordination_jobs",
         "cowork_coordination_status_events",
         "cowork_review_applications",
+        "document_provenance_attestations",
     }
     assert {
         f"{table}_append_only_{operation}"
@@ -721,7 +753,7 @@ def test_reopening_is_idempotent(tmp_path: Path):
         conn.execute(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger'"
         ).fetchone()[0]
-        == 77
+        == 79
     )
     conn.close()
 

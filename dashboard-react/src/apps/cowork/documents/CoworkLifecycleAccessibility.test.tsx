@@ -140,14 +140,14 @@ describe("Co-work lifecycle dialog accessibility and focus", () => {
 
   it.each([
     ["create", "New document", "Title"],
-    ["register", "New document from Markdown", null],
+    ["import", "From file", null],
     ["repair", "Repair document", null],
   ] as const)(
     "keeps the %s dialog accessible and restores focus",
     async (mode, heading, autofocusName) => {
       const user = userEvent.setup();
       const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
-        if (String(input) === "/api/truth/cowork/files/choose-markdown") {
+        if (String(input) === "/api/truth/cowork/files/choose-import") {
           return json(
             {
               error: {
@@ -184,7 +184,7 @@ describe("Co-work lifecycle dialog accessibility and focus", () => {
       } else {
         expect(dialog).toContainElement(globalThis.document.activeElement as HTMLElement);
       }
-      if (mode === "register") {
+      if (mode === "import") {
         await screen.findByRole("button", { name: "Choose again" });
       }
       await expectNoAccessibilityViolations(container);
@@ -308,6 +308,7 @@ describe("Co-work lifecycle dialog accessibility and focus", () => {
             storeId={folder.storeId}
             document={document}
             client={new CoworkHttpClient(fetchImpl as typeof fetch)}
+            onSettleLifecycle={async () => undefined}
             onClose={close}
             onRetired={vi.fn()}
           />

@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 
+from work_buddy.truth import ydoc_store
 from work_buddy.truth.contracts import Actor
 from work_buddy.truth.export import (
     FORMAT_VERSION,
@@ -20,6 +21,7 @@ from work_buddy.truth.export import (
 from work_buddy.truth.identity import new_id, sha256_bytes, sha256_text
 from work_buddy.truth.migrations import REDACTED_SELECTOR_JSON
 from work_buddy.truth.proposals import proposal_canonical_sha256
+from work_buddy.truth.queries import integrity_findings
 from work_buddy.truth.redact import policy_basis_ref
 from work_buddy.truth.store import TruthStore
 
@@ -98,6 +100,7 @@ def _insert_document(
     store: TruthStore,
     *,
     ydoc_snapshot_sha256: str | None = SNAPSHOT_SHA,
+    document_meta: dict[str, Any] | None = None,
 ) -> None:
     """Seed one document plus its span, expression, proposal, and events."""
     with store.write_transaction() as conn:
@@ -112,7 +115,9 @@ def _insert_document(
                 CONTENT_SHA,
                 ydoc_snapshot_sha256,
                 NOW,
-                json.dumps({"producer": {"harness": "test"}}),
+                json.dumps(
+                    document_meta or {"producer": {"harness": "test"}}
+                ),
             ),
         )
         store._insert_ledger_record_locked(conn, "document", DOC_ID)
@@ -215,7 +220,7 @@ def test_document_surface_round_trips_lossless_including_ydoc_blob(
 
     exported = export_store(source)
     objects = _objects(exported.path.read_bytes())
-    assert objects[0]["format_version"] == FORMAT_VERSION == 7
+    assert objects[0]["format_version"] == FORMAT_VERSION == 8
 
     record_types = {
         item["record_type"]
@@ -248,6 +253,115 @@ def test_document_surface_round_trips_lossless_including_ydoc_blob(
     assert (restored.paths.blobs / SNAPSHOT_SHA).read_bytes() == SNAPSHOT_BYTES
     reexport = export_store(restored, tmp_path / "restored.jsonl")
     assert reexport.path.read_bytes() == exported.path.read_bytes()
+
+
+def test_detached_normalized_import_source_is_live_and_round_trips(
+    tmp_path: Path,
+) -> None:
+    source = _create_store(tmp_path / "source", store_id="b8" * 16)
+    _write_blob(source, SNAPSHOT_SHA, SNAPSHOT_BYTES)
+    source_bytes = b"# Imported\r\n\r\nA source line with trailing spaces.  \r\n"
+    source_digest = sha256_bytes(source_bytes)
+    assert source_digest not in {SNAPSHOT_SHA, CONTENT_SHA}
+    _write_blob(source, source_digest, source_bytes)
+    _insert_document(
+        source,
+        document_meta={
+            "source": {
+                "kind": "file_import",
+                "path": "drafts/imported.md",
+                "sha256": source_digest,
+                "writeback_policy": "never",
+            }
+        },
+    )
+
+    assert source.blob_reference_count(source_digest) == 1
+    assert (
+        ydoc_store.prune_snapshot_blob(
+            source,
+            snapshot_sha256=source_digest,
+        )
+        is False
+    )
+    assert not [
+        finding
+        for finding in integrity_findings(source)
+        if finding.subject_ref == DOC_ID
+        and finding.code.startswith("document-source-blob-")
+    ]
+
+    exported = export_store(source)
+    blob_digests = {
+        item["content_sha256"]
+        for item in _objects(exported.path.read_bytes())
+        if item["record_type"] == "blob"
+    }
+    assert source_digest in blob_digests
+
+    target = tmp_path / "target"
+    target.mkdir()
+    restored = import_store(
+        exported.path,
+        target,
+        registry=FakeRegistry(),
+    ).store
+    assert (restored.paths.blobs / source_digest).read_bytes() == source_bytes
+    assert restored.blob_reference_count(source_digest) == 1
+    assert (
+        ydoc_store.prune_snapshot_blob(
+            restored,
+            snapshot_sha256=source_digest,
+        )
+        is False
+    )
+
+
+def test_historical_detached_import_without_source_blob_remains_portable(
+    tmp_path: Path,
+) -> None:
+    source = _create_store(tmp_path / "source", store_id="b9" * 16)
+    _write_blob(source, SNAPSHOT_SHA, SNAPSHOT_BYTES)
+    unavailable_digest = sha256_bytes(b"historical source bytes were not retained")
+    _insert_document(
+        source,
+        document_meta={
+            "source": {
+                "kind": "imported_markdown",
+                "path": "legacy/import.md",
+                "sha256": unavailable_digest,
+                "writeback_policy": "never",
+            }
+        },
+    )
+
+    source_findings = integrity_findings(source)
+    assert any(
+        finding.code == "document-source-blob-unavailable"
+        and finding.subject_ref == DOC_ID
+        and finding.severity == "warning"
+        for finding in source_findings
+    )
+
+    exported = export_store(source)
+    assert unavailable_digest not in {
+        item["content_sha256"]
+        for item in _objects(exported.path.read_bytes())
+        if item["record_type"] == "blob"
+    }
+    target = tmp_path / "target"
+    target.mkdir()
+    restored = import_store(
+        exported.path,
+        target,
+        registry=FakeRegistry(),
+    ).store
+    assert _table_rows(restored, "documents", "id") == _table_rows(
+        source,
+        "documents",
+        "id",
+    )
+    assert not (restored.paths.blobs / unavailable_digest).exists()
 
 
 def test_redacted_proposal_round_trips_with_hashes_retained(

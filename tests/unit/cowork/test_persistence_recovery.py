@@ -32,18 +32,18 @@ from .conftest import HUMAN
 
 def _ready(store_ctx, *, path: str, key: str):
     source = f"# {key}\n\nOriginal body.\n".encode()
-    target = store_ctx["root"] / path
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(source)
     intent, _ = bootstrap.prepare_bootstrap(
         store_ctx["store"],
         metadata={
-            "mode": "import",
+            # These recovery tests exercise a Co-work-owned Markdown Save
+            # target. From-file imports are intentionally detached and cannot
+            # be used as materialization/reimport fixtures.
+            "mode": "create",
             "path": path,
             "idempotency_key": key,
-            "expected_file_sha256": sha256_bytes(source),
+            "initial_source_sha256": sha256_bytes(source),
         },
-        source=None,
+        source=source,
         actor=HUMAN,
     )
     snapshot = b"YDOC:" + source

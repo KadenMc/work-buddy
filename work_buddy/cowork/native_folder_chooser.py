@@ -2,8 +2,8 @@
 
 The browser cannot safely turn a client-side directory handle into a path on the
 machine running Work Buddy. Local desktop installs therefore ask the host OS to
-choose a folder, Markdown file, or destination directory; hosts without a
-graphical picker report it as unavailable.
+choose a folder, supported import file, or destination directory; hosts without
+a graphical picker report it as unavailable.
 """
 
 from __future__ import annotations
@@ -46,6 +46,27 @@ class NativeFolderChooserError(RuntimeError):
         self.status = status
         self.retryable = retryable
         self.diagnostic = diagnostic or message
+
+
+def _picker_spec(mode: str):
+    """Return validated presentation metadata for one file picker mode."""
+
+    from work_buddy.cowork.folder_picker_helper import (
+        MARKDOWN_FILE_PICKER_SPEC,
+        PICKER_MODE_FILE,
+        PICKER_MODE_MARKDOWN,
+        SUPPORTED_FILE_PICKER_SPEC,
+    )
+
+    if mode == PICKER_MODE_FILE:
+        return SUPPORTED_FILE_PICKER_SPEC
+    if mode == PICKER_MODE_MARKDOWN:
+        return MARKDOWN_FILE_PICKER_SPEC
+    raise NativeFolderChooserError(
+        "The picker could not be opened.",
+        retryable=False,
+        diagnostic="Unsupported native file picker mode.",
+    )
 
 
 def _diagnostic_excerpt(value: object, *, limit: int = 1000) -> str:
@@ -242,6 +263,7 @@ def _choose_windows(
 ) -> str | None:
     from work_buddy.cowork.folder_picker_helper import (
         PICKER_CANCELLED,
+        PICKER_MODE_FILE,
         PICKER_MODE_FOLDER,
         PICKER_MODE_LOCATION,
         PICKER_MODE_MARKDOWN,
@@ -250,6 +272,7 @@ def _choose_windows(
     requested_mode = mode or PICKER_MODE_FOLDER
     if requested_mode not in {
         PICKER_MODE_FOLDER,
+        PICKER_MODE_FILE,
         PICKER_MODE_MARKDOWN,
         PICKER_MODE_LOCATION,
     }:
@@ -265,8 +288,8 @@ def _choose_windows(
         command.extend(
             ["--mode", requested_mode, "--start", str(start)]
         )
-        if requested_mode == PICKER_MODE_MARKDOWN:
-            selection_label = "Markdown file"
+        if requested_mode in {PICKER_MODE_FILE, PICKER_MODE_MARKDOWN}:
+            selection_label = "file"
     raw = _run_dialog(
         command,
         cancelled_code=PICKER_CANCELLED,
@@ -285,6 +308,7 @@ def _choose_macos(
     start_directory: str | Path | None = None,
 ) -> str | None:
     from work_buddy.cowork.folder_picker_helper import (
+        PICKER_MODE_FILE,
         PICKER_MODE_FOLDER,
         PICKER_MODE_LOCATION,
         PICKER_MODE_MARKDOWN,
@@ -301,13 +325,17 @@ def _choose_macos(
         selection_label = "folder"
     else:
         start = _validated_start_directory(start_directory)
-        if requested_mode == PICKER_MODE_MARKDOWN:
-            picker = (
-                'choose file with prompt "New from Markdown" '
-                'default location (POSIX file (item 1 of argv)) '
-                'of type {"md", "markdown"}'
+        if requested_mode in {PICKER_MODE_FILE, PICKER_MODE_MARKDOWN}:
+            spec = _picker_spec(requested_mode)
+            apple_types = ", ".join(
+                f'"{extension}"' for extension in spec.extension_names
             )
-            selection_label = "Markdown file"
+            picker = (
+                'choose file with prompt "From file" '
+                'default location (POSIX file (item 1 of argv)) '
+                f"of type {{{apple_types}}}"
+            )
+            selection_label = "file"
         elif requested_mode == PICKER_MODE_LOCATION:
             picker = (
                 'choose folder with prompt "Choose Location" '
@@ -346,6 +374,7 @@ def _choose_zenity(
     start_directory: str | Path | None = None,
 ) -> str | None:
     from work_buddy.cowork.folder_picker_helper import (
+        PICKER_MODE_FILE,
         PICKER_MODE_FOLDER,
         PICKER_MODE_LOCATION,
         PICKER_MODE_MARKDOWN,
@@ -359,14 +388,18 @@ def _choose_zenity(
     else:
         start = _validated_start_directory(start_directory)
         command.append(f"--filename={str(start) + os.sep}")
-        if requested_mode == PICKER_MODE_MARKDOWN:
+        if requested_mode in {PICKER_MODE_FILE, PICKER_MODE_MARKDOWN}:
+            spec = _picker_spec(requested_mode)
             command.extend(
                 [
-                    "--title=New from Markdown",
-                    "--file-filter=Markdown files | *.md *.markdown",
+                    "--title=From file",
+                    (
+                        f"--file-filter={spec.display_name} | "
+                        f"{' '.join(spec.patterns)}"
+                    ),
                 ]
             )
-            selection_label = "Markdown file"
+            selection_label = "file"
         elif requested_mode == PICKER_MODE_LOCATION:
             command.extend(["--directory", "--title=Choose Location"])
         else:
@@ -421,7 +454,7 @@ def default_host_folder_chooser() -> HostFolderChooser | None:
 
 
 def _default_scoped_path_chooser(mode: str) -> HostScopedPathChooser | None:
-    """Build a root-started picker for Markdown or destination selection."""
+    """Build a root-started picker for file import or destination selection."""
 
     implementation: Callable[[Path], str | None] | None = None
     if os.name == "nt":
@@ -455,11 +488,19 @@ def _default_scoped_path_chooser(mode: str) -> HostScopedPathChooser | None:
 
 
 def default_host_markdown_chooser() -> HostScopedPathChooser | None:
-    """Return the native Markdown-file chooser supported by this host."""
+    """Compatibility wrapper for the former Markdown-specific chooser."""
 
     from work_buddy.cowork.folder_picker_helper import PICKER_MODE_MARKDOWN
 
     return _default_scoped_path_chooser(PICKER_MODE_MARKDOWN)
+
+
+def default_host_import_chooser() -> HostScopedPathChooser | None:
+    """Return the native supported-file chooser for this host."""
+
+    from work_buddy.cowork.folder_picker_helper import PICKER_MODE_FILE
+
+    return _default_scoped_path_chooser(PICKER_MODE_FILE)
 
 
 def default_host_location_chooser() -> HostScopedPathChooser | None:
@@ -475,6 +516,7 @@ __all__ = [
     "HostScopedPathChooser",
     "NativeFolderChooserError",
     "default_host_folder_chooser",
+    "default_host_import_chooser",
     "default_host_location_chooser",
     "default_host_markdown_chooser",
 ]

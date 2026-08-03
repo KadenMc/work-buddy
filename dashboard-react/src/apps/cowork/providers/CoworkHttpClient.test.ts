@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
+import type { CoworkPasteProvenanceRequest } from "../provenance";
 import {
   COWORK_FOLDER_PICKER_INTENT,
   COWORK_FOLDER_PICKER_INTENT_HEADER,
+  COWORK_IMPORT_PICKER_INTENT,
   COWORK_LOCATION_PICKER_INTENT,
-  COWORK_MARKDOWN_PICKER_INTENT,
   CoworkHttpClient,
   normalizeDocumentSummary,
 } from "./CoworkHttpClient";
@@ -15,7 +16,161 @@ const json = (value: unknown, status = 200): Response =>
     headers: { "Content-Type": "application/json" },
   });
 
+const sourceSha256 = "a".repeat(64);
+const markdownImporterWire = {
+  importer_id: "markdown/v1",
+  display_name: "Markdown",
+  source_format: "markdown",
+  media_type: "text/markdown",
+  suffixes: [".md", ".markdown"],
+  max_source_bytes: 16 * 1024 * 1024,
+} as const;
+const markdownImporter = {
+  importerId: "markdown/v1",
+  displayName: "Markdown",
+  sourceFormat: "markdown",
+  mediaType: "text/markdown",
+  suffixes: [".md", ".markdown"],
+  maxSourceBytes: 16 * 1024 * 1024,
+} as const;
+
+const pasteProvenanceRequest: CoworkPasteProvenanceRequest = {
+  storeId: "store with space",
+  documentId: "doc/with slash",
+  basisKind: "user_attestation",
+  expectedStructuredHeadSha256: "a".repeat(64),
+  anchor: {
+    exact: "Pasted text",
+    prefix: "Before ",
+    suffix: " after",
+  },
+  attestation: {
+    schema: "cowork-authorship-attestation/v1",
+    authorship: {
+      kind: "ai",
+      contributors: [],
+    },
+    human_review: {
+      status: "reviewed",
+      reviewers: [
+        {
+          kind: "current_user",
+          ref: "dashboard-user",
+          identity_status: "local_actor_ref",
+        },
+      ],
+    },
+  },
+  idempotencyKey: "paste-provenance-key",
+};
+
 describe("CoworkHttpClient document lifecycle contracts", () => {
+  it("loads the immutable current actor identity used by provenance capture", async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      expect(String(input)).toBe("/api/truth/cowork/current-actor");
+      return json({
+        kind: "human",
+        ref: "account-user-17",
+        identity_status: "account_ref",
+      });
+    });
+
+    await expect(
+      new CoworkHttpClient(fetchImpl as typeof fetch).currentActor(),
+    ).resolves.toEqual({
+      kind: "human",
+      ref: "account-user-17",
+      identity_status: "account_ref",
+    });
+  });
+
+  it("fails closed when the current actor response is not identity-bound", async () => {
+    const client = new CoworkHttpClient(
+      vi.fn(async () =>
+        json({ kind: "human", identity_status: "local_actor_ref" }),
+      ) as typeof fetch,
+    );
+
+    await expect(client.currentActor()).rejects.toMatchObject({
+      apiError: {
+        code: "invalid_current_actor_response",
+      },
+    });
+  });
+
+  it("records exact pasted-span provenance through the document-scoped API", async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      expect(String(input)).toBe(
+        "/api/truth/doc/doc%2Fwith%20slash/authorship-attestations?store_id=store%20with%20space",
+      );
+      expect(init.method).toBe("POST");
+      expect(init.credentials).toBe("same-origin");
+      expect(new Headers(init.headers).get("Content-Type")).toBe("application/json");
+      expect(JSON.parse(String(init.body))).toEqual({
+        span: pasteProvenanceRequest.anchor,
+        attestation: pasteProvenanceRequest.attestation,
+        basis_kind: "user_attestation",
+        expected_structured_head_sha256: "a".repeat(64),
+        idempotency_key: "paste-provenance-key",
+      });
+      return json({
+        attestation_id: "attestation-1",
+        document_span_id: "span-1",
+        target_structured_head_sha256: "a".repeat(64),
+      });
+    });
+    const client = new CoworkHttpClient(fetchImpl as typeof fetch);
+
+    await expect(client.recordPasteProvenance(pasteProvenanceRequest)).resolves.toEqual({
+      attestationId: "attestation-1",
+      documentSpanId: "span-1",
+      targetStructuredHeadSha256: "a".repeat(64),
+    });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it("preserves a stale structured-head API error for a paste provenance retry", async () => {
+    const fetchImpl = vi.fn(async () =>
+      json(
+        {
+          error: {
+            code: "stale_structured_head",
+            message: "The document changed before this provenance was recorded.",
+            retryable: true,
+          },
+        },
+        409,
+      ),
+    );
+    const client = new CoworkHttpClient(fetchImpl as typeof fetch);
+
+    await expect(client.recordPasteProvenance(pasteProvenanceRequest)).rejects.toMatchObject({
+      apiError: {
+        code: "stale_structured_head",
+        retryable: true,
+        status: 409,
+      },
+    });
+  });
+
+  it("rejects a provenance receipt for a different structured document head", async () => {
+    const fetchImpl = vi.fn(async () =>
+      json({
+        attestation_id: "attestation-1",
+        document_span_id: "span-1",
+        target_structured_head_sha256: "b".repeat(64),
+      }),
+    );
+    const client = new CoworkHttpClient(fetchImpl as typeof fetch);
+
+    await expect(client.recordPasteProvenance(pasteProvenanceRequest)).rejects.toMatchObject({
+      apiError: {
+        code: "invalid_provenance_response",
+        retryable: true,
+      },
+    });
+  });
+
   it("preserves picker-specific availability from Folder discovery", async () => {
     const fetchImpl = vi.fn(async () =>
       json({
@@ -25,7 +180,8 @@ describe("CoworkHttpClient document lifecycle contracts", () => {
         chooser: {
           available: true,
           kind: "host_native",
-          markdown_available: false,
+          import_available: false,
+          markdown_available: true,
           location_available: true,
         },
       }),
@@ -36,8 +192,31 @@ describe("CoworkHttpClient document lifecycle contracts", () => {
       chooser: {
         available: true,
         kind: "host_native",
-        markdownAvailable: false,
+        importAvailable: false,
         locationAvailable: true,
+      },
+    });
+  });
+
+  it("falls back to legacy Markdown picker availability when import availability is absent", async () => {
+    const fetchImpl = vi.fn(async () =>
+      json({
+        read_only: false,
+        folders: [],
+        diagnostics: [],
+        chooser: {
+          available: true,
+          kind: "legacy_host",
+          markdown_available: false,
+          location_available: true,
+        },
+      }),
+    );
+    const client = new CoworkHttpClient(fetchImpl as typeof fetch);
+
+    await expect(client.listFolders()).resolves.toMatchObject({
+      chooser: {
+        importAvailable: false,
       },
     });
   });
@@ -69,10 +248,10 @@ describe("CoworkHttpClient document lifecycle contracts", () => {
 
   it.each([
     [
-      "Markdown",
-      "chooseMarkdownFile",
-      "/api/truth/cowork/files/choose-markdown",
-      COWORK_MARKDOWN_PICKER_INTENT,
+      "file import",
+      "chooseImportFile",
+      "/api/truth/cowork/files/choose-import",
+      COWORK_IMPORT_PICKER_INTENT,
       "notes/source.md",
     ],
     [
@@ -87,14 +266,33 @@ describe("CoworkHttpClient document lifecycle contracts", () => {
     async (_label, method, expectedUrl, expectedIntent, path) => {
       const fetchImpl = vi.fn(
         async (_input: RequestInfo | URL, _init: RequestInit = {}) =>
-          json({ cancelled: false, path }),
+          json(
+            method === "chooseImportFile"
+              ? {
+                  cancelled: false,
+                  path,
+                  importer_id: "markdown/v1",
+                  media_type: "text/markdown",
+                  source_sha256: sourceSha256,
+                  importer: markdownImporterWire,
+                }
+              : { cancelled: false, path },
+          ),
       );
       const client = new CoworkHttpClient(fetchImpl as typeof fetch);
 
-      await expect(client[method]("store-1")).resolves.toEqual({
-        cancelled: false,
-        path,
-      });
+      await expect(client[method]("store-1")).resolves.toEqual(
+        method === "chooseImportFile"
+          ? {
+              cancelled: false,
+              path,
+              importerId: "markdown/v1",
+              mediaType: "text/markdown",
+              sourceSha256,
+              importer: markdownImporter,
+            }
+          : { cancelled: false, path },
+      );
 
       const [url, init = {}] = fetchImpl.mock.calls[0];
       const headers = new Headers(init.headers);
@@ -105,7 +303,7 @@ describe("CoworkHttpClient document lifecycle contracts", () => {
     },
   );
 
-  it.each(["chooseMarkdownFile", "chooseLocation"] as const)(
+  it.each(["chooseImportFile", "chooseLocation"] as const)(
     "rejects a successful %s response that omits its required path",
     async (method) => {
       const fetchImpl = vi.fn(
@@ -123,6 +321,81 @@ describe("CoworkHttpClient document lifecycle contracts", () => {
     },
   );
 
+  it.each([
+    {
+      cancelled: false,
+      path: "notes/source.md",
+      media_type: "text/markdown",
+      source_sha256: sourceSha256,
+      importer: markdownImporterWire,
+    },
+    {
+      cancelled: false,
+      path: "notes/source.md",
+      importer_id: "markdown/v1",
+      source_sha256: sourceSha256,
+      importer: markdownImporterWire,
+    },
+    {
+      cancelled: false,
+      path: "notes/source.md",
+      importer_id: "markdown/v1",
+      media_type: "text/markdown",
+      importer: markdownImporterWire,
+    },
+  ])(
+    "rejects a non-cancelled file selection without a complete importer identity",
+    async (payload) => {
+      const fetchImpl = vi.fn(async () => json(payload));
+      const client = new CoworkHttpClient(fetchImpl as typeof fetch);
+
+      await expect(client.chooseImportFile("store-1")).rejects.toMatchObject({
+        apiError: {
+          code: "invalid_picker_response",
+          retryable: true,
+        },
+      });
+    },
+  );
+
+  it.each([
+    undefined,
+    {
+      ...markdownImporterWire,
+      importer_id: "markdown/v2",
+    },
+    {
+      ...markdownImporterWire,
+      suffixes: [],
+    },
+    {
+      ...markdownImporterWire,
+      max_source_bytes: 0,
+    },
+  ])(
+    "rejects a malformed or mismatched server importer descriptor",
+    async (importer) => {
+      const fetchImpl = vi.fn(async () =>
+        json({
+          cancelled: false,
+          path: "notes/source.md",
+          importer_id: "markdown/v1",
+          media_type: "text/markdown",
+          source_sha256: sourceSha256,
+          importer,
+        }),
+      );
+      const client = new CoworkHttpClient(fetchImpl as typeof fetch);
+
+      await expect(client.chooseImportFile("store-1")).rejects.toMatchObject({
+        apiError: {
+          code: "invalid_picker_response",
+          retryable: true,
+        },
+      });
+    },
+  );
+
   it("falls back to the path basename when the server title is blank", () => {
     expect(
       normalizeDocumentSummary({
@@ -131,6 +404,67 @@ describe("CoworkHttpClient document lifecycle contracts", () => {
         title: "   ",
       }).title,
     ).toBe("My Working Note.MD");
+  });
+
+  it("preserves detached import source identity and the currently observed source hash", () => {
+    expect(
+      normalizeDocumentSummary({
+        document_id: "detached",
+        path: "drafts/source.md",
+        source_writeback: "never",
+        import_source_sha256: "a".repeat(64),
+        observed_source_file_sha256: "b".repeat(64),
+      }),
+    ).toMatchObject({
+      importSourceSha256: "a".repeat(64),
+      observedSourceFileSha256: "b".repeat(64),
+    });
+    expect(
+      normalizeDocumentSummary({
+        document_id: "detached-nested",
+        path: "drafts/source.md",
+        hashes: {
+          import_source_sha256: "c".repeat(64),
+          observed_source_file_sha256: "d".repeat(64),
+        },
+      }),
+    ).toMatchObject({
+      importSourceSha256: "c".repeat(64),
+      observedSourceFileSha256: "d".repeat(64),
+    });
+  });
+
+  it("keeps absent legacy writeback metadata compatible but fails closed once the field is supplied", () => {
+    expect(
+      normalizeDocumentSummary({
+        document_id: "legacy",
+        path: "legacy.md",
+      }).sourceWriteback,
+    ).toBe("same_file");
+    expect(
+      normalizeDocumentSummary({
+        document_id: "current",
+        path: "current.md",
+        source_writeback: "same_file",
+      }).sourceWriteback,
+    ).toBe("same_file");
+
+    for (const sourceWriteback of ["future_policy", null, false, ""]) {
+      expect(
+        normalizeDocumentSummary({
+          document_id: "malformed",
+          path: "malformed.md",
+          source_writeback: sourceWriteback,
+        }).sourceWriteback,
+      ).toBe("never");
+    }
+    expect(
+      normalizeDocumentSummary({
+        document_id: "malformed-camel",
+        path: "malformed-camel.md",
+        sourceWriteback: "future_policy",
+      }).sourceWriteback,
+    ).toBe("never");
   });
 
   it("uses prepare, exact staged source, and multipart commit for re-import", async () => {

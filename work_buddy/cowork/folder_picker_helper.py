@@ -14,17 +14,43 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
+from work_buddy.cowork.file_importers import (
+    DEFAULT_FILE_IMPORTERS,
+    FilePickerSpec,
+    MARKDOWN_SUFFIXES,
+)
+
 
 PICKER_PROTOCOL = "work-buddy-native-picker/v2"
 PICKER_CANCELLED = 2
 PICKER_MODE_FOLDER = "folder"
+PICKER_MODE_FILE = "file"
 PICKER_MODE_MARKDOWN = "markdown"
 PICKER_MODE_LOCATION = "location"
 PICKER_MODES = frozenset(
-    {PICKER_MODE_FOLDER, PICKER_MODE_MARKDOWN, PICKER_MODE_LOCATION}
+    {
+        PICKER_MODE_FILE,
+        PICKER_MODE_FOLDER,
+        PICKER_MODE_MARKDOWN,
+        PICKER_MODE_LOCATION,
+    }
 )
 MAX_START_PATH_CHARS = 32_767
-MARKDOWN_FILE_FILTER = "Markdown files (*.md *.markdown)"
+
+
+def _qt_file_filter(spec: FilePickerSpec) -> str:
+    return f"{spec.display_name} ({' '.join(spec.patterns)})"
+
+
+SUPPORTED_FILE_PICKER_SPEC = DEFAULT_FILE_IMPORTERS.picker_spec()
+SUPPORTED_FILE_FILTER = _qt_file_filter(SUPPORTED_FILE_PICKER_SPEC)
+# Compatibility mode stays Markdown-only even after generic From file gains
+# another registered importer.
+MARKDOWN_FILE_PICKER_SPEC = FilePickerSpec(
+    display_name="Markdown files",
+    suffixes=MARKDOWN_SUFFIXES,
+)
+MARKDOWN_FILE_FILTER = _qt_file_filter(MARKDOWN_FILE_PICKER_SPEC)
 
 
 def _validate_start_directory(value: str | None) -> Path:
@@ -84,12 +110,17 @@ def _choose_native_path(
     anchor.activateWindow()
     app.processEvents()
     try:
-        if mode == PICKER_MODE_MARKDOWN:
+        if mode in {PICKER_MODE_FILE, PICKER_MODE_MARKDOWN}:
+            file_filter = (
+                SUPPORTED_FILE_FILTER
+                if mode == PICKER_MODE_FILE
+                else MARKDOWN_FILE_FILTER
+            )
             selected, _selected_filter = QFileDialog.getOpenFileName(
                 anchor,
-                "New from Markdown",
+                "From file",
                 str(start_directory),
-                MARKDOWN_FILE_FILTER,
+                file_filter,
             )
         else:
             selected = QFileDialog.getExistingDirectory(
@@ -112,10 +143,19 @@ def _choose_native_folder() -> str | None:
 
 
 def _choose_native_markdown(start_directory: str | Path) -> str | None:
-    """Choose one existing Markdown file, starting inside the active folder."""
+    """Compatibility wrapper for the former Markdown-specific picker."""
 
     return _choose_native_path(
         PICKER_MODE_MARKDOWN,
+        _validate_start_directory(str(start_directory)),
+    )
+
+
+def _choose_native_file(start_directory: str | Path) -> str | None:
+    """Choose one supported import file, starting inside the active folder."""
+
+    return _choose_native_path(
+        PICKER_MODE_FILE,
         _validate_start_directory(str(start_directory)),
     )
 
@@ -185,7 +225,9 @@ def main(argv: list[str] | None = None) -> int:
             chooser = _choose_native_folder
         else:
             start = _validate_start_directory(arguments.start)
-            if mode == PICKER_MODE_MARKDOWN:
+            if mode == PICKER_MODE_FILE:
+                chooser = lambda: _choose_native_file(start)
+            elif mode == PICKER_MODE_MARKDOWN:
                 chooser = lambda: _choose_native_markdown(start)
             else:
                 chooser = lambda: _choose_native_location(start)

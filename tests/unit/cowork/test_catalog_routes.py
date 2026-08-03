@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from work_buddy.cowork import bootstrap, catalog_api
+from work_buddy.cowork.file_importers import MARKDOWN_MAX_SOURCE_BYTES
 from work_buddy.truth import documents
 from work_buddy.truth.contracts import Actor
 from work_buddy.truth.identity import sha256_bytes
@@ -138,6 +139,84 @@ def test_source_rejects_invalid_version_with_typed_error(client, seeded):
             "retryable": False,
         },
     }
+
+
+def test_oversized_detached_source_keeps_catalog_usable_and_fails_current_read_typed(
+    client, store_ctx
+):
+    source = b"# Initially bounded\n"
+    rel = "imports/grown-after-import.md"
+    target = store_ctx["root"] / rel
+    target.parent.mkdir(parents=True)
+    target.write_bytes(source)
+    actor = Actor("human", "dashboard-user")
+    intent, _ = bootstrap.prepare_bootstrap(
+        store_ctx["store"],
+        metadata={
+            "mode": "import",
+            "path": rel,
+            "expected_file_sha256": sha256_bytes(source),
+            "idempotency_key": "grown-source-bootstrap-0001",
+        },
+        source=None,
+        actor=actor,
+    )
+    snapshot = b"YDOC:" + source
+    ready = bootstrap.commit_bootstrap(
+        store_ctx["store"],
+        bootstrap_id=intent.id,
+        snapshot=snapshot,
+        source_sha256=sha256_bytes(source),
+        snapshot_sha256=sha256_bytes(snapshot),
+        ydoc_schema=bootstrap.YDOC_SCHEMA,
+        actor=actor,
+    )
+    with target.open("wb") as stream:
+        stream.truncate(MARKDOWN_MAX_SOURCE_BYTES + 1)
+
+    listed = client.get(_url("/api/truth/doc/list", store_ctx["store_id"]))
+    fetched = client.get(
+        _url(f"/api/truth/doc/{ready['document_id']}", store_ctx["store_id"])
+    )
+    current = client.get(
+        _url(
+            f"/api/truth/doc/{ready['document_id']}/source",
+            store_ctx["store_id"],
+        )
+    )
+
+    assert listed.status_code == 200
+    list_entry = listed.get_json()["docs"][0]
+    assert list_entry["source_writeback"] == "never"
+    assert list_entry["observed_source_file_sha256"] is None
+    assert list_entry["current_file_sha256"] == sha256_bytes(source)
+    assert fetched.status_code == 200
+    assert fetched.get_json()["observed_source_file_sha256"] is None
+    assert current.status_code == 413
+    assert current.get_json()["error"] == {
+        "code": "source_too_large",
+        "message": "The current source file exceeds the size limit.",
+        "retryable": False,
+        "details": {
+            "importer_id": "markdown/v1",
+            "max_source_bytes": MARKDOWN_MAX_SOURCE_BYTES,
+            "source_byte_length": MARKDOWN_MAX_SOURCE_BYTES + 1,
+        },
+    }
+
+    target.unlink()
+    target.mkdir()
+    listed_again = client.get(_url("/api/truth/doc/list", store_ctx["store_id"]))
+    non_regular = client.get(
+        _url(
+            f"/api/truth/doc/{ready['document_id']}/source",
+            store_ctx["store_id"],
+        )
+    )
+    assert listed_again.status_code == 200
+    assert listed_again.get_json()["docs"][0]["observed_source_file_sha256"] is None
+    assert non_regular.status_code == 409
+    assert non_regular.get_json()["error"]["code"] == "source_unavailable"
 
 
 def test_retire_is_idempotent_and_never_deletes_markdown(client, store_ctx):

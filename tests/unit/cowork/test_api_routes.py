@@ -11,10 +11,12 @@ import json
 import os
 import struct
 
+import pytest
+
 from work_buddy.conversations import store as conversation_store
 from work_buddy.conversations.execution import EXECUTION_METADATA_KEY
 from work_buddy.cowork import api
-from work_buddy.cowork import conversations, document_agent
+from work_buddy.cowork import conversations, document_agent, provenance
 from work_buddy.truth import documents, expressions, proposals, ydoc_store
 from work_buddy.truth.anchors import CompositeSelector
 from work_buddy.truth.contracts import Actor
@@ -46,8 +48,12 @@ def test_cowork_host_file_routes_reject_non_loopback_callers(client, store_ctx):
         _url("/api/truth/doc/list", store_ctx["store_id"]),
         environ_overrides=remote,
     )
+    current_actor = client.get(
+        "/api/truth/cowork/current-actor",
+        environ_overrides=remote,
+    )
 
-    for response in (folders, documents):
+    for response in (folders, documents, current_actor):
         assert response.status_code == 403
         assert response.get_json() == {
             "ok": False,
@@ -204,6 +210,8 @@ def test_list_returns_registered_docs(client, seeded):
     assert entry["profile"] == "co_authored"
     assert entry["drift_state"] == "clean"
     assert entry["last_materialized_sha256"] == seeded["content_sha256"]
+    assert entry["import_source_sha256"] is None
+    assert entry["observed_source_file_sha256"] == seeded["content_sha256"]
 
 
 def test_get_returns_open_proposals_and_hashes(client, seeded, make_proposal):
@@ -214,6 +222,8 @@ def test_get_returns_open_proposals_and_hashes(client, seeded, make_proposal):
     assert resp.status_code == 200
     payload = resp.get_json()
     assert payload["hashes"]["ydoc_snapshot_sha256"] == seeded["snapshot_sha256"]
+    assert payload["import_source_sha256"] is None
+    assert payload["observed_source_file_sha256"] == seeded["content_sha256"]
     assert payload["drift"]["state"] == "clean"
     assert len(payload["open_proposals"]) == 1
     entry = payload["open_proposals"][0]
@@ -222,6 +232,80 @@ def test_get_returns_open_proposals_and_hashes(client, seeded, make_proposal):
     assert entry["base_ok"] is True
     assert entry["quote_anchor"]["exact"] == DOC_QUOTE
     assert entry["kind"] == "edit"
+
+
+def test_list_and_get_distinguish_recorded_import_source_from_observed_file(
+    client,
+    store_ctx,
+):
+    source_path = store_ctx["root"] / "drafts" / "detached-source.md"
+    source_path.parent.mkdir(parents=True)
+    original_source = b"# Original detached import\n"
+    source_path.write_bytes(original_source)
+    recorded_source_sha256 = sha256_bytes(original_source)
+    snapshot = b"YDOC-DETACHED-IMPORT-SNAPSHOT"
+    snapshot_sha256 = ydoc_store.write_snapshot(
+        store_ctx["store"],
+        snapshot=snapshot,
+    )
+    structured_head_sha256 = ydoc_store.structured_head_from_segments(
+        snapshot,
+        (),
+    )
+    document, _, _ = documents.register_ready_document(
+        store_ctx["store"],
+        path="drafts/detached-source.md",
+        title="Detached source",
+        document_class="co_authored",
+        projection_bytes=original_source,
+        ydoc_snapshot_sha256=snapshot_sha256,
+        structured_head_sha256=structured_head_sha256,
+        actor=HUMAN,
+        mode="import",
+        document_meta={
+            "source": {
+                "kind": "file_import",
+                "writeback_policy": "never",
+                "sha256": recorded_source_sha256,
+                "importer_id": "markdown/v1",
+                "media_type": "text/markdown",
+            }
+        },
+        at=NOW,
+    )
+    changed_source = b"# The source changed after import\n"
+    observed_source_sha256 = sha256_bytes(changed_source)
+    source_path.write_bytes(changed_source)
+
+    listed = client.get(_url("/api/truth/doc/list", store_ctx["store_id"]))
+    fetched = client.get(
+        _url(f"/api/truth/doc/{document.id}", store_ctx["store_id"])
+    )
+
+    assert listed.status_code == 200
+    list_entry = listed.get_json()["docs"][0]
+    assert list_entry["source_writeback"] == "never"
+    assert list_entry["current_file_sha256"] == recorded_source_sha256
+    assert list_entry["import_source_sha256"] == recorded_source_sha256
+    assert list_entry["observed_source_file_sha256"] == observed_source_sha256
+
+    assert fetched.status_code == 200
+    fetched_payload = fetched.get_json()
+    assert fetched_payload["source_writeback"] == "never"
+    assert fetched_payload["import_source_sha256"] == recorded_source_sha256
+    assert (
+        fetched_payload["observed_source_file_sha256"]
+        == observed_source_sha256
+    )
+    assert fetched_payload["hashes"]["current_file_sha256"] == recorded_source_sha256
+    assert (
+        fetched_payload["hashes"]["import_source_sha256"]
+        == recorded_source_sha256
+    )
+    assert (
+        fetched_payload["hashes"]["observed_source_file_sha256"]
+        == observed_source_sha256
+    )
 
 
 def test_get_returns_empty_replacement_as_deletion_edit(
@@ -611,6 +695,243 @@ def test_get_leaves_unresolvable_expression_claim_metadata_empty(client, seeded)
 def test_get_unknown_document_is_404(client, seeded):
     resp = client.get(_url("/api/truth/doc/" + "0" * 32, seeded["store_id"]))
     assert resp.status_code == 404
+
+
+def test_current_actor_exposes_the_binding_provenance_clients_must_freeze(
+    client,
+):
+    response = client.get(
+        "/api/truth/cowork/current-actor",
+        headers={"X-WB-User-Ref": "local-author"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "kind": "human",
+        "ref": "local-author",
+        "identity_status": "local_actor_ref",
+    }
+
+
+def test_paste_authorship_attestation_targets_exact_structured_head(
+    client,
+    seeded,
+):
+    document = seeded["document"]
+    head = ydoc_store.current_structured_head(
+        seeded["store"],
+        document_id=document.id,
+        snapshot_sha256=seeded["snapshot_sha256"],
+    )
+    url = _url(
+        f"/api/truth/doc/{document.id}/authorship-attestations",
+        seeded["store_id"],
+    )
+    body = {
+        "span": {
+            "exact": DOC_QUOTE,
+            "prefix": "before ",
+            "suffix": " after",
+        },
+        "attestation": {
+            "schema": "cowork-authorship-attestation/v1",
+            "authorship": {
+                "kind": "human",
+                "contributors": [
+                    {
+                        "kind": "current_user",
+                        "ref": "local-author",
+                        "identity_status": "local_actor_ref",
+                    }
+                ],
+            },
+            "human_review": {
+                "status": "not_applicable",
+                "reviewers": [],
+            },
+        },
+        "basis_kind": "automatic_short_text_attribution",
+        "expected_structured_head_sha256": head,
+        "idempotency_key": "paste-route-0001",
+    }
+
+    recorded = client.post(
+        url,
+        json=body,
+        headers={"X-WB-User-Ref": "local-author"},
+    )
+
+    assert recorded.status_code == 201
+    receipt = recorded.get_json()
+    assert receipt["target_structured_head_sha256"] == head
+    listed = provenance.list_attestations(seeded["store"], document.id)
+    assert len(listed) == 1
+    assert listed[0]["attestation_id"] == receipt["attestation_id"]
+    assert listed[0]["scope"]["document_span_id"] == receipt["document_span_id"]
+    assert listed[0]["authorship"]["contributors"] == [
+        {
+            "identity_status": "local_actor_ref",
+            "kind": "human",
+            "ref": "local-author",
+        }
+    ]
+    assert listed[0]["basis"]["kind"] == "automatic_short_text_attribution"
+
+    replay = client.post(
+        url,
+        json=body,
+        headers={"X-WB-User-Ref": "local-author"},
+    )
+    assert replay.status_code == 201
+    assert replay.get_json()["attestation_id"] == receipt["attestation_id"]
+    assert len(provenance.list_attestations(seeded["store"], document.id)) == 1
+
+    switched_actor_replay = client.post(
+        url,
+        json=body,
+        headers={"X-WB-User-Ref": "different-local-author"},
+    )
+    assert switched_actor_replay.status_code == 409
+    assert switched_actor_replay.get_json()["error"] == {
+        "code": "provenance_actor_changed",
+        "message": (
+            "The acting user changed after this provenance determination "
+            "was captured."
+        ),
+        "details": {},
+        "retryable": False,
+    }
+    assert len(provenance.list_attestations(seeded["store"], document.id)) == 1
+
+    opened = client.get(
+        _url(f"/api/truth/doc/{document.id}", seeded["store_id"])
+    )
+    assert opened.status_code == 200
+    assert opened.get_json()["authorship_attestations"] == listed
+
+
+def test_paste_authorship_attestation_rejects_stale_structured_head(
+    client,
+    seeded,
+):
+    document = seeded["document"]
+    response = client.post(
+        _url(
+            f"/api/truth/doc/{document.id}/authorship-attestations",
+            seeded["store_id"],
+        ),
+        json={
+            "span": {"exact": DOC_QUOTE, "prefix": "", "suffix": ""},
+            "attestation": {
+                "schema": "cowork-authorship-attestation/v1",
+                "authorship": {"kind": "unknown", "contributors": []},
+                "human_review": {
+                    "status": "not_applicable",
+                    "reviewers": [],
+                },
+            },
+            "expected_structured_head_sha256": "0" * 64,
+            "idempotency_key": "paste-route-stale-0001",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.get_json()["error"]["code"] == "provenance_target_changed"
+    assert provenance.list_attestations(seeded["store"], document.id) == []
+    with seeded["store"]._read_connection() as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM document_spans WHERE document_id = ?",
+                (document.id,),
+            ).fetchone()[0]
+            == 0
+        )
+
+
+@pytest.mark.parametrize(
+    ("exact", "attestation", "message"),
+    [
+        (
+            "x" * 600,
+            {
+                "schema": "cowork-authorship-attestation/v1",
+                "authorship": {
+                    "kind": "human",
+                    "contributors": [
+                        {
+                            "kind": "current_user",
+                            "ref": "local-author",
+                            "identity_status": "local_actor_ref",
+                        }
+                    ],
+                },
+                "human_review": {
+                    "status": "not_applicable",
+                    "reviewers": [],
+                },
+            },
+            "short text authored by the acting user",
+        ),
+        (
+            DOC_QUOTE,
+            {
+                "schema": "cowork-authorship-attestation/v1",
+                "authorship": {"kind": "ai", "contributors": []},
+                "human_review": {
+                    "status": "not_reviewed",
+                    "reviewers": [],
+                },
+            },
+            "short text authored by the acting user",
+        ),
+        (
+            DOC_QUOTE,
+            {
+                "authorship": {"kind": "unknown", "contributors": []},
+                "human_review": {
+                    "status": "not_applicable",
+                    "reviewers": [],
+                },
+            },
+            "attestation.schema",
+        ),
+    ],
+)
+def test_automatic_paste_attribution_is_server_constrained(
+    client,
+    seeded,
+    exact,
+    attestation,
+    message,
+):
+    document = seeded["document"]
+    head = ydoc_store.current_structured_head(
+        seeded["store"],
+        document_id=document.id,
+        snapshot_sha256=seeded["snapshot_sha256"],
+    )
+    response = client.post(
+        _url(
+            f"/api/truth/doc/{document.id}/authorship-attestations",
+            seeded["store_id"],
+        ),
+        json={
+            "span": {"exact": exact, "prefix": "", "suffix": ""},
+            "attestation": attestation,
+            "basis_kind": "automatic_short_text_attribution",
+            "expected_structured_head_sha256": head,
+            "idempotency_key": "automatic-paste-guard-0001",
+        },
+        headers={"X-WB-User-Ref": "local-author"},
+    )
+
+    assert response.status_code == 400
+    error = response.get_json()["error"]
+    assert message in (error["message"] if isinstance(error, dict) else error)
+    assert provenance.list_attestations(
+        seeded["store"],
+        document.id,
+    ) == []
 
 
 # --- R3 / R4 transport -----------------------------------------------------

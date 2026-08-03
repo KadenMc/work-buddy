@@ -26,6 +26,7 @@ from work_buddy.truth.contracts import (
     VALID_STATUSES,
     validate_agent_producer_meta,
 )
+from work_buddy.truth.documents import retained_file_import_source_sha256
 from work_buddy.truth.fingerprints import (
     FingerprintStatus,
     IMMUTABLE_LINK_TYPES,
@@ -37,6 +38,7 @@ from work_buddy.truth.identity import (
     claim_sha256,
     new_id,
     parse_truth_uri,
+    sha256_bytes,
     sha256_text,
     truth_uri,
     utc_now,
@@ -1787,6 +1789,20 @@ def _document_integrity_findings(
         is not None
         else []
     )
+    provenance_rows = (
+        conn.execute(
+            "SELECT * FROM document_provenance_attestations "
+            "ORDER BY created_at, rowid"
+        ).fetchall()
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'document_provenance_attestations'"
+        ).fetchone()
+        is not None
+        else []
+    )
+    document_versions_by_id = {row["id"]: row for row in document_versions}
+    provenance_by_id = {row["id"]: row for row in provenance_rows}
 
     latest_status: dict[str, sqlite3.Row] = {}
     for row in status_rows:
@@ -1819,6 +1835,156 @@ def _document_integrity_findings(
                 event["id"],
                 f"document_id {event['document_id']} has no document row",
             )
+    for attestation in provenance_rows:
+        attestation_id = attestation["id"]
+        document_id = attestation["document_id"]
+        if document_id not in documents:
+            add(
+                "document-provenance-dangling-ref",
+                "document_provenance_attestation",
+                attestation_id,
+                f"document_id {document_id} has no document row",
+            )
+        target_kind = attestation["target_kind"]
+        if target_kind == "document_version":
+            target_id = attestation["document_version_id"]
+            target = document_versions_by_id.get(target_id)
+        elif target_kind == "document_span":
+            target_id = attestation["document_span_id"]
+            target = document_spans.get(target_id)
+        else:
+            target_id = None
+            target = None
+        if target is None:
+            add(
+                "document-provenance-dangling-target",
+                "document_provenance_attestation",
+                attestation_id,
+                f"{target_kind} target {target_id} does not exist",
+            )
+        elif target["document_id"] != document_id:
+            add(
+                "document-provenance-target-document-mismatch",
+                "document_provenance_attestation",
+                attestation_id,
+                "the frozen target belongs to another document",
+            )
+        elif (
+            target_kind == "document_version"
+            and target["structured_head_sha256"]
+            != attestation["target_structured_head_sha256"]
+        ):
+            add(
+                "document-provenance-target-head-mismatch",
+                "document_provenance_attestation",
+                attestation_id,
+                "target_structured_head_sha256 differs from the document version",
+            )
+
+        target_head = attestation["target_structured_head_sha256"]
+        if not (
+            isinstance(target_head, str)
+            and len(target_head) == 64
+            and all(character in "0123456789abcdef" for character in target_head)
+        ):
+            add(
+                "document-provenance-invalid-target-head",
+                "document_provenance_attestation",
+                attestation_id,
+                "target_structured_head_sha256 is not a lowercase SHA-256 digest",
+            )
+
+        try:
+            from work_buddy.truth.provenance import (
+                attestation_canonical_sha256_from_record,
+                validate_attestation_components,
+            )
+
+            validate_attestation_components(
+                target_kind=attestation["target_kind"],
+                document_version_id=attestation["document_version_id"],
+                document_span_id=attestation["document_span_id"],
+                authorship_kind=attestation["authorship_kind"],
+                human_contributors=attestation["human_contributors_json"],
+                review_status=attestation["review_status"],
+                human_reviewers=attestation["human_reviewers_json"],
+                source_kind=attestation["source_kind"],
+                source=attestation["source_json"],
+                basis_kind=attestation["basis_kind"],
+                basis_ref=attestation["basis_ref"],
+                attested_by_kind=attestation["attested_by_kind"],
+                attested_by_ref=attestation["attested_by_ref"],
+                attested_by_meta=attestation["attested_by_meta_json"],
+            )
+            recomputed = attestation_canonical_sha256_from_record(attestation)
+        except Exception as exc:  # noqa: BLE001 - report corrupt durable data
+            add(
+                "document-provenance-invalid",
+                "document_provenance_attestation",
+                attestation_id,
+                f"attestation fields are invalid: {exc}",
+            )
+        else:
+            if recomputed != attestation["canonical_sha256"]:
+                add(
+                    "document-provenance-canonical-mismatch",
+                    "document_provenance_attestation",
+                    attestation_id,
+                    "recomputed canonical_sha256 differs from the stored value",
+                )
+
+        supersedes_id = attestation["supersedes_id"]
+        if supersedes_id is not None:
+            prior = provenance_by_id.get(supersedes_id)
+            if prior is None:
+                add(
+                    "document-provenance-dangling-supersession",
+                    "document_provenance_attestation",
+                    attestation_id,
+                    f"supersedes_id {supersedes_id} does not exist",
+                )
+            elif (
+                prior["document_id"] != document_id
+                or prior["target_kind"] != target_kind
+                or prior["document_version_id"]
+                != attestation["document_version_id"]
+                or prior["document_span_id"] != attestation["document_span_id"]
+            ):
+                add(
+                    "document-provenance-supersession-target-mismatch",
+                    "document_provenance_attestation",
+                    attestation_id,
+                    "supersession changes the frozen target",
+                )
+            else:
+                try:
+                    if datetime.fromisoformat(
+                        str(prior["created_at"]).replace("Z", "+00:00")
+                    ) > datetime.fromisoformat(
+                        str(attestation["created_at"]).replace("Z", "+00:00")
+                    ):
+                        raise ValueError
+                except (TypeError, ValueError):
+                    add(
+                        "document-provenance-invalid-supersession-order",
+                        "document_provenance_attestation",
+                        attestation_id,
+                        "superseded attestation is not earlier than its replacement",
+                    )
+
+        visited = {attestation_id}
+        cursor = supersedes_id
+        while cursor is not None and cursor in provenance_by_id:
+            if cursor in visited:
+                add(
+                    "document-provenance-supersession-cycle",
+                    "document_provenance_attestation",
+                    attestation_id,
+                    "supersession history contains a cycle",
+                )
+                break
+            visited.add(cursor)
+            cursor = provenance_by_id[cursor]["supersedes_id"]
     for expr in expressions:
         if expr["document_span_id"] not in document_spans:
             add(
@@ -1840,6 +2006,37 @@ def _document_integrity_findings(
                     doc_id,
                     f"ydoc snapshot blob {digest} is absent",
                 )
+        source_digest = retained_file_import_source_sha256(doc["meta_json"])
+        if source_digest is None:
+            continue
+        source_path = store.resolve_blob_path(f"blobs/{source_digest}")
+        if not source_path.exists():
+            add(
+                "document-source-blob-unavailable",
+                "document",
+                doc_id,
+                "exact imported source bytes are unavailable; historical "
+                "imports may retain hash-only provenance",
+                severity="warning",
+            )
+            continue
+        try:
+            source_bytes = source_path.read_bytes()
+        except OSError as exc:
+            add(
+                "document-source-blob-unreadable",
+                "document",
+                doc_id,
+                f"retained import source blob could not be read: {exc}",
+            )
+            continue
+        if sha256_bytes(source_bytes) != source_digest:
+            add(
+                "document-source-blob-mismatch",
+                "document",
+                doc_id,
+                "retained import source bytes do not match source sha256",
+            )
 
     for prop in proposals:
         proposal_id = prop["id"]
@@ -2027,6 +2224,7 @@ def _document_integrity_findings(
         "proposal_status_event": {row["id"] for row in status_rows},
         "doc_event": {row["id"] for row in doc_events},
         "document_version": {row["id"] for row in document_versions},
+        "document_provenance_attestation": set(provenance_by_id),
     }
 
 

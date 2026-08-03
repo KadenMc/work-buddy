@@ -6,8 +6,10 @@ import json
 
 from flask import Blueprint, Response, jsonify, request
 
-from work_buddy.cowork import bootstrap
+from work_buddy.cowork import bootstrap, provenance
 from work_buddy.truth.contracts import Actor, InvariantViolation
+from work_buddy.truth.events import emit_truth_event
+from work_buddy.truth.identity import sha256_text
 
 
 bootstrap_blueprint = Blueprint("cowork_bootstrap", __name__)
@@ -95,7 +97,11 @@ def api_bootstrap_prepare():
             )
         metadata = _metadata_part()
         uploaded = request.files.get("source")
-        source = None if uploaded is None else uploaded.read()
+        source = (
+            None
+            if uploaded is None
+            else uploaded.read(bootstrap.maximum_source_upload_bytes() + 1)
+        )
         intent, created = bootstrap.prepare_bootstrap(
             _store(), metadata=metadata, source=source, actor=_actor()
         )
@@ -118,6 +124,8 @@ def api_bootstrap_prepare():
             "expires_at": intent.expires_at,
             "state": intent.state,
         }
+        if intent.mode == "import":
+            payload["importer"] = bootstrap.importer_descriptor(intent)
         if intent.state == "committed" and intent.receipt is not None:
             payload["result"] = intent.receipt
         return jsonify(payload), 201 if created else 200
@@ -133,14 +141,18 @@ def api_bootstrap_source(bootstrap_id: str):
         intent, payload = bootstrap.read_staged_source(
             _store(), bootstrap_id=bootstrap_id, actor=_actor()
         )
-        response = Response(payload, mimetype="application/octet-stream")
+        media_type = intent.source_media_type or "text/markdown"
+        response = Response(payload, mimetype=media_type)
         response.headers["ETag"] = f'"{intent.source_sha256}"'
         response.headers["X-WB-Source-Sha256"] = intent.source_sha256
         response.headers["X-WB-Source-Byte-Length"] = str(len(payload))
-        response.headers["X-WB-Encoding"] = "utf-8"
-        response.headers["X-WB-BOM"] = (
-            "utf-8" if payload.startswith(b"\xef\xbb\xbf") else "none"
-        )
+        if intent.importer_id is not None:
+            response.headers["X-WB-Importer-Id"] = intent.importer_id
+        if media_type == "text/markdown":
+            response.headers["X-WB-Encoding"] = "utf-8"
+            response.headers["X-WB-BOM"] = (
+                "utf-8" if payload.startswith(b"\xef\xbb\xbf") else "none"
+            )
         return response
     except bootstrap.BootstrapError as exc:
         return _error(exc)
@@ -150,24 +162,90 @@ def api_bootstrap_source(bootstrap_id: str):
 def api_bootstrap_commit(bootstrap_id: str):
     try:
         _require_writable()
-        if request.mimetype != "application/octet-stream":
+        if (request.mimetype or "").startswith("multipart/form-data"):
+            metadata = _metadata_part()
+            snapshot_upload = request.files.get("snapshot")
+            projection_upload = request.files.get("projection")
+            if snapshot_upload is None or projection_upload is None:
+                raise bootstrap.BootstrapError(
+                    "invalid_request",
+                    "bootstrap commit requires snapshot and projection parts",
+                )
+            snapshot = snapshot_upload.read(bootstrap.MAX_SNAPSHOT_BYTES + 1)
+            projection = projection_upload.read(
+                bootstrap.MAX_CANONICAL_PROJECTION_BYTES + 1
+            )
+            source_sha256 = str(metadata.get("source_sha256") or "")
+            snapshot_sha256 = str(metadata.get("snapshot_sha256") or "")
+            projection_sha256 = str(metadata.get("projection_sha256") or "")
+            ydoc_schema = str(metadata.get("ydoc_schema") or "")
+        elif request.mimetype == "application/octet-stream":
+            # Backward-compatible strict-fidelity client. Its source bytes are
+            # also its projection bytes.
+            snapshot = request.stream.read(bootstrap.MAX_SNAPSHOT_BYTES + 1)
+            projection = None
+            source_sha256 = request.headers.get("X-WB-Source-Sha256") or ""
+            snapshot_sha256 = request.headers.get("X-WB-Snapshot-Sha256") or ""
+            projection_sha256 = None
+            ydoc_schema = request.headers.get("X-WB-Ydoc-Schema") or ""
+        else:
             raise bootstrap.BootstrapError(
                 "unsupported_media_type",
-                "bootstrap commit requires application/octet-stream",
+                "bootstrap commit requires multipart/form-data",
                 status=415,
             )
+        store = _store()
         receipt = bootstrap.commit_bootstrap(
-            _store(),
+            store,
             bootstrap_id=bootstrap_id,
-            snapshot=request.get_data(cache=False),
-            source_sha256=request.headers.get("X-WB-Source-Sha256") or "",
-            snapshot_sha256=request.headers.get("X-WB-Snapshot-Sha256") or "",
-            ydoc_schema=request.headers.get("X-WB-Ydoc-Schema") or "",
+            snapshot=snapshot,
+            projection=projection,
+            source_sha256=source_sha256,
+            snapshot_sha256=snapshot_sha256,
+            projection_sha256=projection_sha256,
+            ydoc_schema=ydoc_schema,
             actor=_actor(),
         )
+        attestation_id = receipt.get("authorship_attestation_id")
+        if (
+            receipt.get("mode") == "import"
+            and isinstance(attestation_id, str)
+            and attestation_id
+        ):
+            emit_truth_event(
+                "truth.doc_provenance_attested",
+                store_id=store.store_id,
+                event_id=sha256_text(
+                    f"cowork-file-import-provenance:{attestation_id}"
+                ),
+                data={
+                    "document_id": receipt["document_id"],
+                    "attestation_id": attestation_id,
+                    "document_version_id": receipt["document_version_id"],
+                    "target_structured_head_sha256": receipt[
+                        "structured_head_sha256"
+                    ],
+                    "basis_kind": "user_attestation",
+                },
+            )
         return jsonify(receipt)
     except bootstrap.BootstrapError as exc:
         return _error(exc)
+    except provenance.ProvenanceConflictError as exc:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": {
+                        "code": exc.code,
+                        "message": str(exc),
+                        "details": exc.details,
+                        "retryable": exc.retryable,
+                    },
+                }
+            ),
+            exc.status,
+        )
     except InvariantViolation as exc:
         return _error(bootstrap.BootstrapError("invalid_request", str(exc)))
 

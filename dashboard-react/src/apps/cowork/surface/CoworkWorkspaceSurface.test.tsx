@@ -21,6 +21,7 @@ import CoworkWorkspaceWidget, {
   reimportReceiptMatchesDocument,
 } from "../widget/CoworkWorkspaceWidget";
 import {
+  coworkEditorHelp,
   coworkExecutionSwitchConfirmation,
   resolveFixtureMode,
 } from "./CoworkWorkspaceSurface";
@@ -115,15 +116,54 @@ describe("Co-work execution switch impact", () => {
   });
 });
 
+describe("Co-work editor hover help", () => {
+  it("does not promise source-file Save for a detached import", () => {
+    const detached = coworkEditorHelp({ sourceWriteback: "never" });
+    expect(detached.details).toContain("file you imported remains unchanged");
+    expect(detached.details).not.toContain("Save updates");
+
+    const fileBacked = coworkEditorHelp({ sourceWriteback: "same_file" });
+    expect(fileBacked.details).toContain(
+      "Save updates the Markdown file in your folder",
+    );
+  });
+});
+
 describe("CoworkWorkspaceWidget default (empty) mode", () => {
   const originalUrl = window.location.href;
+  const originalFetch = globalThis.fetch;
   beforeEach(() => window.history.replaceState({}, "", "/app/cowork"));
-  afterEach(() => window.history.replaceState({}, "", originalUrl));
+  afterEach(() => {
+    window.history.replaceState({}, "", originalUrl);
+    globalThis.fetch = originalFetch;
+  });
 
   const emptyInput: CoworkWorkspaceInput = {
     document: null,
     sessionQuality: "demo",
   };
+  const selectedFolder = {
+    storeId: "selected-store",
+    folderName: "selected-folder",
+    folderPath: "C:/Projects/selected-folder",
+    layout: "wbuddy_cowork_v1",
+    reachable: true,
+    eligibility: "eligible",
+    ineligibleReason: null,
+    documentSurface: {
+      enabled: true,
+      allowedDocumentClasses: ["co_authored"],
+      feedbackCapture: true,
+    },
+    permissions: {
+      read: true,
+      create: true,
+      import: true,
+      materialize: true,
+      retire: true,
+    },
+    documentCount: 0,
+  } as const;
 
   it("opens with direct Folder selection and the stable toolbar actions", async () => {
     const { container } = renderWorkspace(emptyInput);
@@ -131,7 +171,7 @@ describe("CoworkWorkspaceWidget default (empty) mode", () => {
     expect(screen.getByRole("button", { name: "Open folder" })).toBeVisible();
     expect(screen.getByRole("button", { name: "New" })).toBeVisible();
     expect(
-      screen.getByRole("button", { name: "New from Markdown" }),
+      screen.getByRole("button", { name: "From file" }),
     ).toBeVisible();
     expect(screen.getByText("No documents yet.")).toBeVisible();
     expect(screen.queryByText("Choose a Folder for Co-work")).toBeNull();
@@ -512,6 +552,190 @@ describe("CoworkWorkspaceWidget default (empty) mode", () => {
     await waitFor(() => expect(newDocument).toBeEnabled());
   });
 
+  it("keeps creation blocked while replacing an already active Folder", async () => {
+    const user = userEvent.setup();
+    let release!: () => void;
+    const emit = vi.fn(
+      (intent: Parameters<typeof noopEmit>[0]) =>
+        new Promise<Awaited<ReturnType<typeof noopEmit>>>((resolve) => {
+          release = () =>
+            resolve({
+              intent_id: intent.intent_id,
+              status: "accepted" as const,
+            });
+        }),
+    );
+    const { rerender } = renderWorkspace(
+      {
+        ...emptyInput,
+        folders: [selectedFolder],
+        folderSelection: { kind: "initialized", folder: selectedFolder },
+        activeFolderStoreId: selectedFolder.storeId,
+        routeTarget: { kind: "launcher", storeId: selectedFolder.storeId },
+      },
+      emit,
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: selectedFolder.folderName }),
+    );
+
+    const fromFile = screen.getByRole("button", { name: "From file" });
+    const newDocument = screen.getByRole("button", { name: "New" });
+    expect(fromFile).toBeDisabled();
+    expect(newDocument).toBeDisabled();
+
+    const replacementFolder = {
+      ...selectedFolder,
+      storeId: "replacement-store",
+      folderName: "replacement-folder",
+      folderPath: "C:/Projects/replacement-folder",
+    };
+    rerender(
+      workspaceElement(
+        {
+          ...emptyInput,
+          folders: [replacementFolder, selectedFolder],
+          folderSelection: { kind: "initialized", folder: replacementFolder },
+          activeFolderStoreId: replacementFolder.storeId,
+          routeTarget: { kind: "launcher", storeId: replacementFolder.storeId },
+        },
+        emit,
+      ),
+    );
+    expect(fromFile).toBeEnabled();
+    expect(newDocument).toBeEnabled();
+
+    release();
+    await waitFor(() => expect(fromFile).toBeEnabled());
+    expect(newDocument).toBeEnabled();
+  });
+
+  it("continues From file after Folder selection without waiting for the Folder request to settle", async () => {
+    const user = userEvent.setup();
+    let releaseFolder!: () => void;
+    const emit = vi.fn(
+      (intent: Parameters<typeof noopEmit>[0]) =>
+        new Promise<Awaited<ReturnType<typeof noopEmit>>>((resolve) => {
+          releaseFolder = () =>
+            resolve({
+              intent_id: intent.intent_id,
+              status: "accepted" as const,
+            });
+        }),
+    );
+    globalThis.fetch = vi.fn(() => new Promise<Response>(() => undefined));
+    const { rerender } = renderWorkspace(emptyInput, emit);
+
+    await user.click(screen.getByRole("button", { name: "From file" }));
+    expect(emit).toHaveBeenCalledOnce();
+    expect(emit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        intent_type: COWORK_INTENTS.folderSelect,
+        payload: { action: "choose" },
+      }),
+    );
+
+    rerender(
+      workspaceElement(
+        {
+          ...emptyInput,
+          folders: [selectedFolder],
+          folderSelection: { kind: "initialized", folder: selectedFolder },
+          activeFolderStoreId: selectedFolder.storeId,
+          catalog: {
+            status: "loading",
+            documents: [],
+            refreshedAt: null,
+            error: null,
+          },
+          routeTarget: { kind: "launcher", storeId: selectedFolder.storeId },
+        },
+        emit,
+      ),
+    );
+
+    expect(
+      await screen.findByRole("dialog", { name: "From file" }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "From file", hidden: true }),
+    ).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "New", hidden: true }),
+    ).toBeEnabled();
+
+    await act(async () => releaseFolder());
+  });
+
+  it("clears the retained From file action when Folder selection is cancelled", async () => {
+    const user = userEvent.setup();
+    const emit = vi.fn(noopEmit);
+    const { rerender } = renderWorkspace(emptyInput, emit);
+
+    const fromFile = screen.getByRole("button", { name: "From file" });
+    await user.click(fromFile);
+    await waitFor(() => expect(fromFile).toBeEnabled());
+
+    rerender(
+      workspaceElement(
+        {
+          ...emptyInput,
+          folders: [selectedFolder],
+          folderSelection: { kind: "initialized", folder: selectedFolder },
+          activeFolderStoreId: selectedFolder.storeId,
+          routeTarget: { kind: "launcher", storeId: selectedFolder.storeId },
+        },
+        emit,
+      ),
+    );
+
+    expect(screen.queryByRole("dialog", { name: "From file" })).toBeNull();
+  });
+
+  it("explains when the selected Folder cannot continue a retained file import", async () => {
+    const user = userEvent.setup();
+    let releaseFolder!: () => void;
+    const emit = vi.fn(
+      (intent: Parameters<typeof noopEmit>[0]) =>
+        new Promise<Awaited<ReturnType<typeof noopEmit>>>((resolve) => {
+          releaseFolder = () =>
+            resolve({
+              intent_id: intent.intent_id,
+              status: "accepted" as const,
+            });
+        }),
+    );
+    const blockedFolder = {
+      ...selectedFolder,
+      permissions: { ...selectedFolder.permissions, import: false },
+    };
+    const { container, rerender } = renderWorkspace(emptyInput, emit);
+
+    await user.click(screen.getByRole("button", { name: "From file" }));
+    rerender(
+      workspaceElement(
+        {
+          ...emptyInput,
+          folders: [blockedFolder],
+          folderSelection: { kind: "initialized", folder: blockedFolder },
+          activeFolderStoreId: blockedFolder.storeId,
+          routeTarget: { kind: "launcher", storeId: blockedFolder.storeId },
+        },
+        emit,
+      ),
+    );
+
+    await waitFor(() =>
+      expect(
+        container.querySelector(".wb-cowork-lifecycle__notice"),
+      ).toHaveTextContent("This folder doesn’t allow file imports."),
+    );
+    expect(screen.queryByRole("dialog", { name: "From file" })).toBeNull();
+
+    await act(async () => releaseFolder());
+  });
+
   it("shows a native Folder picker failure once without leaving the start screen", async () => {
     const user = userEvent.setup();
     const emit = vi.fn(async (intent: Parameters<typeof noopEmit>[0]) => ({
@@ -877,9 +1101,17 @@ const LIVE_DOCUMENT: CoworkDocumentSummary = {
   path: "docs/live.md",
   title: "Live doc",
   profile: "co_authored",
+  sourceWriteback: "same_file",
   driftState: "clean",
   openProposalCount: 0,
   openFlagCount: 0,
+  permissions: {
+    open: true,
+    edit: true,
+    materialize: true,
+    repair: true,
+    retire: true,
+  },
 };
 
 const LIVE_FOLDER = {
@@ -1665,10 +1897,10 @@ describe("CoworkWorkspaceWidget live mode", () => {
     });
     expect(within(launcher).queryByRole("button", { name: "New" })).toBeNull();
     expect(
-      within(launcher).queryByRole("button", { name: "New from Markdown" }),
+      within(launcher).queryByRole("button", { name: "From file" }),
     ).toBeNull();
     expect(screen.getByRole("button", { name: "New" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "New from Markdown" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "From file" })).toBeVisible();
 
     await user.click(screen.getByRole("button", { name: "Close folder" }));
     expect(emit).toHaveBeenCalledWith(
@@ -1713,7 +1945,7 @@ describe("CoworkWorkspaceWidget live mode", () => {
     expect(reimportReceiptMatchesDocument(receipt, committedDocument)).toBe(true);
   });
 
-  it("keeps New from Markdown unavailable when the host cannot open that picker", async () => {
+  it("keeps From file unavailable when the host cannot open the importer", async () => {
     const user = userEvent.setup();
     const emit = vi.fn(noopEmit);
     window.history.replaceState({}, "", "/app/cowork?store_id=live-store");
@@ -1725,7 +1957,7 @@ describe("CoworkWorkspaceWidget live mode", () => {
         folderChooser: {
           available: true,
           kind: "host_native",
-          markdownAvailable: false,
+          importAvailable: false,
           locationAvailable: true,
         },
         folderSelection: { kind: "initialized", folder: LIVE_FOLDER },
@@ -1746,23 +1978,23 @@ describe("CoworkWorkspaceWidget live mode", () => {
       emit,
     );
 
-    const fromMarkdown = screen.getByRole("button", {
-      name: "New from Markdown",
+    const fromFile = screen.getByRole("button", {
+      name: "From file",
     });
-    expect(fromMarkdown).toHaveAttribute("aria-disabled", "true");
-    expect(fromMarkdown).toBeEnabled();
-    fromMarkdown.focus();
-    expect(fromMarkdown).toHaveFocus();
-    expect(fromMarkdown).toHaveAccessibleDescription(
-      "Markdown file selection isn’t available here.",
+    expect(fromFile).toHaveAttribute("aria-disabled", "true");
+    expect(fromFile).toBeEnabled();
+    fromFile.focus();
+    expect(fromFile).toHaveFocus();
+    expect(fromFile).toHaveAccessibleDescription(
+      "File import isn’t available here.",
     );
     expect(
-      screen.getByText("Markdown file selection isn’t available here."),
+      screen.getByText("File import isn’t available here."),
     ).toBeVisible();
 
-    await user.click(fromMarkdown);
+    await user.click(fromFile);
     expect(
-      screen.queryByRole("dialog", { name: "New document from Markdown" }),
+      screen.queryByRole("dialog", { name: "From file" }),
     ).toBeNull();
     expect(emit).not.toHaveBeenCalled();
   });
@@ -1810,7 +2042,7 @@ describe("CoworkWorkspaceWidget live mode", () => {
     expect(openDocumentButton.querySelector("svg")).toBeNull();
     expect(screen.queryByRole("button", { name: "New document" })).toBeNull();
     expect(screen.getByRole("button", { name: "New" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "New from Markdown" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "From file" })).toBeVisible();
 
     await user.click(openDocumentButton);
 

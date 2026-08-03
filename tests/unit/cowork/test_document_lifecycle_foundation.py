@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+import json
 from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
-from work_buddy.cowork import bootstrap, materialization
+from work_buddy.cowork import bootstrap, materialization, provenance, retirement
+from work_buddy.cowork.file_importers import (
+    FileImporter,
+    FileImporterRegistry,
+    MARKDOWN_FILE_IMPORTER,
+    MARKDOWN_MAX_SOURCE_BYTES,
+)
+from work_buddy.cowork.lifecycle_state import inspect_lifecycle_state
 from work_buddy.cowork.readiness import classify_document
 from work_buddy.truth import documents, ydoc_store
+from work_buddy.truth.export import export_store
 from work_buddy.truth.identity import sha256_bytes
 
 from .conftest import HUMAN
@@ -124,6 +133,43 @@ def test_bootstrap_create_commits_one_ready_version_and_receipt(store_ctx):
     assert path_key == documents.document_path_key(record.path)
 
 
+def test_bootstrap_create_rejects_a_projection_that_differs_from_source(
+    store_ctx,
+):
+    store = store_ctx["store"]
+    source = b"# Exact create\n"
+    intent, _ = bootstrap.prepare_bootstrap(
+        store,
+        metadata={
+            "mode": "create",
+            "path": "docs/exact-create.md",
+            "initial_source_sha256": sha256_bytes(source),
+            "idempotency_key": "create-projection-mismatch-0001",
+        },
+        source=source,
+        actor=HUMAN,
+    )
+    snapshot = b"opaque-create-snapshot"
+    projection = b"# Different managed projection\n"
+
+    with pytest.raises(bootstrap.BootstrapError) as rejected:
+        bootstrap.commit_bootstrap(
+            store,
+            bootstrap_id=intent.id,
+            snapshot=snapshot,
+            source_sha256=intent.source_sha256,
+            snapshot_sha256=sha256_bytes(snapshot),
+            ydoc_schema=bootstrap.YDOC_SCHEMA,
+            actor=HUMAN,
+            projection=projection,
+            projection_sha256=sha256_bytes(projection),
+        )
+
+    assert rejected.value.code == "projection_not_lossless"
+    assert not (store_ctx["root"] / "docs" / "exact-create.md").exists()
+    assert bootstrap.get_intent(store, intent.id).state == "prepared"
+
+
 def test_bootstrap_import_preserves_bom_and_crlf_bytes(store_ctx):
     store = store_ctx["store"]
     source = b"\xef\xbb\xbf# Exact\r\n\r\nBody\r\n"
@@ -148,7 +194,8 @@ def test_bootstrap_import_preserves_bom_and_crlf_bytes(store_ctx):
     assert staged_intent.source_sha256 == sha256_bytes(source)
     assert staged == source
     snapshot = b"opaque-import-snapshot"
-    bootstrap.commit_bootstrap(
+    projection = b"# Exact\n\nBody\n"
+    receipt = bootstrap.commit_bootstrap(
         store,
         bootstrap_id=intent.id,
         snapshot=snapshot,
@@ -156,9 +203,513 @@ def test_bootstrap_import_preserves_bom_and_crlf_bytes(store_ctx):
         snapshot_sha256=sha256_bytes(snapshot),
         ydoc_schema=bootstrap.YDOC_SCHEMA,
         actor=HUMAN,
+        projection=projection,
+        projection_sha256=sha256_bytes(projection),
     )
     assert target.read_bytes() == source
     assert store.resolve_blob_path(f"blobs/{sha256_bytes(source)}").read_bytes() == source
+    assert (
+        store.resolve_blob_path(f"blobs/{sha256_bytes(projection)}").read_bytes()
+        == projection
+    )
+    document = documents.get_document(store, intent.document_id)
+    assert document.content_sha256 == sha256_bytes(projection)
+    assert receipt["projection_sha256"] == sha256_bytes(projection)
+    assert receipt["source_file_sha256"] == sha256_bytes(source)
+    assert isinstance(receipt["authorship_attestation_id"], str)
+    assert documents.source_writeback_policy(document) == "never"
+    assert json.loads(document.meta_json)["source"]["kind"] == "file_import"
+    assert receipt["source_writeback"] == "never"
+    assert receipt["permissions"]["materialize"] is False
+    head = ydoc_store.current_structured_head(
+        store,
+        document_id=document.id,
+        snapshot_sha256=document.ydoc_snapshot_sha256,
+    )
+    with pytest.raises(materialization.MaterializationError) as blocked:
+        materialization.publish_projection(
+            store,
+            document_id=document.id,
+            rendered_markdown="# Coerced\n",
+            rendered_sha256=sha256_bytes(b"# Coerced\n"),
+            expected_file_sha256=sha256_bytes(source),
+            expected_structured_head_sha256=head,
+            snapshot_sha256=document.ydoc_snapshot_sha256,
+            actor=HUMAN,
+        )
+    assert blocked.value.code == "source_writeback_forbidden"
+    assert target.read_bytes() == source
+
+    replacement = b"opaque-import-snapshot-after-review"
+    managed = materialization.commit_managed_projection(
+        store,
+        document_id=document.id,
+        rendered_markdown="# Coerced\n",
+        rendered_sha256=sha256_bytes(b"# Coerced\n"),
+        expected_structured_head_sha256=head,
+        snapshot_sha256=document.ydoc_snapshot_sha256,
+        actor=HUMAN,
+        replacement_snapshot=replacement,
+        replacement_snapshot_sha256=sha256_bytes(replacement),
+        version_detail="managed_projection:test",
+    )
+    refreshed = documents.get_document(store, document.id)
+    assert managed["source_writeback"] == "never"
+    assert managed["materialization_intent_id"] is None
+    assert refreshed.content_sha256 == sha256_bytes(b"# Coerced\n")
+    assert refreshed.ydoc_snapshot_sha256 == sha256_bytes(replacement)
+    assert target.read_bytes() == source
+
+    retire_intent, created = retirement.prepare_retirement(
+        store,
+        document_id=document.id,
+        actor=HUMAN,
+        idempotency_key="retire-detached-import-0001",
+    )
+    assert created is True
+    retired = retirement.commit_retirement(
+        store,
+        document_id=document.id,
+        intent_id=retire_intent.id,
+        actor=HUMAN,
+    )
+    assert retired["file_retained"] is True
+    assert target.read_bytes() == source
+
+
+def test_bootstrap_recovery_never_unbounded_reads_a_grown_import_source(store_ctx):
+    store = store_ctx["store"]
+    source = b"# Prepared import\n"
+    target = store_ctx["root"] / "imports" / "recovery-grown.md"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(source)
+    intent, _ = bootstrap.prepare_bootstrap(
+        store,
+        metadata={
+            "mode": "import",
+            "path": "imports/recovery-grown.md",
+            "expected_file_sha256": sha256_bytes(source),
+            "idempotency_key": "recovery-grown-import-0001",
+        },
+        source=None,
+        actor=HUMAN,
+    )
+    with store.write_transaction() as conn:
+        conn.execute(
+            "UPDATE cowork_bootstrap_intents SET state = 'publishing' WHERE id = ?",
+            (intent.id,),
+        )
+    with target.open("wb") as stream:
+        stream.truncate(MARKDOWN_MAX_SOURCE_BYTES + 1)
+
+    recovered = bootstrap.recover_bootstrap_intent(store, intent.id)
+
+    assert recovered.state == "failed"
+    assert recovered.recovery_detail == "recovery_required:external_state"
+    assert target.stat().st_size == MARKDOWN_MAX_SOURCE_BYTES + 1
+
+
+def test_bootstrap_and_lifecycle_are_source_format_neutral(
+    store_ctx,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    store = store_ctx["store"]
+    synthetic = FileImporter(
+        "fixture/v1",
+        (".wbtest",),
+        "application/x-wbtest",
+        4096,
+        display_name="Fixture document",
+        source_format="fixture",
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "DEFAULT_FILE_IMPORTERS",
+        FileImporterRegistry((MARKDOWN_FILE_IMPORTER, synthetic)),
+    )
+    source = b"\x00future binary source\xff"
+    projection = b"# Canonical projection\n"
+    target = store_ctx["root"] / "imports" / "source.wbtest"
+    target.parent.mkdir()
+    target.write_bytes(source)
+
+    intent, created = bootstrap.prepare_bootstrap(
+        store,
+        metadata={
+            "mode": "import",
+            "path": "imports/source.wbtest",
+            "title": "Source",
+            "expected_file_sha256": sha256_bytes(source),
+            "importer_id": synthetic.importer_id,
+            # This browser value is only an assertion; the registry is
+            # authoritative.
+            "source_media_type": synthetic.media_type,
+            "idempotency_key": "synthetic-import-0001",
+        },
+        source=None,
+        actor=HUMAN,
+    )
+    assert created is True
+    snapshot = b"opaque-synthetic-import-snapshot"
+    receipt = bootstrap.commit_bootstrap(
+        store,
+        bootstrap_id=intent.id,
+        snapshot=snapshot,
+        source_sha256=intent.source_sha256,
+        snapshot_sha256=sha256_bytes(snapshot),
+        ydoc_schema=bootstrap.YDOC_SCHEMA,
+        actor=HUMAN,
+        projection=projection,
+        projection_sha256=sha256_bytes(projection),
+    )
+
+    document = documents.get_document(store, receipt["document_id"])
+    metadata = json.loads(document.meta_json)
+    assert metadata["source"] == {
+        "kind": "file_import",
+        "path": "imports/source.wbtest",
+        "sha256": sha256_bytes(source),
+        "writeback_policy": "never",
+        "importer_id": "fixture/v1",
+        "format": "fixture",
+        "media_type": "application/x-wbtest",
+    }
+    assert receipt["source_importer"] == synthetic.descriptor()
+    assert inspect_lifecycle_state(store, document).file_path == target.resolve()
+    assert target.read_bytes() == source
+
+    retirement_intent, _ = retirement.prepare_retirement(
+        store,
+        document_id=document.id,
+        actor=HUMAN,
+        idempotency_key="synthetic-retire-0001",
+    )
+    retirement.commit_retirement(
+        store,
+        document_id=document.id,
+        intent_id=retirement_intent.id,
+        actor=HUMAN,
+    )
+    export_store(store, tmp_path / "synthetic-export.jsonl")
+    assert target.read_bytes() == source
+
+
+def test_bootstrap_enforces_the_authoritative_importer_binding(
+    store_ctx,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = store_ctx["store"]
+    synthetic = FileImporter(
+        "fixture/v1",
+        (".wbtest",),
+        "application/x-wbtest",
+        4,
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "DEFAULT_FILE_IMPORTERS",
+        FileImporterRegistry((MARKDOWN_FILE_IMPORTER, synthetic)),
+    )
+    markdown = store_ctx["root"] / "wrong.md"
+    markdown.write_bytes(b"ok")
+    with pytest.raises(bootstrap.BootstrapError) as wrong_suffix:
+        bootstrap.prepare_bootstrap(
+            store,
+            metadata={
+                "mode": "import",
+                "path": "wrong.md",
+                "importer_id": "fixture/v1",
+                "idempotency_key": "fixture-wrong-suffix-0001",
+            },
+            source=None,
+            actor=HUMAN,
+        )
+    assert wrong_suffix.value.code == "importer_path_mismatch"
+
+    source = store_ctx["root"] / "source.wbtest"
+    source.write_bytes(b"ok")
+    with pytest.raises(bootstrap.BootstrapError) as wrong_media:
+        bootstrap.prepare_bootstrap(
+            store,
+            metadata={
+                "mode": "import",
+                "path": "source.wbtest",
+                "importer_id": "fixture/v1",
+                "source_media_type": "text/plain",
+                "idempotency_key": "fixture-wrong-media-0001",
+            },
+            source=None,
+            actor=HUMAN,
+        )
+    assert wrong_media.value.code == "importer_media_type_mismatch"
+
+    source.write_bytes(b"12345")
+    with pytest.raises(bootstrap.BootstrapError) as too_large:
+        bootstrap.prepare_bootstrap(
+            store,
+            metadata={
+                "mode": "import",
+                "path": "source.wbtest",
+                "importer_id": "fixture/v1",
+                "idempotency_key": "fixture-too-large-0001",
+            },
+            source=None,
+            actor=HUMAN,
+        )
+    assert too_large.value.code == "source_too_large"
+    assert too_large.value.details == {
+        "max_source_bytes": 4,
+        "source_byte_length": 5,
+    }
+
+
+def test_detached_import_compacts_before_exportable_retirement(store_ctx):
+    store = store_ctx["store"]
+    source = b"# Detached source\n"
+    target = store_ctx["root"] / "notes" / "detached-with-edits.md"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(source)
+    intent, _ = bootstrap.prepare_bootstrap(
+        store,
+        metadata={
+            "mode": "import",
+            "path": "notes/detached-with-edits.md",
+            "expected_file_sha256": sha256_bytes(source),
+            "idempotency_key": "import-detached-edits-0001",
+        },
+        source=None,
+        actor=HUMAN,
+    )
+    snapshot = b"opaque-detached-edit-snapshot"
+    receipt = bootstrap.commit_bootstrap(
+        store,
+        bootstrap_id=intent.id,
+        snapshot=snapshot,
+        source_sha256=intent.source_sha256,
+        snapshot_sha256=sha256_bytes(snapshot),
+        ydoc_schema=bootstrap.YDOC_SCHEMA,
+        actor=HUMAN,
+        projection=source,
+        projection_sha256=sha256_bytes(source),
+    )
+    document = documents.get_document(store, receipt["document_id"])
+    ydoc_store.append_update(
+        store,
+        document_id=document.id,
+        update=b"durable-direct-edit",
+    )
+    edited = inspect_lifecycle_state(store, document)
+    assert edited.unmaterialized_structured_edits is True
+
+    with pytest.raises(retirement.RetirementError) as blocked:
+        retirement.prepare_retirement(
+            store,
+            document_id=document.id,
+            actor=HUMAN,
+            idempotency_key="retire-detached-edits-0001",
+        )
+    assert blocked.value.code == "retirement_compaction_required"
+    assert blocked.value.status == 409
+    assert blocked.value.retryable is True
+    assert blocked.value.details == {
+        "document_id": document.id,
+        "recovery_action": "compact_current_structured_head",
+        "retry_after_compaction": True,
+    }
+    assert documents.current_lifecycle(store, document.id) == "active"
+    assert target.read_bytes() == source
+
+    # This is the same lossless, client-owned operation performed by the live
+    # editor after its idle debounce. Python never interprets or combines Yjs
+    # updates itself.
+    compacted_snapshot = b"opaque-detached-edit-compacted-snapshot"
+    assert edited.structured_head_sha256 is not None
+    ydoc_store.compact_and_advance(
+        store,
+        document_id=document.id,
+        snapshot=compacted_snapshot,
+        expected_snapshot_sha256=sha256_bytes(compacted_snapshot),
+        expected_structured_head_sha256=edited.structured_head_sha256,
+        actor=HUMAN,
+    )
+    assert not ydoc_store.update_tail_present(store, document_id=document.id)
+
+    retire_intent, created = retirement.prepare_retirement(
+        store,
+        document_id=document.id,
+        actor=HUMAN,
+        idempotency_key="retire-detached-edits-after-compact-0001",
+    )
+    assert created is True
+    retired = retirement.commit_retirement(
+        store,
+        document_id=document.id,
+        intent_id=retire_intent.id,
+        actor=HUMAN,
+    )
+
+    assert retired["history_retained"] is True
+    assert documents.current_lifecycle(store, document.id) == "retired"
+    assert not ydoc_store.update_tail_present(store, document_id=document.id)
+    assert target.read_bytes() == source
+    assert export_store(store).path.is_file()
+
+
+def test_normalized_detached_import_does_not_offer_impossible_repair(
+    store_ctx,
+):
+    store = store_ctx["store"]
+    source = b"# Normalized\r\n\r\nImported source.\r\n"
+    projection = b"# Normalized\n\nImported source.\n"
+    target = store_ctx["root"] / "notes" / "normalized-repair.md"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(source)
+    intent, _ = bootstrap.prepare_bootstrap(
+        store,
+        metadata={
+            "mode": "import",
+            "path": "notes/normalized-repair.md",
+            "expected_file_sha256": sha256_bytes(source),
+            "idempotency_key": "normalized-repair-import-0001",
+        },
+        source=None,
+        actor=HUMAN,
+    )
+    snapshot = b"opaque-normalized-repair-snapshot"
+    receipt = bootstrap.commit_bootstrap(
+        store,
+        bootstrap_id=intent.id,
+        snapshot=snapshot,
+        source_sha256=intent.source_sha256,
+        snapshot_sha256=sha256_bytes(snapshot),
+        ydoc_schema=bootstrap.YDOC_SCHEMA,
+        actor=HUMAN,
+        projection=projection,
+        projection_sha256=sha256_bytes(projection),
+    )
+    with store.write_transaction() as conn:
+        conn.execute(
+            "UPDATE documents SET ydoc_snapshot_sha256 = NULL WHERE id = ?",
+            (receipt["document_id"],),
+        )
+    document = documents.get_document(store, receipt["document_id"])
+    readiness = classify_document(store, document)
+    assert readiness.initialization_state == "bootstrap_required"
+    assert readiness.permissions["repair"] is False
+
+    with pytest.raises(bootstrap.BootstrapError) as rejected:
+        bootstrap.prepare_bootstrap(
+            store,
+            metadata={
+                "mode": "repair",
+                "path": document.path,
+                "document_id": document.id,
+                "expected_file_sha256": sha256_bytes(source),
+                "idempotency_key": "normalized-repair-attempt-0001",
+            },
+            source=None,
+            actor=HUMAN,
+        )
+    assert rejected.value.code == "repair_not_supported"
+    assert rejected.value.status == 409
+    assert target.read_bytes() == source
+
+
+def test_import_intent_binds_importer_and_staged_provenance(store_ctx):
+    store = store_ctx["store"]
+    source = b"# Bound import\n"
+    target = store_ctx["root"] / "imports" / "bound.md"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(source)
+    attestation = {
+        "schema": provenance.INPUT_ATTESTATION_SCHEMA,
+        "authorship": {
+            "kind": "ai",
+            "contributors": [],
+        },
+        "human_review": {
+            "status": "not_reviewed",
+            "reviewers": [],
+        },
+    }
+    intent, _ = bootstrap.prepare_bootstrap(
+        store,
+        metadata={
+            "mode": "import",
+            "path": "imports/bound.md",
+            "expected_file_sha256": sha256_bytes(source),
+            "importer_id": "markdown/v1",
+            "source_media_type": "text/markdown",
+            "authorship_attestation": attestation,
+            "idempotency_key": "bound-import-provenance-0001",
+        },
+        source=None,
+        actor=HUMAN,
+    )
+
+    assert intent.importer_id == "markdown/v1"
+    assert intent.source_media_type == "text/markdown"
+    assert intent.import_attestation_sha256 is not None
+    staged_attestation = bootstrap._attestation_stage_path(store, intent.id)
+    staged_attestation.write_text(
+        '{"schema":"cowork-authorship-attestation/v1",'
+        '"authorship":{"kind":"human","contributors":[{"kind":"current_user"}]},'
+        '"human_review":{"status":"not_applicable","reviewers":[]}}',
+        encoding="utf-8",
+    )
+    snapshot = b"opaque-import-integrity-snapshot"
+    with pytest.raises(bootstrap.BootstrapError) as corrupt:
+        bootstrap.commit_bootstrap(
+            store,
+            bootstrap_id=intent.id,
+            snapshot=snapshot,
+            source_sha256=intent.source_sha256,
+            snapshot_sha256=sha256_bytes(snapshot),
+            ydoc_schema=bootstrap.YDOC_SCHEMA,
+            actor=HUMAN,
+            projection=source,
+            projection_sha256=sha256_bytes(source),
+        )
+    assert corrupt.value.code == "staged_attestation_corrupt"
+
+
+def test_new_import_does_not_downgrade_a_missing_attestation_to_unknown(
+    store_ctx,
+):
+    store = store_ctx["store"]
+    source = b"# Missing determination\n"
+    target = store_ctx["root"] / "imports" / "missing-determination.md"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(source)
+    intent, _ = bootstrap.prepare_bootstrap(
+        store,
+        metadata={
+            "mode": "import",
+            "path": "imports/missing-determination.md",
+            "expected_file_sha256": sha256_bytes(source),
+            "idempotency_key": "missing-import-provenance-0001",
+        },
+        source=None,
+        actor=HUMAN,
+    )
+    bootstrap._attestation_stage_path(store, intent.id).unlink()
+    snapshot = b"opaque-missing-attestation-snapshot"
+
+    with pytest.raises(bootstrap.BootstrapError) as missing:
+        bootstrap.commit_bootstrap(
+            store,
+            bootstrap_id=intent.id,
+            snapshot=snapshot,
+            source_sha256=intent.source_sha256,
+            snapshot_sha256=sha256_bytes(snapshot),
+            ydoc_schema=bootstrap.YDOC_SCHEMA,
+            actor=HUMAN,
+            projection=source,
+            projection_sha256=sha256_bytes(source),
+        )
+
+    assert missing.value.code == "staged_attestation_missing"
 
 
 def test_bootstrap_idempotency_conflict_does_not_publish(store_ctx):

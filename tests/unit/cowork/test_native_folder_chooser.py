@@ -10,6 +10,7 @@ import pytest
 from work_buddy.cowork import native_folder_chooser
 from work_buddy.cowork.folder_picker_helper import (
     PICKER_CANCELLED,
+    PICKER_MODE_FILE,
     PICKER_MODE_FOLDER,
     PICKER_MODE_LOCATION,
     PICKER_MODE_MARKDOWN,
@@ -78,6 +79,7 @@ def test_windows_json_protocol_accepts_one_transport_line_terminator(
 @pytest.mark.parametrize(
     ("mode", "selection"),
     [
+        (PICKER_MODE_FILE, "notes.md"),
         (PICKER_MODE_MARKDOWN, "notes.md"),
         (PICKER_MODE_LOCATION, "drafts"),
     ],
@@ -445,9 +447,85 @@ def test_other_native_pickers_use_the_same_concise_title(monkeypatch) -> None:
     assert zenity_cancelled_code == 1
 
 
+def test_native_file_pickers_use_from_file_wording(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    observed: list[list[str]] = []
+
+    def run(command, **_kwargs):
+        observed.append(command)
+        if command[0] == "/usr/bin/osascript":
+            return native_folder_chooser._macos_cancel_marker(PICKER_MODE_FILE)
+        return None
+
+    monkeypatch.setattr(native_folder_chooser, "_run_dialog", run)
+
+    assert (
+        native_folder_chooser._choose_macos(
+            mode=PICKER_MODE_FILE,
+            start_directory=tmp_path,
+        )
+        is None
+    )
+    assert (
+        native_folder_chooser._choose_zenity(
+            "zenity",
+            mode=PICKER_MODE_FILE,
+            start_directory=tmp_path,
+        )
+        is None
+    )
+
+    assert '"From file"' in observed[0][2]
+    assert "--title=From file" in observed[1]
+    assert "--file-filter=Supported files | *.md *.markdown" in observed[1]
+
+
+def test_legacy_markdown_picker_keeps_a_markdown_only_filter(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    observed: list[list[str]] = []
+
+    def run(command, **_kwargs):
+        observed.append(command)
+        if command[0] == "/usr/bin/osascript":
+            return native_folder_chooser._macos_cancel_marker(
+                PICKER_MODE_MARKDOWN
+            )
+        return None
+
+    monkeypatch.setattr(native_folder_chooser, "_run_dialog", run)
+
+    assert (
+        native_folder_chooser._choose_macos(
+            mode=PICKER_MODE_MARKDOWN,
+            start_directory=tmp_path,
+        )
+        is None
+    )
+    assert (
+        native_folder_chooser._choose_zenity(
+            "zenity",
+            mode=PICKER_MODE_MARKDOWN,
+            start_directory=tmp_path,
+        )
+        is None
+    )
+
+    assert 'of type {"md", "markdown"}' in observed[0][2]
+    assert "--file-filter=Markdown files | *.md *.markdown" in observed[1]
+
+
 @pytest.mark.parametrize(
     "mode",
-    [PICKER_MODE_FOLDER, PICKER_MODE_MARKDOWN, PICKER_MODE_LOCATION],
+    [
+        PICKER_MODE_FOLDER,
+        PICKER_MODE_FILE,
+        PICKER_MODE_MARKDOWN,
+        PICKER_MODE_LOCATION,
+    ],
 )
 def test_macos_cancel_uses_a_mode_bound_success_payload(
     monkeypatch,
@@ -508,7 +586,12 @@ def test_macos_cancel_marker_for_another_mode_is_not_cancel(
 
 @pytest.mark.parametrize(
     "mode",
-    [PICKER_MODE_FOLDER, PICKER_MODE_MARKDOWN, PICKER_MODE_LOCATION],
+    [
+        PICKER_MODE_FOLDER,
+        PICKER_MODE_FILE,
+        PICKER_MODE_MARKDOWN,
+        PICKER_MODE_LOCATION,
+    ],
 )
 def test_macos_nonzero_exit_is_never_misclassified_as_cancel(
     monkeypatch,
@@ -570,3 +653,38 @@ def test_scoped_picker_modes_share_the_process_lock(
 
     assert raised.value.code == "folder_chooser_busy"
     assert raised.value.status == 409
+
+
+def test_default_import_chooser_uses_generic_file_mode(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        native_folder_chooser,
+        "os",
+        _windows_os_stub(),
+    )
+    monkeypatch.setattr(
+        native_folder_chooser.importlib.util,
+        "find_spec",
+        lambda _name: object(),
+    )
+
+    def choose_windows(**kwargs):
+        observed.update(kwargs)
+        return str(tmp_path / "notes.md")
+
+    monkeypatch.setattr(
+        native_folder_chooser,
+        "_choose_windows",
+        choose_windows,
+    )
+    chooser = native_folder_chooser.default_host_import_chooser()
+    assert chooser is not None
+
+    assert chooser(tmp_path) == str(tmp_path / "notes.md")
+    assert observed == {
+        "mode": PICKER_MODE_FILE,
+        "start_directory": tmp_path.resolve(),
+    }

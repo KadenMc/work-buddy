@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Dialog, Heading, Modal, ModalOverlay } from "react-aria-components";
 
 import { Button, InlineAlert, Spinner } from "../../../ui";
@@ -14,10 +14,17 @@ const makeIdempotencyKey = (): string =>
   globalThis.crypto?.randomUUID?.() ??
   `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
 
+const PREPARE_INVALIDATING_COMMIT_ERRORS = new Set([
+  "retirement_compaction_required",
+  "confirmation_stale",
+  "intent_expired",
+]);
+
 export interface CoworkRetirementDialogProps {
   readonly storeId: string;
   readonly document: CoworkDocumentSummary;
   readonly client: CoworkHttpClient;
+  readonly onSettleLifecycle: () => Promise<void>;
   readonly onClose: () => void;
   readonly onRetired: (receipt: CoworkRetirementReceipt) => Promise<void> | void;
 }
@@ -27,6 +34,7 @@ export function CoworkRetirementDialog({
   storeId,
   document,
   client,
+  onSettleLifecycle,
   onClose,
   onRetired,
 }: CoworkRetirementDialogProps) {
@@ -35,24 +43,34 @@ export function CoworkRetirementDialog({
   const [error, setError] = useState<string | null>(null);
   const keyRef = useRef(makeIdempotencyKey());
 
-  const prepare = (): void => {
+  const prepare = useCallback((): void => {
     setBusy(true);
     setError(null);
-    void client
-      .prepareRetirement(storeId, document.documentId, keyRef.current)
-      .then(setPrepared)
-      .catch((prepareError) =>
+    setPrepared(null);
+    void (async () => {
+      try {
+        await onSettleLifecycle();
+        setPrepared(
+          await client.prepareRetirement(
+            storeId,
+            document.documentId,
+            keyRef.current,
+          ),
+        );
+      } catch (prepareError) {
         setError(
           coworkErrorMessage(
             asCoworkApiError(prepareError),
             "Co-work couldn’t check that document for safe removal.",
           ),
-        ),
-      )
-      .finally(() => setBusy(false));
-  };
+        );
+      } finally {
+        setBusy(false);
+      }
+    })();
+  }, [client, document.documentId, onSettleLifecycle, storeId]);
 
-  useEffect(prepare, [client, document.documentId, storeId]);
+  useEffect(prepare, [prepare]);
 
   const retire = async (): Promise<void> => {
     if (prepared === null) return;
@@ -66,9 +84,17 @@ export function CoworkRetirementDialog({
       );
       await onRetired(receipt);
     } catch (retireError) {
+      const apiError = asCoworkApiError(retireError);
+      if (PREPARE_INVALIDATING_COMMIT_ERRORS.has(apiError.code)) {
+        // A collaborator may have changed the head after preparation, or the
+        // confirmation may have expired. Re-check against a fresh intent after
+        // the live editor settles again.
+        setPrepared(null);
+        keyRef.current = makeIdempotencyKey();
+      }
       setError(
         coworkErrorMessage(
-          asCoworkApiError(retireError),
+          apiError,
           "Co-work couldn’t remove that document.",
         ),
       );

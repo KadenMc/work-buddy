@@ -60,6 +60,7 @@ import { LedgerDecorationProjector } from "./ledgerDecorationProjector";
 import type { CoworkEditorReadyContext } from "./CoworkBridgeEditor";
 import type { CoworkSittingWorkspace } from "./sittingWorkspace";
 import type { CoworkActionSnapshotController } from "../targets";
+import type { CoworkPasteProvenanceRecorder } from "../provenance";
 
 /** Registered documents are initialized by bootstrap; live hydration never fabricates text. */
 export const DEFAULT_BRIDGE_SEED_MARKDOWN = "";
@@ -103,6 +104,8 @@ export interface UseCoworkBridgeOptions {
   readonly onFeedbackCaptured?: (capture: FeedbackCapture) => void;
   /** Injectable R9 feedback transport, else the same-origin HTTP transport. */
   readonly feedbackTransport?: CoworkFeedbackTransport;
+  /** Persists exact-span provenance for editor paste transactions. */
+  readonly pasteProvenanceRecorder?: CoworkPasteProvenanceRecorder;
 }
 
 export interface CoworkBridgeEditorMountProps {
@@ -119,6 +122,8 @@ export interface CoworkBridgeEditorMountProps {
   readonly onFeedbackCaptured?: (capture: FeedbackCapture) => void;
   /** Injectable R9 feedback transport, else the same-origin HTTP transport. */
   readonly feedbackTransport?: CoworkFeedbackTransport;
+  /** Persists exact-span provenance for editor paste transactions. */
+  readonly onRecordPasteProvenance?: CoworkPasteProvenanceRecorder;
   readonly readOnly?: boolean;
   readonly onSyncStatus?: (status: CoworkSyncStatus) => void;
   readonly currentFileSha256?: string | null;
@@ -198,6 +203,7 @@ export const useCoworkBridge = (
     onSittingCommitted,
     onFeedbackCaptured,
     feedbackTransport,
+    pasteProvenanceRecorder,
   } = options;
 
   const editorRef = useRef<Editor | null>(null);
@@ -341,6 +347,7 @@ export const useCoworkBridge = (
       documentId,
       storeId,
       feedbackTransport,
+      onRecordPasteProvenance: pasteProvenanceRecorder,
       ...(feedbackCaptureEnabled
         ? {
             onFeedbackCaptured: (capture: FeedbackCapture) =>
@@ -370,6 +377,7 @@ export const useCoworkBridge = (
       documentId,
       storeId,
       feedbackTransport,
+      pasteProvenanceRecorder,
       feedbackCaptureEnabled,
       readOnly,
       onSyncStatus,
