@@ -21,6 +21,7 @@ interface CoworkDocumentBarProps {
   readonly onChooseFolder: () => void;
   readonly onCloseFolder: () => void;
   readonly folderActionBusy?: boolean;
+  readonly creationActionsBusy?: boolean;
   readonly closingFolder?: boolean;
   readonly onOpenPicker: () => void;
   readonly onCreate: () => void;
@@ -74,6 +75,20 @@ export const coworkScratchPromotionBlockedReason = (
   return null;
 };
 
+export const coworkImportBlockedReason = (
+  model: Pick<CoworkViewModel, "readOnly" | "folderChooser">,
+  folder: CoworkFolderSummary | null,
+): string | null =>
+  model.readOnly
+    ? "Read-only mode. New folder documents aren’t available."
+    : folder === null && !model.folderChooser.available
+      ? "Choosing a folder isn’t available here."
+      : folder !== null && !folder.permissions.import
+        ? "This folder doesn’t allow file imports."
+        : !model.folderChooser.importAvailable
+          ? "File import isn’t available here."
+          : null;
+
 const registeredStatusLabel = (
   model: CoworkViewModel,
   document: CoworkDocumentSummary,
@@ -120,6 +135,7 @@ export function CoworkDocumentBar({
   onChooseFolder,
   onCloseFolder,
   folderActionBusy = false,
+  creationActionsBusy = folderActionBusy,
   closingFolder = false,
   onOpenPicker,
   onCreate,
@@ -176,16 +192,7 @@ export function CoworkDocumentBar({
         : !folder.permissions.create
           ? "This folder doesn’t allow new documents."
           : null;
-  const importBlockedReason =
-    folder === null
-      ? "Open a folder before importing a file."
-      : model.readOnly
-        ? "Read-only mode. New folder documents aren’t available."
-        : !folder.permissions.import
-          ? "This folder doesn’t allow file imports."
-          : !model.folderChooser.importAvailable
-            ? "File import isn’t available here."
-            : null;
+  const importBlockedReason = coworkImportBlockedReason(model, folder);
   const folderTriggerRef = useRef<HTMLButtonElement>(null);
   const hadFolderRef = useRef(folder !== null);
 
@@ -370,7 +377,7 @@ export function CoworkDocumentBar({
             if (importBlockedReason !== null) return;
             onImportFile();
           }}
-          disabled={folderActionBusy}
+          disabled={creationActionsBusy}
           aria-disabled={importBlockedReason !== null || undefined}
           aria-describedby={
             importBlockedReason === null
@@ -399,7 +406,7 @@ export function CoworkDocumentBar({
             if (createBlockedReason !== null) return;
             onCreate();
           }}
-          disabled={folderActionBusy}
+          disabled={creationActionsBusy}
           aria-disabled={createBlockedReason !== null || undefined}
           aria-describedby={
             createBlockedReason === null ? undefined : "cowork-new-blocked-reason"

@@ -17,6 +17,7 @@ import {
 } from "../contracts";
 import {
   CoworkDocumentBar,
+  coworkImportBlockedReason,
   coworkReimportLocalBlockedReason,
   coworkScratchPromotionBlockedReason,
 } from "../documents/CoworkDocumentBar";
@@ -95,6 +96,7 @@ type LifecycleDialog = "create" | "import" | "repair" | null;
 interface PendingFolderAction {
   readonly action: string;
   readonly storeId?: string;
+  readonly originStoreId: string | null;
 }
 
 interface PendingScratchPromotion {
@@ -141,6 +143,8 @@ export default function CoworkWorkspaceWidget({
   const [folderNotice, setFolderNotice] = useState<string | null>(null);
   const [pendingFolderAction, setPendingFolderAction] =
     useState<PendingFolderAction | null>(null);
+  const [pendingLifecycleAfterFolder, setPendingLifecycleAfterFolder] =
+    useState<Exclude<LifecycleDialog, null> | null>(null);
   const folderActionBusy = useRef(false);
   const folderActionEpoch = useRef(0);
   const [localNotice, setLocalNotice] = useState<string | null>(null);
@@ -202,6 +206,7 @@ export default function CoworkWorkspaceWidget({
         folderActionEpoch.current += 1;
         folderActionBusy.current = false;
         setPendingFolderAction(null);
+        setPendingLifecycleAfterFolder(null);
         setFolderNotice(null);
         void folderAction(action, payload).catch((error: unknown) => {
           setFolderNotice(
@@ -218,6 +223,7 @@ export default function CoworkWorkspaceWidget({
       folderActionBusy.current = true;
       setPendingFolderAction({
         action,
+        originStoreId: model.activeFolderStoreId,
         ...(typeof payload.storeId === "string" ? { storeId: payload.storeId } : {}),
       });
       setFolderNotice(null);
@@ -238,7 +244,7 @@ export default function CoworkWorkspaceWidget({
           setPendingFolderAction(null);
         });
     },
-    [folderAction],
+    [folderAction, model.activeFolderStoreId],
   );
 
   const openDocument = useCallback(
@@ -254,7 +260,9 @@ export default function CoworkWorkspaceWidget({
   );
 
   const openLifecycleDialog = (next: Exclude<LifecycleDialog, null>): void => {
+    setLocalNotice(null);
     if (folder === null) {
+      setPendingLifecycleAfterFolder(next);
       runFolderAction("choose");
       return;
     }
@@ -269,6 +277,41 @@ export default function CoworkWorkspaceWidget({
     if (next !== "repair") setRepairDocument(null);
     setDialog(next);
   };
+
+  useEffect(() => {
+    if (pendingLifecycleAfterFolder === null) return;
+    if (folder === null) {
+      if (
+        pendingFolderAction === null &&
+        model.folderSelection.kind === "none"
+      ) {
+        setPendingLifecycleAfterFolder(null);
+      }
+      return;
+    }
+    const blockedReason =
+      pendingLifecycleAfterFolder === "import"
+        ? coworkImportBlockedReason(model, folder)
+        : model.readOnly
+          ? "Read-only mode. New folder documents aren’t available."
+          : pendingLifecycleAfterFolder === "create" && !folder.permissions.create
+            ? "This folder doesn’t allow new documents."
+            : null;
+    if (blockedReason === null) {
+      setPickerOpen(false);
+      setDialog(pendingLifecycleAfterFolder);
+    } else {
+      setLocalNotice(blockedReason);
+    }
+    setPendingLifecycleAfterFolder(null);
+  }, [
+    folder,
+    model.folderChooser.importAvailable,
+    model.folderSelection.kind,
+    model.readOnly,
+    pendingFolderAction,
+    pendingLifecycleAfterFolder,
+  ]);
 
   const beginScratchPromotion = useCallback(async (): Promise<void> => {
     if (model.activeSession.kind !== "scratch" || promotionBusy) return;
@@ -445,6 +488,15 @@ export default function CoworkWorkspaceWidget({
     model.folderSelection.kind !== "initialized" &&
     model.folderSelection.kind !== "choosing" &&
     model.folderSelection.kind !== "inspecting";
+  const pendingFolderTargetEstablished =
+    pendingFolderAction !== null &&
+    pendingFolderAction.action !== "close" &&
+    model.folderSelection.kind === "initialized" &&
+    model.activeFolderStoreId === model.folderSelection.folder.storeId &&
+    model.activeFolderStoreId !== pendingFolderAction.originStoreId;
+  const creationActionsBusy =
+    folderLifecycleActive ||
+    (pendingFolderAction !== null && !pendingFolderTargetEstablished);
   const folderErrorNotice =
     folderNotice ??
     (session.kind === "none" || model.navigationError === null
@@ -587,7 +639,10 @@ export default function CoworkWorkspaceWidget({
       }}
       onCancelInspection={() => runFolderAction("cancel")}
       onInitialize={() => runFolderAction("initialize")}
-      onOpenFolder={(storeId) => runFolderAction("open", { storeId })}
+      onOpenFolder={(storeId) => {
+        setLocalNotice(null);
+        runFolderAction("open", { storeId });
+      }}
       onOpenDocument={(document) => void openDocument(document)}
       onOpenLocalDocument={(scratch) =>
         void dispatch(COWORK_INTENTS.scratchOpen, { scratchId: scratch.scratchId })
@@ -604,11 +659,17 @@ export default function CoworkWorkspaceWidget({
       <CoworkDocumentBar
         model={model}
         folderActionBusy={pendingFolderAction !== null || folderLifecycleActive}
+        creationActionsBusy={creationActionsBusy}
         closingFolder={pendingFolderAction?.action === "close"}
-        onChooseFolder={() => runFolderAction("choose")}
+        onChooseFolder={() => {
+          setLocalNotice(null);
+          runFolderAction("choose");
+        }}
         onCloseFolder={() => {
           setPickerOpen(false);
           setDialog(null);
+          setPendingLifecycleAfterFolder(null);
+          setLocalNotice(null);
           runFolderAction("close");
         }}
         onOpenPicker={() => setPickerOpen(true)}

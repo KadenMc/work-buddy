@@ -444,7 +444,9 @@ describe("CoworkDocumentBar Save", () => {
     expect(screen.queryByText(/Open another Folder/i)).toBeNull();
   });
 
-  it("keeps New and From file in the toolbar across Folder states", () => {
+  it("keeps New and From file actionable across Folder states", async () => {
+    const user = userEvent.setup();
+    const onImportFile = vi.fn();
     const noFolderModel: CoworkViewModel = {
       ...model,
       activeFolderStoreId: null,
@@ -454,19 +456,19 @@ describe("CoworkDocumentBar Save", () => {
       document: null,
     };
     const { rerender } = render(
-      <CoworkDocumentBar {...baseProps} model={noFolderModel} />,
+      <CoworkDocumentBar
+        {...baseProps}
+        model={noFolderModel}
+        onImportFile={onImportFile}
+      />,
     );
 
     expect(screen.getByRole("button", { name: "New" })).toBeEnabled();
-    const unavailableImport = screen.getByRole("button", {
-      name: "From file",
-    });
-    expect(unavailableImport).toHaveAttribute("aria-disabled", "true");
-    expect(unavailableImport).toHaveAccessibleDescription(
-      "Open a folder before importing a file.",
-    );
-    unavailableImport.focus();
-    expect(unavailableImport).toHaveFocus();
+    const importWithoutFolder = screen.getByRole("button", { name: "From file" });
+    expect(importWithoutFolder).toBeEnabled();
+    expect(importWithoutFolder).not.toHaveAttribute("aria-disabled");
+    await user.click(importWithoutFolder);
+    expect(onImportFile).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("button", { name: "Close folder" })).toBeNull();
 
     const folderModel: CoworkViewModel = {
@@ -476,13 +478,51 @@ describe("CoworkDocumentBar Save", () => {
       activeFolderStoreId: folder.storeId,
       routeTarget: { kind: "launcher", storeId: folder.storeId },
     };
-    rerender(<CoworkDocumentBar {...baseProps} model={folderModel} />);
+    rerender(
+      <CoworkDocumentBar
+        {...baseProps}
+        model={folderModel}
+        onImportFile={onImportFile}
+      />,
+    );
 
     expect(screen.getByRole("button", { name: "New" })).toBeEnabled();
     expect(
       screen.getByRole("button", { name: "From file" }),
     ).toBeEnabled();
     expect(screen.getByRole("button", { name: "Close folder" })).toBeVisible();
+  });
+
+  it("explains when From file cannot start Folder selection", async () => {
+    const user = userEvent.setup();
+    const onImportFile = vi.fn();
+    render(
+      <CoworkDocumentBar
+        {...baseProps}
+        model={{
+          ...model,
+          folders: [],
+          activeFolderStoreId: null,
+          folderSelection: { kind: "none" },
+          folderChooser: {
+            ...model.folderChooser,
+            available: false,
+            importAvailable: false,
+          },
+        }}
+        onImportFile={onImportFile}
+      />,
+    );
+
+    const unavailableImport = screen.getByRole("button", { name: "From file" });
+    expect(unavailableImport).toHaveAttribute("aria-disabled", "true");
+    expect(unavailableImport).toHaveAccessibleDescription(
+      "Choosing a folder isn’t available here.",
+    );
+    unavailableImport.focus();
+    expect(unavailableImport).toHaveFocus();
+    await user.click(unavailableImport);
+    expect(onImportFile).not.toHaveBeenCalled();
   });
 
   it("closes the selected Folder through a distinct, discoverable control", async () => {

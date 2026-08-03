@@ -97,10 +97,13 @@ is not set up in the folder, offers only **Close**, and changes no files.
 The document bar keeps the same foundational controls in every resting state:
 the folder control, **Open document**, **From file**, and NotePencil **New**.
 With no folder, New starts an ordinary browser-local document; with a folder, it
-opens the contained create flow. From file remains in the same toolbar position
-and is disabled with a specific explanation until an import-capable folder and
-native file picker are available. These creation actions never appear in the
-launcher body or inside the Open document dialog.
+opens the contained create flow. From file remains in the same toolbar position.
+With no folder, it starts folder selection and retains the import intent; after
+the chosen folder is opened or set up, Co-work continues directly into the file
+import. It is disabled only when read-only mode, folder permissions, or host
+capabilities make that continuation unavailable. These creation actions never
+appear in the launcher body or inside the Open document dialog, and catalog
+loading does not keep them locked after a writable folder has been established.
 
 The launcher has one **Documents** list whose contents follow the current
 context. With a folder open, it contains only ready registered documents from
