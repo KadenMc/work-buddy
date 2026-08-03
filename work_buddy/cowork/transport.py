@@ -18,6 +18,7 @@ from typing import Any
 from work_buddy.truth import documents, ydoc_store
 from work_buddy.cowork.policy import document_surface_allowed
 from work_buddy.truth.contracts import Actor, InvariantViolation
+from work_buddy.truth.identity import sha256_bytes
 from work_buddy.truth.store import DocumentRecord, TruthStore, _valid_digest
 
 # 4-byte big-endian length prefix per opaque segment (matches the update-log
@@ -179,6 +180,7 @@ def push_ydoc(
     base_structured_head_sha256: str | None = None,
     base_ydoc_generation: str | None = None,
     compacted_snapshot_sha256: str | None = None,
+    compacted_projection_sha256: str | None = None,
     at: str | None = None,
 ) -> tuple[dict[str, Any], int]:
     """Apply one R4 PUSH of an opaque update batch (human direct edits only).
@@ -191,6 +193,13 @@ def push_ydoc(
     server appends the opaque batch either way and interprets no bytes.
     """
     raw_body = bytes(body)
+    if (
+        compacted_projection_sha256 is not None
+        and compacted_snapshot_sha256 is None
+    ):
+        raise InvariantViolation(
+            "a compacted projection requires a compacted snapshot"
+        )
     if (
         compacted_snapshot_sha256 is None
         and len(raw_body) > ydoc_store.MAX_OPAQUE_SEGMENT_BYTES
@@ -283,20 +292,55 @@ def push_ydoc(
                 return _size_failure("update_too_large", exc)
             if exc.segment_index == 1:
                 return _size_failure("snapshot_too_large", exc)
+            if exc.segment_index == 2:
+                return _size_failure("projection_too_large", exc)
             raise InvariantViolation(
                 "a compacted push contains an unexpected oversized segment"
             ) from exc
-        if len(segments) != 2:
-            raise InvariantViolation(
-                "a compacted push must frame the update batch then the snapshot"
+        expected_segment_count = (
+            3 if compacted_projection_sha256 is not None else 2
+        )
+        if len(segments) != expected_segment_count:
+            suffix = (
+                " and the UTF-8 projection"
+                if expected_segment_count == 3
+                else ""
             )
-        batch, snapshot = segments
+            raise InvariantViolation(
+                "a compacted push must frame the update batch, the snapshot"
+                f"{suffix}"
+            )
+        batch, snapshot = segments[:2]
+        projection_digest: str | None = None
+        if compacted_projection_sha256 is not None:
+            projection = segments[2]
+            try:
+                projection.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise InvariantViolation(
+                    "the compacted Markdown projection must be UTF-8"
+                ) from exc
+            expected_projection = _valid_digest(
+                compacted_projection_sha256,
+                "X-WB-Compacted-Projection-Sha256",
+            )
+            projection_digest = sha256_bytes(projection)
+            if projection_digest != expected_projection:
+                raise InvariantViolation(
+                    "compacted projection does not match its declared digest"
+                )
     else:
         batch, snapshot = raw_body, None
+        projection_digest = None
 
     try:
         if snapshot is not None:
-            _, structured_head, next_offset = ydoc_store.compact_and_advance(
+            (
+                _,
+                structured_head,
+                next_offset,
+                projection_receipt,
+            ) = ydoc_store.compact_and_advance(
                 store,
                 document_id=document.id,
                 snapshot=snapshot,
@@ -305,8 +349,10 @@ def push_ydoc(
                 actor=actor,
                 at=at,
                 lock_guard=_guard,
+                projection_sha256=projection_digest,
             )
         else:
+            projection_receipt = None
             next_offset, structured_head = ydoc_store.append_update_cas(
                 store,
                 document_id=document.id,
@@ -341,20 +387,27 @@ def push_ydoc(
             },
             409,
         )
-    return (
-        {
-            "ok": True,
-            "applied": True,
-            # doc_sha256 is the Markdown projection hash.
-            "doc_sha256": document.content_sha256,
-            "projection_sha256": document.content_sha256,
-            "structured_head_sha256": structured_head,
-            "ydoc_head_sha256": structured_head,
-            "ydoc_generation": expected_generation,
-            "next_offset": next_offset,
-        },
-        200,
-    )
+    payload: dict[str, Any] = {
+        "ok": True,
+        "applied": True,
+        # doc_sha256 is the managed Markdown projection hash.
+        "doc_sha256": document.content_sha256,
+        "projection_sha256": document.content_sha256,
+        "structured_head_sha256": structured_head,
+        "ydoc_head_sha256": structured_head,
+        "ydoc_generation": expected_generation,
+        "next_offset": next_offset,
+    }
+    if projection_receipt is not None:
+        payload.update(
+            {
+                "compacted_projection_sha256": (
+                    projection_receipt.projection_sha256
+                ),
+                "projection_receipt_id": projection_receipt.id,
+            }
+        )
+    return payload, 200
 
 
 __all__ = [

@@ -264,6 +264,7 @@
     font-family: inherit;
     font-size: var(--wb-font-size-sm);
     line-height: var(--wb-line-height-body);
+    overflow-y: hidden;
     resize: none;
   }
 

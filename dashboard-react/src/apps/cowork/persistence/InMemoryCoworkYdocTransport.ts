@@ -106,6 +106,19 @@ export class InMemoryCoworkYdocTransport implements CoworkYdocTransport {
         // The server content-addresses the blob and verifies the declared digest.
         throw new Error("Compaction snapshot does not re-hash to its declared digest");
       }
+      const projectionMarkdown = request.compaction.projectionMarkdown;
+      const projectionSha256 = request.compaction.projectionSha256;
+      if ((projectionMarkdown === undefined) !== (projectionSha256 === undefined)) {
+        throw new Error("Capture compaction projection is incomplete");
+      }
+      if (
+        projectionMarkdown !== undefined &&
+        projectionSha256 !== undefined &&
+        (await sha256Hex(new TextEncoder().encode(projectionMarkdown))) !==
+          projectionSha256
+      ) {
+        throw new Error("Compaction projection does not re-hash to its declared digest");
+      }
     }
 
     this.#log.push(new Uint8Array(request.batch));
@@ -119,6 +132,20 @@ export class InMemoryCoworkYdocTransport implements CoworkYdocTransport {
     }
 
     await this.#recomputeDocSha256();
+    const compactedProjectionSha256 = request.compaction?.projectionSha256;
+    const projectionReceiptId =
+      compactedProjectionSha256 === undefined
+        ? undefined
+        : await sha256Hex(
+            new TextEncoder().encode(
+              [
+                this.#ydocGeneration,
+                this.#snapshotSha256 ?? "",
+                this.#docSha256,
+                compactedProjectionSha256,
+              ].join("\u0000"),
+            ),
+          );
     return {
       ok: true,
       applied: true,
@@ -126,6 +153,10 @@ export class InMemoryCoworkYdocTransport implements CoworkYdocTransport {
       structuredHeadSha256: this.#docSha256,
       ydocGeneration: this.#ydocGeneration,
       projectionSha256: "",
+      ...(compactedProjectionSha256 === undefined
+        ? {}
+        : { compactedProjectionSha256 }),
+      ...(projectionReceiptId === undefined ? {} : { projectionReceiptId }),
       nextOffset: String(this.#baseOffset + this.#log.length),
     };
   }

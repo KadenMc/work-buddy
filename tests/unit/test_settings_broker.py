@@ -8,7 +8,10 @@ import pytest
 
 from work_buddy import config as wb_config
 from work_buddy.settings import broker, store
-from work_buddy.settings.registry import JOURNAL_DAY_BOUNDARY_ID
+from work_buddy.settings.registry import (
+    COWORK_REVIEW_NAV_BINDING_ID,
+    JOURNAL_DAY_BOUNDARY_ID,
+)
 
 
 NY = ZoneInfo("America/New_York")
@@ -31,11 +34,12 @@ def _value(at: datetime):
     return broker.get_values(observed_at=at)[0]["values"][0]
 
 
-def test_registry_defines_one_app_owned_profile_setting_with_one_canonical_placement() -> None:
+def test_registry_defines_app_owned_settings_with_canonical_placements() -> None:
     payload = broker.get_registry()
-    assert payload["registry_revision"] == "settings-registry:1"
+    assert payload["registry_revision"] == "settings-registry:2"
     assert [item["setting_id"] for item in payload["definitions"]] == [
-        JOURNAL_DAY_BOUNDARY_ID
+        JOURNAL_DAY_BOUNDARY_ID,
+        COWORK_REVIEW_NAV_BINDING_ID,
     ]
     definition = payload["definitions"][0]
     assert definition["owner"] == {
@@ -48,8 +52,107 @@ def test_registry_defines_one_app_owned_profile_setting_with_one_canonical_place
     assert definition["default_value"] == "05:00"
     assert definition["allowed_scopes"] == ["profile"]
     assert [item["context_id"] for item in payload["placements"]] == [
-        "wb.settings.app.journal"
+        "wb.settings.app.journal",
+        "wb.settings.app.cowork",
     ]
+
+    cowork = payload["definitions"][1]
+    assert cowork["owner"]["id"] == "wb.cowork"
+    assert cowork["value_schema"] == {
+        "type": "string",
+        "enum": ["inverted", "vim"],
+    }
+    assert cowork["default_value"] == "inverted"
+    assert cowork["presentation"]["apply_behavior"] == "immediate"
+    cowork_page = next(
+        page
+        for page in payload["pages"]
+        if page["page_id"] == "wb.settings.app.cowork"
+    )
+    assert cowork_page["fallback_return_path"] == "/app/cowork"
+
+
+def test_cowork_review_navigation_values_apply_immediately_and_reset() -> None:
+    initial, events = broker.get_values(
+        context_id="wb.settings.app.cowork", observed_at=_at(15, 12)
+    )
+    assert events == []
+    value = initial["values"][0]
+    assert value["setting_id"] == COWORK_REVIEW_NAV_BINDING_ID
+    assert value["effective_value"] == "inverted"
+    assert value["default_source"] == "registry-default"
+    assert value["apply_status"] == "effective"
+    assert value["pending_value"] is None
+    assert value["impact_preview"] is None
+
+    preview = broker.preview_value(
+        COWORK_REVIEW_NAV_BINDING_ID,
+        scope="profile",
+        value="vim",
+        expected_revision="value:0",
+        observed_at=_at(15, 12, 1),
+    )
+    assert preview["preview"] == {
+        "setting_id": COWORK_REVIEW_NAV_BINDING_ID,
+        "scope": {"kind": "profile", "subject_id": "default"},
+        "value": "vim",
+        "effective_at": None,
+        "apply_status": "immediate",
+        "impact_preview": None,
+    }
+
+    changed, event = broker.update_value(
+        COWORK_REVIEW_NAV_BINDING_ID,
+        scope="profile",
+        value="vim",
+        expected_revision="value:0",
+        observed_at=_at(15, 12, 2),
+    )
+    assert changed["effective_value"] == "vim"
+    assert changed["pending_value"] is None
+    assert changed["revision"] == "value:1"
+    assert event["reason"] == "value-applied"
+    assert event["affected_contexts"] == [
+        "app:wb.cowork",
+        "view:wb.cowork.workspace",
+    ]
+
+    changed_back, event = broker.update_value(
+        COWORK_REVIEW_NAV_BINDING_ID,
+        scope="profile",
+        value="inverted",
+        expected_revision="value:1",
+        observed_at=_at(15, 12, 3),
+    )
+    assert changed_back["effective_value"] == "inverted"
+    assert changed_back["source"] == "profile"
+    assert changed_back["revision"] == "value:2"
+    assert event["reason"] == "value-applied"
+
+    reset, event = broker.reset_value(
+        COWORK_REVIEW_NAV_BINDING_ID,
+        scope="profile",
+        expected_revision="value:2",
+        observed_at=_at(15, 12, 4),
+    )
+    assert reset["effective_value"] == "inverted"
+    assert reset["source"] == "default"
+    assert reset["revision"] == "value:3"
+    assert event["reason"] == "value-reset"
+
+
+@pytest.mark.parametrize("invalid", [None, 5, "standard", "Vim"])
+def test_cowork_review_navigation_rejects_values_outside_declared_enum(invalid) -> None:
+    with pytest.raises(broker.SettingsError) as raised:
+        broker.update_value(
+            COWORK_REVIEW_NAV_BINDING_ID,
+            scope="profile",
+            value=invalid,
+            expected_revision="value:0",
+            observed_at=_at(15, 12),
+        )
+    assert raised.value.code == "validation_error"
+    assert raised.value.field == "value"
 
 
 def test_default_snapshot_carries_timezone_revision_and_impact() -> None:

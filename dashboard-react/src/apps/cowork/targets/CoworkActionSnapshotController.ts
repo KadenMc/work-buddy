@@ -466,11 +466,10 @@ export class DefaultCoworkActionSnapshotController
       await this.#persistence.flush();
       const editor = this.#requireEditor();
       assertCanonicalCoworkEditorState(editor);
-      const compacted = await this.#persistence.compact();
 
-      // Everything below is captured from one synchronous editor/Y.Doc turn.
-      // The generation/hash checks after asynchronous hashing prove it still
-      // matches the compaction receipt before the immutable payload escapes.
+      // Capture projection, target, and Y.Doc bytes in one synchronous editor
+      // turn. The capture-specific compaction admits that exact pair in one
+      // server CAS; a stale CAS returns null so the entire pair is regenerated.
       const range = this.#resolvePlanRange(editor, plan);
       const projection = coworkProjectionTarget(
         editor,
@@ -492,11 +491,19 @@ export class DefaultCoworkActionSnapshotController
         sha256Hex(new TextEncoder().encode(targetText)),
       ]);
 
+      if (this.#getEditGeneration() !== editGeneration) continue;
+      const compacted = await this.#persistence.compactProjection({
+        snapshot,
+        snapshotSha256,
+        projectionMarkdown: projection.markdown,
+        projectionSha256,
+      });
+      if (compacted === null) continue;
       const stable =
         this.#getEditGeneration() === editGeneration &&
         snapshotSha256 === compacted.snapshotSha256 &&
-        this.#persistence.docSha256 ===
-          compacted.structuredHeadSha256;
+        projectionSha256 === compacted.compactedProjectionSha256 &&
+        this.#persistence.docSha256 === compacted.structuredHeadSha256;
       if (!stable) continue;
       if (this.#persistence.ydocGeneration.length === 0) {
         throw new Error("The document generation is unavailable");
@@ -550,6 +557,7 @@ export class DefaultCoworkActionSnapshotController
         structuredHeadSha256: compacted.structuredHeadSha256,
         projectionMarkdown: projection.markdown,
         projectionSha256,
+        projectionReceiptId: compacted.projectionReceiptId,
         target: resolvedTarget,
       });
     }

@@ -69,6 +69,12 @@ def _required_text(value: object, label: str) -> str:
     return value
 
 
+def _optional_text(value: object, label: str) -> str | None:
+    if value is None:
+        return None
+    return _required_text(value, label)
+
+
 def _mapping(value: object, label: str) -> dict[str, Any]:
     if not isinstance(value, Mapping) or not all(
         isinstance(key, str) for key in value
@@ -268,6 +274,10 @@ def prepare_chat_action_snapshot(
             expected_projection_sha256=_required_text(
                 capture.get("projectionSha256"),
                 "projectionSha256",
+            ),
+            projection_receipt_id=_optional_text(
+                capture.get("projectionReceiptId"),
+                "projectionReceiptId",
             ),
             target=selector,
             context_boundary={

@@ -786,14 +786,17 @@ def test_structured_head_vectors_and_epoch_reset(store_ctx):
             expected_structured_head_sha256=base,
         )
     compacted = b"client-compacted-state"
-    _, compacted_head, new_cursor = ydoc_store.compact_and_advance(
-        store,
-        document_id=record.id,
-        snapshot=compacted,
-        expected_snapshot_sha256=sha256_bytes(compacted),
-        expected_structured_head_sha256=live,
-        actor=HUMAN,
+    _, compacted_head, new_cursor, projection_receipt = (
+        ydoc_store.compact_and_advance(
+            store,
+            document_id=record.id,
+            snapshot=compacted,
+            expected_snapshot_sha256=sha256_bytes(compacted),
+            expected_structured_head_sha256=live,
+            actor=HUMAN,
+        )
     )
+    assert projection_receipt is None
     assert compacted_head == ydoc_store.structured_head_from_segments(compacted, ())
     assert new_cursor != cursor
     updates, _, reset = ydoc_store.read_epoch_updates(

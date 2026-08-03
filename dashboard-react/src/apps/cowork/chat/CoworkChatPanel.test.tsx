@@ -12,6 +12,7 @@ import type {
 import { CoworkChatAnnotations } from "./annotations";
 import { CoworkChatPanel } from "./CoworkChatPanel";
 import { CoworkChatTargetingProvider } from "./CoworkChatTargeting";
+import { CoworkChatActionSnapshotError } from "./HttpCoworkChatActionSnapshotClient";
 
 function jsonResponse(
   body: unknown,
@@ -300,6 +301,113 @@ describe("CoworkChatPanel", () => {
     expect(
       screen.getByLabelText("Frozen document context: Introduction"),
     ).toHaveTextContent("Frozen version · action-s");
+  });
+
+  it("recaptures once when the durable document changes during context preparation", async () => {
+    const firstReference = {
+      schema: "wb.cowork.document-target/v1",
+      storeId: "store-1",
+      documentId: "doc-1",
+      kind: "text_range",
+    } as const;
+    const firstCapture = {
+      revision: "first",
+      target: {
+        selector: { kind: "text_quote" },
+        targetReference: firstReference,
+      },
+    } as unknown as CoworkCapturedActionSnapshot;
+    const secondCapture = { revision: "second" } as unknown as CoworkCapturedActionSnapshot;
+    const targetSnapshot = {
+      phase: "ready" as const,
+      selection: null,
+      currentSection: null,
+      workingTarget: {
+        kind: "document" as const,
+        label: "Whole document",
+        wordCount: 20,
+        range: null,
+      },
+    };
+    const controller: CoworkActionSnapshotController = {
+      subscribe: () => () => undefined,
+      getSnapshot: () => targetSnapshot,
+      setWorkingTargetFromSelection: vi.fn(),
+      clearWorkingTarget: vi.fn(),
+      capture: vi.fn().mockResolvedValueOnce(firstCapture),
+      captureReference: vi.fn().mockResolvedValueOnce(secondCapture),
+    };
+    const context: ChatActionSnapshotContext = {
+      kind: "action_snapshot",
+      actionSnapshotId: "action-snapshot-recaptured",
+      storeId: "store-1",
+      documentId: "doc-1",
+      targetKind: "document",
+      targetLabel: "Whole document",
+      targetWordCount: 20,
+      targetTextSha256: "a".repeat(64),
+      projectionSha256: "b".repeat(64),
+      capturedAt: "2026-08-03T12:00:00Z",
+    };
+    const prepare = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new CoworkChatActionSnapshotError(
+          "The document changed while its context was being attached.",
+          409,
+          "action_snapshot_changed",
+        ),
+      )
+      .mockResolvedValueOnce(context);
+    let posted = false;
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        posted = true;
+        return jsonResponse({ sent: true, message_id: "recaptured-turn" });
+      }
+      return jsonResponse(
+        conversation(
+          posted
+            ? [
+                {
+                  message_id: "recaptured-turn",
+                  role: "user",
+                  content: "Use the current version.",
+                },
+              ]
+            : [],
+        ),
+      );
+    }) as unknown as typeof fetch;
+
+    render(
+      <CoworkChatTargetingProvider
+        storeId="store-1"
+        documentId="doc-1"
+        controller={controller}
+        agent={{
+          status: "running",
+          alive: true,
+          started: true,
+          error: null,
+        }}
+        client={{ prepare }}
+      >
+        <CoworkChatPanel provider={provider(fetchImpl)} conversationId="c1" />
+      </CoworkChatTargetingProvider>,
+    );
+
+    await screen.findByText(/No messages yet/);
+    await userEvent.type(screen.getByRole("textbox"), "Use the current version.");
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => expect(controller.capture).toHaveBeenCalledTimes(1));
+    expect(controller.captureReference).toHaveBeenCalledWith(
+      "working_target",
+      firstReference,
+    );
+    expect(prepare).toHaveBeenNthCalledWith(1, firstCapture);
+    expect(prepare).toHaveBeenNthCalledWith(2, secondCapture);
   });
 
   it("explains when Working on context cannot be consumed", async () => {

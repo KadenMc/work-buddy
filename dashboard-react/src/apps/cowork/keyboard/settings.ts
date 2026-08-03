@@ -51,7 +51,7 @@ export const coworkKeyboardSettingsContribution: SettingsContribution = {
         "Inverted uses j for the previous item and k for the next item. Vim uses the conventional j down, k up pair.",
       valueSchema: { type: "string", enum: ["inverted", "vim"] },
       defaultValue: DEFAULT_NAV_BINDING_PRESET,
-      allowedScopes: ["profile", "device"],
+      allowedScopes: ["profile"],
       defaultScope: "profile",
       control: {
         kind: "select",

@@ -30,6 +30,19 @@ export interface CoworkCompactionReceipt {
   readonly structuredHeadSha256: string;
 }
 
+export interface CoworkProjectionCheckpoint {
+  readonly snapshot: Uint8Array;
+  readonly snapshotSha256: string;
+  readonly projectionMarkdown: string;
+  readonly projectionSha256: string;
+}
+
+export interface CoworkProjectionCompactionReceipt
+  extends CoworkCompactionReceipt {
+  readonly compactedProjectionSha256: string;
+  readonly projectionReceiptId: string;
+}
+
 /**
  * A logical generation change means the server destructively replaced the Y.Doc.
  * A live Y.Doc cannot be cleared or replaced in place: applying the replacement snapshot
@@ -364,6 +377,83 @@ export class CoworkYdocPersistence {
       snapshotSha256: this.#snapshotSha256,
       structuredHeadSha256: this.#docSha256,
     };
+  }
+
+  /**
+   * Admit one browser-rendered Markdown projection in the same CAS as its
+   * exact compacted Y.Doc snapshot. A stale CAS catches up but deliberately
+   * returns null: the caller must re-render both values from the refreshed
+   * editor instead of pairing a new snapshot with an old projection.
+   */
+  async compactProjection(
+    checkpoint: CoworkProjectionCheckpoint,
+  ): Promise<CoworkProjectionCompactionReceipt | null> {
+    let receipt: CoworkProjectionCompactionReceipt | null = null;
+    await this.#enqueue(async () => {
+      await this.#drainPending();
+      const [checkpointSnapshotSha256, checkpointProjectionSha256] =
+        await Promise.all([
+          sha256Hex(checkpoint.snapshot),
+          sha256Hex(new TextEncoder().encode(checkpoint.projectionMarkdown)),
+        ]);
+      if (
+        checkpointSnapshotSha256 !== checkpoint.snapshotSha256 ||
+        checkpointProjectionSha256 !== checkpoint.projectionSha256
+      ) {
+        throw new Error("Capture compaction bytes do not match their digests");
+      }
+      const liveSnapshotSha256 = await sha256Hex(
+        Y.encodeStateAsUpdate(this.#doc),
+      );
+      if (liveSnapshotSha256 !== checkpoint.snapshotSha256) {
+        return;
+      }
+      const result = await this.#transport.push({
+        batch: checkpoint.snapshot,
+        baseSha256: this.#docSha256,
+        baseStructuredHeadSha256: this.#docSha256,
+        baseYdocGeneration: this.#ydocGeneration,
+        compaction: {
+          snapshot: checkpoint.snapshot,
+          snapshotSha256: checkpoint.snapshotSha256,
+          projectionMarkdown: checkpoint.projectionMarkdown,
+          projectionSha256: checkpoint.projectionSha256,
+        },
+      });
+      if (!result.ok) {
+        await this.pullSince();
+        return;
+      }
+      this.#assertGeneration(result.ydocGeneration);
+      if (
+        result.compactedProjectionSha256 !== checkpoint.projectionSha256 ||
+        typeof result.projectionReceiptId !== "string" ||
+        result.projectionReceiptId.length === 0
+      ) {
+        throw new Error(
+          "Capture compaction did not return its projection receipt",
+        );
+      }
+      this.#offset = result.nextOffset;
+      this.#docSha256 = result.structuredHeadSha256 ?? result.docSha256;
+      this.#snapshotSha256 = checkpoint.snapshotSha256;
+      receipt = {
+        snapshotSha256: checkpoint.snapshotSha256,
+        structuredHeadSha256: this.#docSha256,
+        compactedProjectionSha256: result.compactedProjectionSha256,
+        projectionReceiptId: result.projectionReceiptId,
+      };
+      if (this.#outbox !== undefined) {
+        await this.#outbox.pruneAcknowledged();
+        for (let index = this.#pendingBatches.length - 1; index >= 0; index -= 1) {
+          if (this.#pendingBatches[index].acknowledged) {
+            this.#pendingBatches.splice(index, 1);
+          }
+        }
+      }
+      this.#setStatus("clean");
+    });
+    return receipt;
   }
 
   async #compactOnce(): Promise<void> {

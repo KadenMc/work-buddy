@@ -209,6 +209,45 @@ describe("ConversationChat", () => {
     expect(await screen.findByRole("textbox")).toHaveValue("second draft");
   });
 
+  it("surfaces a pre-send failure, retains the draft, and clears it on retry", async () => {
+    const chatProvider = provider("c1", { messages: [] });
+    const prepareSend = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new Error("The document changed while its exact context was prepared."),
+      )
+      .mockImplementation(async (input) => input);
+    render(
+      <ConversationChat
+        provider={chatProvider}
+        conversationId="c1"
+        title="Project chat"
+        prepareSend={prepareSend}
+      />,
+    );
+    const input = await screen.findByRole("textbox");
+    await userEvent.type(input, "Keep this authored draft");
+
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(
+      await screen.findByText(
+        "The document changed while its exact context was prepared.",
+      ),
+    ).toBeVisible();
+    expect(input).toHaveValue("Keep this authored draft");
+
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => expect(input).toHaveValue(""));
+    expect(
+      screen.queryByText(
+        "The document changed while its exact context was prepared.",
+      ),
+    ).toBeNull();
+    expect(prepareSend).toHaveBeenCalledTimes(2);
+  });
+
   it("has no accessibility violations with additive extensions", async () => {
     const { container } = render(
       <ConversationChat

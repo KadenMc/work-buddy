@@ -270,6 +270,87 @@ def test_push_compaction_advances_snapshot_and_truncates_log(seeded):
     assert headers["X-WB-Ydoc-Generation"] == generation_before
 
 
+def test_capture_compaction_returns_exact_projection_receipt(seeded):
+    store = seeded["store"]
+    document = seeded["document"]
+    generation = documents.current_ydoc_generation(store, document.id)
+    snapshot = b"YDOC-CAPTURE-SNAPSHOT"
+    projection = b"# Edited\n\nExact captured projection.\n"
+    projection_sha256 = sha256_bytes(projection)
+    head = ydoc_store.current_structured_head(
+        store,
+        document_id=document.id,
+        snapshot_sha256=seeded["snapshot_sha256"],
+    )
+
+    payload, status = transport.push_ydoc(
+        store,
+        document,
+        HUMAN,
+        body=transport.frame_segments([b"final", snapshot, projection]),
+        base_structured_head_sha256=head,
+        base_ydoc_generation=generation,
+        compacted_snapshot_sha256=sha256_bytes(snapshot),
+        compacted_projection_sha256=projection_sha256,
+        at=NOW,
+    )
+
+    assert status == 200
+    assert payload["projection_sha256"] == document.content_sha256
+    assert payload["compacted_projection_sha256"] == projection_sha256
+    assert ydoc_store.projection_receipt_matches(
+        store,
+        receipt_id=payload["projection_receipt_id"],
+        document_id=document.id,
+        ydoc_snapshot_sha256=sha256_bytes(snapshot),
+        structured_head_sha256=payload["structured_head_sha256"],
+        ydoc_generation_sha256=generation,
+        projection_sha256=projection_sha256,
+    )
+
+    ydoc_store.append_update_cas(
+        store,
+        document_id=document.id,
+        snapshot_sha256=sha256_bytes(snapshot),
+        update=b"later-edit",
+        expected_structured_head_sha256=payload["structured_head_sha256"],
+    )
+    assert ydoc_store.current_projection_receipt(
+        store, document_id=document.id
+    ) is None
+
+
+def test_capture_compaction_rejects_projection_digest_mismatch(seeded):
+    store = seeded["store"]
+    document = seeded["document"]
+    snapshot = b"YDOC-CAPTURE-SNAPSHOT"
+    head = ydoc_store.current_structured_head(
+        store,
+        document_id=document.id,
+        snapshot_sha256=seeded["snapshot_sha256"],
+    )
+
+    with pytest.raises(
+        InvariantViolation,
+        match="projection does not match",
+    ):
+        transport.push_ydoc(
+            store,
+            document,
+            HUMAN,
+            body=transport.frame_segments(
+                [b"final", snapshot, b"# Actual projection\n"]
+            ),
+            base_structured_head_sha256=head,
+            base_ydoc_generation=documents.current_ydoc_generation(
+                store, document.id
+            ),
+            compacted_snapshot_sha256=sha256_bytes(snapshot),
+            compacted_projection_sha256="0" * 64,
+            at=NOW,
+        )
+
+
 def test_push_compaction_requires_two_segments(seeded):
     store = seeded["store"]
     document = seeded["document"]
@@ -339,6 +420,30 @@ def test_push_size_failures_are_typed_and_mutate_nothing(seeded, monkeypatch):
     )
     assert snapshot_status == 413
     assert snapshot_payload["error"]["code"] == "snapshot_too_large"
+
+    oversized_projection = b"projection"
+    projection_body = (
+        _PREFIX.pack(1)
+        + b"u"
+        + _PREFIX.pack(1)
+        + b"s"
+        + _PREFIX.pack(len(oversized_projection))
+        + oversized_projection
+    )
+    projection_payload, projection_status = transport.push_ydoc(
+        store,
+        document,
+        HUMAN,
+        body=projection_body,
+        base_structured_head_sha256=head,
+        base_ydoc_generation=documents.current_ydoc_generation(
+            store, document.id
+        ),
+        compacted_snapshot_sha256=sha256_bytes(b"s"),
+        compacted_projection_sha256=sha256_bytes(oversized_projection),
+    )
+    assert projection_status == 413
+    assert projection_payload["error"]["code"] == "projection_too_large"
 
     assert documents.get_document(store, document.id) == before_document
     assert ydoc_store.read_updates(store, document_id=document.id)[0] == ()

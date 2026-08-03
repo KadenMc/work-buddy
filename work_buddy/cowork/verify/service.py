@@ -599,6 +599,7 @@ def create_action_snapshot(
     expected_structured_head_sha256: str,
     expected_ydoc_generation_sha256: str,
     expected_projection_sha256: str,
+    projection_receipt_id: str | None = None,
     actor: Actor,
     target: ActionTarget | Mapping[str, Any] | None = None,
     context_boundary: Mapping[str, Any] | None = None,
@@ -624,6 +625,11 @@ def create_action_snapshot(
     expected_projection = _digest(
         expected_projection_sha256,
         "expected_projection_sha256",
+    )
+    projection_receipt = (
+        None
+        if projection_receipt_id is None
+        else _digest(projection_receipt_id, "projection_receipt_id")
     )
     if isinstance(projection, str):
         projection_text = projection
@@ -707,13 +713,30 @@ def create_action_snapshot(
             raise VerifyInvariantViolation(
                 "document Y.Doc generation changed before capture"
             )
-        if (
-            not ydoc_store.update_tail_present(store, document_id=document_ref)
-            and projection_digest != document.content_sha256
+        if projection_receipt is not None:
+            if not ydoc_store.projection_receipt_matches(
+                store,
+                receipt_id=projection_receipt,
+                document_id=document_ref,
+                ydoc_snapshot_sha256=expected_snapshot,
+                structured_head_sha256=expected_head,
+                ydoc_generation_sha256=expected_generation,
+                projection_sha256=projection_digest,
+            ):
+                raise VerifyInvariantViolation(
+                    "projection receipt does not match this compacted capture"
+                )
+        elif (
+            projection_digest != document.content_sha256
+            and not ydoc_store.update_tail_present(
+                store, document_id=document_ref
+            )
         ):
+            # Rolling compatibility permits a managed baseline or the legacy
+            # un-compacted-tail path. New browser captures compact first and
+            # must bind an edited projection to that exact CAS receipt.
             raise VerifyInvariantViolation(
-                "projection differs from the durable document without a "
-                "structured update tail"
+                "edited projection has no matching compaction receipt"
             )
         current_version = documents.current_document_version(store, document_ref)
         canonical_payload = {

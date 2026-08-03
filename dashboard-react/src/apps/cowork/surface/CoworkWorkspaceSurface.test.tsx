@@ -1425,6 +1425,69 @@ describe("CoworkWorkspaceWidget live mode", () => {
     saveRailTab(window.localStorage, "live-doc", "review");
   });
 
+  it("restarts a stopped Chat and immediately refreshes its liveness", async () => {
+    const fallback = liveFetch();
+    let restarted = false;
+    let conversationReads = 0;
+    const fetchImpl = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        const url = String(input);
+        const method = (init?.method ?? "GET").toUpperCase();
+        if (
+          url.includes(
+            "/api/truth/doc/live-doc/conversation?store_id=live-store",
+          )
+        ) {
+          if (method === "POST") restarted = true;
+          return jsonResponse({
+            ok: true,
+            conversation_id: LIVE_CONVERSATION_ID,
+            created: false,
+            agent: restarted
+              ? { ...LIVE_AGENT, started: true }
+              : {
+                  status: "stopped",
+                  alive: false,
+                  started: true,
+                  error: null,
+                },
+          });
+        }
+        if (url === `/api/conversations/${LIVE_CONVERSATION_ID}`) {
+          conversationReads += 1;
+          return jsonResponse({
+            conversation: {
+              conversation_id: LIVE_CONVERSATION_ID,
+              title: "Document conversation",
+              status: "open",
+              agent_alive: restarted,
+            },
+            messages: [],
+          });
+        }
+        return fallback(input, init);
+      },
+    );
+    renderLive(noopEmit, fetchImpl as unknown as typeof fetch);
+
+    await userEvent.click(screen.getByRole("tab", { name: /Chat/ }));
+    expect(await screen.findByText("Chat paused.")).toBeVisible();
+    const readsBeforeRestart = conversationReads;
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Restart chat" }),
+    );
+
+    await waitFor(() => expect(restarted).toBe(true));
+    await waitFor(() =>
+      expect(conversationReads).toBeGreaterThan(readsBeforeRestart),
+    );
+    await waitFor(() =>
+      expect(screen.queryByText("Chat paused.")).not.toBeInTheDocument(),
+    );
+    saveRailTab(window.localStorage, "live-doc", "review");
+  });
+
   it("hydrates persisted feedback span links on reload by exact message id", async () => {
     vi.stubGlobal(
       "matchMedia",

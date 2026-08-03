@@ -38,6 +38,7 @@ export {
 } from "./CoworkChatTargeting";
 
 export {
+  CoworkChatActionSnapshotError,
   HttpCoworkChatActionSnapshotClient,
   type CoworkChatActionSnapshotClient,
 } from "./HttpCoworkChatActionSnapshotClient";

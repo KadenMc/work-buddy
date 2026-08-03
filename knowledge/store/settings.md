@@ -19,14 +19,14 @@ entry_points:
 dev_notes: |-
   Server/profile values live in `db/settings/settings.db`. The store runs the Settings migration ladder once per resolved database path. Definitions, pages, sections, and placements are separate records in the registry; stored values key by setting identity and scope, not navigation path.
 
-  The broker owns typed validation, authority checks, optimistic revision matching, preview, mutation, reset, policy transitions, and event publication. React code consumes same-origin endpoints and keeps page-local lexical search controls mounted while filtering.
+  The broker owns typed validation, authority checks, optimistic revision matching, preview, mutation, reset, immediate values, policy transitions, and event publication. React code consumes same-origin endpoints and keeps page-local lexical search controls mounted while filtering.
 ---
 
 Settings is the authority and information architecture for configurable Work Buddy behavior.
 
 ## Navigation
 
-Application-owned settings are organized under **Apps**, separated by provenance such as Built-in and Community. Journal appears once at `Apps -> Built-in -> Journal`. View- and System-related groups are sections inside the owning App page rather than duplicate global View entries.
+Application-owned settings are organized under **Apps**, separated by provenance such as Built-in and Community. Journal and Co-work each appear once under `Apps -> Built-in`; Co-work owns its Review navigation binding on that page. View- and System-related groups are sections inside the owning App page rather than duplicate global View entries.
 
 The canonical Journal route is `/app/settings/apps/journal`. Contextual settings launchers navigate directly to the owning page. Compatibility routes may redirect there while preserving navigation state; they do not create a second setting identity.
 
@@ -48,6 +48,13 @@ Authority is declared per setting. Device-local settings cover presentation and 
 ## Broker behavior
 
 The same-origin Settings API exposes registry, values, preview, mutation, and reset operations. Mutations use typed validation, revision checks, authority enforcement, and the dashboard read-only gate. Successful changes publish `settings.changed` to the live UI projection.
+
+Registry-backed select controls use the same authoritative values path as the
+Journal time control. Immediate values take effect in the mutation response;
+only settings explicitly declared `next-boundary` enter the Journal transition
+path. A stored default is frozen for its declared `value_version`, so changing
+a definition's default or representation requires a deliberate Settings-store
+migration rather than silently reinterpreting an existing profile.
 
 Page search is immediate lexical filtering and keeps controls mounted so draft values are not destroyed. Global semantic Settings search is a separate integration boundary and is not supplied by browser calls to the embedding service.
 

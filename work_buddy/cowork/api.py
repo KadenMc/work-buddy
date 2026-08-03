@@ -1337,6 +1337,9 @@ def api_doc_ydoc_push(document_id: str):
         request.headers.get("X-WB-Base-Ydoc-Generation") or None
     )
     compacted = request.headers.get("X-WB-Compacted-Snapshot-Sha256") or None
+    compacted_projection = (
+        request.headers.get("X-WB-Compacted-Projection-Sha256") or None
+    )
     actor = _actor_for_request()
     try:
         from work_buddy.consent import user_initiated
@@ -1351,6 +1354,7 @@ def api_doc_ydoc_push(document_id: str):
                 base_structured_head_sha256=base_structured_head_sha256,
                 base_ydoc_generation=base_ydoc_generation,
                 compacted_snapshot_sha256=compacted,
+                compacted_projection_sha256=compacted_projection,
             )
     except InvariantViolation as exc:
         return _fail(str(exc), 400)

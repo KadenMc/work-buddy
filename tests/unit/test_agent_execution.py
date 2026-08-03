@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -16,6 +17,9 @@ from work_buddy.agent_execution.claude_code import (
     claude_account_environment,
 )
 from work_buddy.agent_execution.claude_worker import (
+    _claude_config_source,
+    _isolated_claude_config,
+    _retry_cleanup,
     run_worker as run_claude_worker,
 )
 from work_buddy.agent_execution.codex import (
@@ -341,6 +345,8 @@ def test_claude_start_passes_exact_model_and_account_environment(
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "not-in-child")
     monkeypatch.setenv("WORK_BUDDY_SESSION_ID", "inherited-bootstrap-id")
+    source_config = tmp_path / "claude-source"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(source_config))
 
     def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(
@@ -398,6 +404,7 @@ def test_claude_start_passes_exact_model_and_account_environment(
     child_env = captured["env"]
     assert isinstance(child_env, dict)
     assert "ANTHROPIC_API_KEY" not in child_env
+    assert child_env["CLAUDE_CONFIG_DIR"] == str(source_config)
     assert (
         child_env["WORK_BUDDY_SESSION_ID"]
         == "claude-generation-cowork"
@@ -413,7 +420,31 @@ def test_claude_worker_uses_empty_neutral_cwd_and_no_session_persistence(
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "not-in-claude")
     monkeypatch.setenv("WORK_BUDDY_SESSION_ID", "inherited-bootstrap-id")
+    source_config = tmp_path / "claude-source"
+    source_config.mkdir()
+    credentials = source_config / ".credentials.json"
+    credentials.write_text(
+        json.dumps(
+            {
+                "claudeAiOauth": {"accessToken": "account-backed"},
+                "mcpOAuth": {
+                    "unrelated-server": {"accessToken": "do-not-copy"}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (source_config / "settings.json").write_text(
+        '{"apiKeyHelper":"do-not-load"}',
+        encoding="utf-8",
+    )
+    (source_config / "CLAUDE.md").write_text(
+        "Do not load this instruction.",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(source_config))
     calls: dict[str, object] = {}
+    isolated_config_paths: list[Path] = []
 
     def run(command: list[str], **kwargs: object) -> object:
         calls["command"] = command
@@ -422,6 +453,25 @@ def test_claude_worker_uses_empty_neutral_cwd_and_no_session_persistence(
         assert host_cwd.is_dir()
         assert list(host_cwd.iterdir()) == []
         assert host_cwd != tmp_path.resolve()
+        child_env = kwargs["env"]
+        assert isinstance(child_env, dict)
+        isolated_config = Path(child_env["CLAUDE_CONFIG_DIR"])
+        isolated_config_paths.append(isolated_config)
+        assert isolated_config != source_config.resolve()
+        assert sorted(path.name for path in isolated_config.iterdir()) == [
+            ".credentials.json"
+        ]
+        assert not (isolated_config / "settings.json").exists()
+        assert not (isolated_config / "CLAUDE.md").exists()
+        isolated_credentials = json.loads(
+            (isolated_config / ".credentials.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert isolated_credentials == {
+            "claudeAiOauth": {"accessToken": "account-backed"}
+        }
+        assert "mcpOAuth" not in isolated_credentials
         return SimpleNamespace(returncode=0)
 
     result = run_claude_worker(
@@ -437,8 +487,16 @@ def test_claude_worker_uses_empty_neutral_cwd_and_no_session_persistence(
     assert isinstance(argv, list)
     assert argv[argv.index("--model") + 1] == "opus"
     assert argv[argv.index("--max-budget-usd") + 1] == "3.5"
-    assert argv[argv.index("--setting-sources") + 1] == ""
-    assert argv[argv.index("--settings") + 1] == "{}"
+    assert "--setting-sources" not in argv
+    assert json.loads(argv[argv.index("--settings") + 1]) == {
+        "autoMemoryEnabled": False,
+        "disableAllHooks": True,
+        "disableArtifact": True,
+        "disableBundledSkills": True,
+        "disableClaudeAiConnectors": True,
+        "disableWorkflows": True,
+        "enabledMcpjsonServers": ["work-buddy"],
+    }
     assert "--strict-mcp-config" in argv
     assert "--no-session-persistence" in argv
     assert "--no-chrome" in argv
@@ -463,6 +521,8 @@ def test_claude_worker_uses_empty_neutral_cwd_and_no_session_persistence(
     assert calls["stdout"] is subprocess.DEVNULL
     assert calls["stderr"] is subprocess.DEVNULL
     assert not Path(calls["cwd"]).exists()
+    assert len(isolated_config_paths) == 1
+    assert not isolated_config_paths[0].exists()
     child_env = calls["env"]
     assert isinstance(child_env, dict)
     assert "ANTHROPIC_API_KEY" not in child_env
@@ -475,6 +535,151 @@ def test_claude_worker_uses_empty_neutral_cwd_and_no_session_persistence(
         child_env["WORK_BUDDY_SESSION_ID"]
         == "claude-generation-cowork"
     )
+
+
+def test_claude_config_source_defaults_to_home(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        "work_buddy.agent_execution.claude_worker.Path.home",
+        lambda: tmp_path,
+    )
+
+    assert _claude_config_source({}) == (tmp_path / ".claude").resolve()
+
+
+def test_claude_config_projection_is_private_and_ephemeral(
+    tmp_path: Path,
+) -> None:
+    source_config = tmp_path / "claude-source"
+    source_config.mkdir()
+    source_credentials = source_config / ".credentials.json"
+    source_credentials.write_text(
+        json.dumps(
+            {
+                "claudeAiOauth": {
+                    "accessToken": "private-token",
+                    "refreshToken": "private-refresh",
+                },
+                "mcpOAuth": {
+                    "unrelated-server": {"accessToken": "other-token"}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (source_config / "settings.json").write_text(
+        '{"env":{"ANTHROPIC_API_KEY":"wrong-route"}}',
+        encoding="utf-8",
+    )
+
+    isolated_path: Path | None = None
+    with _isolated_claude_config(
+        {"CLAUDE_CONFIG_DIR": str(source_config)}
+    ) as isolated_config:
+        isolated_path = isolated_config
+        copied_credentials = isolated_config / ".credentials.json"
+        assert sorted(path.name for path in isolated_config.iterdir()) == [
+            ".credentials.json"
+        ]
+        assert json.loads(copied_credentials.read_text(encoding="utf-8")) == {
+            "claudeAiOauth": {
+                "accessToken": "private-token",
+                "refreshToken": "private-refresh",
+            }
+        }
+        assert not (isolated_config / "settings.json").exists()
+        if os.name != "nt":
+            assert copied_credentials.stat().st_mode & 0o777 == 0o600
+
+    assert isolated_path is not None
+    assert not isolated_path.exists()
+
+
+def test_claude_config_allows_empty_directory_for_macos_keychain(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source_config = tmp_path / "claude-source"
+    source_config.mkdir()
+    (source_config / ".credentials.json").write_text(
+        json.dumps(
+            {
+                "claudeAiOauth": {"accessToken": "legacy-file-token"},
+                "mcpOAuth": {"unrelated-server": {"accessToken": "other"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (source_config / "settings.json").write_text(
+        '{"apiKeyHelper":"do-not-load"}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "work_buddy.agent_execution.claude_worker._CLAUDE_USES_KEYCHAIN",
+        True,
+    )
+
+    isolated_path: Path | None = None
+    with _isolated_claude_config(
+        {"CLAUDE_CONFIG_DIR": str(source_config)}
+    ) as isolated_config:
+        isolated_path = isolated_config
+        assert list(isolated_config.iterdir()) == []
+
+    assert isolated_path is not None
+    assert not isolated_path.exists()
+
+
+def test_claude_config_cleanup_retries_transient_file_locks() -> None:
+    calls = 0
+    delays: list[float] = []
+
+    def cleanup() -> None:
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise PermissionError("credential file is still closing")
+
+    _retry_cleanup(cleanup, sleeper=delays.append)
+
+    assert calls == 3
+    assert delays == [0.05, 0.15]
+
+
+def test_claude_config_cleanup_fails_closed_after_bounded_retries() -> None:
+    calls = 0
+    delays: list[float] = []
+
+    def cleanup() -> None:
+        nonlocal calls
+        calls += 1
+        raise PermissionError("credential file remains locked")
+
+    with pytest.raises(PermissionError, match="remains locked"):
+        _retry_cleanup(cleanup, sleeper=delays.append)
+
+    assert calls == 4
+    assert delays == [0.05, 0.15, 0.3]
+
+
+def test_claude_config_requires_credentials_outside_macos(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source_config = tmp_path / "claude-source"
+    source_config.mkdir()
+    monkeypatch.setattr(
+        "work_buddy.agent_execution.claude_worker._CLAUDE_USES_KEYCHAIN",
+        False,
+    )
+
+    with pytest.raises(FileNotFoundError):
+        with _isolated_claude_config(
+            {"CLAUDE_CONFIG_DIR": str(source_config)}
+        ):
+            pytest.fail("Claude must not start without account credentials")
 
 
 def test_claude_worker_rejects_unsafe_direct_identity() -> None:

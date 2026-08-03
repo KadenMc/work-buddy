@@ -32,6 +32,7 @@ import {
   CoworkPassageAction,
   CoworkRoutingNotices,
 } from "./CoworkChatExtensions";
+import { CoworkChatActionSnapshotError } from "./HttpCoworkChatActionSnapshotClient";
 import { useOptionalCoworkChatTargeting } from "./CoworkChatTargeting";
 import type { ScrollAnchorTarget } from "./contracts";
 import type { CoworkDocumentAgent } from "./documentConversationBinding";
@@ -149,9 +150,37 @@ export function CoworkChatPanel({
             "Working-on context is unavailable for this Chat.",
         );
       }
-      const capture = await targeting.controller.capture("working_target");
-      const context = await targeting.client.prepare(capture);
-      return { ...input, context };
+      const firstCapture = await targeting.controller.capture("working_target");
+      try {
+        const context = await targeting.client.prepare(firstCapture);
+        return { ...input, context };
+      } catch (error) {
+        if (
+          !(error instanceof CoworkChatActionSnapshotError) ||
+          error.code !== "action_snapshot_changed"
+        ) {
+          throw error;
+        }
+        // A collaborator can advance the durable head after the browser's
+        // stable capture but before its POST arrives. Recapture exactly once
+        // against the first capture's logical target; a newer Working on
+        // choice must never silently retarget the already-authored message.
+        const reference = firstCapture.target.targetReference;
+        if (
+          targeting.controller.captureReference === undefined ||
+          (firstCapture.target.selector.kind !== "document" &&
+            reference === undefined)
+        ) {
+          throw error;
+        }
+        const context = await targeting.client.prepare(
+          await targeting.controller.captureReference(
+            "working_target",
+            reference ?? null,
+          ),
+        );
+        return { ...input, context };
+      }
     },
     [targetUnavailableReason, targeting],
   );

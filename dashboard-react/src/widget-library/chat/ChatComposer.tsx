@@ -1,4 +1,6 @@
 import {
+  useCallback,
+  useLayoutEffect,
   useRef,
   useState,
   type FormEvent,
@@ -11,9 +13,6 @@ import { Button, InlineAlert, Spinner } from "../../ui";
 import { ChatExecutionPicker } from "./ChatExecutionPicker";
 import type { ChatExecutionControl } from "./useChatExecutionProfile";
 import "./styles.css";
-
-/** Cap the auto-grown textarea height so a long draft scrolls within itself. */
-const MAX_INPUT_HEIGHT = 160;
 
 export interface ChatComposerProps {
   /**
@@ -73,12 +72,42 @@ export function ChatComposer({
     !executionBlocksSend &&
     draft.trim().length > 0;
 
-  const grow = (element: HTMLTextAreaElement | null) => {
+  const grow = useCallback((element: HTMLTextAreaElement | null) => {
     if (element === null) return;
     element.style.height = "auto";
-    const next = Math.min(element.scrollHeight, MAX_INPUT_HEIGHT);
-    if (next > 0) element.style.height = `${next}px`;
-  };
+    element.style.overflowY = "hidden";
+    const styles = globalThis.getComputedStyle(element);
+    const borderHeight =
+      (Number.parseFloat(styles.borderTopWidth) || 0) +
+      (Number.parseFloat(styles.borderBottomWidth) || 0);
+    const desiredHeight = element.scrollHeight + borderHeight;
+    const parsedMaximum = Number.parseFloat(styles.maxHeight);
+    const maximumHeight = Number.isFinite(parsedMaximum)
+      ? parsedMaximum
+      : Number.POSITIVE_INFINITY;
+    const nextHeight = Math.min(desiredHeight, maximumHeight);
+    if (nextHeight > 0) element.style.height = `${nextHeight}px`;
+    element.style.overflowY =
+      desiredHeight > maximumHeight ? "auto" : "hidden";
+  }, []);
+
+  useLayoutEffect(() => {
+    grow(inputRef.current);
+  }, [draft, grow]);
+
+  useLayoutEffect(() => {
+    const element = inputRef.current;
+    if (element === null || typeof ResizeObserver === "undefined") return;
+    let width = element.getBoundingClientRect().width;
+    const observer = new ResizeObserver((entries) => {
+      const nextWidth = entries[0]?.contentRect.width ?? width;
+      if (nextWidth === width) return;
+      width = nextWidth;
+      grow(element);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [grow]);
 
   const submit = async () => {
     const value = draft.trim();
@@ -96,7 +125,6 @@ export function ChatComposer({
       setDraft("");
       onDraftChange?.("");
       if (inputRef.current !== null) {
-        inputRef.current.style.height = "";
         inputRef.current.focus();
       }
     } catch {
@@ -139,7 +167,6 @@ export function ChatComposer({
           onChange={(value) => {
             setDraft(value);
             onDraftChange?.(value);
-            grow(inputRef.current);
           }}
         >
           <TextArea

@@ -324,6 +324,19 @@ export class LocalCoworkYdocTransport implements CoworkYdocTransport {
         // The backing content-addresses the blob and verifies the declared digest.
         throw new Error("Compaction snapshot does not re-hash to its declared digest");
       }
+      const projectionMarkdown = request.compaction.projectionMarkdown;
+      const projectionSha256 = request.compaction.projectionSha256;
+      if ((projectionMarkdown === undefined) !== (projectionSha256 === undefined)) {
+        throw new Error("Capture compaction projection is incomplete");
+      }
+      if (
+        projectionMarkdown !== undefined &&
+        projectionSha256 !== undefined &&
+        (await sha256Hex(new TextEncoder().encode(projectionMarkdown))) !==
+          projectionSha256
+      ) {
+        throw new Error("Compaction projection does not re-hash to its declared digest");
+      }
     }
 
     const log = state.log.map((batch) => new Uint8Array(batch));
@@ -350,6 +363,20 @@ export class LocalCoworkYdocTransport implements CoworkYdocTransport {
 
     await this.#backing.write(this.#key, nextState);
     const nextDocSha256 = await this.#fingerprint(nextState);
+    const compactedProjectionSha256 = request.compaction?.projectionSha256;
+    const projectionReceiptId =
+      compactedProjectionSha256 === undefined
+        ? undefined
+        : await sha256Hex(
+            new TextEncoder().encode(
+              [
+                this.#ydocGeneration,
+                nextState.snapshotSha256 ?? "",
+                nextDocSha256,
+                compactedProjectionSha256,
+              ].join("\u0000"),
+            ),
+          );
     return {
       ok: true,
       applied: true,
@@ -357,6 +384,10 @@ export class LocalCoworkYdocTransport implements CoworkYdocTransport {
       structuredHeadSha256: nextDocSha256,
       ydocGeneration: this.#ydocGeneration,
       projectionSha256: "",
+      ...(compactedProjectionSha256 === undefined
+        ? {}
+        : { compactedProjectionSha256 }),
+      ...(projectionReceiptId === undefined ? {} : { projectionReceiptId }),
       nextOffset: String(nextState.baseOffset + nextState.log.length),
     };
   }

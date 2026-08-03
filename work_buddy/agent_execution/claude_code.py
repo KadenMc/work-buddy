@@ -207,6 +207,31 @@ def _isolated_setting_args() -> tuple[str, ...]:
     )
 
 
+def _isolated_worker_setting_args() -> tuple[str, ...]:
+    """Isolate a headless worker without hiding its explicit MCP config.
+
+    The Claude Code CLI suppresses ``--mcp-config`` when the invocation also
+    supplies an empty ``--setting-sources`` value.  The document worker
+    therefore pairs a credential-only config directory with one explicit
+    settings overlay: it disables extension surfaces and narrowly approves
+    only the server supplied by its strict, server-authored MCP configuration.
+    """
+
+    settings = {
+        "autoMemoryEnabled": False,
+        "disableAllHooks": True,
+        "disableArtifact": True,
+        "disableBundledSkills": True,
+        "disableClaudeAiConnectors": True,
+        "disableWorkflows": True,
+        "enabledMcpjsonServers": ["work-buddy"],
+    }
+    return (
+        "--settings",
+        json.dumps(settings, separators=(",", ":"), ensure_ascii=True),
+    )
+
+
 def _work_buddy_mcp_config(session_id: str) -> str:
     cfg = load_config()
     port = (
@@ -425,7 +450,13 @@ class ClaudeCodeProvider:
             "--max-budget-usd",
             str(budget),
         ]
+        source_config_dir = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
         child_env = claude_account_environment()
+        if source_config_dir:
+            # The trusted wrapper uses this only to seed its credential-only
+            # config directory; it never forwards the source directory to
+            # Claude itself.
+            child_env["CLAUDE_CONFIG_DIR"] = source_config_dir
         child_env["WORK_BUDDY_SESSION_ID"] = session_id
         result = spawn_detached_process_authorized(
             name=request.name,

@@ -290,6 +290,82 @@ describe("SettingsPage", () => {
     );
   });
 
+  it("renders and saves an authoritative select setting", async () => {
+    const fetchMock = vi.fn(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.startsWith("/api/settings/values?")) {
+          return Response.json({
+            schema_version: 1,
+            registry_revision: "settings-registry:2",
+            observed_at: "2026-08-03T12:00:00Z",
+            read_only: false,
+            values: [
+              {
+                setting_id: "wb.cowork.review.nav-binding",
+                scope: { kind: "profile", subject_id: "default" },
+                effective_value: "inverted",
+                configured_value: "inverted",
+                source: "default",
+                configured_source: "default",
+                is_modified: false,
+                revision: "value:0",
+              },
+            ],
+          });
+        }
+        if (url.endsWith("/api/settings/values/wb.cowork.review.nav-binding")) {
+          expect(init?.method).toBe("PATCH");
+          expect(JSON.parse(String(init?.body))).toEqual({
+            scope: "profile",
+            value: "vim",
+            expected_revision: "value:0",
+          });
+          return Response.json({
+            schema_version: 1,
+            registry_revision: "settings-registry:2",
+            value: {
+              setting_id: "wb.cowork.review.nav-binding",
+              scope: { kind: "profile", subject_id: "default" },
+              effective_value: "vim",
+              configured_value: "vim",
+              source: "profile",
+              configured_source: "profile",
+              is_modified: true,
+              revision: "value:1",
+            },
+            event: { type: "settings.changed" },
+          });
+        }
+        return new Response(null, { status: 404 });
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <MemoryRouter initialEntries={["/settings/apps/cowork"]}>
+        <TypographyScaleProvider initialScale="standard">
+          <SettingsPage registryOverride={nativeSettingsRegistry} />
+        </TypographyScaleProvider>
+      </MemoryRouter>,
+    );
+
+    const select = await screen.findByRole("combobox", {
+      name: "Review navigation keys",
+    });
+    await waitFor(() => expect(select).toBeEnabled());
+    expect(select).toHaveValue("inverted");
+    fireEvent.change(select, { target: { value: "vim" } });
+    expect(screen.getByText(/Conventional vim/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save change" }));
+
+    expect(await screen.findByText("Setting saved.")).toBeInTheDocument();
+    expect(select).toHaveValue("vim");
+    expect(
+      screen.getByRole("button", { name: "Reset to Co-work default" }),
+    ).toBeEnabled();
+  });
+
   it("resolves canonical setting links to one preferred placement and preserves unknown IDs", async () => {
     const rendered = render(
       <MemoryRouter

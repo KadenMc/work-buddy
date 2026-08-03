@@ -123,6 +123,123 @@ def test_snapshot_replacement_recovers_both_pointer_boundaries(
     assert not ydoc_store.update_tail_present(reopened, document_id=document.id)
 
 
+def test_compaction_recovery_publishes_projection_receipt_with_snapshot(
+    store_ctx, monkeypatch
+):
+    store = store_ctx["store"]
+    document, _source, ready = _ready(
+        store_ctx,
+        path="docs/projection-receipt-recovery.md",
+        key="projection-receipt-recovery-0001",
+    )
+    snapshot = b"YDOC:projection-receipt-recovery"
+    projection_sha256 = sha256_bytes(b"# Recovered projection\n")
+    original_finish = ydoc_store._finish_compaction_unlocked
+
+    def crash_after_pointer_commit(*_args, **_kwargs):
+        raise RuntimeError("simulated process death")
+
+    monkeypatch.setattr(
+        ydoc_store,
+        "_finish_compaction_unlocked",
+        crash_after_pointer_commit,
+    )
+    with pytest.raises(RuntimeError, match="simulated process death"):
+        ydoc_store.compact_and_advance(
+            store,
+            document_id=document.id,
+            snapshot=snapshot,
+            expected_snapshot_sha256=sha256_bytes(snapshot),
+            expected_structured_head_sha256=ready["structured_head_sha256"],
+            actor=HUMAN,
+            projection_sha256=projection_sha256,
+        )
+    assert ydoc_store.current_projection_receipt(
+        store, document_id=document.id
+    ) is None
+
+    monkeypatch.setattr(
+        ydoc_store,
+        "_finish_compaction_unlocked",
+        original_finish,
+    )
+    assert ydoc_store.recover_compaction(
+        store, document_id=document.id
+    ) is True
+    receipt = ydoc_store.current_projection_receipt(
+        store, document_id=document.id
+    )
+    assert receipt is not None
+    assert receipt.ydoc_snapshot_sha256 == sha256_bytes(snapshot)
+    assert receipt.projection_sha256 == projection_sha256
+
+
+@pytest.mark.parametrize("crash_after_state_write", [False, True])
+def test_compaction_finish_recovers_after_each_destructive_write(
+    store_ctx, monkeypatch, crash_after_state_write
+):
+    store = store_ctx["store"]
+    document, _source, ready = _ready(
+        store_ctx,
+        path=f"docs/finish-idempotent-{crash_after_state_write}.md",
+        key=f"finish-idempotent-{crash_after_state_write}-0001",
+    )
+    old_snapshot = document.ydoc_snapshot_sha256
+    assert old_snapshot is not None
+    _, live_head = ydoc_store.append_update_cas(
+        store,
+        document_id=document.id,
+        update=b"pending-edit-included-by-snapshot",
+        snapshot_sha256=old_snapshot,
+        expected_structured_head_sha256=ready["structured_head_sha256"],
+    )
+    snapshot = b"YDOC:compacted-with-pending-edit"
+    projection_sha256 = sha256_bytes(b"# Compacted projection\n")
+    original_write_epoch = ydoc_store._write_epoch
+
+    def die_during_finish(*args, **kwargs):
+        if crash_after_state_write:
+            original_write_epoch(*args, **kwargs)
+        raise RuntimeError("simulated process death during finish")
+
+    monkeypatch.setattr(ydoc_store, "_write_epoch", die_during_finish)
+    with pytest.raises(RuntimeError, match="process death during finish"):
+        ydoc_store.compact_and_advance(
+            store,
+            document_id=document.id,
+            snapshot=snapshot,
+            expected_snapshot_sha256=sha256_bytes(snapshot),
+            expected_structured_head_sha256=live_head,
+            actor=HUMAN,
+            projection_sha256=projection_sha256,
+        )
+
+    assert not ydoc_store.update_tail_present(store, document_id=document.id)
+    assert ydoc_store.compaction_recovery_pending(
+        store, document_id=document.id
+    )
+    if crash_after_state_write:
+        assert ydoc_store.current_projection_receipt(
+            store, document_id=document.id
+        ) is not None
+    else:
+        assert ydoc_store.current_projection_receipt(
+            store, document_id=document.id
+        ) is None
+
+    monkeypatch.setattr(ydoc_store, "_write_epoch", original_write_epoch)
+    assert ydoc_store.recover_compaction(store, document_id=document.id) is True
+    receipt = ydoc_store.current_projection_receipt(
+        store, document_id=document.id
+    )
+    assert receipt is not None
+    assert receipt.ydoc_snapshot_sha256 == sha256_bytes(snapshot)
+    assert receipt.projection_sha256 == projection_sha256
+    assert not ydoc_store.compaction_recovery_pending(
+        store, document_id=document.id
+    )
+
+
 def test_store_open_finishes_committed_reimport_after_pointer_commit(
     store_ctx, monkeypatch
 ):

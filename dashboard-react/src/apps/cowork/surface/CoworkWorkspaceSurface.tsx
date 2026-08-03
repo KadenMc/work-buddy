@@ -619,10 +619,12 @@ export function CoworkLiveWorkspace({
     () => new HttpCoworkVerifyClient({ documentId, storeId }),
     [documentId, storeId],
   );
-  const ensureConversation = useCallback(
-    (): Promise<void> => conversation.ensure(selectedExecution),
-    [conversation.ensure, selectedExecution],
-  );
+  const ensureConversation = useCallback(async (): Promise<void> => {
+    await conversation.ensure(selectedExecution);
+    // Restart is a binding operation, so refresh the independently cached
+    // transcript/liveness snapshot without remounting it or losing the draft.
+    chatProvider?.invalidate();
+  }, [chatProvider, conversation.ensure, selectedExecution]);
   const chat: CoworkRailChat = useMemo(() => {
     if (
       conversation.phase === "ready" &&

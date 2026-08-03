@@ -243,11 +243,16 @@ export class HttpChatConversationProvider implements ChatConversationProvider {
     };
   }
 
+  /** Ask mounted consumers to reload immediately without replacing the provider. */
+  invalidate(): void {
+    // Snapshot the set so an unsubscribe during dispatch remains well defined.
+    for (const listener of [...this.listeners]) listener();
+  }
+
   private startPolling(): void {
     if (this.timer !== null || this.pollIntervalMs <= 0) return;
     this.timer = setInterval(() => {
-      // A snapshot of the set so an unsubscribe during dispatch is well defined.
-      for (const listener of [...this.listeners]) listener();
+      this.invalidate();
     }, this.pollIntervalMs);
   }
 

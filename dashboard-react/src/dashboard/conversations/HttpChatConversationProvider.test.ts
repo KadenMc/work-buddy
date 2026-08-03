@@ -45,6 +45,23 @@ afterEach(() => {
 });
 
 describe("HttpChatConversationProvider", () => {
+  it("can invalidate mounted consumers immediately", () => {
+    const provider = new HttpChatConversationProvider({
+      conversationId: "c1",
+      fetchImpl: vi.fn(),
+      pollIntervalMs: 0,
+    });
+    const listener = vi.fn();
+    const unsubscribe = provider.subscribe("c1", listener);
+
+    provider.invalidate();
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    unsubscribe();
+    provider.invalidate();
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
   it("loads a conversation and normalizes the house payload", async () => {
     const fetchImpl = vi.fn(async () =>
       jsonResponse(

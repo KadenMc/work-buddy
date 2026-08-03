@@ -28,7 +28,7 @@ dev_notes: |-
 
   Process ownership is `(pid, generation-owner-token)`, not PID alone. Natural-exit cleanup removes only the exact registered handle, failed termination retains ownership for a later retry, and cleanup must never kill an unowned or recycled PID.
 
-  Claude user/project/local settings are suppressed, but operating-system or organization-managed policy is part of the host administrator trust boundary and cannot be bypassed by a child process. Do not describe the worker as suppressing that managed layer.
+  Claude runs against a per-run clean `CLAUDE_CONFIG_DIR`; user/project/local settings are absent rather than merely overlaid. On Windows and Linux it receives a private `0600` `.credentials.json` projection containing only `claudeAiOauth`; unrelated `mcpOAuth` credentials are never exposed. On macOS it starts empty because Claude Code reads the account credential from Keychain. Operating-system or organization-managed policy remains part of the host administrator trust boundary and cannot be bypassed by a child process. Do not describe the worker as suppressing that managed layer.
 ---
 
 # Account-backed agent execution
@@ -97,9 +97,16 @@ Claude Code runs with an empty neutral working directory, no session
 persistence, browser/IDE integration, project instruction files, auto-memory,
 attachments, inherited Anthropic credential/routing variables, prompt/tool
 telemetry, debug logs, account-synced skills/plugins, marketplace auto-install,
-slash commands, or inherited Claude OAuth tokens. User, project, and local
-settings are suppressed;
-administrator-managed policy remains a host trust boundary. Codex runs an
+slash commands, or inherited Claude OAuth environment tokens. Claude receives
+a per-run clean config directory seeded only with a private projection of the
+`claudeAiOauth` account credential on Windows and Linux, or initially empty
+while macOS uses Keychain. Unrelated MCP OAuth credentials and user, project,
+and local settings are absent.
+Any transient state Claude creates remains inside that directory and is
+removed on exit. Credential removal is attempted first and transient file
+locks receive bounded retries; a persistent cleanup failure fails the run
+rather than being silently ignored. Administrator-managed policy remains a
+host trust boundary. Codex runs an
 ephemeral read-only thread with inherited MCP servers, plugins, skills,
 instructions, shell snapshots, analytics, proxies, and network capabilities
 disabled. The selected host folder is represented only by the constrained

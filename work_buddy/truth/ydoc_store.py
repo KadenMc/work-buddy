@@ -64,6 +64,18 @@ class SnapshotReplacement:
     epoch_cursor: str
 
 
+@dataclass(frozen=True, slots=True)
+class ProjectionReceipt:
+    """Operational proof that one projection rode one compaction CAS."""
+
+    id: str
+    document_id: str
+    ydoc_snapshot_sha256: str
+    structured_head_sha256: str
+    ydoc_generation_sha256: str
+    projection_sha256: str
+
+
 def _as_bytes(value: object, label: str) -> bytes:
     if isinstance(value, (bytes, bytearray, memoryview)):
         return bytes(value)
@@ -165,28 +177,134 @@ def structured_head_from_segments(
     return digest.hexdigest()
 
 
-def _read_epoch(store: TruthStore, document_id: str) -> str:
+def _read_runtime_state(store: TruthStore, document_id: str) -> dict[str, object]:
     state_path = _state_path(store, document_id)
     if not state_path.is_file():
-        return "0"
+        return {"schema": "cowork-cursor/v1", "epoch": "0"}
     try:
         value = json.loads(state_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise InvariantViolation("Y.Doc runtime cursor state is corrupt") from exc
-    epoch = value.get("epoch") if isinstance(value, dict) else None
+    if not isinstance(value, dict):
+        raise InvariantViolation("Y.Doc runtime cursor state is invalid")
+    epoch = value.get("epoch")
     if not isinstance(epoch, str) or not epoch:
         raise InvariantViolation("Y.Doc runtime cursor epoch is invalid")
-    return epoch
+    return value
 
 
-def _write_epoch(store: TruthStore, document_id: str, epoch: str) -> None:
+def _read_epoch(store: TruthStore, document_id: str) -> str:
+    return str(_read_runtime_state(store, document_id)["epoch"])
+
+
+def _projection_receipt_payload(receipt: ProjectionReceipt) -> dict[str, str]:
+    return {
+        "schema": "cowork-projection-receipt/v1",
+        "id": receipt.id,
+        "document_id": receipt.document_id,
+        "ydoc_snapshot_sha256": receipt.ydoc_snapshot_sha256,
+        "structured_head_sha256": receipt.structured_head_sha256,
+        "ydoc_generation_sha256": receipt.ydoc_generation_sha256,
+        "projection_sha256": receipt.projection_sha256,
+    }
+
+
+def _parse_projection_receipt(value: object) -> ProjectionReceipt | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or value.get("schema") != (
+        "cowork-projection-receipt/v1"
+    ):
+        raise InvariantViolation("Y.Doc projection receipt is invalid")
+    document_id = _document_ref(value.get("document_id"))
+    return ProjectionReceipt(
+        id=_valid_digest(value.get("id"), "projection receipt id"),
+        document_id=document_id,
+        ydoc_snapshot_sha256=_valid_digest(
+            value.get("ydoc_snapshot_sha256"),
+            "projection receipt snapshot",
+        ),
+        structured_head_sha256=_valid_digest(
+            value.get("structured_head_sha256"),
+            "projection receipt structured head",
+        ),
+        ydoc_generation_sha256=_valid_digest(
+            value.get("ydoc_generation_sha256"),
+            "projection receipt Y.Doc generation",
+        ),
+        projection_sha256=_valid_digest(
+            value.get("projection_sha256"),
+            "projection receipt projection",
+        ),
+    )
+
+
+def _write_epoch(
+    store: TruthStore,
+    document_id: str,
+    epoch: str,
+    *,
+    projection_receipt: ProjectionReceipt | None = None,
+) -> None:
+    state: dict[str, object] = {
+        "schema": "cowork-cursor/v2",
+        "epoch": epoch,
+    }
+    if projection_receipt is not None:
+        state["projection_receipt"] = _projection_receipt_payload(
+            projection_receipt
+        )
     atomic_write_bytes(
         _state_path(store, document_id, create=True),
         json.dumps(
-            {"schema": "cowork-cursor/v1", "epoch": epoch},
+            state,
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8"),
+    )
+
+
+def current_projection_receipt(
+    store: TruthStore,
+    *,
+    document_id: str,
+) -> ProjectionReceipt | None:
+    """Return the projection checkpoint published by the latest compaction."""
+
+    state = _read_runtime_state(store, document_id)
+    return _parse_projection_receipt(state.get("projection_receipt"))
+
+
+def projection_receipt_matches(
+    store: TruthStore,
+    *,
+    receipt_id: str,
+    document_id: str,
+    ydoc_snapshot_sha256: str,
+    structured_head_sha256: str,
+    ydoc_generation_sha256: str,
+    projection_sha256: str,
+) -> bool:
+    """Validate the complete tuple admitted by the latest compaction CAS."""
+
+    receipt = current_projection_receipt(store, document_id=document_id)
+    if receipt is None:
+        return False
+    return receipt == ProjectionReceipt(
+        id=_valid_digest(receipt_id, "projection receipt id"),
+        document_id=_document_ref(document_id),
+        ydoc_snapshot_sha256=_valid_digest(
+            ydoc_snapshot_sha256, "projection receipt snapshot"
+        ),
+        structured_head_sha256=_valid_digest(
+            structured_head_sha256, "projection receipt structured head"
+        ),
+        ydoc_generation_sha256=_valid_digest(
+            ydoc_generation_sha256, "projection receipt Y.Doc generation"
+        ),
+        projection_sha256=_valid_digest(
+            projection_sha256, "projection receipt projection"
+        ),
     )
 
 
@@ -228,6 +346,10 @@ def _append_update_unlocked(
         raise InvariantViolation(
             "the stale recovery export could not be invalidated before Y.Doc append"
         ) from exc
+    # A tail changes the structured head without a corresponding canonical
+    # Markdown projection. Invalidate any prior projection receipt before the
+    # update becomes durable; a failed append may cause a harmless recapture.
+    _write_epoch(store, document_id, _read_epoch(store, document_id))
     log_path = _update_log_path(store, document_id, create_parent=True)
     with open(log_path, "ab") as handle:
         handle.write(_LENGTH_PREFIX.pack(len(payload)))
@@ -497,20 +619,52 @@ def _finish_compaction_unlocked(
     document_id: str,
     marker: dict[str, object],
 ) -> None:
-    old_log = _update_log_path(store, document_id)
-    data = old_log.read_bytes() if old_log.is_file() else b""
-    if sha256_bytes(data) != marker.get("old_log_sha256"):
-        raise CompactionRecoveryRequired(
-            "update log changed across the compaction recovery boundary"
-        )
     new_epoch = marker.get("new_epoch")
     if not isinstance(new_epoch, str) or not new_epoch:
         raise CompactionRecoveryRequired("compaction marker has no target epoch")
+    try:
+        recorded_log_sha256 = _valid_digest(
+            marker.get("old_log_sha256"), "compaction update log"
+        )
+        projection_receipt = _parse_projection_receipt(
+            marker.get("projection_receipt")
+        )
+    except InvariantViolation as exc:
+        raise CompactionRecoveryRequired(
+            "compaction marker contains invalid recovery state"
+        ) from exc
+    if (
+        projection_receipt is not None
+        and projection_receipt.document_id != _document_ref(document_id)
+    ):
+        raise CompactionRecoveryRequired(
+            "compaction projection receipt belongs to another document"
+        )
+    old_log = _update_log_path(store, document_id)
+    data = old_log.read_bytes() if old_log.is_file() else b""
+    actual_log_sha256 = sha256_bytes(data)
+    if (
+        actual_log_sha256 != recorded_log_sha256
+        and actual_log_sha256 != sha256_bytes(b"")
+    ):
+        raise CompactionRecoveryRequired(
+            "update log changed across the compaction recovery boundary"
+        )
+    # The finish sequence is intentionally idempotent. A process may die after
+    # the old log is atomically emptied or after the epoch/receipt is published
+    # but before the marker is removed. Recovery can safely repeat both writes
+    # because every caller has already proved that the durable document pointer
+    # names this marker's target snapshot.
     atomic_write_bytes(
         _update_log_path(store, document_id, create_parent=True),
         b"",
     )
-    _write_epoch(store, document_id, new_epoch)
+    _write_epoch(
+        store,
+        document_id,
+        new_epoch,
+        projection_receipt=projection_receipt,
+    )
     _marker_path(store, document_id).unlink(missing_ok=True)
 
 
@@ -677,10 +831,13 @@ def compact_and_advance(
     actor: object,
     at: str | None = None,
     lock_guard: Callable[[], None] | None = None,
-) -> tuple[str, str, str]:
+    projection_sha256: str | None = None,
+) -> tuple[str, str, str, ProjectionReceipt | None]:
     """Commit a compacted snapshot/version, then rotate its included tail.
 
-    Returns ``(snapshot_sha256, structured_head_sha256, epoch_cursor)``.
+    Returns ``(snapshot_sha256, structured_head_sha256, epoch_cursor,
+    projection_receipt)``. A receipt exists only when the caller supplied a
+    server-verified projection digest for this compaction.
     A durable marker closes every crash boundary between the SQLite commit and
     update-log rotation.
     """
@@ -693,6 +850,11 @@ def compact_and_advance(
         raise InvariantViolation("actor must be a durable Actor")
     expected_head = _valid_digest(
         expected_structured_head_sha256, "expected_structured_head_sha256"
+    )
+    projection_digest = (
+        None
+        if projection_sha256 is None
+        else _valid_digest(projection_sha256, "projection_sha256")
     )
     with document_lock(store, document_id):
         if lock_guard is not None:
@@ -721,6 +883,20 @@ def compact_and_advance(
         )
         new_snapshot = read_snapshot(store, snapshot_sha256=digest)
         compacted_head = structured_head_from_segments(new_snapshot, ())
+        projection_receipt = (
+            None
+            if projection_digest is None
+            else ProjectionReceipt(
+                id=secrets.token_hex(32),
+                document_id=_document_ref(document_id),
+                ydoc_snapshot_sha256=digest,
+                structured_head_sha256=compacted_head,
+                ydoc_generation_sha256=documents.current_ydoc_generation(
+                    store, document_id
+                ),
+                projection_sha256=projection_digest,
+            )
+        )
 
         projection_blob = store.resolve_blob_path(f"blobs/{document.content_sha256}")
         if not projection_blob.is_file():
@@ -744,6 +920,10 @@ def compact_and_advance(
             "old_epoch": _read_epoch(store, document_id),
             "new_epoch": new_epoch,
         }
+        if projection_receipt is not None:
+            marker["projection_receipt"] = _projection_receipt_payload(
+                projection_receipt
+            )
         atomic_write_bytes(
             _marker_path(store, document_id, create=True),
             json.dumps(marker, sort_keys=True, separators=(",", ":")).encode("utf-8"),
@@ -777,7 +957,12 @@ def compact_and_advance(
         if committed:
             _finish_compaction_unlocked(store, document_id, marker)
             store._run_on_commit()
-        return digest, compacted_head, encode_cursor(new_epoch, 0)
+        return (
+            digest,
+            compacted_head,
+            encode_cursor(new_epoch, 0),
+            projection_receipt,
+        )
 
 
 def prune_snapshot_blob(store: TruthStore, *, snapshot_sha256: str) -> bool:
@@ -818,6 +1003,7 @@ __all__ = [
     "CompactionRecoveryRequired",
     "compaction_recovery_pending",
     "MAX_OPAQUE_SEGMENT_BYTES",
+    "ProjectionReceipt",
     "SnapshotReplacement",
     "StructuredHeadConflict",
     "UpdateLogCorruption",
@@ -827,12 +1013,14 @@ __all__ = [
     "compact",
     "compact_and_advance",
     "current_structured_head",
+    "current_projection_receipt",
     "decode_cursor",
     "document_lock",
     "encode_cursor",
     "finish_snapshot_replacement_locked",
     "prune_snapshot_blob",
     "prepare_snapshot_replacement_locked",
+    "projection_receipt_matches",
     "read_epoch_updates",
     "recover_compaction_locked",
     "read_snapshot",

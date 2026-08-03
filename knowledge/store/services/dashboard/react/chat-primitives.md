@@ -45,7 +45,7 @@ Reusable React chat components for conversational surfaces in the React dashboar
 - **ChatPanel**: message log plus composer with a header slot and the standard host states, including a read-only banner. Forwards the composer's optional `initialValue` and `onDraftChange` draft seam, so a host can retain the unsent draft across reloads.
 - **ChatPanelState**: the canonical loading, empty, or error shell for a host that does not yet have a ready conversation. The host supplies state kind, direct copy, and at most one action without recreating panel markup or importing private chat styles.
 - **ChatMessageList**: author attribution, timestamps, unread boundary with scroll lock and jump-to-latest, inline choice and boolean answers, typing indicator and agent-stopped notice.
-- **ChatComposer**: Enter submits, Shift plus Enter inserts a newline, the draft is retained on send failure. Optional draft-observation seam: `initialValue` seeds the draft once on mount and `onDraftChange` fires on every edit (empty string after a successful send), so a host can persist the unsent draft and arm an unsaved-work guard while the composer keeps owning the text state.
+- **ChatComposer**: Enter submits, Shift plus Enter inserts a newline, the draft is retained on send failure. It grows with its content and enables its own scrollbar only after reaching the CSS height cap. Optional draft-observation seam: `initialValue` seeds the draft once on mount and `onDraftChange` fires on every edit (empty string after a successful send), so a host can persist the unsent draft and arm an unsaved-work guard while the composer keeps owning the text state.
 - **ChatExecutionPicker**: an optional, compact **Run with** control that shows
   one atomic provider/model choice grouped by provider. Server-authored
   availability and descriptions stay visible and accessible; unavailable
@@ -100,6 +100,12 @@ selection and composition.
 ## State and mapping
 
 `useChatConversation(provider, conversationId)` binds a `ChatConversationProvider` (loadConversation, sendMessage, subscribe) to React state with load, silent-refresh, and send lifecycles. `normalizeConversationPayload` converts the raw `GET /api/conversations/<id>` payload into canonical types, and `deriveAgentActivity` mirrors the legacy typing and stopped logic from `conversation.agent_alive`.
+
+Feature-owned preparation that runs before transport send reports through the
+same inline error surface and retains the draft; it must not fail only in the
+console. The house HTTP provider also exposes explicit invalidation for host
+lifecycle actions such as agent restart, so a mounted transcript can refresh
+liveness immediately without remounting or waiting for its polling interval.
 
 Message identity: the endpoint serializes message ids as `message_id`, which the mapping prefers. A bare `id` is accepted as a fixture-side fallback and a positional id is the last resort.
 

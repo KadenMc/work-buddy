@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   ChatPanel,
@@ -20,6 +20,11 @@ import {
 import { deriveAgentActivity } from "./mapping";
 
 const EMPTY_MESSAGES: readonly ChatMessage[] = [];
+
+const errorMessage = (error: unknown): string =>
+  error instanceof Error && error.message.trim().length > 0
+    ? error.message
+    : "Message context could not be prepared.";
 
 /**
  * Transport-derived state exposed to a feature-owned recovery resolver. The
@@ -96,6 +101,9 @@ export function ConversationChat({
   ...panelProps
 }: ConversationChatProps) {
   const chat = useChatConversation(provider, conversationId);
+  const activeBinding = useRef({ provider, conversationId });
+  activeBinding.current = { provider, conversationId };
+  const [prepareError, setPrepareError] = useState<string | null>(null);
   const messages = chat.snapshot?.messages ?? EMPTY_MESSAGES;
   const activity =
     chat.snapshot === null ? "idle" : deriveAgentActivity(chat.snapshot);
@@ -128,6 +136,10 @@ export function ConversationChat({
     onMessagesChange?.(messages);
   }, [messages, onMessagesChange]);
 
+  useEffect(() => {
+    setPrepareError(null);
+  }, [conversationId, provider]);
+
   return (
     <ChatPanel
       {...panelProps}
@@ -138,9 +150,23 @@ export function ConversationChat({
       messages={messages}
       agentActivity={activity}
       onSend={async (value, inReplyTo) => {
+        const expectedProvider = provider;
+        const expectedConversationId = conversationId;
+        setPrepareError(null);
         const input: ChatSendInput = { value, inReplyTo };
-        const prepared =
-          prepareSend === undefined ? input : await prepareSend(input);
+        let prepared: ChatSendInput;
+        try {
+          prepared =
+            prepareSend === undefined ? input : await prepareSend(input);
+        } catch (error) {
+          if (
+            activeBinding.current.provider === expectedProvider &&
+            activeBinding.current.conversationId === expectedConversationId
+          ) {
+            setPrepareError(errorMessage(error));
+          }
+          throw error;
+        }
         await chat.send(
           prepared.value,
           prepared.inReplyTo,
@@ -148,7 +174,7 @@ export function ConversationChat({
         );
       }}
       sending={chat.sending}
-      sendErrorMessage={chat.sendError ?? undefined}
+      sendErrorMessage={prepareError ?? chat.sendError ?? undefined}
       errorMessage={chat.error ?? undefined}
       onRetry={chat.retry}
       inputRecovery={resolvedRecovery}

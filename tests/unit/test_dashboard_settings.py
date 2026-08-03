@@ -10,6 +10,7 @@ from work_buddy.settings import broker, store
 
 
 SETTING_ID = "wb.journal.day-boundary"
+COWORK_SETTING_ID = "wb.cowork.review.nav-binding"
 
 
 @pytest.fixture
@@ -29,7 +30,7 @@ def test_registry_and_context_value_snapshot(client) -> None:
     assert registry.headers["Cache-Control"] == "no-store"
     body = registry.get_json()
     assert body["definitions"][0]["setting_id"] == SETTING_ID
-    assert len(body["placements"]) == 1
+    assert len(body["placements"]) == 2
     assert body["pages"][0]["navigation_category"] == "built-in"
 
     values = client.get(
@@ -40,6 +41,62 @@ def test_registry_and_context_value_snapshot(client) -> None:
     assert snapshot["timezone"] == "America/New_York"
     assert snapshot["read_only"] is False
     assert snapshot["values"][0]["effective_value"] == "05:00"
+
+
+def test_cowork_context_and_immediate_enum_value_contract(client) -> None:
+    values = client.get(
+        "/api/settings/values?context_id=wb.settings.app.cowork"
+    )
+    assert values.status_code == 200
+    snapshot = values.get_json()
+    assert snapshot["registry_revision"] == "settings-registry:2"
+    assert snapshot["values"] == [
+        {
+            "apply_status": "effective",
+            "configured_source": "default",
+            "configured_value": "inverted",
+            "default_source": "registry-default",
+            "default_value": "inverted",
+            "diagnostics": [],
+            "effective_at": None,
+            "effective_value": "inverted",
+            "impact_preview": None,
+            "is_modified": False,
+            "last_transition": None,
+            "pending_timezone": None,
+            "pending_value": None,
+            "revision": "value:0",
+            "scope": {"kind": "profile", "subject_id": "default"},
+            "setting_id": COWORK_SETTING_ID,
+            "source": "default",
+            "value_version": 1,
+        }
+    ]
+
+    changed = client.patch(
+        f"/api/settings/values/{COWORK_SETTING_ID}",
+        json={
+            "scope": "profile",
+            "value": "vim",
+            "expected_revision": "value:0",
+        },
+    )
+    assert changed.status_code == 200
+    body = changed.get_json()
+    assert body["value"]["effective_value"] == "vim"
+    assert body["value"]["pending_value"] is None
+    assert body["event"]["apply_status"] == "effective"
+
+    invalid = client.patch(
+        f"/api/settings/values/{COWORK_SETTING_ID}",
+        json={
+            "scope": "profile",
+            "value": "emacs",
+            "expected_revision": "value:1",
+        },
+    )
+    assert invalid.status_code == 400
+    assert invalid.get_json()["field"] == "value"
 
 
 def test_patch_conflict_validation_and_reset_contract(client) -> None:

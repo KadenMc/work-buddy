@@ -9,6 +9,7 @@ import {
   InMemoryCoworkYdocOutboxBackingStore,
 } from "./CoworkYdocOutbox";
 import { InMemoryCoworkYdocTransport } from "./InMemoryCoworkYdocTransport";
+import { sha256Hex } from "./hashing";
 import type {
   CoworkYdocPull,
   CoworkYdocPullRequest,
@@ -121,6 +122,103 @@ describe("CoworkYdocPersistence", () => {
     const fresh = new CoworkYdocPersistence(freshDoc, transport);
     await fresh.hydrate();
     expect(freshDoc.getText("t").toString()).toBe("content");
+  });
+
+  it("binds an exact Markdown projection to its capture compaction", async () => {
+    const transport = new InMemoryCoworkYdocTransport();
+    await seedTransport(transport, (doc) => doc.getText("t").insert(0, "content"));
+    const clientDoc = new Y.Doc();
+    const persistence = new CoworkYdocPersistence(clientDoc, transport);
+    await persistence.hydrate();
+    const snapshot = Y.encodeStateAsUpdate(clientDoc);
+    const snapshotSha256 = await sha256Hex(snapshot);
+    const projectionMarkdown = "# Content\n\ncontent\n";
+    const projectionSha256 = await sha256Hex(
+      new TextEncoder().encode(projectionMarkdown),
+    );
+
+    const receipt = await persistence.compactProjection({
+      snapshot,
+      snapshotSha256,
+      projectionMarkdown,
+      projectionSha256,
+    });
+
+    expect(receipt).toMatchObject({
+      snapshotSha256,
+      compactedProjectionSha256: projectionSha256,
+    });
+    expect(receipt?.projectionReceiptId).toBeTruthy();
+  });
+
+  it("does not compact an old capture after a newer local edit is drained", async () => {
+    const transport = new InMemoryCoworkYdocTransport();
+    await seedTransport(transport, (doc) => doc.getText("t").insert(0, "base"));
+    const clientDoc = new Y.Doc();
+    const persistence = new CoworkYdocPersistence(clientDoc, transport);
+    await persistence.hydrate();
+    persistence.start();
+    const staleSnapshot = Y.encodeStateAsUpdate(clientDoc);
+    const staleProjection = "base";
+
+    humanEdit(clientDoc, () => clientDoc.getText("t").insert(4, " local"));
+    const receipt = await persistence.compactProjection({
+      snapshot: staleSnapshot,
+      snapshotSha256: await sha256Hex(staleSnapshot),
+      projectionMarkdown: staleProjection,
+      projectionSha256: await sha256Hex(
+        new TextEncoder().encode(staleProjection),
+      ),
+    });
+
+    expect(receipt).toBeNull();
+    expect(transport.hasSnapshot).toBe(false);
+    const freshDoc = new Y.Doc();
+    const fresh = new CoworkYdocPersistence(freshDoc, transport);
+    await fresh.hydrate();
+    expect(freshDoc.getText("t").toString()).toBe("base local");
+  });
+
+  it("does not reuse an old projection when a capture compaction is stale", async () => {
+    const transport = new InMemoryCoworkYdocTransport();
+    await seedTransport(transport, (doc) => doc.getText("t").insert(0, "base"));
+    const staleDoc = new Y.Doc();
+    const stale = new CoworkYdocPersistence(staleDoc, transport);
+    await stale.hydrate();
+    const staleSnapshot = Y.encodeStateAsUpdate(staleDoc);
+    const staleProjection = "base";
+
+    const writerDoc = new Y.Doc();
+    const writer = new CoworkYdocPersistence(writerDoc, transport);
+    await writer.hydrate();
+    writer.start();
+    humanEdit(writerDoc, () => writerDoc.getText("t").insert(4, " remote"));
+    await writer.flush();
+
+    const first = await stale.compactProjection({
+      snapshot: staleSnapshot,
+      snapshotSha256: await sha256Hex(staleSnapshot),
+      projectionMarkdown: staleProjection,
+      projectionSha256: await sha256Hex(
+        new TextEncoder().encode(staleProjection),
+      ),
+    });
+
+    expect(first).toBeNull();
+    expect(staleDoc.getText("t").toString()).toBe("base remote");
+    const refreshedSnapshot = Y.encodeStateAsUpdate(staleDoc);
+    const refreshedProjection = "base remote";
+    const second = await stale.compactProjection({
+      snapshot: refreshedSnapshot,
+      snapshotSha256: await sha256Hex(refreshedSnapshot),
+      projectionMarkdown: refreshedProjection,
+      projectionSha256: await sha256Hex(
+        new TextEncoder().encode(refreshedProjection),
+      ),
+    });
+    expect(second?.compactedProjectionSha256).toBe(
+      await sha256Hex(new TextEncoder().encode(refreshedProjection)),
+    );
   });
 
   it("retries an offline tab after another tab compacts the same Y.Doc generation", async () => {

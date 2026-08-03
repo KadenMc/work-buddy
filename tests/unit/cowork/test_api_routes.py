@@ -15,7 +15,7 @@ import pytest
 
 from work_buddy.conversations import store as conversation_store
 from work_buddy.conversations.execution import EXECUTION_METADATA_KEY
-from work_buddy.cowork import api
+from work_buddy.cowork import api, transport
 from work_buddy.cowork import conversations, document_agent, provenance
 from work_buddy.truth import documents, expressions, proposals, ydoc_store
 from work_buddy.truth.anchors import CompositeSelector
@@ -982,6 +982,37 @@ def test_ydoc_push_appends_and_guards_stale_base(client, seeded):
     )
     assert stale.status_code == 409
     assert stale.get_json()["error"] == "stale_base"
+
+
+def test_ydoc_capture_compaction_returns_projection_receipt(client, seeded):
+    document = seeded["document"]
+    store = seeded["store"]
+    snapshot = b"YDOC-HTTP-CAPTURE"
+    projection = b"# Exact HTTP projection\n"
+    head = ydoc_store.current_structured_head(
+        store,
+        document_id=document.id,
+        snapshot_sha256=seeded["snapshot_sha256"],
+    )
+    response = client.post(
+        _url(f"/api/truth/doc/{document.id}/ydoc", seeded["store_id"]),
+        data=transport.frame_segments([b"final", snapshot, projection]),
+        content_type="application/octet-stream",
+        headers={
+            "X-WB-Base-Ydoc-Sha256": head,
+            "X-WB-Base-Ydoc-Generation": (
+                documents.current_ydoc_generation(store, document.id)
+            ),
+            "X-WB-Compacted-Snapshot-Sha256": sha256_bytes(snapshot),
+            "X-WB-Compacted-Projection-Sha256": sha256_bytes(projection),
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["projection_sha256"] == document.content_sha256
+    assert payload["compacted_projection_sha256"] == sha256_bytes(projection)
+    assert payload["projection_receipt_id"]
 
 
 def test_ydoc_push_size_limits_return_typed_413_without_mutation(
