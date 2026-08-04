@@ -29,22 +29,24 @@ export async function openCowork(page: Page): Promise<void> {
 }
 
 /**
- * Open the Co-work surface on its honest empty default route, no demo fixture and no live store,
- * and wait for the empty workspace to hydrate. The editor textbox only mounts once the local
- * Y.Doc has hydrated from its per-document transport, so it is the reliable ready signal, and the
- * Review tab confirms the rail mounted beside it.
+ * Open the honest Co-work launcher and create a local document through the same New action a
+ * person uses. The editor textbox only mounts once that scratch Y.Doc has hydrated from its
+ * per-document transport, so it is the reliable ready signal. Returns the generated scratch id.
  */
-export async function openCoworkEmpty(page: Page): Promise<void> {
+export async function openCoworkScratch(page: Page): Promise<string> {
   // The Co-work chunk (Tiptap, Yjs, the suggestion engine) is lazy-loaded, so absorb the first
   // cold compile in the wait budget rather than racing the default expect timeout.
   test.setTimeout(120_000);
   await page.goto("/app/cowork", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "New", exact: true }).click();
   await expect(page.getByRole("textbox", { name: "Document editor" })).toBeVisible({
     timeout: 60_000,
   });
-  await expect(page.getByRole("tab", { name: "Review" })).toBeVisible({
-    timeout: 60_000,
-  });
+  const scratchId = new URL(page.url()).searchParams.get("scratch_id");
+  if (scratchId === null || scratchId.length === 0) {
+    throw new Error("New did not open a scratch document route.");
+  }
+  return scratchId;
 }
 
 /** The IndexedDB database, object store, and key prefix the local Yjs transport persists into. */
@@ -128,57 +130,73 @@ export async function waitForCoworkEditorDurable(
   documentId: string,
 ): Promise<void> {
   const recordKey = `${COWORK_YDOC_KEY_PREFIX}${documentId}`;
+  const readState = () =>
+    page.evaluate(
+      ({ database, store, key }) =>
+        new Promise<{ hasSnapshot: boolean; logLength: number }>((resolve) => {
+          let settled = false;
+          const done = (value: { hasSnapshot: boolean; logLength: number }): void => {
+            if (settled) return;
+            settled = true;
+            resolve(value);
+          };
+          try {
+            const open = indexedDB.open(database, 1);
+            open.onupgradeneeded = () => {
+              if (!open.result.objectStoreNames.contains(store)) {
+                open.result.createObjectStore(store, { keyPath: "key" });
+              }
+            };
+            open.onsuccess = () => {
+              const db = open.result;
+              if (!db.objectStoreNames.contains(store)) {
+                db.close();
+                done({ hasSnapshot: false, logLength: 0 });
+                return;
+              }
+              const request = db
+                .transaction(store, "readonly")
+                .objectStore(store)
+                .get(key);
+              request.onsuccess = () => {
+                const record = request.result as
+                  | { snapshot: unknown; log?: readonly unknown[] }
+                  | undefined;
+                db.close();
+                done({
+                  hasSnapshot: record !== undefined && record.snapshot !== null,
+                  logLength: Array.isArray(record?.log) ? record.log.length : 0,
+                });
+              };
+              request.onerror = () => {
+                db.close();
+                done({ hasSnapshot: false, logLength: 0 });
+              };
+            };
+            open.onerror = () => done({ hasSnapshot: false, logLength: 0 });
+          } catch {
+            done({ hasSnapshot: false, logLength: 0 });
+          }
+        }),
+      { database: COWORK_YDOC_DATABASE, store: COWORK_YDOC_STORE, key: recordKey },
+    );
+
+  // First observe the typed human update in the append log. Otherwise an older initial
+  // snapshot could make the durability check pass before that update reaches IndexedDB.
+  await expect
+    .poll(async () => (await readState()).logLength, {
+      timeout: 30_000,
+      intervals: [100, 200, 400],
+    })
+    .toBeGreaterThan(0);
+
+  // Idle compaction folds that observed update into the snapshot and clears the log.
   await expect
     .poll(
-      () =>
-        page.evaluate(
-          ({ database, store, key }) =>
-            new Promise<boolean>((resolve) => {
-              let settled = false;
-              const done = (value: boolean): void => {
-                if (settled) return;
-                settled = true;
-                resolve(value);
-              };
-              try {
-                const open = indexedDB.open(database, 1);
-                open.onupgradeneeded = () => {
-                  if (!open.result.objectStoreNames.contains(store)) {
-                    open.result.createObjectStore(store, { keyPath: "key" });
-                  }
-                };
-                open.onsuccess = () => {
-                  const db = open.result;
-                  if (!db.objectStoreNames.contains(store)) {
-                    db.close();
-                    done(false);
-                    return;
-                  }
-                  const request = db
-                    .transaction(store, "readonly")
-                    .objectStore(store)
-                    .get(key);
-                  request.onsuccess = () => {
-                    const record = request.result as
-                      | { snapshot: unknown }
-                      | undefined;
-                    const durable =
-                      record !== undefined && record.snapshot !== null;
-                    db.close();
-                    done(durable);
-                  };
-                  request.onerror = () => {
-                    db.close();
-                    done(false);
-                  };
-                };
-                open.onerror = () => done(false);
-              } catch {
-                done(false);
-              }
-            }),
-          { database: COWORK_YDOC_DATABASE, store: COWORK_YDOC_STORE, key: recordKey },
-        ),
+      async () => {
+        const state = await readState();
+        return state.hasSnapshot && state.logLength === 0;
+      },
       { timeout: 30_000, intervals: [200, 400, 800] },
     )
     .toBe(true);

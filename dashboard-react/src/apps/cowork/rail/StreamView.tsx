@@ -1,25 +1,18 @@
 /**
- * The aligned-stream Review layout (SP-6 variant A default). One document-order
- * column of margin cards, each tied to its anchor. When an AnchorRectSource is
- * wired the cards are positioned per-anchor outside the React render cycle
- * (useAlignedStream), and clustered anchors are pushed apart. With no source, or
- * on a narrow container, the stream degrades to a grouped document-order list
- * (SP-6 variant B fallback) plus scroll-to-and-highlight on select.
+ * The Review stream is a conventional document-order list. Cards stay in normal
+ * flow so the browser owns scrolling and reading order. Selecting a card keeps
+ * the editor highlight in sync; its passage button provides explicit navigation.
  */
 
 import { ClaimCard } from "./ClaimCard";
 import { ProposalCard } from "./ProposalCard";
 import type { StagedClaimDecision, StagedDecision } from "./contracts";
 import {
-  groupOf,
   isSelectedItem,
   railItemKey,
-  type RailGroup,
   type RailItem,
 } from "./items";
-import type { AnchorRectSource } from "./provider";
 import type { RailSelectionKind } from "./store";
-import { useAlignedStream } from "./useAlignedStream";
 
 export interface StreamViewProps {
   readonly items: readonly RailItem[];
@@ -29,32 +22,13 @@ export interface StreamViewProps {
   readonly claimDecisions: Readonly<Record<string, StagedClaimDecision>>;
   /** Claim id to inspector span id, for the claim inspect affordance. */
   readonly inspectSpanByClaim: ReadonlyMap<string, string>;
-  /** Force the grouped fallback (narrow viewport). */
-  readonly grouped: boolean;
-  readonly anchorRects?: AnchorRectSource;
   onSelect(id: string, kind: RailSelectionKind): void;
   onScrollToAnchor?(id: string, kind: RailSelectionKind): void;
   onInspect(spanId: string): void;
 }
 
-const GROUP_HEADING: Record<RailGroup, string> = {
-  suggestions: "Suggestions",
-  flags: "Flags",
-  claims: "Claims",
-};
-
-const GROUP_ORDER: readonly RailGroup[] = ["suggestions", "flags", "claims"];
-
 export function StreamView(props: StreamViewProps) {
-  const controller = useAlignedStream({
-    anchorRects: props.anchorRects,
-    anchors: props.items.map((item) => ({ id: item.id, kind: item.kind })),
-  });
-
   const renderCard = (item: RailItem) => {
-    const cardRef = controller.aligned
-      ? controller.registerCard(item.id, item.kind)
-      : undefined;
     const scrollTo =
       props.onScrollToAnchor === undefined
         ? undefined
@@ -74,7 +48,6 @@ export function StreamView(props: StreamViewProps) {
           inspectSpanId={props.inspectSpanByClaim.get(item.id)}
           onInspect={props.onInspect}
           onScrollToAnchor={scrollTo}
-          cardRef={cardRef}
         />
       );
     }
@@ -90,7 +63,6 @@ export function StreamView(props: StreamViewProps) {
         staged={props.decisions[item.id]}
         onSelect={() => props.onSelect(item.id, "proposal")}
         onScrollToAnchor={scrollTo}
-        cardRef={cardRef}
       />
     );
   };
@@ -103,45 +75,9 @@ export function StreamView(props: StreamViewProps) {
     );
   }
 
-  if (props.grouped) {
-    return (
-      <div className="wb-cowork-rail__stream" data-grouped="true">
-        {GROUP_ORDER.map((group) => {
-          const groupItems = props.items.filter(
-            (item) => groupOf(item) === group,
-          );
-          if (groupItems.length === 0) return null;
-          return (
-            <section
-              key={group}
-              className="wb-cowork-rail__group"
-              aria-label={GROUP_HEADING[group]}
-            >
-              <h3 className="wb-cowork-rail__group-head">
-                {GROUP_HEADING[group]}
-                <span className="wb-cowork-rail__group-count">
-                  {groupItems.length}
-                </span>
-              </h3>
-              <ul className="wb-cowork-rail__card-list">
-                {groupItems.map(renderCard)}
-              </ul>
-            </section>
-          );
-        })}
-      </div>
-    );
-  }
-
   return (
-    <div
-      className="wb-cowork-rail__stream"
-      data-aligned={controller.aligned ? "true" : undefined}
-    >
-      <ul
-        className="wb-cowork-rail__card-list"
-        ref={controller.aligned ? controller.registerContainer : undefined}
-      >
+    <div className="wb-cowork-rail__stream">
+      <ul className="wb-cowork-rail__card-list">
         {props.items.map(renderCard)}
       </ul>
     </div>

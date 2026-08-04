@@ -45,7 +45,11 @@ class MemoryStorage implements Storage {
   }
 }
 
-function renderRail(storage: Storage = new MemoryStorage()) {
+function renderRail(
+  storage: Storage = new MemoryStorage(),
+  reviewScrollRef?: (element: HTMLElement | null) => void,
+  onReviewScrollWillDetach?: () => void,
+) {
   return render(
     <CoworkRail
       documentId="demo-doc"
@@ -63,6 +67,8 @@ function renderRail(storage: Storage = new MemoryStorage()) {
         },
       }}
       storage={storage}
+      reviewScrollRef={reviewScrollRef}
+      onReviewScrollWillDetach={onReviewScrollWillDetach}
     />,
   );
 }
@@ -140,6 +146,39 @@ describe("CoworkRail", () => {
 
     await userEvent.click(screen.getByRole("tab", { name: "Review" }));
     await waitFor(() => expect(loadRailTab(storage, "demo-doc")).toBe("review"));
+  });
+
+  it("attaches Review scroll persistence only while Review is visible", async () => {
+    const storage = new MemoryStorage();
+    saveRailTab(storage, "demo-doc", "chat");
+    const reviewScrollRef = vi.fn();
+    const onReviewScrollWillDetach = vi.fn();
+
+    renderRail(storage, reviewScrollRef, onReviewScrollWillDetach);
+    expect(screen.getByRole("tab", { name: /Chat/ })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(
+      reviewScrollRef.mock.calls.some(([element]) => element instanceof HTMLElement),
+    ).toBe(false);
+
+    await userEvent.click(screen.getByRole("tab", { name: "Review" }));
+    await waitFor(() =>
+      expect(
+        reviewScrollRef.mock.calls.some(
+          ([element]) => element instanceof HTMLElement,
+        ),
+      ).toBe(true),
+    );
+
+    await userEvent.click(screen.getByRole("tab", { name: /Chat/ }));
+    expect(onReviewScrollWillDetach).toHaveBeenCalledOnce();
+    await waitFor(() =>
+      expect(
+        reviewScrollRef.mock.calls.some(([element]) => element === null),
+      ).toBe(true),
+    );
   });
 
   it("does not start an agent merely because the persisted Chat tab is restored", () => {

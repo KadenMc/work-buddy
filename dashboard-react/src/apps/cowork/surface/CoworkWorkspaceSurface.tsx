@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type MutableRefObject,
+  type RefCallback,
   type ReactNode,
 } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
@@ -95,6 +96,10 @@ import {
   RAIL_PANEL_ID,
   useResizableRail,
 } from "./useResizableRail";
+import {
+  coworkScrollPositionStorageKey,
+  usePersistedScrollPosition,
+} from "./usePersistedScrollPosition";
 import "./styles.css";
 
 const DRIFT_LABEL: Record<string, string> = {
@@ -149,6 +154,36 @@ const DEMO_DOCUMENT_MARKDOWN = [
   "The cache keys on the active collector set, so a bundle is reused across invocations that share it. Keys on a digest of every collector output.",
   "",
   "We always rebuild the bundle when a reported change lands. Benchmarks on the reference machine show cold-start latency dropped from 1.8 s to 1.1 s after prewarming.",
+  "",
+  "## Fixture depth",
+  "",
+  "The fixture deliberately includes enough ordinary prose to exercise independent editor scrolling at browser-test viewport sizes.",
+  "",
+  "A collector records its identity, configuration revision, and the content fingerprint it contributed to the bundle.",
+  "",
+  "The cache reuses a bundle only while those inputs still describe the requested context.",
+  "",
+  "A reported vault change invalidates the affected fingerprint before the next lookup begins.",
+  "",
+  "Unrelated collector outputs remain reusable, which keeps invalidation narrower than a full rebuild.",
+  "",
+  "The diagnostic record names which input changed so a person can inspect unexpected misses.",
+  "",
+  "Prewarming remains optional and does not change the cache key or the invalidation contract.",
+  "",
+  "Cold starts follow the same path, making the measured comparison representative of ordinary execution.",
+  "",
+  "Each benchmark run records its machine profile and fixture revision alongside the timing sample.",
+  "",
+  "Those records let later runs distinguish a cache regression from an environment change.",
+  "",
+  "The review fixture also needs a stable lower passage so editor navigation can cross a meaningful scroll boundary.",
+  "",
+  "Keeping that depth in the fixture prevents scroll tests from depending on machine-specific font rendering.",
+  "",
+  "The final paragraphs contain no review anchors and therefore cannot alter the seeded proposal order.",
+  "",
+  "They exist only to make the document behave like the longer material Co-work is designed to support.",
   "",
 ].join("\n");
 
@@ -291,7 +326,7 @@ function CoworkWorkspaceLayout({
   editorHelp = coworkEditorHelp(),
   editor,
   rail,
-  railRef,
+  editorScrollRef,
   showHealth = true,
   narrow = false,
   activePane = "editor",
@@ -303,7 +338,7 @@ function CoworkWorkspaceLayout({
   readonly editorHelp?: HelpContent;
   readonly editor: ReactNode;
   readonly rail: ReactNode;
-  readonly railRef?: (element: HTMLElement | null) => void;
+  readonly editorScrollRef?: RefCallback<HTMLElement>;
   readonly showHealth?: boolean;
   readonly narrow?: boolean;
   readonly activePane?: CoworkWorkspacePane;
@@ -339,7 +374,9 @@ function CoworkWorkspaceLayout({
           >
             {editorTopBar}
             <HelpTarget content={editorHelp} placement="top">
-              <div className="wb-cowork__editor-region">{editor}</div>
+              <div className="wb-cowork__editor-region" ref={editorScrollRef}>
+                {editor}
+              </div>
             </HelpTarget>
           </div>
         </Panel>
@@ -359,7 +396,6 @@ function CoworkWorkspaceLayout({
           <aside
             className="wb-cowork__rail"
             aria-label="Review and chat"
-            ref={railRef}
             hidden={narrow && activePane === "editor"}
             inert={narrow && activePane === "editor" ? true : undefined}
           >
@@ -411,16 +447,29 @@ export function CoworkDemoWorkspace({
     () => createDemoChatProvider(conversationId),
     [conversationId],
   );
+  const editorScrollRef = usePersistedScrollPosition({
+    key: coworkScrollPositionStorageKey({ documentId }, "editor"),
+  });
+  const reviewScrollRef = usePersistedScrollPosition({
+    key: coworkScrollPositionStorageKey({ documentId }, "review"),
+  });
+  const detachReviewScroll = useCallback(
+    () => reviewScrollRef(null),
+    [reviewScrollRef],
+  );
 
   return (
     <CoworkWorkspaceLayout
       health={healthFromModel(model)}
+      editorScrollRef={editorScrollRef}
       editor={
         <CoworkEditorPane documentId={documentId} seedMarkdown={DEMO_DOCUMENT_MARKDOWN} />
       }
       rail={
         <CoworkRail
           documentId={documentId}
+          reviewScrollRef={reviewScrollRef}
+          onReviewScrollWillDetach={detachReviewScroll}
           reviewProvider={reviewProvider}
           chat={{
             kind: "ready",
@@ -456,9 +505,12 @@ export function CoworkScratchWorkspace({
   readonly onSyncStatus?: (status: CoworkSyncStatus) => void;
   readonly onLocalEdit?: () => void;
 }) {
+  const editorScrollRef = usePersistedScrollPosition({
+    key: coworkScrollPositionStorageKey({ documentId: scratchId }, "editor"),
+  });
   return (
     <div className="wb-cowork wb-cowork--local-document">
-      <div className="wb-cowork__editor-region">
+      <div className="wb-cowork__editor-region" ref={editorScrollRef}>
         <CoworkEditorPane
           documentId={scratchId}
           onPromotionHandle={onPromotionHandle}
@@ -473,8 +525,8 @@ export function CoworkScratchWorkspace({
 /**
  * Live mode (the default on a ledger-backed folder). The bridge shares one canonical Y.Doc
  * and one R2 pull across the editor and rail, so cards and view-only decorations agree. A
- * doc-scoped SSE nudge reloads the review layer, and the aligned stream measures generalized
- * decoration anchors through the anchor-rect source.
+ * doc-scoped SSE nudge reloads the review layer, and explicit Review navigation resolves
+ * generalized decoration anchors through the anchor source.
  */
 export function CoworkLiveWorkspace({
   documentId,
@@ -518,6 +570,16 @@ export function CoworkLiveWorkspace({
   const workspaceIdentity = `${storeId}\u0000${documentId}`;
   const workspaceIdentityRef = useRef(workspaceIdentity);
   workspaceIdentityRef.current = workspaceIdentity;
+  const editorScrollRef = usePersistedScrollPosition({
+    key: coworkScrollPositionStorageKey({ documentId, storeId }, "editor"),
+  });
+  const reviewScrollRef = usePersistedScrollPosition({
+    key: coworkScrollPositionStorageKey({ documentId, storeId }, "review"),
+  });
+  const detachReviewScroll = useCallback(
+    () => reviewScrollRef(null),
+    [reviewScrollRef],
+  );
 
   // One document conversation linkage store per document. The submit path annotates a routing
   // note delivery here, and the feedback entry point annotates the captured span when R9 lands.
@@ -698,11 +760,14 @@ export function CoworkLiveWorkspace({
     useState<VerificationRecheckIntent | null>(null);
   const selectPane = useCallback(
     (pane: CoworkWorkspacePane): void => {
+      if (activePane === "review" && pane !== "review") {
+        detachReviewScroll();
+      }
       setActivePane(pane);
       if (pane !== "editor") railStore.setTab(pane);
       if (pane === "chat") void prepareChat();
     },
-    [prepareChat, railStore],
+    [activePane, detachReviewScroll, prepareChat, railStore],
   );
   useEffect(
     () =>
@@ -764,6 +829,9 @@ export function CoworkLiveWorkspace({
             }
             conversation.adoptFeedback(capture);
             annotations.annotateFeedback(capture);
+            if (railStore.getState().tab === "review") {
+              detachReviewScroll();
+            }
             railStore.setTab("chat");
           },
         }
@@ -898,7 +966,7 @@ export function CoworkLiveWorkspace({
           onClearArmedRecheck={() => setArmedVerifyRecheck(null)}
         />
       }
-      railRef={bridge.railRef}
+      editorScrollRef={editorScrollRef}
       narrow={narrowWorkspace}
       activePane={activePane}
       paneTabs={
@@ -929,15 +997,16 @@ export function CoworkLiveWorkspace({
         >
           <CoworkRail
             documentId={documentId}
+            reviewScrollRef={reviewScrollRef}
+            onReviewScrollWillDetach={detachReviewScroll}
             reviewProvider={bridge.reviewProvider}
             chat={chat}
-            anchorRects={bridge.anchorRects}
+            reviewAnchors={bridge.reviewAnchors}
             store={railStore}
             queueBindings={navBinding}
             chatAnnotations={annotations}
             chatExecution={presentedChatExecution}
             onScrollToChatAnchor={scrollToChatAnchor}
-            narrow={narrowWorkspace}
             reviewVisible={
               !narrowWorkspace || activePane === "review"
             }

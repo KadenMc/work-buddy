@@ -4,7 +4,7 @@
  * hidden in the composed surface. Covered: the proposal cards (insertion,
  * deletion, flag), the claim card, the filter lens, the mark bar for each verb
  * group including the reject-as-preference inline input, the passage inspector,
- * the drift strip, and the narrow grouped stream fallback.
+ * the drift strip, and the normal-flow Review stream.
  */
 
 import { render, screen } from "@testing-library/react";
@@ -200,7 +200,7 @@ describe("CoworkRail family accessibility", () => {
     await expectNoAccessibilityViolations(container);
   });
 
-  it("clears axe on the narrow grouped stream fallback", async () => {
+  it("clears axe on the document-order Review stream", async () => {
     const items = orderedItems(reviewData());
     const { container } = render(
       <StreamView
@@ -210,13 +210,13 @@ describe("CoworkRail family accessibility", () => {
         decisions={{}}
         claimDecisions={{}}
         inspectSpanByClaim={new Map()}
-        grouped
         onSelect={noop}
         onInspect={noop}
       />,
     );
-    // The grouped fallback labels each type section in text.
-    expect(screen.getByRole("region", { name: "Suggestions" })).toBeVisible();
+    expect(container.querySelectorAll(".wb-cowork-rail__card")).toHaveLength(
+      items.length,
+    );
     await expectNoAccessibilityViolations(container);
   });
 });

@@ -7,7 +7,14 @@
  * persistence, and a dirty sitting arms the route-change guard.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type RefCallback,
+} from "react";
 
 import { Inspector } from "./Inspector";
 import { VerificationAttentionFeed } from "./VerificationAttentionFeed";
@@ -31,9 +38,8 @@ import {
   visibleItems,
   type RailItem,
 } from "./items";
-import type { AnchorRectSource, ReviewRailProvider } from "./provider";
+import type { ReviewAnchorController, ReviewRailProvider } from "./provider";
 import { isDirty, type RailSelectionKind, type RailStore } from "./store";
-import { useIsNarrow } from "./useIsNarrow";
 import { useReviewData } from "./useReviewData";
 import { useRailState } from "./useRailState";
 import { RecoverableDecisionApplyError } from "./applyRecovery";
@@ -129,12 +135,12 @@ export interface ReviewPanelProps {
   readonly documentId: string;
   /** Injectable for tests, defaults to window.localStorage. */
   readonly storage?: Storage;
-  readonly anchorRects?: AnchorRectSource;
+  readonly scrollContainerRef?: RefCallback<HTMLElement>;
+  readonly onScrollContainerWillDetach?: () => void;
+  readonly reviewAnchors?: ReviewAnchorController;
   readonly queueBindings?: QueueBindings;
   /** Whether Review is currently visible and may handle global shortcuts. */
   readonly active?: boolean;
-  /** Force the grouped narrow fallback. Otherwise a container query decides. */
-  readonly narrow?: boolean;
   readonly onDiscussCothink?: (
     item: CothinkItem,
   ) => void | Promise<void>;
@@ -153,7 +159,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
   const [attentionError, setAttentionError] = useState<string | null>(null);
   const [busyAttentionId, setBusyAttentionId] = useState<string | null>(null);
   const pendingRevealRef = useRef<{
-    readonly source: AnchorRectSource;
+    readonly source: ReviewAnchorController;
     readonly id: string;
     readonly kind: RailSelectionKind;
   } | null>(null);
@@ -181,9 +187,6 @@ export function ReviewPanel(props: ReviewPanelProps) {
     applyNotice.attempt.selectionFingerprint === decisionFingerprint
       ? applyNotice
       : null;
-
-  const [measuredNarrow, narrowRef] = useIsNarrow();
-  const narrow = props.narrow ?? measuredNarrow;
 
   useDraftPersistence(store, props.documentId, storage);
   useUnsavedChangesGuard(store, dirty);
@@ -226,7 +229,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
    * underlying annotations when the card lens changes.
    */
   useEffect(() => {
-    const source = props.anchorRects;
+    const source = props.reviewAnchors;
     if (source === undefined) return;
     if (targetId === null || targetKind === null) {
       pendingRevealRef.current = null;
@@ -242,15 +245,15 @@ export function ReviewPanel(props: ReviewPanelProps) {
     source.focusAnchor(
       targetId,
       targetKind,
-      flash ? { scroll: true, flash: true } : { scroll: true },
+      flash ? { scroll: true, flash: true } : {},
     );
-  }, [props.anchorRects, targetId, targetKind]);
+  }, [props.reviewAnchors, targetId, targetKind]);
 
   useEffect(
     () => () => {
-      props.anchorRects?.clearFocusedAnchor();
+      props.reviewAnchors?.clearFocusedAnchor();
     },
-    [props.anchorRects],
+    [props.reviewAnchors],
   );
 
   /*
@@ -334,14 +337,14 @@ export function ReviewPanel(props: ReviewPanelProps) {
   );
 
   const revealAnchor = useMemo(() => {
-    const source = props.anchorRects;
+    const source = props.reviewAnchors;
     if (source === undefined) return undefined;
     return (id: string, kind: RailSelectionKind) =>
       source.focusAnchor(id, kind, { scroll: true, flash: true });
-  }, [props.anchorRects]);
+  }, [props.reviewAnchors]);
 
   const selectAndRevealAnchor = useMemo(() => {
-    const source = props.anchorRects;
+    const source = props.reviewAnchors;
     if (source === undefined) return undefined;
     return (id: string, kind: RailSelectionKind) => {
       const current = store.getState();
@@ -357,7 +360,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
       pendingRevealRef.current = { source, id, kind };
       store.select(id, kind);
     };
-  }, [props.anchorRects, store]);
+  }, [props.reviewAnchors, store]);
 
   const submit = useCallback(async (requestedAttempt?: ReviewApplyAttempt) => {
     if (data === null || submitting) return;
@@ -462,24 +465,24 @@ export function ReviewPanel(props: ReviewPanelProps) {
 
   const revealResult = useCallback(
     (result: EvaluationResult) => {
-      if (result.quoteAnchor === null || props.anchorRects === undefined) return;
-      props.anchorRects.focusAnchor(result.resultId, "evaluation_result", {
+      if (result.quoteAnchor === null || props.reviewAnchors === undefined) return;
+      props.reviewAnchors.focusAnchor(result.resultId, "evaluation_result", {
         scroll: true,
         flash: true,
       });
     },
-    [props.anchorRects],
+    [props.reviewAnchors],
   );
 
   const openCorrection = useCallback(
     (proposalId: string) => {
       store.select(proposalId, "proposal");
-      props.anchorRects?.focusAnchor(proposalId, "proposal", {
+      props.reviewAnchors?.focusAnchor(proposalId, "proposal", {
         scroll: true,
         flash: true,
       });
     },
-    [props.anchorRects, store],
+    [props.reviewAnchors, store],
   );
 
   const actOnCothink = useCallback(
@@ -575,7 +578,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
     "Suggestion no longer shown";
   const reviewBlocker = (proposalId: string) => {
     store.select(proposalId, "proposal");
-    props.anchorRects?.focusAnchor(proposalId, "proposal", {
+    props.reviewAnchors?.focusAnchor(proposalId, "proposal", {
       scroll: true,
       flash: true,
     });
@@ -589,11 +592,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
   };
 
   return (
-    <div
-      ref={narrowRef}
-      className="wb-cowork-rail__panel"
-      data-narrow={narrow ? "true" : undefined}
-    >
+    <div className="wb-cowork-rail__panel">
       <RailDriftStrip title={data.title} drift={data.drift} />
 
       <VerificationAttentionFeed
@@ -656,7 +655,12 @@ export function ReviewPanel(props: ReviewPanelProps) {
             type="button"
             className="wb-cowork-rail__mode-btn"
             aria-pressed={mode === "queue"}
-            onClick={() => store.setMode("queue")}
+            onClick={() => {
+              if (mode === "stream" && filter === "all") {
+                props.onScrollContainerWillDetach?.();
+              }
+              store.setMode("queue");
+            }}
           >
             Queue
           </button>
@@ -820,10 +824,22 @@ export function ReviewPanel(props: ReviewPanelProps) {
       <FilterLens
         filter={filter}
         counts={counts}
-        onChange={(next) => store.setFilter(next)}
+        onChange={(next) => {
+          if (mode === "stream" && filter === "all" && next !== "all") {
+            props.onScrollContainerWillDetach?.();
+          }
+          store.setFilter(next);
+        }}
       />
 
-      <div className="wb-cowork-rail__body">
+      <div
+        className="wb-cowork-rail__body"
+        ref={
+          mode === "stream" && filter === "all"
+            ? props.scrollContainerRef
+            : undefined
+        }
+      >
         {mode === "stream" ? (
           <StreamView
             items={visible}
@@ -832,8 +848,6 @@ export function ReviewPanel(props: ReviewPanelProps) {
             decisions={decisions}
             claimDecisions={claimDecisions}
             inspectSpanByClaim={spanByClaim}
-            grouped={narrow}
-            anchorRects={props.anchorRects}
             onSelect={(id, kind) => store.select(id, kind)}
             onScrollToAnchor={selectAndRevealAnchor}
             onInspect={(spanId) => store.openInspector(spanId)}

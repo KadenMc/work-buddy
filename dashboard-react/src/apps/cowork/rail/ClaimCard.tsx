@@ -22,7 +22,6 @@ export interface ClaimCardProps {
   readonly inspectSpanId?: string;
   onInspect?(spanId: string): void;
   onScrollToAnchor?(): void;
-  cardRef?: (element: HTMLElement | null) => void;
 }
 
 const STATUS_LABEL: Record<ClaimStatus, string> = {
@@ -43,11 +42,9 @@ export function ClaimCard({
   inspectSpanId,
   onInspect,
   onScrollToAnchor,
-  cardRef,
 }: ClaimCardProps) {
   return (
     <li
-      ref={cardRef}
       className="wb-cowork-rail__card"
       data-kind="claim"
       data-selected={selected ? "true" : undefined}

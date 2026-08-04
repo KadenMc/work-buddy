@@ -566,31 +566,9 @@
   background: var(--wb-color-surface-inset);
 }
 
-/* ---------- stream and groups ---------- */
+/* ---------- stream ---------- */
 .wb-cowork-rail__stream {
   padding: var(--wb-space-4);
-}
-
-.wb-cowork-rail__group {
-  margin-block-end: var(--wb-space-6);
-}
-
-.wb-cowork-rail__group-head {
-  display: flex;
-  align-items: center;
-  gap: var(--wb-space-3);
-  margin: 0 0 var(--wb-space-3);
-  font-size: var(--wb-font-size-2xs);
-  font-weight: var(--wb-font-weight-semibold);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--wb-color-text-secondary);
-}
-
-.wb-cowork-rail__group-count {
-  margin-inline-start: auto;
-  font-family: var(--wb-font-mono);
-  color: var(--wb-color-text-muted);
 }
 
 .wb-cowork-rail__card-list {

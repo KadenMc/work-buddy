@@ -78,12 +78,10 @@ describe("Co-work Widget Lab section", () => {
     expect(markbar.getByRole("button", { name: "Defer" })).toBeEnabled();
   });
 
-  it("renders the narrow grouped fallback", () => {
+  it("renders the document-order stream", () => {
     render(<CoworkLabSection />);
-    const grouped = within(screen.getByTestId("cowork-lab-grouped"));
-    expect(grouped.getByRole("region", { name: "Suggestions" })).toBeVisible();
-    expect(grouped.getByRole("region", { name: "Flags" })).toBeVisible();
-    expect(grouped.getByRole("region", { name: "Claims" })).toBeVisible();
+    const stream = within(screen.getByTestId("cowork-lab-stream"));
+    expect(stream.getAllByRole("listitem")).toHaveLength(5);
   });
 
   it("stages a verb through the live mark bar", async () => {
@@ -95,7 +93,7 @@ describe("Co-work Widget Lab section", () => {
     expect(accept).toHaveAttribute("aria-pressed", "true");
   });
 
-  it("clears axe on the card and grouped-fallback panels", async () => {
+  it("clears axe on the card and stream panels", async () => {
     // Per-component axe lives in the conformance suite. The whole section mounts
     // several mark bars at once, which collide only as a lab-composition artifact
     // (production shows one mark bar), so axe is scoped to panels here.
@@ -104,7 +102,7 @@ describe("Co-work Widget Lab section", () => {
       screen.getByTestId("cowork-lab-card-insertion"),
     );
     await expectNoAccessibilityViolations(
-      screen.getByTestId("cowork-lab-grouped"),
+      screen.getByTestId("cowork-lab-stream"),
     );
   });
 });

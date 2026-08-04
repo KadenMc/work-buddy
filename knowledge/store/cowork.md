@@ -44,7 +44,9 @@ dev_notes: |
 
   Editor annotations are a runtime-only ProseMirror decoration projection derived from the same R2 document snapshot as the Review rail. They must never enter the schema, Yjs state, Markdown, undo history, or outbound persistence. Proposal and claim anchors are kind-qualified so identical raw IDs cannot collide. Review focus changes only the active treatment; rail filters never remove the underlying editor annotations. Chat passage highlighting is also view state and must preserve the editor selection and the user's current focus.
 
-  The editor-aligned Review stream remains independently scrollable. Compact any unused document offset before the first visible card so the stream opens with review content rather than a blank rail; shift every later placement by the same amount to preserve relative passage spacing and collision resolution. Rail-only ancestor scrolling must neither change those placements nor trigger realignment; otherwise a compensating card transform cancels the user's scroll and makes the stream appear pinned. Editor or shared-ancestor scrolling, resize, editor transactions, and card-size changes remain genuine geometry updates. Any later refresh must preserve the Review body's current scroll position.
+  Review Stream cards stay in normal document flow inside one ordinary Review scroll container. Do not position or transform cards from editor-anchor geometry, subscribe card layout to editor transactions, or compensate for rail scrolling; those cross-pane geometry loops previously produced blank space and snap-back behavior. The editor owns anchor highlighting. Card selection updates that highlight without scrolling, while the explicit passage action scrolls and flashes it. A future contextual margin view would need to share the editor's scroll plane rather than recreate independent editor-to-rail alignment.
+
+  Scroll persistence is a device-local callback-ref binding keyed by full folder ID, document ID, and surface (with an explicit document-only namespace for browser-local and demo documents). Attach the Review binding only while Review is visible and only for **Stream** + **All**. Detach it synchronously before switching to Chat, a filter, or Queue, so shorter replacement content cannot clamp the canonical position before it is saved. Writes are throttled and flushed on unmount, page hide, and document visibility loss. A saved position may exceed a loading shell's current range, so restoration observes later geometry for a bounded period and must never persist that temporary clamp. Wheel or touch movement, scroll keys directed at the container itself, an external programmatic scroll, or explicit passage navigation cancels pending restoration and becomes the new position. Ordinary clicks, caret placement, and descendant control keys do not cancel it before scrolling actually occurs.
 
   Origin filtering is not persistence isolation: a later human Yjs update can causally depend on an earlier filtered struct. Never project a pending proposal into the live collaborative Y.Doc, even under a non-human origin. Sitting materialization starts from a clean clone of the canonical structured head, joins admitted decisions to the authoritative proposal catalog by ID and canonical hash, resolves every materializing anchor against that initial clone, rejects missing, mismatched, unresolved, duplicate, or overlapping edits, and applies confirmed changes in reverse document order. Explicit Save fails closed if tracked-suggestion schema artifacts somehow appear in the live document.
 
@@ -253,6 +255,14 @@ only after the server durably accepts them. Opening or reimporting a document
 uses a durability barrier and one atomic model commit, so a delayed request
 cannot replace a newer navigation choice.
 
+Editor and Review scroll positions are device-local interface continuity, not
+document state. Co-work stores them separately per folder, document, and
+surface, then restores them when that document is reopened. Restoration waits
+for late editor hydration or Review loading, but any user scroll intent or
+explicit passage navigation wins immediately. Only the canonical **Stream** +
+**All** Review view owns the saved Review position; Queue, filtered views, and a
+hidden Review tab cannot replace it with their temporary geometry.
+
 If device hydration fails, the editor presents a working retry action rather
 than remaining in an indefinite loading state. The document bar presents one
 prioritized durability/save status and only the recovery action that can
@@ -421,9 +431,12 @@ the document. Insertions and replacements show their proposed text beside the
 anchored original; deletions show the original as translucent danger text with
 a strikethrough. Flags, expressions or claims, and confirmed agent provenance
 have distinct visual and non-colour treatments, and a flag remains a warning
-underline rather than looking like removed text. Selecting a Review card or
-moving through Queue scrolls to and strongly emphasizes only its
-kind-qualified anchor. An explicit passage affordance also flashes that anchor.
+underline rather than looking like removed text. The Review **Stream** is a
+conventional normal-flow list in document order, with filters acting as lenses
+over that list and **Queue** providing sequential focus. Selecting a Review card
+or moving through Queue strongly emphasizes only its kind-qualified anchor
+without moving the editor. The explicit passage affordance is the action that
+scrolls to and briefly flashes that anchor.
 
 The review rail groups proposals into a sitting so the user can decide them in
 context. Accepting or amending a proposal applies only the admitted,

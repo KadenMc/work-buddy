@@ -11,10 +11,10 @@ import type { StagedClaimDecision, StagedDecision } from "./contracts";
 /** Which rail tab is shown (section 5.1, Review or Chat). */
 export type RailTab = "review" | "chat";
 
-/** The Review-tab layout, the aligned stream or the queue focus mode (SP-6). */
+/** The Review-tab layout: a document-order stream or queue focus mode. */
 export type RailMode = "stream" | "queue";
 
-/** The typed-group filter lens (SP-6 variant B as a lens over the stream). */
+/** The typed filter lens over the document-order stream. */
 export type RailFilter = "all" | "suggestions" | "flags" | "claims";
 
 /** What the mark bar and inspector are currently pointed at. */

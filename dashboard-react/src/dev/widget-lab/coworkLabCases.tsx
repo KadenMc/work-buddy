@@ -4,7 +4,7 @@
  * app-owned keep-alive instance with its own live state, not a snapshot-hydrated reusable
  * type. This section renders the review-rail family directly at the states a reviewer needs
  * to eyeball: each card type, each verb group, the unavailable-target state, and the
- * narrow grouped fallback. It draws on the same shipped demo scene the rail tests use, so
+ * normal-flow document-order stream. It draws on the same shipped demo scene the rail tests use, so
  * the lab and the tests never drift.
  */
 
@@ -110,7 +110,7 @@ export function CoworkLabSection() {
       <p>
         The single-surface review rail family at the states that matter for
         conformance: every card type, every verb group, the unavailable-target
-        state, and the narrow grouped fallback.
+        state, and the normal-flow document-order stream.
       </p>
 
       <div className="wb-cowork-lab__grid">
@@ -179,8 +179,8 @@ export function CoworkLabSection() {
         </LabPanel>
 
         <LabPanel
-          heading="Narrow grouped fallback"
-          testId="cowork-lab-grouped"
+          heading="Document-order stream"
+          testId="cowork-lab-stream"
         >
           <StreamView
             items={items}
@@ -189,7 +189,6 @@ export function CoworkLabSection() {
             decisions={{}}
             claimDecisions={{}}
             inspectSpanByClaim={new Map()}
-            grouped
             onSelect={noop}
             onInspect={noop}
           />

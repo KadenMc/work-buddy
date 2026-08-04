@@ -89,25 +89,11 @@ export interface AnchorFocusOptions {
 }
 
 /**
- * The anchor-rect seam for the aligned-stream layout. The editor owns the live
- * ProseMirror decorations, so it is the only source that can report where a
- * a review item's anchor currently sits. The rail measures card heights itself and
- * asks this seam for anchor tops, then resolves overlaps outside the React
- * render cycle (audit A12, perf contract). When no source is wired the stream
- * degrades to a document-order list with scroll-to-and-highlight on select.
+ * The editor-owned Review-anchor seam. Review cards remain in normal document
+ * order; this controller owns only focused passage treatment and explicit
+ * passage navigation.
  */
-export interface AnchorRectSource {
-  /**
-   * The top offset and height of a namespace-qualified review anchor, in the same coordinate
-   * space as the rail scroll container, or null when the anchor is not
-   * currently laid out (off-screen, lost, or the editor is not mounted).
-   */
-  anchorRect(
-    id: string,
-    kind: ReviewAnchorKind,
-  ): { readonly top: number; readonly height: number } | null;
-  /** Bring a proposal's anchor into view and flash it (the degrade path). */
-  scrollToAnchor(proposalId: string): void;
+export interface ReviewAnchorController {
   /**
    * Persistently emphasize the selected Review target. The kind is part of the
    * identity: claim ids and proposal ids occupy separate namespaces. Filtering
@@ -121,9 +107,4 @@ export interface AnchorRectSource {
   ): void;
   /** Clear only the focused treatment, never the underlying annotations. */
   clearFocusedAnchor(): void;
-  /**
-   * Register a listener fired whenever anchor geometry may have changed (editor
-   * scroll, resize, or a decoration rebuild). Returns an unsubscribe.
-   */
-  subscribe(onGeometryChange: () => void): ReviewUnsubscribe;
 }

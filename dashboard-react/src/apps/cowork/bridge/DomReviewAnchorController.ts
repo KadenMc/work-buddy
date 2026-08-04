@@ -1,16 +1,11 @@
 /**
- * The editor-backed AnchorRectSource that completes the aligned margin stream. The editor
- * is the only owner of live anchor geometry, so this measures
- * namespace-qualified ledger-decoration DOM rects. Every current anchor renders a plain
- * `data-wb-anchor-kind` plus `data-wb-anchor-id`; old suggestion marks additionally retain
- * their JSON `data-id` for adapter compatibility. It reports each anchor's top and height
- * in the rail card-list coordinate space, which is exactly what
- * useAlignedStream feeds computeAlignedLayout.
+ * Editor-backed Review-anchor controller. The editor owns ledger-decoration
+ * focus; Review uses this controller to select, reveal, and flash the matching
+ * passage without coupling card layout to editor layout.
  *
- * Degrade path (section on AnchorRectSource): an unresolved, off-screen, or currently
- * unmounted anchor reports null, so useAlignedStream leaves that card in normal flow and the
- * rail falls back to scroll-to-and-highlight. Flags and expression-backed claims now receive
- * real ledger decorations and participate in the same geometry path.
+ * Every current anchor renders `data-wb-anchor-kind` plus
+ * `data-wb-anchor-id`; old suggestion marks retain their JSON `data-id` for
+ * adapter compatibility.
  */
 
 import type { Editor } from "@tiptap/core";
@@ -22,9 +17,8 @@ import {
 } from "../editor/ledgerDecorations";
 import type {
   AnchorFocusOptions,
-  AnchorRectSource,
+  ReviewAnchorController,
   ReviewAnchorKind,
-  ReviewUnsubscribe,
 } from "../rail/provider";
 
 /** How long the scroll-to flash class stays on a mark before it is removed. */
@@ -32,28 +26,11 @@ const FLASH_MS = 1200;
 const FLASH_CLASS = "wb-cowork-anchor--flash";
 const ACTIVE_CLASS = "wb-cowork-anchor--active";
 
-const targetContains = (
-  target: EventTarget | null,
-  element: HTMLElement | null,
-): boolean => {
-  if (target === null || element === null) return false;
-  if (target === element) return true;
-  const candidate = target as { contains?: (node: Node) => boolean };
-  return (
-    typeof candidate.contains === "function" && candidate.contains(element)
-  );
-};
-
-export interface DomAnchorRectSourceOptions {
+export interface DomReviewAnchorControllerOptions {
   /** The editor's ProseMirror DOM root (editor.view.dom). Null until the editor mounts. */
   readonly getEditorRoot: () => HTMLElement | null;
   /** The live editor, used to persist focus through decoration rebuilds. */
   readonly getEditor?: () => Editor | null;
-  /**
-   * The rail card-list element the aligned cards are positioned within (position: relative).
-   * Card tops are reported relative to this element, matching useAlignedStream's transform.
-   */
-  readonly getRailRoot: () => HTMLElement | null;
   /** Injectable window for tests, else the global window. */
   readonly windowRef?: Window;
 }
@@ -81,8 +58,8 @@ const parseStringList = (raw: string | null): readonly string[] => {
   }
 };
 
-export class DomAnchorRectSource implements AnchorRectSource {
-  readonly #options: DomAnchorRectSourceOptions;
+export class DomReviewAnchorController implements ReviewAnchorController {
+  readonly #options: DomReviewAnchorControllerOptions;
   readonly #window: Window | undefined;
   #flashTimer: number | undefined;
   #focused:
@@ -93,13 +70,9 @@ export class DomAnchorRectSource implements AnchorRectSource {
       }
     | null = null;
   #pendingFocus = false;
-  readonly #geometryListeners = new Set<() => void>();
   #attachedEditor: Editor | null = null;
-  readonly #onEditorTransaction = (): void => {
-    this.#emitGeometryChange();
-  };
 
-  constructor(options: DomAnchorRectSourceOptions) {
+  constructor(options: DomReviewAnchorControllerOptions) {
     this.#options = options;
     this.#window =
       options.windowRef ??
@@ -161,33 +134,7 @@ export class DomAnchorRectSource implements AnchorRectSource {
     this.#flashTimer = undefined;
   }
 
-  #emitGeometryChange(): void {
-    for (const listener of this.#geometryListeners) listener();
-  }
-
-  /**
-   * Scrollable rail-only ancestors move the card-list rect without moving the
-   * editor anchor. Remove that viewport displacement so the reported card
-   * coordinate remains stable while a person browses the Review stream. Stop
-   * at the first shared ancestor because its scroll moves both columns equally.
-   */
-  #railOnlyAncestorScrollTop(
-    railRoot: HTMLElement,
-    editorRoot: HTMLElement,
-  ): number {
-    let scrollTop = 0;
-    let ancestor = railRoot.parentElement;
-    while (ancestor !== null && !ancestor.contains(editorRoot)) {
-      scrollTop += ancestor.scrollTop;
-      ancestor = ancestor.parentElement;
-    }
-    return scrollTop;
-  }
-
-  /**
-   * Bind editor transaction geometry and replay a focus requested while the
-   * editor was still mounting.
-   */
+  /** Bind a live editor and replay focus requested before it mounted. */
   attachEditor(editor: Editor): void {
     if (this.#attachedEditor === editor) {
       this.refresh();
@@ -195,62 +142,22 @@ export class DomAnchorRectSource implements AnchorRectSource {
     }
     this.detachEditor();
     this.#attachedEditor = editor;
-    editor.on("transaction", this.#onEditorTransaction);
     this.refresh();
   }
 
   detachEditor(): void {
-    this.#attachedEditor?.off("transaction", this.#onEditorTransaction);
     this.#attachedEditor = null;
     // The Review selection outlives an editor remount. The next attachment
     // must project that still-current focus into the fresh plugin state.
     this.#pendingFocus = this.#focused !== null;
   }
 
-  /** Notify aligned cards after a decoration projection and replay pending focus. */
+  /** Replay focus after a decoration projection or editor attachment. */
   refresh(): void {
     const pending = this.#focused;
     if (this.#pendingFocus && pending !== null) {
       this.focusAnchor(pending.id, pending.kind, pending.options);
     }
-    this.#emitGeometryChange();
-  }
-
-  anchorRect(
-    id: string,
-    kind: ReviewAnchorKind,
-  ): { readonly top: number; readonly height: number } | null {
-    const editorRoot = this.#options.getEditorRoot();
-    const railRoot = this.#options.getRailRoot();
-    const elements = this.#anchorElements(id, kind);
-    if (editorRoot === null || railRoot === null || elements.length === 0) {
-      return null;
-    }
-
-    let top = Number.POSITIVE_INFINITY;
-    let bottom = Number.NEGATIVE_INFINITY;
-    for (const element of elements) {
-      const rect = element.getBoundingClientRect();
-      top = Math.min(top, rect.top);
-      bottom = Math.max(bottom, rect.bottom);
-    }
-    if (!Number.isFinite(top) || !Number.isFinite(bottom)) return null;
-
-    const railRect = railRoot.getBoundingClientRect();
-    // Convert to the card-list content coordinate space. The list is inside the
-    // independently scrollable Review body, so its viewport rect already includes
-    // that ancestor's scroll displacement. Subtract the displacement once to keep
-    // the placement stable instead of cancelling the user's scroll with a matching
-    // transform in useAlignedStream.
-    const relativeTop =
-      top -
-      railRect.top -
-      this.#railOnlyAncestorScrollTop(railRoot, editorRoot);
-    return { top: relativeTop, height: Math.max(0, bottom - top) };
-  }
-
-  scrollToAnchor(proposalId: string): void {
-    this.focusAnchor(proposalId, "proposal", { scroll: true, flash: true });
   }
 
   focusAnchor(
@@ -270,9 +177,8 @@ export class DomAnchorRectSource implements AnchorRectSource {
     /*
      * ProseMirror owns every node under editor.view.dom. Mutating those class lists
      * directly wakes its DOM observer, which can reparse CSS-backed presentation as
-     * document marks (for example a deletion's line-through as a `strike` mark). Use
-     * the decoration transaction whenever the live plugin is available; retain the
-     * direct-DOM branch only for the legacy/no-editor degrade path.
+     * document marks. Use the decoration transaction whenever the live plugin is
+     * available; retain the direct-DOM branch only for the legacy/no-editor path.
      */
     if (!projected && !pluginManaged) {
       this.#clearDomFocus();
@@ -333,39 +239,5 @@ export class DomAnchorRectSource implements AnchorRectSource {
     if (!cleared && this.#options.getEditor === undefined) {
       this.#clearDomFocus();
     }
-  }
-
-  subscribe(onGeometryChange: () => void): ReviewUnsubscribe {
-    const view = this.#window;
-    const unsubscribers: Array<() => void> = [];
-    this.#geometryListeners.add(onGeometryChange);
-    unsubscribers.push(() => {
-      this.#geometryListeners.delete(onGeometryChange);
-    });
-
-    if (view !== undefined) {
-      // Capture-phase scroll catches the editor's own scroll container and shared
-      // ancestors. Review-only scrolling must not trigger alignment: its native
-      // movement is the interaction, and remeasuring it used to move every card by
-      // the inverse amount and make the rail appear frozen.
-      const onScroll = (event: Event): void => {
-        const railRoot = this.#options.getRailRoot();
-        const editorRoot = this.#options.getEditorRoot();
-        const affectsRail = targetContains(event.target, railRoot);
-        const affectsEditor = targetContains(event.target, editorRoot);
-        if (affectsRail && !affectsEditor) return;
-        onGeometryChange();
-      };
-      view.addEventListener("scroll", onScroll, true);
-      view.addEventListener("resize", onGeometryChange);
-      unsubscribers.push(() => {
-        view.removeEventListener("scroll", onScroll, true);
-        view.removeEventListener("resize", onGeometryChange);
-      });
-    }
-
-    return () => {
-      for (const unsubscribe of unsubscribers) unsubscribe();
-    };
   }
 }
