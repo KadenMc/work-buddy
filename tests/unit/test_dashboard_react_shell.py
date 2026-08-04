@@ -220,7 +220,7 @@ def test_app_route_reports_boot_build_failure_without_breaking_apis(
 def test_supervised_build_state_is_authoritative_over_error_marker(
     client, tmp_path, monkeypatch,
 ):
-    from work_buddy.dashboard import build_freshness
+    from work_buddy.dashboard import build_freshness, service as dashboard_service
 
     marker = tmp_path / "build-error.json"
     marker.write_text(
@@ -231,6 +231,13 @@ def test_supervised_build_state_is_authoritative_over_error_marker(
         build_freshness, "dashboard_build_error_marker_path", lambda: marker,
     )
     monkeypatch.setenv(build_freshness._BUILD_STATE_ENV, "ready")
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text(
+        "<!doctype html><title>work-buddy dashboard</title>",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(dashboard_service, "_react_dist_dir", lambda: dist)
 
     assert client.get("/app").status_code == 200
 
