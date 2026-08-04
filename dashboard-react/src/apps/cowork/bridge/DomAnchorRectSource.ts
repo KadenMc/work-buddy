@@ -32,6 +32,18 @@ const FLASH_MS = 1200;
 const FLASH_CLASS = "wb-cowork-anchor--flash";
 const ACTIVE_CLASS = "wb-cowork-anchor--active";
 
+const targetContains = (
+  target: EventTarget | null,
+  element: HTMLElement | null,
+): boolean => {
+  if (target === null || element === null) return false;
+  if (target === element) return true;
+  const candidate = target as { contains?: (node: Node) => boolean };
+  return (
+    typeof candidate.contains === "function" && candidate.contains(element)
+  );
+};
+
 export interface DomAnchorRectSourceOptions {
   /** The editor's ProseMirror DOM root (editor.view.dom). Null until the editor mounts. */
   readonly getEditorRoot: () => HTMLElement | null;
@@ -154,6 +166,25 @@ export class DomAnchorRectSource implements AnchorRectSource {
   }
 
   /**
+   * Scrollable rail-only ancestors move the card-list rect without moving the
+   * editor anchor. Remove that viewport displacement so the reported card
+   * coordinate remains stable while a person browses the Review stream. Stop
+   * at the first shared ancestor because its scroll moves both columns equally.
+   */
+  #railOnlyAncestorScrollTop(
+    railRoot: HTMLElement,
+    editorRoot: HTMLElement,
+  ): number {
+    let scrollTop = 0;
+    let ancestor = railRoot.parentElement;
+    while (ancestor !== null && !ancestor.contains(editorRoot)) {
+      scrollTop += ancestor.scrollTop;
+      ancestor = ancestor.parentElement;
+    }
+    return scrollTop;
+  }
+
+  /**
    * Bind editor transaction geometry and replay a focus requested while the
    * editor was still mounting.
    */
@@ -189,9 +220,12 @@ export class DomAnchorRectSource implements AnchorRectSource {
     id: string,
     kind: ReviewAnchorKind,
   ): { readonly top: number; readonly height: number } | null {
+    const editorRoot = this.#options.getEditorRoot();
     const railRoot = this.#options.getRailRoot();
     const elements = this.#anchorElements(id, kind);
-    if (railRoot === null || elements.length === 0) return null;
+    if (editorRoot === null || railRoot === null || elements.length === 0) {
+      return null;
+    }
 
     let top = Number.POSITIVE_INFINITY;
     let bottom = Number.NEGATIVE_INFINITY;
@@ -203,9 +237,15 @@ export class DomAnchorRectSource implements AnchorRectSource {
     if (!Number.isFinite(top) || !Number.isFinite(bottom)) return null;
 
     const railRect = railRoot.getBoundingClientRect();
-    // Convert to the card-list coordinate space. scrollTop covers the case where the card
-    // list is itself the scroll container, and is zero when an ancestor scrolls instead.
-    const relativeTop = top - railRect.top + railRoot.scrollTop;
+    // Convert to the card-list content coordinate space. The list is inside the
+    // independently scrollable Review body, so its viewport rect already includes
+    // that ancestor's scroll displacement. Subtract the displacement once to keep
+    // the placement stable instead of cancelling the user's scroll with a matching
+    // transform in useAlignedStream.
+    const relativeTop =
+      top -
+      railRect.top -
+      this.#railOnlyAncestorScrollTop(railRoot, editorRoot);
     return { top: relativeTop, height: Math.max(0, bottom - top) };
   }
 
@@ -304,11 +344,22 @@ export class DomAnchorRectSource implements AnchorRectSource {
     });
 
     if (view !== undefined) {
-      // Capture-phase scroll catches the editor's own scroll container and any ancestor.
-      view.addEventListener("scroll", onGeometryChange, true);
+      // Capture-phase scroll catches the editor's own scroll container and shared
+      // ancestors. Review-only scrolling must not trigger alignment: its native
+      // movement is the interaction, and remeasuring it used to move every card by
+      // the inverse amount and make the rail appear frozen.
+      const onScroll = (event: Event): void => {
+        const railRoot = this.#options.getRailRoot();
+        const editorRoot = this.#options.getEditorRoot();
+        const affectsRail = targetContains(event.target, railRoot);
+        const affectsEditor = targetContains(event.target, editorRoot);
+        if (affectsRail && !affectsEditor) return;
+        onGeometryChange();
+      };
+      view.addEventListener("scroll", onScroll, true);
       view.addEventListener("resize", onGeometryChange);
       unsubscribers.push(() => {
-        view.removeEventListener("scroll", onGeometryChange, true);
+        view.removeEventListener("scroll", onScroll, true);
         view.removeEventListener("resize", onGeometryChange);
       });
     }
