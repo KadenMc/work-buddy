@@ -192,3 +192,59 @@ def test_app_route_absent_dist_is_helpful_404(client):
     history_resp = client.get("/app/journal")
     assert history_resp.status_code == 404
     assert "npm run build" in history_resp.get_data(as_text=True)
+
+
+def test_app_route_reports_boot_build_failure_without_breaking_apis(
+    client, tmp_path, monkeypatch,
+):
+    from work_buddy.dashboard import build_freshness
+
+    marker = tmp_path / "build-error.json"
+    marker.write_text(
+        '{"status":"build_failed","message":"TypeScript failed",'
+        '"recorded_at":1}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        build_freshness, "dashboard_build_error_marker_path", lambda: marker,
+    )
+
+    response = client.get("/app")
+
+    assert response.status_code == 503
+    assert "TypeScript failed" in response.get_data(as_text=True)
+    assert response.headers["Cache-Control"] == "no-store"
+    assert client.get("/api/dashboard/context").status_code == 200
+
+
+def test_supervised_build_state_is_authoritative_over_error_marker(
+    client, tmp_path, monkeypatch,
+):
+    from work_buddy.dashboard import build_freshness
+
+    marker = tmp_path / "build-error.json"
+    marker.write_text(
+        '{"status":"old_failure","message":"stale marker","recorded_at":1}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        build_freshness, "dashboard_build_error_marker_path", lambda: marker,
+    )
+    monkeypatch.setenv(build_freshness._BUILD_STATE_ENV, "ready")
+
+    assert client.get("/app").status_code == 200
+
+
+def test_supervised_failure_gates_app_without_exposing_build_output(
+    client, monkeypatch,
+):
+    from work_buddy.dashboard import build_freshness
+
+    monkeypatch.setenv(build_freshness._BUILD_STATE_ENV, "build_failed")
+
+    response = client.get("/app")
+
+    assert response.status_code == 503
+    body = response.get_data(as_text=True)
+    assert "See the sidecar log" in body
+    assert "TypeScript" not in body

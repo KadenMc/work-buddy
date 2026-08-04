@@ -2128,6 +2128,20 @@ def _react_dist_dir() -> Path:
 
 def _serve_react_app_index() -> Response:
     """Return the no-store React document for root and history routes."""
+    from work_buddy.dashboard.build_freshness import read_dashboard_build_error
+
+    build_error = read_dashboard_build_error()
+    if build_error is not None:
+        response = Response(
+            "React dashboard unavailable: its automatic startup build failed.\n\n"
+            f"{build_error.message}\n\n"
+            "The dashboard APIs and legacy root remain available. Fix the "
+            "reported frontend build problem and restart the sidecar.\n",
+            status=503,
+            content_type="text/plain; charset=utf-8",
+        )
+        response.headers["Cache-Control"] = "no-store"
+        return response
     index = _react_dist_dir() / "index.html"
     if not index.is_file():
         return Response(
