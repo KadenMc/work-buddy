@@ -556,6 +556,185 @@ def test_accepting_one_imported_proposal_keeps_other_targets_verifiable(store_ct
     ) == ("applicable", "reanchored")
 
 
+def test_cancelled_batch_after_sequential_accept_can_commit_safe_subset(store_ctx):
+    """A client-side batch preparation failure never consumes admitted marks.
+
+    The browser prepares its replacement snapshot only after the server admits a
+    sitting.  If that local preparation cannot place one target, it may cancel
+    the pure prepared intent and submit the placeable subset under a new key.
+    This covers the exact sequential-then-batch shape used by Review, including
+    a blockquote hard-break target whose Markdown selector remains server-valid.
+    """
+
+    store = store_ctx["store"]
+    source = (
+        b"# Lifecycle\r\n\r\n"
+        b"> First  \r\n> target. Strain of  \r\n> working this way. "
+        b"Tail  \r\n> target.\r\n"
+    )
+    document, _source, snapshot = _ready_import(
+        store_ctx,
+        source=source,
+        key="lifecycle-import-sequential-batch-0001",
+    )
+    initial_head = ydoc_store.current_structured_head(
+        store,
+        document_id=document.id,
+        snapshot_sha256=document.ydoc_snapshot_sha256,
+    )
+    first = _proposal(
+        store,
+        document,
+        initial_head,
+        exact="First  \r\n> target.",
+        replacement="First target.",
+    )
+    blockquote_hard_break = _proposal(
+        store,
+        document,
+        initial_head,
+        exact="of  \r\n> working this way.",
+        replacement="of working this way.",
+    )
+    tail = _proposal(
+        store,
+        document,
+        initial_head,
+        exact="Tail  \r\n> target.",
+        replacement="Tail target.",
+    )
+    pushed, status = transport.push_ydoc(
+        store,
+        document,
+        HUMAN,
+        body=transport.frame_segments([b"", snapshot, source]),
+        base_structured_head_sha256=initial_head,
+        base_ydoc_generation=documents.current_ydoc_generation(store, document.id),
+        compacted_snapshot_sha256=sha256_bytes(snapshot),
+        compacted_projection_sha256=sha256_bytes(source),
+    )
+    assert status == 200
+
+    first_intent, _ = sitting_lifecycle.prepare_sitting(
+        store,
+        document_id=document.id,
+        actor=HUMAN,
+        items=[
+            {
+                "proposal_id": first.id,
+                "verb": "confirm",
+                "canonical_sha256": first.canonical_sha256,
+            }
+        ],
+        expected_file_sha256=document.content_sha256,
+        expected_structured_head_sha256=pushed["structured_head_sha256"],
+        idempotency_key="sitting-sequential-before-batch-0001",
+    )
+    after_first = source.replace(b"First  \r\n> target.", b"First target.")
+    after_first_snapshot = b"YDOC:" + after_first
+    first_receipt, _ = sitting_lifecycle.commit_sitting(
+        store,
+        document_id=document.id,
+        intent_id=first_intent.id,
+        actor=HUMAN,
+        snapshot=after_first_snapshot,
+        snapshot_sha256=sha256_bytes(after_first_snapshot),
+        rendered_markdown=after_first.decode(),
+        rendered_sha256=sha256_bytes(after_first),
+    )
+    assert first_receipt["results"][0]["result"] == "applied"
+    assert _gesture_count(store) == 1
+
+    refreshed = documents.get_document(store, document.id)
+    batch_intent, _ = sitting_lifecycle.prepare_sitting(
+        store,
+        document_id=document.id,
+        actor=HUMAN,
+        items=[
+            {
+                "proposal_id": blockquote_hard_break.id,
+                "verb": "confirm",
+                "canonical_sha256": blockquote_hard_break.canonical_sha256,
+            },
+            {
+                "proposal_id": tail.id,
+                "verb": "confirm",
+                "canonical_sha256": tail.canonical_sha256,
+            },
+        ],
+        expected_file_sha256=refreshed.content_sha256,
+        expected_structured_head_sha256=first_receipt["structured_head_sha256"],
+        idempotency_key="sitting-batch-client-prepare-0001",
+    )
+
+    assert len(batch_intent.admitted) == 2
+    assert batch_intent.failed == ()
+    ranges = [
+        (
+            entry["item"]["_applicability"]["resolved_start"],
+            entry["item"]["_applicability"]["resolved_end"],
+        )
+        for entry in batch_intent.admitted
+    ]
+    assert all(
+        entry["item"]["_applicability"]["reason"] == "reanchored"
+        for entry in batch_intent.admitted
+    )
+    assert ranges[0][1] <= ranges[1][0]
+
+    cancelled = sitting_lifecycle.cancel_sitting(
+        store,
+        document_id=document.id,
+        intent_id=batch_intent.id,
+        actor=HUMAN,
+    )
+    assert cancelled["state"] == "cancelled"
+    assert _gesture_count(store) == 1
+    assert (
+        proposals.latest_proposal_status(store, blockquote_hard_break.id).status
+        == "open"
+    )
+    assert proposals.latest_proposal_status(store, tail.id).status == "open"
+
+    safe_intent, _ = sitting_lifecycle.prepare_sitting(
+        store,
+        document_id=document.id,
+        actor=HUMAN,
+        items=[
+            {
+                "proposal_id": tail.id,
+                "verb": "confirm",
+                "canonical_sha256": tail.canonical_sha256,
+            }
+        ],
+        expected_file_sha256=refreshed.content_sha256,
+        expected_structured_head_sha256=first_receipt["structured_head_sha256"],
+        idempotency_key="sitting-batch-safe-subset-0001",
+    )
+    after_safe_subset = after_first.replace(
+        b"Tail  \r\n> target.", b"Tail target."
+    )
+    safe_snapshot = b"YDOC:" + after_safe_subset
+    safe_receipt, _ = sitting_lifecycle.commit_sitting(
+        store,
+        document_id=document.id,
+        intent_id=safe_intent.id,
+        actor=HUMAN,
+        snapshot=safe_snapshot,
+        snapshot_sha256=sha256_bytes(safe_snapshot),
+        rendered_markdown=after_safe_subset.decode(),
+        rendered_sha256=sha256_bytes(after_safe_subset),
+    )
+
+    assert safe_receipt["results"][0]["result"] == "applied"
+    assert _gesture_count(store) == 2
+    assert proposals.latest_proposal_status(store, tail.id).status == "applied"
+    assert (
+        proposals.latest_proposal_status(store, blockquote_hard_break.id).status
+        == "open"
+    )
+
+
 def test_sitting_file_race_leaves_ledger_and_structured_state_unchanged(store_ctx):
     store = store_ctx["store"]
     document, _source, _ = _ready(store_ctx, key="lifecycle-ready-race")

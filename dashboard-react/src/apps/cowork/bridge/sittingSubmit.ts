@@ -6,6 +6,7 @@ import type {
   StagedDecision,
 } from "../rail/contracts";
 import type { SittingSubmission } from "../rail/provider";
+import { RecoverableDecisionApplyError } from "../rail/applyRecovery";
 import {
   CoworkSittingClient,
   type CoworkSittingTransport,
@@ -44,6 +45,41 @@ export const toRailSittingResult = (response: SittingResponse): RailSittingResul
   partial: response.partial,
   results: response.results.map(toRailItemResult),
 });
+
+const failedItemMessage = (item: SittingItemResult): string => {
+  if (item.result === "rejected_stale_view") {
+    return "This suggestion changed since you made the decision.";
+  }
+  const raw = item.error?.trim();
+  if (raw === undefined || raw.length === 0) {
+    return "This decision cannot be applied to the current document.";
+  }
+  const known: Readonly<Record<string, string>> = {
+    stale_base: "The document changed around this suggestion.",
+    target_missing: "The original passage is no longer in the current document.",
+    target_ambiguous: "The original passage now appears in more than one place.",
+    "proposal does not exist": "This suggestion is no longer available.",
+    "proposal belongs to another document":
+      "This suggestion belongs to a different document.",
+    "proposal has no status history":
+      "Co-work cannot determine this suggestion’s current status.",
+    "duplicate proposal in sitting": "This suggestion was selected more than once.",
+    "unsupported item fields": "This saved decision is no longer supported.",
+  };
+  if (known[raw] !== undefined) return known[raw];
+  const closed = /^proposal is ([a-z_]+), not open$/u.exec(raw);
+  if (closed !== null) {
+    return `This suggestion is already ${closed[1].replace(/_/gu, " ")}.`;
+  }
+  if (raw.startsWith("unsupported verb:")) {
+    return "This saved decision is no longer supported.";
+  }
+  if (/^[a-z_]+$/u.test(raw)) {
+    return "Co-work could not safely apply this decision to the current document.";
+  }
+  const bounded = raw.slice(0, 240);
+  return `${bounded.charAt(0).toUpperCase()}${bounded.slice(1)}${/[.!?]$/u.test(bounded) ? "" : "."}`;
+};
 
 export const routingDeliveriesFrom = (
   submitted: readonly StagedDecision[],
@@ -120,6 +156,8 @@ export interface SubmitCoworkSittingParams {
   readonly workspace: CoworkSittingWorkspace;
   readonly transport: CoworkSittingTransport;
   readonly idempotencyKeyFor: (fingerprint: string) => string;
+  /** Retire the key for an intent that is known not to have committed. */
+  readonly onIntentAbandoned?: (fingerprint: string) => void;
   readonly onCommitted?: () => void;
   readonly onRoutingDelivery?: (delivery: RoutingDeliveryInput) => void;
 }
@@ -148,16 +186,42 @@ export const submitCoworkSitting = async (
     expectedStructuredHeadSha256: preflight.expectedStructuredHeadSha256,
   });
   const client = new CoworkSittingClient(params.transport);
-  const prepared = await client.prepare({
-    documentId: params.documentId,
-    storeId: params.storeId,
-    body: {
-      items,
-      expected_file_sha256: preflight.expectedFileSha256,
-      expected_ydoc_head_sha256: preflight.expectedStructuredHeadSha256,
-      idempotency_key: params.idempotencyKeyFor(fingerprint),
-    },
-  });
+  const prepare = () =>
+    client.prepare({
+      documentId: params.documentId,
+      storeId: params.storeId,
+      body: {
+        items,
+        expected_file_sha256: preflight.expectedFileSha256,
+        expected_ydoc_head_sha256: preflight.expectedStructuredHeadSha256,
+        idempotency_key: params.idempotencyKeyFor(fingerprint),
+      },
+    });
+  let prepared = await prepare();
+
+  // A deterministic recovery may have cancelled an earlier attempt using this
+  // fingerprint. Retire that consumed key and transparently prepare once more.
+  if (prepared.state === "cancelled") {
+    params.onIntentAbandoned?.(fingerprint);
+    prepared = await prepare();
+    if (prepared.state === "cancelled") {
+      params.onIntentAbandoned?.(fingerprint);
+      throw new Error(
+        "Co-work could not start a fresh decision attempt. Your decisions were not applied.",
+      );
+    }
+  }
+
+  const abandonPreparedIntent = async (): Promise<void> => {
+    try {
+      await client.cancel(params.documentId, params.storeId, prepared.intent_id);
+    } catch {
+      // The uncommitted intent expires even when best-effort cleanup is unavailable.
+    } finally {
+      // A cancelled or locally abandoned intent must never poison an identical retry.
+      params.onIntentAbandoned?.(fingerprint);
+    }
+  };
 
   if (prepared.state === "committed" && prepared.result !== undefined) {
     await params.workspace.refreshFromServer(prepared.result, preflight.generation);
@@ -171,6 +235,27 @@ export const submitCoworkSitting = async (
     return toRailSittingResult(prepared.result);
   }
 
+  if (prepared.failed_items.length > 0) {
+    await abandonPreparedIntent();
+    throw new RecoverableDecisionApplyError(
+      "Some decisions do not match the current document.",
+      {
+        availableProposalIds: prepared.admitted_items.map(
+          (item) => item.proposal_id,
+        ),
+        blockers: prepared.failed_items.map((item) => ({
+          proposalId: item.proposal_id,
+          reason:
+            item.result === "rejected_stale_view"
+              ? "proposal_changed"
+              : "not_currently_applicable",
+          relatedProposalIds: [],
+          message: failedItemMessage(item),
+        })),
+      },
+    );
+  }
+
   let staged:
     | Awaited<ReturnType<CoworkSittingWorkspace["prepare"]>>
     | null = null;
@@ -179,7 +264,7 @@ export const submitCoworkSitting = async (
       staged = await params.workspace.prepare(prepared.admitted_items, preflight.generation);
     }
     if (!params.workspace.isCurrent(preflight.generation)) {
-      await client.cancel(params.documentId, params.storeId, prepared.intent_id);
+      await abandonPreparedIntent();
       throw new Error(
         "The document changed while the sitting was being prepared. Review the latest text and submit again.",
       );
@@ -206,6 +291,13 @@ export const submitCoworkSitting = async (
     }
     params.onCommitted?.();
     return toRailSittingResult(response);
+  } catch (error) {
+    if (error instanceof RecoverableDecisionApplyError) {
+      // This exact all-items intent cannot be committed with the recovery subset.
+      // Release it before Review offers a separately confirmed subset submission.
+      await abandonPreparedIntent();
+    }
+    throw error;
   } finally {
     staged?.dispose();
   }

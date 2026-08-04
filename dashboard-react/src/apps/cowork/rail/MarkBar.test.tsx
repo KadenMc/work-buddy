@@ -218,6 +218,39 @@ describe("MarkBar edit verbs", () => {
     await userEvent.click(screen.getByRole("button", { name: "Defer" }));
     expect(cbs.onClearProposal).toHaveBeenCalledWith("p1");
   });
+
+  it("disables every staging control while Review is submitting", async () => {
+    const cbs = handlers();
+    const { rerender } = render(
+      <MarkBar target={{ kind: "proposal", proposal: proposal() }} {...cbs} />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Amend" }));
+
+    rerender(
+      <MarkBar
+        target={{ kind: "proposal", proposal: proposal() }}
+        disabled
+        {...cbs}
+      />,
+    );
+
+    for (const label of [
+      "Accept",
+      "Amend",
+      "Reject",
+      "Reject as false",
+      "Reject as preference",
+      "Redirect",
+      "Defer",
+      "Stage",
+      "Cancel",
+    ]) {
+      expect(screen.getByRole("button", { name: label })).toBeDisabled();
+    }
+    expect(screen.getByLabelText("Your replacement")).toBeDisabled();
+    expect(cbs.onStageProposal).not.toHaveBeenCalled();
+    expect(cbs.onClearProposal).not.toHaveBeenCalled();
+  });
 });
 
 describe("MarkBar flag verbs", () => {

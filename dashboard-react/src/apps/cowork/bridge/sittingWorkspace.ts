@@ -5,6 +5,10 @@ import { assertCanonicalCoworkEditorState } from "../editor/canonicalState";
 import { buildEditorExtensions } from "../editor/extensions";
 import { serializeCoworkEditorMarkdown } from "../editor/serializeCoworkMarkdown";
 import { sha256Hex } from "../persistence/hashing";
+import {
+  RecoverableDecisionApplyError,
+  type DecisionApplyBlocker,
+} from "../rail/applyRecovery";
 import { resolveQuoteAnchor } from "../suggestions/anchor";
 import type {
   DecisionItem,
@@ -69,32 +73,49 @@ export const prepareCoworkSittingDocument = async (
       proposalsById.set(proposal.proposal_id, proposal);
     }
 
-    const resolved = admittedItems.map((item) => {
+    const blockers = new Map<string, DecisionApplyBlocker>();
+    const resolved = admittedItems.flatMap((item) => {
       const proposal = proposalsById.get(item.proposal_id);
       if (proposal === undefined) {
-        throw new Error(
-          `The admitted proposal ${item.proposal_id} is missing from the authoritative catalog.`,
-        );
+        blockers.set(item.proposal_id, {
+          proposalId: item.proposal_id,
+          reason: "proposal_unavailable",
+          relatedProposalIds: [],
+          message: "This suggestion is no longer available in the current review.",
+        });
+        return [];
       }
       if (proposal.canonical_sha256 !== item.canonical_sha256) {
-        throw new Error(
-          `The admitted proposal ${item.proposal_id} no longer matches the authoritative catalog.`,
-        );
+        blockers.set(item.proposal_id, {
+          proposalId: item.proposal_id,
+          reason: "proposal_changed",
+          relatedProposalIds: [],
+          message: "This suggestion changed since you made the decision.",
+        });
+        return [];
       }
 
       let replacement: string | null = null;
       if (item.verb === "confirm") {
         if (proposal.kind !== "edit" || proposal.replacement === null) {
-          throw new Error(
-            `The admitted proposal ${item.proposal_id} is not a materializable edit.`,
-          );
+          blockers.set(item.proposal_id, {
+            proposalId: item.proposal_id,
+            reason: "not_editable",
+            relatedProposalIds: [],
+            message: "This suggestion is not an editable text replacement.",
+          });
+          return [];
         }
         replacement = proposal.replacement;
       } else if (item.verb === "edit_confirm") {
         if (proposal.kind !== "edit" || proposal.replacement === null) {
-          throw new Error(
-            `The admitted proposal ${item.proposal_id} is not a materializable edit.`,
-          );
+          blockers.set(item.proposal_id, {
+            proposalId: item.proposal_id,
+            reason: "not_editable",
+            relatedProposalIds: [],
+            message: "This suggestion is not an editable text replacement.",
+          });
+          return [];
         }
         if (item.amend_content === undefined) {
           throw new Error(
@@ -109,12 +130,16 @@ export const prepareCoworkSittingDocument = async (
           ? null
           : resolveQuoteAnchor(editor.state.doc, proposal.quoteAnchor);
       if (replacement !== null && range === null) {
-        throw new Error(
-          `The admitted proposal ${item.proposal_id} could not be resolved in the canonical document.`,
-        );
+        blockers.set(item.proposal_id, {
+          proposalId: item.proposal_id,
+          reason: "passage_unavailable",
+          relatedProposalIds: [],
+          message: "The original passage could not be found in the current document.",
+        });
+        return [];
       }
 
-      return { item, range, replacement };
+      return [{ item, range, replacement }];
     });
 
     const materialized = resolved.filter(
@@ -130,11 +155,45 @@ export const prepareCoworkSittingDocument = async (
         const a = materialized[left].range;
         const b = materialized[right].range;
         if (a.from < b.to && b.from < a.to) {
-          throw new Error(
-            `The admitted proposals ${materialized[left].item.proposal_id} and ${materialized[right].item.proposal_id} overlap.`,
-          );
+          const leftId = materialized[left].item.proposal_id;
+          const rightId = materialized[right].item.proposal_id;
+          const addConflict = (proposalId: string, relatedProposalId: string) => {
+            const existing = blockers.get(proposalId);
+            const relatedProposalIds = new Set(
+              existing?.reason === "conflicts_with_selected_edit"
+                ? existing.relatedProposalIds
+                : [],
+            );
+            relatedProposalIds.add(relatedProposalId);
+            blockers.set(proposalId, {
+              proposalId,
+              reason: "conflicts_with_selected_edit",
+              relatedProposalIds: [...relatedProposalIds],
+              message: "This edit overlaps another selected edit.",
+            });
+          };
+          addConflict(leftId, rightId);
+          addConflict(rightId, leftId);
         }
       }
+    }
+
+    if (blockers.size > 0) {
+      const availableProposalIds = admittedItems
+        .map((item) => item.proposal_id)
+        .filter((proposalId) => !blockers.has(proposalId));
+      const orderedBlockers = admittedItems.flatMap((item) => {
+        const blocker = blockers.get(item.proposal_id);
+        return blocker === undefined ? [] : [blocker];
+      });
+      throw new RecoverableDecisionApplyError(
+        orderedBlockers.some(
+          (blocker) => blocker.reason === "conflicts_with_selected_edit",
+        )
+          ? "Some selected edits overlap and cannot be applied together."
+          : "Some selected decisions no longer match the current document.",
+        { availableProposalIds, blockers: orderedBlockers },
+      );
     }
 
     const transaction = editor.state.tr;

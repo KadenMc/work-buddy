@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { SittingSubmission } from "../rail/provider";
+import { RecoverableDecisionApplyError } from "../rail/applyRecovery";
 import type { CoworkSittingTransport } from "../suggestions/sitting";
 import type {
   DecisionItem,
@@ -97,40 +98,73 @@ const workspace = (events: string[]): CoworkSittingWorkspace => ({
 });
 
 describe("submitCoworkSitting two-phase choreography", () => {
-  it("keeps live state untouched until commit and applies only server-admitted items", async () => {
+  it("requires confirmation before applying the admitted subset", async () => {
     const decisions = [toDecisionItem(staged("accepted")), toDecisionItem(staged("stale"))];
     const events: string[] = [];
     const transport: CoworkSittingTransport = {
       prepare: async () => prepared([decisions[0]], [itemResult(decisions[1], "rejected_stale_view")]),
-      commit: async (request) => {
-        expect(events).toEqual(["prepared:accepted"]);
-        expect(request.documentCommit?.rendered_markdown).toBe("# committed\n");
-        events.push("server-committed");
-        return receipt("intent-1", [
-          itemResult(decisions[0]),
-          itemResult(decisions[1], "rejected_stale_view"),
-        ]);
+      commit: vi.fn(),
+      cancel: vi.fn(async () => undefined),
+    };
+    const onIntentAbandoned = vi.fn();
+
+    const result = await submitCoworkSitting({
+        documentId: "doc",
+        storeId: "store",
+        submission: submission([staged("accepted"), staged("stale")]),
+        workspace: workspace(events),
+        transport,
+        idempotencyKeyFor: () => "stable-key",
+        onIntentAbandoned,
+      }).catch((error: unknown) => error);
+
+    expect(result).toBeInstanceOf(RecoverableDecisionApplyError);
+    expect((result as RecoverableDecisionApplyError).recovery).toEqual({
+      availableProposalIds: ["accepted"],
+      blockers: [
+        expect.objectContaining({
+          proposalId: "stale",
+          reason: "proposal_changed",
+        }),
+      ],
+    });
+    expect(events).toEqual([]);
+    expect(transport.cancel).toHaveBeenCalledWith("doc", "store", "intent-1");
+    expect(onIntentAbandoned).toHaveBeenCalledTimes(1);
+    expect(transport.commit).not.toHaveBeenCalled();
+  });
+
+  it("retires a cancelled key and transparently prepares with a fresh one", async () => {
+    const events: string[] = [];
+    const keys: string[] = [];
+    const item = toDecisionItem(staged("p1"));
+    let key = "cancelled-key";
+    const transport: CoworkSittingTransport = {
+      prepare: async (request) => {
+        keys.push(request.body.idempotency_key);
+        return request.body.idempotency_key === "cancelled-key"
+          ? { ...prepared([item]), state: "cancelled" }
+          : prepared([item]);
       },
-      cancel: async () => undefined,
+      commit: async () => receipt("intent-1", [itemResult(item)]),
+      cancel: vi.fn(),
     };
 
     const result = await submitCoworkSitting({
       documentId: "doc",
       storeId: "store",
-      submission: submission([staged("accepted"), staged("stale")]),
+      submission: submission(),
       workspace: workspace(events),
       transport,
-      idempotencyKeyFor: () => "stable-key",
+      idempotencyKeyFor: () => key,
+      onIntentAbandoned: () => {
+        key = "fresh-key";
+      },
     });
 
-    expect(events).toEqual([
-      "prepared:accepted",
-      "server-committed",
-      "refreshed:intent-1:4",
-      "disposed",
-    ]);
-    expect(result.partial).toBe(true);
-    expect(result.results[1]?.result).toBe("rejected_stale_view");
+    expect(keys).toEqual(["cancelled-key", "fresh-key"]);
+    expect(result.results[0]?.result).toBe("applied");
+    expect(events).toEqual(["prepared:p1", "refreshed:intent-1:4", "disposed"]);
   });
 
   it("does not refresh on commit failure and preserves a stable retry key", async () => {
@@ -160,6 +194,53 @@ describe("submitCoworkSitting two-phase choreography", () => {
     ).rejects.toThrow(/network/u);
     expect(events).toEqual(["prepared:p1", "disposed"]);
     expect(keys).toEqual(["stable-key"]);
+  });
+
+  it("cancels an unusable prepared intent before surfacing subset recovery", async () => {
+    const item = toDecisionItem(staged("blocked"));
+    const cancel = vi.fn(async () => undefined);
+    const commit = vi.fn();
+    const recovery = new RecoverableDecisionApplyError(
+      "The passage cannot be placed.",
+      {
+        availableProposalIds: [],
+        blockers: [
+          {
+            proposalId: "blocked",
+            reason: "passage_unavailable",
+            relatedProposalIds: [],
+            message: "The original passage could not be found.",
+          },
+        ],
+      },
+    );
+    const transport: CoworkSittingTransport = {
+      prepare: async () => prepared([item]),
+      commit,
+      cancel,
+    };
+    const onIntentAbandoned = vi.fn();
+
+    await expect(
+      submitCoworkSitting({
+        documentId: "doc",
+        storeId: "store",
+        submission: submission([staged("blocked")]),
+        workspace: {
+          ...workspace([]),
+          prepare: async () => {
+            throw recovery;
+          },
+        },
+        transport,
+        idempotencyKeyFor: () => "stable-key",
+        onIntentAbandoned,
+      }),
+    ).rejects.toBe(recovery);
+
+    expect(cancel).toHaveBeenCalledWith("doc", "store", "intent-1");
+    expect(onIntentAbandoned).toHaveBeenCalledTimes(1);
+    expect(commit).not.toHaveBeenCalled();
   });
 
   it("recovers a response-lost committed intent by refreshing instead of reapplying", async () => {

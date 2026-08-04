@@ -39,6 +39,8 @@ export interface MarkBarProps {
   onStageClaim(decision: StagedClaimDecision): void;
   onClearProposal(proposalId: string): void;
   onClearClaim(claimId: string): void;
+  /** Freeze every staging control while Review is applying a confirmed request. */
+  readonly disabled?: boolean;
   /** Show the single-key hint on each verb (queue mode). */
   readonly showHotkeys?: boolean;
 }
@@ -90,16 +92,19 @@ export function MarkBar(props: MarkBarProps) {
       : props.stagedClaim?.verb;
 
   const openInput = (verb: ProposalVerbKind, prefill: string) => {
+    if (props.disabled) return;
     setInputVerb(verb);
     setInputValue(prefill);
   };
 
   const cancelInput = () => {
+    if (props.disabled) return;
     setInputVerb(null);
     setInputValue("");
   };
 
   const commitProposalVerb = (proposal: ReviewProposal, verb: ProposalVerbKind) => {
+    if (props.disabled) return;
     const needsAmend = verb === "edit_confirm";
     const needsRedirect = verb === "redirect";
     const needsNegation =
@@ -136,6 +141,7 @@ export function MarkBar(props: MarkBarProps) {
   };
 
   const submitInput = (proposal: ReviewProposal) => {
+    if (props.disabled) return;
     if (inputVerb === null) return;
     const trimmed = inputValue.trim();
     if (inputVerb !== "edit_confirm" && trimmed.length === 0) return;
@@ -153,6 +159,7 @@ export function MarkBar(props: MarkBarProps) {
   };
 
   const commitClaimVerb = (claim: ReviewClaim, verb: ClaimVerbKind) => {
+    if (props.disabled) return;
     if (stagedVerb === verb) {
       props.onClearClaim(claim.claimId);
       return;
@@ -171,7 +178,11 @@ export function MarkBar(props: MarkBarProps) {
       (target.proposal.applicability === undefined && !target.proposal.baseOk));
 
   return (
-    <section className="wb-cowork-rail__markbar" aria-label="Decide">
+    <section
+      className="wb-cowork-rail__markbar"
+      aria-label="Decide"
+      aria-busy={props.disabled || undefined}
+    >
       <p className="wb-cowork-rail__markbar-ctx">
         <span className="wb-cowork-rail__markbar-sel">{contextLabel}</span>
         <span className="wb-cowork-rail__markbar-hash" aria-label="Content hash">
@@ -200,7 +211,10 @@ export function MarkBar(props: MarkBarProps) {
                   <VerbButton
                     key={entry.verb + entry.label}
                     option={entry}
-                    disabled={!isVerbDecidable(target.proposal, entry.verb)}
+                    disabled={
+                      (props.disabled ?? false) ||
+                      !isVerbDecidable(target.proposal, entry.verb)
+                    }
                     staged={stagedVerb === entry.verb}
                     showHotkey={props.showHotkeys ?? false}
                     onClick={() =>
@@ -220,7 +234,7 @@ export function MarkBar(props: MarkBarProps) {
                 <VerbButton
                   key={entry.verb + entry.label}
                   option={entry}
-                  disabled={false}
+                  disabled={props.disabled ?? false}
                   staged={stagedVerb === entry.verb}
                   showHotkey={props.showHotkeys ?? false}
                   onClick={() => commitClaimVerb(target.claim, entry.verb)}
@@ -245,18 +259,21 @@ export function MarkBar(props: MarkBarProps) {
             className="wb-cowork-rail__verb-input-field"
             value={inputValue}
             rows={3}
+            disabled={props.disabled}
             onChange={(event) => setInputValue(event.target.value)}
           />
           <div className="wb-cowork-rail__verb-input-actions">
             <button
               type="submit"
               className="wb-cowork-rail__verb wb-cowork-rail__verb--primary"
+              disabled={props.disabled}
             >
               Stage
             </button>
             <button
               type="button"
               className="wb-cowork-rail__verb wb-cowork-rail__verb--neutral"
+              disabled={props.disabled}
               onClick={cancelInput}
             >
               Cancel

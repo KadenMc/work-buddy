@@ -108,19 +108,27 @@ const visibleMarkdownText = (doc: Node, markdown: string): string => {
   }
 };
 
-/** True when the min(len, available) characters ending at `idx` match the tail of prefix. */
-const prefixMatches = (flat: string, idx: number, prefix: string): boolean => {
-  if (prefix.length === 0) return true;
-  const k = Math.min(prefix.length, idx);
-  return flat.substring(idx - k, idx) === prefix.substring(prefix.length - k);
+const contextPattern = (context: string): string | null => {
+  const parts = context.split(/\s+/u).filter((part) => part.length > 0);
+  return parts.length === 0 ? null : parts.map(escapeRegExp).join("\\s+");
 };
 
-/** True when the min(len, available) characters starting at `idx` match the head of suffix. */
+/**
+ * Context is authored against canonical Markdown while `flat` is visible editor text.
+ * Match it at the quote boundary with whitespace tolerance, including a trimmed block
+ * boundary: fragment parsing legitimately turns `\r\n\r\nThat week` into `That week`,
+ * while the live text index still has a newline before the paragraph.
+ */
+const prefixMatches = (flat: string, idx: number, prefix: string): boolean => {
+  const pattern = contextPattern(prefix);
+  if (pattern === null) return true;
+  return new RegExp(`${pattern}\\s*$`, "u").test(flat.substring(0, idx));
+};
+
 const suffixMatches = (flat: string, idx: number, suffix: string): boolean => {
-  if (suffix.length === 0) return true;
-  const available = flat.length - idx;
-  const k = Math.min(suffix.length, available);
-  return flat.substring(idx, idx + k) === suffix.substring(0, k);
+  const pattern = contextPattern(suffix);
+  if (pattern === null) return true;
+  return new RegExp(`^\\s*${pattern}`, "u").test(flat.substring(idx));
 };
 
 const rangeFor = (

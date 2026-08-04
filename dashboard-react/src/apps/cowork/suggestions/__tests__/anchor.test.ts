@@ -102,6 +102,30 @@ describe("resolveQuoteAnchor", () => {
       .toBe("at the centre.");
   });
 
+  it("uses whitespace-tolerant block context to choose a repeated hard-break quote", () => {
+    editor = makeSuggestionEditor({
+      content:
+        "<blockquote><p>work that cannot be stood behind, and the strain of<br>working this way.</p></blockquote>" +
+        "<p>That week is the problem in miniature.</p>" +
+        "<blockquote><p>Later comes the strain of<br>working this way.</p></blockquote>",
+    });
+    const range = resolveQuoteAnchor(editor.state.doc, {
+      exact: "of  \r\n> working this way.",
+      prefix: "work that cannot be stood behind, and the strain ",
+      suffix: "\r\n\r\nThat week",
+    });
+
+    expect(range).not.toBeNull();
+    const resolved = range as { from: number; to: number };
+    expect(
+      editor.state.doc
+        .textBetween(resolved.from, resolved.to, "\n", "\n")
+        .replace(/\s+/gu, " "),
+    ).toBe("of working this way.");
+    expect(editor.state.doc.textBetween(resolved.to, resolved.to + 12, "\n", "\n"))
+      .toContain("That week");
+  });
+
   it("keeps Markdown-visible fallback ambiguous when context cannot choose", () => {
     editor = makeSuggestionEditor({
       content: "<blockquote><p>at<br>the centre. then at<br>the centre.</p></blockquote>",

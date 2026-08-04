@@ -5,6 +5,12 @@ import {
   type CoworkSittingTransport,
 } from "../suggestions/sitting";
 import type { SittingSubmission } from "../rail/provider";
+import { RecoverableDecisionApplyError } from "../rail/applyRecovery";
+import type {
+  DecisionItem,
+  SittingPrepared,
+  SittingResponse,
+} from "../suggestions/types";
 import { LiveReviewRailProvider } from "./LiveReviewRailProvider";
 import type { CoworkDocClient } from "./HttpCoworkDocClient";
 import type { R2DocPayload, R2Proposal } from "./types";
@@ -317,6 +323,109 @@ describe("LiveReviewRailProvider", () => {
 
     expect(events).toEqual(["prepared:s1", "refreshed"]);
     expect(result.results[0]?.result).toBe("applied");
+  });
+
+  it("uses a fresh idempotency key after deterministic recovery cancels an intent", async () => {
+    const { workspace } = workspaceRecording();
+    const keys: string[] = [];
+    let blockedKey: string | null = null;
+    const item: DecisionItem = {
+      proposal_id: "s1",
+      verb: "confirm",
+      canonical_sha256: "canon-s1",
+    };
+    const basePrepared = (key: string): SittingPrepared => ({
+      ok: true,
+      intent_id: `intent-${key}`,
+      state: "prepared",
+      expires_at: "later",
+      expected_file_sha256: "f".repeat(64),
+      expected_ydoc_head_sha256: "h".repeat(64),
+      expected_snapshot_sha256: "b".repeat(64),
+      admitted_items: [item],
+      failed_items: [],
+      requires_document_commit: true,
+    });
+    const transport: CoworkSittingTransport = {
+      prepare: async (request) => {
+        const key = request.body.idempotency_key;
+        keys.push(key);
+        blockedKey ??= key;
+        if (key === blockedKey) {
+          return {
+            ...basePrepared(key),
+            admitted_items: [],
+            failed_items: [
+              {
+                proposal_id: "s1",
+                verb: "confirm",
+                result: "error",
+                base_ok: false,
+                gesture_id: null,
+                negation_claim_id: null,
+                preference_claim_id: null,
+                new_proposal_id: null,
+                materialized: false,
+                error: "target_missing",
+              },
+            ],
+            requires_document_commit: false,
+          };
+        }
+        return basePrepared(key);
+      },
+      cancel: vi.fn(async () => undefined),
+      commit: async (request): Promise<SittingResponse> => ({
+        ok: true,
+        intent_id: request.intentId,
+        partial: false,
+        results: [
+          {
+            proposal_id: "s1",
+            verb: "confirm",
+            result: "applied",
+            base_ok: true,
+            gesture_id: "gesture-s1",
+            negation_claim_id: null,
+            preference_claim_id: null,
+            new_proposal_id: null,
+            materialized: true,
+            error: null,
+          },
+        ],
+        materialize: {
+          new_file_sha256: "m".repeat(64),
+          document_version_id: "version-1",
+        },
+        structured_head_sha256: "s".repeat(64),
+        snapshot_sha256: "s".repeat(64),
+      }),
+    };
+    const provider = build({
+      getSittingWorkspace: () => workspace,
+      sittingTransport: transport,
+    });
+    const submission: SittingSubmission = {
+      baseDocSha256: "base-sha",
+      proposalDecisions: [
+        { proposalId: "s1", verb: "confirm", canonicalSha256: "canon-s1" },
+      ],
+      claimDecisions: [],
+    };
+
+    const first = await provider.submitSitting(submission).catch(
+      (error: unknown) => error,
+    );
+    expect(first).toBeInstanceOf(RecoverableDecisionApplyError);
+    expect(
+      (first as RecoverableDecisionApplyError).recovery.blockers[0]?.message,
+    ).toBe("The original passage is no longer in the current document.");
+
+    await expect(provider.submitSitting(submission)).resolves.toMatchObject({
+      results: [{ result: "applied" }],
+    });
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).not.toBe(keys[0]);
   });
 
   it("publishes only durable recheck intents from the refreshed R2 pull", async () => {

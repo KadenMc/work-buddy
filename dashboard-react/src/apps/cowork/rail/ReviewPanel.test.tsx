@@ -8,8 +8,9 @@ import {
   InMemoryReviewProvider,
 } from "./InMemoryReviewProvider";
 import { ReviewPanel } from "./ReviewPanel";
-import type { AnchorRectSource } from "./provider";
+import type { AnchorRectSource, ReviewRailProvider } from "./provider";
 import { RailStore } from "./store";
+import { RecoverableDecisionApplyError } from "./applyRecovery";
 
 /** A minimal in-memory Storage so a draft does not leak across tests. */
 class MemoryStorage implements Storage {
@@ -36,7 +37,7 @@ class MemoryStorage implements Storage {
 
 interface RenderPanelOptions {
   readonly store?: RailStore;
-  readonly provider?: InMemoryReviewProvider;
+  readonly provider?: ReviewRailProvider;
   readonly anchorRects?: AnchorRectSource;
 }
 
@@ -70,6 +71,29 @@ function createAnchorRects() {
 }
 
 const S1_TLDR = "Add the vault content hash to the cache key.";
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+const stageAccepts = (store: RailStore, proposalIds: readonly string[]) => {
+  const data = demoReviewData();
+  for (const proposalId of proposalIds) {
+    const proposal = data.proposals.find((item) => item.proposalId === proposalId);
+    if (proposal === undefined) throw new Error(`Unknown fixture proposal ${proposalId}`);
+    store.stageDecision({
+      proposalId,
+      verb: "confirm",
+      canonicalSha256: proposal.canonicalSha256,
+    });
+  }
+};
 
 describe("ReviewPanel", () => {
   it("renders the drift strip and the document-ordered stream", async () => {
@@ -132,6 +156,428 @@ describe("ReviewPanel", () => {
     expect(
       screen.getByRole("button", { name: /Apply decisions/ }),
     ).toBeDisabled();
+  });
+
+  it("retries the exact confirmed subset after a generic failure", async () => {
+    const data = demoReviewData();
+    const store = new RailStore();
+    stageAccepts(store, ["s1", "s2", "s3"]);
+    const submitSitting = vi
+      .fn<ReviewRailProvider["submitSitting"]>()
+      .mockRejectedValueOnce(
+        new RecoverableDecisionApplyError("One passage is unavailable.", {
+          availableProposalIds: ["s2", "s3"],
+          blockers: [
+            {
+              proposalId: "s1",
+              reason: "passage_unavailable",
+              relatedProposalIds: [],
+              message: "The original passage could not be found in the current document.",
+            },
+          ],
+        }),
+      )
+      .mockRejectedValueOnce(new Error("The connection was interrupted."))
+      .mockResolvedValueOnce({
+        ok: true,
+        partial: false,
+        results: ["s2", "s3"].map((proposalId) => ({
+          proposalId,
+          verb: "confirm" as const,
+          result: "applied" as const,
+          baseOk: true,
+          gestureId: `gesture-${proposalId}`,
+          error: null,
+        })),
+      });
+    const provider: ReviewRailProvider = {
+      load: async () => data,
+      subscribe: () => () => {},
+      submitSitting,
+    };
+    renderPanel({ provider, store });
+    await waitFor(() => expect(screen.getByText(S1_TLDR)).toBeVisible());
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Apply decisions (3)" }),
+    );
+
+    expect(await screen.findByText("1 decision needs review")).toBeVisible();
+    expect(screen.getByText("Nothing was applied. The other 2 are ready.")).toBeVisible();
+    expect(
+      screen.getByText("The original passage could not be found in the current document."),
+    ).toBeVisible();
+    expect(submitSitting).toHaveBeenCalledTimes(1);
+    expect(Object.keys(store.getState().decisions)).toEqual(["s1", "s2", "s3"]);
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Apply the other 2" }),
+    );
+
+    await waitFor(() => expect(submitSitting).toHaveBeenCalledTimes(2));
+    expect(
+      submitSitting.mock.calls[1]?.[0].proposalDecisions.map(
+        (decision) => decision.proposalId,
+      ),
+    ).toEqual(["s2", "s3"]);
+    expect(Object.keys(store.getState().decisions)).toEqual(["s1", "s2", "s3"]);
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Try the other 2 again" }),
+    );
+
+    await waitFor(() => expect(submitSitting).toHaveBeenCalledTimes(3));
+    expect(
+      submitSitting.mock.calls[2]?.[0].proposalDecisions.map(
+        (decision) => decision.proposalId,
+      ),
+    ).toEqual(["s2", "s3"]);
+    expect(Object.keys(store.getState().decisions)).toEqual(["s1"]);
+    expect(
+      screen.getByText("2 decisions applied; 1 decision still needs review"),
+    ).toBeVisible();
+  });
+
+  it("merges retained blockers when the confirmed subset needs a second recovery", async () => {
+    const data = demoReviewData();
+    const store = new RailStore();
+    stageAccepts(store, ["s1", "s2", "s3"]);
+    const submitSitting = vi
+      .fn<ReviewRailProvider["submitSitting"]>()
+      .mockRejectedValueOnce(
+        new RecoverableDecisionApplyError("One passage is unavailable.", {
+          availableProposalIds: ["s2", "s3"],
+          blockers: [
+            {
+              proposalId: "s1",
+              reason: "passage_unavailable",
+              relatedProposalIds: [],
+              message: "The first passage could not be found.",
+            },
+          ],
+        }),
+      )
+      .mockRejectedValueOnce(
+        new RecoverableDecisionApplyError("Two edits conflict.", {
+          availableProposalIds: ["s3"],
+          blockers: [
+            {
+              proposalId: "s2",
+              reason: "conflicts_with_selected_edit",
+              relatedProposalIds: [],
+              message: "The second edit conflicts with another selected edit.",
+            },
+          ],
+        }),
+      );
+    const provider: ReviewRailProvider = {
+      load: async () => data,
+      subscribe: () => () => {},
+      submitSitting,
+    };
+    renderPanel({ provider, store });
+    await waitFor(() => expect(screen.getByText(S1_TLDR)).toBeVisible());
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Apply decisions (3)" }),
+    );
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Apply the other 2" }),
+    );
+
+    expect(await screen.findByText("2 decisions need review")).toBeVisible();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "The other decision is ready.",
+    );
+    expect(screen.getByText("The first passage could not be found.")).toBeVisible();
+    expect(
+      screen.getByText("The second edit conflicts with another selected edit."),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Apply the other decision" }),
+    ).toBeEnabled();
+    expect(Object.keys(store.getState().decisions)).toEqual(["s1", "s2", "s3"]);
+  });
+
+  it("lets the user remove a blocked decision that is no longer in Review", async () => {
+    const complete = demoReviewData();
+    const data = {
+      ...complete,
+      proposals: complete.proposals.filter(
+        (proposal) => proposal.proposalId !== "s1",
+      ),
+    };
+    const store = new RailStore();
+    stageAccepts(store, ["s1", "s2"]);
+    const provider: ReviewRailProvider = {
+      load: async () => data,
+      subscribe: () => () => {},
+      submitSitting: async () => {
+        throw new RecoverableDecisionApplyError("One suggestion is gone.", {
+          availableProposalIds: ["s2"],
+          blockers: [
+            {
+              proposalId: "s1",
+              reason: "proposal_unavailable",
+              relatedProposalIds: [],
+              message: "This suggestion is no longer available.",
+            },
+          ],
+        });
+      },
+    };
+    renderPanel({ provider, store });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Apply decisions (2)" })).toBeEnabled(),
+    );
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Apply decisions (2)" }),
+    );
+
+    expect(await screen.findByText("Suggestion no longer shown")).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "Suggestion no longer shown" }),
+    ).not.toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", {
+        name: "Remove decision: Suggestion no longer shown",
+      }),
+    );
+
+    expect(Object.keys(store.getState().decisions)).toEqual(["s2"]);
+    expect(screen.queryByText("1 decision needs review")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Apply decisions (1)" }),
+    ).toBeEnabled();
+  });
+
+  it("rechecks the remaining selections after one overlapping decision is removed", async () => {
+    const data = demoReviewData();
+    const store = new RailStore();
+    stageAccepts(store, ["s1", "s2", "s3"]);
+    const submitSitting = vi
+      .fn<ReviewRailProvider["submitSitting"]>()
+      .mockRejectedValueOnce(
+        new RecoverableDecisionApplyError("Two edits overlap.", {
+          availableProposalIds: ["s3"],
+          blockers: [
+            {
+              proposalId: "s1",
+              reason: "conflicts_with_selected_edit",
+              relatedProposalIds: ["s2"],
+              message: "This edit overlaps another selected edit.",
+            },
+            {
+              proposalId: "s2",
+              reason: "conflicts_with_selected_edit",
+              relatedProposalIds: ["s1"],
+              message: "This edit overlaps another selected edit.",
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce({
+        ok: true,
+        partial: false,
+        results: ["s2", "s3"].map((proposalId) => ({
+          proposalId,
+          verb: "confirm" as const,
+          result: "applied" as const,
+          baseOk: true,
+          gestureId: `gesture-${proposalId}`,
+          error: null,
+        })),
+      });
+    const provider: ReviewRailProvider = {
+      load: async () => data,
+      subscribe: () => () => {},
+      submitSitting,
+    };
+    renderPanel({ provider, store });
+    await waitFor(() => expect(screen.getByText(S1_TLDR)).toBeVisible());
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Apply decisions (3)" }),
+    );
+    await userEvent.click(
+      await screen.findByRole("button", {
+        name: `Remove decision: ${S1_TLDR}`,
+      }),
+    );
+
+    expect(screen.queryByText("2 decisions need review")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Apply decisions (2)" }),
+    ).toBeEnabled();
+    expect(Object.keys(store.getState().decisions)).toEqual(["s2", "s3"]);
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Apply decisions (2)" }),
+    );
+    await waitFor(() => expect(submitSitting).toHaveBeenCalledTimes(2));
+    expect(
+      submitSitting.mock.calls[1]?.[0].proposalDecisions.map(
+        (decision) => decision.proposalId,
+      ),
+    ).toEqual(["s2", "s3"]);
+    expect(Object.keys(store.getState().decisions)).toEqual([]);
+  });
+
+  it("does not mention blocked items for an initial transport error", async () => {
+    const data = demoReviewData();
+    const store = new RailStore();
+    stageAccepts(store, ["s1"]);
+    const provider: ReviewRailProvider = {
+      load: async () => data,
+      subscribe: () => () => {},
+      submitSitting: async () => {
+        throw new Error("The connection was interrupted.");
+      },
+    };
+    renderPanel({ provider, store });
+    await waitFor(() => expect(screen.getByText(S1_TLDR)).toBeVisible());
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Apply decisions (1)" }),
+    );
+
+    expect(
+      await screen.findByText(
+        "The connection was interrupted. Your decisions are still selected, so it is safe to try again.",
+      ),
+    ).toBeVisible();
+    expect(screen.queryByText(/blocked items/u)).not.toBeInTheDocument();
+  });
+
+  it("does not clear a decision changed while its earlier value was applying", async () => {
+    const data = demoReviewData();
+    const store = new RailStore();
+    stageAccepts(store, ["s1"]);
+    const pending = deferred<Awaited<ReturnType<ReviewRailProvider["submitSitting"]>>>();
+    const provider: ReviewRailProvider = {
+      load: async () => data,
+      subscribe: () => () => {},
+      submitSitting: () => pending.promise,
+    };
+    renderPanel({ provider, store });
+    await waitFor(() => expect(screen.getByText(S1_TLDR)).toBeVisible());
+    await userEvent.click(screen.getByText(S1_TLDR));
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Apply decisions (1)" }),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Accept" })).toBeDisabled(),
+    );
+    expect(screen.getByRole("button", { name: "Defer" })).toBeDisabled();
+
+    const original = data.proposals.find((proposal) => proposal.proposalId === "s1");
+    if (original === undefined) throw new Error("Missing s1 fixture");
+    store.stageDecision({
+      proposalId: "s1",
+      verb: "defer",
+      canonicalSha256: original.canonicalSha256,
+    });
+    pending.resolve({
+      ok: true,
+      partial: false,
+      results: [
+        {
+          proposalId: "s1",
+          verb: "confirm",
+          result: "applied",
+          baseOk: true,
+          gestureId: "gesture-s1",
+          error: null,
+        },
+      ],
+    });
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Apply decisions (1)" })).toBeEnabled(),
+    );
+    expect(store.getState().decisions.s1?.verb).toBe("defer");
+  });
+
+  it("does not surface recovery against a selection changed mid-request", async () => {
+    const data = demoReviewData();
+    const store = new RailStore();
+    stageAccepts(store, ["s1"]);
+    const pending = deferred<Awaited<ReturnType<ReviewRailProvider["submitSitting"]>>>();
+    const provider: ReviewRailProvider = {
+      load: async () => data,
+      subscribe: () => () => {},
+      submitSitting: () => pending.promise,
+    };
+    renderPanel({ provider, store });
+    await waitFor(() => expect(screen.getByText(S1_TLDR)).toBeVisible());
+    await userEvent.click(
+      screen.getByRole("button", { name: "Apply decisions (1)" }),
+    );
+    stageAccepts(store, ["s2"]);
+    pending.reject(
+      new RecoverableDecisionApplyError("The first passage moved.", {
+        availableProposalIds: [],
+        blockers: [
+          {
+            proposalId: "s1",
+            reason: "passage_unavailable",
+            relatedProposalIds: [],
+            message: "The first passage moved.",
+          },
+        ],
+      }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Apply decisions (2)" })).toBeEnabled(),
+    );
+    expect(screen.queryByText("1 decision needs review")).not.toBeInTheDocument();
+  });
+
+  it("explains a provider partial result instead of silently clearing its safe items", async () => {
+    const data = demoReviewData();
+    const store = new RailStore();
+    stageAccepts(store, ["s1", "s2"]);
+    const provider: ReviewRailProvider = {
+      load: async () => data,
+      subscribe: () => () => {},
+      submitSitting: async () => ({
+        ok: true,
+        partial: true,
+        results: [
+          {
+            proposalId: "s1",
+            verb: "confirm",
+            result: "applied",
+            baseOk: true,
+            gestureId: "gesture-s1",
+            error: null,
+          },
+          {
+            proposalId: "s2",
+            verb: "confirm",
+            result: "rejected_stale_view",
+            baseOk: false,
+            gestureId: null,
+            error: "This suggestion changed since it was reviewed.",
+          },
+        ],
+      }),
+    };
+    renderPanel({ provider, store });
+    await waitFor(() => expect(screen.getByText(S1_TLDR)).toBeVisible());
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Apply decisions (2)" }),
+    );
+
+    expect(
+      await screen.findByText("1 decision applied; 1 decision still needs review"),
+    ).toBeVisible();
+    expect(screen.getByText("The blocked decisions remain selected.")).toBeVisible();
+    expect(Object.keys(store.getState().decisions)).toEqual(["s2"]);
   });
 
   it("filters the stream with the lens", async () => {

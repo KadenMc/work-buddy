@@ -36,6 +36,92 @@ import { isDirty, type RailSelectionKind, type RailStore } from "./store";
 import { useIsNarrow } from "./useIsNarrow";
 import { useReviewData } from "./useReviewData";
 import { useRailState } from "./useRailState";
+import { RecoverableDecisionApplyError } from "./applyRecovery";
+import {
+  asCoworkApiError,
+  coworkErrorMessage,
+} from "../providers/errors";
+
+interface ReviewApplyBlocker {
+  readonly proposalId: string;
+  readonly message: string;
+}
+
+interface ReviewApplyAttempt {
+  readonly proposalDecisions: readonly StagedDecision[];
+  readonly claimDecisions: readonly StagedClaimDecision[];
+  readonly retainedBlockers: readonly ReviewApplyBlocker[];
+  /** The complete Review selection when this exact request was confirmed. */
+  readonly selectionFingerprint: string;
+}
+
+type ReviewApplyNotice =
+  | {
+      readonly kind: "recovery";
+      readonly availableProposalIds: readonly string[];
+      readonly blockers: readonly ReviewApplyBlocker[];
+      readonly decisionFingerprint: string;
+    }
+  | {
+      readonly kind: "partial";
+      readonly appliedCount: number;
+      readonly blockers: readonly ReviewApplyBlocker[];
+    }
+  | {
+      readonly kind: "error";
+      readonly message: string;
+      readonly attempt: ReviewApplyAttempt;
+    };
+
+const proposalDecisionTuple = (decision: StagedDecision) => [
+  decision.proposalId,
+  decision.verb,
+  decision.canonicalSha256,
+  decision.amendContent ?? null,
+  decision.redirectNote ?? null,
+  decision.negationText ?? null,
+  decision.preferenceText ?? null,
+] as const;
+
+const claimDecisionTuple = (decision: StagedClaimDecision) => [
+  decision.claimId,
+  decision.verb,
+  decision.canonicalSha256,
+] as const;
+
+const sameProposalDecision = (
+  left: StagedDecision | undefined,
+  right: StagedDecision,
+): boolean =>
+  left !== undefined &&
+  JSON.stringify(proposalDecisionTuple(left)) ===
+    JSON.stringify(proposalDecisionTuple(right));
+
+const decisionsFingerprint = (
+  decisions: Readonly<Record<string, StagedDecision>>,
+  claimDecisions: Readonly<Record<string, StagedClaimDecision>>,
+): string =>
+  JSON.stringify({
+    proposals: Object.values(decisions)
+      .sort((left, right) => left.proposalId.localeCompare(right.proposalId))
+      .map(proposalDecisionTuple),
+    claims: Object.values(claimDecisions)
+      .sort((left, right) => left.claimId.localeCompare(right.claimId))
+      .map(claimDecisionTuple),
+  });
+
+const mergeBlockers = (
+  ...groups: readonly (readonly ReviewApplyBlocker[])[]
+): readonly ReviewApplyBlocker[] => {
+  const byProposal = new Map<string, ReviewApplyBlocker>();
+  for (const group of groups) {
+    for (const blocker of group) byProposal.set(blocker.proposalId, blocker);
+  }
+  return [...byProposal.values()];
+};
+
+const quantity = (count: number, singular: string, plural = `${singular}s`) =>
+  `${count} ${count === 1 ? singular : plural}`;
 
 export interface ReviewPanelProps {
   readonly provider: ReviewRailProvider;
@@ -63,7 +149,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
   const storage = props.storage ?? window.localStorage;
   const { data, status, reload } = useReviewData(props.provider);
   const [submitting, setSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [applyNotice, setApplyNotice] = useState<ReviewApplyNotice | null>(null);
   const [attentionError, setAttentionError] = useState<string | null>(null);
   const [busyAttentionId, setBusyAttentionId] = useState<string | null>(null);
   const pendingRevealRef = useRef<{
@@ -81,6 +167,20 @@ export function ReviewPanel(props: ReviewPanelProps) {
   const claimDecisions = useRailState(store, (state) => state.claimDecisions);
   const inspectorSpanId = useRailState(store, (state) => state.inspectorSpanId);
   const dirty = useRailState(store, isDirty);
+  const decisionFingerprint = useMemo(
+    () => decisionsFingerprint(decisions, claimDecisions),
+    [decisions, claimDecisions],
+  );
+  const activeRecovery =
+    applyNotice?.kind === "recovery" &&
+    applyNotice.decisionFingerprint === decisionFingerprint
+      ? applyNotice
+      : null;
+  const activeError =
+    applyNotice?.kind === "error" &&
+    applyNotice.attempt.selectionFingerprint === decisionFingerprint
+      ? applyNotice
+      : null;
 
   const [measuredNarrow, narrowRef] = useIsNarrow();
   const narrow = props.narrow ?? measuredNarrow;
@@ -202,18 +302,22 @@ export function ReviewPanel(props: ReviewPanelProps) {
 
   const stageProposal = useCallback(
     (decision: StagedDecision) => {
+      if (submitting) return;
+      setApplyNotice(null);
       store.stageDecision(decision);
       if (mode === "queue") advanceToNextUndecided(clampedIndex);
     },
-    [store, mode, advanceToNextUndecided, clampedIndex],
+    [store, mode, advanceToNextUndecided, clampedIndex, submitting],
   );
 
   const stageClaim = useCallback(
     (decision: StagedClaimDecision) => {
+      if (submitting) return;
+      setApplyNotice(null);
       store.stageClaimDecision(decision);
       if (mode === "queue") advanceToNextUndecided(clampedIndex);
     },
-    [store, mode, advanceToNextUndecided, clampedIndex],
+    [store, mode, advanceToNextUndecided, clampedIndex, submitting],
   );
 
   const navigate = useCallback(
@@ -255,27 +359,102 @@ export function ReviewPanel(props: ReviewPanelProps) {
     };
   }, [props.anchorRects, store]);
 
-  const submit = useCallback(async () => {
+  const submit = useCallback(async (requestedAttempt?: ReviewApplyAttempt) => {
     if (data === null || submitting) return;
+    const state = store.getState();
+    const selectionFingerprint = decisionsFingerprint(
+      state.decisions,
+      state.claimDecisions,
+    );
+    const attempt: ReviewApplyAttempt =
+      requestedAttempt ?? {
+        proposalDecisions: Object.values(state.decisions).map((decision) => ({
+          ...decision,
+        })),
+        claimDecisions: Object.values(state.claimDecisions).map((decision) => ({
+          ...decision,
+        })),
+        retainedBlockers: [],
+        selectionFingerprint,
+      };
+    if (
+      attempt.selectionFingerprint !== selectionFingerprint ||
+      (attempt.proposalDecisions.length === 0 &&
+        attempt.claimDecisions.length === 0)
+    ) {
+      return;
+    }
     setSubmitting(true);
-    setSubmitError(null);
+    setApplyNotice(null);
     try {
       const result = await props.provider.submitSitting({
         baseDocSha256: data.drift.currentFileSha256 ?? "",
-        proposalDecisions: Object.values(store.getState().decisions),
-        claimDecisions: Object.values(store.getState().claimDecisions),
+        proposalDecisions: attempt.proposalDecisions,
+        claimDecisions: attempt.claimDecisions,
       });
+      const failed = result.results.filter(
+        (item) => item.result === "error" || item.result === "rejected_stale_view",
+      );
       for (const item of result.results) {
         if (item.result !== "error" && item.result !== "rejected_stale_view") {
-          store.clearDecision(item.proposalId);
+          const submitted = attempt.proposalDecisions.find(
+            (decision) => decision.proposalId === item.proposalId,
+          );
+          if (
+            submitted !== undefined &&
+            sameProposalDecision(
+              store.getState().decisions[item.proposalId],
+              submitted,
+            )
+          ) {
+            store.clearDecision(item.proposalId);
+          }
         }
       }
+      const appliedCount = result.results.length - failed.length;
+      const blockers = [
+        ...attempt.retainedBlockers,
+        ...failed.map((item) => ({
+          proposalId: item.proposalId,
+          message:
+            item.error?.trim() ||
+            "This suggestion no longer matches the current document.",
+        })),
+      ];
+      setApplyNotice(
+        blockers.length === 0
+          ? null
+          : { kind: "partial", appliedCount, blockers },
+      );
       // Failed prepare items remain staged and durable. Reload re-derives only committed
       // items from the ledger, never from the fact that a submit was attempted.
       reload();
       props.onSubmitted?.();
-    } catch {
-      setSubmitError("Co-work couldn’t apply your decisions.");
+    } catch (error) {
+      if (error instanceof RecoverableDecisionApplyError) {
+        const submittedIds = new Set(
+          attempt.proposalDecisions.map((decision) => decision.proposalId),
+        );
+        setApplyNotice({
+          kind: "recovery",
+          availableProposalIds: error.recovery.availableProposalIds.filter(
+            (proposalId) => submittedIds.has(proposalId),
+          ),
+          blockers: mergeBlockers(
+            attempt.retainedBlockers,
+            error.recovery.blockers,
+          ),
+          decisionFingerprint: attempt.selectionFingerprint,
+        });
+      } else {
+        const fallback =
+          "Co-work couldn’t confirm that your decisions were applied.";
+        setApplyNotice({
+          kind: "error",
+          message: coworkErrorMessage(asCoworkApiError(error), fallback),
+          attempt,
+        });
+      }
     } finally {
       setSubmitting(false);
     }
@@ -391,6 +570,23 @@ export function ReviewPanel(props: ReviewPanelProps) {
 
   const pendingCount =
     Object.keys(decisions).length + Object.keys(claimDecisions).length;
+  const proposalLabel = (proposalId: string) =>
+    data.proposals.find((proposal) => proposal.proposalId === proposalId)?.tldr ??
+    "Suggestion no longer shown";
+  const reviewBlocker = (proposalId: string) => {
+    store.select(proposalId, "proposal");
+    props.anchorRects?.focusAnchor(proposalId, "proposal", {
+      scroll: true,
+      flash: true,
+    });
+  };
+  const removeBlockedDecision = (proposalId: string) => {
+    store.clearDecision(proposalId);
+    // A blocker can depend on another selected edit (for example, an overlap).
+    // Removing one therefore invalidates the whole diagnosis. Re-run preflight on
+    // the remaining explicit choices instead of pretending the other blockers stand.
+    setApplyNotice(null);
+  };
 
   return (
     <div
@@ -468,20 +664,156 @@ export function ReviewPanel(props: ReviewPanelProps) {
         <button
           type="button"
           className="wb-cowork-rail__submit"
-          disabled={!dirty || submitting}
+          disabled={!dirty || submitting || activeRecovery !== null}
           onClick={() => {
-            void submit();
+            void submit(activeError?.attempt);
           }}
         >
           {submitting
             ? "Applying decisions…"
-            : `${submitError === null ? "Apply decisions" : "Try again"}${pendingCount > 0 ? ` (${pendingCount})` : ""}`}
+            : activeRecovery !== null
+              ? "Decisions need review"
+              : activeError !== null &&
+                  activeError.attempt.retainedBlockers.length > 0
+                ? activeError.attempt.proposalDecisions.length === 1
+                  ? "Try the other decision again"
+                  : `Try the other ${String(activeError.attempt.proposalDecisions.length)} again`
+                : `${activeError !== null ? "Try again" : "Apply decisions"}${pendingCount > 0 ? ` (${pendingCount})` : ""}`}
         </button>
       </div>
 
-      {submitError !== null ? (
+      {activeRecovery !== null ? (
+        <section
+          className="wb-cowork-rail__apply-notice wb-cowork-rail__apply-notice--attention"
+          role="alert"
+          aria-labelledby="wb-cowork-apply-recovery-title"
+        >
+          <strong id="wb-cowork-apply-recovery-title">
+            {quantity(activeRecovery.blockers.length, "decision")} {activeRecovery.blockers.length === 1 ? "needs" : "need"} review
+          </strong>
+          <p>
+            Nothing was applied.
+            {activeRecovery.availableProposalIds.length > 0
+              ? activeRecovery.availableProposalIds.length === 1
+                ? " The other decision is ready."
+                : ` The other ${String(activeRecovery.availableProposalIds.length)} are ready.`
+              : " Your decisions are still selected."}
+          </p>
+          <ul className="wb-cowork-rail__apply-blockers">
+            {activeRecovery.blockers.map((blocker) => {
+              const label = proposalLabel(blocker.proposalId);
+              const isShown = data.proposals.some(
+                (proposal) => proposal.proposalId === blocker.proposalId,
+              );
+              return (
+                <li key={blocker.proposalId}>
+                  {isShown ? (
+                    <button
+                      type="button"
+                      className="wb-cowork-rail__apply-blocker"
+                      onClick={() => reviewBlocker(blocker.proposalId)}
+                    >
+                      {label}
+                    </button>
+                  ) : (
+                    <strong>{label}</strong>
+                  )}
+                  <span>{blocker.message}</span>
+                  <button
+                    type="button"
+                    className="wb-cowork-rail__apply-remove"
+                    aria-label={`Remove decision: ${label}`}
+                    onClick={() => removeBlockedDecision(blocker.proposalId)}
+                  >
+                    Remove decision
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+          <div className="wb-cowork-rail__apply-actions">
+            {activeRecovery.availableProposalIds.length > 0 ? (
+              <button
+                type="button"
+                className="wb-cowork-rail__verb wb-cowork-rail__verb--neutral"
+                disabled={submitting}
+                onClick={() => {
+                  const current = store.getState();
+                  const available = new Set(
+                    activeRecovery.availableProposalIds,
+                  );
+                  void submit({
+                    proposalDecisions: Object.values(current.decisions)
+                      .filter((decision) => available.has(decision.proposalId))
+                      .map((decision) => ({ ...decision })),
+                    claimDecisions: [],
+                    retainedBlockers: activeRecovery.blockers,
+                    selectionFingerprint: decisionsFingerprint(
+                      current.decisions,
+                      current.claimDecisions,
+                    ),
+                  });
+                }}
+              >
+                {activeRecovery.availableProposalIds.length === 1
+                  ? "Apply the other decision"
+                  : `Apply the other ${String(activeRecovery.availableProposalIds.length)}`}
+              </button>
+            ) : null}
+          </div>
+        </section>
+      ) : applyNotice?.kind === "partial" ? (
+        <section
+          className="wb-cowork-rail__apply-notice"
+          role="status"
+          aria-label="Decision apply result"
+        >
+          <strong>
+            {applyNotice.appliedCount > 0
+              ? `${quantity(applyNotice.appliedCount, "decision")} applied; `
+              : "No decisions applied; "}
+            {quantity(applyNotice.blockers.length, "decision")} {applyNotice.blockers.length === 1 ? "still needs" : "still need"} review
+          </strong>
+          <p>The blocked decisions remain selected.</p>
+          <ul className="wb-cowork-rail__apply-blockers">
+            {applyNotice.blockers.map((blocker) => {
+              const label = proposalLabel(blocker.proposalId);
+              const isShown = data.proposals.some(
+                (proposal) => proposal.proposalId === blocker.proposalId,
+              );
+              return (
+                <li key={blocker.proposalId}>
+                  {isShown ? (
+                    <button
+                      type="button"
+                      className="wb-cowork-rail__apply-blocker"
+                      onClick={() => reviewBlocker(blocker.proposalId)}
+                    >
+                      {label}
+                    </button>
+                  ) : (
+                    <strong>{label}</strong>
+                  )}
+                  <span>{blocker.message}</span>
+                  <button
+                    type="button"
+                    className="wb-cowork-rail__apply-remove"
+                    aria-label={`Remove decision: ${label}`}
+                    onClick={() => removeBlockedDecision(blocker.proposalId)}
+                  >
+                    Remove decision
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      ) : activeError !== null ? (
         <p className="wb-cowork-rail__sitting-error" role="alert">
-          {submitError} Your decisions are still here.
+          {activeError.message}{" "}
+          {activeError.attempt.retainedBlockers.length > 0
+            ? "Your confirmed decisions and blocked items are still here, so it is safe to try again."
+            : "Your decisions are still selected, so it is safe to try again."}
         </p>
       ) : null}
 
@@ -533,6 +865,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
 
       {markTarget !== undefined ? (
         <MarkBar
+          disabled={submitting}
           target={markTarget}
           stagedProposal={
             markTarget.kind === "proposal"
@@ -546,8 +879,16 @@ export function ReviewPanel(props: ReviewPanelProps) {
           }
           onStageProposal={stageProposal}
           onStageClaim={stageClaim}
-          onClearProposal={(id) => store.clearDecision(id)}
-          onClearClaim={(id) => store.clearClaimDecision(id)}
+          onClearProposal={(id) => {
+            if (submitting) return;
+            setApplyNotice(null);
+            store.clearDecision(id);
+          }}
+          onClearClaim={(id) => {
+            if (submitting) return;
+            setApplyNotice(null);
+            store.clearClaimDecision(id);
+          }}
           showHotkeys={mode === "queue"}
         />
       ) : (

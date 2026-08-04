@@ -46,6 +46,8 @@ dev_notes: |
 
   Origin filtering is not persistence isolation: a later human Yjs update can causally depend on an earlier filtered struct. Never project a pending proposal into the live collaborative Y.Doc, even under a non-human origin. Sitting materialization starts from a clean clone of the canonical structured head, joins admitted decisions to the authoritative proposal catalog by ID and canonical hash, resolves every materializing anchor against that initial clone, rejects missing, mismatched, unresolved, duplicate, or overlapping edits, and applies confirmed changes in reverse document order. Explicit Save fails closed if tracked-suggestion schema artifacts somehow appear in the live document.
 
+  Batch preparation is a non-mutating preflight, not an all-purpose error boundary. Canonical Markdown selectors and visible ProseMirror text use different whitespace representations, so client context matching must tolerate Markdown line and block boundaries while still resolving exactly one occurrence. If any selected decision is unavailable, changed, unresolved, or conflicts with another selected edit, cancel the prepared intent and return item-level blockers plus the independently applicable subset. Review keeps every decision selected and requires a second explicit action before submitting that subset; it never silently converts the user's batch into a partial application. A deterministic cancellation retires that attempt's idempotency key before any same-selection retry; an uncertain commit/response failure retains the key so retry can recover the receipt. Subset retries remain bound to the exact explicitly confirmed decisions and retained blockers. The user may explicitly remove a blocker; because overlap diagnoses depend on the whole selection, doing so clears the old diagnosis and requires a fresh preflight of the remaining decisions.
+
   Successful and response-recovery sitting paths do not adopt the prepared clone directly. They pull the authoritative committed state, verify its structured head, advance the managed projection, and then refresh the review projection. A document with `source.writeback_policy=never` commits that projection internally and never publishes it over the import source artifact. The canonical-state guard runs before preparation and after the server refresh. If a human edit advances the local generation while the sitting is in flight, the new baseline is retained but the editor remains unsaved rather than falsely claiming to be current.
 
   Before sitting admission, the editor publishes the exact current Y.Doc
@@ -433,6 +435,13 @@ a file. The claims a document expresses live in the folder's scoped Truth ledger
 through expression links. Internally, the engine still uses terms such as scope
 root, store ID, and Truth store; the dashboard consistently calls the thing the
 user selected a **folder**.
+
+Before a multi-decision sitting changes the document, Co-work confirms that the
+selected edits can be placed together against one synchronized document head. A
+blocked decision does not collapse the batch into a generic failure and does not
+cause the other decisions to be applied silently. Review identifies the blocked
+suggestions, keeps all choices selected, and—when an independent subset is ready—
+offers an explicit action to apply only those other decisions.
 
 Proposal base hashes remain immutable drafting lineage; they are not a
 whole-document applicability veto. Review accepts a matching structured head
