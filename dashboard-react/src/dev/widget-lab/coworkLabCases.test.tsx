@@ -59,16 +59,16 @@ describe("Co-work Widget Lab section", () => {
     }
   });
 
-  it("disables the accept-family verbs on the stale-base state", () => {
+  it("disables text mutation when the original target is missing", () => {
     render(<CoworkLabSection />);
     const stale = within(screen.getByTestId("cowork-lab-stale"));
-    // The card badge and the mark-bar note both state the stale reason in text.
+    // The card badge and mark-bar note both state the target problem in text.
     expect(
-      stale.getByText("Based on an older version — reject or defer"),
+      stale.getByText("Original passage is no longer present"),
     ).toBeVisible();
     expect(
       stale.getByText(
-        "The document changed after this was proposed, so it can only be rejected or deferred.",
+        "The original passage cannot be placed safely. Accept and Amend are unavailable; other review decisions still work.",
       ),
     ).toBeVisible();
     const markbar = within(screen.getByTestId("cowork-lab-markbar-stale"));

@@ -6,7 +6,6 @@ import { expectNoAccessibilityViolations } from "../../test/setup";
 import {
   ChatPanel,
   ChatPanelState,
-  type ChatInputRecovery,
   type ChatPanelProps,
 } from "./ChatPanel";
 import type { ChatMessage } from "./contracts";
@@ -301,7 +300,7 @@ describe("ChatPanel", () => {
     await expectNoAccessibilityViolations(container);
   });
 
-  it("disables the composer while the agent is stopped even without composerDisabled", () => {
+  it("shows terminal no-response while keeping the composer available", async () => {
     render(
       <ChatPanel
         title="Doc chat"
@@ -310,11 +309,11 @@ describe("ChatPanel", () => {
         agentActivity="stopped"
       />,
     );
-    expect(
-      screen.getByText("Chat paused. Your messages are still here."),
-    ).toBeInTheDocument();
-    expect(screen.getByRole("textbox", { name: "Message" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(screen.getByText("No response received.")).toBeInTheDocument();
+    const composer = screen.getByRole("textbox", { name: "Message" });
+    expect(composer).toBeEnabled();
+    await userEvent.type(composer, "Try again");
+    expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
   });
 
   type LockedResponseProps = Omit<
@@ -325,23 +324,9 @@ describe("ChatPanel", () => {
     readonly [string, LockedResponseProps]
   > = [
     ["read-only", { status: "read-only" }],
-    ["stopped", { agentActivity: "stopped" }],
+    ["waiting-for-response", { agentActivity: "thinking" }],
     ["sending", { sending: true }],
     ["composer-disabled", { composerDisabled: true }],
-    [
-      "recovering",
-      {
-        inputRecovery: {
-          tone: "warning",
-          title: "Chat paused.",
-          detail: "Messages remain available.",
-          action: {
-            label: "Restart chat",
-            onAction: vi.fn(),
-          },
-        },
-      },
-    ],
   ];
 
   it.each(lockedResponseCases)(
@@ -359,88 +344,6 @@ describe("ChatPanel", () => {
       expect(screen.getByRole("button", { name: "No" })).toBeDisabled();
     },
   );
-
-  it("shows a recovery action instead of the composer and suppresses the stopped notice", async () => {
-    const onAction = vi.fn();
-    const recovery: ChatInputRecovery = {
-      tone: "warning",
-      title: "Chat paused.",
-      detail: "Your messages are still here.",
-      action: {
-        label: "Restart chat",
-        onAction,
-      },
-    };
-    render(
-      <ChatPanel
-        title="Doc chat"
-        messages={messages}
-        agentActivity="stopped"
-        onSend={vi.fn()}
-        inputRecovery={recovery}
-      />,
-    );
-
-    expect(screen.getByText("Chat paused.")).toBeVisible();
-    expect(
-      screen.queryByText("Chat paused. Your messages are still here."),
-    ).toBeNull();
-    expect(screen.queryByRole("textbox")).toBeNull();
-    await userEvent.click(
-      screen.getByRole("button", { name: "Restart chat" }),
-    );
-    expect(onAction).toHaveBeenCalledTimes(1);
-  });
-
-  it("disables a pending recovery action", () => {
-    render(
-      <ChatPanel
-        title="Doc chat"
-        messages={messages}
-        onSend={vi.fn()}
-        inputRecovery={{
-          tone: "info",
-          title: "Restarting chat…",
-          detail: "Your messages are still here.",
-          action: {
-            label: "Restarting…",
-            onAction: vi.fn(),
-            pending: true,
-          },
-        }}
-        execution={executionControl()}
-      />,
-    );
-    expect(
-      screen.getByRole("button", { name: "Restarting…" }),
-    ).toBeDisabled();
-    expect(
-      screen.getByRole("button", {
-        name: "Run with Claude Code · Sonnet",
-      }),
-    ).toBeDisabled();
-  });
-
-  it("shows an honest recovery explanation when no action is available", () => {
-    render(
-      <ChatPanel
-        title="Doc chat"
-        messages={messages}
-        onSend={vi.fn()}
-        inputRecovery={{
-          tone: "info",
-          title: "Chat unavailable.",
-          detail: "This conversation can still be read.",
-        }}
-      />,
-    );
-    expect(screen.getByText("Chat unavailable.")).toBeVisible();
-    expect(
-      screen.getByText("This conversation can still be read."),
-    ).toBeVisible();
-    expect(screen.queryByRole("textbox")).toBeNull();
-    expect(screen.queryByRole("button")).toBeNull();
-  });
 
   it("passes the question message id as the inline answer's second argument", async () => {
     const onSend = vi.fn().mockResolvedValue(undefined);
@@ -461,27 +364,6 @@ describe("ChatPanel", () => {
     );
     await userEvent.click(screen.getByRole("button", { name: "Yes" }));
     expect(onSend).toHaveBeenCalledWith("true", "q1");
-  });
-
-  it("has no accessibility violations in a recoverable state", async () => {
-    const { container } = render(
-      <ChatPanel
-        title="Doc chat"
-        messages={[pendingQuestion]}
-        agentActivity="stopped"
-        onSend={vi.fn()}
-        inputRecovery={{
-          tone: "warning",
-          title: "Chat paused.",
-          detail: "Your messages are still here.",
-          action: {
-            label: "Restart chat",
-            onAction: vi.fn(),
-          },
-        }}
-      />,
-    );
-    await expectNoAccessibilityViolations(container);
   });
 
   it("handles a rejected inline answer without an unhandled rejection", async () => {

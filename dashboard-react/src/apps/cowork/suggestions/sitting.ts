@@ -222,6 +222,9 @@ export class InMemoryCoworkSittingTransport implements CoworkSittingTransport {
     this.#lastPrepareRequest = request;
     const existing = this.#byKey.get(request.body.idempotency_key);
     if (existing !== undefined) {
+      if (existing.cancelled) {
+        return { ...existing.prepared, state: "cancelled" };
+      }
       return existing.receipt === null
         ? existing.prepared
         : { ...existing.prepared, state: "committed", result: existing.receipt };

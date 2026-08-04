@@ -10,12 +10,13 @@ import io
 import json
 import os
 import struct
+from contextlib import contextmanager
 
 import pytest
 
 from work_buddy.conversations import store as conversation_store
 from work_buddy.conversations.execution import EXECUTION_METADATA_KEY
-from work_buddy.cowork import api
+from work_buddy.cowork import api, transport
 from work_buddy.cowork import conversations, document_agent, provenance
 from work_buddy.truth import documents, expressions, proposals, ydoc_store
 from work_buddy.truth.anchors import CompositeSelector
@@ -230,8 +231,50 @@ def test_get_returns_open_proposals_and_hashes(client, seeded, make_proposal):
     assert entry["proposal_id"] == proposal.id
     assert entry["canonical_sha256"] == proposal.canonical_sha256
     assert entry["base_ok"] is True
+    assert entry["applicability"] == {
+        "status": "applicable",
+        "reason": "same_materialized_baseline",
+        "current_structured_head_sha256": payload["structured_head_sha256"],
+    }
     assert entry["quote_anchor"]["exact"] == DOC_QUOTE
     assert entry["kind"] == "edit"
+
+
+def test_get_uses_live_structured_head_not_materialized_baseline_for_applicability(
+    client, seeded
+):
+    store = seeded["store"]
+    document = seeded["document"]
+    head = ydoc_store.current_structured_head(
+        store,
+        document_id=document.id,
+        snapshot_sha256=document.ydoc_snapshot_sha256,
+    )
+    proposal = proposals.propose_edit(
+        store,
+        document_id=document.id,
+        base_content_sha256=sha256_text("a newer browser projection"),
+        base_structured_head_sha256=head,
+        selector=CompositeSelector(exact=DOC_QUOTE),
+        quote_exact=DOC_QUOTE,
+        replacement="A clearer sentence.",
+        actor=AGENT,
+        at=NOW,
+    )
+
+    response = client.get(
+        _url(f"/api/truth/doc/{document.id}", store.store_id)
+    )
+
+    assert response.status_code == 200
+    entry = next(
+        item
+        for item in response.get_json()["open_proposals"]
+        if item["proposal_id"] == proposal.id
+    )
+    assert entry["base_ok"] is True
+    assert entry["applicability"]["status"] == "applicable"
+    assert entry["applicability"]["reason"] == "same_structured_head"
 
 
 def test_list_and_get_distinguish_recorded_import_source_from_observed_file(
@@ -984,6 +1027,37 @@ def test_ydoc_push_appends_and_guards_stale_base(client, seeded):
     assert stale.get_json()["error"] == "stale_base"
 
 
+def test_ydoc_capture_compaction_returns_projection_receipt(client, seeded):
+    document = seeded["document"]
+    store = seeded["store"]
+    snapshot = b"YDOC-HTTP-CAPTURE"
+    projection = b"# Exact HTTP projection\n"
+    head = ydoc_store.current_structured_head(
+        store,
+        document_id=document.id,
+        snapshot_sha256=seeded["snapshot_sha256"],
+    )
+    response = client.post(
+        _url(f"/api/truth/doc/{document.id}/ydoc", seeded["store_id"]),
+        data=transport.frame_segments([b"final", snapshot, projection]),
+        content_type="application/octet-stream",
+        headers={
+            "X-WB-Base-Ydoc-Sha256": head,
+            "X-WB-Base-Ydoc-Generation": (
+                documents.current_ydoc_generation(store, document.id)
+            ),
+            "X-WB-Compacted-Snapshot-Sha256": sha256_bytes(snapshot),
+            "X-WB-Compacted-Projection-Sha256": sha256_bytes(projection),
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["projection_sha256"] == document.content_sha256
+    assert payload["compacted_projection_sha256"] == sha256_bytes(projection)
+    assert payload["projection_receipt_id"]
+
+
 def test_ydoc_push_size_limits_return_typed_413_without_mutation(
     client, seeded, monkeypatch
 ):
@@ -1256,6 +1330,180 @@ def test_conversation_get_is_read_only_and_post_lazily_creates_real_binding(
     assert repeated["created"] is False
 
 
+def test_conversation_bind_mounts_chat_without_running_or_fencing_a_model(
+    client,
+    seeded,
+    fake_document_agent,
+    monkeypatch,
+):
+    from work_buddy import consent
+
+    boundaries: list[str] = []
+
+    @contextmanager
+    def _observed_user_action(label):
+        boundaries.append(label)
+        yield
+
+    def _unexpected_fence(**_kwargs):
+        raise AssertionError("binding Chat must not fence a document agent")
+
+    monkeypatch.setattr(consent, "user_initiated", _observed_user_action)
+    monkeypatch.setattr(
+        document_agent,
+        "fence_document_agent",
+        _unexpected_fence,
+    )
+    url = _url(
+        f"/api/truth/doc/{seeded['document'].id}/conversation/bind",
+        seeded["store_id"],
+    )
+    conn = conversation_store.get_connection()
+    try:
+        before_conversations = conn.execute(
+            "SELECT COUNT(*) FROM conversations"
+        ).fetchone()[0]
+        before_leases = conn.execute(
+            "SELECT COUNT(*) FROM conversation_agent_leases"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+    bound = client.post(url)
+
+    assert bound.status_code == 200
+    payload = bound.get_json()
+    assert payload["ok"] is True
+    assert payload["created"] is True
+    assert payload["conversation_id"]
+    assert payload["agent"] == {
+        "status": "not_started",
+        "alive": None,
+        "started": False,
+        "error": None,
+    }
+    assert payload["feedback"] == []
+    assert payload["execution"]["selection"]["persisted"] is True
+    assert payload["execution"]["selection"]["revision"]
+    assert fake_document_agent == []
+
+    repeated = client.post(url)
+
+    assert repeated.status_code == 200
+    repeated_payload = repeated.get_json()
+    assert repeated_payload["conversation_id"] == payload["conversation_id"]
+    assert repeated_payload["created"] is False
+    assert repeated_payload["agent"]["status"] == "not_started"
+    assert (
+        repeated_payload["execution"]["selection"]["revision"]
+        == payload["execution"]["selection"]["revision"]
+    )
+    assert fake_document_agent == []
+    assert boundaries == [
+        "dashboard.cowork.conversation_bind",
+        "dashboard.cowork.conversation_bind",
+    ]
+    conn = conversation_store.get_connection()
+    try:
+        assert (
+            conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
+            == before_conversations + 1
+        )
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM conversation_agent_leases"
+            ).fetchone()[0]
+            == before_leases
+        )
+    finally:
+        conn.close()
+
+
+def test_conversation_bind_rejects_a_closed_canonical_conversation(
+    client,
+    seeded,
+    fake_document_agent,
+):
+    binding = conversations.ensure_document_conversation(
+        document_id=seeded["document"].id,
+        store_id=seeded["store_id"],
+    )
+    assert conversation_store.close_conversation(binding.conversation_id)
+
+    response = client.post(
+        _url(
+            f"/api/truth/doc/{seeded['document'].id}/conversation/bind",
+            seeded["store_id"],
+        )
+    )
+
+    assert response.status_code == 409
+    assert response.get_json()["error"] == {
+        "code": "conversation_closed",
+        "message": (
+            "This document's conversation is closed and cannot be reopened."
+        ),
+        "details": {},
+        "retryable": False,
+    }
+    assert fake_document_agent == []
+
+
+@pytest.mark.parametrize(
+    ("gate", "expected_status", "expected_error"),
+    [
+        ("read_only", 403, "Dashboard is in read-only mode"),
+        ("retired", 409, "Chat cannot be opened for a retired document."),
+        (
+            "surface",
+            403,
+            "This document is not available in Co-work for this folder.",
+        ),
+    ],
+)
+def test_conversation_bind_preserves_document_mutation_gates(
+    client,
+    seeded,
+    fake_document_agent,
+    monkeypatch,
+    gate,
+    expected_status,
+    expected_error,
+):
+    if gate == "read_only":
+        monkeypatch.setattr(api, "_is_read_only", lambda: True)
+    elif gate == "retired":
+        monkeypatch.setattr(
+            api.documents,
+            "current_lifecycle",
+            lambda *_args, **_kwargs: "retired",
+        )
+    else:
+        monkeypatch.setattr(
+            api,
+            "document_surface_allowed",
+            lambda *_args, **_kwargs: False,
+        )
+
+    response = client.post(
+        _url(
+            f"/api/truth/doc/{seeded['document'].id}/conversation/bind",
+            seeded["store_id"],
+        )
+    )
+
+    assert response.status_code == expected_status
+    assert response.get_json()["error"] == expected_error
+    assert (
+        conversations.find_document_conversation(
+            document_id=seeded["document"].id,
+            store_id=seeded["store_id"],
+        )
+        is None
+    )
+    assert fake_document_agent == []
+
+
 def test_conversation_catalog_refresh_is_explicit(
     client,
     seeded,
@@ -1446,6 +1694,7 @@ def test_execution_routes_fail_closed_for_a_corrupt_saved_selection(
     base = f"/api/truth/doc/{seeded['document'].id}/conversation"
     responses = (
         client.get(_url(base, seeded["store_id"])),
+        client.post(_url(f"{base}/bind", seeded["store_id"])),
         client.patch(
             _url(f"{base}/execution", seeded["store_id"]),
             json={
@@ -1491,6 +1740,7 @@ def test_execution_routes_fail_closed_for_malformed_conversation_metadata(
     base = f"/api/truth/doc/{seeded['document'].id}/conversation"
     responses = (
         client.get(_url(base, seeded["store_id"])),
+        client.post(_url(f"{base}/bind", seeded["store_id"])),
         client.post(_url(base, seeded["store_id"])),
         client.patch(
             _url(f"{base}/execution", seeded["store_id"]),

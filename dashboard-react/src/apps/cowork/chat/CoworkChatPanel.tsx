@@ -17,10 +17,8 @@ import {
   ConversationChat,
   type ChatConversationProvider,
   type ChatExecutionControl,
-  type ChatInputRecovery,
   type ChatMessage,
   type ChatSendInput,
-  type ConversationChatState,
 } from "../../../widget-library/chat";
 import type { CoworkActionSnapshotControllerState } from "../targets";
 import {
@@ -32,9 +30,9 @@ import {
   CoworkPassageAction,
   CoworkRoutingNotices,
 } from "./CoworkChatExtensions";
+import { CoworkChatActionSnapshotError } from "./HttpCoworkChatActionSnapshotClient";
 import { useOptionalCoworkChatTargeting } from "./CoworkChatTargeting";
 import type { ScrollAnchorTarget } from "./contracts";
-import type { CoworkDocumentAgent } from "./documentConversationBinding";
 import "./styles.css";
 
 export interface CoworkChatPanelProps {
@@ -55,14 +53,6 @@ export interface CoworkChatPanelProps {
   readonly composerInitialValue?: string;
   /** Observe the live draft, including the empty value after acknowledged send. */
   readonly onComposerDraftChange?: (value: string) => void;
-  /** Server-owned state of the document agent bound to this conversation. */
-  readonly agent?: CoworkDocumentAgent;
-  /** A start or restart request is in flight. */
-  readonly ensuringAgent?: boolean;
-  /** A failed start or restart request. */
-  readonly ensureError?: string | null;
-  /** Present-user-intent start or restart action. */
-  readonly onEnsureAgent?: () => void;
   /** Let the owning rail derive unread state without mounting another hook. */
   readonly onMessagesChange?: (messages: readonly ChatMessage[]) => void;
   /** Generic provider/model selection owned by the shared Chat surface. */
@@ -100,10 +90,6 @@ export function CoworkChatPanel({
   noMessagesLabel = "No messages yet. Ask anything about this document.",
   composerInitialValue,
   onComposerDraftChange,
-  agent,
-  ensuringAgent = false,
-  ensureError,
-  onEnsureAgent,
   onMessagesChange,
   execution,
 }: CoworkChatPanelProps) {
@@ -149,9 +135,37 @@ export function CoworkChatPanel({
             "Working-on context is unavailable for this Chat.",
         );
       }
-      const capture = await targeting.controller.capture("working_target");
-      const context = await targeting.client.prepare(capture);
-      return { ...input, context };
+      const firstCapture = await targeting.controller.capture("working_target");
+      try {
+        const context = await targeting.client.prepare(firstCapture);
+        return { ...input, context };
+      } catch (error) {
+        if (
+          !(error instanceof CoworkChatActionSnapshotError) ||
+          error.code !== "action_snapshot_changed"
+        ) {
+          throw error;
+        }
+        // A collaborator can advance the durable head after the browser's
+        // stable capture but before its POST arrives. Recapture exactly once
+        // against the first capture's logical target; a newer Working on
+        // choice must never silently retarget the already-authored message.
+        const reference = firstCapture.target.targetReference;
+        if (
+          targeting.controller.captureReference === undefined ||
+          (firstCapture.target.selector.kind !== "document" &&
+            reference === undefined)
+        ) {
+          throw error;
+        }
+        const context = await targeting.client.prepare(
+          await targeting.controller.captureReference(
+            "working_target",
+            reference ?? null,
+          ),
+        );
+        return { ...input, context };
+      }
     },
     [targetUnavailableReason, targeting],
   );
@@ -181,78 +195,6 @@ export function CoworkChatPanel({
       );
     },
     [linkage.feedback, onScrollToAnchor],
-  );
-
-  const resolveInputRecovery = useCallback(
-    (state: ConversationChatState): ChatInputRecovery | undefined => {
-      const startFailed = agent?.status === "spawn_failed";
-      const notStarted = agent?.status === "not_started";
-      const stopped =
-        agent?.status === "stopped" ||
-        (!startFailed &&
-          !notStarted &&
-          state.agentActivity === "stopped");
-      if (!startFailed && !notStarted && !stopped) return undefined;
-
-      const titleText = ensuringAgent
-        ? startFailed
-          ? "Trying again…"
-          : notStarted
-            ? "Starting chat…"
-            : "Restarting chat…"
-        : startFailed
-          ? "Chat couldn’t start."
-          : notStarted
-            ? "Chat hasn’t started."
-            : "Chat paused.";
-      const rawError = ensureError ?? agent?.error;
-      const detail =
-        ensuringAgent
-          ? "Your messages are still here."
-          : rawError === "Chat couldn’t start. Try again."
-            ? "Try again."
-            : rawError ??
-              (startFailed
-                ? "Try again."
-                : notStarted
-                  ? "Start chat to ask about this document."
-                  : "Your messages are still here.");
-      const actionLabel = ensuringAgent
-        ? startFailed
-          ? "Trying again…"
-          : notStarted
-            ? "Starting…"
-            : "Restarting…"
-        : startFailed
-          ? "Try again"
-          : notStarted
-            ? "Start chat"
-            : "Restart chat";
-
-      return {
-        tone: stopped || startFailed ? "warning" : "info",
-        title: titleText,
-        detail,
-        preserveComposer: true,
-        ...(onEnsureAgent === undefined
-          ? {}
-          : {
-              action: {
-                label: actionLabel,
-                onAction: onEnsureAgent,
-                pending: ensuringAgent,
-                requiresExecution: true,
-              },
-            }),
-      };
-    },
-    [
-      agent?.error,
-      agent?.status,
-      ensureError,
-      ensuringAgent,
-      onEnsureAgent,
-    ],
   );
 
   return (
@@ -306,7 +248,6 @@ export function CoworkChatPanel({
           onDismiss={(id) => store.dismissRoutingDelivery(id)}
         />
       }
-      inputRecovery={resolveInputRecovery}
       readOnlyReason="This chat is closed."
       execution={execution}
     />

@@ -123,7 +123,13 @@ export function useAlignedStream(
       return;
     }
 
-    const placements = computeAlignedLayout(inputs, { gap });
+    // Anchor offsets are document coordinates, so the first visible item may be
+    // hundreds of pixels down the page. Remove only that unused leading offset;
+    // later cards keep their relative passage spacing and overlap resolution.
+    const placements = computeAlignedLayout(inputs, {
+      gap,
+      maxLeadingSpace: 0,
+    });
     if (placementsEqual(placements, lastPlacementRef.current)) return;
     clearPlacementStyles();
     lastPlacementRef.current = placements;

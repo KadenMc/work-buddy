@@ -115,6 +115,45 @@ def _configured_default(setting_id: str) -> Any:
     return value
 
 
+def _apply_behavior(setting_id: str) -> str:
+    definition = registry.definition_for(setting_id)
+    if definition is None:
+        raise SettingsError(
+            "unknown_setting",
+            f"Unknown setting: {setting_id}",
+            status_code=404,
+        )
+    return definition.get("presentation", {}).get("apply_behavior", "immediate")
+
+
+def _definition_value_version(setting_id: str) -> int:
+    definition = registry.definition_for(setting_id)
+    if definition is None:
+        raise SettingsError(
+            "unknown_setting",
+            f"Unknown setting: {setting_id}",
+            status_code=404,
+        )
+    return int(definition["value_version"])
+
+
+def _bootstrap_source(setting_id: str) -> str:
+    return (
+        "config-bootstrap"
+        if setting_id == registry.JOURNAL_DAY_BOUNDARY_ID
+        else "registry-default"
+    )
+
+
+def _affected_contexts(setting_id: str) -> list[str]:
+    definition = registry.definition_for(setting_id) or {}
+    return [
+        f"{target['kind']}:{target['id']}"
+        for target in definition.get("applies_to", [])
+        if target.get("kind") and target.get("id")
+    ]
+
+
 def _now_iso(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat(timespec="milliseconds")
 
@@ -233,6 +272,8 @@ def _ensure_policy_history(conn, row, observed_at: datetime) -> None:
 
 def _ensure_row(conn, setting_id: str, observed_at: datetime):
     bootstrap_default = _configured_default(setting_id)
+    value_version = _definition_value_version(setting_id)
+    bootstrap_source = _bootstrap_source(setting_id)
     conn.execute(
         """
         INSERT OR IGNORE INTO setting_value_state (
@@ -240,13 +281,15 @@ def _ensure_row(conn, setting_id: str, observed_at: datetime):
             bootstrap_source, value_version, active_timezone, active_value_json,
             pending_value_json, pending_source, pending_timezone, effective_at,
             revision, updated_at
-        ) VALUES (?, 'profile', ?, ?, 'config-bootstrap', 1,
+        ) VALUES (?, 'profile', ?, ?, ?, ?,
                   ?, NULL, NULL, NULL, NULL, NULL, 0, ?)
         """,
         (
             setting_id,
             registry.PROFILE_SCOPE_ID,
             json.dumps(bootstrap_default),
+            bootstrap_source,
+            value_version,
             _timezone_name(),
             _now_iso(observed_at),
         ),
@@ -283,6 +326,15 @@ def _ensure_row(conn, setting_id: str, observed_at: datetime):
             """,
             (setting_id, registry.PROFILE_SCOPE_ID),
         ).fetchone()
+    if int(row["value_version"]) != value_version:
+        # Defaults are frozen for one declared value version. A definition
+        # change must ship an explicit store migration instead of silently
+        # reinterpreting an existing profile value.
+        raise SettingsError(
+            "setting_migration_required",
+            f"Setting {setting_id} requires a value migration.",
+            status_code=503,
+        )
     if setting_id == registry.JOURNAL_DAY_BOUNDARY_ID:
         _ensure_policy_history(conn, row, observed_at)
         if row["active_timezone"] is None:
@@ -323,11 +375,7 @@ def _change_event(record: dict[str, Any], reason: str) -> dict[str, Any]:
         "scope": record["scope"]["kind"],
         "registry_revision": registry.REGISTRY_REVISION,
         "value_revision": record["revision"],
-        "affected_contexts": [
-            "app:wb.journal",
-            "subsystem:wb.journal/day-lifecycle",
-            "view:wb.journal.main",
-        ],
+        "affected_contexts": _affected_contexts(record["setting_id"]),
         "apply_status": record["apply_status"],
         "reason": reason,
     }
@@ -491,6 +539,33 @@ def _record_from_row(row, observed_at: datetime) -> dict[str, Any]:
     configured_value = pending_value if has_pending else effective_value
     configured_source = row["pending_source"] if has_pending else effective_source
 
+    record = {
+        "setting_id": row["setting_id"],
+        "value_version": int(row["value_version"]),
+        "scope": {"kind": "profile", "subject_id": registry.PROFILE_SCOPE_ID},
+        "default_value": default,
+        "default_source": row["bootstrap_source"],
+        "effective_value": effective_value,
+        "configured_value": configured_value,
+        "source": effective_source,
+        "configured_source": configured_source,
+        "is_modified": configured_source == "profile",
+        "revision": f"value:{row['revision']}",
+        "pending_value": pending_value if has_pending else None,
+        "apply_status": "pending" if has_pending else "effective",
+    }
+    if row["setting_id"] != registry.JOURNAL_DAY_BOUNDARY_ID:
+        record.update(
+            {
+                "pending_timezone": None,
+                "effective_at": None,
+                "last_transition": None,
+                "impact_preview": None,
+                "diagnostics": [],
+            }
+        )
+        return record
+
     active_timezone_name = row["active_timezone"] or _timezone_name()
     pending_timezone_name = (
         row["pending_timezone"] or active_timezone_name if has_pending else None
@@ -514,40 +589,30 @@ def _record_from_row(row, observed_at: datetime) -> dict[str, Any]:
             ),
         }
 
-    return {
-        "setting_id": row["setting_id"],
-        "value_version": int(row["value_version"]),
-        "policy_timezone": active_timezone_name,
-        "configured_timezone": _timezone_name(),
-        "diagnostics": _timezone_diagnostics(active_timezone_name),
-        "scope": {"kind": "profile", "subject_id": registry.PROFILE_SCOPE_ID},
-        "default_value": default,
-        "default_source": row["bootstrap_source"],
-        "effective_value": effective_value,
-        "configured_value": configured_value,
-        "source": effective_source,
-        "configured_source": configured_source,
-        "is_modified": configured_source == "profile",
-        "revision": f"value:{row['revision']}",
-        "pending_value": pending_value if has_pending else None,
-        "pending_timezone": pending_timezone_name,
-        "effective_at": effective_at,
-        "last_transition": last_transition,
-        "apply_status": "pending" if has_pending else "effective",
-        "impact_preview": _impact_preview(
-            observed_at=observed_at,
-            effective_value=effective_value,
-            pending_value=pending_value if has_pending else None,
-            pending_effective_at=effective_at_instant,
-            pending_timezone_name=pending_timezone_name,
-            last_transition_at=(
-                datetime.fromisoformat(row["applied_at"])
-                if row["applied_at"]
-                else None
+    record.update(
+        {
+            "policy_timezone": active_timezone_name,
+            "configured_timezone": _timezone_name(),
+            "diagnostics": _timezone_diagnostics(active_timezone_name),
+            "pending_timezone": pending_timezone_name,
+            "effective_at": effective_at,
+            "last_transition": last_transition,
+            "impact_preview": _impact_preview(
+                observed_at=observed_at,
+                effective_value=effective_value,
+                pending_value=pending_value if has_pending else None,
+                pending_effective_at=effective_at_instant,
+                pending_timezone_name=pending_timezone_name,
+                last_transition_at=(
+                    datetime.fromisoformat(row["applied_at"])
+                    if row["applied_at"]
+                    else None
+                ),
+                active_timezone_name=active_timezone_name,
             ),
-            active_timezone_name=active_timezone_name,
-        ),
-    }
+        }
+    )
+    return record
 
 
 def _read_value(setting_id: str, observed_at: datetime):
@@ -602,8 +667,13 @@ def get_values(
         {
             "schema_version": registry.SCHEMA_VERSION,
             "registry_revision": registry.REGISTRY_REVISION,
-            "timezone": (
-                values[0]["policy_timezone"] if values else _timezone_name()
+            "timezone": next(
+                (
+                    value["policy_timezone"]
+                    for value in values
+                    if value.get("policy_timezone")
+                ),
+                _timezone_name(),
             ),
             "configured_timezone": _timezone_name(),
             "diagnostics": [
@@ -640,7 +710,26 @@ def _validate_request(
             status_code=400,
             field="scope",
         )
-    if validate_value and setting_id == registry.JOURNAL_DAY_BOUNDARY_ID:
+    if not validate_value:
+        return
+
+    value_schema = definition.get("value_schema", {})
+    if value_schema.get("type") == "string" and not isinstance(value, str):
+        raise SettingsError(
+            "validation_error",
+            f"Value for {setting_id} must be a string.",
+            status_code=400,
+            field="value",
+        )
+    allowed_values = value_schema.get("enum")
+    if allowed_values is not None and value not in allowed_values:
+        raise SettingsError(
+            "validation_error",
+            f"Value for {setting_id} must be one of {allowed_values!r}.",
+            status_code=400,
+            field="value",
+        )
+    if setting_id == registry.JOURNAL_DAY_BOUNDARY_ID:
         try:
             parse_local_time(value)
         except (InvalidLocalTime, TypeError) as exc:
@@ -784,6 +873,79 @@ def _write_pending(
     return record, _change_event(record, "pending-value-scheduled")
 
 
+def _write_immediate(
+    *,
+    setting_id: str,
+    target_value: Any,
+    target_source: str,
+    expected_revision: str | None,
+    observed_at: datetime,
+    read_only: bool,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    if read_only:
+        raise SettingsError(
+            "read_only",
+            "Dashboard settings are read-only.",
+            status_code=403,
+        )
+
+    conn = store.get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = _ensure_row(conn, setting_id, observed_at)
+        current = _record_from_row(row, observed_at)
+        try:
+            _assert_revision(expected_revision, current)
+        except SettingsError:
+            conn.commit()
+            raise
+
+        if target_source == "profile":
+            unchanged = (
+                current["effective_value"] == target_value
+                and current["pending_value"] is None
+            )
+            active_value_json = json.dumps(target_value)
+            reason = "value-applied"
+        else:
+            unchanged = (
+                current["source"] == "default"
+                and current["pending_value"] is None
+            )
+            active_value_json = None
+            reason = "value-reset"
+
+        if unchanged:
+            conn.commit()
+            return current, None
+
+        conn.execute(
+            """
+            UPDATE setting_value_state
+            SET active_value_json = ?,
+                pending_value_json = NULL, pending_source = NULL,
+                pending_timezone = NULL, effective_at = NULL,
+                applied_from_value_json = ?, applied_at = ?,
+                revision = revision + 1, updated_at = ?
+            WHERE setting_id = ? AND scope = 'profile' AND scope_id = ?
+            """,
+            (
+                active_value_json,
+                json.dumps(current["effective_value"]),
+                _now_iso(observed_at),
+                _now_iso(observed_at),
+                setting_id,
+                registry.PROFILE_SCOPE_ID,
+            ),
+        )
+        row = _ensure_row(conn, setting_id, observed_at)
+        record = _record_from_row(row, observed_at)
+        conn.commit()
+    finally:
+        conn.close()
+    return record, _change_event(record, reason)
+
+
 def update_value(
     setting_id: str,
     *,
@@ -794,13 +956,29 @@ def update_value(
     read_only: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     _validate_request(setting_id, scope, value, validate_value=True)
-    return _write_pending(
-        setting_id=setting_id,
-        target_value=value,
-        target_source="profile",
-        expected_revision=expected_revision,
-        observed_at=_observed_at(observed_at),
-        read_only=read_only,
+    apply_behavior = _apply_behavior(setting_id)
+    if apply_behavior == "immediate":
+        return _write_immediate(
+            setting_id=setting_id,
+            target_value=value,
+            target_source="profile",
+            expected_revision=expected_revision,
+            observed_at=_observed_at(observed_at),
+            read_only=read_only,
+        )
+    if apply_behavior == "next-boundary":
+        return _write_pending(
+            setting_id=setting_id,
+            target_value=value,
+            target_source="profile",
+            expected_revision=expected_revision,
+            observed_at=_observed_at(observed_at),
+            read_only=read_only,
+        )
+    raise SettingsError(
+        "unsupported_apply_behavior",
+        f"Setting {setting_id} has unsupported apply behavior {apply_behavior!r}.",
+        status_code=500,
     )
 
 
@@ -850,6 +1028,34 @@ def preview_value(
     now = _observed_at(observed_at)
     record = _preview_record(setting_id, now)
     _assert_revision(expected_revision, record)
+    apply_behavior = _apply_behavior(setting_id)
+    if apply_behavior == "immediate":
+        return {
+            "schema_version": registry.SCHEMA_VERSION,
+            "registry_revision": registry.REGISTRY_REVISION,
+            "timezone": _timezone_name(),
+            "configured_timezone": _timezone_name(),
+            "value_revision": record["revision"],
+            "preview": {
+                "setting_id": setting_id,
+                "scope": record["scope"],
+                "value": value,
+                "effective_at": None,
+                "apply_status": (
+                    "effective"
+                    if value == record["effective_value"]
+                    else "immediate"
+                ),
+                "impact_preview": None,
+            },
+            "diagnostics": [],
+        }
+    if apply_behavior != "next-boundary":
+        raise SettingsError(
+            "unsupported_apply_behavior",
+            f"Setting {setting_id} has unsupported apply behavior {apply_behavior!r}.",
+            status_code=500,
+        )
     active_timezone = record["policy_timezone"]
     zone = ZoneInfo(active_timezone)
 
@@ -922,6 +1128,22 @@ def reset_value(
     _assert_revision(expected_revision, current)
 
     default = current["default_value"]
+    apply_behavior = _apply_behavior(setting_id)
+    if apply_behavior == "immediate":
+        return _write_immediate(
+            setting_id=setting_id,
+            target_value=default,
+            target_source="default",
+            expected_revision=current["revision"],
+            observed_at=now,
+            read_only=read_only,
+        )
+    if apply_behavior != "next-boundary":
+        raise SettingsError(
+            "unsupported_apply_behavior",
+            f"Setting {setting_id} has unsupported apply behavior {apply_behavior!r}.",
+            status_code=500,
+        )
     if current["source"] == "default":
         # No active override: reset only needs to cancel a pending intent.
         if current["pending_value"] is None:

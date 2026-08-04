@@ -15,7 +15,7 @@ from work_buddy.mcp_server import op_registry
 from work_buddy.truth import documents, ydoc_store
 from work_buddy.truth.identity import sha256_bytes
 
-from .conftest import DOC_BODY, NOW
+from .conftest import DOC_BODY, HUMAN, NOW
 
 
 def _capture(seeded, *, source: str = "working_target"):
@@ -102,6 +102,125 @@ def test_prepare_endpoint_persists_idempotent_frozen_chat_context(
     assert view["target"]["text"] == DOC_BODY
 
 
+def test_prepare_endpoint_accepts_edited_projection_after_required_compaction(
+    client,
+    seeded,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """A capture remains valid after compaction removes the update tail."""
+
+    from work_buddy.cowork import lifecycle_lock
+
+    monkeypatch.setattr(
+        lifecycle_lock,
+        "data_dir",
+        lambda _suffix: tmp_path / "runtime-locks",
+    )
+    store = seeded["store"]
+    document = seeded["document"]
+    edited_projection = (
+        "# Throwaway fixture\n\n"
+        "Edited sentence captured after the Y.Doc was compacted.\n"
+    )
+    edited_snapshot = b"YDOC-EDITED-THROWAWAY-SNAPSHOT"
+    edited_projection_sha256 = sha256_bytes(
+        edited_projection.encode("utf-8")
+    )
+    old_head = ydoc_store.current_structured_head(
+        store,
+        document_id=document.id,
+        snapshot_sha256=seeded["snapshot_sha256"],
+    )
+    (
+        snapshot_sha256,
+        structured_head_sha256,
+        _,
+        projection_receipt,
+    ) = (
+        ydoc_store.compact_and_advance(
+            store,
+            document_id=document.id,
+            snapshot=edited_snapshot,
+            expected_snapshot_sha256=sha256_bytes(edited_snapshot),
+            expected_structured_head_sha256=old_head,
+            actor=HUMAN,
+            at=NOW,
+            projection_sha256=edited_projection_sha256,
+        )
+    )
+    assert projection_receipt is not None
+    assert not ydoc_store.update_tail_present(
+        store,
+        document_id=document.id,
+    )
+    assert sha256_bytes(edited_projection.encode("utf-8")) != (
+        document.content_sha256
+    )
+    capture = _capture(
+        {
+            **seeded,
+            "snapshot_bytes": edited_snapshot,
+            "snapshot_sha256": snapshot_sha256,
+        }
+    )
+    capture["structuredHeadSha256"] = structured_head_sha256
+    capture["projectionMarkdown"] = edited_projection
+    capture["projectionSha256"] = edited_projection_sha256
+    capture["projectionReceiptId"] = projection_receipt.id
+    capture["target"]["wordCount"] = 9
+    capture["target"]["targetTextSha256"] = capture[
+        "projectionSha256"
+    ]
+
+    receiptless = dict(capture)
+    receiptless.pop("projectionReceiptId")
+    missing_receipt = client.post(
+        (
+            f"/api/truth/doc/{document.id}/chat/action-snapshots"
+            f"?store_id={seeded['store_id']}"
+        ),
+        json={"capture": receiptless},
+    )
+    assert missing_receipt.status_code == 409
+
+    response = client.post(
+        (
+            f"/api/truth/doc/{document.id}/chat/action-snapshots"
+            f"?store_id={seeded['store_id']}"
+        ),
+        json={"capture": capture},
+    )
+
+    assert response.status_code == 201
+    context = response.get_json()["context"]
+    view = chat_targets.action_snapshot_view(
+        store,
+        document_id=document.id,
+        action_snapshot_id=context["action_snapshot_id"],
+    )
+    assert view["frozen_markdown"] == edited_projection
+    assert view["target"]["text"] == edited_projection
+
+    tampered = dict(capture)
+    tampered["projectionMarkdown"] = edited_projection + "Injected.\n"
+    tampered["projectionSha256"] = sha256_bytes(
+        tampered["projectionMarkdown"].encode("utf-8")
+    )
+    tampered["target"] = {
+        **capture["target"],
+        "targetTextSha256": tampered["projectionSha256"],
+    }
+    rejected = client.post(
+        (
+            f"/api/truth/doc/{document.id}/chat/action-snapshots"
+            f"?store_id={seeded['store_id']}"
+        ),
+        json={"capture": tampered},
+    )
+    assert rejected.status_code == 409
+
+
 def test_targeted_turn_is_bound_to_running_agent_and_exact_snapshot(
     client,
     seeded,
@@ -156,6 +275,7 @@ def test_targeted_turn_is_bound_to_running_agent_and_exact_snapshot(
     message = chat_targets.post_targeted_chat_message(
         conversation_id=binding.conversation_id,
         content="Please focus on this frozen version.",
+        message_id="caller-stable-targeted-turn",
         context={
             "kind": "action_snapshot",
             "action_snapshot_id": context["action_snapshot_id"],
@@ -163,6 +283,18 @@ def test_targeted_turn_is_bound_to_running_agent_and_exact_snapshot(
             "document_id": seeded["document"].id,
         },
     )
+    replay = chat_targets.post_targeted_chat_message(
+        conversation_id=binding.conversation_id,
+        content="Please focus on this frozen version.",
+        message_id="caller-stable-targeted-turn",
+        context={
+            "kind": "action_snapshot",
+            "action_snapshot_id": context["action_snapshot_id"],
+            "store_id": seeded["store_id"],
+            "document_id": seeded["document"].id,
+        },
+    )
+    assert replay.message_id == message.message_id
     assert message.context == context
     received = conversation_store.receive_user_message(
         binding.conversation_id,

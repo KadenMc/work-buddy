@@ -34,7 +34,7 @@ describe("useAlignedStream", () => {
     expect(getByTestId("card-a").style.transform).toBe("");
   });
 
-  it("positions cards at their anchors and resolves a clustered overlap", async () => {
+  it("starts with content and resolves a clustered overlap", async () => {
     const source: AnchorRectSource = {
       // Two anchors 5px apart, so the second card must be pushed below the first.
       anchorRect: (id) =>
@@ -48,10 +48,11 @@ describe("useAlignedStream", () => {
     expect(getByTestId("root")).toHaveAttribute("data-aligned", "true");
 
     await waitFor(() => {
-      expect(getByTestId("card-a").style.transform).toBe("translateY(100px)");
+      expect(getByTestId("card-a").style.transform).toBe("translateY(0px)");
     });
-    // b would overlap a at 105, so it cascades to 100 + 0 height + 8 gap.
-    expect(getByTestId("card-b").style.transform).toBe("translateY(108px)");
+    // The first anchor's leading offset is removed. b would then sit at 5, so
+    // it cascades to the first card plus the 8px minimum gap.
+    expect(getByTestId("card-b").style.transform).toBe("translateY(8px)");
   });
 
   it("degrades every card and clears stale placement when one anchor is lost", async () => {
@@ -75,8 +76,8 @@ describe("useAlignedStream", () => {
     const { getByTestId } = render(<Harness source={source} />);
 
     await waitFor(() => {
-      expect(getByTestId("card-a").style.transform).toBe("translateY(100px)");
-      expect(getByTestId("card-b").style.transform).toBe("translateY(180px)");
+      expect(getByTestId("card-a").style.transform).toBe("translateY(0px)");
+      expect(getByTestId("card-b").style.transform).toBe("translateY(80px)");
     });
 
     secondResolved = false;

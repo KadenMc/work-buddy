@@ -225,7 +225,6 @@ export function deriveAgentActivity(
   snapshot: ChatConversationSnapshot,
 ): ChatAgentActivity {
   if (snapshot.status !== "open") return "idle";
-  if (snapshot.agentLiveness === "stopped") return "stopped";
 
   const messages = snapshot.messages;
   const hasPending = messages.some((message) => message.pending === true);
@@ -234,11 +233,13 @@ export function deriveAgentActivity(
   const last = messages.length > 0 ? messages[messages.length - 1] : undefined;
   if (last === undefined) return "idle";
 
-  // The agent has explicitly handed control back with a question.
-  if (last.author !== "user" && last.question !== undefined) return "idle";
+  // An assistant or system turn has handed control back. A long-lived worker
+  // remains alive while it waits for another message, so process liveness alone
+  // must never make a completed reply look permanently busy.
+  if (last.author !== "user") return "idle";
 
-  // A live driver is mid-flow. With no registered driver (unknown) fall back to
-  // showing activity only while the human holds the last turn.
-  if (snapshot.agentLiveness === "alive") return "thinking";
-  return last.author === "user" ? "thinking" : "idle";
+  // A stopped driver with the human holding the last turn is an explicit
+  // terminal no-response outcome. Otherwise the turn is still in progress;
+  // unknown liveness retains the legacy transport fallback.
+  return snapshot.agentLiveness === "stopped" ? "stopped" : "thinking";
 }

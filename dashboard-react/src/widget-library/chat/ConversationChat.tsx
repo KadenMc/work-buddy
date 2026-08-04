@@ -1,12 +1,7 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import {
-  ChatPanel,
-  type ChatInputRecovery,
-  type ChatPanelProps,
-} from "./ChatPanel";
+import { ChatPanel, type ChatPanelProps } from "./ChatPanel";
 import type {
-  ChatAgentActivity,
   ChatConversationProvider,
   ChatConversationSnapshot,
   ChatMessage,
@@ -21,24 +16,29 @@ import { deriveAgentActivity } from "./mapping";
 
 const EMPTY_MESSAGES: readonly ChatMessage[] = [];
 
-/**
- * Transport-derived state exposed to a feature-owned recovery resolver. The
- * resolver may choose presentation only; the shared surface retains ownership
- * of loading, sending, retry, transcript, and composer behavior.
- */
-export interface ConversationChatState {
+let fallbackMessageSequence = 0;
+
+const newUserMessageId = (): string => {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return `chat-user-${globalThis.crypto.randomUUID()}`;
+  }
+  fallbackMessageSequence += 1;
+  return `chat-user-${Date.now().toString(36)}-${fallbackMessageSequence.toString(36)}`;
+};
+
+interface PendingSendEnvelope {
+  readonly provider: ChatConversationProvider;
   readonly conversationId: string;
-  readonly snapshot: ChatConversationSnapshot | null;
-  readonly loadStatus: ChatLoadStatus;
-  readonly loadError: string | null;
-  readonly sending: boolean;
-  readonly sendError: string | null;
-  readonly agentActivity: ChatAgentActivity;
+  readonly value: string;
+  readonly inReplyTo?: string;
+  readonly messageId: string;
+  prepared?: ChatSendInput;
 }
 
-export type ChatInputRecoveryResolver = (
-  state: ConversationChatState,
-) => ChatInputRecovery | undefined;
+const errorMessage = (error: unknown): string =>
+  error instanceof Error && error.message.trim().length > 0
+    ? error.message
+    : "Message context could not be prepared.";
 
 /** Additive pre-send seam for hosts that explicitly attach durable context. */
 export type ChatSendPreparer = (
@@ -55,17 +55,11 @@ type SharedConversationPanelProps = Omit<
   | "sendErrorMessage"
   | "errorMessage"
   | "onRetry"
-  | "inputRecovery"
 >;
 
 export type ConversationChatProps = SharedConversationPanelProps & {
   readonly provider: ChatConversationProvider;
   readonly conversationId: string;
-  /**
-   * A fixed recovery descriptor or a pure resolver over the current
-   * transport-derived state.
-   */
-  readonly inputRecovery?: ChatInputRecovery | ChatInputRecoveryResolver;
   /** Observe the canonical message list without mounting another chat hook. */
   readonly onMessagesChange?: (messages: readonly ChatMessage[]) => void;
   /** Prepare an outbound turn before the provider sees it. */
@@ -89,44 +83,29 @@ function panelStatus(
 export function ConversationChat({
   provider,
   conversationId,
-  inputRecovery,
   onMessagesChange,
   prepareSend,
   readOnlyReason = "This conversation is closed.",
   ...panelProps
 }: ConversationChatProps) {
   const chat = useChatConversation(provider, conversationId);
+  const activeBinding = useRef({ provider, conversationId });
+  activeBinding.current = { provider, conversationId };
+  const pendingSendRef = useRef<PendingSendEnvelope | null>(null);
+  const [prepareError, setPrepareError] = useState<string | null>(null);
+  const [revealLatestMessageToken, setRevealLatestMessageToken] = useState(0);
   const messages = chat.snapshot?.messages ?? EMPTY_MESSAGES;
   const activity =
     chat.snapshot === null ? "idle" : deriveAgentActivity(chat.snapshot);
-  const state = useMemo<ConversationChatState>(
-    () => ({
-      conversationId,
-      snapshot: chat.snapshot,
-      loadStatus: chat.status,
-      loadError: chat.error,
-      sending: chat.sending,
-      sendError: chat.sendError,
-      agentActivity: activity,
-    }),
-    [
-      activity,
-      chat.error,
-      chat.sendError,
-      chat.sending,
-      chat.snapshot,
-      chat.status,
-      conversationId,
-    ],
-  );
-  const resolvedRecovery =
-    typeof inputRecovery === "function"
-      ? inputRecovery(state)
-      : inputRecovery;
-
   useEffect(() => {
     onMessagesChange?.(messages);
   }, [messages, onMessagesChange]);
+
+  useEffect(() => {
+    setPrepareError(null);
+    setRevealLatestMessageToken(0);
+    pendingSendRef.current = null;
+  }, [conversationId, provider]);
 
   return (
     <ChatPanel
@@ -138,21 +117,75 @@ export function ConversationChat({
       messages={messages}
       agentActivity={activity}
       onSend={async (value, inReplyTo) => {
-        const input: ChatSendInput = { value, inReplyTo };
-        const prepared =
-          prepareSend === undefined ? input : await prepareSend(input);
+        const expectedProvider = provider;
+        const expectedConversationId = conversationId;
+        setPrepareError(null);
+        let pending = pendingSendRef.current;
+        if (
+          pending === null ||
+          pending.provider !== expectedProvider ||
+          pending.conversationId !== expectedConversationId ||
+          pending.value !== value ||
+          pending.inReplyTo !== inReplyTo
+        ) {
+          pending = {
+            provider: expectedProvider,
+            conversationId: expectedConversationId,
+            value,
+            inReplyTo,
+            messageId: newUserMessageId(),
+          };
+          pendingSendRef.current = pending;
+        }
+        let prepared: ChatSendInput;
+        try {
+          if (pending.prepared === undefined) {
+            const input: ChatSendInput = {
+              value,
+              inReplyTo,
+              messageId: pending.messageId,
+            };
+            const candidate =
+              prepareSend === undefined ? input : await prepareSend(input);
+            // The shared surface owns retry identity. A host may enrich the
+            // send but cannot accidentally drop or replace that identity.
+            pending.prepared = {
+              ...candidate,
+              messageId: pending.messageId,
+            };
+          }
+          prepared = pending.prepared;
+        } catch (error) {
+          if (
+            activeBinding.current.provider === expectedProvider &&
+            activeBinding.current.conversationId === expectedConversationId
+          ) {
+            setPrepareError(errorMessage(error));
+          }
+          throw error;
+        }
         await chat.send(
           prepared.value,
           prepared.inReplyTo,
           prepared.context,
+          prepared.messageId,
         );
+        if (pendingSendRef.current === pending) {
+          pendingSendRef.current = null;
+        }
+        if (
+          activeBinding.current.provider === expectedProvider &&
+          activeBinding.current.conversationId === expectedConversationId
+        ) {
+          setRevealLatestMessageToken((token) => token + 1);
+        }
       }}
       sending={chat.sending}
-      sendErrorMessage={chat.sendError ?? undefined}
+      sendErrorMessage={prepareError ?? chat.sendError ?? undefined}
       errorMessage={chat.error ?? undefined}
       onRetry={chat.retry}
-      inputRecovery={resolvedRecovery}
       readOnlyReason={readOnlyReason}
+      revealLatestMessageToken={revealLatestMessageToken}
     />
   );
 }

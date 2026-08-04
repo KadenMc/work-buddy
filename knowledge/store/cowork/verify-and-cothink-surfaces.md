@@ -33,6 +33,18 @@ dev_notes: |-
   document GET endpoint's existing explicit SQLite snapshot connection; do not
   open independent read connections while assembling one response. SSE is only
   an invalidation nudge; the client always re-pulls authoritative state.
+
+  Proposal applicability depends on a provable current Markdown projection of the
+  live structured state. Normal client compaction carries a projection receipt.
+  Any sitting that replaces the Y.Doc snapshot must persist the exact rendered
+  projection and carry a fresh receipt in the crash-recovery marker so publishing
+  the rotated epoch also publishes the projection/snapshot/head/generation tuple.
+  For documents affected before that receipt existed, recovery may use only the
+  latest projection-bound document version when its projection pointer, snapshot,
+  and structured head all exactly match the current document. Do not use a
+  receipt-less `snapshot_compacted` version for this fallback: its version
+  projection may be the materialized baseline rather than the live Y.Doc
+  projection. Load this proof inside the document read's existing SQLite snapshot.
 ---
 
 ## Dashboard HTTP
@@ -158,13 +170,28 @@ The Review rail:
 
 - surfaces only coordinator-dispositioned results;
 - uses evidence-first cards and exact passage navigation;
-- sends correction proposals through the ordinary sitting; and
+- sends correction proposals through the ordinary sitting;
+- assesses corrections against their current target rather than treating an
+  unrelated whole-document change as automatic staleness;
+- requires safe target placement only for **Accept** and **Amend**, while
+  record-level review decisions remain available; and
 - labels historical Co-think cards and actions separately from evaluation
   results.
 
 The Chat composer has one compact **About:** chip. Ordinary authored messages
 inherit the current Working on target and capture its exact version at send
-time; there is no separate sticky target switch.
+time; there is no separate sticky target switch. This chip belongs to the
+Co-work adapter: the reusable Chat widget remains general-purpose and does not
+show Working on, About, or internal action-snapshot/version identifiers unless
+a host explicitly supplies an accessory.
+
+Opening Chat creates or reuses its binding and pins the displayed execution
+selection without running a model. Sending an authored message and choosing
+**Discuss** on a Co-think item both wake the document agent automatically. The
+acknowledged user turn remains visible while read projections catch up, Send is
+disabled while a reply is pending, and a wake that produces no response reaches
+the terminal **No response received.** state with ordinary composition restored.
+No Start or Restart control is exposed.
 
 After a Verify-linked proposal is applied, Review projects a durable
 **Correction ready to recheck** card. Its action is a contextual handoff: it
@@ -188,3 +215,6 @@ whole document.
 Clean conforming results remain quiet in the attention feed. Results against an
 earlier structured head are labeled as an earlier version instead of being
 presented as current.
+That label describes an evaluation result's frozen run context. Proposal
+applicability is separate: a resulting correction may remain actionable after
+unrelated edits when its original target reanchors uniquely.

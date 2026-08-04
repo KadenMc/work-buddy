@@ -221,6 +221,7 @@ const capture: CoworkCapturedActionSnapshot = {
   structuredHeadSha256: "head",
   projectionMarkdown: "# Methods",
   projectionSha256: "projection",
+  projectionReceiptId: "projection-receipt-a",
   target: {
     source: "working_target",
     label: "Methods",

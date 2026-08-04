@@ -102,13 +102,13 @@ describe("useDocumentConversationBinding", () => {
     expect(result.current.conversationId).toBe("opaque-started-28");
   });
 
-  it("keeps an existing transcript bound while its agent restarts", async () => {
-    let resolveRestart!: (
+  it("keeps an existing transcript mounted during a repeated preparation", async () => {
+    let resolvePreparation!: (
       value: CoworkDocumentConversationBinding,
     ) => void;
-    const restart = new Promise<CoworkDocumentConversationBinding>(
+    const preparation = new Promise<CoworkDocumentConversationBinding>(
       (resolve) => {
-        resolveRestart = resolve;
+        resolvePreparation = resolve;
       },
     );
     const existing = {
@@ -122,7 +122,7 @@ describe("useDocumentConversationBinding", () => {
     };
     const client: CoworkDocumentConversationBindingClient = {
       load: vi.fn(async () => existing),
-      ensure: vi.fn(() => restart),
+      ensure: vi.fn(() => preparation),
     };
     const { result } = renderHook(() =>
       useDocumentConversationBinding({
@@ -141,13 +141,13 @@ describe("useDocumentConversationBinding", () => {
     expect(result.current.conversationId).toBe("opaque-stopped-12");
     expect(result.current.ensuring).toBe(true);
 
-    resolveRestart(runningBinding("opaque-stopped-12"));
+    resolvePreparation(runningBinding("opaque-stopped-12"));
     await act(async () => pending);
     expect(result.current.phase).toBe("ready");
     expect(result.current.ensuring).toBe(false);
   });
 
-  it("keeps an existing transcript bound when restart transport fails", async () => {
+  it("keeps an existing transcript bound when preparation transport fails", async () => {
     const existing = {
       ...runningBinding("opaque-stopped-13"),
       agent: {
@@ -180,7 +180,7 @@ describe("useDocumentConversationBinding", () => {
     expect(result.current.error).toBe("The network is unavailable.");
   });
 
-  it("adopts the newer execution revision from a failed start before retry", async () => {
+  it("adopts newer execution authority from a failed preparation", async () => {
     const currentExecution = execution(
       "claude-code",
       "sonnet",
@@ -213,13 +213,7 @@ describe("useDocumentConversationBinding", () => {
     );
     await waitFor(() => expect(result.current.phase).toBe("idle"));
 
-    await act(() =>
-      result.current.ensure({
-        providerId: "claude-code",
-        modelId: "sonnet",
-        expectedRevision: "revision:stale",
-      }),
-    );
+    await act(() => result.current.ensure());
 
     expect(result.current.execution?.selection).toMatchObject({
       providerId: "codex",

@@ -24,6 +24,25 @@ const errorMessage = (
     : "Document context could not be attached.";
 };
 
+const errorCode = (payload: unknown): string | null =>
+  isRecord(payload) &&
+  typeof payload.code === "string" &&
+  payload.code.trim().length > 0
+    ? payload.code
+    : null;
+
+/** A typed frozen-context failure so the host can recover only safe races. */
+export class CoworkChatActionSnapshotError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code: string | null,
+  ) {
+    super(message);
+    this.name = "CoworkChatActionSnapshotError";
+  }
+}
+
 const normalizeContext = (value: unknown): ChatActionSnapshotContext => {
   if (
     !isRecord(value) ||
@@ -112,7 +131,11 @@ export class HttpCoworkChatActionSnapshotClient
       payload = undefined;
     }
     if (!response.ok || !isRecord(payload)) {
-      throw new Error(errorMessage(payload, response));
+      throw new CoworkChatActionSnapshotError(
+        errorMessage(payload, response),
+        response.status,
+        errorCode(payload),
+      );
     }
     return normalizeContext(payload.context);
   }

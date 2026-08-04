@@ -105,7 +105,26 @@ export class HttpCoworkYdocTransport implements CoworkYdocTransport {
     let body: Uint8Array;
     if (request.compaction !== undefined) {
       headers["X-WB-Compacted-Snapshot-Sha256"] = request.compaction.snapshotSha256;
-      body = frameSegments([request.batch, request.compaction.snapshot]);
+      const projectionMarkdown = request.compaction.projectionMarkdown;
+      const projectionSha256 = request.compaction.projectionSha256;
+      if (
+        (projectionMarkdown === undefined) !==
+        (projectionSha256 === undefined)
+      ) {
+        throw new Error(
+          "A capture compaction requires both its Markdown projection and digest",
+        );
+      }
+      if (projectionMarkdown !== undefined && projectionSha256 !== undefined) {
+        headers["X-WB-Compacted-Projection-Sha256"] = projectionSha256;
+        body = frameSegments([
+          request.batch,
+          request.compaction.snapshot,
+          new TextEncoder().encode(projectionMarkdown),
+        ]);
+      } else {
+        body = frameSegments([request.batch, request.compaction.snapshot]);
+      }
     } else {
       body = request.batch;
     }
@@ -122,6 +141,8 @@ export class HttpCoworkYdocTransport implements CoworkYdocTransport {
       readonly ydoc_head_sha256?: string;
       readonly ydoc_generation?: string;
       readonly projection_sha256?: string;
+      readonly compacted_projection_sha256?: string;
+      readonly projection_receipt_id?: string;
       readonly next_offset?: string;
       readonly error?:
         | string
@@ -184,6 +205,15 @@ export class HttpCoworkYdocTransport implements CoworkYdocTransport {
         "",
       ydocGeneration,
       projectionSha256: payload.projection_sha256 ?? "",
+      ...(payload.compacted_projection_sha256 === undefined
+        ? {}
+        : {
+            compactedProjectionSha256:
+              payload.compacted_projection_sha256,
+          }),
+      ...(payload.projection_receipt_id === undefined
+        ? {}
+        : { projectionReceiptId: payload.projection_receipt_id }),
       nextOffset: payload.next_offset ?? "",
     };
   }

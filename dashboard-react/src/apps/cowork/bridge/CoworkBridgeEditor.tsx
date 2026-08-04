@@ -1349,29 +1349,52 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
   const sittingWorkspace = useMemo<CoworkSittingWorkspace>(
     () => ({
       synchronize: async () => {
-        if (persistence.lastError !== null || persistence.pendingBatchCount > 0) {
-          await persistence.retry();
-        }
-        await persistence.flush();
-        const editor = editorRef.current;
-        if (editor === null) {
-          throw new Error("The document is still loading. Try again in a moment.");
-        }
-        assertCanonicalCoworkEditorState(editor);
         const fileSha256 = expectedFileSha256.current;
         if (fileSha256 === null || fileSha256.length === 0) {
           throw new Error(
             "Co-work cannot verify the Markdown file before applying these decisions.",
           );
         }
-        return {
-          expectedFileSha256: fileSha256,
-          // Pending proposals never enter the live Y.Doc. flush() has persisted every
-          // human-origin update, so this is the exact server head against which prepare
-          // should compare-and-swap.
-          expectedStructuredHeadSha256: persistence.docSha256,
-          generation: editGeneration.current,
-        };
+        // Publish the exact canonical Markdown and Y.Doc snapshot together.
+        // A user edit racing the checkpoint causes a bounded recapture; Review
+        // never pairs current prose with an older projection receipt.
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          if (persistence.lastError !== null || persistence.pendingBatchCount > 0) {
+            await persistence.retry();
+          }
+          await persistence.flush();
+          const editor = editorRef.current;
+          if (editor === null) {
+            throw new Error("The document is still loading. Try again in a moment.");
+          }
+          assertCanonicalCoworkEditorState(editor);
+          const generation = editGeneration.current;
+          const projectionMarkdown = serializeCoworkEditorMarkdown(
+            editor,
+            props.document,
+          );
+          const snapshot = Y.encodeStateAsUpdate(props.document);
+          const [snapshotSha256, projectionSha256] = await Promise.all([
+            sha256Hex(snapshot),
+            sha256Hex(new TextEncoder().encode(projectionMarkdown)),
+          ]);
+          if (generation !== editGeneration.current) continue;
+          const receipt = await persistence.compactProjection({
+            snapshot,
+            snapshotSha256,
+            projectionMarkdown,
+            projectionSha256,
+          });
+          if (receipt === null || generation !== editGeneration.current) continue;
+          return {
+            expectedFileSha256: fileSha256,
+            expectedStructuredHeadSha256: receipt.structuredHeadSha256,
+            generation,
+          };
+        }
+        throw new Error(
+          "The document kept changing while Review prepared it. Try again when the edit settles.",
+        );
       },
       prepare: async (admittedItems, generation) => {
         if (editorRef.current === null) {

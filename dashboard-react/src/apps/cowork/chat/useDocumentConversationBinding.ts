@@ -1,9 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import type {
-  ChatExecutionSelectionInput,
-  ChatExecutionSnapshot,
-} from "../../../widget-library/chat";
+import type { ChatExecutionSnapshot } from "../../../widget-library/chat";
 import type { FeedbackCapture } from "./contracts";
 import {
   HttpCoworkDocumentConversationBindingClient,
@@ -27,15 +24,15 @@ export interface CoworkConversationBindingState {
   readonly agent: CoworkDocumentAgent;
   readonly feedback: readonly FeedbackCapture[];
   readonly execution?: ChatExecutionSnapshot;
-  /** True while a user-authorized start/restart POST is in flight. */
+  /** True while the server is creating or reusing the local binding. */
   readonly ensuring: boolean;
   readonly error: string | null;
 }
 
 export interface UseDocumentConversationBindingResult
   extends CoworkConversationBindingState {
-  /** Present-user-intent mutation: ensure the binding and start/restart its agent. */
-  ensure(execution?: ChatExecutionSelectionInput): Promise<void>;
+  /** Prepare the conversation without starting a model. */
+  ensure(): Promise<void>;
   /** Adopt the authoritative binding returned by a successful feedback POST. */
   adoptFeedback(capture: FeedbackCapture): void;
   /** Adopt an execution PATCH and its atomically returned agent state. */
@@ -145,7 +142,7 @@ export function useDocumentConversationBinding({
   }, [documentId, identity, resolvedClient, storeId]);
 
   const ensure = useCallback(
-    (execution?: ChatExecutionSelectionInput): Promise<void> => {
+    (): Promise<void> => {
       if (ensureInFlight.current !== null) return ensureInFlight.current;
       const expectedIdentity = identity;
       const sequence = ++requestSequence.current;
@@ -158,11 +155,8 @@ export function useDocumentConversationBinding({
         ensuring: true,
         error: null,
       }));
-      const pending = (
-        execution === undefined
-          ? resolvedClient.ensure(documentId, storeId)
-          : resolvedClient.ensure(documentId, storeId, execution)
-      )
+      const pending = resolvedClient
+        .ensure(documentId, storeId)
         .then((binding) => {
           if (
             identityRef.current !== expectedIdentity ||

@@ -27,15 +27,21 @@ export interface AlignOptions {
   readonly gap?: number;
   /** The smallest top a card may take. Defaults to 0. */
   readonly minTop?: number;
+  /**
+   * Maximum empty space before the first card. When present, the whole aligned
+   * stream shifts upward by any excess while preserving relative anchor spacing.
+   */
+  readonly maxLeadingSpace?: number;
 }
 
 /**
  * Place cards next to their anchors, resolving overlap by pushing a clustered
  * card down to just below its predecessor. Input is assumed in document order,
  * but it is sorted defensively by anchorTop so ordering is never load-bearing on
- * the caller. Each card sits at max(its anchor top, previous card's bottom plus
- * the gap), which preserves document order and minimizes the drift from each
- * anchor.
+ * the caller. When maxLeadingSpace is set, the resolver first removes the same
+ * excess leading offset from every anchor. Each card then sits at max(its
+ * adjusted anchor top, previous card's bottom plus the gap), which preserves
+ * document order and relative anchor spacing while minimizing collision drift.
  */
 export function computeAlignedLayout(
   inputs: readonly AlignInput[],
@@ -44,11 +50,20 @@ export function computeAlignedLayout(
   const gap = options.gap ?? 8;
   const minTop = options.minTop ?? 0;
   const ordered = [...inputs].sort((a, b) => a.anchorTop - b.anchorTop);
+  const maxLeadingSpace =
+    options.maxLeadingSpace === undefined
+      ? undefined
+      : Math.max(0, options.maxLeadingSpace);
+  const naturalFirstTop = Math.max(ordered[0]?.anchorTop ?? minTop, minTop);
+  const alignmentOffset =
+    maxLeadingSpace === undefined
+      ? 0
+      : Math.max(0, naturalFirstTop - (minTop + maxLeadingSpace));
 
   const placements: AlignPlacement[] = [];
   let cursor = minTop;
   for (const input of ordered) {
-    const top = Math.max(input.anchorTop, cursor, minTop);
+    const top = Math.max(input.anchorTop - alignmentOffset, cursor, minTop);
     placements.push({ id: input.id, top });
     cursor = top + input.height + gap;
   }

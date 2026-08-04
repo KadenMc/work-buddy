@@ -1,3 +1,5 @@
+import { useCallback } from "react";
+
 import type { WidgetInstanceId } from "../../contributions/contracts";
 import { useDurableHost } from "./durableContext";
 
@@ -14,19 +16,27 @@ export interface DurableCellProps {
  */
 export function DurableCell({ instanceId }: DurableCellProps) {
   const { adopt, release } = useDurableHost();
+  // React cleans up a changed callback ref before invoking its replacement.
+  // Keep this ref stable across ordinary parent renders so a durable widget is
+  // only parked for a real cell unmount or instance/host identity change.
+  const attachCell = useCallback(
+    (cell: HTMLDivElement | null) => {
+      if (cell === null) {
+        return;
+      }
+      adopt(instanceId, cell);
+      return () => {
+        release(instanceId, cell);
+      };
+    },
+    [adopt, instanceId, release],
+  );
+
   return (
     <div
       className="wb-durable-cell"
       data-durable-cell-for={instanceId}
-      ref={(cell: HTMLDivElement | null) => {
-        if (cell === null) {
-          return;
-        }
-        adopt(instanceId, cell);
-        return () => {
-          release(instanceId, cell);
-        };
-      }}
+      ref={attachCell}
     />
   );
 }

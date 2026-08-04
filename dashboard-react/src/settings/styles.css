@@ -528,16 +528,41 @@
     padding: var(--wb-space-7);
   }
 
-  .wb-time-setting-control > label {
+  .wb-select-setting-control {
+    display: grid;
+    gap: var(--wb-space-4);
+    padding: var(--wb-space-7);
+  }
+
+  .wb-time-setting-control > label,
+  .wb-select-setting-control > label {
     color: var(--wb-color-text-secondary);
     font-size: var(--wb-font-size-sm);
     font-weight: var(--wb-font-weight-semibold);
   }
 
-  .wb-time-setting-control__row {
+  .wb-time-setting-control__row,
+  .wb-select-setting-control__row {
     display: flex;
     align-items: center;
     gap: var(--wb-space-4);
+  }
+
+  .wb-select-setting-control select {
+    min-height: var(--wb-control-height-md);
+    min-width: min(100%, 18rem);
+    padding: 0 var(--wb-space-5);
+    border: var(--wb-border-width) solid var(--wb-color-border-default);
+    border-radius: var(--wb-radius-control);
+    background: var(--wb-color-surface-inset);
+    color: var(--wb-color-text-primary);
+    font: inherit;
+  }
+
+  .wb-select-setting-control select:focus-visible {
+    border-color: var(--wb-color-border-interactive);
+    outline: 0.1875rem solid var(--wb-color-focus-ring);
+    outline-offset: var(--wb-space-1);
   }
 
   .wb-time-setting-control input[type="time"] {
@@ -556,7 +581,8 @@
     outline-offset: var(--wb-space-1);
   }
 
-  .wb-time-setting-control > p {
+  .wb-time-setting-control > p,
+  .wb-select-setting-control > p {
     color: var(--wb-color-text-secondary);
     font-size: var(--wb-font-size-sm);
   }
@@ -650,13 +676,15 @@
 
     .wb-settings-control-actions,
     .wb-settings-related-action,
-    .wb-time-setting-control__row {
+    .wb-time-setting-control__row,
+    .wb-select-setting-control__row {
       align-items: stretch;
       flex-direction: column;
     }
 
     .wb-settings-control-actions .wb-button,
-    .wb-time-setting-control__row .wb-button {
+    .wb-time-setting-control__row .wb-button,
+    .wb-select-setting-control__row .wb-button {
       width: 100%;
     }
 

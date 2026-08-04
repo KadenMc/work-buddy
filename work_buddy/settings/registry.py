@@ -1,8 +1,8 @@
 """Declarative native Settings contributions for Work Buddy applications.
 
-Definitions, pages, and placements remain separate on purpose. The Journal day
-boundary is defined once and rendered on its owning App page. Views link to that
-canonical page instead of creating duplicate navigation or editing surfaces.
+Definitions, pages, and placements remain separate on purpose. Each setting is
+defined once and rendered on its owning App page. Views link to that canonical
+page instead of creating duplicate navigation or editing surfaces.
 """
 
 from __future__ import annotations
@@ -14,8 +14,9 @@ from work_buddy.journal_day import DEFAULT_DAY_BOUNDARY, parse_local_time
 
 
 SCHEMA_VERSION = 1
-REGISTRY_REVISION = "settings-registry:1"
+REGISTRY_REVISION = "settings-registry:2"
 JOURNAL_DAY_BOUNDARY_ID = "wb.journal.day-boundary"
+COWORK_REVIEW_NAV_BINDING_ID = "wb.cowork.review.nav-binding"
 PROFILE_SCOPE_ID = "default"
 
 
@@ -84,6 +85,79 @@ _DEFINITIONS: tuple[dict[str, Any], ...] = (
         "visibility": "frontend",
         "sensitivity": "ordinary",
     },
+    {
+        "setting_id": COWORK_REVIEW_NAV_BINDING_ID,
+        "definition_version": 1,
+        "value_version": 1,
+        "owner": {"kind": "app", "id": "wb.cowork", "label": "Co-work"},
+        "provenance": {
+            "complement_id": "wb.cowork",
+            "label": "Co-work",
+            "trust_tier": "native",
+        },
+        "title": "Review navigation keys",
+        "short_description": (
+            "Choose which keys walk to the previous and next item while "
+            "reviewing a document."
+        ),
+        "long_description": (
+            "Inverted uses j for the previous item and k for the next item. "
+            "Vim uses the conventional j down, k up pair."
+        ),
+        "keywords": [
+            "keyboard",
+            "shortcut",
+            "navigation",
+            "j",
+            "k",
+            "vim",
+            "review",
+        ],
+        "tags": ["keyboard", "review"],
+        "value_schema": {
+            "type": "string",
+            "enum": ["inverted", "vim"],
+        },
+        "default_value": "inverted",
+        "allowed_scopes": ["profile"],
+        "default_scope": "profile",
+        "applies_to": [
+            {"kind": "app", "id": "wb.cowork", "label": "Co-work"},
+            {
+                "kind": "view",
+                "id": "wb.cowork.workspace",
+                "label": "Co-work view",
+            },
+        ],
+        "affects": [
+            {
+                "ref": {
+                    "kind": "view",
+                    "id": "wb.cowork.workspace",
+                    "label": "Co-work view",
+                },
+                "note": "Changes the j/k direction used to walk Review items.",
+            }
+        ],
+        "presentation": {
+            "control": "select",
+            "options": [
+                {
+                    "value": "inverted",
+                    "label": "Inverted (j up, k down)",
+                    "description": "The house binding: j moves to the previous item.",
+                },
+                {
+                    "value": "vim",
+                    "label": "Vim (j down, k up)",
+                    "description": "Conventional vim: j moves to the next item.",
+                },
+            ],
+            "apply_behavior": "immediate",
+        },
+        "visibility": "frontend",
+        "sensitivity": "ordinary",
+    },
 )
 
 
@@ -107,6 +181,26 @@ _PAGES: tuple[dict[str, Any], ...] = (
             }
         ],
     },
+    {
+        "page_id": "wb.settings.app.cowork",
+        "context_id": "wb.settings.app.cowork",
+        "context": {"kind": "app", "id": "wb.cowork", "label": "Co-work"},
+        "owner": {"kind": "app", "id": "wb.cowork", "label": "Co-work"},
+        "route": "/app/settings/apps/cowork",
+        "label": "Co-work",
+        "description": "Configure the Co-work document review and writing surface.",
+        "navigation_group": "apps",
+        "navigation_category": "built-in",
+        "order": 20,
+        "fallback_return_path": "/app/cowork",
+        "sections": [
+            {
+                "section_id": "review-keyboard",
+                "label": "Review keyboard",
+                "order": 10,
+            }
+        ],
+    },
 )
 
 
@@ -117,6 +211,14 @@ _PLACEMENTS: tuple[dict[str, Any], ...] = (
         "page_id": "wb.settings.app.journal",
         "context_id": "wb.settings.app.journal",
         "section_id": "day-behavior",
+        "order": 10,
+    },
+    {
+        "placement_id": "wb.settings.placement.app.cowork.nav-binding",
+        "setting_id": COWORK_REVIEW_NAV_BINDING_ID,
+        "page_id": "wb.settings.app.cowork",
+        "context_id": "wb.settings.app.cowork",
+        "section_id": "review-keyboard",
         "order": 10,
     },
 )
@@ -134,8 +236,21 @@ def _validate_native_registry() -> None:
         raise RuntimeError("duplicate native setting placement ID")
 
     for definition in _DEFINITIONS:
+        if definition["presentation"]["apply_behavior"] not in {
+            "immediate",
+            "next-boundary",
+        }:
+            raise RuntimeError(
+                f"unsupported apply behavior for {definition['setting_id']}"
+            )
         if definition["setting_id"] == JOURNAL_DAY_BOUNDARY_ID:
             parse_local_time(definition["default_value"])
+        value_schema = definition["value_schema"]
+        enum_values = value_schema.get("enum")
+        if enum_values is not None and definition["default_value"] not in enum_values:
+            raise RuntimeError(
+                f"default value is outside enum for {definition['setting_id']}"
+            )
         if definition["default_scope"] not in definition["allowed_scopes"]:
             raise RuntimeError(
                 f"invalid default scope for {definition['setting_id']}"

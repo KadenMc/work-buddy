@@ -24,6 +24,7 @@ from pathlib import Path
 from flask import Flask, Response, jsonify, request, send_file
 
 from work_buddy.config import load_config
+from work_buddy.conversations.store import UserMessageIdConflictError
 from work_buddy.dashboard.api import (
     get_chats_summary,
     get_contracts_summary,
@@ -4634,8 +4635,28 @@ def api_conversation_get(conversation_id: str):
                     conversation_id,
                     consumer=consumer,
                 )
-                conversation["agent_alive"] = status.alive
-                conversation["agent_status"] = status.status
+                messages = result.get("messages")
+                last_message = (
+                    messages[-1]
+                    if isinstance(messages, list) and messages
+                    else None
+                )
+                # A durable authored turn with no driver lease is a completed
+                # no-response outcome, not an indefinitely running request.
+                # This covers refused/failed best-effort wakes while keeping
+                # pre-send bound conversations in their neutral not-started
+                # state.
+                no_response = (
+                    status.status == "not_started"
+                    and isinstance(last_message, dict)
+                    and last_message.get("role") == "user"
+                )
+                conversation["agent_alive"] = (
+                    False if no_response else status.alive
+                )
+                conversation["agent_status"] = (
+                    "stopped" if no_response else status.status
+                )
                 conversation["agent_error"] = status.error
             else:
                 conversation["agent_alive"] = is_alive(conversation_id)
@@ -4645,11 +4666,48 @@ def api_conversation_get(conversation_id: str):
         return jsonify({"error": str(exc)}), 500
 
 
+def _wake_persisted_cowork_turn(conversation_id: str) -> object | None:
+    """Best-effort wake after the authored turn is already durable."""
+
+    try:
+        from work_buddy.consent import user_initiated
+        from work_buddy.cowork.document_agent import ensure_bound_document_agent
+
+        with user_initiated("dashboard.cowork.chat_turn"):
+            status = ensure_bound_document_agent(conversation_id)
+        if status is None:
+            logger.warning(
+                "Document-agent wake produced no driver after chat turn: "
+                "conversation=%s",
+                conversation_id,
+            )
+        elif getattr(status, "status", None) != "running":
+            logger.warning(
+                "Document-agent wake did not reach running after chat turn: "
+                "conversation=%s status=%s",
+                conversation_id,
+                getattr(status, "status", None),
+            )
+        return status
+    except Exception:
+        # Message persistence is the response contract, so a nested spawn
+        # failure must never turn a successful authored send into 500. The
+        # conversation projection derives a terminal no-response state from
+        # the durable user turn plus the absence of a driver lease.
+        logger.exception(
+            "Document-agent wake failed after chat turn persisted: "
+            "conversation=%s",
+            conversation_id,
+        )
+        return None
+
+
 @app.post("/api/conversations/<conversation_id>/respond")
 def api_conversation_respond(conversation_id: str):
     """User sends a message or responds to a pending question.
 
-    Expects: {"value": "user's text", "in_reply_to": "question-id"?}
+    Expects: {"value": "user's text", "in_reply_to": "question-id"?,
+              "message_id": "caller-stable-id"?}
 
     An explicit reply is conversation-scoped and single-winner. A Co-work
     composer turn without one remains an ordinary authored message and never
@@ -4662,6 +4720,7 @@ def api_conversation_respond(conversation_id: str):
     data = request.get_json(silent=True) or {}
     value = data.get("value", "")
     in_reply_to = data.get("in_reply_to", data.get("inReplyTo"))
+    message_id = data.get("message_id", data.get("messageId"))
     context = data.get("context")
     if not value and value is not False:
         return jsonify({"error": "Missing 'value' in request body"}), 400
@@ -4669,6 +4728,24 @@ def api_conversation_respond(conversation_id: str):
         not isinstance(in_reply_to, str) or not in_reply_to.strip()
     ):
         return jsonify({"error": "'in_reply_to' must be a nonempty string"}), 400
+    if message_id is not None:
+        if (
+            not isinstance(message_id, str)
+            or not message_id.strip()
+            or len(message_id.strip()) > 255
+        ):
+            return (
+                jsonify(
+                    {
+                        "error": (
+                            "'message_id' must be a nonempty string no longer "
+                            "than 255 characters"
+                        )
+                    }
+                ),
+                400,
+            )
+        message_id = message_id.strip()
     if context is not None and not isinstance(context, dict):
         return jsonify({"error": "'context' must be an object"}), 400
     if context is not None and in_reply_to is not None:
@@ -4700,6 +4777,7 @@ def api_conversation_respond(conversation_id: str):
                     conversation_id=conversation_id,
                     content=str(value),
                     context=context,
+                    message_id=message_id,
                 )
             except CoworkChatTargetError as exc:
                 return (
@@ -4711,6 +4789,10 @@ def api_conversation_respond(conversation_id: str):
                     ),
                     exc.status,
                 )
+            # post_targeted_chat_message has released the document lifecycle
+            # lock after committing the exact frozen-context reference. Wake
+            # under a fresh ordered boundary so no lock is inverted.
+            _wake_persisted_cowork_turn(conversation_id)
             return jsonify(
                 {
                     "sent": True,
@@ -4721,8 +4803,8 @@ def api_conversation_respond(conversation_id: str):
 
         from work_buddy.conversations.store import (
             get_conversation,
+            get_pending_question,
             post_user_message,
-            respond_to_conversation,
             respond_to_message_with_user_message,
         )
         conversation = get_conversation(conversation_id)
@@ -4733,6 +4815,7 @@ def api_conversation_respond(conversation_id: str):
                 conversation_id,
                 in_reply_to,
                 str(value),
+                user_message_id=message_id,
             )
             if msg is None:
                 return (
@@ -4744,6 +4827,8 @@ def api_conversation_respond(conversation_id: str):
                     ),
                     409,
                 )
+            if conversation.source == "cowork_document":
+                _wake_persisted_cowork_turn(conversation_id)
             return jsonify(
                 {
                     "responded": True,
@@ -4754,13 +4839,38 @@ def api_conversation_respond(conversation_id: str):
 
         # Compatibility for older chat consumers that do not send an exact id.
         if conversation.source != "cowork_document":
-            msg = respond_to_conversation(conversation_id, str(value))
-            if msg is not None:
-                return jsonify({"responded": True, "message_id": msg.message_id})
-        msg = post_user_message(conversation_id, str(value))
+            pending = get_pending_question(conversation_id)
+            if pending is not None:
+                msg = respond_to_message_with_user_message(
+                    conversation_id,
+                    pending.message_id,
+                    str(value),
+                    user_message_id=message_id,
+                )
+                if msg is not None:
+                    return jsonify(
+                        {"responded": True, "message_id": msg.message_id}
+                    )
+        msg = post_user_message(
+            conversation_id,
+            str(value),
+            message_id=message_id,
+        )
         if msg is None:
             return jsonify({"error": "Conversation not found or closed"}), 404
+        if conversation.source == "cowork_document":
+            _wake_persisted_cowork_turn(conversation_id)
         return jsonify({"sent": True, "message_id": msg.message_id})
+    except UserMessageIdConflictError:
+        return (
+            jsonify(
+                {
+                    "error": "That message identity was already used for a different turn.",
+                    "code": "message_id_conflict",
+                }
+            ),
+            409,
+        )
     except Exception as exc:
         logger.error(
             "Conversation respond failed for %s: %s", conversation_id, exc,

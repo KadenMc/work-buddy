@@ -74,6 +74,8 @@ export class HttpChatConversationProvider implements ChatConversationProvider {
   private readonly listeners = new Set<ChatInvalidationListener>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private lastSnapshot: ChatConversationSnapshot | null = null;
+  /** POST-confirmed turns not yet observed in the server read projection. */
+  private readonly unobservedAcknowledgements = new Map<string, ChatSendInput>();
   private requestSequence = 0;
   private cachedSequence = 0;
 
@@ -117,6 +119,64 @@ export class HttpChatConversationProvider implements ChatConversationProvider {
     }
   }
 
+  /**
+   * Materialize the user turn confirmed by POST /respond when the read model has
+   * not caught up yet. The acknowledgement's message id is the delivery
+   * boundary; a successful but stale GET is no more authoritative about that
+   * one turn than a temporarily failed GET.
+   */
+  private withUnobservedAcknowledgements(
+    reloaded?: ChatConversationSnapshot,
+  ): ChatConversationSnapshot {
+    // A supplied reload is the current server projection. The cache is only
+    // the fallback when the post-send read failed.
+    const base =
+      reloaded ??
+      this.lastSnapshot ?? {
+        conversationId: this.conversationId,
+        status: "open",
+        agentLiveness: "unknown",
+        messages: [],
+      };
+    // Only the fresh server projection can retire an acknowledgement. A
+    // previously optimistic cache is not proof that the read model caught up.
+    const serverMessageIds = new Set(
+      reloaded?.messages.map((message) => message.id) ?? [],
+    );
+    for (const messageId of serverMessageIds) {
+      this.unobservedAcknowledgements.delete(messageId);
+    }
+    const existingIds = new Set(base.messages.map((message) => message.id));
+    const missing = [...this.unobservedAcknowledgements].filter(
+      ([messageId]) => !existingIds.has(messageId),
+    );
+    if (missing.length === 0) return base;
+
+    return {
+      ...base,
+      messages: [
+        ...base.messages,
+        ...missing.map(([messageId, input]) => ({
+          id: messageId,
+          author: "user",
+          content: input.value,
+          context: input.context,
+        }) as const),
+      ],
+    };
+  }
+
+  private cacheAcknowledgedView(
+    reloaded?: ChatConversationSnapshot,
+  ): ChatConversationSnapshot {
+    const optimistic = this.withUnobservedAcknowledgements(reloaded);
+    // Fence older in-flight loads from replacing this delivery-confirmed view.
+    this.requestSequence += 1;
+    this.cachedSequence = this.requestSequence;
+    this.lastSnapshot = optimistic;
+    return optimistic;
+  }
+
   async loadConversation(
     conversationId: string,
   ): Promise<ChatConversationSnapshot> {
@@ -133,7 +193,9 @@ export class HttpChatConversationProvider implements ChatConversationProvider {
     if (payload.conversation.conversation_id !== this.conversationId) {
       throw new Error("Chat returned the wrong conversation.");
     }
-    const snapshot = normalizeConversationPayload(payload);
+    const snapshot = this.withUnobservedAcknowledgements(
+      normalizeConversationPayload(payload),
+    );
     if (sequence >= this.cachedSequence) {
       this.cachedSequence = sequence;
       this.lastSnapshot = snapshot;
@@ -153,6 +215,9 @@ export class HttpChatConversationProvider implements ChatConversationProvider {
       // plain composer turn omits it and remains an ordinary user message.
       body: JSON.stringify({
         value: input.value,
+        ...(input.messageId === undefined
+          ? {}
+          : { message_id: input.messageId }),
         ...(input.inReplyTo === undefined
           ? {}
           : { in_reply_to: input.inReplyTo }),
@@ -188,45 +253,25 @@ export class HttpChatConversationProvider implements ChatConversationProvider {
         "Your message may have been delivered, but chat could not confirm it. Wait for chat to refresh before trying again.",
       );
     }
+    this.unobservedAcknowledgements.set(messageId, input);
 
     // The POST acknowledgement is authoritative: once it returns a message id,
-    // a transient follow-up GET failure must not retain the draft and invite a
-    // duplicate send. Block older in-flight loads from regressing the cache,
-    // then prefer the server snapshot and fall back to an optimistic user turn.
+    // neither a transient follow-up GET failure nor a successful-but-stale GET
+    // may retain the draft and invite a duplicate send. Block older in-flight
+    // loads from regressing the cache, then reconcile the acknowledged user turn
+    // into whichever snapshot is freshest.
     const acknowledgementSequence = ++this.requestSequence;
     this.cachedSequence = Math.max(
       this.cachedSequence,
       acknowledgementSequence,
     );
     try {
+      // loadConversation already reconciles and caches every outstanding
+      // acknowledgement. Feeding that optimistic view through the reconciler
+      // again would mistake our own bubble for server observation.
       return await this.loadConversation(conversationId);
     } catch {
-      const base =
-        this.lastSnapshot ?? {
-          conversationId: this.conversationId,
-          status: "open",
-          agentLiveness: "unknown",
-          messages: [],
-        };
-      if (base.messages.some((message) => message.id === messageId)) {
-        return base;
-      }
-      const optimistic: ChatConversationSnapshot = {
-        ...base,
-        messages: [
-          ...base.messages,
-          {
-            id: messageId,
-            author: "user",
-            content: input.value,
-            context: input.context,
-          },
-        ],
-      };
-      this.requestSequence += 1;
-      this.cachedSequence = this.requestSequence;
-      this.lastSnapshot = optimistic;
-      return optimistic;
+      return this.cacheAcknowledgedView();
     }
   }
 
@@ -243,11 +288,16 @@ export class HttpChatConversationProvider implements ChatConversationProvider {
     };
   }
 
+  /** Ask mounted consumers to reload immediately without replacing the provider. */
+  invalidate(): void {
+    // Snapshot the set so an unsubscribe during dispatch remains well defined.
+    for (const listener of [...this.listeners]) listener();
+  }
+
   private startPolling(): void {
     if (this.timer !== null || this.pollIntervalMs <= 0) return;
     this.timer = setInterval(() => {
-      // A snapshot of the set so an unsubscribe during dispatch is well defined.
-      for (const listener of [...this.listeners]) listener();
+      this.invalidate();
     }, this.pollIntervalMs);
   }
 

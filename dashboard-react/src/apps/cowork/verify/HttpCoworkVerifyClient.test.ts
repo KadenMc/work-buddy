@@ -27,6 +27,7 @@ const capture = {
   structuredHeadSha256: "d".repeat(64),
   projectionMarkdown: "# Title\n",
   projectionSha256: "e".repeat(64),
+  projectionReceiptId: "projection-receipt-1",
   target: {
     source: "whole_document",
     label: "Whole document",

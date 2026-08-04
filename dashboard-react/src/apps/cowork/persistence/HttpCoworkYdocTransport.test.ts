@@ -202,6 +202,60 @@ describe("HttpCoworkYdocTransport", () => {
     expect(parseFrames(framed)).toEqual([batch, snapshot]);
   });
 
+  it("frames a capture projection into the same compaction CAS", async () => {
+    const batch = bytes(1);
+    const snapshot = bytes(2, 2);
+    const projectionMarkdown = "# Exact projection\n";
+    const fetchImpl = mockFetch(() =>
+      fakeResponse({
+        json: {
+          ok: true,
+          applied: true,
+          doc_sha256: "managed-baseline",
+          structured_head_sha256: "structured-head",
+          projection_sha256: "managed-baseline",
+          compacted_projection_sha256: "projection-digest",
+          projection_receipt_id: "projection-receipt",
+          ydoc_generation: "generation-1",
+          next_offset: "6",
+        },
+      }),
+    );
+
+    const result = await transportWith(fetchImpl).push({
+      batch,
+      baseSha256: "base",
+      baseYdocGeneration: "generation-1",
+      compaction: {
+        snapshot,
+        snapshotSha256: "snap",
+        projectionMarkdown,
+        projectionSha256: "projection-digest",
+      },
+    });
+
+    const [, options] = fetchImpl.mock.calls[0];
+    expect(options?.headers).toMatchObject({
+      "X-WB-Compacted-Snapshot-Sha256": "snap",
+      "X-WB-Compacted-Projection-Sha256": "projection-digest",
+    });
+    expect(
+      parseFrames(options?.body as Uint8Array).map((frame) =>
+        Array.from(frame),
+      ),
+    ).toEqual([
+      Array.from(batch),
+      Array.from(snapshot),
+      Array.from(new TextEncoder().encode(projectionMarkdown)),
+    ]);
+    expect(result).toMatchObject({
+      ok: true,
+      projectionSha256: "managed-baseline",
+      compactedProjectionSha256: "projection-digest",
+      projectionReceiptId: "projection-receipt",
+    });
+  });
+
   it("maps only an explicit stale_base response into a retry result", async () => {
     const fetchImpl = mockFetch(() =>
       fakeResponse({

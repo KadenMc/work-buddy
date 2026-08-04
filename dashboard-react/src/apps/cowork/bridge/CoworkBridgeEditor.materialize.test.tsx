@@ -147,7 +147,11 @@ describe("CoworkBridgeEditor explicit Markdown Save", () => {
     if (workspace === null) throw new Error("sitting workspace was not ready");
     const preflight = await workspace.synchronize();
     expect(preflight.expectedStructuredHeadSha256).toBe(initialHead);
-    expect(pushes).toHaveLength(0);
+    expect(pushes).toHaveLength(1);
+    expect(
+      (pushes[0] as { compaction?: { projectionMarkdown?: string } }).compaction
+        ?.projectionMarkdown,
+    ).toBe("The quick brown fox");
     expect((await server.pull({})).structuredHeadSha256).toBe(initialHead);
 
     const mountedEditor = editorRef.current;
@@ -163,7 +167,7 @@ describe("CoworkBridgeEditor explicit Markdown Save", () => {
         mountedEditor.state.tr.insertText("ly", quick.to),
       );
     });
-    await waitFor(() => expect(pushes).toHaveLength(1));
+    await waitFor(() => expect(pushes).toHaveLength(2));
     const persisted = await server.pull({});
     expect(persisted.structuredHeadSha256).not.toBe(initialHead);
     const reopened = new Y.Doc();

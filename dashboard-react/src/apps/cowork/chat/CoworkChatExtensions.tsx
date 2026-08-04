@@ -74,15 +74,11 @@ export function CoworkActionSnapshotProvenance({
   return (
     <div
       className="wb-cowork-chat-msg__context"
-      aria-label={`Frozen document context: ${context.targetLabel}`}
-      title={`Action snapshot ${context.actionSnapshotId}`}
+      aria-label={`${prefix}: ${context.targetLabel}`}
     >
       <span className="wb-cowork-chat-msg__context-label">
         {prefix}: {context.targetLabel}
         {words}
-      </span>
-      <span className="wb-cowork-chat-msg__context-version">
-        Frozen version · {context.actionSnapshotId.slice(0, 8)}
       </span>
     </div>
   );
@@ -95,7 +91,7 @@ function routingLabel(delivery: RoutingDelivery): string {
     return `${target} sent to the document agent.`;
   }
   if (delivery.state === "queued") {
-    return `${target} saved in chat. Restart chat to continue.`;
+    return `${target} saved in chat and waiting for delivery.`;
   }
   return `${target} could not be saved in chat.`;
 }

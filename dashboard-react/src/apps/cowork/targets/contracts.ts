@@ -6,7 +6,11 @@
  * None of these records grants readable context, change authority, or egress.
  */
 
-import type { CoworkCompactionReceipt } from "../persistence/CoworkYdocPersistence";
+import type {
+  CoworkCompactionReceipt,
+  CoworkProjectionCheckpoint,
+  CoworkProjectionCompactionReceipt,
+} from "../persistence/CoworkYdocPersistence";
 
 export type CoworkActionTargetChoice =
   | "working_target"
@@ -123,6 +127,8 @@ export interface CoworkCapturedActionSnapshot {
   readonly structuredHeadSha256: string;
   readonly projectionMarkdown: string;
   readonly projectionSha256: string;
+  /** Server-issued receipt binding this projection to the compacted Y.Doc CAS. */
+  readonly projectionReceiptId: string;
   readonly target: CoworkResolvedActionTarget;
 }
 
@@ -173,6 +179,9 @@ export interface CoworkActionCapturePersistence {
   retry(): Promise<void>;
   flush(): Promise<void>;
   compact(): Promise<CoworkCompactionReceipt>;
+  compactProjection(
+    checkpoint: CoworkProjectionCheckpoint,
+  ): Promise<CoworkProjectionCompactionReceipt | null>;
 }
 
 /**

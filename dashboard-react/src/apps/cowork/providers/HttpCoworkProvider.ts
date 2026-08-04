@@ -42,6 +42,10 @@ import {
   registeredSessionDurabilityKey,
   scratchSessionDurabilityKey,
 } from "../session/CoworkSessionDurability";
+import {
+  coworkStoreUrlId,
+  resolveCoworkRouteStoreId,
+} from "./storeRouteIdentity";
 
 export interface CoworkLocationAdapter {
   getSearch(): string;
@@ -154,6 +158,7 @@ export class HttpCoworkProvider implements ViewProvider {
   #inspectionToken: string | null = null;
   #inspectionEpoch = 0;
   #folderActivationEpoch = 0;
+  #ignoredLocationSearch: string | null = null;
   #folderMutationKey: {
     readonly inspectionToken: string;
     readonly operation: "initialize";
@@ -199,6 +204,11 @@ export class HttpCoworkProvider implements ViewProvider {
       document: null,
     };
     options.location.subscribe((search) => {
+      const ignoredSearch = this.#ignoredLocationSearch;
+      this.#ignoredLocationSearch = null;
+      if (search === ignoredSearch) {
+        return;
+      }
       void this.#followLocation(search);
     });
   }
@@ -463,7 +473,7 @@ export class HttpCoworkProvider implements ViewProvider {
   }
 
   async #bootstrap(): Promise<void> {
-    const route = routeFromSearch(this.#location.getSearch(), this.#scratches);
+    const requestedRoute = routeFromSearch(this.#location.getSearch(), this.#scratches);
     try {
       const [folders] = await Promise.all([
         this.#client.listFolders(true),
@@ -476,12 +486,14 @@ export class HttpCoworkProvider implements ViewProvider {
         scratches: this.#scratches.list(),
         readOnly: folders.readOnly,
       };
+      const route = resolveCoworkRouteStoreId(requestedRoute, folders.folders);
       await this.#resolveRoute(route, false);
+      this.#replaceWithCanonicalStoreUrl(route);
     } catch (error) {
       const apiError = asCoworkApiError(error);
       this.#model = {
         ...this.#model,
-        routeTarget: route,
+        routeTarget: requestedRoute,
         navigationError: apiError,
         catalog: { ...emptyCatalog("error"), error: apiError },
       };
@@ -490,12 +502,16 @@ export class HttpCoworkProvider implements ViewProvider {
 
   async #followLocation(search: string): Promise<void> {
     await this.#ensureBooted();
-    const route = routeFromSearch(search, this.#scratches);
+    const route = resolveCoworkRouteStoreId(
+      routeFromSearch(search, this.#scratches),
+      this.#model.folders,
+    );
     const previousSearch = this.#activeSessionSearch();
     try {
       await this.#withDurableSessionLeave(routeDurabilityKey(route), () =>
         this.#resolveRoute(route, true),
       );
+      this.#replaceWithCanonicalStoreUrl(route);
     } catch (error) {
       // Browser Back/Forward changes the address before the provider can run its barrier.
       // Restore the still-open session when device-local persistence fails.
@@ -508,13 +524,43 @@ export class HttpCoworkProvider implements ViewProvider {
   #activeSessionSearch(): string {
     const session = this.#model.activeSession;
     if (session.kind === "registered") {
-      return `?store_id=${encodeURIComponent(session.storeId)}&document_id=${encodeURIComponent(session.document.documentId)}`;
+      return this.#storeSearch(session.storeId, session.document.documentId);
     }
     if (session.kind === "scratch") {
       return `?scratch_id=${encodeURIComponent(session.scratchId)}`;
     }
     const storeId = this.#model.activeFolderStoreId;
-    return storeId === null ? "?mode=launcher" : `?store_id=${encodeURIComponent(storeId)}`;
+    return storeId === null ? "?mode=launcher" : this.#storeSearch(storeId);
+  }
+
+  #storeSearch(storeId: string, documentId?: string): string {
+    const urlStoreId = coworkStoreUrlId(storeId, this.#model.folders);
+    const documentSearch =
+      documentId === undefined ? "" : `&document_id=${encodeURIComponent(documentId)}`;
+    return `?store_id=${encodeURIComponent(urlStoreId)}${documentSearch}`;
+  }
+
+  #replaceWithCanonicalStoreUrl(route: CoworkRouteTarget): void {
+    if (route.kind === "scratch" || route.kind === "unavailable" || route.storeId === null) {
+      return;
+    }
+
+    const hasResolvedRoute =
+      route.kind === "registered"
+        ? this.#model.activeSession.kind === "registered" &&
+          this.#model.activeSession.storeId === route.storeId &&
+          this.#model.activeSession.document.documentId === route.documentId
+        : this.#model.activeFolderStoreId === route.storeId;
+    if (!hasResolvedRoute) return;
+
+    const params = new URLSearchParams(this.#location.getSearch());
+    const urlStoreId = coworkStoreUrlId(route.storeId, this.#model.folders);
+    if (params.get("store_id") === urlStoreId) return;
+
+    params.set("store_id", urlStoreId);
+    const nextSearch = `?${params.toString()}`;
+    this.#ignoredLocationSearch = nextSearch;
+    this.#location.replaceSearch(nextSearch);
   }
 
   async #resolveRoute(route: CoworkRouteTarget, notify: boolean): Promise<void> {
@@ -915,9 +961,7 @@ export class HttpCoworkProvider implements ViewProvider {
       document,
     };
     if (navigate) {
-      this.#location.pushSearch(
-        `?store_id=${encodeURIComponent(input.storeId)}&document_id=${encodeURIComponent(input.documentId)}`,
-      );
+      this.#location.pushSearch(this.#storeSearch(input.storeId, input.documentId));
     }
     this.#touch("document-opened");
   }
@@ -933,7 +977,7 @@ export class HttpCoworkProvider implements ViewProvider {
       document: null,
     };
     this.#location.pushSearch(
-      storeId === null ? "?mode=launcher" : `?store_id=${encodeURIComponent(storeId)}`,
+      storeId === null ? "?mode=launcher" : this.#storeSearch(storeId),
     );
     this.#touch("document-closed");
   }
@@ -1044,7 +1088,7 @@ export class HttpCoworkProvider implements ViewProvider {
           document: null,
         };
         this.#location.pushSearch(
-          storeId === null ? "?mode=launcher" : `?store_id=${encodeURIComponent(storeId)}`,
+          storeId === null ? "?mode=launcher" : this.#storeSearch(storeId),
         );
         this.#touch("local-document-discarded");
         return;
@@ -1116,7 +1160,7 @@ export class HttpCoworkProvider implements ViewProvider {
         activeSession: { kind: "none" },
         document: null,
       };
-      this.#location.pushSearch(`?store_id=${encodeURIComponent(input.storeId)}`);
+      this.#location.pushSearch(this.#storeSearch(input.storeId));
       this.#touch("folder-opened");
       return;
     }
@@ -1368,7 +1412,7 @@ export class HttpCoworkProvider implements ViewProvider {
             document: null,
           };
           await this.#loadCatalog(folder.storeId);
-          this.#location.pushSearch(`?store_id=${encodeURIComponent(folder.storeId)}`);
+          this.#location.pushSearch(this.#storeSearch(folder.storeId));
           this.#touch("folder-opened");
         });
       } catch (error) {
@@ -1424,7 +1468,7 @@ export class HttpCoworkProvider implements ViewProvider {
       document: null,
     };
     await this.#loadCatalog(folder.storeId);
-    this.#location.pushSearch(`?store_id=${encodeURIComponent(folder.storeId)}`);
+    this.#location.pushSearch(this.#storeSearch(folder.storeId));
     this.#touch("folder-initialized");
   }
 

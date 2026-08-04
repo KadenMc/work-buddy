@@ -498,6 +498,132 @@ function TimeSetting({
   );
 }
 
+function SelectSetting({
+  projected,
+  values,
+}: {
+  readonly projected: ProjectedSetting;
+  readonly values: SettingsValuesState;
+}) {
+  const { definition } = projected;
+  const options =
+    definition.control.kind === "select" ? definition.control.options : [];
+  const value = values.snapshot?.values.get(definition.settingId);
+  const storedValue =
+    value?.configuredValue ?? value?.effectiveValue ?? definition.defaultValue;
+  const defaultValue =
+    typeof definition.defaultValue === "string"
+      ? definition.defaultValue
+      : options[0]?.value ?? "";
+  const initialValue =
+    typeof storedValue === "string" &&
+    options.some((option) => option.value === storedValue)
+      ? storedValue
+      : defaultValue;
+  const revision = value?.revision ?? "unavailable";
+  const [draft, setDraft] = useState(initialValue);
+  const [baseline, setBaseline] = useState({ revision, value: initialValue });
+  const [externalChange, setExternalChange] = useState(false);
+
+  useEffect(() => {
+    if (revision === baseline.revision) return;
+    const mayAdopt = draft === baseline.value || draft === initialValue;
+    if (mayAdopt) setDraft(initialValue);
+    setExternalChange(!mayAdopt);
+    setBaseline({ revision, value: initialValue });
+  }, [baseline, draft, initialValue, revision]);
+
+  const serverUnavailable =
+    values.status === "unavailable" || values.status === "error";
+  const disabled =
+    serverUnavailable ||
+    values.status === "loading" ||
+    values.snapshot?.readOnly === true ||
+    values.mutationSettingId === definition.settingId;
+  const changed = draft !== initialValue;
+  const selectedOption = options.find((option) => option.value === draft);
+  const controlId = `control-${settingElementId(definition.settingId)}`;
+
+  return (
+    <SettingCard projected={projected} value={value}>
+      {values.status === "loading" ? (
+        <InlineAlert tone="info">Loading the authoritative setting…</InlineAlert>
+      ) : null}
+      {serverUnavailable ? (
+        <InlineAlert tone="warning">
+          The Settings service is unavailable. This setting remains discoverable,
+          but editing is disabled until its authority reconnects.
+        </InlineAlert>
+      ) : null}
+      {values.snapshot?.readOnly ? (
+        <InlineAlert tone="warning">
+          Work Buddy is read-only. You can inspect this setting but cannot change it.
+        </InlineAlert>
+      ) : null}
+      {externalChange ? (
+        <InlineAlert tone="warning" role="status" aria-live="polite">
+          <span>
+            The authoritative value changed while you were choosing an option. Your
+            choice was preserved.
+          </span>
+          <Button
+            variant="secondary"
+            size="small"
+            onClick={() => {
+              setDraft(initialValue);
+              setExternalChange(false);
+            }}
+          >
+            Use latest value
+          </Button>
+        </InlineAlert>
+      ) : null}
+
+      <div className="wb-select-setting-control">
+        <label htmlFor={controlId}>{definition.title}</label>
+        <div className="wb-select-setting-control__row">
+          <select
+            id={controlId}
+            value={draft}
+            disabled={disabled}
+            onChange={(event) => {
+              setDraft(event.target.value);
+              if (event.target.value === initialValue) setExternalChange(false);
+            }}
+          >
+            {options.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <Button
+            variant="primary"
+            size="small"
+            disabled={disabled || !changed}
+            onClick={() => void values.write(definition.settingId, draft)}
+          >
+            Save change
+          </Button>
+        </div>
+        {selectedOption?.description ? <p>{selectedOption.description}</p> : null}
+      </div>
+
+      <div className="wb-settings-control-actions">
+        <p>Changes apply as soon as they are saved.</p>
+        <Button
+          variant="secondary"
+          size="small"
+          disabled={disabled || !value?.isModified}
+          onClick={() => void values.reset(definition.settingId)}
+        >
+          Reset to {definition.ownerLabel} default
+        </Button>
+      </div>
+    </SettingCard>
+  );
+}
+
 function UnsupportedSetting({ projected }: { readonly projected: ProjectedSetting }) {
   return (
     <SettingCard projected={projected}>
@@ -524,6 +650,9 @@ function SettingControl({
     projected.definition.settingId === JOURNAL_DAY_BOUNDARY_SETTING_ID
   ) {
     return <TimeSetting projected={projected} values={values} />;
+  }
+  if (projected.definition.control.kind === "select") {
+    return <SelectSetting projected={projected} values={values} />;
   }
   return <UnsupportedSetting projected={projected} />;
 }

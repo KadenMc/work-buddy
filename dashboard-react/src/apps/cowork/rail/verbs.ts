@@ -111,29 +111,31 @@ export const CLAIM_VERB_LABEL: Record<ClaimVerbKind, string> = {
 };
 
 /**
- * The reject and defer verbs that stay decidable on a stale-base proposal (S6).
- * confirm, edit_confirm, redirect, and endorse are structurally undecidable
- * against a stale base (they would return an error with reason stale_base), so
- * the mark bar disables them.
+ * Only Accept and Amend mutate document text, so only those verbs require a
+ * safely located current target. Routing and flag decisions remain valid even
+ * when the original passage moved or disappeared.
  */
-const STALE_BASE_ALLOWED: ReadonlySet<ProposalVerbKind> = new Set([
+const TARGET_INDEPENDENT: ReadonlySet<ProposalVerbKind> = new Set([
   "reject_plain",
   "reject_as_false",
   "reject_as_preference",
   "defer",
   "dismiss",
+  "redirect",
+  "endorse",
 ]);
 
 /**
- * Whether a verb is decidable for a given proposal. On a stale base only the
- * reject family and defer or dismiss remain available (section 1.5 stale gate).
+ * Whether a verb is decidable for a given proposal. New servers expose a typed
+ * target assessment; baseOk is retained only for rolling compatibility.
  */
 export function isVerbDecidable(
-  proposal: Pick<ReviewProposal, "baseOk">,
+  proposal: Pick<ReviewProposal, "applicability" | "baseOk">,
   verb: ProposalVerbKind,
 ): boolean {
-  if (proposal.baseOk) return true;
-  return STALE_BASE_ALLOWED.has(verb);
+  if (TARGET_INDEPENDENT.has(verb)) return true;
+  return proposal.applicability?.status === "applicable" ||
+    (proposal.applicability === undefined && proposal.baseOk);
 }
 
 /**

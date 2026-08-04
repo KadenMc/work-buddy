@@ -29,6 +29,13 @@ dev_notes: |-
 
   Cross-store `wb-truth:` references fail closed for confirmation when their authority cannot be resolved locally. Integrity reporting may retain unresolved external references as warnings, but it must not silently promote them to confirmed premises.
 
+  Proposal base-content and structured-head hashes are immutable lineage, not
+  a blanket current-document gate. Only Co-work sitting orchestration may pass
+  an internal prevalidated applicability result after target assessment against
+  a receipt-bound projection. Commit still retains the expected structured-head
+  and snapshot concurrency boundary; no caller-facing transport may assert that
+  proof.
+
   The executable contract inventory is `tests/unit/truth/INVARIANT_COVERAGE.md`; declarative end-to-end workloads live in `tests/fixtures/truth/`. Released schema fixtures are immutable compatibility inputs: add a new versioned fixture instead of regenerating an old one.
 
   Document surface constants and seams: `SCHEMA_VERSION` and export `FORMAT_VERSION` are both 8, with export upcast support back to 1. Schema v8 adds append-only `document_provenance_attestations`, backfills imported sources with `writeback_policy=never`, and gives historical detached imports a deterministic system-attested unknown-authorship/unknown-review record rather than inventing provenance. These extend the document versions, lifecycle intents, Verify, Co-think, and coordination history introduced in v3-v7. The `truth.doc_*` event vocabulary's single source of truth is the frozenset in `work_buddy/truth/events.py`. Engine modules: `documents.py` (registration, source-writeback policy, retained import-source references, and immutable version recording), `provenance.py` (canonical provenance-attestation validation), `proposals.py` (decision funnel; rejecting decisions funnel through `_redact_if_policy`, which nulls content and scrubs the consumed gesture `payload_excerpt` in the same transaction), `expressions.py` (role-typed claim ties, minted on plain accept only), and `ydoc_store.py` (structured heads, bounded update admission, durable snapshots, and compaction). Co-work owns importer policy, attestation capture, supported import normalization, paste delivery/recovery, drift, reimport, materialization, retirement, recovery, and sitting orchestration. A retained import-source blob is soft-required: new imports capture it and pin it through refcounts, while an upgraded historical hash-only import produces a portable integrity warning rather than becoming unreadable. Integrity's gesture-subject resolver matches proposals on `canonical_sha256` and exempts the reject_as_false closure-to-negation confirm shape from the claim-subject gesture checks. `proposals.quote_exact` is nullable to admit content redaction, following the `evidence_spans` pattern.
@@ -140,6 +147,13 @@ barrier for that cross-store delivery gap, not an atomicity guarantee. See
 `cowork/content-provenance`.
 
 Agents never edit a registered document's content directly. An agent edit arrives as a tracked-edit proposal whose canonical payload is hash-bound, and every decision on a proposal is a human gesture with the same single-use exact-review authority as claim confirmation: accept, accept with an amended replacement, reason-classed rejection, or dismissal. `replacement: ""` is an explicit deletion of the anchored passage; `replacement: null` remains a flag with no textual edit. A deletion cannot carry claim references or mint expressions because no accepted passage remains to express them. A plain accept of a non-deletion edit mints the expression rows carried by the proposal's claim references. An amended accept skips that minting because the applied replacement is no longer the reviewed text. When the store's content gate directs it, a rejecting decision redacts the proposal's readable content in the same transaction, records the redaction through the proposal's own status history, and scrubs the consumed gesture receipt so no readable excerpt survives.
+
+Applicability is target-level. **Accept** and **Amend** materialize text and
+therefore require the original passage to be safely located at sitting
+preparation. Rejection, defer, redirect, and flag endorse or dismiss decisions
+operate on the proposal record and remain valid when text placement cannot be
+proven. The proposal's original base hashes remain preserved as lineage in
+every case.
 
 Out-of-band edits are first-class for a document with a file writeback target:
 drift detection notices when that file diverges from its last materialized

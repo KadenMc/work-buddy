@@ -147,6 +147,11 @@ export class LiveReviewRailProvider implements ReviewRailProvider {
       workspace,
       transport: this.#options.sittingTransport,
       idempotencyKeyFor: (fingerprint) => this.#idempotencyKey(fingerprint),
+      onIntentAbandoned: (fingerprint) => {
+        if (this.#pendingKey?.fingerprint === fingerprint) {
+          this.#pendingKey = null;
+        }
+      },
       onCommitted: () => {
         this.#pendingKey = null;
       },

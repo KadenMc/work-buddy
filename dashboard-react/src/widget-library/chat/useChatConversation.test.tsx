@@ -43,11 +43,17 @@ describe("useChatConversation", () => {
       conversationId: "c1",
       autoReply: () => [{ id: "a1", author: "assistant", content: "Got it" }],
     });
+    const sendMessage = vi.spyOn(provider, "sendMessage");
     const { result } = renderHook(() => useChatConversation(provider, "c1"));
     await waitFor(() => expect(result.current.status).toBe("ready"));
 
     await act(async () => {
-      await result.current.send("hi");
+      await result.current.send(
+        "hi",
+        undefined,
+        undefined,
+        "chat-user-hook-stable",
+      );
     });
 
     expect(result.current.sending).toBe(false);
@@ -55,6 +61,12 @@ describe("useChatConversation", () => {
       "hi",
       "Got it",
     ]);
+    expect(sendMessage).toHaveBeenCalledWith("c1", {
+      value: "hi",
+      inReplyTo: undefined,
+      context: undefined,
+      messageId: "chat-user-hook-stable",
+    });
   });
 
   it("reloads on a provider invalidation", async () => {

@@ -404,6 +404,14 @@ export const mapProposal = (
     epistemicState: proposal.epistemic_state,
     baseDocSha256: proposal.base_doc_sha256,
     canonicalSha256: proposal.canonical_sha256,
+    ...(proposal.applicability === undefined
+      ? {}
+      : {
+          applicability: {
+            status: proposal.applicability.status,
+            reason: proposal.applicability.reason,
+          },
+        }),
     baseOk: proposal.base_ok,
     status: proposal.status,
     fixesRef: proposal.fixes_ref,

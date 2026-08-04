@@ -38,6 +38,13 @@ export interface CoworkYdocPullRequest {
 export interface CoworkYdocCompaction {
   readonly snapshot: Uint8Array;
   readonly snapshotSha256: string;
+  /**
+   * Present only for an exact action capture. The server hashes these UTF-8
+   * bytes and binds them to this compaction CAS without advancing the managed
+   * Markdown baseline.
+   */
+  readonly projectionMarkdown?: string;
+  readonly projectionSha256?: string;
 }
 
 export interface CoworkYdocPushRequest {
@@ -60,6 +67,9 @@ export type CoworkYdocPushResult =
       readonly docSha256: string;
       readonly structuredHeadSha256?: string;
       readonly projectionSha256?: string;
+      /** Exact browser projection admitted atomically with this compaction. */
+      readonly compactedProjectionSha256?: string;
+      readonly projectionReceiptId?: string;
       readonly ydocGeneration: string;
       readonly nextOffset: string;
     }

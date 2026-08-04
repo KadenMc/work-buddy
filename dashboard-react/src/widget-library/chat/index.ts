@@ -61,16 +61,13 @@ export {
 export {
   ChatPanel,
   ChatPanelState,
-  type ChatInputRecovery,
-  type ChatInputRecoveryAction,
   type ChatPanelProps,
+  type ChatPanelStateAction,
   type ChatPanelStateKind,
   type ChatPanelStateProps,
 } from "./ChatPanel";
 export {
   ConversationChat,
-  type ChatInputRecoveryResolver,
   type ChatSendPreparer,
   type ConversationChatProps,
-  type ConversationChatState,
 } from "./ConversationChat";

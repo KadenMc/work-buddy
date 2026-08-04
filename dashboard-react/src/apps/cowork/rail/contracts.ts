@@ -53,10 +53,15 @@ export interface ProposalClaimRef {
   readonly role: ClaimRefRole;
 }
 
+export interface ProposalApplicability {
+  readonly status: "applicable" | "target_changed" | "unknown";
+  readonly reason: string;
+}
+
 /**
  * One open proposal as delivered by R2 doc-get, plus two rail-display fields
  * (anchorLabel, documentOrder) the stream and queue use for ordering and the
- * scroll-to-anchor affordance. base_ok is the S6 stale-base signal.
+ * scroll-to-anchor affordance.
  */
 export interface ReviewProposal {
   readonly proposalId: string;
@@ -73,7 +78,9 @@ export interface ReviewProposal {
   readonly baseDocSha256: string;
   /** The per-item hash the human is shown, the single-use gesture binding (I6). */
   readonly canonicalSha256: string;
-  /** S6: false marks the proposal stale-base, decidable only via reject or defer. */
+  /** Target-level proof against the current canonical Markdown projection. */
+  readonly applicability?: ProposalApplicability;
+  /** Compatibility alias for older servers; true means target-applicable. */
   readonly baseOk: boolean;
   readonly status: ProposalStatus;
   /** Set when a flag was endorsed and the drafted fix returned as a linked proposal. */

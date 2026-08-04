@@ -39,6 +39,7 @@ describe("cowork keyboard settings contribution", () => {
     const [definition] = coworkKeyboardSettingsContribution.definitions;
     expect(definition.settingId).toBe(COWORK_NAV_BINDING_SETTING_ID);
     expect(definition.defaultValue).toBe("inverted");
+    expect(definition.allowedScopes).toEqual(["profile"]);
     expect(definition.control.kind).toBe("select");
     const control = definition.control;
     if (control.kind !== "select") throw new Error("expected a select control");

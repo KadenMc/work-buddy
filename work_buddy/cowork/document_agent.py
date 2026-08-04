@@ -183,8 +183,9 @@ Bindings:
 
 ## Setup
 
-1. Read WORK_BUDDY_SESSION_ID from the environment and call wb_init before any
-   other work-buddy tool.
+1. Follow the Work Buddy execution identity preamble exactly. Initialize once
+   with its exact session_id and harness_id before any other Work Buddy tool;
+   never substitute an environment, bootstrap, or native harness identity.
 2. Resolve the exact schemas with wb_search for cowork_doc_get,
    cowork_action_snapshot_get, cowork_doc_propose_edit, cowork_doc_comment,
    conversation_send, conversation_ask, conversation_poll,
@@ -751,6 +752,112 @@ def ensure_document_agent(
         )
 
 
+def _execution_selection_for_conversation(
+    conversation_id: str,
+) -> AgentExecutionSelection:
+    """Reuse a pinned target or atomically pin the current server default."""
+
+    from work_buddy.agent_execution.registry import default_selection
+    from work_buddy.conversations import execution as conversation_execution
+
+    projected = conversation_execution.projected_execution(
+        conversation_id,
+        default_selection().to_dict(),
+    )
+    if not projected.persisted:
+        try:
+            projected = conversation_execution.set_execution(
+                conversation_id,
+                projected.to_dict(),
+                expected_revision=None,
+            )
+        except conversation_execution.ConversationExecutionConflict:
+            # A concurrent trusted selector won the compare-and-swap. Use its
+            # persisted target rather than replacing it with our projection.
+            projected = conversation_execution.projected_execution(
+                conversation_id,
+                default_selection().to_dict(),
+            )
+            if not projected.persisted:
+                raise
+    return AgentExecutionSelection(
+        provider_id=projected.provider_id,
+        model_id=projected.model_id,
+        provider_label=projected.provider_label,
+        model_label=projected.model_label,
+    )
+
+
+def _cowork_document_binding(conversation: object) -> tuple[str, str] | None:
+    if (
+        conversation is None
+        or getattr(conversation, "source", None) != "cowork_document"
+        or getattr(conversation, "status", None) == "closed"
+    ):
+        return None
+    metadata = getattr(conversation, "metadata", None)
+    if not isinstance(metadata, Mapping):
+        return None
+    store_id = metadata.get("cowork_store_id")
+    document_id = metadata.get("cowork_document_id")
+    if (
+        not isinstance(store_id, str)
+        or not store_id.strip()
+        or not isinstance(document_id, str)
+        or not document_id.strip()
+    ):
+        return None
+    return store_id, document_id
+
+
+def ensure_bound_document_agent(
+    conversation_id: str,
+) -> DocumentAgentStatus | None:
+    """Wake the driver bound to one already-persisted Co-work chat turn.
+
+    A preliminary closed connection discovers the immutable binding. The
+    lifecycle critical section then revalidates Truth before opening the
+    conversations store again, preserving the global lifecycle -> Truth ->
+    conversations order. A concurrent retirement therefore either wins before
+    this wake or waits and subsequently fences the newly ensured generation.
+    """
+
+    from work_buddy.conversations.store import get_conversation
+    from work_buddy.cowork.lifecycle_lock import document_lifecycle_lock
+    from work_buddy.cowork.policy import document_surface_allowed
+    from work_buddy.truth import documents
+    from work_buddy.truth.registry import TruthStoreRegistry
+
+    discovered = get_conversation(conversation_id)
+    binding = _cowork_document_binding(discovered)
+    if binding is None:
+        return None
+    store_id, document_id = binding
+
+    with document_lifecycle_lock(store_id, document_id):
+        store = TruthStoreRegistry().open_store(store_id)
+        document = documents.get_document(store, document_id)
+        if (
+            documents.current_lifecycle(store, document.id) != "active"
+            or not document_surface_allowed(store, document)
+        ):
+            return None
+
+        # Retirement and conversation replacement both serialize on the same
+        # lifecycle lock. Re-read after Truth so the authoritative order stays
+        # lifecycle -> Truth -> conversations.
+        current = get_conversation(conversation_id)
+        if _cowork_document_binding(current) != (store_id, document_id):
+            return None
+        execution = _execution_selection_for_conversation(conversation_id)
+        return ensure_document_agent(
+            store_id=store_id,
+            document_id=document.id,
+            conversation_id=conversation_id,
+            execution=execution,
+        )
+
+
 def fence_document_agent(
     *,
     conversation_id: str,
@@ -792,6 +899,7 @@ __all__ = [
     "FeedbackPromptContext",
     "build_document_agent_prompt",
     "document_agent_consumer",
+    "ensure_bound_document_agent",
     "ensure_document_agent",
     "fence_document_agent",
     "inspect_document_agent",

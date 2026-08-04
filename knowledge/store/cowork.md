@@ -26,9 +26,15 @@ dev_notes: |
 
   `wb.cowork.folder.close@1` is a dedicated navigation intent. It is not the folder-selection `cancel` action: cancel restores the context that existed before a transient picker or inspection, while **Close folder** deliberately clears the active folder and catalog. A registered session must pass the device-durability leave barrier first; an active browser-local document is folder-independent and remains open. Closing never unregisters a folder, retires a document, mutates `.wbuddy`, or changes Markdown.
 
-  A document conversation ID is opaque and server-issued. GET binding inspection is read-only; only explicit Chat activation, feedback submission, or a routing decision may create the binding and ensure its driver. The driver receives durable user turns through a generation-scoped lease/cursor inbox and acknowledges each message only after handling it. Driver writes, questions, proposals, and comments carry the same generation fence so a stopped, restarted, or retired generation cannot mutate the document.
+  A document conversation ID is opaque and server-issued. GET binding inspection is read-only. Preparing Chat may create the canonical binding and pin the displayed execution selection, but it must not start a model. Persisting an authored Chat, feedback, routing, or Co-think discussion turn automatically wakes or starts the driver. The driver receives durable user turns through a generation-scoped lease/cursor inbox and acknowledges each message only after handling it. Driver writes, questions, proposals, and comments carry the same generation fence so a stopped, restarted, or retired generation cannot mutate the document.
 
-  The provider/model selection is durable conversation authority, not browser settings. The first explicit start pins the projected server default. A live change is one revision-checked atomic pair and restarts only the document driver; transcript, draft, binding, and document state remain. Copy producer attribution from the exact active lease, never from request fields or the conversation's current selection.
+  The shared Chat surface assigns one caller-stable message ID before Co-work
+  freezes target context. An uncertain delivery retries the exact prepared
+  content, context, and ID. Identical replay returns the original durable turn;
+  conflicting reuse is rejected. Distinct authored sends remain distinct even
+  when their text happens to match.
+
+  The provider/model selection is durable conversation authority, not browser settings. Non-executing Chat binding pins the validated server default returned to the picker, so the first authored turn cannot run on an undisplayed target. A live change is one revision-checked atomic pair and restarts only the document driver; transcript, draft, binding, and document state remain. Copy producer attribution from the exact active lease, never from request fields or the conversation's current selection.
 
   On a changed selection, raw lease status is the fencing authority: any persisted `starting` or `running` lease must be stopped before the new selection is launched even if a stale heartbeat or failed liveness probe projects it as stopped. The write guard accepts raw active leases, so using only presentation status would leave the old generation authorized.
 
@@ -38,9 +44,19 @@ dev_notes: |
 
   Editor annotations are a runtime-only ProseMirror decoration projection derived from the same R2 document snapshot as the Review rail. They must never enter the schema, Yjs state, Markdown, undo history, or outbound persistence. Proposal and claim anchors are kind-qualified so identical raw IDs cannot collide. Review focus changes only the active treatment; rail filters never remove the underlying editor annotations. Chat passage highlighting is also view state and must preserve the editor selection and the user's current focus.
 
+  The editor-aligned Review stream remains independently scrollable. Compact any unused document offset before the first visible card so the stream opens with review content rather than a blank rail; shift every later placement by the same amount to preserve relative passage spacing and collision resolution. Rail-only ancestor scrolling must neither change those placements nor trigger realignment; otherwise a compensating card transform cancels the user's scroll and makes the stream appear pinned. Editor or shared-ancestor scrolling, resize, editor transactions, and card-size changes remain genuine geometry updates. Any later refresh must preserve the Review body's current scroll position.
+
   Origin filtering is not persistence isolation: a later human Yjs update can causally depend on an earlier filtered struct. Never project a pending proposal into the live collaborative Y.Doc, even under a non-human origin. Sitting materialization starts from a clean clone of the canonical structured head, joins admitted decisions to the authoritative proposal catalog by ID and canonical hash, resolves every materializing anchor against that initial clone, rejects missing, mismatched, unresolved, duplicate, or overlapping edits, and applies confirmed changes in reverse document order. Explicit Save fails closed if tracked-suggestion schema artifacts somehow appear in the live document.
 
+  Batch preparation is a non-mutating preflight, not an all-purpose error boundary. Canonical Markdown selectors and visible ProseMirror text use different whitespace representations, so client context matching must tolerate Markdown line and block boundaries while still resolving exactly one occurrence. If any selected decision is unavailable, changed, unresolved, or conflicts with another selected edit, cancel the prepared intent and return item-level blockers plus the independently applicable subset. Review keeps every decision selected and requires a second explicit action before submitting that subset; it never silently converts the user's batch into a partial application. A deterministic cancellation retires that attempt's idempotency key before any same-selection retry; an uncertain commit/response failure retains the key so retry can recover the receipt. Subset retries remain bound to the exact explicitly confirmed decisions and retained blockers. The user may explicitly remove a blocker; because overlap diagnoses depend on the whole selection, doing so clears the old diagnosis and requires a fresh preflight of the remaining decisions.
+
   Successful and response-recovery sitting paths do not adopt the prepared clone directly. They pull the authoritative committed state, verify its structured head, advance the managed projection, and then refresh the review projection. A document with `source.writeback_policy=never` commits that projection internally and never publishes it over the import source artifact. The canonical-state guard runs before preparation and after the server refresh. If a human edit advances the local generation while the sitting is in flight, the new baseline is retained but the editor remains unsaved rather than falsely claiming to be current.
+
+  Before sitting admission, the editor publishes the exact current Y.Doc
+  snapshot and canonical Markdown together, with bounded recapture if an edit
+  races the checkpoint. The server persists the verified projection blob before
+  its receipt and may pass an internal prevalidated applicability proof only
+  while the sitting's expected-head and snapshot checks still hold.
 
   Paste persistence and paste provenance are related but cannot be committed in one browser transaction: Yjs state, the synchronous local-storage intent journal, the document-scoped IndexedDB provenance outbox, and the server Truth store are separate authorities. The journal is the smallest recovery barrier across that gap, not an atomicity claim. Never delete a frozen provenance request before a confirmed server receipt, and never retarget one implicitly after an absent, ambiguous, or changed target. An actor-binding rejection is the exception that requires explicit recovery: refetch the current actor, invalidate every stale frozen request, rotate its idempotency key, reset its determination to unknown, and require a fresh user attestation before sending.
 ---
@@ -200,6 +216,11 @@ navigation, and a shared local link restore the same working context. Document
 selection and folder closing do not imply a file write. Retiring a document
 removes it from the active catalog while preserving any source artifact,
 writeback file, managed projections, and durable history.
+After a route resolves, the dashboard uses the first eight characters of
+`store_id` only when that prefix uniquely identifies one entry in the
+authoritative Folder catalog. Exact full IDs remain valid, and a collision
+keeps the full ID. The prefix is presentation-only: provider state and every
+API request use the full permanent store identity.
 For a detached import, removal first retries and flushes pending edits, validates
 the canonical head, and compacts the Yjs tail into a durable internal snapshot.
 It may therefore retain a newer structured head than its latest managed
@@ -312,9 +333,11 @@ rebinding or repeatedly resending stale attribution. See
 Every registered document has at most one durable conversation binding. The
 binding ID is an opaque server-issued identifier; the dashboard never derives
 one from the document or folder ID. Opening or reloading a document performs a
-read-only binding lookup and does not start an agent. The first explicit Chat
-action, selected-text feedback submission, redirect, or endorsement can create
-the binding and ensure one document agent.
+read-only binding lookup and does not start an agent. Preparing the Chat pane can
+create or reuse that binding and pin its displayed model selection, but still
+does not run a model. Persisting an authored Chat message, selected-text
+feedback, redirect, endorsement, or Co-think discussion automatically wakes or
+starts one document agent.
 
 The Chat header's optional **Run with** picker selects one provider/model pair
 for that durable conversation. Claude Code uses the user's signed-in Claude
@@ -324,21 +347,23 @@ not imply API billing, store a browser-only preference, or silently fall back to
 another provider.
 
 Before the conversation exists, the picker shows the server default without
-creating anything. The first explicit Chat start pins that validated pair.
-Changing an active conversation asks for confirmation, then restarts only the
-assistant driver. The messages and unsent draft stay. The selection is
-revisioned so two open surfaces cannot silently overwrite each other, and
-assistant messages retain the provider/model that actually produced them.
-Read-only documents may inspect the saved selection but cannot change it or
-start a new Chat driver.
+creating anything. Chat preparation pins the validated pair returned to the
+picker without starting the assistant driver. Changing an active conversation
+asks for confirmation, then restarts only that driver. The messages and unsent
+draft stay. The selection is revisioned so two open surfaces cannot silently
+overwrite each other, and assistant messages retain the provider/model that
+actually produced them. Read-only documents may inspect the saved selection but
+cannot change it or send a turn that starts a new driver.
 
 Selected-text feedback is saved verbatim as human-authored evidence, anchored to
 the exact document passage, and posted as an ordinary user turn in that same
 conversation. The response returns the real conversation and message IDs so the
 chat can attach the anchor to the exact transcript message, including when two
-feedback notes contain identical text. If agent startup fails after persistence,
-the feedback remains visible and the user can explicitly restart Chat; the
-dashboard does not claim that the authored feedback failed or silently retry it.
+feedback notes contain identical text. If the automatic wake fails after
+persistence, the authored turn and feedback remain visible, Chat reaches **No
+response received.**, and ordinary composition becomes available again. A later
+authored turn makes another bounded wake attempt; there is no user-facing
+Restart lifecycle control.
 
 **Jump to passage** reveals the editor on a narrow screen, scrolls the anchored
 quote into view, and briefly highlights it without replacing the editor's
@@ -350,6 +375,13 @@ the old one from sending messages, asking questions, proposing edits, or adding
 comments. Ordinary composer messages never answer a pending structured question
 implicitly; a structured response names the exact question it answers.
 
+Each authored Chat turn receives one caller-stable message ID before Co-work
+freezes its target context. If delivery acknowledgement is uncertain, the exact
+prepared content, context, and ID are retried together. An identical replay
+resolves to the existing durable turn rather than creating another inbox item.
+This delivery idempotency complements the generation-scoped lease and cursor;
+it does not collapse distinct user sends merely because their text matches.
+
 The driver runs outside the selected folder and receives document authority only
 through a generation-scoped, server-enforced MCP session. Neither provider gets
 the folder path or project instructions through its working directory, command
@@ -357,7 +389,7 @@ arguments, or prompt. See `architecture/agent-execution` for provider isolation,
 catalog, persistence, and process-ownership details.
 
 Redirect and endorsement notices distinguish three outcomes: saved and sent to
-a running agent, saved in Chat but awaiting restart, or not saved. A review
+a running agent, saved in Chat but not answered, or not saved. A review
 gesture can remain committed even if its follow-up chat delivery fails, so the
 dashboard reports the conversation write and agent state returned by the server
 rather than inferring success from the gesture itself.
@@ -405,3 +437,19 @@ a file. The claims a document expresses live in the folder's scoped Truth ledger
 through expression links. Internally, the engine still uses terms such as scope
 root, store ID, and Truth store; the dashboard consistently calls the thing the
 user selected a **folder**.
+
+Before a multi-decision sitting changes the document, Co-work confirms that the
+selected edits can be placed together against one synchronized document head. A
+blocked decision does not collapse the batch into a generic failure and does not
+cause the other decisions to be applied silently. Review identifies the blocked
+suggestions, keeps all choices selected, and—when an independent subset is ready—
+offers an explicit action to apply only those other decisions.
+
+Proposal base hashes remain immutable drafting lineage; they are not a
+whole-document applicability veto. Review accepts a matching structured head
+as current and otherwise requires the immutable quote selector to resolve
+uniquely against a receipt-bound current canonical Markdown projection. An
+unrelated edit may therefore move a proposal without invalidating it. A
+missing, ambiguous, or unverifiable passage blocks only **Accept** and
+**Amend**. **Reject**, **Dismiss**, **Defer**, **Redirect**, and **Endorse**
+remain proposal-level decisions because they do not apply text.

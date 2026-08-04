@@ -1,6 +1,6 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { expectNoAccessibilityViolations } from "../../test/setup";
 import { ChatComposer } from "./ChatComposer";
@@ -31,6 +31,28 @@ const changingExecution = (): ChatExecutionControl => ({
   currentAvailable: true,
   select: vi.fn(async () => {}),
   retry: vi.fn(),
+});
+
+function mockTextareaGeometry(): void {
+  const readComputedStyle = globalThis.getComputedStyle.bind(globalThis);
+  vi.spyOn(globalThis, "getComputedStyle").mockImplementation((element, pseudo) => {
+    const style = readComputedStyle(element, pseudo);
+    if (!(element instanceof HTMLTextAreaElement)) return style;
+    return new Proxy(style, {
+      get(target, property) {
+        if (property === "borderTopWidth" || property === "borderBottomWidth") {
+          return "1px";
+        }
+        if (property === "maxHeight") return "160px";
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  });
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
 });
 
 describe("ChatComposer", () => {
@@ -75,6 +97,25 @@ describe("ChatComposer", () => {
     expect(input).toHaveValue("keep me");
   });
 
+  it("guards two submit events in the same render turn", async () => {
+    let acknowledge: (() => void) | undefined;
+    const pending = new Promise<void>((resolve) => {
+      acknowledge = resolve;
+    });
+    const onSend = vi.fn(() => pending);
+    render(<ChatComposer onSend={onSend} initialValue="one durable turn" />);
+    const form = screen.getByRole("textbox").closest("form");
+    expect(form).not.toBeNull();
+
+    act(() => {
+      form?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      form?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+
+    expect(onSend).toHaveBeenCalledTimes(1);
+    await act(async () => acknowledge?.());
+  });
+
   it("seeds from initialValue and reports the live draft, empty after send", async () => {
     const onSend = vi.fn().mockResolvedValue(undefined);
     const onDraftChange = vi.fn();
@@ -93,6 +134,42 @@ describe("ChatComposer", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(onDraftChange).toHaveBeenLastCalledWith(""));
+  });
+
+  it("grows a retained draft without showing a scrollbar before the cap", () => {
+    const scrollHeight = vi
+      .spyOn(HTMLTextAreaElement.prototype, "scrollHeight", "get")
+      .mockReturnValue(72);
+    mockTextareaGeometry();
+
+    render(
+      <ChatComposer
+        onSend={vi.fn()}
+        initialValue={"retained line one\nretained line two"}
+      />,
+    );
+
+    const input = screen.getByRole("textbox");
+    expect(input).toHaveStyle({ height: "74px", overflowY: "hidden" });
+    scrollHeight.mockRestore();
+  });
+
+  it("scrolls internally only after reaching the CSS height cap", async () => {
+    const scrollHeight = vi
+      .spyOn(HTMLTextAreaElement.prototype, "scrollHeight", "get")
+      .mockImplementation(function (this: HTMLTextAreaElement) {
+        return this.value.includes("very long") ? 220 : 36;
+      });
+    mockTextareaGeometry();
+    render(<ChatComposer onSend={vi.fn()} />);
+    const input = screen.getByRole("textbox");
+
+    await userEvent.type(input, "very long");
+    expect(input).toHaveStyle({ height: "160px", overflowY: "auto" });
+
+    await userEvent.clear(input);
+    expect(input).toHaveStyle({ height: "38px", overflowY: "hidden" });
+    scrollHeight.mockRestore();
   });
 
   it("disables input and Send when the composer is disabled", () => {

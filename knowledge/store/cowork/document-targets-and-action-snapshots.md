@@ -115,6 +115,39 @@ immutable `ActionSnapshot` with separate:
 - allowed change ranges; and
 - egress boundary.
 
+Compaction intentionally consumes the structured update tail before the
+action-snapshot request. For a capture compaction, the request frames the exact
+Y.Doc snapshot and UTF-8 Markdown projection together. The server re-hashes
+both, commits the snapshot under the structured-head CAS, and publishes one
+operational projection receipt through the same crash-recovery boundary. The
+later action snapshot must match that receipt's document, Y.Doc generation,
+snapshot, structured head, and projection digest. A stale CAS makes the browser
+regenerate both projection and snapshot; it never retries a refreshed Y.Doc
+with old Markdown. A later structured update or ordinary compaction invalidates
+the receipt.
+
+This receipt proves that the opaque snapshot and projection were admitted
+together. Python still does not interpret Yjs, so it does not independently
+derive Markdown from the snapshot; that would require a server-side Yjs runtime
+and the canonical serializer. The browser remains the trusted serializer while
+the server owns concurrency, durable binding, target containment, and egress.
+
+## Review applicability
+
+The operational projection receipt is also Review's proof boundary. Before a
+sitting, the editor compacts the current Y.Doc snapshot and canonical Markdown
+together. The server stores the verified UTF-8 projection bytes
+content-addressably before publishing the receipt. The receipt is current only
+while its document, Y.Doc generation, snapshot, structured head, and projection
+digest all match live state.
+
+A proposal drafted against another structured head may still apply when its
+immutable quote selector reanchors uniquely in that receipt-bound projection
+using exact-first, whitespace-tolerant matching. A missing or ambiguous target
+is reported as a target-placement problem. A missing, invalid, or outdated
+projection receipt yields unknown applicability instead of claiming that the
+whole document is simply older.
+
 ## Chat consumption
 
 An ordinary authored Chat message inherits Working on and stores a safe
@@ -122,6 +155,12 @@ action-snapshot reference in transcript context. Its compact **About:** chip
 reports that shared target; there is no independent sticky toggle. Structured
 answers to an existing agent question remain bound to that question rather
 than capturing a second target.
+
+If a collaborator advances the structured head between capture and request,
+Chat may recapture once, but it pins that retry to the first capture's durable
+target reference. A concurrent Working on change cannot silently retarget the
+message. Any second conflict or unresolvable original target stays visible and
+retains the draft.
 
 The generation-fenced document agent must call
 `cowork_action_snapshot_get` with the exact message and snapshot IDs. A

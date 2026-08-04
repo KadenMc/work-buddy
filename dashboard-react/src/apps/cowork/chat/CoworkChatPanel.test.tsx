@@ -12,6 +12,7 @@ import type {
 import { CoworkChatAnnotations } from "./annotations";
 import { CoworkChatPanel } from "./CoworkChatPanel";
 import { CoworkChatTargetingProvider } from "./CoworkChatTargeting";
+import { CoworkChatActionSnapshotError } from "./HttpCoworkChatActionSnapshotClient";
 
 function jsonResponse(
   body: unknown,
@@ -177,7 +178,7 @@ describe("CoworkChatPanel", () => {
     expect(await screen.findByText("Done.")).toBeInTheDocument();
   });
 
-  it("uses the shared Working on target and saves its frozen context even while Chat is stopped", async () => {
+  it("uses the shared Working on target without exposing its internal frozen version", async () => {
     const captured = {
       schema: "wb.cowork.action-snapshot/v1",
       storeId: "store-1",
@@ -264,12 +265,6 @@ describe("CoworkChatPanel", () => {
         <CoworkChatPanel
           provider={provider(fetchImpl)}
           conversationId="c1"
-          agent={{
-            status: "stopped",
-            alive: false,
-            started: false,
-            error: null,
-          }}
         />
       </CoworkChatTargetingProvider>,
     );
@@ -288,8 +283,10 @@ describe("CoworkChatPanel", () => {
     const post = fetchMock.mock.calls.find(
       (call) => call[1]?.method === "POST",
     );
-    expect(JSON.parse((post?.[1] as RequestInit).body as string)).toEqual({
+    const postedBody = JSON.parse((post?.[1] as RequestInit).body as string);
+    expect(postedBody).toEqual({
       value: "Focus here.",
+      message_id: expect.stringMatching(/^chat-user-/u),
       context: {
         kind: "action_snapshot",
         action_snapshot_id: context.actionSnapshotId,
@@ -298,8 +295,117 @@ describe("CoworkChatPanel", () => {
       },
     });
     expect(
-      screen.getByLabelText("Frozen document context: Introduction"),
-    ).toHaveTextContent("Frozen version · action-s");
+      screen.getByLabelText("Working on: Introduction"),
+    ).toHaveTextContent("Working on: Introduction · 24 words");
+    expect(screen.queryByText(/Frozen version/)).toBeNull();
+    expect(screen.queryByTitle(/Action snapshot/)).toBeNull();
+  });
+
+  it("recaptures once when the durable document changes during context preparation", async () => {
+    const firstReference = {
+      schema: "wb.cowork.document-target/v1",
+      storeId: "store-1",
+      documentId: "doc-1",
+      kind: "text_range",
+    } as const;
+    const firstCapture = {
+      revision: "first",
+      target: {
+        selector: { kind: "text_quote" },
+        targetReference: firstReference,
+      },
+    } as unknown as CoworkCapturedActionSnapshot;
+    const secondCapture = { revision: "second" } as unknown as CoworkCapturedActionSnapshot;
+    const targetSnapshot = {
+      phase: "ready" as const,
+      selection: null,
+      currentSection: null,
+      workingTarget: {
+        kind: "document" as const,
+        label: "Whole document",
+        wordCount: 20,
+        range: null,
+      },
+    };
+    const controller: CoworkActionSnapshotController = {
+      subscribe: () => () => undefined,
+      getSnapshot: () => targetSnapshot,
+      setWorkingTargetFromSelection: vi.fn(),
+      clearWorkingTarget: vi.fn(),
+      capture: vi.fn().mockResolvedValueOnce(firstCapture),
+      captureReference: vi.fn().mockResolvedValueOnce(secondCapture),
+    };
+    const context: ChatActionSnapshotContext = {
+      kind: "action_snapshot",
+      actionSnapshotId: "action-snapshot-recaptured",
+      storeId: "store-1",
+      documentId: "doc-1",
+      targetKind: "document",
+      targetLabel: "Whole document",
+      targetWordCount: 20,
+      targetTextSha256: "a".repeat(64),
+      projectionSha256: "b".repeat(64),
+      capturedAt: "2026-08-03T12:00:00Z",
+    };
+    const prepare = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new CoworkChatActionSnapshotError(
+          "The document changed while its context was being attached.",
+          409,
+          "action_snapshot_changed",
+        ),
+      )
+      .mockResolvedValueOnce(context);
+    let posted = false;
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        posted = true;
+        return jsonResponse({ sent: true, message_id: "recaptured-turn" });
+      }
+      return jsonResponse(
+        conversation(
+          posted
+            ? [
+                {
+                  message_id: "recaptured-turn",
+                  role: "user",
+                  content: "Use the current version.",
+                },
+              ]
+            : [],
+        ),
+      );
+    }) as unknown as typeof fetch;
+
+    render(
+      <CoworkChatTargetingProvider
+        storeId="store-1"
+        documentId="doc-1"
+        controller={controller}
+        agent={{
+          status: "running",
+          alive: true,
+          started: true,
+          error: null,
+        }}
+        client={{ prepare }}
+      >
+        <CoworkChatPanel provider={provider(fetchImpl)} conversationId="c1" />
+      </CoworkChatTargetingProvider>,
+    );
+
+    await screen.findByText(/No messages yet/);
+    await userEvent.type(screen.getByRole("textbox"), "Use the current version.");
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => expect(controller.capture).toHaveBeenCalledTimes(1));
+    expect(controller.captureReference).toHaveBeenCalledWith(
+      "working_target",
+      firstReference,
+    );
+    expect(prepare).toHaveBeenNthCalledWith(1, firstCapture);
+    expect(prepare).toHaveBeenNthCalledWith(2, secondCapture);
   });
 
   it("explains when Working on context cannot be consumed", async () => {
@@ -341,12 +447,6 @@ describe("CoworkChatPanel", () => {
         <CoworkChatPanel
           provider={provider(fetchImpl)}
           conversationId="c1"
-          agent={{
-            status: "running",
-            alive: true,
-            started: true,
-            error: null,
-          }}
         />
       </CoworkChatTargetingProvider>,
     );
@@ -407,83 +507,37 @@ describe("CoworkChatPanel", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("shows a recoverable unavailable state when the document agent could not start", async () => {
-    const fetchImpl = vi.fn(async () =>
-      jsonResponse(
-        conversation([
-          { message_id: "u1", role: "user", content: "Please review this." },
-        ]),
-      ),
-    ) as unknown as typeof fetch;
-    const onEnsureAgent = vi.fn();
-
-    render(
-      <CoworkChatPanel
-        provider={provider(fetchImpl)}
-        conversationId="c1"
-        agent={{
-          status: "spawn_failed",
-          alive: false,
-          started: false,
-          error: "The configured agent runner is unavailable.",
-        }}
-        onEnsureAgent={onEnsureAgent}
-      />,
-    );
-
-    expect(await screen.findByText("Please review this.")).toBeVisible();
-    expect(screen.getByText("Chat couldn’t start.")).toBeVisible();
-    expect(screen.queryByText("Chat paused.")).toBeNull();
-    expect(screen.getByText(/configured agent runner is unavailable/i)).toBeVisible();
-    expect(
-      screen.getByRole("textbox", { name: "Message" }),
-    ).toBeVisible();
-    await userEvent.click(
-      screen.getByRole("button", { name: "Try again" }),
-    );
-    expect(onEnsureAgent).toHaveBeenCalledOnce();
-  });
-
-  it("turns dynamic agent liveness failure into Restart on the same conversation", async () => {
+  it("shows a terminal no-response state without a manual restart action", async () => {
     const fetchImpl = vi.fn(async () =>
       jsonResponse(
         conversation(
-          [{ message_id: "u1", role: "user", content: "Continue here." }],
+          [{ message_id: "u1", role: "user", content: "Please review this." }],
           { agent_alive: false },
         ),
       ),
     ) as unknown as typeof fetch;
-    const onEnsureAgent = vi.fn();
-
     render(
       <CoworkChatPanel
         provider={provider(fetchImpl)}
         conversationId="c1"
-        agent={{
-          status: "running",
-          alive: true,
-          started: false,
-          error: null,
-        }}
-        onEnsureAgent={onEnsureAgent}
       />,
     );
 
-    expect(await screen.findByText(/Chat paused/)).toBeVisible();
-    expect(screen.getByText(/messages are still here/i)).toBeVisible();
-    expect(screen.queryByText(/Close this chat/i)).toBeNull();
-    await userEvent.click(
-      screen.getByRole("button", { name: "Restart chat" }),
-    );
-    expect(onEnsureAgent).toHaveBeenCalledOnce();
+    expect(await screen.findByText("Please review this.")).toBeVisible();
+    expect(screen.getByText("No response received.")).toBeVisible();
+    expect(screen.queryByRole("button", { name: /restart chat/i })).toBeNull();
+    const composer = screen.getByRole("textbox", { name: "Message" });
+    await userEvent.type(composer, "Try a different approach.");
+    expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
   });
 
-  it("keeps the transcript visible while a restart is in flight", async () => {
+  it("disables submission while the latest acknowledged turn awaits a reply", async () => {
     const fetchImpl = vi.fn(async () =>
       jsonResponse(
-        conversation([
-          { message_id: "u1", role: "user", content: "Keep this visible." },
-        ]),
+        conversation(
+          [{ message_id: "u1", role: "user", content: "Continue here." }],
+          { agent_alive: true },
+        ),
       ),
     ) as unknown as typeof fetch;
 
@@ -491,25 +545,18 @@ describe("CoworkChatPanel", () => {
       <CoworkChatPanel
         provider={provider(fetchImpl)}
         conversationId="c1"
-        agent={{
-          status: "stopped",
-          alive: false,
-          started: false,
-          error: null,
-        }}
-        ensuringAgent
-        onEnsureAgent={vi.fn()}
       />,
     );
 
-    expect(await screen.findByText("Keep this visible.")).toBeVisible();
-    expect(screen.getByText("Restarting chat…")).toBeVisible();
-    expect(
-      screen.getByRole("button", { name: "Restarting…" }),
-    ).toBeDisabled();
+    expect(await screen.findByText("Continue here.")).toBeVisible();
+    expect(screen.getByText("Assistant is typing")).toBeInTheDocument();
+    const composer = screen.getByRole("textbox", { name: "Message" });
+    await userEvent.type(composer, "Draft the next thought");
+    expect(composer).toHaveValue("Draft the next thought");
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
   });
 
-  it("disables structured answers while the document agent needs recovery", async () => {
+  it("keeps a pending structured question answerable without recovery controls", async () => {
     const fetchImpl = vi.fn(async () =>
       jsonResponse(
         conversation([
@@ -529,51 +576,13 @@ describe("CoworkChatPanel", () => {
       <CoworkChatPanel
         provider={provider(fetchImpl)}
         conversationId="c1"
-        agent={{
-          status: "stopped",
-          alive: false,
-          started: false,
-          error: null,
-        }}
-        onEnsureAgent={vi.fn()}
       />,
     );
 
     expect(await screen.findByText("Continue?")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Yes" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "No" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Restart chat" })).toBeEnabled();
-  });
-
-  it("keeps the transcript visible when a restart request fails", async () => {
-    const fetchImpl = vi.fn(async () =>
-      jsonResponse(
-        conversation([
-          { message_id: "u1", role: "user", content: "Do not hide this." },
-        ]),
-      ),
-    ) as unknown as typeof fetch;
-
-    render(
-      <CoworkChatPanel
-        provider={provider(fetchImpl)}
-        conversationId="c1"
-        agent={{
-          status: "stopped",
-          alive: false,
-          started: false,
-          error: null,
-        }}
-        ensureError="The network is unavailable."
-        onEnsureAgent={vi.fn()}
-      />,
-    );
-
-    expect(await screen.findByText("Do not hide this.")).toBeVisible();
-    expect(screen.getByText("The network is unavailable.")).toBeVisible();
-    expect(
-      screen.getByRole("button", { name: "Restart chat" }),
-    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "Yes" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "No" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: /restart chat/i })).toBeNull();
   });
 
   it("surfaces a load error and recovers on retry", async () => {

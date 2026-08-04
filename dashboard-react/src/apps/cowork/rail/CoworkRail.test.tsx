@@ -61,7 +61,6 @@ function renderRail(storage: Storage = new MemoryStorage()) {
           started: true,
           error: null,
         },
-        onEnsureAgent: () => {},
       }}
       storage={storage}
     />,
@@ -154,7 +153,6 @@ describe("CoworkRail", () => {
         chat={{
           kind: "idle",
           draftStorageId: "document:demo-doc",
-          onStart: vi.fn(),
         }}
         onChatSelected={onChatSelected}
         storage={storage}
@@ -162,7 +160,7 @@ describe("CoworkRail", () => {
     );
 
     expect(
-      screen.getByRole("heading", { name: "Chat hasn’t started." }),
+      screen.getByRole("heading", { name: "Preparing chat…" }),
     ).toBeVisible();
     expect(onChatSelected).not.toHaveBeenCalled();
   });
@@ -176,7 +174,6 @@ describe("CoworkRail", () => {
         chat={{
           kind: "idle",
           draftStorageId: "document:demo-doc",
-          onStart: vi.fn(),
         }}
         onChatSelected={onChatSelected}
         storage={new MemoryStorage()}
@@ -188,9 +185,7 @@ describe("CoworkRail", () => {
     expect(onChatSelected).toHaveBeenCalledOnce();
   });
 
-  it("lets the user choose the execution pair before explicitly starting chat", async () => {
-    const select = vi.fn(async () => {});
-    const onStart = vi.fn();
+  it("does not expose model lifecycle controls in the preparation gate", async () => {
     render(
       <CoworkRail
         documentId="demo-doc"
@@ -198,31 +193,18 @@ describe("CoworkRail", () => {
         chat={{
           kind: "idle",
           draftStorageId: "document:demo-doc",
-          onStart,
         }}
-        chatExecution={chatExecution(select)}
+        chatExecution={chatExecution()}
         storage={new MemoryStorage()}
       />,
     );
 
     await userEvent.click(screen.getByRole("tab", { name: /Chat/ }));
-    await userEvent.click(
-      screen.getByRole("button", {
-        name: "Run with Claude Code · Sonnet",
-      }),
-    );
-    await userEvent.click(
-      screen.getByRole("option", { name: "Codex, GPT-5.6" }),
-    );
-
-    expect(select).toHaveBeenCalledWith("codex", "gpt-5.6");
-    expect(onStart).not.toHaveBeenCalled();
-    await userEvent.click(screen.getByRole("button", { name: "Start chat" }));
-    expect(onStart).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("button", { name: /Start chat/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Restart chat/i })).toBeNull();
   });
 
-  it("does not start an idle chat from a server read-only execution profile", () => {
-    const onStart = vi.fn();
+  it("keeps the preparation gate passive for a read-only execution profile", () => {
     const execution = chatExecution();
     render(
       <CoworkRail
@@ -231,7 +213,6 @@ describe("CoworkRail", () => {
         chat={{
           kind: "idle",
           draftStorageId: "document:demo-doc",
-          onStart,
         }}
         chatExecution={{
           ...execution,
@@ -245,10 +226,8 @@ describe("CoworkRail", () => {
       />,
     );
 
-    expect(
-      screen.getByRole("button", { name: "Start chat" }),
-    ).toBeDisabled();
-    expect(onStart).not.toHaveBeenCalled();
+    expect(screen.getByRole("heading", { name: "Preparing chat…" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: /Start chat/i })).toBeNull();
   });
 
   it("does not let a hidden Queue consume shortcuts from Chat", async () => {
@@ -295,7 +274,6 @@ describe("CoworkRail", () => {
             started: false,
             error: null,
           },
-          onEnsureAgent: vi.fn(),
         }}
         chatAnnotations={new CoworkChatAnnotations()}
         storage={new MemoryStorage()}
@@ -323,7 +301,6 @@ describe("CoworkRail", () => {
               started: true,
               error: null,
             },
-            onEnsureAgent: () => {},
           }}
           storage={new MemoryStorage()}
         />
@@ -426,7 +403,6 @@ describe("CoworkRail", () => {
             started: true,
             error: null,
           },
-          onEnsureAgent: () => {},
         }}
         storage={new MemoryStorage()}
       />,

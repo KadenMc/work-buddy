@@ -1,10 +1,6 @@
 import type { ReactNode } from "react";
 
-import {
-  Button,
-  InlineAlert,
-  type InlineAlertTone,
-} from "../../ui";
+import { Button, InlineAlert } from "../../ui";
 import { ChatComposer } from "./ChatComposer";
 import { ChatExecutionPicker } from "./ChatExecutionPicker";
 import { ChatMessageList } from "./ChatMessageList";
@@ -16,25 +12,12 @@ import type {
 import type { ChatExecutionControl } from "./useChatExecutionProfile";
 import "./styles.css";
 
-/**
- * A recoverable input state that keeps the transcript readable while replacing
- * the composer with an explanation and, when available, one explicit action.
- */
-export interface ChatInputRecoveryAction {
+export interface ChatPanelStateAction {
   readonly label: string;
   readonly onAction: () => void;
   readonly pending?: boolean;
   /** Opt in when this host action launches or replaces the selected runtime. */
   readonly requiresExecution?: boolean;
-}
-
-export interface ChatInputRecovery {
-  readonly tone: InlineAlertTone;
-  readonly title: string;
-  readonly detail: ReactNode;
-  readonly action?: ChatInputRecoveryAction;
-  /** Keep freeform input available so authored turns queue while an agent is down. */
-  readonly preserveComposer?: boolean;
 }
 
 export type ChatPanelStateKind = "loading" | "empty" | "error";
@@ -45,7 +28,7 @@ export interface ChatPanelStateProps {
   readonly kind: ChatPanelStateKind;
   readonly title: string;
   readonly detail?: ReactNode;
-  readonly action?: ChatInputRecoveryAction;
+  readonly action?: ChatPanelStateAction;
   readonly header?: ReactNode;
   readonly execution?: ChatExecutionControl;
   readonly executionDisabled?: boolean;
@@ -140,8 +123,6 @@ export interface ChatPanelProps {
   readonly composerAccessory?: ReactNode;
   /** Compact additive context rendered in the shared composer footer. */
   readonly composerFooterAccessory?: ReactNode;
-  /** Recoverable state shown in the input region instead of the composer. */
-  readonly inputRecovery?: ChatInputRecovery;
   /** Seed the composer draft once on mount, e.g. from a retained unsent draft. */
   readonly initialValue?: string;
   /**
@@ -160,6 +141,8 @@ export interface ChatPanelProps {
   readonly onRetry?: () => void;
   readonly initialUnreadFromMessageId?: string | null;
   readonly onReachLatest?: () => void;
+  /** Changes after a locally-authored send so that turn is brought into view. */
+  readonly revealLatestMessageToken?: number;
   /** Empty-transcript copy inside a ready conversation. */
   readonly noMessagesLabel?: string;
   /** Server-authoritative provider/model selection for the next agent turn. */
@@ -201,7 +184,6 @@ export function ChatPanel({
   composerPlaceholder,
   composerAccessory,
   composerFooterAccessory,
-  inputRecovery,
   initialValue,
   onDraftChange,
   readOnlyReason,
@@ -210,6 +192,7 @@ export function ChatPanel({
   onRetry,
   initialUnreadFromMessageId,
   onReachLatest,
+  revealLatestMessageToken,
   noMessagesLabel,
   execution,
 }: ChatPanelProps) {
@@ -219,8 +202,7 @@ export function ChatPanel({
   const structuredResponsesDisabled =
     responsesDisabled ||
     readOnly ||
-    agentActivity === "stopped" ||
-    inputRecovery !== undefined ||
+    agentActivity === "thinking" ||
     composerDisabled ||
     execution?.selecting === true ||
     sending;
@@ -257,11 +239,10 @@ export function ChatPanel({
             }
       }
       responsesDisabled={structuredResponsesDisabled}
-      showStoppedNotice={
-        showStoppedNotice && !readOnly && inputRecovery === undefined
-      }
+      showStoppedNotice={showStoppedNotice && !readOnly}
       initialUnreadFromMessageId={initialUnreadFromMessageId}
       onReachLatest={onReachLatest}
+      revealLatestMessageToken={revealLatestMessageToken}
       emptyLabel={noMessagesLabel}
     />
   );
@@ -285,63 +266,12 @@ export function ChatPanel({
               {readOnlyReason ?? "Replies are currently disabled."}
             </InlineAlert>
           </div>
-        ) : inputRecovery !== undefined ? (
-          <div className="wb-chat-panel__input-region">
-            {execution === undefined || inputRecovery.preserveComposer === true ? null : (
-              <ChatExecutionPicker
-                control={execution}
-                disabled={
-                  sending ||
-                  agentActivity === "thinking" ||
-                  inputRecovery.action?.pending === true
-                }
-              />
-            )}
-            <InlineAlert
-              tone={inputRecovery.tone}
-              role="status"
-              className="wb-chat-panel__read-only"
-            >
-              <strong>{inputRecovery.title}</strong>{" "}
-              {inputRecovery.detail}
-              {inputRecovery.action !== undefined ? (
-                <Button
-                  variant="secondary"
-                  className="wb-chat-state__action"
-                  onClick={inputRecovery.action.onAction}
-                  disabled={
-                    inputRecovery.action.pending === true ||
-                    (inputRecovery.action.requiresExecution === true &&
-                      execution !== undefined &&
-                      (execution.status !== "ready" ||
-                        execution.selecting ||
-                        !execution.currentAvailable))
-                  }
-                >
-                  {inputRecovery.action.label}
-                </Button>
-              ) : null}
-            </InlineAlert>
-            {inputRecovery.preserveComposer === true && onSend !== undefined ? (
-              <ChatComposer
-                onSend={onSend}
-                sending={sending}
-                disabled={composerDisabled === true}
-                placeholder={composerPlaceholder}
-                errorMessage={sendErrorMessage}
-                initialValue={initialValue}
-                onDraftChange={onDraftChange}
-                execution={execution}
-                accessory={composerAccessory}
-                footerAccessory={composerFooterAccessory}
-              />
-            ) : null}
-          </div>
         ) : onSend !== undefined ? (
           <ChatComposer
             onSend={onSend}
             sending={sending}
-            disabled={composerDisabled === true || agentActivity === "stopped"}
+            submissionDisabled={agentActivity === "thinking"}
+            disabled={composerDisabled === true}
             placeholder={composerPlaceholder}
             errorMessage={sendErrorMessage}
             initialValue={initialValue}

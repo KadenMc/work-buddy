@@ -48,6 +48,11 @@ from work_buddy.cowork.paths import (
     resolve_markdown_path,
 )
 from work_buddy.cowork.policy import document_surface_allowed
+from work_buddy.cowork.proposal_applicability import (
+    ProposalApplicability,
+    assess_proposal_applicability,
+    load_current_projection,
+)
 from work_buddy.truth import documents, expressions, proposals, queries
 from work_buddy.truth.anchors import CompositeSelector
 from work_buddy.truth.contracts import Actor, InvariantViolation
@@ -244,7 +249,7 @@ def _open_proposal_entry(
     proposal,
     document: DocumentRecord,
     *,
-    structured_head_sha256: str | None,
+    applicability: ProposalApplicability,
 ) -> dict:
     refs = json.loads(proposal.claim_refs_json) if proposal.claim_refs_json else []
     return {
@@ -259,14 +264,10 @@ def _open_proposal_entry(
         "base_doc_sha256": proposal.base_content_sha256,
         "base_structured_head_sha256": proposal.base_structured_head_sha256,
         "canonical_sha256": proposal.canonical_sha256,
-        "base_ok": (
-            proposal.base_content_sha256 == document.content_sha256
-            and (
-                proposal.base_structured_head_sha256 is None
-                or proposal.base_structured_head_sha256
-                == structured_head_sha256
-            )
-        ),
+        # Compatibility alias for older dashboard bundles.  New clients use
+        # the typed target-level result below.
+        "base_ok": applicability.applicable,
+        "applicability": applicability.to_wire(),
         "status": "open",
         "fixes_ref": None,
         "claim_refs": refs,
@@ -519,6 +520,12 @@ def api_doc_get(document_id: str):
             conn=conn,
         )
         readiness_view = document_readiness.to_dict()
+        current_projection, projection_reason = load_current_projection(
+            store,
+            document,
+            structured_head_sha256=readiness_view["structured_head_sha256"],
+            conn=conn,
+        )
         # The additive Verify/Co-think projection is part of this document
         # read. Keep every ledger read on the same explicit snapshot so the
         # client cannot observe a capability/result/configuration mixture
@@ -551,7 +558,6 @@ def api_doc_get(document_id: str):
         else None
     )
     state = _drift_from_hash(document, current_file_sha256)
-
     payload = {
         "document_id": document.id,
         "store_id": store.store_id,
@@ -583,9 +589,15 @@ def api_doc_get(document_id: str):
             _open_proposal_entry(
                 item,
                 document,
-                structured_head_sha256=readiness_view[
-                    "structured_head_sha256"
-                ],
+                applicability=assess_proposal_applicability(
+                    item,
+                    document,
+                    structured_head_sha256=readiness_view[
+                        "structured_head_sha256"
+                    ],
+                    current_projection=current_projection,
+                    projection_unavailable_reason=projection_reason,
+                ),
             )
             for item in open_props
         ],
@@ -642,7 +654,7 @@ def _project_execution(conversation_id: str | None):
 
 
 def _pin_projected_execution(conversation_id: str):
-    """Return the conversation target, pinning the default on first start."""
+    """Return the conversation target, pinning its displayed default once."""
     state = _project_execution(conversation_id)
     if state.persisted:
         return state
@@ -961,6 +973,107 @@ def api_doc_conversation_get(document_id: str):
         {
             "ok": True,
             "conversation_id": conversation_id,
+            "agent": agent_status.to_dict(),
+            "feedback": feedback_payload,
+            "execution": execution_snapshot,
+        }
+    )
+
+
+@cowork_blueprint.post("/api/truth/doc/<document_id>/conversation/bind")
+def api_doc_conversation_bind(document_id: str):
+    """Bind the conversation and its displayed model without running it.
+
+    Opening Chat needs a durable conversation id so the shared conversation
+    widget can mount, but selecting that pane is not itself a request to run a
+    model. This endpoint owns the canonical binding and pins the model selection
+    returned to the picker so the first authored turn cannot silently run on a
+    different default. Agent startup remains attached to an authored turn (or
+    another explicit action).
+    """
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    store, error = _resolve_store(request.args.get("store_id"))
+    if error:
+        return error
+    gate = _document_surface_or_403(store)
+    if gate:
+        return gate
+
+    from work_buddy.consent import user_initiated
+
+    binding = None
+    try:
+        # Binding participates in the same cross-database lifecycle boundary
+        # as conversation start. Retirement must not commit and then miss a
+        # conversation created by a concurrent Chat-pane gesture.
+        with lifecycle_lock.document_lifecycle_lock(
+            store.store_id,
+            document_id,
+        ):
+            document, doc_error = _resolve_document(store, document_id)
+            if doc_error:
+                return doc_error
+            if documents.current_lifecycle(store, document.id) != "active":
+                return _fail(
+                    "Chat cannot be opened for a retired document.",
+                    409,
+                )
+            if not document_surface_allowed(store, document):
+                return _fail(
+                    "This document is not available in Co-work for this folder.",
+                    403,
+                )
+            with user_initiated("dashboard.cowork.conversation_bind"):
+                binding = conversations.ensure_document_conversation(
+                    document_id=document.id,
+                    store_id=store.store_id,
+                )
+                bound_status = _conversation_status(binding.conversation_id)
+                if bound_status is None or bound_status == "closed":
+                    return _execution_error(
+                        ValueError(
+                            "This document's conversation is closed and "
+                            "cannot be reopened."
+                        ),
+                        status=409,
+                        code="conversation_closed",
+                        retryable=False,
+                        conversation_id=binding.conversation_id,
+                    )
+                consumer = document_agent.document_agent_consumer(
+                    store.store_id,
+                    document.id,
+                )
+                agent_status = document_agent.inspect_document_agent(
+                    binding.conversation_id,
+                    consumer=consumer,
+                )
+                feedback_payload = feedback.feedback_items(
+                    store,
+                    document_id=document.id,
+                    conversation_id=binding.conversation_id,
+                )
+                # Binding is the configuration boundary: make the selection
+                # shown by this response authoritative without claiming a
+                # lease, fencing a driver, or invoking a model.
+                _pin_projected_execution(binding.conversation_id)
+                execution_snapshot = _execution_snapshot(binding.conversation_id)
+    except conversation_execution.ConversationExecutionCorrupt as exc:
+        return _execution_error(
+            exc,
+            conversation_id=(
+                None if binding is None else binding.conversation_id
+            ),
+        )
+    except InvariantViolation as exc:
+        return _fail(str(exc), 400)
+    return jsonify(
+        {
+            "ok": True,
+            "conversation_id": binding.conversation_id,
+            "created": binding.created,
             "agent": agent_status.to_dict(),
             "feedback": feedback_payload,
             "execution": execution_snapshot,
@@ -1337,6 +1450,9 @@ def api_doc_ydoc_push(document_id: str):
         request.headers.get("X-WB-Base-Ydoc-Generation") or None
     )
     compacted = request.headers.get("X-WB-Compacted-Snapshot-Sha256") or None
+    compacted_projection = (
+        request.headers.get("X-WB-Compacted-Projection-Sha256") or None
+    )
     actor = _actor_for_request()
     try:
         from work_buddy.consent import user_initiated
@@ -1351,6 +1467,7 @@ def api_doc_ydoc_push(document_id: str):
                 base_structured_head_sha256=base_structured_head_sha256,
                 base_ydoc_generation=base_ydoc_generation,
                 compacted_snapshot_sha256=compacted,
+                compacted_projection_sha256=compacted_projection,
             )
     except InvariantViolation as exc:
         return _fail(str(exc), 400)

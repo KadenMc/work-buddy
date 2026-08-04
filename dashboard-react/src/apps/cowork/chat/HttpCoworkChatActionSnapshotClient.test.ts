@@ -69,6 +69,7 @@ describe("HttpCoworkChatActionSnapshotClient", () => {
         {
           error:
             "Working-on context is unavailable because the document assistant is not running.",
+          code: "action_snapshot_changed",
         },
         409,
       ),
@@ -79,8 +80,11 @@ describe("HttpCoworkChatActionSnapshotClient", () => {
       fetchImpl,
     });
 
-    await expect(client.prepare(capture)).rejects.toThrow(
-      "document assistant is not running",
-    );
+    const pending = client.prepare(capture);
+    await expect(pending).rejects.toThrow("document assistant is not running");
+    await expect(pending).rejects.toMatchObject({
+      status: 409,
+      code: "action_snapshot_changed",
+    });
   });
 });

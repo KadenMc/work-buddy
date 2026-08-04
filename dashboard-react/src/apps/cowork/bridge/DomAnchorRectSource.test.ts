@@ -48,10 +48,9 @@ const ledgerElement = (
   return element;
 };
 
-const railRoot = (top: number, scrollTop = 0): HTMLElement => {
+const railRoot = (top: number): HTMLElement => {
   const element = document.createElement("ul");
   element.getBoundingClientRect = () => rect(top, top + 400);
-  Object.defineProperty(element, "scrollTop", { value: scrollTop, configurable: true });
   return element;
 };
 
@@ -59,15 +58,113 @@ describe("DomAnchorRectSource", () => {
   it("activates: reports a mark rect in the rail coordinate space", () => {
     const editorRoot = document.createElement("div");
     editorRoot.append(markElement("s1", 120, 140));
-    const rail = railRoot(80, 10);
+    const rail = railRoot(80);
 
     const source = new DomAnchorRectSource({
       getEditorRoot: () => editorRoot,
       getRailRoot: () => rail,
     });
 
-    // top = markTop(120) - railTop(80) + scrollTop(10) = 50, height = 20.
-    expect(source.anchorRect("s1", "proposal")).toEqual({ top: 50, height: 20 });
+    // top = markTop(120) - railTop(80) = 40, height = 20.
+    expect(source.anchorRect("s1", "proposal")).toEqual({ top: 40, height: 20 });
+  });
+
+  it("keeps Review-only ancestor scrolling out of card coordinates", () => {
+    const workspace = document.createElement("div");
+    const editorRoot = document.createElement("div");
+    const mark = markElement("s1", 120, 140);
+    editorRoot.append(mark);
+
+    const railScroller = document.createElement("div");
+    const rail = railRoot(80);
+    let railScrollTop = 0;
+    Object.defineProperty(railScroller, "scrollTop", {
+      configurable: true,
+      get: () => railScrollTop,
+    });
+    rail.getBoundingClientRect = () =>
+      rect(80 - railScrollTop, 480 - railScrollTop);
+    railScroller.append(rail);
+    workspace.append(editorRoot, railScroller);
+    document.body.append(workspace);
+
+    const source = new DomAnchorRectSource({
+      getEditorRoot: () => editorRoot,
+      getRailRoot: () => rail,
+    });
+
+    expect(source.anchorRect("s1", "proposal")).toEqual({
+      top: 40,
+      height: 20,
+    });
+
+    railScrollTop = 60;
+    expect(source.anchorRect("s1", "proposal")).toEqual({
+      top: 40,
+      height: 20,
+    });
+
+    workspace.remove();
+  });
+
+  it("ignores Review-only scroll events but still reports editor scrolling", () => {
+    const workspace = document.createElement("div");
+    const editorScroller = document.createElement("div");
+    const editorRoot = document.createElement("div");
+    const mark = markElement("s1", 120, 140);
+    let editorScrollTop = 0;
+    mark.getBoundingClientRect = () =>
+      rect(120 - editorScrollTop, 140 - editorScrollTop);
+    editorRoot.append(mark);
+    editorScroller.append(editorRoot);
+
+    const railScroller = document.createElement("div");
+    const rail = railRoot(80);
+    let railScrollTop = 0;
+    Object.defineProperty(railScroller, "scrollTop", {
+      configurable: true,
+      get: () => railScrollTop,
+    });
+    rail.getBoundingClientRect = () =>
+      rect(80 - railScrollTop, 480 - railScrollTop);
+    railScroller.append(rail);
+    workspace.append(editorScroller, railScroller);
+    document.body.append(workspace);
+
+    const source = new DomAnchorRectSource({
+      getEditorRoot: () => editorRoot,
+      getRailRoot: () => rail,
+    });
+    const onChange = vi.fn();
+    const unsubscribe = source.subscribe(onChange);
+
+    railScrollTop = 60;
+    railScroller.dispatchEvent(new Event("scroll"));
+    expect(onChange).not.toHaveBeenCalled();
+    expect(source.anchorRect("s1", "proposal")).toEqual({
+      top: 40,
+      height: 20,
+    });
+
+    // A later explicit remeasurement remains stable even though the rail is
+    // still scrolled; filtering the scroll event alone would fail this case.
+    source.refresh();
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(source.anchorRect("s1", "proposal")).toEqual({
+      top: 40,
+      height: 20,
+    });
+
+    editorScrollTop = 20;
+    editorScroller.dispatchEvent(new Event("scroll"));
+    expect(onChange).toHaveBeenCalledTimes(2);
+    expect(source.anchorRect("s1", "proposal")).toEqual({
+      top: 20,
+      height: 20,
+    });
+
+    unsubscribe();
+    workspace.remove();
   });
 
   it("unions the rects of a multi-node mark", () => {

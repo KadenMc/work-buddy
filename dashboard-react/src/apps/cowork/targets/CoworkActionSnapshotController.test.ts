@@ -54,6 +54,28 @@ class FakeCapturePersistence implements CoworkActionCapturePersistence {
     }
     return receipt;
   }
+
+  async compactProjection(
+    checkpoint: Parameters<
+      CoworkActionCapturePersistence["compactProjection"]
+    >[0],
+  ): ReturnType<CoworkActionCapturePersistence["compactProjection"]> {
+    this.compactCalls += 1;
+    this.docSha256 = `head-${this.compactCalls}`;
+    const receipt = {
+      snapshotSha256: checkpoint.snapshotSha256,
+      structuredHeadSha256: this.docSha256,
+      compactedProjectionSha256: checkpoint.projectionSha256,
+      projectionReceiptId: `projection-receipt-${this.compactCalls}`,
+    };
+    if (
+      this.mutateAfterEveryCompaction ||
+      (this.compactCalls === 1 && this.mutateAfterFirstCompaction !== null)
+    ) {
+      this.mutateAfterFirstCompaction?.();
+    }
+    return receipt;
+  }
 }
 
 let editor: Editor | null = null;
@@ -123,6 +145,7 @@ describe("DefaultCoworkActionSnapshotController", () => {
     expect(persistence.compactCalls).toBe(2);
     expect(capture.editGeneration).toBe(1);
     expect(capture.structuredHeadSha256).toBe("head-2");
+    expect(capture.projectionReceiptId).toBe("projection-receipt-2");
     expect(
       await sha256Hex(decodeCoworkBytes(capture.snapshotBase64)),
     ).toBe(capture.snapshotSha256);

@@ -11,6 +11,7 @@ import type {
   ProposalInput,
   SittingVerb,
 } from "../suggestions/types";
+import { RecoverableDecisionApplyError } from "../rail/applyRecovery";
 import { prepareCoworkSittingDocument } from "./sittingWorkspace";
 
 const documents: Y.Doc[] = [];
@@ -225,26 +226,74 @@ describe("prepareCoworkSittingDocument", () => {
     prepared.dispose();
   });
 
+  it("materializes a canonical Markdown hard-break proposal", async () => {
+    const document = await seedDocument("The methods  \r\nsection follows.");
+    const proposal = editProposal(
+      "prop-hard-break",
+      "methods  \r\nsection",
+      "methods section",
+      { prefix: "The ", suffix: " follows." },
+    );
+
+    const prepared = await prepareCoworkSittingDocument(
+      document,
+      [decision(proposal, "confirm")],
+      [proposal],
+      1,
+    );
+
+    expect(prepared.commit.rendered_markdown).toBe("The methods section follows.");
+    prepared.dispose();
+  });
+
+  it("materializes a hard break inside a Markdown blockquote", async () => {
+    const document = await seedDocument("> Keep the idea at  \r\n> the centre.");
+    const proposal = editProposal(
+      "prop-blockquote-break",
+      "at  \r\n> the centre.",
+      "at the centre.",
+      { prefix: "idea ", suffix: "" },
+    );
+
+    const prepared = await prepareCoworkSittingDocument(
+      document,
+      [decision(proposal, "confirm")],
+      [proposal],
+      1,
+    );
+
+    expect(prepared.commit.rendered_markdown).toBe("> Keep the idea at the centre.");
+    prepared.dispose();
+  });
+
   it("fails closed when an admitted proposal is missing from the catalog", async () => {
     const document = await seedDocument("The quick brown fox");
     const proposal = editProposal("prop-1", "quick", "slow");
 
-    await expect(
-      prepareCoworkSittingDocument(
+    const result = await prepareCoworkSittingDocument(
         document,
         [decision(proposal, "confirm")],
         [],
         1,
-      ),
-    ).rejects.toThrow(/missing from the authoritative catalog/u);
+      ).catch((error: unknown) => error);
+
+    expect(result).toBeInstanceOf(RecoverableDecisionApplyError);
+    expect((result as RecoverableDecisionApplyError).recovery).toEqual({
+      availableProposalIds: [],
+      blockers: [
+        expect.objectContaining({
+          proposalId: "prop-1",
+          reason: "proposal_unavailable",
+        }),
+      ],
+    });
   });
 
   it("fails closed when the admitted canonical hash does not match", async () => {
     const document = await seedDocument("The quick brown fox");
     const proposal = editProposal("prop-1", "quick", "slow");
 
-    await expect(
-      prepareCoworkSittingDocument(
+    const result = await prepareCoworkSittingDocument(
         document,
         [
           {
@@ -254,37 +303,70 @@ describe("prepareCoworkSittingDocument", () => {
         ],
         [proposal],
         1,
-      ),
-    ).rejects.toThrow(/no longer matches/u);
+      ).catch((error: unknown) => error);
+
+    expect(result).toBeInstanceOf(RecoverableDecisionApplyError);
+    expect((result as RecoverableDecisionApplyError).recovery.blockers).toEqual([
+      expect.objectContaining({
+        proposalId: "prop-1",
+        reason: "proposal_changed",
+      }),
+    ]);
   });
 
   it("fails closed when an admitted quote anchor is unresolved", async () => {
     const document = await seedDocument("The quick brown fox");
     const proposal = editProposal("prop-1", "missing", "slow");
 
-    await expect(
-      prepareCoworkSittingDocument(
+    const result = await prepareCoworkSittingDocument(
         document,
         [decision(proposal, "confirm")],
         [proposal],
         1,
-      ),
-    ).rejects.toThrow(/could not be resolved/u);
+      ).catch((error: unknown) => error);
+
+    expect(result).toBeInstanceOf(RecoverableDecisionApplyError);
+    expect((result as RecoverableDecisionApplyError).recovery.blockers).toEqual([
+      expect.objectContaining({
+        proposalId: "prop-1",
+        reason: "passage_unavailable",
+      }),
+    ]);
   });
 
-  it("fails closed when admitted materialized edits overlap", async () => {
+  it("identifies overlapping edits and preserves the disjoint available subset", async () => {
     const document = await seedDocument("abcdef");
     const first = editProposal("prop-1", "bcd", "one");
     const second = editProposal("prop-2", "cde", "two");
+    const third = editProposal("prop-3", "f", "three");
 
-    await expect(
-      prepareCoworkSittingDocument(
+    const result = await prepareCoworkSittingDocument(
         document,
-        [decision(first, "confirm"), decision(second, "confirm")],
-        [first, second],
+        [
+          decision(first, "confirm"),
+          decision(second, "confirm"),
+          decision(third, "confirm"),
+        ],
+        [first, second, third],
         1,
-      ),
-    ).rejects.toThrow(/overlap/u);
+      ).catch((error: unknown) => error);
+
+    expect(result).toBeInstanceOf(RecoverableDecisionApplyError);
+    expect((result as RecoverableDecisionApplyError).recovery).toEqual({
+      availableProposalIds: ["prop-3"],
+      blockers: [
+        expect.objectContaining({
+          proposalId: "prop-1",
+          reason: "conflicts_with_selected_edit",
+          relatedProposalIds: ["prop-2"],
+        }),
+        expect.objectContaining({
+          proposalId: "prop-2",
+          reason: "conflicts_with_selected_edit",
+          relatedProposalIds: ["prop-1"],
+        }),
+      ],
+    });
   });
 
   it("applies only the admitted subset of the authoritative catalog", async () => {

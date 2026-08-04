@@ -69,6 +69,12 @@ def _required_text(value: object, label: str) -> str:
     return value
 
 
+def _optional_text(value: object, label: str) -> str | None:
+    if value is None:
+        return None
+    return _required_text(value, label)
+
+
 def _mapping(value: object, label: str) -> dict[str, Any]:
     if not isinstance(value, Mapping) or not all(
         isinstance(key, str) for key in value
@@ -269,6 +275,10 @@ def prepare_chat_action_snapshot(
                 capture.get("projectionSha256"),
                 "projectionSha256",
             ),
+            projection_receipt_id=_optional_text(
+                capture.get("projectionReceiptId"),
+                "projectionReceiptId",
+            ),
             target=selector,
             context_boundary={
                 "kind": "complete_frozen_document",
@@ -409,6 +419,7 @@ def post_targeted_chat_message(
     conversation_id: str,
     content: str,
     context: Mapping[str, Any],
+    message_id: str | None = None,
 ) -> ConversationMessage:
     """Append a targeted turn even when its bound agent must be restarted."""
 
@@ -477,6 +488,7 @@ def post_targeted_chat_message(
         message = post_user_message(
             conversation_id,
             content,
+            message_id=message_id,
             context=durable_context,
         )
         if message is None:

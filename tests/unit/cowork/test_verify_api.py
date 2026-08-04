@@ -586,14 +586,21 @@ def test_cothink_item_can_be_parked_then_dismissed_by_exact_item_hash(
 def test_cothink_discuss_saves_exact_non_evidential_context_in_chat(
     client,
     seeded,
+    fake_document_agent,
     fake_verify_host,
     monkeypatch,
 ):
     from work_buddy.conversations import store as conversation_store
-    from work_buddy.cowork import chat_targets
+    from work_buddy.cowork import chat_targets, document_agent
+    from work_buddy.truth import registry as truth_registry
 
     monkeypatch.setattr(
         chat_targets,
+        "TruthStoreRegistry",
+        lambda: seeded["registry"],
+    )
+    monkeypatch.setattr(
+        truth_registry,
         "TruthStoreRegistry",
         lambda: seeded["registry"],
     )
@@ -660,6 +667,10 @@ def test_cothink_discuss_saves_exact_non_evidential_context_in_chat(
         "rationale": "The draft treats the choice as permanent.",
         "non_evidential": True,
     }
+    assert len(fake_document_agent) == 1
+    assert fake_document_agent[0]["conversation_id"] == receipt["conversation_id"]
+    assert fake_document_agent[0]["store_id"] == seeded["store_id"]
+    assert fake_document_agent[0]["document_id"] == seeded["document"].id
     opened = client.get(
         (
             f"/api/truth/doc/{seeded['document'].id}"
@@ -667,6 +678,39 @@ def test_cothink_discuss_saves_exact_non_evidential_context_in_chat(
         )
     ).get_json()
     assert opened["cothink_items"][0]["status"] == "open"
+
+    messages_before_failed_wake = len(bundle["messages"])
+
+    def _wake_failure(_conversation_id: str):
+        raise RuntimeError("throwaway Co-think wake failure")
+
+    monkeypatch.setattr(
+        document_agent,
+        "ensure_bound_document_agent",
+        _wake_failure,
+    )
+    discussed_with_failed_wake = client.post(
+        (
+            f"/api/truth/doc/{seeded['document'].id}/cothink/items/"
+            f"{item.id}/actions?store_id={seeded['store_id']}"
+        ),
+        json={
+            "action": "discuss",
+            "canonical_sha256": item.canonical_sha256,
+        },
+    )
+
+    assert discussed_with_failed_wake.status_code == 200
+    failed_wake_receipt = discussed_with_failed_wake.get_json()
+    after_failed_wake = conversation_store.get_conversation_with_messages(
+        receipt["conversation_id"]
+    )
+    assert after_failed_wake is not None
+    assert len(after_failed_wake["messages"]) == messages_before_failed_wake + 1
+    assert (
+        after_failed_wake["messages"][-1]["message_id"]
+        == failed_wake_receipt["message_id"]
+    )
 
 
 def test_cothink_no_item_and_unavailable_outcomes_survive_doc_reload(

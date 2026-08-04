@@ -11,6 +11,11 @@ from typing import Any, Mapping
 from work_buddy.cowork import materialization, sittings
 from work_buddy.cowork.lifecycle_state import inspect_lifecycle_state
 from work_buddy.cowork.policy import document_surface_allowed
+from work_buddy.cowork.proposal_applicability import (
+    CurrentProjection,
+    assess_proposal_applicability,
+    load_current_projection,
+)
 from work_buddy.cowork.verify_coordination import record_review_application
 from work_buddy.truth import documents, proposals, ydoc_store
 from work_buddy.truth.contracts import Actor, InvariantViolation
@@ -155,6 +160,8 @@ def _admit_item(
     item: Mapping[str, Any],
     *,
     structured_head_sha256: str,
+    current_projection: CurrentProjection | None,
+    projection_unavailable_reason: str,
     conn: sqlite3.Connection,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     proposal_id = str(item.get("proposal_id") or "").strip()
@@ -169,10 +176,14 @@ def _admit_item(
         return None, _item_error(proposal_id, verb, "proposal does not exist")
     if proposal.document_id != document.id:
         return None, _item_error(proposal_id, verb, "proposal belongs to another document")
-    base_ok = proposal.base_content_sha256 == document.content_sha256 and (
-        proposal.base_structured_head_sha256 is None
-        or proposal.base_structured_head_sha256 == structured_head_sha256
+    applicability = assess_proposal_applicability(
+        proposal,
+        document,
+        structured_head_sha256=structured_head_sha256,
+        current_projection=current_projection,
+        projection_unavailable_reason=projection_unavailable_reason,
     )
+    base_ok = applicability.applicable
     supplied = str(item.get("canonical_sha256") or "").strip().lower()
     if supplied != proposal.canonical_sha256:
         result = _item_error(proposal_id, verb, "canonical_sha256 no longer matches the shown proposal", base_ok=base_ok)
@@ -185,7 +196,12 @@ def _admit_item(
     if latest.status != "open":
         return None, _item_error(proposal_id, verb, f"proposal is {latest.status}, not open", base_ok=base_ok)
     if verb in sittings._BASE_REQUIRED_VERBS and not base_ok:
-        return None, _item_error(proposal_id, verb, "stale_base", base_ok=False)
+        return None, _item_error(
+            proposal_id,
+            verb,
+            applicability.reason,
+            base_ok=False,
+        )
     precheck = sittings._precheck_inputs(proposal, verb)
     if precheck is not None:
         return None, _item_error(proposal_id, verb, precheck, base_ok=base_ok)
@@ -204,7 +220,9 @@ def _admit_item(
             return None, _item_error(proposal_id, verb, "reject_as_preference requires a result claim or preference text", base_ok=base_ok)
         if claim_id and store._get_claim_locked(conn, claim_id) is None:
             return None, _item_error(proposal_id, verb, "result claim does not exist", base_ok=base_ok)
-    return dict(item), None
+    admitted = dict(item)
+    admitted["_applicability"] = applicability.to_wire()
+    return admitted, None
 
 
 def prepare_sitting(
@@ -299,6 +317,12 @@ def prepare_sitting(
         failed: list[dict[str, Any]] = []
         seen: set[str] = set()
         with store._read_connection() as conn:
+            current_projection, projection_reason = load_current_projection(
+                store,
+                document,
+                structured_head_sha256=expected_head,
+                conn=conn,
+            )
             for index, item in enumerate(items):
                 proposal_id = str(item.get("proposal_id") or "").strip()
                 if proposal_id in seen:
@@ -310,6 +334,8 @@ def prepare_sitting(
                     document,
                     item,
                     structured_head_sha256=expected_head,
+                    current_projection=current_projection,
+                    projection_unavailable_reason=projection_reason,
                     conn=conn,
                 )
                 if error is not None:
@@ -353,6 +379,7 @@ def _commit_decisions(
     outcomes: list[tuple[int, sittings.ItemOutcome]] = []
     events: list[tuple[str, dict[str, Any]]] = []
     for entry in intent.admitted:
+        application_proof = entry["item"].get("_applicability")
         outcome = sittings.decide_one(
             store,
             document,
@@ -361,6 +388,10 @@ def _commit_decisions(
             at=at,
             conn=conn,
             current_structured_head_sha256=intent.expected_structured_head_sha256,
+            applicability_prevalidated=(
+                isinstance(application_proof, Mapping)
+                and application_proof.get("status") == "applicable"
+            ),
         )
         if outcome.result["result"] in {"error", "rejected_stale_view"}:
             raise SittingError(

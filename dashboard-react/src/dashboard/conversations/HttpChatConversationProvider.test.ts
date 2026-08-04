@@ -45,6 +45,23 @@ afterEach(() => {
 });
 
 describe("HttpChatConversationProvider", () => {
+  it("can invalidate mounted consumers immediately", () => {
+    const provider = new HttpChatConversationProvider({
+      conversationId: "c1",
+      fetchImpl: vi.fn(),
+      pollIntervalMs: 0,
+    });
+    const listener = vi.fn();
+    const unsubscribe = provider.subscribe("c1", listener);
+
+    provider.invalidate();
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    unsubscribe();
+    provider.invalidate();
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
   it("loads a conversation and normalizes the house payload", async () => {
     const fetchImpl = vi.fn(async () =>
       jsonResponse(
@@ -154,6 +171,7 @@ describe("HttpChatConversationProvider", () => {
 
     const snapshot = await provider.sendMessage("c1", {
       value: "please tighten this",
+      messageId: "chat-user-stable-1",
     });
 
     const postCall = fetchImpl.mock.calls.find(
@@ -162,7 +180,10 @@ describe("HttpChatConversationProvider", () => {
     expect(postCall?.[0]).toBe("/api/conversations/c1/respond");
     expect(
       JSON.parse((postCall?.[1] as RequestInit).body as string),
-    ).toEqual({ value: "please tighten this" });
+    ).toEqual({
+      value: "please tighten this",
+      message_id: "chat-user-stable-1",
+    });
     expect(snapshot.messages.map((message) => message.content)).toEqual([
       "please tighten this",
       "On it.",
@@ -327,6 +348,73 @@ describe("HttpChatConversationProvider", () => {
       "agent-1",
       "user-ack-1",
       "agent-2",
+    ]);
+  });
+
+  it("keeps an acknowledged turn through repeated stale reads until the server observes it", async () => {
+    const priorMessage: RawMessage = {
+      message_id: "agent-1",
+      role: "agent",
+      content: "What should change?",
+    };
+    let serverCaughtUp = false;
+    const fetchImpl = vi.fn(
+      async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.method === "POST") {
+          return jsonResponse({ sent: true, message_id: "user-ack-1" });
+        }
+        // The projection may lag the successful write even though this GET is
+        // itself a valid 200 response.
+        return jsonResponse(
+          conversation(
+            serverCaughtUp
+              ? [
+                  priorMessage,
+                  {
+                    message_id: "user-ack-1",
+                    role: "user",
+                    content: "Make the claim measurable.",
+                  },
+                ]
+              : [priorMessage],
+          ),
+        );
+      },
+    );
+    const provider = new HttpChatConversationProvider({
+      conversationId: "c1",
+      fetchImpl,
+      pollIntervalMs: 0,
+    });
+    await provider.loadConversation("c1");
+
+    const snapshot = await provider.sendMessage("c1", {
+      value: "Make the claim measurable.",
+    });
+
+    expect(snapshot.messages).toEqual([
+      expect.objectContaining({
+        id: "agent-1",
+        author: "assistant",
+      }),
+      expect.objectContaining({
+        id: "user-ack-1",
+        author: "user",
+        content: "Make the claim measurable.",
+      }),
+    ]);
+
+    const stillStale = await provider.loadConversation("c1");
+    expect(stillStale.messages.map((message) => message.id)).toEqual([
+      "agent-1",
+      "user-ack-1",
+    ]);
+
+    serverCaughtUp = true;
+    const caughtUp = await provider.loadConversation("c1");
+    expect(caughtUp.messages.map((message) => message.id)).toEqual([
+      "agent-1",
+      "user-ack-1",
     ]);
   });
 

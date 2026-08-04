@@ -22,7 +22,6 @@ import {
 import {
   useChatExecutionProfile,
   type ChatExecutionSelectionCandidate,
-  type ChatExecutionSelectionInput,
   type ChatExecutionSwitchConfirmation,
 } from "../../../widget-library/chat";
 import {
@@ -434,7 +433,6 @@ export function CoworkDemoWorkspace({
               started: true,
               error: null,
             },
-            onEnsureAgent: () => {},
           }}
         />
       }
@@ -607,22 +605,51 @@ export function CoworkLiveWorkspace({
         : null,
     [conversation.conversationId, conversation.phase],
   );
-  const selectedExecution: ChatExecutionSelectionInput | undefined =
-    chatExecution?.snapshot === null || chatExecution?.snapshot === undefined
-      ? undefined
-      : {
-          providerId: chatExecution.snapshot.selection.providerId,
-          modelId: chatExecution.snapshot.selection.modelId,
-          expectedRevision: chatExecution.snapshot.selection.revision,
-        };
   const verifyClient = useMemo(
     () => new HttpCoworkVerifyClient({ documentId, storeId }),
     [documentId, storeId],
   );
-  const ensureConversation = useCallback(
-    (): Promise<void> => conversation.ensure(selectedExecution),
-    [conversation.ensure, selectedExecution],
-  );
+  const ensureConversation = useCallback(async (): Promise<void> => {
+    await conversation.ensure();
+  }, [conversation.ensure]);
+  const automaticPreparationKeyRef = useRef<string | null>(null);
+  const prepareChat = useCallback(async (): Promise<void> => {
+    if (
+      conversation.phase !== "idle" &&
+      conversation.phase !== "error"
+    ) {
+      return;
+    }
+    // A present-user Chat selection authorizes a fresh bounded preparation
+    // attempt even if the previous automatic attempt for this state failed.
+    automaticPreparationKeyRef.current = null;
+    await ensureConversation();
+  }, [conversation.phase, ensureConversation]);
+  useEffect(() => {
+    if (railStore.getState().tab !== "chat" || conversation.ensuring) return;
+    const needsPreparation =
+      conversation.phase === "idle" ||
+      conversation.phase === "error";
+    if (!needsPreparation) return;
+    const attemptKey = [
+      workspaceIdentity,
+      conversation.phase,
+      conversation.conversationId ?? "unbound",
+      conversation.agent.status,
+    ].join("\u0000");
+    if (automaticPreparationKeyRef.current === attemptKey) return;
+    automaticPreparationKeyRef.current = attemptKey;
+    void ensureConversation();
+  }, [
+    conversation.agent.alive,
+    conversation.agent.status,
+    conversation.conversationId,
+    conversation.ensuring,
+    conversation.phase,
+    ensureConversation,
+    railStore,
+    workspaceIdentity,
+  ]);
   const chat: CoworkRailChat = useMemo(() => {
     if (
       conversation.phase === "ready" &&
@@ -635,16 +662,12 @@ export function CoworkLiveWorkspace({
         conversationId: conversation.conversationId,
         draftStorageId: chatDraftStorageId,
         agent: conversation.agent,
-        ensuringAgent: conversation.ensuring,
-        ensureError: conversation.error,
-        onEnsureAgent: ensureConversation,
       };
     }
     if (conversation.phase === "idle") {
       return {
         kind: "idle",
         draftStorageId: chatDraftStorageId,
-        onStart: ensureConversation,
       };
     }
     if (conversation.phase === "error") {
@@ -653,9 +676,6 @@ export function CoworkLiveWorkspace({
         draftStorageId: chatDraftStorageId,
         error:
           conversation.error ?? "Chat could not be loaded.",
-        action:
-          conversation.conversationId === null ? "start" : "restart",
-        onRetry: ensureConversation,
       };
     }
     return {
@@ -668,9 +688,7 @@ export function CoworkLiveWorkspace({
     conversation.agent,
     conversation.conversationId,
     conversation.error,
-    conversation.ensuring,
     conversation.phase,
-    ensureConversation,
   ]);
   const narrowWorkspace = useNarrowWorkspace();
   const [activePane, setActivePane] = useState<CoworkWorkspacePane>("editor");
@@ -682,8 +700,9 @@ export function CoworkLiveWorkspace({
     (pane: CoworkWorkspacePane): void => {
       setActivePane(pane);
       if (pane !== "editor") railStore.setTab(pane);
+      if (pane === "chat") void prepareChat();
     },
-    [railStore],
+    [prepareChat, railStore],
   );
   useEffect(
     () =>
@@ -923,6 +942,7 @@ export function CoworkLiveWorkspace({
               !narrowWorkspace || activePane === "review"
             }
             showTabs={!narrowWorkspace}
+            onChatSelected={() => void prepareChat()}
             onRecheckIntent={recheckIntent}
           />
         </CoworkChatTargetingProvider>

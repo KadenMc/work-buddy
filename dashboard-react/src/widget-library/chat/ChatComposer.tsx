@@ -1,4 +1,6 @@
 import {
+  useCallback,
+  useLayoutEffect,
   useRef,
   useState,
   type FormEvent,
@@ -12,9 +14,6 @@ import { ChatExecutionPicker } from "./ChatExecutionPicker";
 import type { ChatExecutionControl } from "./useChatExecutionProfile";
 import "./styles.css";
 
-/** Cap the auto-grown textarea height so a long draft scrolls within itself. */
-const MAX_INPUT_HEIGHT = 160;
-
 export interface ChatComposerProps {
   /**
    * Send intent. May return a promise. A resolved promise clears the draft, a
@@ -25,6 +24,11 @@ export interface ChatComposerProps {
   readonly disabled?: boolean;
   /** Externally-driven pending state (the provider send is in flight). */
   readonly sending?: boolean;
+  /**
+   * Prevent another submission while preserving the textbox for drafting the
+   * next turn, e.g. while an acknowledged message awaits its reply.
+   */
+  readonly submissionDisabled?: boolean;
   readonly placeholder?: string;
   /** Accessible label for the input. Visually hidden by default. */
   readonly label?: string;
@@ -50,6 +54,7 @@ export function ChatComposer({
   onSend,
   disabled = false,
   sending = false,
+  submissionDisabled = false,
   placeholder = "Type a message…",
   label = "Message",
   errorMessage,
@@ -61,6 +66,7 @@ export function ChatComposer({
 }: ChatComposerProps) {
   const [draft, setDraft] = useState(initialValue);
   const [busy, setBusy] = useState(false);
+  const submittingRef = useRef(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const isSending = sending || busy;
   const effectiveDisabled =
@@ -70,15 +76,46 @@ export function ChatComposer({
   const canSend =
     !effectiveDisabled &&
     !isSending &&
+    !submissionDisabled &&
     !executionBlocksSend &&
     draft.trim().length > 0;
 
-  const grow = (element: HTMLTextAreaElement | null) => {
+  const grow = useCallback((element: HTMLTextAreaElement | null) => {
     if (element === null) return;
     element.style.height = "auto";
-    const next = Math.min(element.scrollHeight, MAX_INPUT_HEIGHT);
-    if (next > 0) element.style.height = `${next}px`;
-  };
+    element.style.overflowY = "hidden";
+    const styles = globalThis.getComputedStyle(element);
+    const borderHeight =
+      (Number.parseFloat(styles.borderTopWidth) || 0) +
+      (Number.parseFloat(styles.borderBottomWidth) || 0);
+    const desiredHeight = element.scrollHeight + borderHeight;
+    const parsedMaximum = Number.parseFloat(styles.maxHeight);
+    const maximumHeight = Number.isFinite(parsedMaximum)
+      ? parsedMaximum
+      : Number.POSITIVE_INFINITY;
+    const nextHeight = Math.min(desiredHeight, maximumHeight);
+    if (nextHeight > 0) element.style.height = `${nextHeight}px`;
+    element.style.overflowY =
+      desiredHeight > maximumHeight ? "auto" : "hidden";
+  }, []);
+
+  useLayoutEffect(() => {
+    grow(inputRef.current);
+  }, [draft, grow]);
+
+  useLayoutEffect(() => {
+    const element = inputRef.current;
+    if (element === null || typeof ResizeObserver === "undefined") return;
+    let width = element.getBoundingClientRect().width;
+    const observer = new ResizeObserver((entries) => {
+      const nextWidth = entries[0]?.contentRect.width ?? width;
+      if (nextWidth === width) return;
+      width = nextWidth;
+      grow(element);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [grow]);
 
   const submit = async () => {
     const value = draft.trim();
@@ -86,22 +123,28 @@ export function ChatComposer({
       value.length === 0 ||
       effectiveDisabled ||
       isSending ||
+      submittingRef.current ||
+      submissionDisabled ||
       executionBlocksSend
     ) {
       return;
     }
+    // React state does not update synchronously. Guard the imperative submit
+    // path too, so Enter plus click (or two submit events in one tick) cannot
+    // dispatch the same draft twice before the disabled state renders.
+    submittingRef.current = true;
     setBusy(true);
     try {
       await onSend(value);
       setDraft("");
       onDraftChange?.("");
       if (inputRef.current !== null) {
-        inputRef.current.style.height = "";
         inputRef.current.focus();
       }
     } catch {
       // Retain the draft. The panel surfaces the failure through errorMessage.
     } finally {
+      submittingRef.current = false;
       setBusy(false);
     }
   };
@@ -139,7 +182,6 @@ export function ChatComposer({
           onChange={(value) => {
             setDraft(value);
             onDraftChange?.(value);
-            grow(inputRef.current);
           }}
         >
           <TextArea
@@ -157,7 +199,7 @@ export function ChatComposer({
           ) : (
             <ChatExecutionPicker
               control={execution}
-              disabled={effectiveDisabled || isSending}
+              disabled={effectiveDisabled || isSending || submissionDisabled}
             />
           )}
           <Button
