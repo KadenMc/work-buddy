@@ -34,6 +34,23 @@ describe("computeAlignedLayout", () => {
     ]);
   });
 
+  it("compacts leading space while preserving relative anchor spacing", () => {
+    const layout = computeAlignedLayout(
+      [
+        { id: "a", anchorTop: 236, height: 346 },
+        { id: "b", anchorTop: 590, height: 325 },
+        { id: "c", anchorTop: 1721, height: 391 },
+      ],
+      { gap: 8, maxLeadingSpace: 0 },
+    );
+
+    expect(layout).toEqual([
+      { id: "a", top: 0 },
+      { id: "b", top: 354 },
+      { id: "c", top: 1485 },
+    ]);
+  });
+
   it("preserves document order even when anchors are out of order", () => {
     const layout = computeAlignedLayout([
       { id: "late", anchorTop: 300, height: 20 },
