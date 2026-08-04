@@ -137,6 +137,7 @@ class ChildService:
     module: str  # e.g. "work_buddy.messaging.service"
     port: int
     args: list[str] = field(default_factory=list)  # extra CLI args
+    environment: dict[str, str] = field(default_factory=dict)
     enabled: bool = True
     process: subprocess.Popen | None = None
     crash_count: int = 0
@@ -501,7 +502,7 @@ def _start_child(svc: ChildService) -> None:
         svc.process = subprocess.Popen(
             cmd,
             cwd=str(_REPO_ROOT),
-            env=build_child_env(),
+            env={**build_child_env(), **svc.environment},
             stdout=log_fh if log_fh else subprocess.DEVNULL,
             stderr=subprocess.STDOUT if log_fh else subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
@@ -524,6 +525,113 @@ def _start_child(svc: ChildService) -> None:
         # pins the file against the next startup roll's rename.
         if log_fh:
             log_fh.close()
+
+
+def _preflight_dashboard_react_build(
+    children: list[ChildService], state: SidecarState,
+) -> Any | None:
+    """Run the React build guard once per daemon boot.
+
+    This intentionally lives outside ``_start_child`` so health-triggered
+    service restarts cannot enter a frontend rebuild loop.  Flask still starts
+    after a failed build; the guard state passed to that child makes only
+    ``/app`` return 503 while the APIs and legacy root remain available.
+    """
+
+    dashboard = next(
+        (child for child in children if child.name == "dashboard" and child.enabled),
+        None,
+    )
+    if dashboard is None:
+        return None
+
+    def publish_boot_heartbeat() -> None:
+        state.last_tick_at = time.time()
+        try:
+            save_state(state)
+        except Exception as exc:
+            logger.warning(
+                "Could not publish dashboard-build boot heartbeat: %s", exc,
+            )
+
+    from work_buddy.dashboard.build_freshness import (
+        DashboardBuildResult,
+        DashboardBuildStatus,
+        dashboard_build_environment,
+        ensure_dashboard_react_build,
+        record_dashboard_build_error,
+    )
+
+    publish_boot_heartbeat()
+    result: DashboardBuildResult | None = None
+
+    # Reclaim the configured, sidecar-owned dashboard port through the same
+    # verified orphan cleanup used by normal child startup. A stale dashboard
+    # can otherwise keep serving old assets and pin dist handles during the
+    # staged swap on Windows.
+    if not _kill_process_on_port(dashboard.port, service_name=dashboard.name):
+        message = (
+            f"Port {dashboard.port} is still owned by another process; the "
+            "React dashboard build was not changed."
+        )
+        result = DashboardBuildResult(
+            status=DashboardBuildStatus.DASHBOARD_PORT_BUSY,
+            message=message,
+            dashboard_root=paths.asset_root() / "dashboard-react",
+            dist_root=paths.asset_root() / "dashboard-react" / "dist",
+        )
+        try:
+            record_dashboard_build_error(result.status, result.message)
+        except OSError:
+            logger.exception("Could not persist dashboard port-busy state")
+    else:
+        try:
+            result = ensure_dashboard_react_build(
+                heartbeat=publish_boot_heartbeat,
+                cancelled=lambda: _shutdown_requested,
+                process_started=lambda pid: assign_process_to_job(_kill_job, pid),
+            )
+        except Exception:
+            # The dashboard child still starts so its APIs and legacy root stay
+            # available. The environment below makes /app fail closed even if
+            # the error marker itself could not be written.
+            logger.exception("Unexpected React dashboard preflight failure")
+            try:
+                record_dashboard_build_error(
+                    DashboardBuildStatus.INTERNAL_ERROR,
+                    "The automatic React dashboard build hit an internal error. "
+                    "See the sidecar log for details.",
+                )
+            except OSError:
+                logger.exception("Could not persist dashboard build-error state")
+
+    dashboard.environment.update(dashboard_build_environment(result))
+    if result is not None and result.ready:
+        logger.info(
+            "Dashboard React preflight: %s (%s, %.2fs)",
+            result.message, result.status.value, result.elapsed_seconds,
+        )
+    else:
+        status = (
+            result.status.value
+            if result is not None
+            else DashboardBuildStatus.INTERNAL_ERROR.value
+        )
+        message = (
+            result.message
+            if result is not None
+            else "Unexpected build-guard error; see the preceding traceback."
+        )
+        logger.error(
+            "Dashboard React preflight failed (%s): %s Flask will still "
+            "start, but /app will return 503; other dashboard and sidecar "
+            "surfaces remain available.",
+            status, message,
+        )
+        if result is not None and result.diagnostic:
+            logger.error("Dashboard React build diagnostic:\n%s", result.diagnostic)
+    publish_boot_heartbeat()
+    return result
 
 
 def _stop_child(svc: ChildService) -> None:
@@ -846,8 +954,19 @@ def run(foreground: bool = True) -> None:
     global _kill_job
     _kill_job = create_kill_on_close_job()
 
-    # --- Start all children in parallel ---
+    # Start independent services immediately so a stale React checkout does
+    # not hold the rest of Work Buddy offline while npm builds. The dashboard
+    # starts only after its one-per-boot freshness preflight; health-triggered
+    # child restarts deliberately never repeat the build.
+    dashboard_children = [child for child in children if child.name == "dashboard"]
     for child in children:
+        if child.name != "dashboard":
+            _start_child(child)
+    _preflight_dashboard_react_build(children, state)
+    if _shutdown_requested:
+        _shutdown(children, state)
+        return
+    for child in dashboard_children:
         _start_child(child)
 
     # Wait for all services to become healthy (parallel polling).

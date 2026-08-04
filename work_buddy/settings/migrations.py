@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 
 from work_buddy.storage.migrations import Migration, MigrationRunner
@@ -25,6 +26,16 @@ _CURRENT_STATE_COLUMNS = (
     "revision",
     "updated_at",
 )
+
+_COWORK_SHORTCUT_SETTING_ID = "wb.cowork.review.nav-binding"
+_COWORK_SHORTCUT_DEFAULTS = {
+    "previous": "j",
+    "next": "k",
+    "accept": "a",
+    "amend": "e",
+    "reject": "x",
+    "defer": ".",
+}
 
 
 def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
@@ -161,6 +172,51 @@ def _m003_journal_day_policy_history(conn: sqlite3.Connection) -> None:
     )
 
 
+def _legacy_cowork_shortcut_value(raw: str | None) -> str | None:
+    if raw is None:
+        return None
+    value = json.loads(raw)
+    if isinstance(value, dict):
+        return raw
+    if value not in {"inverted", "vim"}:
+        raise RuntimeError("unsupported legacy Co-work shortcut value")
+    migrated = dict(_COWORK_SHORTCUT_DEFAULTS)
+    if value == "vim":
+        migrated.update(previous="k", next="j")
+    return json.dumps(migrated, separators=(",", ":"), sort_keys=True)
+
+
+def _m004_cowork_shortcut_map(conn: sqlite3.Connection) -> None:
+    """Migrate the v1 navigation preset into the atomic v2 shortcut map."""
+    value_columns = (
+        "bootstrap_default_value_json",
+        "active_value_json",
+        "pending_value_json",
+        "applied_from_value_json",
+    )
+    rows = conn.execute(
+        "SELECT scope, scope_id, "
+        + ", ".join(value_columns)
+        + " FROM setting_value_state WHERE setting_id = ?",
+        (_COWORK_SHORTCUT_SETTING_ID,),
+    ).fetchall()
+    for row in rows:
+        migrated = {
+            column: _legacy_cowork_shortcut_value(row[index + 2])
+            for index, column in enumerate(value_columns)
+        }
+        conn.execute(
+            """
+            UPDATE setting_value_state
+            SET bootstrap_default_value_json = ?, active_value_json = ?,
+                pending_value_json = ?, applied_from_value_json = ?, value_version = 2
+            WHERE setting_id = ? AND scope = ? AND scope_id = ?
+            """,
+            tuple(migrated[column] for column in value_columns)
+            + (_COWORK_SHORTCUT_SETTING_ID, row[0], row[1]),
+        )
+
+
 class _SettingsMigrationRunner(MigrationRunner):
     """Infer the precise adoption point for an unversioned Settings database."""
 
@@ -188,6 +244,16 @@ class _SettingsMigrationRunner(MigrationRunner):
             return 1
         if "journal_day_policy_epoch" not in tables:
             return 2
+        cowork_version = conn.execute(
+            "SELECT MIN(value_version) FROM setting_value_state WHERE setting_id = ?",
+            (_COWORK_SHORTCUT_SETTING_ID,),
+        ).fetchone()
+        if (
+            cowork_version is not None
+            and cowork_version[0] is not None
+            and int(cowork_version[0]) < 2
+        ):
+            return 3
         return self.target_version
 
 
@@ -204,6 +270,11 @@ SETTINGS_MIGRATIONS = _SettingsMigrationRunner(
             3,
             "Journal day policy history",
             _m003_journal_day_policy_history,
+        ),
+        Migration(
+            4,
+            "Co-work shortcut map",
+            _m004_cowork_shortcut_map,
         ),
     ],
 )

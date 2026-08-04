@@ -9,15 +9,19 @@ import {
   type SettingsContribution,
   type SettingsValueSnapshot,
 } from "../../../settings/contracts";
-import { DEFAULT_NAV_BINDING_PRESET } from "./bindings";
+import {
+  COWORK_SHORTCUT_COMMANDS,
+  DEFAULT_COWORK_SHORTCUT_BINDINGS,
+  coworkShortcutValueSchema,
+} from "./bindings";
 
 /**
  * The Co-work review keyboard binding is a first-class dashboard setting, declared in the
  * house SettingDefinition shape exactly like the accessibility and Journal settings. This
  * contribution is the frontend half (definition metadata, page, placement) that the Settings
- * UI renders and the native fallback registry merges. The effective value is read at runtime
- * with useCoworkNavBinding, which degrades to the inverted default when the value is absent,
- * so the setting is safe to ship before its server registration lands.
+ * UI renders and the native fallback registry merges. The effective map is read at runtime
+ * with useCoworkShortcutBindings, which degrades atomically to the house default when the
+ * value is absent, so the setting is safe during rolling frontend/server upgrades.
  */
 
 export const COWORK_SETTINGS_PAGE_ID: SettingsPageId = asSettingsPageId(
@@ -34,8 +38,8 @@ export const coworkKeyboardSettingsContribution: SettingsContribution = {
     {
       schemaVersion: 1,
       settingId: COWORK_NAV_BINDING_SETTING_ID,
-      definitionVersion: 1,
-      valueVersion: 1,
+      definitionVersion: 2,
+      valueVersion: 2,
       ownerId: "wb.cowork",
       ownerLabel: "Co-work",
       provenance: {
@@ -44,29 +48,18 @@ export const coworkKeyboardSettingsContribution: SettingsContribution = {
         trustTier: "native",
         label: "Built into Co-work",
       },
-      title: "Review navigation keys",
+      title: "Review keyboard shortcuts",
       summary:
-        "Choose which keys walk to the previous and next item while reviewing a document.",
+        "Choose the keys used to move through and decide Queue items.",
       details:
-        "Inverted uses j for the previous item and k for the next item. Vim uses the conventional j down, k up pair.",
-      valueSchema: { type: "string", enum: ["inverted", "vim"] },
-      defaultValue: DEFAULT_NAV_BINDING_PRESET,
+        "These shortcuts are active only while Queue is visible. They never take over while you are typing.",
+      valueSchema: coworkShortcutValueSchema(),
+      defaultValue: DEFAULT_COWORK_SHORTCUT_BINDINGS,
       allowedScopes: ["profile"],
       defaultScope: "profile",
       control: {
-        kind: "select",
-        options: [
-          {
-            value: "inverted",
-            label: "Inverted (j up, k down)",
-            description: "The house binding: j moves to the previous item.",
-          },
-          {
-            value: "vim",
-            label: "Vim (j down, k up)",
-            description: "Conventional vim: j moves to the next item.",
-          },
-        ],
+        kind: "keybinding-map",
+        commands: COWORK_SHORTCUT_COMMANDS,
       },
       appliesTo: [
         { kind: "app", id: "wb.cowork", label: "Co-work" },
@@ -79,6 +72,10 @@ export const coworkKeyboardSettingsContribution: SettingsContribution = {
         "keyboard",
         "shortcut",
         "navigation",
+        "accept",
+        "amend",
+        "reject",
+        "defer",
         "j",
         "k",
         "vim",
@@ -104,7 +101,7 @@ export const coworkKeyboardSettingsContribution: SettingsContribution = {
         {
           sectionId: "review-keyboard",
           label: "Review keyboard",
-          description: "How the keyboard walks proposals and flags in Review.",
+          description: "How the keyboard moves through and decides Queue items.",
           order: 10,
         },
       ],
@@ -127,11 +124,11 @@ export const coworkKeyboardSettingsContribution: SettingsContribution = {
 };
 
 /**
- * Read the configured binding preset id from a settings value snapshot, or undefined when the
+ * Read the configured shortcut map from a settings value snapshot, or undefined when the
  * setting is not present (server does not know it yet, or the fetch was unavailable). Pure, so
  * the resolution is testable without a live settings server.
  */
-export function readNavBindingValue(
+export function readCoworkShortcutBindingValue(
   snapshot: SettingsValueSnapshot | undefined,
 ): unknown {
   return snapshot?.values.get(COWORK_NAV_BINDING_SETTING_ID)?.effectiveValue;

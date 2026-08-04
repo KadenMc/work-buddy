@@ -26,7 +26,7 @@ Settings is the authority and information architecture for configurable Work Bud
 
 ## Navigation
 
-Application-owned settings are organized under **Apps**, separated by provenance such as Built-in and Community. Journal and Co-work each appear once under `Apps -> Built-in`; Co-work owns its Review navigation binding on that page. View- and System-related groups are sections inside the owning App page rather than duplicate global View entries.
+Application-owned settings are organized under **Apps**, separated by provenance such as Built-in and Community. Journal and Co-work each appear once under `Apps -> Built-in`; Co-work owns its atomic Review shortcut map on that page. View- and System-related groups are sections inside the owning App page rather than duplicate global View entries.
 
 The canonical Journal route is `/app/settings/apps/journal`. Contextual settings launchers navigate directly to the owning page. Compatibility routes may redirect there while preserving navigation state; they do not create a second setting identity.
 
@@ -50,11 +50,16 @@ Authority is declared per setting. Device-local settings cover presentation and 
 The same-origin Settings API exposes registry, values, preview, mutation, and reset operations. Mutations use typed validation, revision checks, authority enforcement, and the dashboard read-only gate. Successful changes publish `settings.changed` to the live UI projection.
 
 Registry-backed select controls use the same authoritative values path as the
-Journal time control. Immediate values take effect in the mutation response;
+Journal time control. The reusable keybinding-map control also uses that path:
+one setting owns a declared command set and one atomic command-to-chord object,
+so capture, collision validation, persistence, reset, runtime resolution, and
+rendered shortcut hints share the same source of truth across Apps. Immediate values take effect in the mutation response;
 only settings explicitly declared `next-boundary` enter the Journal transition
 path. A stored default is frozen for its declared `value_version`, so changing
 a definition's default or representation requires a deliberate Settings-store
-migration rather than silently reinterpreting an existing profile.
+migration rather than silently reinterpreting an existing profile. Co-work's
+legacy inverted/Vim Review-navigation value is therefore explicitly migrated
+to the complete shortcut map instead of being treated as the new representation.
 
 Page search is immediate lexical filtering and keeps controls mounted so draft values are not destroyed. Global semantic Settings search is a separate integration boundary and is not supplied by browser calls to the embedding service.
 

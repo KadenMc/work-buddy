@@ -2,35 +2,29 @@ import { expect, test } from "@playwright/test";
 
 import {
   openCowork,
-  openCoworkEmpty,
+  openCoworkScratch,
   resetCoworkStorage,
   waitForCoworkEditorDurable,
 } from "./cowork-helpers";
 
 /**
- * The reload-persistence proof for the honest empty Co-work workspace. The empty default route
- * runs the editor on a local IndexedDB Yjs transport and the chat composer on a localStorage
- * draft, so a typed document and an unsent message must both survive a full page reload with no
- * server and no demo fixture. A second case guards the dev-only demo fixture entry, which the
- * review-loop suites still target, against a regression in its DEV gate.
+ * Persistence proofs for a launcher-created local Co-work document and the dev-only fixture.
+ * Local document text uses the device-local IndexedDB Yjs transport. The fixture supplies a
+ * deterministic editor-plus-Review scene for independent scroll-position continuity.
  */
 
-// The empty workspace persists its editor under this document id (surface EMPTY_DOCUMENT_ID).
-const EMPTY_DOCUMENT_ID = "cowork-empty";
-
 const EDITOR_MARKER = "persist-marker-4b91c";
-const CHAT_DRAFT = "unsent draft 4b91c, kept across reload";
 
-test.describe("Co-work persistence across reload", () => {
+test.describe("Co-work persistence across visits", () => {
   test.beforeEach(async ({ page }) => {
     // Reset both stores for determinism, so the round-trip starts from a pristine empty document.
     await resetCoworkStorage(page);
   });
 
-  test("editor content and chat draft both survive a reload on the empty default route", async ({
+  test("a launcher-created local document survives reload", async ({
     page,
   }) => {
-    await openCoworkEmpty(page);
+    const scratchId = await openCoworkScratch(page);
 
     // The Co-work view chrome renders its title, and no fabricated demo wording appears on the
     // honest empty route (Ruling 1 scrapped demo mode as a product surface).
@@ -47,18 +41,10 @@ test.describe("Co-work persistence across reload", () => {
     await page.keyboard.type(` ${EDITOR_MARKER}`);
     await expect(editor).toContainText(EDITOR_MARKER);
 
-    // Switch to Chat and type a distinct draft without sending. The composer mirrors it to
-    // localStorage on every edit.
-    await page.getByRole("tab", { name: /Chat/ }).click();
-    const composer = page.getByRole("textbox", { name: "Message" });
-    await composer.click();
-    await page.keyboard.type(CHAT_DRAFT);
-    await expect(composer).toHaveValue(CHAT_DRAFT);
-
     // Reload only once the editor content has reached the durable compacted snapshot, the form a
     // reload rehydrates from. This keeps the round-trip deterministic instead of racing the
     // compaction debounce.
-    await waitForCoworkEditorDurable(page, EMPTY_DOCUMENT_ID);
+    await waitForCoworkEditorDurable(page, scratchId);
 
     await page.reload({ waitUntil: "domcontentloaded" });
 
@@ -66,14 +52,6 @@ test.describe("Co-work persistence across reload", () => {
     await expect(
       page.getByRole("textbox", { name: "Document editor" }),
     ).toContainText(EDITOR_MARKER, { timeout: 60_000 });
-
-    // The chat composer rehydrates its retained draft. Select Chat to surface the composer panel
-    // and read the seeded draft. The rail restores its last-active tab from per-document
-    // persistence, so this reselects the tab the pre-reload edit left active.
-    await page.getByRole("tab", { name: /Chat/ }).click();
-    await expect(page.getByRole("textbox", { name: "Message" })).toHaveValue(
-      CHAT_DRAFT,
-    );
   });
 
   test("the dev-only demo fixture route still renders the seeded scene", async ({
@@ -89,5 +67,79 @@ test.describe("Co-work persistence across reload", () => {
     await expect(
       page.getByRole("textbox", { name: "Document editor" }),
     ).toContainText("Context bundle cache");
+  });
+
+  test("editor and Review positions survive leaving the workspace", async ({ page }) => {
+    // A shorter viewport guarantees both the seeded document and its review list have a
+    // meaningful scroll range. The positions are deliberately different so accidentally
+    // sharing one persistence key cannot pass the round trip.
+    await page.setViewportSize({ width: 1280, height: 500 });
+    await openCowork(page);
+
+    const editorRegion = page.locator(".wb-cowork__editor-region");
+    const reviewBody = page.locator(".wb-cowork-rail__body");
+    const editorPosition = await editorRegion.evaluate((element) => {
+      const max = element.scrollHeight - element.clientHeight;
+      element.scrollTop = Math.floor(max * 0.61);
+      return { max, top: element.scrollTop };
+    });
+    const reviewPosition = await reviewBody.evaluate((element) => {
+      const max = element.scrollHeight - element.clientHeight;
+      element.scrollTop = Math.floor(max * 0.79);
+      return { max, top: element.scrollTop };
+    });
+
+    expect(editorPosition.max).toBeGreaterThan(40);
+    expect(reviewPosition.max).toBeGreaterThan(40);
+    expect(editorPosition.top).toBeGreaterThan(0);
+    expect(reviewPosition.top).toBeGreaterThan(0);
+
+    // Let the throttled writer settle, then leave and return to the same fixture route.
+    await page.waitForTimeout(350);
+    await page.goto("/app/", { waitUntil: "domcontentloaded" });
+    await openCowork(page);
+
+    await expect
+      .poll(() => editorRegion.evaluate((element) => element.scrollTop))
+      .toBeCloseTo(editorPosition.top, 0);
+    await expect
+      .poll(() => reviewBody.evaluate((element) => element.scrollTop))
+      .toBeCloseTo(reviewPosition.top, 0);
+
+    // Keeping Review hidden beyond the restoration deadline must not let its display:none
+    // geometry overwrite the saved offset with zero.
+    const restoredReviewTop = await reviewBody.evaluate((element) => element.scrollTop);
+    await page.getByRole("tab", { name: /Chat/ }).click();
+    await page.waitForTimeout(16_000);
+    await page.getByRole("tab", { name: "Review" }).click();
+    await expect
+      .poll(() => reviewBody.evaluate((element) => element.scrollTop))
+      .toBeCloseTo(restoredReviewTop, 0);
+  });
+
+  test("filtered and Queue views do not replace the canonical Review position", async ({
+    page,
+  }) => {
+    await openCowork(page);
+    const reviewBody = page.locator(".wb-cowork-rail__body");
+    const canonicalTop = await reviewBody.evaluate((element) => {
+      const max = element.scrollHeight - element.clientHeight;
+      element.scrollTop = Math.floor(max * 0.72);
+      return element.scrollTop;
+    });
+    expect(canonicalTop).toBeGreaterThan(40);
+    await page.waitForTimeout(350);
+
+    await page.getByRole("button", { name: /Flags/ }).click();
+    await page.getByRole("button", { name: /All/ }).click();
+    await expect
+      .poll(() => reviewBody.evaluate((element) => element.scrollTop))
+      .toBeCloseTo(canonicalTop, 0);
+
+    await page.getByRole("button", { name: "Queue" }).click();
+    await page.getByRole("button", { name: "Stream" }).click();
+    await expect
+      .poll(() => reviewBody.evaluate((element) => element.scrollTop))
+      .toBeCloseTo(canonicalTop, 0);
   });
 });

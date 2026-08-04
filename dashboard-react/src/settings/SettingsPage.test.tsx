@@ -290,22 +290,31 @@ describe("SettingsPage", () => {
     );
   });
 
-  it("renders and saves an authoritative select setting", async () => {
+  it("captures, validates, cancels, and saves an authoritative keybinding map", async () => {
+    const defaults = {
+      previous: "j",
+      next: "k",
+      accept: "a",
+      amend: "e",
+      reject: "x",
+      defer: ".",
+    };
+    const configured = { ...defaults, next: "n" };
     const fetchMock = vi.fn(
       async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
         if (url.startsWith("/api/settings/values?")) {
           return Response.json({
             schema_version: 1,
-            registry_revision: "settings-registry:2",
+            registry_revision: "settings-registry:3",
             observed_at: "2026-08-03T12:00:00Z",
             read_only: false,
             values: [
               {
                 setting_id: "wb.cowork.review.nav-binding",
                 scope: { kind: "profile", subject_id: "default" },
-                effective_value: "inverted",
-                configured_value: "inverted",
+                effective_value: defaults,
+                configured_value: defaults,
                 source: "default",
                 configured_source: "default",
                 is_modified: false,
@@ -318,17 +327,17 @@ describe("SettingsPage", () => {
           expect(init?.method).toBe("PATCH");
           expect(JSON.parse(String(init?.body))).toEqual({
             scope: "profile",
-            value: "vim",
+            value: configured,
             expected_revision: "value:0",
           });
           return Response.json({
             schema_version: 1,
-            registry_revision: "settings-registry:2",
+            registry_revision: "settings-registry:3",
             value: {
               setting_id: "wb.cowork.review.nav-binding",
               scope: { kind: "profile", subject_id: "default" },
-              effective_value: "vim",
-              configured_value: "vim",
+              effective_value: configured,
+              configured_value: configured,
               source: "profile",
               configured_source: "profile",
               is_modified: true,
@@ -350,17 +359,42 @@ describe("SettingsPage", () => {
       </MemoryRouter>,
     );
 
-    const select = await screen.findByRole("combobox", {
-      name: "Review navigation keys",
+    const rebindNext = await screen.findByRole("button", {
+      name: "Rebind Next review item",
     });
-    await waitFor(() => expect(select).toBeEnabled());
-    expect(select).toHaveValue("inverted");
-    fireEvent.change(select, { target: { value: "vim" } });
-    expect(screen.getByText(/Conventional vim/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Save change" }));
+    await waitFor(() => expect(rebindNext).toBeEnabled());
+
+    fireEvent.click(rebindNext);
+    expect(rebindNext).toHaveTextContent("Listening");
+    fireEvent.keyDown(rebindNext, { key: "Tab" });
+    expect(rebindNext).toHaveTextContent("Rebind");
+
+    fireEvent.click(rebindNext);
+    fireEvent.blur(rebindNext);
+    expect(rebindNext).toHaveTextContent("Rebind");
+
+    fireEvent.click(rebindNext);
+    fireEvent.keyDown(rebindNext, { key: "Escape" });
+    expect(rebindNext).toHaveTextContent("Rebind");
+
+    fireEvent.click(rebindNext);
+    fireEvent.keyDown(rebindNext, { key: "j" });
+    const conflicts = screen.getAllByRole("alert");
+    expect(conflicts).toHaveLength(2);
+    for (const conflict of conflicts) {
+      expect(conflict).toHaveTextContent(
+        "Previous review item and Next review item conflict: both use J. Assign different shortcuts.",
+      );
+    }
+    expect(screen.getByRole("button", { name: "Save shortcuts" })).toBeDisabled();
+
+    fireEvent.click(rebindNext);
+    fireEvent.keyDown(rebindNext, { key: "n" });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Save shortcuts" }));
 
     expect(await screen.findByText("Setting saved.")).toBeInTheDocument();
-    expect(select).toHaveValue("vim");
+    expect(screen.getByText("N")).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Reset to Co-work default" }),
     ).toBeEnabled();

@@ -1,8 +1,8 @@
 /**
  * Public surface of the Co-work Review rail. The orchestrator mounts CoworkRail
  * into the view frame in place of the rail placeholder, wiring the review and
- * chat providers, and optionally the anchor-rect seam for true stream
- * alignment. The in-memory providers back the default rendering and the tests.
+ * chat providers, and optionally the editor-owned Review anchor controller.
+ * The in-memory providers back the default rendering and the tests.
  */
 
 export {
@@ -39,7 +39,6 @@ export type {
 } from "./store";
 export { useRailState, shallowArrayEqual } from "./useRailState";
 export { useReviewData, type UseReviewDataResult } from "./useReviewData";
-export { useIsNarrow } from "./useIsNarrow";
 
 export {
   InMemoryReviewProvider,
@@ -50,25 +49,12 @@ export { createDemoChatProvider } from "./chatFixture";
 
 export type {
   ReviewRailProvider,
-  AnchorRectSource,
+  ReviewAnchorController,
   SittingSubmission,
   ReviewInvalidationListener,
   ReviewUnsubscribe,
   ReviewAnchorKind,
 } from "./provider";
-
-export {
-  computeAlignedLayout,
-  placementsEqual,
-  type AlignInput,
-  type AlignPlacement,
-  type AlignOptions,
-} from "./geometry";
-export {
-  useAlignedStream,
-  type UseAlignedStreamOptions,
-  type AlignedStreamController,
-} from "./useAlignedStream";
 
 export {
   useDraftPersistence,

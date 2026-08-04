@@ -1,8 +1,9 @@
 /**
  * One claim-review card (PRD job 2, the six claim verbs live on the mark bar).
- * It shows the claim proposition, its lifecycle status with a non-color label,
- * its evidence receipts, and an inspect affordance into the read-only sentence
- * inspector. Delivered through the review provider seam, the shape carries only
+ * It always shows the claim proposition and non-color lifecycle status, then
+ * discloses rationale, evidence receipts, and the sentence-inspector affordance
+ * only when selected. Its whole non-control surface is a pointer target while
+ * the proposition button remains the semantic keyboard control. Delivered through the review provider seam, the shape carries only
  * what the card and the six verbs need.
  */
 
@@ -11,6 +12,7 @@ import type {
   ReviewClaim,
   StagedClaimDecision,
 } from "./contracts";
+import { activateCardFromContainer } from "./cardActivation";
 import { CLAIM_VERB_LABEL } from "./verbs";
 
 export interface ClaimCardProps {
@@ -22,7 +24,6 @@ export interface ClaimCardProps {
   readonly inspectSpanId?: string;
   onInspect?(spanId: string): void;
   onScrollToAnchor?(): void;
-  cardRef?: (element: HTMLElement | null) => void;
 }
 
 const STATUS_LABEL: Record<ClaimStatus, string> = {
@@ -43,15 +44,14 @@ export function ClaimCard({
   inspectSpanId,
   onInspect,
   onScrollToAnchor,
-  cardRef,
 }: ClaimCardProps) {
   return (
     <li
-      ref={cardRef}
       className="wb-cowork-rail__card"
       data-kind="claim"
       data-selected={selected ? "true" : undefined}
       data-staged={staged !== undefined ? "true" : undefined}
+      onClick={(event) => activateCardFromContainer(event, onSelect)}
     >
       <div className="wb-cowork-rail__card-head">
         <span className="wb-cowork-rail__card-kind" data-kind="claim">
@@ -88,21 +88,25 @@ export function ClaimCard({
         <span className="wb-cowork-rail__card-tldr">{claim.proposition}</span>
       </button>
 
-      <p className="wb-cowork-rail__card-rationale">{claim.rationale}</p>
+      {selected ? (
+        <>
+          <p className="wb-cowork-rail__card-rationale">{claim.rationale}</p>
 
-      <p className="wb-cowork-rail__claim-evidence">
-        {claim.receipts.length} evidence{" "}
-        {claim.receipts.length === 1 ? "span" : "spans"}
-      </p>
+          <p className="wb-cowork-rail__claim-evidence">
+            {claim.receipts.length} evidence{" "}
+            {claim.receipts.length === 1 ? "span" : "spans"}
+          </p>
 
-      {inspectSpanId !== undefined && onInspect !== undefined ? (
-        <button
-          type="button"
-          className="wb-cowork-rail__inspect-link"
-          onClick={() => onInspect(inspectSpanId)}
-        >
-          Inspect the sentence
-        </button>
+          {inspectSpanId !== undefined && onInspect !== undefined ? (
+            <button
+              type="button"
+              className="wb-cowork-rail__inspect-link"
+              onClick={() => onInspect(inspectSpanId)}
+            >
+              Inspect the sentence
+            </button>
+          ) : null}
+        </>
       ) : null}
 
       {staged !== undefined ? (

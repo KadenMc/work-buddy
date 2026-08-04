@@ -8,6 +8,7 @@ import type {
   SettingsPageContribution,
   SettingsSearchResult,
 } from "./contracts";
+import { validateKeybindingMap } from "./keybindings";
 
 const ID_PATTERN = /^[a-z][a-z0-9]*(?:[._/-][a-z0-9][a-z0-9_-]*)+$/;
 const SECTION_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
@@ -50,6 +51,14 @@ function validateDefault(definition: SettingDefinition): void {
         !definition.control.options.some((option) => option.value === value)
       ) {
         throw new Error(`Invalid select default for ${definition.settingId}`);
+      }
+      break;
+    case "keybinding-map":
+      if (
+        definition.control.commands.length === 0 ||
+        validateKeybindingMap(value, definition.control.commands).length > 0
+      ) {
+        throw new Error(`Invalid keybinding-map default for ${definition.settingId}`);
       }
       break;
   }

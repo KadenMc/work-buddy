@@ -14,10 +14,36 @@ from work_buddy.journal_day import DEFAULT_DAY_BOUNDARY, parse_local_time
 
 
 SCHEMA_VERSION = 1
-REGISTRY_REVISION = "settings-registry:2"
+REGISTRY_REVISION = "settings-registry:3"
 JOURNAL_DAY_BOUNDARY_ID = "wb.journal.day-boundary"
 COWORK_REVIEW_NAV_BINDING_ID = "wb.cowork.review.nav-binding"
 PROFILE_SCOPE_ID = "default"
+
+COWORK_REVIEW_SHORTCUT_DEFAULTS = {
+    "previous": "j",
+    "next": "k",
+    "accept": "a",
+    "amend": "e",
+    "reject": "x",
+    "defer": ".",
+}
+
+COWORK_REVIEW_SHORTCUT_COMMANDS = (
+    ("previous", "Previous review item", "Move up the Queue."),
+    ("next", "Next review item", "Move down the Queue."),
+    (
+        "accept",
+        "Accept, endorse, or confirm",
+        "Choose the positive decision for the current item.",
+    ),
+    ("amend", "Amend", "Open the replacement editor for the current suggestion."),
+    (
+        "reject",
+        "Reject or dismiss",
+        "Choose the direct negative decision for the current item.",
+    ),
+    ("defer", "Defer", "Leave the current suggestion for later."),
+)
 
 
 _DEFINITIONS: tuple[dict[str, Any], ...] = (
@@ -87,27 +113,30 @@ _DEFINITIONS: tuple[dict[str, Any], ...] = (
     },
     {
         "setting_id": COWORK_REVIEW_NAV_BINDING_ID,
-        "definition_version": 1,
-        "value_version": 1,
+        "definition_version": 2,
+        "value_version": 2,
         "owner": {"kind": "app", "id": "wb.cowork", "label": "Co-work"},
         "provenance": {
             "complement_id": "wb.cowork",
             "label": "Co-work",
             "trust_tier": "native",
         },
-        "title": "Review navigation keys",
+        "title": "Review keyboard shortcuts",
         "short_description": (
-            "Choose which keys walk to the previous and next item while "
-            "reviewing a document."
+            "Choose the keys used to move through and decide Queue items."
         ),
         "long_description": (
-            "Inverted uses j for the previous item and k for the next item. "
-            "Vim uses the conventional j down, k up pair."
+            "These shortcuts are active only while Queue is visible. They never "
+            "take over while you are typing."
         ),
         "keywords": [
             "keyboard",
             "shortcut",
             "navigation",
+            "accept",
+            "amend",
+            "reject",
+            "defer",
             "j",
             "k",
             "vim",
@@ -115,10 +144,15 @@ _DEFINITIONS: tuple[dict[str, Any], ...] = (
         ],
         "tags": ["keyboard", "review"],
         "value_schema": {
-            "type": "string",
-            "enum": ["inverted", "vim"],
+            "type": "object",
+            "properties": {
+                command_id: {"type": "string"}
+                for command_id in COWORK_REVIEW_SHORTCUT_DEFAULTS
+            },
+            "required": list(COWORK_REVIEW_SHORTCUT_DEFAULTS),
+            "additionalProperties": False,
         },
-        "default_value": "inverted",
+        "default_value": COWORK_REVIEW_SHORTCUT_DEFAULTS,
         "allowed_scopes": ["profile"],
         "default_scope": "profile",
         "applies_to": [
@@ -136,22 +170,18 @@ _DEFINITIONS: tuple[dict[str, Any], ...] = (
                     "id": "wb.cowork.workspace",
                     "label": "Co-work view",
                 },
-                "note": "Changes the j/k direction used to walk Review items.",
+                "note": "Changes the shortcuts used to navigate and decide Queue items.",
             }
         ],
         "presentation": {
-            "control": "select",
-            "options": [
+            "control": "keybinding-map",
+            "commands": [
                 {
-                    "value": "inverted",
-                    "label": "Inverted (j up, k down)",
-                    "description": "The house binding: j moves to the previous item.",
-                },
-                {
-                    "value": "vim",
-                    "label": "Vim (j down, k up)",
-                    "description": "Conventional vim: j moves to the next item.",
-                },
+                    "command_id": command_id,
+                    "label": label,
+                    "description": description,
+                }
+                for command_id, label, description in COWORK_REVIEW_SHORTCUT_COMMANDS
             ],
             "apply_behavior": "immediate",
         },

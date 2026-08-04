@@ -5,11 +5,14 @@ import type {
   SettingId,
   SettingsValueSnapshot,
 } from "../../../settings/contracts";
-import { resolveNavBinding } from "./bindings";
+import {
+  DEFAULT_COWORK_SHORTCUT_BINDINGS,
+  resolveCoworkShortcutBindings,
+} from "./bindings";
 import {
   COWORK_NAV_BINDING_SETTING_ID,
   coworkKeyboardSettingsContribution,
-  readNavBindingValue,
+  readCoworkShortcutBindingValue,
 } from "./settings";
 
 function snapshotWith(
@@ -35,21 +38,28 @@ function snapshotWith(
 }
 
 describe("cowork keyboard settings contribution", () => {
-  it("declares the binding setting with the inverted default and two presets", () => {
+  it("upgrades the existing setting identity to one v2 keybinding map", () => {
     const [definition] = coworkKeyboardSettingsContribution.definitions;
     expect(definition.settingId).toBe(COWORK_NAV_BINDING_SETTING_ID);
-    expect(definition.defaultValue).toBe("inverted");
+    expect(definition.definitionVersion).toBe(2);
+    expect(definition.valueVersion).toBe(2);
+    expect(definition.defaultValue).toEqual(DEFAULT_COWORK_SHORTCUT_BINDINGS);
     expect(definition.allowedScopes).toEqual(["profile"]);
-    expect(definition.control.kind).toBe("select");
-    const control = definition.control;
-    if (control.kind !== "select") throw new Error("expected a select control");
-    expect(control.options.map((option) => option.value)).toEqual([
-      "inverted",
-      "vim",
+    expect(definition.control.kind).toBe("keybinding-map");
+    if (definition.control.kind !== "keybinding-map") {
+      throw new Error("expected a keybinding-map control");
+    }
+    expect(definition.control.commands.map((command) => command.commandId)).toEqual([
+      "previous",
+      "next",
+      "accept",
+      "amend",
+      "reject",
+      "defer",
     ]);
   });
 
-  it("places the setting on a Co-work app settings page", () => {
+  it("places the setting on the contextual Co-work app settings page", () => {
     const placement = coworkKeyboardSettingsContribution.placements[0];
     expect(placement.settingId).toBe(COWORK_NAV_BINDING_SETTING_ID);
     const page = coworkKeyboardSettingsContribution.pages[0];
@@ -58,25 +68,24 @@ describe("cowork keyboard settings contribution", () => {
   });
 });
 
-describe("readNavBindingValue + resolveNavBinding", () => {
-  it("resolves a configured override from the snapshot", () => {
-    const snapshot = snapshotWith(COWORK_NAV_BINDING_SETTING_ID, "vim");
-    expect(resolveNavBinding(readNavBindingValue(snapshot))).toEqual({
-      prev: "k",
-      next: "j",
-    });
+describe("readCoworkShortcutBindingValue", () => {
+  it("resolves a configured map from the snapshot", () => {
+    const configured = {
+      ...DEFAULT_COWORK_SHORTCUT_BINDINGS,
+      accept: "Enter",
+    };
+    const snapshot = snapshotWith(COWORK_NAV_BINDING_SETTING_ID, configured);
+    expect(
+      resolveCoworkShortcutBindings(readCoworkShortcutBindingValue(snapshot)),
+    ).toEqual(configured);
   });
 
-  it("falls back to the inverted default when the setting is absent", () => {
-    expect(readNavBindingValue(undefined)).toBeUndefined();
-    const otherSnapshot = snapshotWith(
-      "wb.other.setting" as SettingId,
-      "vim",
-    );
-    expect(readNavBindingValue(otherSnapshot)).toBeUndefined();
-    expect(resolveNavBinding(readNavBindingValue(otherSnapshot))).toEqual({
-      prev: "j",
-      next: "k",
-    });
+  it("falls back to defaults when the setting is absent", () => {
+    expect(readCoworkShortcutBindingValue(undefined)).toBeUndefined();
+    const otherSnapshot = snapshotWith("wb.other.setting" as SettingId, {});
+    expect(readCoworkShortcutBindingValue(otherSnapshot)).toBeUndefined();
+    expect(
+      resolveCoworkShortcutBindings(readCoworkShortcutBindingValue(otherSnapshot)),
+    ).toEqual(DEFAULT_COWORK_SHORTCUT_BINDINGS);
   });
 });

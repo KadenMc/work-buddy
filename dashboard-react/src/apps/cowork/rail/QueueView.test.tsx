@@ -17,7 +17,7 @@ function baseProps() {
     claimDecisions: {},
     inspectSpanByClaim: new Map<string, string>(),
     onNavigate: vi.fn(),
-    onSelect: vi.fn(),
+    onActivate: vi.fn(),
     onInspect: vi.fn(),
   };
 }
@@ -41,9 +41,27 @@ describe("QueueView", () => {
 
   it("honours a configured binding", async () => {
     const props = baseProps();
-    render(<QueueView {...props} bindings={{ prev: "p", next: "n" }} />);
+    render(
+      <QueueView {...props} bindings={{ previous: "p", next: "n" }} />,
+    );
     await userEvent.keyboard("n");
     expect(props.onNavigate).toHaveBeenLastCalledWith(1);
+  });
+
+  it("does not steal editable input or unrelated modifier chords", async () => {
+    const props = baseProps();
+    render(
+      <>
+        <input aria-label="Draft" />
+        <QueueView {...props} />
+      </>,
+    );
+    await userEvent.click(screen.getByRole("textbox", { name: "Draft" }));
+    await userEvent.keyboard("k");
+    expect(props.onNavigate).not.toHaveBeenCalled();
+    await userEvent.click(document.body);
+    await userEvent.keyboard("{Control>}k{/Control}");
+    expect(props.onNavigate).not.toHaveBeenCalled();
   });
 
   it("does not handle queue shortcuts while Review is hidden", async () => {

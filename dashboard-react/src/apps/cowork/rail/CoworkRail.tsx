@@ -1,11 +1,11 @@
 /**
  * The Review | Chat rail (section 5.1). This is the mount seam the view frame
  * wires in place of the rail placeholder: it owns the two tabs, the Review panel
- * (section 5.5, variant-A-hybrid), and the Chat panel. Every ready Chat path
+ * (section 5.5), and the Chat panel. Every ready Chat path
  * uses the shared ConversationChat surface through a thin Co-work adapter.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type RefCallback } from "react";
 
 import { HelpTarget, type HelpContent } from "../../../dashboard/help";
 import {
@@ -26,10 +26,10 @@ import {
   saveChatDraft,
   saveRailTab,
 } from "../guards";
+import type { CoworkShortcutBindings } from "../keyboard";
 import { ReviewPanel } from "./ReviewPanel";
 import type { VerificationRecheckIntent } from "./contracts";
-import type { QueueBindings } from "./QueueView";
-import type { AnchorRectSource, ReviewRailProvider } from "./provider";
+import type { ReviewAnchorController, ReviewRailProvider } from "./provider";
 import { RailStore, type RailTab } from "./store";
 import { useRailState } from "./useRailState";
 import "./styles.css";
@@ -57,9 +57,12 @@ export interface CoworkRailProps {
   /** Injectable rail store, else one is created for this rail instance. */
   readonly store?: RailStore;
   readonly storage?: Storage;
-  readonly anchorRects?: AnchorRectSource;
-  readonly queueBindings?: QueueBindings;
-  readonly narrow?: boolean;
+  /** Device-local continuity for the Review tab's own scroll container. */
+  readonly reviewScrollRef?: RefCallback<HTMLElement>;
+  /** Saves and detaches Review before a view change can clamp its geometry. */
+  readonly onReviewScrollWillDetach?: () => void;
+  readonly reviewAnchors?: ReviewAnchorController;
+  readonly shortcutBindings?: CoworkShortcutBindings;
   readonly initialTab?: RailTab;
   /** Whether the containing workspace currently exposes the Review pane. */
   readonly reviewVisible?: boolean;
@@ -163,6 +166,7 @@ export function CoworkRail(props: CoworkRailProps) {
     );
   });
   const tab = useRailState(store, (state) => state.tab);
+  const reviewActive = tab === "review" && props.reviewVisible !== false;
   const [messages, setMessages] = useState<readonly ChatMessage[]>([]);
   const conversationId =
     props.chat.kind === "ready" ? props.chat.conversationId : null;
@@ -180,8 +184,15 @@ export function CoworkRail(props: CoworkRailProps) {
       .slice(seenCount)
       .some((message) => message.author === "assistant");
 
+  const selectRailTab = (next: RailTab): void => {
+    if (tab === "review" && next !== "review") {
+      props.onReviewScrollWillDetach?.();
+    }
+    store.setTab(next);
+  };
+
   const continueCothinkInChat = async (): Promise<void> => {
-    store.setTab("chat");
+    selectRailTab("chat");
     props.onChatSelected?.();
   };
 
@@ -200,7 +211,7 @@ export function CoworkRail(props: CoworkRailProps) {
             className="wb-cowork-rail__tab"
             aria-selected={tab === "review"}
             aria-controls="wb-cowork-rail-panel-review"
-            onClick={() => store.setTab("review")}
+            onClick={() => selectRailTab("review")}
           >
             Review
           </button>
@@ -214,7 +225,7 @@ export function CoworkRail(props: CoworkRailProps) {
             aria-selected={tab === "chat"}
             aria-controls="wb-cowork-rail-panel-chat"
             onClick={() => {
-              store.setTab("chat");
+              selectRailTab("chat");
               props.onChatSelected?.();
             }}
           >
@@ -244,10 +255,11 @@ export function CoworkRail(props: CoworkRailProps) {
           store={store}
           documentId={props.documentId}
           storage={props.storage}
-          anchorRects={props.anchorRects}
-          queueBindings={props.queueBindings}
-          active={tab === "review" && props.reviewVisible !== false}
-          narrow={props.narrow}
+          scrollContainerRef={reviewActive ? props.reviewScrollRef : undefined}
+          onScrollContainerWillDetach={props.onReviewScrollWillDetach}
+          reviewAnchors={props.reviewAnchors}
+          shortcutBindings={props.shortcutBindings}
+          active={reviewActive}
           onDiscussCothink={continueCothinkInChat}
           onRecheckIntent={props.onRecheckIntent}
         />

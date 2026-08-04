@@ -566,31 +566,9 @@
   background: var(--wb-color-surface-inset);
 }
 
-/* ---------- stream and groups ---------- */
+/* ---------- stream ---------- */
 .wb-cowork-rail__stream {
   padding: var(--wb-space-4);
-}
-
-.wb-cowork-rail__group {
-  margin-block-end: var(--wb-space-6);
-}
-
-.wb-cowork-rail__group-head {
-  display: flex;
-  align-items: center;
-  gap: var(--wb-space-3);
-  margin: 0 0 var(--wb-space-3);
-  font-size: var(--wb-font-size-2xs);
-  font-weight: var(--wb-font-weight-semibold);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--wb-color-text-secondary);
-}
-
-.wb-cowork-rail__group-count {
-  margin-inline-start: auto;
-  font-family: var(--wb-font-mono);
-  color: var(--wb-color-text-muted);
 }
 
 .wb-cowork-rail__card-list {
@@ -611,6 +589,7 @@
   border-radius: var(--wb-radius-surface);
   background: var(--wb-color-surface-raised);
   box-shadow: var(--wb-shadow-raised);
+  cursor: pointer;
 }
 
 .wb-cowork-rail__card[data-kind="insertion"] {
@@ -733,7 +712,17 @@
   font-size: var(--wb-font-size-sm);
   font-weight: var(--wb-font-weight-medium);
   color: var(--wb-color-text-strong);
+  margin-block-end: 0;
+}
+
+.wb-cowork-rail__card[data-selected="true"] .wb-cowork-rail__card-tldr {
   margin-block-end: var(--wb-space-3);
+}
+
+.wb-cowork-rail__card-rationale,
+.wb-cowork-rail__card-quote,
+.wb-cowork-rail__claim-evidence {
+  cursor: text;
 }
 
 .wb-cowork-rail__card-quote {

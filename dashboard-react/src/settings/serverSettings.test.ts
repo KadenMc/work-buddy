@@ -79,6 +79,46 @@ describe("server settings normalization", () => {
     expect(definition.control).toEqual({ kind: "time", minuteStep: 15 });
   });
 
+  it("normalizes reusable keybinding-map command metadata", () => {
+    const commands = [
+      { command_id: "previous", label: "Previous", description: "Move up." },
+      { command_id: "next", label: "Next", description: "Move down." },
+    ];
+    const payload = {
+      ...serverRegistryPayload,
+      definitions: [
+        {
+          ...serverRegistryPayload.definitions[0],
+          value_schema: {
+            type: "object",
+            properties: {
+              previous: { type: "string" },
+              next: { type: "string" },
+            },
+            required: ["previous", "next"],
+            additionalProperties: false,
+          },
+          default_value: { previous: "j", next: "k" },
+          presentation: {
+            control: "keybinding-map",
+            commands,
+            apply_behavior: "immediate",
+          },
+        },
+      ],
+    };
+
+    const result = normalizeServerRegistry(payload);
+    const [definition] = result.contribution.definitions;
+    expect(definition.control).toEqual({
+      kind: "keybinding-map",
+      commands: [
+        { commandId: "previous", label: "Previous", description: "Move up." },
+        { commandId: "next", label: "Next", description: "Move down." },
+      ],
+    });
+  });
+
   it("preserves revisions, pending transitions, and structured impact previews", () => {
     const snapshot = normalizeValueSnapshot({
       schema_version: 1,

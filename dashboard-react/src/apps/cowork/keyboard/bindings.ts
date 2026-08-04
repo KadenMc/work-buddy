@@ -1,53 +1,90 @@
-/**
- * The Co-work review keyboard binding (PRD section 7 review walkthrough: "Keyboard walks
- * item to item (j/k, Kaden's inverted binding, as a configurable personal binding"). The
- * binding is a pair of single-key names, structurally the QueueView `QueueBindings` shape,
- * resolved from a settings-registry value with the inverted default when nothing is set.
- */
+import type { KeybindingCommandDefinition } from "../../../settings/contracts";
+import {
+  coerceKeybindingMap,
+  type KeybindingMap,
+} from "../../../settings/keybindings";
 
-/** A navigation key pair. Structurally assignable to the rail's QueueBindings. */
-export interface CoworkNavBinding {
-  /** The key that moves to the previous item (up the list). */
-  readonly prev: string;
-  /** The key that moves to the next item (down the list). */
-  readonly next: string;
-}
+export const COWORK_SHORTCUT_COMMANDS = [
+  {
+    commandId: "previous",
+    label: "Previous review item",
+    description: "Move up the Queue.",
+  },
+  {
+    commandId: "next",
+    label: "Next review item",
+    description: "Move down the Queue.",
+  },
+  {
+    commandId: "accept",
+    label: "Accept, endorse, or confirm",
+    description: "Choose the positive decision for the current item.",
+  },
+  {
+    commandId: "amend",
+    label: "Amend",
+    description: "Open the replacement editor for the current suggestion.",
+  },
+  {
+    commandId: "reject",
+    label: "Reject or dismiss",
+    description: "Choose the direct negative decision for the current item.",
+  },
+  {
+    commandId: "defer",
+    label: "Defer",
+    description: "Leave the current suggestion for later.",
+  },
+] as const satisfies readonly KeybindingCommandDefinition[];
 
-/** The selectable preset ids exposed by the setting. */
-export type CoworkNavBindingPreset = "inverted" | "vim";
+export type CoworkShortcutCommandId =
+  (typeof COWORK_SHORTCUT_COMMANDS)[number]["commandId"];
 
-/**
- * The two presets. `inverted` is the house binding (j moves up / previous, k moves down /
- * next), `vim` is the conventional vim pair (j down / next, k up / previous). The presets are
- * the only setting values, so a keybinding never carries a raw keycode across the wire.
- */
-export const NAV_BINDING_PRESETS: Record<
-  CoworkNavBindingPreset,
-  CoworkNavBinding
-> = {
-  inverted: { prev: "j", next: "k" },
-  vim: { prev: "k", next: "j" },
+export type CoworkShortcutBindings = Readonly<
+  Record<CoworkShortcutCommandId, string>
+>;
+
+export const DEFAULT_COWORK_SHORTCUT_BINDINGS: CoworkShortcutBindings = {
+  previous: "j",
+  next: "k",
+  accept: "a",
+  amend: "e",
+  reject: "x",
+  defer: ".",
 };
 
-/** The default preset id and its binding (the inverted house pair). */
-export const DEFAULT_NAV_BINDING_PRESET: CoworkNavBindingPreset = "inverted";
-export const DEFAULT_COWORK_NAV_BINDING: CoworkNavBinding =
-  NAV_BINDING_PRESETS[DEFAULT_NAV_BINDING_PRESET];
+const LEGACY_VIM_BINDINGS: CoworkShortcutBindings = {
+  ...DEFAULT_COWORK_SHORTCUT_BINDINGS,
+  previous: "k",
+  next: "j",
+};
 
-/** Whether a value is a known preset id. */
-export function isNavBindingPreset(
+/** Resolve the v2 map, while remaining defensive around a stale v1 response. */
+export function resolveCoworkShortcutBindings(
   value: unknown,
-): value is CoworkNavBindingPreset {
-  return value === "inverted" || value === "vim";
+): CoworkShortcutBindings {
+  if (value === "vim") return LEGACY_VIM_BINDINGS;
+  if (value === "inverted") return DEFAULT_COWORK_SHORTCUT_BINDINGS;
+  return coerceKeybindingMap(
+    value,
+    DEFAULT_COWORK_SHORTCUT_BINDINGS,
+    COWORK_SHORTCUT_COMMANDS,
+  ) as CoworkShortcutBindings;
 }
 
-/**
- * Resolve a stored setting value to a concrete binding. An unknown or absent value degrades
- * to the inverted default, so the review keyboard always works even before the setting is
- * registered server-side.
- */
-export function resolveNavBinding(value: unknown): CoworkNavBinding {
-  return isNavBindingPreset(value)
-    ? NAV_BINDING_PRESETS[value]
-    : DEFAULT_COWORK_NAV_BINDING;
+export function coworkShortcutValueSchema(): object {
+  const properties = Object.fromEntries(
+    COWORK_SHORTCUT_COMMANDS.map((command) => [
+      command.commandId,
+      { type: "string" },
+    ]),
+  );
+  return {
+    type: "object",
+    properties,
+    required: COWORK_SHORTCUT_COMMANDS.map((command) => command.commandId),
+    additionalProperties: false,
+  };
 }
+
+export type { KeybindingMap };

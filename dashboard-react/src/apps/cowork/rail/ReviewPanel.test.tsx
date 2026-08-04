@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -8,7 +8,8 @@ import {
   InMemoryReviewProvider,
 } from "./InMemoryReviewProvider";
 import { ReviewPanel } from "./ReviewPanel";
-import type { AnchorRectSource, ReviewRailProvider } from "./provider";
+import type { EvaluationResult } from "./contracts";
+import type { ReviewAnchorController, ReviewRailProvider } from "./provider";
 import { RailStore } from "./store";
 import { RecoverableDecisionApplyError } from "./applyRecovery";
 
@@ -38,7 +39,8 @@ class MemoryStorage implements Storage {
 interface RenderPanelOptions {
   readonly store?: RailStore;
   readonly provider?: ReviewRailProvider;
-  readonly anchorRects?: AnchorRectSource;
+  readonly reviewAnchors?: ReviewAnchorController;
+  readonly onScrollContainerWillDetach?: () => void;
 }
 
 function renderPanel(options: RenderPanelOptions = {}) {
@@ -51,23 +53,23 @@ function renderPanel(options: RenderPanelOptions = {}) {
       store={store}
       documentId="demo-doc"
       storage={storage}
-      anchorRects={options.anchorRects}
+      reviewAnchors={options.reviewAnchors}
+      onScrollContainerWillDetach={options.onScrollContainerWillDetach}
     />,
   );
   return { store, provider, storage, ...result };
 }
 
-function createAnchorRects() {
+function createReviewAnchors() {
   const focusAnchor = vi.fn();
+  const revealAnchor = vi.fn();
   const clearFocusedAnchor = vi.fn();
-  const source: AnchorRectSource = {
-    anchorRect: () => null,
-    scrollToAnchor: vi.fn(),
+  const source: ReviewAnchorController = {
     focusAnchor,
+    revealAnchor,
     clearFocusedAnchor,
-    subscribe: () => () => {},
   };
-  return { source, focusAnchor, clearFocusedAnchor };
+  return { source, focusAnchor, revealAnchor, clearFocusedAnchor };
 }
 
 const S1_TLDR = "Add the vault content hash to the cache key.";
@@ -581,20 +583,23 @@ describe("ReviewPanel", () => {
   });
 
   it("filters the stream with the lens", async () => {
-    const anchors = createAnchorRects();
-    const { store } = renderPanel({ anchorRects: anchors.source });
+    const anchors = createReviewAnchors();
+    const onScrollContainerWillDetach = vi.fn();
+    const { store } = renderPanel({
+      reviewAnchors: anchors.source,
+      onScrollContainerWillDetach,
+    });
     await waitFor(() => expect(screen.getByText(S1_TLDR)).toBeVisible());
 
     await userEvent.click(screen.getByText(S1_TLDR));
     await waitFor(() =>
-      expect(anchors.focusAnchor).toHaveBeenCalledWith("s1", "proposal", {
-        scroll: true,
-      }),
+      expect(anchors.revealAnchor).toHaveBeenCalledWith("s1", "proposal"),
     );
     expect(screen.getByRole("button", { name: "Accept" })).toBeVisible();
     anchors.clearFocusedAnchor.mockClear();
 
     await userEvent.click(screen.getByRole("button", { name: /Flags/ }));
+    expect(onScrollContainerWillDetach).toHaveBeenCalledOnce();
     // Only the flag remains, the suggestion is filtered out.
     expect(screen.queryByText(S1_TLDR)).toBeNull();
     expect(
@@ -608,36 +613,63 @@ describe("ReviewPanel", () => {
     expect(screen.getByText("Select an item to decide on it.")).toBeVisible();
   });
 
-  it("scrolls and focuses a selected card, then flashes its explicit anchor affordance", async () => {
-    const anchors = createAnchorRects();
-    renderPanel({ anchorRects: anchors.source });
+  it("detaches the canonical Review scroll binding before entering Queue", async () => {
+    const onScrollContainerWillDetach = vi.fn();
+    renderPanel({ onScrollContainerWillDetach });
     await waitFor(() => expect(screen.getByText(S1_TLDR)).toBeVisible());
-    anchors.focusAnchor.mockClear();
+
+    await userEvent.click(screen.getByRole("button", { name: "Queue" }));
+
+    expect(onScrollContainerWillDetach).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a preselected item passive instead of replaying navigation", async () => {
+    const anchors = createReviewAnchors();
+    const store = new RailStore({
+      selectedId: "s1",
+      selectedKind: "proposal",
+    });
+    renderPanel({ reviewAnchors: anchors.source, store });
+    await waitFor(() => expect(screen.getByText(S1_TLDR)).toBeVisible());
+
+    await waitFor(() =>
+      expect(anchors.focusAnchor).toHaveBeenCalledWith("s1", "proposal"),
+    );
+    expect(anchors.revealAnchor).not.toHaveBeenCalled();
+  });
+
+  it("reveals a card activation, then flashes its explicit passage affordance", async () => {
+    const anchors = createReviewAnchors();
+    renderPanel({ reviewAnchors: anchors.source });
+    await waitFor(() => expect(screen.getByText(S1_TLDR)).toBeVisible());
+    anchors.revealAnchor.mockClear();
 
     await userEvent.click(screen.getByText(S1_TLDR));
     await waitFor(() =>
-      expect(anchors.focusAnchor).toHaveBeenCalledWith("s1", "proposal", {
-        scroll: true,
-      }),
+      expect(anchors.revealAnchor).toHaveBeenCalledWith("s1", "proposal"),
     );
 
-    anchors.focusAnchor.mockClear();
+    // Re-activating an already-selected card remains a navigation command.
+    anchors.revealAnchor.mockClear();
+    await userEvent.click(screen.getByText(S1_TLDR));
+    expect(anchors.revealAnchor).toHaveBeenCalledWith("s1", "proposal");
+
+    anchors.revealAnchor.mockClear();
     await userEvent.click(
       screen.getByRole("button", {
         name: "Go to paragraph 2 in the document",
       }),
     );
-    expect(anchors.focusAnchor).toHaveBeenCalledWith("s1", "proposal", {
-      scroll: true,
+    expect(anchors.revealAnchor).toHaveBeenCalledWith("s1", "proposal", {
       flash: true,
     });
   });
 
   it("selects an unselected Stream item before revealing its passage", async () => {
-    const anchors = createAnchorRects();
-    const { store } = renderPanel({ anchorRects: anchors.source });
+    const anchors = createReviewAnchors();
+    const { store } = renderPanel({ reviewAnchors: anchors.source });
     await waitFor(() => expect(screen.getByText(S1_TLDR)).toBeVisible());
-    anchors.focusAnchor.mockClear();
+    anchors.revealAnchor.mockClear();
 
     await userEvent.click(
       screen.getByRole("button", {
@@ -654,38 +686,114 @@ describe("ReviewPanel", () => {
       }),
     ).toBeVisible();
     expect(screen.getByRole("button", { name: "Accept" })).toBeVisible();
-    expect(anchors.focusAnchor).toHaveBeenCalledWith("s2", "proposal", {
-      scroll: true,
+    expect(anchors.revealAnchor).toHaveBeenCalledWith("s2", "proposal", {
+      flash: true,
+    });
+  });
+
+  it("opens a correction outside the current filter and Queue position before revealing it", async () => {
+    const data = demoReviewData();
+    const result: EvaluationResult = {
+      resultId: "result-s2",
+      runId: "run-1",
+      kind: "nonconforming",
+      criterionLabel: "Paragraph flow",
+      criterionStatement: "Keep paragraphs readable.",
+      checkLabel: "Paragraph flow check",
+      methodLabel: "Deterministic scan",
+      explanation: "A correction is ready.",
+      quoteAnchor: {
+        exact: "every collector output",
+        prefix: "Keys on a digest of ",
+        suffix: ".",
+      },
+      coverageLabel: "Whole document",
+      limitations: [],
+      currentVersion: true,
+      disposition: "surface_proposal",
+      canonicalSha256: "a".repeat(64),
+      proposalIds: ["s2"],
+      createdAt: "2026-08-04T12:00:00Z",
+    };
+    const provider = new InMemoryReviewProvider({
+      data: { ...data, evaluationResults: [result] },
+    });
+    const store = new RailStore({ mode: "queue", filter: "flags" });
+    const anchors = createReviewAnchors();
+    renderPanel({ provider, store, reviewAnchors: anchors.source });
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Review correction" }),
+      ).toBeVisible(),
+    );
+    anchors.revealAnchor.mockClear();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Review correction" }),
+    );
+
+    await waitFor(() => expect(store.getState().mode).toBe("stream"));
+    expect(store.getState().filter).toBe("all");
+    expect(store.getState().selectedId).toBe("s2");
+    expect(store.getState().selectedKind).toBe("proposal");
+    expect(anchors.revealAnchor).toHaveBeenCalledWith("s2", "proposal", {
       flash: true,
     });
   });
 
   it("walks the queue with the keyboard", async () => {
-    const anchors = createAnchorRects();
-    const { store } = renderPanel({ anchorRects: anchors.source });
+    const anchors = createReviewAnchors();
+    const { store } = renderPanel({ reviewAnchors: anchors.source });
     await waitFor(() => expect(screen.getByText(S1_TLDR)).toBeVisible());
 
     await userEvent.click(screen.getByRole("button", { name: "Queue" }));
     expect(screen.getByText("Item 1")).toBeVisible();
     await waitFor(() =>
-      expect(anchors.focusAnchor).toHaveBeenCalledWith("s1", "proposal", {
-        scroll: true,
-      }),
+      expect(anchors.focusAnchor).toHaveBeenCalledWith("s1", "proposal"),
     );
-    anchors.focusAnchor.mockClear();
+    anchors.revealAnchor.mockClear();
 
     await userEvent.keyboard("k");
     expect(screen.getByText("Item 2")).toBeVisible();
     await waitFor(() =>
-      expect(anchors.focusAnchor).toHaveBeenCalledWith("s2", "proposal", {
-        scroll: true,
-      }),
+      expect(anchors.revealAnchor).toHaveBeenCalledWith("s2", "proposal"),
     );
     expect(store.getState().selectedId).toBe("s2");
     expect(store.getState().selectedKind).toBe("proposal");
 
     await userEvent.keyboard("j");
     expect(screen.getByText("Item 1")).toBeVisible();
+  });
+
+  it("stages the focused Queue decision with its advertised shortcut only in Queue", async () => {
+    const { store } = renderPanel();
+    await waitFor(() => expect(screen.getByText(S1_TLDR)).toBeVisible());
+
+    await userEvent.click(screen.getByRole("button", { name: "Queue" }));
+    await userEvent.keyboard("a");
+    expect(store.getState().decisions.s1?.verb).toBe("confirm");
+
+    store.clearDecision("s1");
+    await userEvent.click(screen.getByRole("button", { name: "Stream" }));
+    await userEvent.keyboard("a");
+    expect(store.getState().decisions.s1).toBeUndefined();
+  });
+
+  it("keeps Queue navigation out of an amendment and clears the draft on target change", async () => {
+    renderPanel();
+    await waitFor(() => expect(screen.getByText(S1_TLDR)).toBeVisible());
+    await userEvent.click(screen.getByRole("button", { name: "Queue" }));
+
+    await userEvent.keyboard("e");
+    const draft = screen.getByLabelText("Your replacement");
+    expect(draft).toHaveFocus();
+    await userEvent.keyboard("k");
+    expect(screen.getByText("Item 1")).toBeVisible();
+
+    fireEvent.blur(draft);
+    fireEvent.keyDown(window, { key: "k" });
+    expect(screen.getByText("Item 2")).toBeVisible();
+    expect(screen.queryByLabelText("Your replacement")).not.toBeInTheDocument();
   });
 
   it("qualifies selection by kind when proposal and claim ids collide", async () => {

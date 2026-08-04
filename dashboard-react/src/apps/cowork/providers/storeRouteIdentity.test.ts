@@ -2,12 +2,15 @@ import { describe, expect, it } from "vitest";
 
 import type { CoworkFolderSummary } from "../contracts";
 import {
+  coworkDocumentUrlId,
   coworkStoreUrlId,
+  resolveCoworkDocumentUrlId,
   resolveCoworkRouteStoreId,
   resolveCoworkStoreUrlId,
 } from "./storeRouteIdentity";
 
 const folder = (storeId: string): Pick<CoworkFolderSummary, "storeId"> => ({ storeId });
+const document = (documentId: string) => ({ documentId });
 
 describe("Co-work store URL identities", () => {
   it("resolves a unique eight-character prefix to the full catalog ID", () => {
@@ -60,5 +63,42 @@ describe("Co-work store URL identities", () => {
     const fullStoreId = "465142ba386b4f6d84be621efe1425ca";
 
     expect(coworkStoreUrlId(fullStoreId, [])).toBe(fullStoreId);
+  });
+});
+
+describe("Co-work document URL identities", () => {
+  const fullDocumentId = "8f3ff19c111149b88c54c71c7b567d6c";
+
+  it("resolves and writes a unique eight-character prefix inside one Folder", () => {
+    expect(resolveCoworkDocumentUrlId("8f3ff19c", [document(fullDocumentId)])).toBe(
+      fullDocumentId,
+    );
+    expect(coworkDocumentUrlId(fullDocumentId, [document(fullDocumentId)])).toBe(
+      "8f3ff19c",
+    );
+  });
+
+  it("preserves exact full and legacy IDs", () => {
+    expect(resolveCoworkDocumentUrlId(fullDocumentId, [document(fullDocumentId)])).toBe(
+      fullDocumentId,
+    );
+    expect(resolveCoworkDocumentUrlId("legacy-1", [document("legacy-1")])).toBe(
+      "legacy-1",
+    );
+  });
+
+  it("fails closed for ambiguous or unknown prefixes and writes a full ID on collision", () => {
+    const documents = [
+      document(fullDocumentId),
+      document("8f3ff19c000000000000000000000000"),
+    ];
+
+    expect(resolveCoworkDocumentUrlId("8f3ff19c", documents)).toBeNull();
+    expect(resolveCoworkDocumentUrlId("00000000", documents)).toBeNull();
+    expect(coworkDocumentUrlId(fullDocumentId, documents)).toBe(fullDocumentId);
+  });
+
+  it("does not shorten an ID absent from this Folder catalog", () => {
+    expect(coworkDocumentUrlId(fullDocumentId, [])).toBe(fullDocumentId);
   });
 });

@@ -12,6 +12,7 @@ import type {
   ProposalVerbKind,
   ReviewProposal,
 } from "./contracts";
+import type { CoworkShortcutCommandId } from "../keyboard";
 
 /** Visual weight for a verb button, so the danger reject family reads apart. */
 export type VerbTone = "primary" | "neutral" | "danger";
@@ -31,8 +32,11 @@ export interface VerbOption<Verb extends string> {
   /** The wire gesture-kind name submitted to R5 (section 1.5 right column). */
   readonly verb: Verb;
   readonly tone: VerbTone;
-  /** A single-key hint shown in the queue mode, when the verb has one. */
-  readonly hotkey?: string;
+  /** The user-configurable decision shortcut, when this verb has one. */
+  readonly shortcut?: Extract<
+    CoworkShortcutCommandId,
+    "accept" | "amend" | "reject" | "defer"
+  >;
   /** The extra input this verb collects before staging. */
   readonly input: VerbInput;
 }
@@ -44,9 +48,9 @@ export interface VerbOption<Verb extends string> {
  * proposal carries no claim_refs (S3), decided per proposal at stage time.
  */
 export const EDIT_VERBS: readonly VerbOption<ProposalVerbKind>[] = [
-  { label: "Accept", verb: "confirm", tone: "primary", hotkey: "a", input: "none" },
-  { label: "Amend", verb: "edit_confirm", tone: "neutral", hotkey: "e", input: "amend" },
-  { label: "Reject", verb: "reject_plain", tone: "danger", hotkey: "x", input: "none" },
+  { label: "Accept", verb: "confirm", tone: "primary", shortcut: "accept", input: "none" },
+  { label: "Amend", verb: "edit_confirm", tone: "neutral", shortcut: "amend", input: "amend" },
+  { label: "Reject", verb: "reject_plain", tone: "danger", shortcut: "reject", input: "none" },
   {
     label: "Reject as false",
     verb: "reject_as_false",
@@ -60,20 +64,20 @@ export const EDIT_VERBS: readonly VerbOption<ProposalVerbKind>[] = [
     input: "preference_text",
   },
   { label: "Redirect", verb: "redirect", tone: "neutral", input: "redirect_note" },
-  { label: "Defer", verb: "defer", tone: "neutral", hotkey: ".", input: "none" },
+  { label: "Defer", verb: "defer", tone: "neutral", shortcut: "defer", input: "none" },
 ];
 
 /** Flag verbs (PRD section 6, flag row): Endorse, Dismiss, Redirect. */
 export const FLAG_VERBS: readonly VerbOption<ProposalVerbKind>[] = [
-  { label: "Endorse", verb: "endorse", tone: "primary", hotkey: "a", input: "none" },
-  { label: "Dismiss", verb: "dismiss", tone: "danger", hotkey: "x", input: "none" },
+  { label: "Endorse", verb: "endorse", tone: "primary", shortcut: "accept", input: "none" },
+  { label: "Dismiss", verb: "dismiss", tone: "danger", shortcut: "reject", input: "none" },
   { label: "Redirect", verb: "redirect", tone: "neutral", input: "redirect_note" },
 ];
 
 /** The six committed claim verbs (kernel truth_claim_* capabilities). */
 export const CLAIM_VERBS: readonly VerbOption<ClaimVerbKind>[] = [
-  { label: "Confirm", verb: "confirm", tone: "primary", hotkey: "a", input: "none" },
-  { label: "Reject", verb: "reject", tone: "danger", hotkey: "x", input: "none" },
+  { label: "Confirm", verb: "confirm", tone: "primary", shortcut: "accept", input: "none" },
+  { label: "Reject", verb: "reject", tone: "danger", shortcut: "reject", input: "none" },
   { label: "Challenge", verb: "challenge", tone: "neutral", input: "none" },
   { label: "Supersede", verb: "supersede", tone: "neutral", input: "none" },
   { label: "Redact", verb: "redact", tone: "danger", input: "none" },

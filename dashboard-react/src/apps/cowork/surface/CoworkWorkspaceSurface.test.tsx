@@ -11,6 +11,7 @@ import {
 import { DashboardEventProvider } from "../../../dashboard/events/DashboardEventProvider";
 import { fallbackCanvasTheme } from "../../../theme/resolveTheme";
 import { expectNoAccessibilityViolations } from "../../../test/setup";
+import { DomReviewAnchorController } from "../bridge";
 import {
   COWORK_INTENTS,
   type CoworkDocumentSummary,
@@ -1345,6 +1346,24 @@ describe("CoworkWorkspaceWidget live mode", () => {
     expect(dock?.closest(".wb-cowork__editor-panel")).toBeNull();
   });
 
+  it("routes Review card activation to a one-shot editor reveal", async () => {
+    const revealAnchor = vi.spyOn(
+      DomReviewAnchorController.prototype,
+      "revealAnchor",
+    );
+    renderLive();
+    await waitFor(
+      () => expect(screen.getByText("Name the review rail.")).toBeVisible(),
+      { timeout: 10_000 },
+    );
+
+    await userEvent.click(screen.getByText("Name the review rail."));
+
+    await waitFor(() =>
+      expect(revealAnchor).toHaveBeenCalledWith("s1", "proposal", undefined),
+    );
+  });
+
   it("loads and reloads the exact server-issued conversation id", async () => {
     const firstFetch = liveFetch();
     const first = renderLive(
@@ -2311,6 +2330,13 @@ describe("CoworkWorkspaceWidget live mode", () => {
       timeout: 10_000,
     });
     await user.click(screen.getByText("Name the review rail."));
+    await waitFor(() =>
+      expect(editorTab).toHaveAttribute("aria-selected", "true"),
+    );
+    // Review activation is cross-pane navigation on a narrow workspace. The
+    // editor becomes visible before the bridge attempts the selected passage.
+
+    await user.click(reviewTab);
     await user.click(screen.getByRole("button", { name: "Accept" }));
     expect(screen.getByText("Decision: Accept")).toBeVisible();
 

@@ -88,7 +88,7 @@ import {
 /** What the host reports up once the canonical editor is mounted. */
 export interface CoworkEditorReadyContext {
   readonly editor: Editor;
-  /** The ProseMirror DOM root, the coordinate source for the anchor-rect measurements. */
+  /** The ProseMirror DOM root used to resolve explicit Review passage navigation. */
   readonly dom: HTMLElement;
 }
 
@@ -193,7 +193,7 @@ const oversizedPasteProvenanceError = (): string =>
  * Y.Doc is hydrated from the transport before mount (the parent gates on that), the editor
  * binds to it, persistence starts pushing local human edits, a brand-new document is seeded
  * once, and the load-time id mint is fenced out of the undo stack. It reports the ready
- * context so the bridge can project view-only review decorations and measure anchor geometry.
+ * context so the bridge can project view-only review decorations and control Review focus.
  */
 function MountedBridgeEditor({
   document,

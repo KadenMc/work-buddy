@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -44,10 +44,17 @@ function renderCard(props: Partial<Parameters<typeof ProposalCard>[0]> = {}) {
 }
 
 describe("ProposalCard", () => {
-  it("renders an insertion card with its kind, tldr, rationale, and inserted text", () => {
-    renderCard();
+  it("shows only scan-level information until the card is selected", () => {
+    const { rerender } = renderCard();
     expect(screen.getByText("Insertion")).toBeVisible();
     expect(screen.getByText("Add the vault hash to the key.")).toBeVisible();
+    expect(screen.queryByText("Include vault state in the key.")).toBeNull();
+    expect(screen.queryByText("the set and the vault hash")).toBeNull();
+    rerender(
+      <ul>
+        <ProposalCard proposal={proposal()} selected onSelect={vi.fn()} />
+      </ul>,
+    );
     expect(screen.getByText("Include vault state in the key.")).toBeVisible();
     expect(screen.getByText("the set and the vault hash")).toBeVisible();
     expect(screen.getByText("research-agent")).toBeVisible();
@@ -62,7 +69,7 @@ describe("ProposalCard", () => {
             replacement: "",
             quoteAnchor: { exact: "always ", prefix: "We ", suffix: "rebuild" },
           })}
-          selected={false}
+          selected
           onSelect={vi.fn()}
         />
       </ul>,
@@ -110,17 +117,73 @@ describe("ProposalCard", () => {
     expect(screen.getByRole("button", { pressed: true })).toBeVisible();
   });
 
+  it("selects from the card chrome without duplicating title-button activation", async () => {
+    const onSelect = vi.fn();
+    const { container } = renderCard({ onSelect });
+    await userEvent.click(screen.getByText("Insertion"));
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    await userEvent.click(screen.getByText("Add the vault hash to the key."));
+    expect(onSelect).toHaveBeenCalledTimes(2);
+
+    const card = container.querySelector(".wb-cowork-rail__card");
+    expect(card).not.toBeNull();
+  });
+
+  it("keeps title keyboard activation singular", async () => {
+    const user = userEvent.setup();
+    const onSelect = vi.fn();
+    renderCard({ onSelect });
+    const title = screen.getByRole("button", { pressed: false });
+
+    title.focus();
+    await user.keyboard("{Enter}");
+    await user.keyboard(" ");
+
+    expect(onSelect).toHaveBeenCalledTimes(2);
+  });
+
+  it("ignores selected detail text but not a selection outside the card", () => {
+    const onSelect = vi.fn();
+    const outside = document.createElement("p");
+    outside.textContent = "Editor selection";
+    document.body.append(outside);
+    const { container } = renderCard({ selected: true, onSelect });
+    const card = container.querySelector<HTMLElement>(".wb-cowork-rail__card");
+    const rationale = screen.getByText("Include vault state in the key.");
+    expect(card).not.toBeNull();
+
+    const selection = window.getSelection();
+    const outsideRange = document.createRange();
+    outsideRange.selectNodeContents(outside);
+    selection?.removeAllRanges();
+    selection?.addRange(outsideRange);
+    fireEvent.click(screen.getByText("Insertion"));
+    expect(onSelect).toHaveBeenCalledTimes(1);
+
+    const cardRange = document.createRange();
+    cardRange.selectNodeContents(rationale);
+    selection?.removeAllRanges();
+    selection?.addRange(cardRange);
+    fireEvent.click(rationale);
+    expect(onSelect).toHaveBeenCalledTimes(1);
+
+    selection?.removeAllRanges();
+    outside.remove();
+  });
+
   it("exposes a scroll-to-anchor affordance when a handler is wired", async () => {
     const onScrollToAnchor = vi.fn();
-    renderCard({ onScrollToAnchor });
+    const onSelect = vi.fn();
+    renderCard({ onScrollToAnchor, onSelect });
     await userEvent.click(
       screen.getByRole("button", { name: /Go to paragraph 2/ }),
     );
     expect(onScrollToAnchor).toHaveBeenCalledTimes(1);
+    expect(onSelect).not.toHaveBeenCalled();
   });
 
   it("has no accessibility violations", async () => {
-    const { container } = renderCard({ onScrollToAnchor: vi.fn() });
+    const { container } = renderCard({ selected: true, onScrollToAnchor: vi.fn() });
     await expectNoAccessibilityViolations(container);
   });
 });

@@ -1,10 +1,48 @@
-import type { CoworkFolderSummary, CoworkRouteTarget } from "../contracts";
+import type {
+  CoworkDocumentSummary,
+  CoworkFolderSummary,
+  CoworkRouteTarget,
+} from "../contracts";
 
 export const COWORK_STORE_URL_PREFIX_LENGTH = 8;
+export const COWORK_DOCUMENT_URL_PREFIX_LENGTH = 8;
+
+const uniqueIds = <T>(
+  entries: readonly T[],
+  identify: (entry: T) => string,
+): readonly string[] => [...new Set(entries.map(identify))];
+
+const resolveUrlId = (
+  urlId: string,
+  ids: readonly string[],
+  prefixLength: number,
+): string | null => {
+  if (ids.includes(urlId)) return urlId;
+  if (urlId.length !== prefixLength) return null;
+
+  const matches = ids.filter((id) => id.startsWith(urlId));
+  return matches.length === 1 ? matches[0] : null;
+};
+
+const urlIdFor = (
+  id: string,
+  ids: readonly string[],
+  prefixLength: number,
+): string => {
+  if (id.length <= prefixLength || !ids.includes(id)) return id;
+
+  const prefix = id.slice(0, prefixLength);
+  const matches = ids.filter((candidate) => candidate.startsWith(prefix));
+  return matches.length === 1 ? prefix : id;
+};
 
 const uniqueStoreIds = (
   folders: readonly Pick<CoworkFolderSummary, "storeId">[],
-): readonly string[] => [...new Set(folders.map((folder) => folder.storeId))];
+): readonly string[] => uniqueIds(folders, (folder) => folder.storeId);
+
+const uniqueDocumentIds = (
+  documents: readonly Pick<CoworkDocumentSummary, "documentId">[],
+): readonly string[] => uniqueIds(documents, (document) => document.documentId);
 
 /**
  * Resolve a URL-safe store identity against the authoritative Folder catalog.
@@ -15,12 +53,11 @@ export const resolveCoworkStoreUrlId = (
   urlStoreId: string,
   folders: readonly Pick<CoworkFolderSummary, "storeId">[],
 ): string | null => {
-  const storeIds = uniqueStoreIds(folders);
-  if (storeIds.includes(urlStoreId)) return urlStoreId;
-  if (urlStoreId.length !== COWORK_STORE_URL_PREFIX_LENGTH) return null;
-
-  const matches = storeIds.filter((storeId) => storeId.startsWith(urlStoreId));
-  return matches.length === 1 ? matches[0] : null;
+  return resolveUrlId(
+    urlStoreId,
+    uniqueStoreIds(folders),
+    COWORK_STORE_URL_PREFIX_LENGTH,
+  );
 };
 
 /**
@@ -31,14 +68,41 @@ export const coworkStoreUrlId = (
   storeId: string,
   folders: readonly Pick<CoworkFolderSummary, "storeId">[],
 ): string => {
-  if (storeId.length <= COWORK_STORE_URL_PREFIX_LENGTH) return storeId;
-
-  const storeIds = uniqueStoreIds(folders);
-  if (!storeIds.includes(storeId)) return storeId;
-  const prefix = storeId.slice(0, COWORK_STORE_URL_PREFIX_LENGTH);
-  const matches = storeIds.filter((candidate) => candidate.startsWith(prefix));
-  return matches.length === 1 ? prefix : storeId;
+  return urlIdFor(
+    storeId,
+    uniqueStoreIds(folders),
+    COWORK_STORE_URL_PREFIX_LENGTH,
+  );
 };
+
+/**
+ * Resolve a URL-facing document identity inside one authoritative Folder catalog.
+ * Document prefixes are store-scoped: an ID in another Folder cannot make this
+ * Folder's URL ambiguous. Exact IDs always win over prefix interpretation.
+ */
+export const resolveCoworkDocumentUrlId = (
+  urlDocumentId: string,
+  documents: readonly Pick<CoworkDocumentSummary, "documentId">[],
+): string | null =>
+  resolveUrlId(
+    urlDocumentId,
+    uniqueDocumentIds(documents),
+    COWORK_DOCUMENT_URL_PREFIX_LENGTH,
+  );
+
+/**
+ * Prefer a unique store-scoped eight-character document prefix. Unknown IDs and
+ * collisions remain full so presentation aliases never replace canonical identity.
+ */
+export const coworkDocumentUrlId = (
+  documentId: string,
+  documents: readonly Pick<CoworkDocumentSummary, "documentId">[],
+): string =>
+  urlIdFor(
+    documentId,
+    uniqueDocumentIds(documents),
+    COWORK_DOCUMENT_URL_PREFIX_LENGTH,
+  );
 
 /** Replace only the URL-facing store identity; all provider state remains canonical. */
 export const resolveCoworkRouteStoreId = (

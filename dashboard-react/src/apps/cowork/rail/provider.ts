@@ -80,34 +80,20 @@ export interface ReviewRailProvider {
   createVerifyCheck?(check: VerifyCheckInput): Promise<void>;
 }
 
-/** How an explicit Review affordance should move attention in the editor. */
-export interface AnchorFocusOptions {
-  /** Bring the anchor into view. */
-  readonly scroll?: boolean;
+/** How a one-shot Review activation should reveal its target in the editor. */
+export interface AnchorRevealOptions {
   /** Briefly flash the anchor in addition to its persistent focused treatment. */
   readonly flash?: boolean;
 }
 
 /**
- * The anchor-rect seam for the aligned-stream layout. The editor owns the live
- * ProseMirror decorations, so it is the only source that can report where a
- * a review item's anchor currently sits. The rail measures card heights itself and
- * asks this seam for anchor tops, then resolves overlaps outside the React
- * render cycle (audit A12, perf contract). When no source is wired the stream
- * degrades to a document-order list with scroll-to-and-highlight on select.
+ * The editor-owned Review-anchor seam. Review cards remain in normal document
+ * order; this controller owns focused passage treatment and explicit passage
+ * navigation. Those are deliberately separate operations: persistent focus is
+ * safe to replay after projection refreshes, while a reveal is a one-shot user
+ * command and must never become refreshable state.
  */
-export interface AnchorRectSource {
-  /**
-   * The top offset and height of a namespace-qualified review anchor, in the same coordinate
-   * space as the rail scroll container, or null when the anchor is not
-   * currently laid out (off-screen, lost, or the editor is not mounted).
-   */
-  anchorRect(
-    id: string,
-    kind: ReviewAnchorKind,
-  ): { readonly top: number; readonly height: number } | null;
-  /** Bring a proposal's anchor into view and flash it (the degrade path). */
-  scrollToAnchor(proposalId: string): void;
+export interface ReviewAnchorController {
   /**
    * Persistently emphasize the selected Review target. The kind is part of the
    * identity: claim ids and proposal ids occupy separate namespaces. Filtering
@@ -117,13 +103,18 @@ export interface AnchorRectSource {
   focusAnchor(
     id: string,
     kind: ReviewAnchorKind,
-    options?: AnchorFocusOptions,
+  ): void;
+  /**
+   * Focus and bring one target into view because the user activated a Review
+   * card, moved through Queue, or used an explicit passage affordance. A
+   * projection refresh may restore the focus treatment but must not replay this
+   * navigation.
+   */
+  revealAnchor(
+    id: string,
+    kind: ReviewAnchorKind,
+    options?: AnchorRevealOptions,
   ): void;
   /** Clear only the focused treatment, never the underlying annotations. */
   clearFocusedAnchor(): void;
-  /**
-   * Register a listener fired whenever anchor geometry may have changed (editor
-   * scroll, resize, or a decoration rebuild). Returns an unsubscribe.
-   */
-  subscribe(onGeometryChange: () => void): ReviewUnsubscribe;
 }

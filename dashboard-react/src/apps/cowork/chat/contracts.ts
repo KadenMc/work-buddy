@@ -54,7 +54,7 @@ export interface FeedbackCapture {
 /**
  * The document passage a chat item scrolls to. Handed to the callback prop, so
  * the chat surface never imports the editor or the rail's proposal-keyed
- * AnchorRectSource directly (the feedback anchor is span-keyed, not proposal
+ * ReviewAnchorController directly (the feedback anchor is span-keyed, not proposal
  * keyed).
  */
 export interface ScrollAnchorTarget {

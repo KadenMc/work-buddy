@@ -1,14 +1,14 @@
 /**
  * The wiring hook the Co-work surface uses in live mode. It assembles the whole live bridge
  * once per (documentId, storeId): a canonical Y.Doc, the Yjs transport, the R2 doc client,
- * the live review provider, the view-only decoration projector, the anchor-rect source, and
+ * the live review provider, the view-only decoration projector, the Review anchor controller, and
  * the sitting transport. The rail and editor consume ONE pull, so cards and decorations stay
  * in agreement without proposal structs entering the collaborative document.
  *
  * Data flow. The review provider's single R2 pull feeds the rail cards (its load return) and
  * the editor decorations and health strip (its onData emission), while its ProposalInput
  * channel is retained as the authoritative sitting catalog. The editor mounts through
- * CoworkBridgeEditor and reports its ready context up so the projector and geometry source
+ * CoworkBridgeEditor and reports its ready context up so the projector and anchor controller
  * can attach.
  *
  * Every transport is injectable so the whole bridge is testable with in-memory doubles, and
@@ -45,8 +45,8 @@ import type {
   ReviewRailData,
   VerificationRecheckIntent,
 } from "../rail/contracts";
-import type { AnchorRectSource } from "../rail/provider";
-import { DomAnchorRectSource } from "./DomAnchorRectSource";
+import type { ReviewAnchorController } from "../rail/provider";
+import { DomReviewAnchorController } from "./DomReviewAnchorController";
 import {
   HttpCoworkDocClient,
   type CoworkDocClient,
@@ -144,10 +144,8 @@ export interface CoworkBridgeEditorMountProps {
 
 export interface CoworkBridge {
   readonly reviewProvider: LiveReviewRailProvider;
-  readonly anchorRects: AnchorRectSource;
+  readonly reviewAnchors: ReviewAnchorController;
   readonly editorProps: CoworkBridgeEditorMountProps;
-  /** Ref callback for the rail region, the anchor-rect coordinate root lives inside it. */
-  readonly railRef: (element: HTMLElement | null) => void;
   /** Latest live health, or null before the first pull resolves. */
   readonly health: CoworkLiveHealth | null;
   /** Concise criterion counts for the editor-bottom Verify dock. */
@@ -170,16 +168,6 @@ export interface CoworkBridge {
    */
   readonly scrollToSpanAnchor: (target: ScrollAnchorTarget) => boolean;
 }
-
-/** Find the aligned card-list inside the rail region, the anchor-rect coordinate root. */
-const resolveRailRoot = (railRegion: HTMLElement | null): HTMLElement | null => {
-  if (railRegion === null) return null;
-  return (
-    railRegion.querySelector<HTMLElement>(
-      '.wb-cowork-rail__stream[data-aligned="true"] .wb-cowork-rail__card-list',
-    ) ?? railRegion.querySelector<HTMLElement>(".wb-cowork-rail__card-list")
-  );
-};
 
 export const useCoworkBridge = (
   options: UseCoworkBridgeOptions,
@@ -208,7 +196,6 @@ export const useCoworkBridge = (
 
   const editorRef = useRef<Editor | null>(null);
   const editorDomRef = useRef<HTMLElement | null>(null);
-  const railRegionRef = useRef<HTMLElement | null>(null);
   const editorReadyRef = useRef(false);
   const sittingWorkspaceRef = useRef<CoworkSittingWorkspace | null>(null);
   const proposalCatalogRef = useRef<readonly ProposalInput[]>([]);
@@ -262,10 +249,9 @@ export const useCoworkBridge = (
         onSittingCommittedRef.current?.(requests),
     });
 
-    const anchorRects = new DomAnchorRectSource({
+    const reviewAnchors = new DomReviewAnchorController({
       getEditorRoot: () => editorDomRef.current,
       getEditor: () => editorRef.current,
-      getRailRoot: () => resolveRailRoot(railRegionRef.current),
     });
 
     return {
@@ -273,7 +259,7 @@ export const useCoworkBridge = (
       ledgerProjector,
       passageHighlighter,
       reviewProvider,
-      anchorRects,
+      reviewAnchors,
       ydocTransport: resolvedYdocTransport,
     };
     // The transports and clients are stable per (documentId, storeId). A test passes fresh
@@ -304,7 +290,7 @@ export const useCoworkBridge = (
         ).length,
       });
       core.ledgerProjector.setData(data);
-      core.anchorRects.refresh();
+      core.reviewAnchors.refresh();
     });
     return () => {
       proposalCatalogRef.current = [];
@@ -334,11 +320,11 @@ export const useCoworkBridge = (
         editorDomRef.current = dom;
         editorReadyRef.current = true;
         core.ledgerProjector.attach(editor);
-        core.anchorRects.attachEditor(editor);
+        core.reviewAnchors.attachEditor(editor);
       },
       onTeardown: () => {
         core.passageHighlighter.clear();
-        core.anchorRects.detachEditor();
+        core.reviewAnchors.detachEditor();
         editorReadyRef.current = false;
         editorRef.current = null;
         editorDomRef.current = null;
@@ -390,13 +376,6 @@ export const useCoworkBridge = (
     ],
   );
 
-  const railRef = useMemo(
-    () => (element: HTMLElement | null) => {
-      railRegionRef.current = element;
-    },
-    [],
-  );
-
   const scrollToSpanAnchor = useMemo(
     () =>
       (target: ScrollAnchorTarget): boolean =>
@@ -406,9 +385,8 @@ export const useCoworkBridge = (
 
   return {
     reviewProvider: core.reviewProvider,
-    anchorRects: core.anchorRects,
+    reviewAnchors: core.reviewAnchors,
     editorProps,
-    railRef,
     health,
     verifySetup,
     verifyCapability,

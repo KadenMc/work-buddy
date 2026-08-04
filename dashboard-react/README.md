@@ -49,6 +49,13 @@ directory is gitignored but is required in payloads that serve the React dashboa
 Flask serves history-fallback HTML with no-store headers and hashed assets from
 `/app/assets/` with immutable caching.
 
+In a development checkout, a full sidecar restart automatically fingerprints the
+React inputs and the emitted payload before Flask starts. It rebuilds only when the
+served bundle is stale, stages and validates the new output before swapping `dist/`,
+and makes `/app` return a clear 503 if the build fails instead of silently serving an
+older UI. Packaged installations use their shipped `dist/` and do not require npm at
+runtime. A dashboard-only health restart does not invoke the build guard.
+
 ## Verification
 
 ```powershell

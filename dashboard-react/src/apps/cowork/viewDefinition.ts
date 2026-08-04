@@ -1,4 +1,7 @@
-import type { ViewDefinition } from "../../dashboard/contributions/contracts";
+import {
+  asSettingsPageId,
+  type ViewDefinition,
+} from "../../dashboard/contributions/contracts";
 import type { WidgetThemeDeclaration } from "../../dashboard/contributions/themeContract";
 import {
   COWORK_APP_ID,
@@ -40,6 +43,10 @@ export const COWORK_VIEW_DEFINITION = {
     order: 30,
   },
   primaryJob: "Write and review documents with Co-work.",
+  settings: {
+    pageId: asSettingsPageId("wb.settings.app.cowork"),
+    label: "Co-work settings",
+  },
   grid: { columns: 24 },
   defaultSlots: [
     {

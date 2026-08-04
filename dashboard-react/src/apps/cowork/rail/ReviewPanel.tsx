@@ -7,13 +7,21 @@
  * persistence, and a dirty sitting arms the route-change guard.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type RefCallback,
+} from "react";
 
+import type { CoworkShortcutBindings } from "../keyboard";
 import { Inspector } from "./Inspector";
 import { VerificationAttentionFeed } from "./VerificationAttentionFeed";
 import { FilterLens } from "./FilterLens";
 import { MarkBar, type MarkBarTarget } from "./MarkBar";
-import { QueueView, type QueueBindings } from "./QueueView";
+import { QueueView } from "./QueueView";
 import { RailDriftStrip } from "./RailDriftStrip";
 import { StreamView } from "./StreamView";
 import type {
@@ -31,9 +39,8 @@ import {
   visibleItems,
   type RailItem,
 } from "./items";
-import type { AnchorRectSource, ReviewRailProvider } from "./provider";
+import type { ReviewAnchorController, ReviewRailProvider } from "./provider";
 import { isDirty, type RailSelectionKind, type RailStore } from "./store";
-import { useIsNarrow } from "./useIsNarrow";
 import { useReviewData } from "./useReviewData";
 import { useRailState } from "./useRailState";
 import { RecoverableDecisionApplyError } from "./applyRecovery";
@@ -129,12 +136,12 @@ export interface ReviewPanelProps {
   readonly documentId: string;
   /** Injectable for tests, defaults to window.localStorage. */
   readonly storage?: Storage;
-  readonly anchorRects?: AnchorRectSource;
-  readonly queueBindings?: QueueBindings;
+  readonly scrollContainerRef?: RefCallback<HTMLElement>;
+  readonly onScrollContainerWillDetach?: () => void;
+  readonly reviewAnchors?: ReviewAnchorController;
+  readonly shortcutBindings?: CoworkShortcutBindings;
   /** Whether Review is currently visible and may handle global shortcuts. */
   readonly active?: boolean;
-  /** Force the grouped narrow fallback. Otherwise a container query decides. */
-  readonly narrow?: boolean;
   readonly onDiscussCothink?: (
     item: CothinkItem,
   ) => void | Promise<void>;
@@ -152,10 +159,11 @@ export function ReviewPanel(props: ReviewPanelProps) {
   const [applyNotice, setApplyNotice] = useState<ReviewApplyNotice | null>(null);
   const [attentionError, setAttentionError] = useState<string | null>(null);
   const [busyAttentionId, setBusyAttentionId] = useState<string | null>(null);
-  const pendingRevealRef = useRef<{
-    readonly source: AnchorRectSource;
+  const pendingActivationRef = useRef<{
+    readonly source: ReviewAnchorController;
     readonly id: string;
     readonly kind: RailSelectionKind;
+    readonly flash: boolean;
   } | null>(null);
 
   const filter = useRailState(store, (state) => state.filter);
@@ -181,9 +189,6 @@ export function ReviewPanel(props: ReviewPanelProps) {
     applyNotice.attempt.selectionFingerprint === decisionFingerprint
       ? applyNotice
       : null;
-
-  const [measuredNarrow, narrowRef] = useIsNarrow();
-  const narrow = props.narrow ?? measuredNarrow;
 
   useDraftPersistence(store, props.documentId, storage);
   useUnsavedChangesGuard(store, dirty);
@@ -221,36 +226,43 @@ export function ReviewPanel(props: ReviewPanelProps) {
   const targetKind = targetItem?.kind ?? null;
 
   /*
-   * Selection is a kind-qualified rail concern, but the editor owns its visual
-   * treatment. Keep the focused decoration in sync without ever hiding the
-   * underlying annotations when the card lens changes.
+   * Selection is stateful rail context; activation is a one-shot navigation
+   * command. Passive selection reconciliation (initial render, filtering, mode
+   * changes, or data refresh) only mirrors the focused decoration. A present
+   * user activation leaves a marker that this effect consumes exactly once to
+   * reveal the passage. Keeping those paths distinct prevents reloads and
+   * projection refreshes from replaying an old editor jump.
    */
   useEffect(() => {
-    const source = props.anchorRects;
+    const source = props.reviewAnchors;
     if (source === undefined) return;
     if (targetId === null || targetKind === null) {
-      pendingRevealRef.current = null;
+      pendingActivationRef.current = null;
       source.clearFocusedAnchor();
       return;
     }
-    const pending = pendingRevealRef.current;
-    const flash =
+    const pending = pendingActivationRef.current;
+    const activate =
       pending?.source === source &&
       pending.id === targetId &&
       pending.kind === targetKind;
-    pendingRevealRef.current = null;
-    source.focusAnchor(
-      targetId,
-      targetKind,
-      flash ? { scroll: true, flash: true } : { scroll: true },
-    );
-  }, [props.anchorRects, targetId, targetKind]);
+    pendingActivationRef.current = null;
+    if (activate) {
+      if (pending.flash) {
+        source.revealAnchor(targetId, targetKind, { flash: true });
+      } else {
+        source.revealAnchor(targetId, targetKind);
+      }
+    } else {
+      source.focusAnchor(targetId, targetKind);
+    }
+  }, [props.reviewAnchors, targetId, targetKind]);
 
   useEffect(
     () => () => {
-      props.anchorRects?.clearFocusedAnchor();
+      props.reviewAnchors?.clearFocusedAnchor();
     },
-    [props.anchorRects],
+    [props.reviewAnchors],
   );
 
   /*
@@ -280,6 +292,61 @@ export function ReviewPanel(props: ReviewPanelProps) {
     targetItem,
   ]);
 
+  /**
+   * One present-user Review activation selects the kind-qualified item and
+   * reveals its editor anchor. When selection must change first, the effect
+   * above performs the reveal after React has reconciled the matching target;
+   * an already-selected card can issue the command immediately.
+   */
+  const activateReviewTarget = useCallback(
+    (
+      id: string,
+      kind: RailSelectionKind,
+      options: { readonly flash?: boolean } = {},
+    ) => {
+      const source = props.reviewAnchors;
+      const current = store.getState();
+      if (source === undefined) {
+        store.select(id, kind);
+        return;
+      }
+      if (current.selectedId === id && current.selectedKind === kind) {
+        if (options.flash === true) {
+          source.revealAnchor(id, kind, { flash: true });
+        } else {
+          source.revealAnchor(id, kind);
+        }
+        return;
+      }
+      pendingActivationRef.current = {
+        source,
+        id,
+        kind,
+        flash: options.flash === true,
+      };
+      store.select(id, kind);
+    },
+    [props.reviewAnchors, store],
+  );
+
+  /**
+   * Attention and recovery links can point outside the active lens or Queue
+   * position. Open the canonical Stream/All view first so the requested item
+   * becomes both the selected card and the effect's navigation target.
+   */
+  const openReviewTarget = useCallback(
+    (
+      id: string,
+      kind: RailSelectionKind,
+      options: { readonly flash?: boolean } = {},
+    ) => {
+      store.setMode("stream");
+      store.setFilter("all");
+      activateReviewTarget(id, kind, options);
+    },
+    [activateReviewTarget, store],
+  );
+
   const advanceToNextUndecided = useCallback(
     (fromIndex: number) => {
       for (let offset = 1; offset <= visible.length; offset += 1) {
@@ -292,12 +359,12 @@ export function ReviewPanel(props: ReviewPanelProps) {
             : decisions[item.id] !== undefined;
         if (!decided) {
           store.setQueueIndex(next);
-          store.select(item.id, item.kind);
+          activateReviewTarget(item.id, item.kind);
           return;
         }
       }
     },
-    [visible, decisions, claimDecisions, store],
+    [visible, decisions, claimDecisions, store, activateReviewTarget],
   );
 
   const stageProposal = useCallback(
@@ -328,36 +395,16 @@ export function ReviewPanel(props: ReviewPanelProps) {
       );
       store.setQueueIndex(next);
       const item = visible[next];
-      if (item !== undefined) store.select(item.id, item.kind);
+      if (item !== undefined) activateReviewTarget(item.id, item.kind);
     },
-    [clampedIndex, visible, store],
+    [clampedIndex, visible, store, activateReviewTarget],
   );
 
-  const revealAnchor = useMemo(() => {
-    const source = props.anchorRects;
-    if (source === undefined) return undefined;
-    return (id: string, kind: RailSelectionKind) =>
-      source.focusAnchor(id, kind, { scroll: true, flash: true });
-  }, [props.anchorRects]);
-
-  const selectAndRevealAnchor = useMemo(() => {
-    const source = props.anchorRects;
-    if (source === undefined) return undefined;
-    return (id: string, kind: RailSelectionKind) => {
-      const current = store.getState();
-      if (current.selectedId === id && current.selectedKind === kind) {
-        source.focusAnchor(id, kind, { scroll: true, flash: true });
-        return;
-      }
-      /*
-       * Select first so the card, MarkBar, and editor target agree. The
-       * selection effect consumes this marker and performs one flashing focus,
-       * instead of immediately replacing the flash with its normal focus.
-       */
-      pendingRevealRef.current = { source, id, kind };
-      store.select(id, kind);
-    };
-  }, [props.anchorRects, store]);
+  const flashReviewTarget = useCallback(
+    (id: string, kind: RailSelectionKind) =>
+      activateReviewTarget(id, kind, { flash: true }),
+    [activateReviewTarget],
+  );
 
   const submit = useCallback(async (requestedAttempt?: ReviewApplyAttempt) => {
     if (data === null || submitting) return;
@@ -462,24 +509,19 @@ export function ReviewPanel(props: ReviewPanelProps) {
 
   const revealResult = useCallback(
     (result: EvaluationResult) => {
-      if (result.quoteAnchor === null || props.anchorRects === undefined) return;
-      props.anchorRects.focusAnchor(result.resultId, "evaluation_result", {
-        scroll: true,
+      if (result.quoteAnchor === null || props.reviewAnchors === undefined) return;
+      props.reviewAnchors.revealAnchor(result.resultId, "evaluation_result", {
         flash: true,
       });
     },
-    [props.anchorRects],
+    [props.reviewAnchors],
   );
 
   const openCorrection = useCallback(
     (proposalId: string) => {
-      store.select(proposalId, "proposal");
-      props.anchorRects?.focusAnchor(proposalId, "proposal", {
-        scroll: true,
-        flash: true,
-      });
+      openReviewTarget(proposalId, "proposal", { flash: true });
     },
-    [props.anchorRects, store],
+    [openReviewTarget],
   );
 
   const actOnCothink = useCallback(
@@ -574,11 +616,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
     data.proposals.find((proposal) => proposal.proposalId === proposalId)?.tldr ??
     "Suggestion no longer shown";
   const reviewBlocker = (proposalId: string) => {
-    store.select(proposalId, "proposal");
-    props.anchorRects?.focusAnchor(proposalId, "proposal", {
-      scroll: true,
-      flash: true,
-    });
+    openReviewTarget(proposalId, "proposal", { flash: true });
   };
   const removeBlockedDecision = (proposalId: string) => {
     store.clearDecision(proposalId);
@@ -589,11 +627,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
   };
 
   return (
-    <div
-      ref={narrowRef}
-      className="wb-cowork-rail__panel"
-      data-narrow={narrow ? "true" : undefined}
-    >
+    <div className="wb-cowork-rail__panel">
       <RailDriftStrip title={data.title} drift={data.drift} />
 
       <VerificationAttentionFeed
@@ -656,7 +690,12 @@ export function ReviewPanel(props: ReviewPanelProps) {
             type="button"
             className="wb-cowork-rail__mode-btn"
             aria-pressed={mode === "queue"}
-            onClick={() => store.setMode("queue")}
+            onClick={() => {
+              if (mode === "stream" && filter === "all") {
+                props.onScrollContainerWillDetach?.();
+              }
+              store.setMode("queue");
+            }}
           >
             Queue
           </button>
@@ -820,10 +859,22 @@ export function ReviewPanel(props: ReviewPanelProps) {
       <FilterLens
         filter={filter}
         counts={counts}
-        onChange={(next) => store.setFilter(next)}
+        onChange={(next) => {
+          if (mode === "stream" && filter === "all" && next !== "all") {
+            props.onScrollContainerWillDetach?.();
+          }
+          store.setFilter(next);
+        }}
       />
 
-      <div className="wb-cowork-rail__body">
+      <div
+        className="wb-cowork-rail__body"
+        ref={
+          mode === "stream" && filter === "all"
+            ? props.scrollContainerRef
+            : undefined
+        }
+      >
         {mode === "stream" ? (
           <StreamView
             items={visible}
@@ -832,10 +883,8 @@ export function ReviewPanel(props: ReviewPanelProps) {
             decisions={decisions}
             claimDecisions={claimDecisions}
             inspectSpanByClaim={spanByClaim}
-            grouped={narrow}
-            anchorRects={props.anchorRects}
-            onSelect={(id, kind) => store.select(id, kind)}
-            onScrollToAnchor={selectAndRevealAnchor}
+            onActivate={activateReviewTarget}
+            onScrollToAnchor={flashReviewTarget}
             onInspect={(spanId) => store.openInspector(spanId)}
           />
         ) : (
@@ -845,11 +894,11 @@ export function ReviewPanel(props: ReviewPanelProps) {
             decisions={decisions}
             claimDecisions={claimDecisions}
             inspectSpanByClaim={spanByClaim}
-            bindings={props.queueBindings}
+            bindings={props.shortcutBindings}
             keyboardNavigationEnabled={props.active ?? true}
             onNavigate={navigate}
-            onSelect={(id, kind) => store.select(id, kind)}
-            onScrollToAnchor={revealAnchor}
+            onActivate={activateReviewTarget}
+            onScrollToAnchor={flashReviewTarget}
             onInspect={(spanId) => store.openInspector(spanId)}
           />
         )}
@@ -890,6 +939,10 @@ export function ReviewPanel(props: ReviewPanelProps) {
             store.clearClaimDecision(id);
           }}
           showHotkeys={mode === "queue"}
+          bindings={props.shortcutBindings}
+          keyboardShortcutsEnabled={
+            mode === "queue" && (props.active ?? true)
+          }
         />
       ) : (
         <p className="wb-cowork-rail__markbar-hint">

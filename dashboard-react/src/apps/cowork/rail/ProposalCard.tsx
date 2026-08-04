@@ -1,13 +1,17 @@
 /**
- * One margin card for a proposal or a flag (SP-6 variant A card, rendered the
- * same way in the stream, the groups, and the queue). The card is selectable
- * (selecting it points the mark bar at it), it names its anchor with a
- * scroll-to affordance (the degrade path when true alignment is not wired), and
+ * One Review card for a proposal or a flag, rendered the same way in the
+ * document-order stream and the queue. Its whole non-control surface is an
+ * efficient pointer target while the title button remains the semantic
+ * keyboard control. Unselected Stream cards expose only scan-level identity;
+ * selecting one reveals its quote and rationale, points the mark bar at it,
+ * and issues the explicit passage-navigation command. It also names its anchor with a
+ * separate passage-navigation affordance, and
  * it surfaces target-placement and staged-decision states with a non-color
- * encoding as well as color (SP-6 G3).
+ * encoding as well as color.
  */
 
 import type { ReviewProposal, StagedDecision } from "./contracts";
+import { activateCardFromContainer } from "./cardActivation";
 import { PROPOSAL_VERB_LABEL } from "./verbs";
 
 export interface ProposalCardProps {
@@ -17,8 +21,6 @@ export interface ProposalCardProps {
   onSelect(): void;
   /** Bring the anchor into view and flash it. Absent hides the affordance. */
   onScrollToAnchor?(): void;
-  /** Ref for the aligned-stream geometry controller. */
-  cardRef?: (element: HTMLElement | null) => void;
 }
 
 function kindLabel(proposal: ReviewProposal): string {
@@ -62,18 +64,17 @@ export function ProposalCard({
   staged,
   onSelect,
   onScrollToAnchor,
-  cardRef,
 }: ProposalCardProps) {
   const token = kindToken(proposal);
   const placementProblem = placementMessage(proposal);
   return (
     <li
-      ref={cardRef}
       className="wb-cowork-rail__card"
       data-kind={token}
       data-selected={selected ? "true" : undefined}
       data-staged={staged !== undefined ? "true" : undefined}
       data-stale={placementProblem !== null ? "true" : undefined}
+      onClick={(event) => activateCardFromContainer(event, onSelect)}
     >
       <div className="wb-cowork-rail__card-head">
         <span className="wb-cowork-rail__card-kind" data-kind={token}>
@@ -107,7 +108,7 @@ export function ProposalCard({
         <span className="wb-cowork-rail__card-tldr">{proposal.tldr}</span>
       </button>
 
-      {proposal.kind === "edit" && proposal.replacement !== null ? (
+      {selected && proposal.kind === "edit" && proposal.replacement !== null ? (
         <p className="wb-cowork-rail__card-quote">
           <span className="wb-cowork-rail__quote-context">
             {proposal.quoteAnchor.prefix}
@@ -127,7 +128,9 @@ export function ProposalCard({
         </p>
       ) : null}
 
-      <p className="wb-cowork-rail__card-rationale">{proposal.rationale}</p>
+      {selected ? (
+        <p className="wb-cowork-rail__card-rationale">{proposal.rationale}</p>
+      ) : null}
 
       {placementProblem !== null ? (
         <p className="wb-cowork-rail__card-badge is-stale">

@@ -18,8 +18,7 @@ function baseProps() {
     decisions: {},
     claimDecisions: {},
     inspectSpanByClaim: emptySpanMap,
-    grouped: false,
-    onSelect: vi.fn(),
+    onActivate: vi.fn(),
     onInspect: vi.fn(),
   };
 }
@@ -27,10 +26,18 @@ function baseProps() {
 describe("StreamView", () => {
   it("renders every item as a card in document order", () => {
     render(<StreamView {...baseProps()} />);
-    const cards = document.querySelectorAll(".wb-cowork-rail__card");
+    const cards = [...document.querySelectorAll(".wb-cowork-rail__card")];
     expect(cards).toHaveLength(5);
-    expect(screen.getByText("Add the vault content hash to the cache key.")).toBeVisible();
-    expect(screen.getByText("Cite the benchmark file for this figure.")).toBeVisible();
+    expect(
+      cards.map(
+        (card) =>
+          card.querySelector(".wb-cowork-rail__card-tldr")?.textContent,
+      ),
+    ).toEqual(
+      items.map((item) =>
+        item.kind === "claim" ? item.claim.proposition : item.proposal.tldr,
+      ),
+    );
   });
 
   it("selects a card and reports its kind", async () => {
@@ -39,20 +46,53 @@ describe("StreamView", () => {
     await userEvent.click(
       screen.getByText("Add the vault content hash to the cache key."),
     );
-    expect(props.onSelect).toHaveBeenCalledWith("s1", "proposal");
+    expect(props.onActivate).toHaveBeenCalledWith("s1", "proposal");
   });
 
-  it("renders the grouped narrow fallback with typed headings", () => {
-    render(<StreamView {...baseProps()} grouped />);
+  it("navigates explicitly to a card's document passage", async () => {
+    const props = {
+      ...baseProps(),
+      onScrollToAnchor: vi.fn(),
+    };
+    const first = items[0];
+    const anchorLabel =
+      first.kind === "claim" ? first.claim.anchorLabel : first.proposal.anchorLabel;
+    render(<StreamView {...props} />);
+
+    await userEvent.click(
+      screen.getByRole("button", {
+        name: `Go to ${anchorLabel} in the document`,
+      }),
+    );
+
+    expect(props.onScrollToAnchor).toHaveBeenCalledWith(first.id, first.kind);
+  });
+
+  it("keeps every card in normal flow across rerenders", () => {
+    const props = baseProps();
+    const { container, rerender } = render(<StreamView {...props} />);
+    rerender(
+      <StreamView
+        {...props}
+        decisions={{
+          s1: {
+            proposalId: "s1",
+            verb: "confirm",
+            canonicalSha256: "sha",
+          },
+        }}
+      />,
+    );
+
+    for (const card of container.querySelectorAll<HTMLElement>(
+      ".wb-cowork-rail__card",
+    )) {
+      expect(card.style.position).toBe("");
+      expect(card.style.transform).toBe("");
+    }
     expect(
-      screen.getByRole("region", { name: "Suggestions" }),
-    ).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "Flags" })).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "Claims" })).toBeInTheDocument();
-    const suggestions = screen.getByRole("region", { name: "Suggestions" });
-    expect(
-      suggestions.querySelectorAll(".wb-cowork-rail__card"),
-    ).toHaveLength(3);
+      container.querySelector(".wb-cowork-rail__card-list"),
+    ).not.toHaveAttribute("style");
   });
 
   it("shows an empty state when there is nothing to review", () => {

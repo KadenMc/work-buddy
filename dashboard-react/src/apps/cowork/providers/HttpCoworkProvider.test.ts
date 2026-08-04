@@ -165,6 +165,230 @@ describe("HttpCoworkProvider", () => {
     expect(location.search).toBe("?store_id=465142ba");
   });
 
+  it.each([
+    [
+      "full IDs",
+      "465142ba386b4f6d84be621efe1425ca",
+      "8f3ff19c111149b88c54c71c7b567d6c",
+    ],
+    ["unique short IDs", "465142ba", "8f3ff19c"],
+  ])(
+    "opens document links with %s using full internal and API identities",
+    async (_label, urlStoreId, urlDocumentId) => {
+      const fullStoreId = "465142ba386b4f6d84be621efe1425ca";
+      const fullDocumentId = "8f3ff19c111149b88c54c71c7b567d6c";
+      const location = new MemoryLocation(
+        `?store_id=${urlStoreId}&document_id=${urlDocumentId}&panel=review`,
+      );
+      const requestedUrls: string[] = [];
+      const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        requestedUrls.push(url);
+        if (url.startsWith("/api/truth/cowork/folders?")) {
+          return json({
+            read_only: false,
+            folders: [{ ...folder, store_id: fullStoreId }],
+            diagnostics: [],
+          });
+        }
+        if (url.startsWith("/api/truth/doc/list?")) {
+          expect(
+            new URL(url, "http://work-buddy.test").searchParams.get("store_id"),
+          ).toBe(fullStoreId);
+          return json({ docs: [document(fullDocumentId)] });
+        }
+        if (url.includes(`/api/truth/doc/${fullDocumentId}/ydoc?`)) {
+          expect(
+            new URL(url, "http://work-buddy.test").searchParams.get("store_id"),
+          ).toBe(fullStoreId);
+          return validYdocResponse();
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      });
+      const provider = new HttpCoworkProvider({
+        location,
+        storage: localStorage,
+        client: new CoworkHttpClient(fetchImpl as typeof fetch),
+      });
+
+      const snapshot = await provider.loadView();
+
+      expect(snapshot.model.activeSession).toMatchObject({
+        kind: "registered",
+        storeId: fullStoreId,
+        document: { documentId: fullDocumentId },
+      });
+      expect(snapshot.model.routeTarget).toEqual({
+        kind: "registered",
+        storeId: fullStoreId,
+        documentId: fullDocumentId,
+      });
+      expect(location.search).toBe(
+        "?store_id=465142ba&document_id=8f3ff19c&panel=review",
+      );
+      expect(
+        requestedUrls.some((url) => url.includes("/api/truth/doc/8f3ff19c/ydoc?")),
+      ).toBe(false);
+      expect(
+        requestedUrls.filter((url) => url.startsWith("/api/truth/doc/list?")),
+      ).toHaveLength(1);
+    },
+  );
+
+  it("keeps a full document ID in the URL when its eight-character prefix collides", async () => {
+    const fullStoreId = "465142ba386b4f6d84be621efe1425ca";
+    const fullDocumentId = "8f3ff19c111149b88c54c71c7b567d6c";
+    const collidingDocumentId = "8f3ff19c000000000000000000000000";
+    const location = new MemoryLocation(
+      `?store_id=${fullStoreId}&document_id=${fullDocumentId}`,
+    );
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith("/api/truth/cowork/folders?")) {
+        return json({
+          read_only: false,
+          folders: [{ ...folder, store_id: fullStoreId }],
+          diagnostics: [],
+        });
+      }
+      if (url.startsWith("/api/truth/doc/list?")) {
+        return json({
+          docs: [document(fullDocumentId), document(collidingDocumentId)],
+        });
+      }
+      if (url.includes(`/api/truth/doc/${fullDocumentId}/ydoc?`)) {
+        return validYdocResponse();
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const provider = new HttpCoworkProvider({
+      location,
+      storage: localStorage,
+      client: new CoworkHttpClient(fetchImpl as typeof fetch),
+    });
+
+    const snapshot = await provider.loadView();
+
+    expect(snapshot.model.activeSession).toMatchObject({
+      kind: "registered",
+      document: { documentId: fullDocumentId },
+    });
+    expect(location.search).toBe(
+      `?store_id=465142ba&document_id=${fullDocumentId}`,
+    );
+  });
+
+  it.each([
+    [
+      "ambiguous",
+      "8f3ff19c",
+      [
+        document("8f3ff19c111149b88c54c71c7b567d6c"),
+        document("8f3ff19c000000000000000000000000"),
+      ],
+      "document_url_ambiguous",
+    ],
+    [
+      "unknown",
+      "00000000",
+      [document("8f3ff19c111149b88c54c71c7b567d6c")],
+      "document_not_found",
+    ],
+  ])(
+    "fails closed for an %s short document ID",
+    async (_label, urlDocumentId, docs, code) => {
+      const fullStoreId = "465142ba386b4f6d84be621efe1425ca";
+      const location = new MemoryLocation(
+        `?store_id=${fullStoreId}&document_id=${urlDocumentId}`,
+      );
+      const requestedUrls: string[] = [];
+      const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        requestedUrls.push(url);
+        if (url.startsWith("/api/truth/cowork/folders?")) {
+          return json({
+            read_only: false,
+            folders: [{ ...folder, store_id: fullStoreId }],
+            diagnostics: [],
+          });
+        }
+        if (url.startsWith("/api/truth/doc/list?")) return json({ docs });
+        throw new Error(`Unexpected request: ${url}`);
+      });
+      const provider = new HttpCoworkProvider({
+        location,
+        storage: localStorage,
+        client: new CoworkHttpClient(fetchImpl as typeof fetch),
+      });
+
+      const snapshot = await provider.loadView();
+
+      expect(snapshot.model.activeSession).toEqual({ kind: "none" });
+      expect(snapshot.model.navigationError?.code).toBe(code);
+      expect(requestedUrls.some((url) => url.includes("/ydoc?"))).toBe(false);
+      expect(
+        requestedUrls.some((url) =>
+          url.includes(`/api/truth/doc/${urlDocumentId}?`),
+        ),
+      ).toBe(false);
+    },
+  );
+
+  it("expands a short document ID before comparing navigation durability keys", async () => {
+    const fullStoreId = "465142ba386b4f6d84be621efe1425ca";
+    const fullDocumentId = "8f3ff19c111149b88c54c71c7b567d6c";
+    const location = new MemoryLocation(
+      `?store_id=${fullStoreId}&document_id=${fullDocumentId}`,
+    );
+    let ydocReads = 0;
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith("/api/truth/cowork/folders?")) {
+        return json({
+          read_only: false,
+          folders: [{ ...folder, store_id: fullStoreId }],
+          diagnostics: [],
+        });
+      }
+      if (url.startsWith("/api/truth/doc/list?")) {
+        return json({ docs: [document(fullDocumentId)] });
+      }
+      if (url.includes(`/api/truth/doc/${fullDocumentId}/ydoc?`)) {
+        ydocReads += 1;
+        return validYdocResponse();
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const provider = new HttpCoworkProvider({
+      location,
+      storage: localStorage,
+      client: new CoworkHttpClient(fetchImpl as typeof fetch),
+    });
+    await provider.loadView();
+
+    const prepareToLeave = vi.fn();
+    const unregister = coworkSessionDurability.register(
+      registeredSessionDurabilityKey(fullStoreId, fullDocumentId),
+      { prepareToLeave },
+    );
+    try {
+      location.pushSearch("?store_id=465142ba&document_id=8f3ff19c&panel=chat");
+      await vi.waitFor(() => expect(ydocReads).toBe(2));
+
+      expect(prepareToLeave).not.toHaveBeenCalled();
+      expect((await provider.loadView()).model.activeSession).toMatchObject({
+        kind: "registered",
+        storeId: fullStoreId,
+        document: { documentId: fullDocumentId },
+      });
+      expect(location.search).toBe(
+        "?store_id=465142ba&document_id=8f3ff19c&panel=chat",
+      );
+    } finally {
+      unregister();
+    }
+  });
+
   it("keeps inspection tokens private and waits for confirmation before initializing a Folder", async () => {
     const location = new MemoryLocation();
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

@@ -31,9 +31,9 @@ export {
   type HttpCoworkDocClientOptions,
 } from "./HttpCoworkDocClient";
 export {
-  DomAnchorRectSource,
-  type DomAnchorRectSourceOptions,
-} from "./DomAnchorRectSource";
+  DomReviewAnchorController,
+  type DomReviewAnchorControllerOptions,
+} from "./DomReviewAnchorController";
 export {
   submitCoworkSitting,
   toDecisionItem,

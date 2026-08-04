@@ -62,6 +62,12 @@ export interface SettingsProvenance {
   readonly label: string;
 }
 
+export interface KeybindingCommandDefinition {
+  readonly commandId: string;
+  readonly label: string;
+  readonly description?: string;
+}
+
 export type StandardSettingControl =
   | {
       readonly kind: "typography-scale";
@@ -81,6 +87,10 @@ export type StandardSettingControl =
         readonly label: string;
         readonly description?: string;
       }[];
+    }
+  | {
+      readonly kind: "keybinding-map";
+      readonly commands: readonly KeybindingCommandDefinition[];
     };
 
 export interface SettingDefinition<Value = unknown> {

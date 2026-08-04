@@ -15,6 +15,14 @@ from work_buddy.settings.registry import (
 
 
 NY = ZoneInfo("America/New_York")
+DEFAULT_SHORTCUTS = {
+    "previous": "j",
+    "next": "k",
+    "accept": "a",
+    "amend": "e",
+    "reject": "x",
+    "defer": ".",
+}
 
 
 @pytest.fixture(autouse=True)
@@ -36,7 +44,7 @@ def _value(at: datetime):
 
 def test_registry_defines_app_owned_settings_with_canonical_placements() -> None:
     payload = broker.get_registry()
-    assert payload["registry_revision"] == "settings-registry:2"
+    assert payload["registry_revision"] == "settings-registry:3"
     assert [item["setting_id"] for item in payload["definitions"]] == [
         JOURNAL_DAY_BOUNDARY_ID,
         COWORK_REVIEW_NAV_BINDING_ID,
@@ -58,11 +66,13 @@ def test_registry_defines_app_owned_settings_with_canonical_placements() -> None
 
     cowork = payload["definitions"][1]
     assert cowork["owner"]["id"] == "wb.cowork"
-    assert cowork["value_schema"] == {
-        "type": "string",
-        "enum": ["inverted", "vim"],
-    }
-    assert cowork["default_value"] == "inverted"
+    assert cowork["value_schema"]["type"] == "object"
+    assert cowork["value_schema"]["required"] == list(DEFAULT_SHORTCUTS)
+    assert cowork["value_schema"]["additionalProperties"] is False
+    assert cowork["default_value"] == DEFAULT_SHORTCUTS
+    assert cowork["definition_version"] == 2
+    assert cowork["value_version"] == 2
+    assert cowork["presentation"]["control"] == "keybinding-map"
     assert cowork["presentation"]["apply_behavior"] == "immediate"
     cowork_page = next(
         page
@@ -73,13 +83,14 @@ def test_registry_defines_app_owned_settings_with_canonical_placements() -> None
 
 
 def test_cowork_review_navigation_values_apply_immediately_and_reset() -> None:
+    configured = {**DEFAULT_SHORTCUTS, "accept": "Enter"}
     initial, events = broker.get_values(
         context_id="wb.settings.app.cowork", observed_at=_at(15, 12)
     )
     assert events == []
     value = initial["values"][0]
     assert value["setting_id"] == COWORK_REVIEW_NAV_BINDING_ID
-    assert value["effective_value"] == "inverted"
+    assert value["effective_value"] == DEFAULT_SHORTCUTS
     assert value["default_source"] == "registry-default"
     assert value["apply_status"] == "effective"
     assert value["pending_value"] is None
@@ -88,14 +99,14 @@ def test_cowork_review_navigation_values_apply_immediately_and_reset() -> None:
     preview = broker.preview_value(
         COWORK_REVIEW_NAV_BINDING_ID,
         scope="profile",
-        value="vim",
+        value=configured,
         expected_revision="value:0",
         observed_at=_at(15, 12, 1),
     )
     assert preview["preview"] == {
         "setting_id": COWORK_REVIEW_NAV_BINDING_ID,
         "scope": {"kind": "profile", "subject_id": "default"},
-        "value": "vim",
+        "value": configured,
         "effective_at": None,
         "apply_status": "immediate",
         "impact_preview": None,
@@ -104,11 +115,11 @@ def test_cowork_review_navigation_values_apply_immediately_and_reset() -> None:
     changed, event = broker.update_value(
         COWORK_REVIEW_NAV_BINDING_ID,
         scope="profile",
-        value="vim",
+        value=configured,
         expected_revision="value:0",
         observed_at=_at(15, 12, 2),
     )
-    assert changed["effective_value"] == "vim"
+    assert changed["effective_value"] == configured
     assert changed["pending_value"] is None
     assert changed["revision"] == "value:1"
     assert event["reason"] == "value-applied"
@@ -120,11 +131,11 @@ def test_cowork_review_navigation_values_apply_immediately_and_reset() -> None:
     changed_back, event = broker.update_value(
         COWORK_REVIEW_NAV_BINDING_ID,
         scope="profile",
-        value="inverted",
+        value=DEFAULT_SHORTCUTS,
         expected_revision="value:1",
         observed_at=_at(15, 12, 3),
     )
-    assert changed_back["effective_value"] == "inverted"
+    assert changed_back["effective_value"] == DEFAULT_SHORTCUTS
     assert changed_back["source"] == "profile"
     assert changed_back["revision"] == "value:2"
     assert event["reason"] == "value-applied"
@@ -135,14 +146,24 @@ def test_cowork_review_navigation_values_apply_immediately_and_reset() -> None:
         expected_revision="value:2",
         observed_at=_at(15, 12, 4),
     )
-    assert reset["effective_value"] == "inverted"
+    assert reset["effective_value"] == DEFAULT_SHORTCUTS
     assert reset["source"] == "default"
     assert reset["revision"] == "value:3"
     assert event["reason"] == "value-reset"
 
 
-@pytest.mark.parametrize("invalid", [None, 5, "standard", "Vim"])
-def test_cowork_review_navigation_rejects_values_outside_declared_enum(invalid) -> None:
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        None,
+        5,
+        "vim",
+        {"next": "n"},
+        {**DEFAULT_SHORTCUTS, "next": "j"},
+        {**DEFAULT_SHORTCUTS, "next": "K"},
+    ],
+)
+def test_cowork_review_navigation_rejects_invalid_shortcut_maps(invalid) -> None:
     with pytest.raises(broker.SettingsError) as raised:
         broker.update_value(
             COWORK_REVIEW_NAV_BINDING_ID,
@@ -153,6 +174,21 @@ def test_cowork_review_navigation_rejects_values_outside_declared_enum(invalid) 
         )
     assert raised.value.code == "validation_error"
     assert raised.value.field == "value"
+
+
+def test_keybinding_map_validation_uses_definition_command_metadata() -> None:
+    definition = {
+        "presentation": {
+            "control": "keybinding-map",
+            "commands": [
+                {"command_id": "up", "label": "Up"},
+                {"command_id": "down", "label": "Down"},
+            ],
+        }
+    }
+    broker._validate_keybinding_map({"up": "u", "down": "d"}, definition)
+    with pytest.raises(broker.SettingsError):
+        broker._validate_keybinding_map({"up": "u", "down": "u"}, definition)
 
 
 def test_default_snapshot_carries_timezone_revision_and_impact() -> None:
