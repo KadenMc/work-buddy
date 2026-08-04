@@ -32,7 +32,8 @@ export interface QueueViewProps {
   /** Whether this visible Review surface may handle its window-level shortcuts. */
   readonly keyboardNavigationEnabled?: boolean;
   onNavigate(delta: number): void;
-  onSelect(id: string, kind: RailSelectionKind): void;
+  /** A present-user activation of the currently focused card. */
+  onActivate(id: string, kind: RailSelectionKind): void;
   onScrollToAnchor?(id: string, kind: RailSelectionKind): void;
   onInspect(spanId: string): void;
 }
@@ -150,7 +151,7 @@ export function QueueView(props: QueueViewProps) {
               claim={focused.claim}
               selected
               staged={props.claimDecisions[focused.id]}
-              onSelect={() => props.onSelect(focused.id, "claim")}
+              onSelect={() => props.onActivate(focused.id, "claim")}
               inspectSpanId={props.inspectSpanByClaim.get(focused.id)}
               onInspect={props.onInspect}
               onScrollToAnchor={scrollTo}
@@ -160,7 +161,7 @@ export function QueueView(props: QueueViewProps) {
               proposal={focused.proposal}
               selected
               staged={props.decisions[focused.id]}
-              onSelect={() => props.onSelect(focused.id, "proposal")}
+              onSelect={() => props.onActivate(focused.id, "proposal")}
               onScrollToAnchor={scrollTo}
             />
           )}

@@ -44,7 +44,7 @@ dev_notes: |
 
   Editor annotations are a runtime-only ProseMirror decoration projection derived from the same R2 document snapshot as the Review rail. They must never enter the schema, Yjs state, Markdown, undo history, or outbound persistence. Proposal and claim anchors are kind-qualified so identical raw IDs cannot collide. Review focus changes only the active treatment; rail filters never remove the underlying editor annotations. Chat passage highlighting is also view state and must preserve the editor selection and the user's current focus.
 
-  Review Stream cards stay in normal document flow inside one ordinary Review scroll container. Do not position or transform cards from editor-anchor geometry, subscribe card layout to editor transactions, or compensate for rail scrolling; those cross-pane geometry loops previously produced blank space and snap-back behavior. The editor owns anchor highlighting. Card selection updates that highlight without scrolling, while the explicit passage action scrolls and flashes it. A future contextual margin view would need to share the editor's scroll plane rather than recreate independent editor-to-rail alignment.
+  Review Stream cards stay in normal document flow inside one ordinary Review scroll container. Do not position or transform cards from editor-anchor geometry, subscribe card layout to editor transactions, or compensate for rail scrolling; those cross-pane geometry loops previously produced blank space and snap-back behavior. The editor and Review remain independent sibling scroll owners. Passive selection reconciliation—initial render, filtering, mode changes, and data/decorations refresh—may restore the editor's focused treatment but must not move either surface. A present-user activation of a card, Queue target, or recovery link is a one-shot command that selects and reveals the corresponding editor passage; recovery links first expose their target in Stream/All, and the explicit passage affordance also flashes it. On a narrow workspace, the surface exposes the Editor before revealing. Never persist or replay a reveal command during anchor/decorations refresh: only the current kind-qualified focused identity may be reapplied during the mounted session. A future contextual margin view would need to share the editor's scroll plane rather than recreate independent editor-to-rail alignment.
 
   Scroll persistence is a device-local callback-ref binding keyed by full folder ID, document ID, and surface (with an explicit document-only namespace for browser-local and demo documents). Attach the Review binding only while Review is visible and only for **Stream** + **All**. Detach it synchronously before switching to Chat, a filter, or Queue, so shorter replacement content cannot clamp the canonical position before it is saved. Writes are throttled and flushed on unmount, page hide, and document visibility loss. A saved position may exceed a loading shell's current range, so restoration observes later geometry for a bounded period and must never persist that temporary clamp. Wheel or touch movement, scroll keys directed at the container itself, an external programmatic scroll, or explicit passage navigation cancels pending restoration and becomes the new position. Ordinary clicks, caret placement, and descendant control keys do not cancel it before scrolling actually occurs.
 
@@ -433,10 +433,13 @@ a strikethrough. Flags, expressions or claims, and confirmed agent provenance
 have distinct visual and non-colour treatments, and a flag remains a warning
 underline rather than looking like removed text. The Review **Stream** is a
 conventional normal-flow list in document order, with filters acting as lenses
-over that list and **Queue** providing sequential focus. Selecting a Review card
-or moving through Queue strongly emphasizes only its kind-qualified anchor
-without moving the editor. The explicit passage affordance is the action that
-scrolls to and briefly flashes that anchor.
+over that list and **Queue** providing sequential focus. Activating a Review
+card or moving through Queue selects its kind-qualified target and reveals that
+passage in the editor without moving Review itself. The explicit passage
+affordance performs the same reveal and briefly flashes the anchor. Merely
+reconciling an already-selected item or remounting the editor projection
+restores its emphasis without scrolling; current selection is rail state, while
+navigation intent is a one-shot command.
 
 The review rail groups proposals into a sitting so the user can decide them in
 context. Accepting or amending a proposal applies only the admitted,

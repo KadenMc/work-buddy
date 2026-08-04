@@ -117,26 +117,6 @@ test.describe("Co-work persistence across visits", () => {
       .toBeCloseTo(restoredReviewTop, 0);
   });
 
-  test("card selection preserves the editor position", async ({
-    page,
-  }) => {
-    await openCowork(page);
-    const editorRegion = page.locator(".wb-cowork__editor-region");
-    const startingTop = await editorRegion.evaluate((element) => {
-      const max = element.scrollHeight - element.clientHeight;
-      element.scrollTop = max;
-      return element.scrollTop;
-    });
-    expect(startingTop).toBeGreaterThan(40);
-
-    await page.getByText("Add the vault content hash to the cache key.").click();
-    await page.waitForTimeout(500);
-    expect(await editorRegion.evaluate((element) => element.scrollTop)).toBeCloseTo(
-      startingTop,
-      0,
-    );
-  });
-
   test("filtered and Queue views do not replace the canonical Review position", async ({
     page,
   }) => {

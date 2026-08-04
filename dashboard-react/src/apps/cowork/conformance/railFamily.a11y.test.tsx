@@ -210,7 +210,7 @@ describe("CoworkRail family accessibility", () => {
         decisions={{}}
         claimDecisions={{}}
         inspectSpanByClaim={new Map()}
-        onSelect={noop}
+        onActivate={noop}
         onInspect={noop}
       />,
     );

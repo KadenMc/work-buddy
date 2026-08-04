@@ -68,12 +68,35 @@ describe("DomReviewAnchorController", () => {
       getEditorRoot: () => editorRoot,
     });
 
-    controller.focusAnchor("s1", "proposal", { scroll: true, flash: true });
+    controller.revealAnchor("s1", "proposal", { flash: true });
 
     expect(scrollIntoView).toHaveBeenCalledOnce();
     expect(mark).toHaveClass("wb-cowork-anchor--active");
     expect(mark).toHaveClass("wb-cowork-anchor--flash");
+
+    // A projection refresh restores durable focus but never replays the old
+    // one-shot navigation command (the source of historical snap-back).
+    controller.refresh();
+    expect(scrollIntoView).toHaveBeenCalledOnce();
     controller.clearFocusedAnchor();
+  });
+
+  it("does not replay an unresolved reveal when a later refresh finds the anchor", () => {
+    const editorRoot = document.createElement("div");
+    const controller = new DomReviewAnchorController({
+      getEditorRoot: () => editorRoot,
+    });
+
+    controller.revealAnchor("s1", "proposal");
+    const mark = legacyProposalElement("s1");
+    const scrollIntoView = vi.fn();
+    mark.scrollIntoView = scrollIntoView;
+    editorRoot.append(mark);
+
+    controller.refresh();
+
+    expect(mark).toHaveClass("wb-cowork-anchor--active");
+    expect(scrollIntoView).not.toHaveBeenCalled();
   });
 
   it("focuses only the requested namespace and clears it explicitly", () => {

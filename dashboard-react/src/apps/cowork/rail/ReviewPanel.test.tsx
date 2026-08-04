@@ -8,6 +8,7 @@ import {
   InMemoryReviewProvider,
 } from "./InMemoryReviewProvider";
 import { ReviewPanel } from "./ReviewPanel";
+import type { EvaluationResult } from "./contracts";
 import type { ReviewAnchorController, ReviewRailProvider } from "./provider";
 import { RailStore } from "./store";
 import { RecoverableDecisionApplyError } from "./applyRecovery";
@@ -61,12 +62,14 @@ function renderPanel(options: RenderPanelOptions = {}) {
 
 function createReviewAnchors() {
   const focusAnchor = vi.fn();
+  const revealAnchor = vi.fn();
   const clearFocusedAnchor = vi.fn();
   const source: ReviewAnchorController = {
     focusAnchor,
+    revealAnchor,
     clearFocusedAnchor,
   };
-  return { source, focusAnchor, clearFocusedAnchor };
+  return { source, focusAnchor, revealAnchor, clearFocusedAnchor };
 }
 
 const S1_TLDR = "Add the vault content hash to the cache key.";
@@ -590,7 +593,7 @@ describe("ReviewPanel", () => {
 
     await userEvent.click(screen.getByText(S1_TLDR));
     await waitFor(() =>
-      expect(anchors.focusAnchor).toHaveBeenCalledWith("s1", "proposal", {}),
+      expect(anchors.revealAnchor).toHaveBeenCalledWith("s1", "proposal"),
     );
     expect(screen.getByRole("button", { name: "Accept" })).toBeVisible();
     anchors.clearFocusedAnchor.mockClear();
@@ -620,25 +623,44 @@ describe("ReviewPanel", () => {
     expect(onScrollContainerWillDetach).toHaveBeenCalledOnce();
   });
 
-  it("focuses a selected card without scrolling, then flashes its explicit passage affordance", async () => {
+  it("keeps a preselected item passive instead of replaying navigation", async () => {
+    const anchors = createReviewAnchors();
+    const store = new RailStore({
+      selectedId: "s1",
+      selectedKind: "proposal",
+    });
+    renderPanel({ reviewAnchors: anchors.source, store });
+    await waitFor(() => expect(screen.getByText(S1_TLDR)).toBeVisible());
+
+    await waitFor(() =>
+      expect(anchors.focusAnchor).toHaveBeenCalledWith("s1", "proposal"),
+    );
+    expect(anchors.revealAnchor).not.toHaveBeenCalled();
+  });
+
+  it("reveals a card activation, then flashes its explicit passage affordance", async () => {
     const anchors = createReviewAnchors();
     renderPanel({ reviewAnchors: anchors.source });
     await waitFor(() => expect(screen.getByText(S1_TLDR)).toBeVisible());
-    anchors.focusAnchor.mockClear();
+    anchors.revealAnchor.mockClear();
 
     await userEvent.click(screen.getByText(S1_TLDR));
     await waitFor(() =>
-      expect(anchors.focusAnchor).toHaveBeenCalledWith("s1", "proposal", {}),
+      expect(anchors.revealAnchor).toHaveBeenCalledWith("s1", "proposal"),
     );
 
-    anchors.focusAnchor.mockClear();
+    // Re-activating an already-selected card remains a navigation command.
+    anchors.revealAnchor.mockClear();
+    await userEvent.click(screen.getByText(S1_TLDR));
+    expect(anchors.revealAnchor).toHaveBeenCalledWith("s1", "proposal");
+
+    anchors.revealAnchor.mockClear();
     await userEvent.click(
       screen.getByRole("button", {
         name: "Go to paragraph 2 in the document",
       }),
     );
-    expect(anchors.focusAnchor).toHaveBeenCalledWith("s1", "proposal", {
-      scroll: true,
+    expect(anchors.revealAnchor).toHaveBeenCalledWith("s1", "proposal", {
       flash: true,
     });
   });
@@ -647,7 +669,7 @@ describe("ReviewPanel", () => {
     const anchors = createReviewAnchors();
     const { store } = renderPanel({ reviewAnchors: anchors.source });
     await waitFor(() => expect(screen.getByText(S1_TLDR)).toBeVisible());
-    anchors.focusAnchor.mockClear();
+    anchors.revealAnchor.mockClear();
 
     await userEvent.click(
       screen.getByRole("button", {
@@ -664,8 +686,57 @@ describe("ReviewPanel", () => {
       }),
     ).toBeVisible();
     expect(screen.getByRole("button", { name: "Accept" })).toBeVisible();
-    expect(anchors.focusAnchor).toHaveBeenCalledWith("s2", "proposal", {
-      scroll: true,
+    expect(anchors.revealAnchor).toHaveBeenCalledWith("s2", "proposal", {
+      flash: true,
+    });
+  });
+
+  it("opens a correction outside the current filter and Queue position before revealing it", async () => {
+    const data = demoReviewData();
+    const result: EvaluationResult = {
+      resultId: "result-s2",
+      runId: "run-1",
+      kind: "nonconforming",
+      criterionLabel: "Paragraph flow",
+      criterionStatement: "Keep paragraphs readable.",
+      checkLabel: "Paragraph flow check",
+      methodLabel: "Deterministic scan",
+      explanation: "A correction is ready.",
+      quoteAnchor: {
+        exact: "every collector output",
+        prefix: "Keys on a digest of ",
+        suffix: ".",
+      },
+      coverageLabel: "Whole document",
+      limitations: [],
+      currentVersion: true,
+      disposition: "surface_proposal",
+      canonicalSha256: "a".repeat(64),
+      proposalIds: ["s2"],
+      createdAt: "2026-08-04T12:00:00Z",
+    };
+    const provider = new InMemoryReviewProvider({
+      data: { ...data, evaluationResults: [result] },
+    });
+    const store = new RailStore({ mode: "queue", filter: "flags" });
+    const anchors = createReviewAnchors();
+    renderPanel({ provider, store, reviewAnchors: anchors.source });
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Review correction" }),
+      ).toBeVisible(),
+    );
+    anchors.revealAnchor.mockClear();
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Review correction" }),
+    );
+
+    await waitFor(() => expect(store.getState().mode).toBe("stream"));
+    expect(store.getState().filter).toBe("all");
+    expect(store.getState().selectedId).toBe("s2");
+    expect(store.getState().selectedKind).toBe("proposal");
+    expect(anchors.revealAnchor).toHaveBeenCalledWith("s2", "proposal", {
       flash: true,
     });
   });
@@ -678,14 +749,14 @@ describe("ReviewPanel", () => {
     await userEvent.click(screen.getByRole("button", { name: "Queue" }));
     expect(screen.getByText("Item 1")).toBeVisible();
     await waitFor(() =>
-      expect(anchors.focusAnchor).toHaveBeenCalledWith("s1", "proposal", {}),
+      expect(anchors.focusAnchor).toHaveBeenCalledWith("s1", "proposal"),
     );
-    anchors.focusAnchor.mockClear();
+    anchors.revealAnchor.mockClear();
 
     await userEvent.keyboard("k");
     expect(screen.getByText("Item 2")).toBeVisible();
     await waitFor(() =>
-      expect(anchors.focusAnchor).toHaveBeenCalledWith("s2", "proposal", {}),
+      expect(anchors.revealAnchor).toHaveBeenCalledWith("s2", "proposal"),
     );
     expect(store.getState().selectedId).toBe("s2");
     expect(store.getState().selectedKind).toBe("proposal");

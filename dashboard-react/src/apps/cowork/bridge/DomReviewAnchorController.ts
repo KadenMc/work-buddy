@@ -1,7 +1,9 @@
 /**
  * Editor-backed Review-anchor controller. The editor owns ledger-decoration
  * focus; Review uses this controller to select, reveal, and flash the matching
- * passage without coupling card layout to editor layout.
+ * passage without coupling card layout to editor layout. Focus identity is
+ * refreshable state; reveal is deliberately one-shot so an R2/decorations
+ * refresh cannot snap the editor back to a formerly activated passage.
  *
  * Every current anchor renders `data-wb-anchor-kind` plus
  * `data-wb-anchor-id`; old suggestion marks retain their JSON `data-id` for
@@ -16,7 +18,7 @@ import {
   setCoworkLedgerAnchorFlash,
 } from "../editor/ledgerDecorations";
 import type {
-  AnchorFocusOptions,
+  AnchorRevealOptions,
   ReviewAnchorController,
   ReviewAnchorKind,
 } from "../rail/provider";
@@ -66,10 +68,9 @@ export class DomReviewAnchorController implements ReviewAnchorController {
     | {
         readonly id: string;
         readonly kind: ReviewAnchorKind;
-        readonly options: AnchorFocusOptions;
       }
     | null = null;
-  #pendingFocus = false;
+  #flashing = false;
   #attachedEditor: Editor | null = null;
 
   constructor(options: DomReviewAnchorControllerOptions) {
@@ -147,31 +148,24 @@ export class DomReviewAnchorController implements ReviewAnchorController {
 
   detachEditor(): void {
     this.#attachedEditor = null;
-    // The Review selection outlives an editor remount. The next attachment
-    // must project that still-current focus into the fresh plugin state.
-    this.#pendingFocus = this.#focused !== null;
   }
 
   /** Replay focus after a decoration projection or editor attachment. */
   refresh(): void {
-    const pending = this.#focused;
-    if (this.#pendingFocus && pending !== null) {
-      this.focusAnchor(pending.id, pending.kind, pending.options);
-    }
+    const focused = this.#focused;
+    if (focused === null) return;
+    this.#projectFocus(focused.id, focused.kind, this.#flashing);
   }
 
-  focusAnchor(
+  #projectFocus(
     id: string,
     kind: ReviewAnchorKind,
-    options: AnchorFocusOptions = {},
-  ): void {
-    this.#cancelFlashTimer();
-    this.#focused = { id, kind, options };
+    flash: boolean,
+  ): HTMLElement[] {
     const editor = this.#options.getEditor?.() ?? null;
     const projected =
       editor !== null &&
-      focusCoworkLedgerAnchor(editor, { id, kind }, options.flash === true);
-    this.#pendingFocus = !projected;
+      focusCoworkLedgerAnchor(editor, { id, kind }, flash);
     const pluginManaged = this.#options.getEditor !== undefined;
 
     /*
@@ -188,34 +182,33 @@ export class DomReviewAnchorController implements ReviewAnchorController {
     if (!projected && !pluginManaged) {
       for (const element of elements) {
         element.classList.add(ACTIVE_CLASS);
-        if (options.flash === true) element.classList.add(FLASH_CLASS);
+        if (flash) element.classList.add(FLASH_CLASS);
       }
     }
+    return elements;
+  }
 
+  #scrollToFirst(elements: readonly HTMLElement[]): boolean {
     const [first] = elements;
-    if (
-      options.scroll === true &&
-      first !== undefined &&
-      typeof first.scrollIntoView === "function"
-    ) {
-      const reducedMotion =
-        typeof this.#window?.matchMedia === "function" &&
-        this.#window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      first.scrollIntoView({
-        block: "center",
-        behavior: reducedMotion ? "auto" : "smooth",
-      });
+    if (first === undefined || typeof first.scrollIntoView !== "function") {
+      return false;
     }
+    const reducedMotion =
+      typeof this.#window?.matchMedia === "function" &&
+      this.#window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    first.scrollIntoView({
+      block: "center",
+      behavior: reducedMotion ? "auto" : "smooth",
+    });
+    return true;
+  }
 
-    if (options.flash === true && this.#window !== undefined) {
+  #startFlashTimer(id: string, kind: ReviewAnchorKind): void {
+    if (this.#window !== undefined) {
+      const pluginManaged = this.#options.getEditor !== undefined;
       this.#flashTimer = this.#window.setTimeout(() => {
         this.#flashTimer = undefined;
-        if (this.#focused?.id === id && this.#focused.kind === kind) {
-          this.#focused = {
-            ...this.#focused,
-            options: { ...this.#focused.options, flash: false },
-          };
-        }
+        this.#flashing = false;
         const currentEditor = this.#options.getEditor?.() ?? null;
         const cleared =
           currentEditor !== null &&
@@ -229,10 +222,31 @@ export class DomReviewAnchorController implements ReviewAnchorController {
     }
   }
 
+  focusAnchor(id: string, kind: ReviewAnchorKind): void {
+    this.#cancelFlashTimer();
+    this.#focused = { id, kind };
+    this.#flashing = false;
+    this.#projectFocus(id, kind, false);
+  }
+
+  revealAnchor(
+    id: string,
+    kind: ReviewAnchorKind,
+    options: AnchorRevealOptions = {},
+  ): void {
+    this.#cancelFlashTimer();
+    const flash = options.flash === true;
+    this.#focused = { id, kind };
+    this.#flashing = flash;
+    const elements = this.#projectFocus(id, kind, flash);
+    this.#scrollToFirst(elements);
+    if (flash) this.#startFlashTimer(id, kind);
+  }
+
   clearFocusedAnchor(): void {
     this.#cancelFlashTimer();
     this.#focused = null;
-    this.#pendingFocus = false;
+    this.#flashing = false;
     const editor = this.#options.getEditor?.() ?? null;
     const cleared =
       editor !== null && clearCoworkLedgerAnchorFocus(editor);

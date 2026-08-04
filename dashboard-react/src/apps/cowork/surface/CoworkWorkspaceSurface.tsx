@@ -73,6 +73,7 @@ import {
   createDemoChatProvider,
   isDirty,
   type CoworkRailChat,
+  type ReviewAnchorController,
   type VerificationRecheckIntent,
 } from "../rail";
 import {
@@ -837,6 +838,30 @@ export function CoworkLiveWorkspace({
         }
       : {}),
   });
+  /*
+   * Review owns neither editor DOM nor narrow-pane visibility. This surface
+   * adapts its one-shot reveal command across that boundary: wide workspaces
+   * delegate immediately, while narrow workspaces expose the Editor first and
+   * reveal on the next frame. Passive focus never changes panes or scrolls.
+   */
+  const reviewAnchors = useMemo<ReviewAnchorController>(
+    () => ({
+      focusAnchor: (id, kind) => bridge.reviewAnchors.focusAnchor(id, kind),
+      revealAnchor: (id, kind, options) => {
+        if (!narrowWorkspace) {
+          bridge.reviewAnchors.revealAnchor(id, kind, options);
+          return;
+        }
+        selectPane("editor");
+        window.requestAnimationFrame(() => {
+          editorPaneTabRef.current?.focus();
+          bridge.reviewAnchors.revealAnchor(id, kind, options);
+        });
+      },
+      clearFocusedAnchor: () => bridge.reviewAnchors.clearFocusedAnchor(),
+    }),
+    [bridge.reviewAnchors, narrowWorkspace, selectPane],
+  );
   const resolvedRunVerify = useMemo<CoworkRunVerifyHandler | undefined>(() => {
     if (onRunVerify !== undefined) return onRunVerify;
     return async (capture, intent) => {
@@ -1001,7 +1026,7 @@ export function CoworkLiveWorkspace({
             onReviewScrollWillDetach={detachReviewScroll}
             reviewProvider={bridge.reviewProvider}
             chat={chat}
-            reviewAnchors={bridge.reviewAnchors}
+            reviewAnchors={reviewAnchors}
             store={railStore}
             queueBindings={navBinding}
             chatAnnotations={annotations}

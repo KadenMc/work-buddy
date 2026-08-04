@@ -158,10 +158,11 @@ export function ReviewPanel(props: ReviewPanelProps) {
   const [applyNotice, setApplyNotice] = useState<ReviewApplyNotice | null>(null);
   const [attentionError, setAttentionError] = useState<string | null>(null);
   const [busyAttentionId, setBusyAttentionId] = useState<string | null>(null);
-  const pendingRevealRef = useRef<{
+  const pendingActivationRef = useRef<{
     readonly source: ReviewAnchorController;
     readonly id: string;
     readonly kind: RailSelectionKind;
+    readonly flash: boolean;
   } | null>(null);
 
   const filter = useRailState(store, (state) => state.filter);
@@ -224,29 +225,36 @@ export function ReviewPanel(props: ReviewPanelProps) {
   const targetKind = targetItem?.kind ?? null;
 
   /*
-   * Selection is a kind-qualified rail concern, but the editor owns its visual
-   * treatment. Keep the focused decoration in sync without ever hiding the
-   * underlying annotations when the card lens changes.
+   * Selection is stateful rail context; activation is a one-shot navigation
+   * command. Passive selection reconciliation (initial render, filtering, mode
+   * changes, or data refresh) only mirrors the focused decoration. A present
+   * user activation leaves a marker that this effect consumes exactly once to
+   * reveal the passage. Keeping those paths distinct prevents reloads and
+   * projection refreshes from replaying an old editor jump.
    */
   useEffect(() => {
     const source = props.reviewAnchors;
     if (source === undefined) return;
     if (targetId === null || targetKind === null) {
-      pendingRevealRef.current = null;
+      pendingActivationRef.current = null;
       source.clearFocusedAnchor();
       return;
     }
-    const pending = pendingRevealRef.current;
-    const flash =
+    const pending = pendingActivationRef.current;
+    const activate =
       pending?.source === source &&
       pending.id === targetId &&
       pending.kind === targetKind;
-    pendingRevealRef.current = null;
-    source.focusAnchor(
-      targetId,
-      targetKind,
-      flash ? { scroll: true, flash: true } : {},
-    );
+    pendingActivationRef.current = null;
+    if (activate) {
+      if (pending.flash) {
+        source.revealAnchor(targetId, targetKind, { flash: true });
+      } else {
+        source.revealAnchor(targetId, targetKind);
+      }
+    } else {
+      source.focusAnchor(targetId, targetKind);
+    }
   }, [props.reviewAnchors, targetId, targetKind]);
 
   useEffect(
@@ -283,6 +291,61 @@ export function ReviewPanel(props: ReviewPanelProps) {
     targetItem,
   ]);
 
+  /**
+   * One present-user Review activation selects the kind-qualified item and
+   * reveals its editor anchor. When selection must change first, the effect
+   * above performs the reveal after React has reconciled the matching target;
+   * an already-selected card can issue the command immediately.
+   */
+  const activateReviewTarget = useCallback(
+    (
+      id: string,
+      kind: RailSelectionKind,
+      options: { readonly flash?: boolean } = {},
+    ) => {
+      const source = props.reviewAnchors;
+      const current = store.getState();
+      if (source === undefined) {
+        store.select(id, kind);
+        return;
+      }
+      if (current.selectedId === id && current.selectedKind === kind) {
+        if (options.flash === true) {
+          source.revealAnchor(id, kind, { flash: true });
+        } else {
+          source.revealAnchor(id, kind);
+        }
+        return;
+      }
+      pendingActivationRef.current = {
+        source,
+        id,
+        kind,
+        flash: options.flash === true,
+      };
+      store.select(id, kind);
+    },
+    [props.reviewAnchors, store],
+  );
+
+  /**
+   * Attention and recovery links can point outside the active lens or Queue
+   * position. Open the canonical Stream/All view first so the requested item
+   * becomes both the selected card and the effect's navigation target.
+   */
+  const openReviewTarget = useCallback(
+    (
+      id: string,
+      kind: RailSelectionKind,
+      options: { readonly flash?: boolean } = {},
+    ) => {
+      store.setMode("stream");
+      store.setFilter("all");
+      activateReviewTarget(id, kind, options);
+    },
+    [activateReviewTarget, store],
+  );
+
   const advanceToNextUndecided = useCallback(
     (fromIndex: number) => {
       for (let offset = 1; offset <= visible.length; offset += 1) {
@@ -295,12 +358,12 @@ export function ReviewPanel(props: ReviewPanelProps) {
             : decisions[item.id] !== undefined;
         if (!decided) {
           store.setQueueIndex(next);
-          store.select(item.id, item.kind);
+          activateReviewTarget(item.id, item.kind);
           return;
         }
       }
     },
-    [visible, decisions, claimDecisions, store],
+    [visible, decisions, claimDecisions, store, activateReviewTarget],
   );
 
   const stageProposal = useCallback(
@@ -331,36 +394,16 @@ export function ReviewPanel(props: ReviewPanelProps) {
       );
       store.setQueueIndex(next);
       const item = visible[next];
-      if (item !== undefined) store.select(item.id, item.kind);
+      if (item !== undefined) activateReviewTarget(item.id, item.kind);
     },
-    [clampedIndex, visible, store],
+    [clampedIndex, visible, store, activateReviewTarget],
   );
 
-  const revealAnchor = useMemo(() => {
-    const source = props.reviewAnchors;
-    if (source === undefined) return undefined;
-    return (id: string, kind: RailSelectionKind) =>
-      source.focusAnchor(id, kind, { scroll: true, flash: true });
-  }, [props.reviewAnchors]);
-
-  const selectAndRevealAnchor = useMemo(() => {
-    const source = props.reviewAnchors;
-    if (source === undefined) return undefined;
-    return (id: string, kind: RailSelectionKind) => {
-      const current = store.getState();
-      if (current.selectedId === id && current.selectedKind === kind) {
-        source.focusAnchor(id, kind, { scroll: true, flash: true });
-        return;
-      }
-      /*
-       * Select first so the card, MarkBar, and editor target agree. The
-       * selection effect consumes this marker and performs one flashing focus,
-       * instead of immediately replacing the flash with its normal focus.
-       */
-      pendingRevealRef.current = { source, id, kind };
-      store.select(id, kind);
-    };
-  }, [props.reviewAnchors, store]);
+  const flashReviewTarget = useCallback(
+    (id: string, kind: RailSelectionKind) =>
+      activateReviewTarget(id, kind, { flash: true }),
+    [activateReviewTarget],
+  );
 
   const submit = useCallback(async (requestedAttempt?: ReviewApplyAttempt) => {
     if (data === null || submitting) return;
@@ -466,8 +509,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
   const revealResult = useCallback(
     (result: EvaluationResult) => {
       if (result.quoteAnchor === null || props.reviewAnchors === undefined) return;
-      props.reviewAnchors.focusAnchor(result.resultId, "evaluation_result", {
-        scroll: true,
+      props.reviewAnchors.revealAnchor(result.resultId, "evaluation_result", {
         flash: true,
       });
     },
@@ -476,13 +518,9 @@ export function ReviewPanel(props: ReviewPanelProps) {
 
   const openCorrection = useCallback(
     (proposalId: string) => {
-      store.select(proposalId, "proposal");
-      props.reviewAnchors?.focusAnchor(proposalId, "proposal", {
-        scroll: true,
-        flash: true,
-      });
+      openReviewTarget(proposalId, "proposal", { flash: true });
     },
-    [props.reviewAnchors, store],
+    [openReviewTarget],
   );
 
   const actOnCothink = useCallback(
@@ -577,11 +615,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
     data.proposals.find((proposal) => proposal.proposalId === proposalId)?.tldr ??
     "Suggestion no longer shown";
   const reviewBlocker = (proposalId: string) => {
-    store.select(proposalId, "proposal");
-    props.reviewAnchors?.focusAnchor(proposalId, "proposal", {
-      scroll: true,
-      flash: true,
-    });
+    openReviewTarget(proposalId, "proposal", { flash: true });
   };
   const removeBlockedDecision = (proposalId: string) => {
     store.clearDecision(proposalId);
@@ -848,8 +882,8 @@ export function ReviewPanel(props: ReviewPanelProps) {
             decisions={decisions}
             claimDecisions={claimDecisions}
             inspectSpanByClaim={spanByClaim}
-            onSelect={(id, kind) => store.select(id, kind)}
-            onScrollToAnchor={selectAndRevealAnchor}
+            onActivate={activateReviewTarget}
+            onScrollToAnchor={flashReviewTarget}
             onInspect={(spanId) => store.openInspector(spanId)}
           />
         ) : (
@@ -862,8 +896,8 @@ export function ReviewPanel(props: ReviewPanelProps) {
             bindings={props.queueBindings}
             keyboardNavigationEnabled={props.active ?? true}
             onNavigate={navigate}
-            onSelect={(id, kind) => store.select(id, kind)}
-            onScrollToAnchor={revealAnchor}
+            onActivate={activateReviewTarget}
+            onScrollToAnchor={flashReviewTarget}
             onInspect={(spanId) => store.openInspector(spanId)}
           />
         )}

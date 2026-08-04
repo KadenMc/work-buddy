@@ -17,7 +17,7 @@ function baseProps() {
     claimDecisions: {},
     inspectSpanByClaim: new Map<string, string>(),
     onNavigate: vi.fn(),
-    onSelect: vi.fn(),
+    onActivate: vi.fn(),
     onInspect: vi.fn(),
   };
 }

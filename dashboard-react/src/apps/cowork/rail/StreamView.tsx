@@ -1,7 +1,9 @@
 /**
  * The Review stream is a conventional document-order list. Cards stay in normal
- * flow so the browser owns scrolling and reading order. Selecting a card keeps
- * the editor highlight in sync; its passage button provides explicit navigation.
+ * flow so the browser owns scrolling and reading order. The selected props are
+ * passive render state; activating a card is an explicit select-and-reveal
+ * command. Its passage button uses the same command with stronger visual
+ * emphasis.
  */
 
 import { ClaimCard } from "./ClaimCard";
@@ -22,7 +24,7 @@ export interface StreamViewProps {
   readonly claimDecisions: Readonly<Record<string, StagedClaimDecision>>;
   /** Claim id to inspector span id, for the claim inspect affordance. */
   readonly inspectSpanByClaim: ReadonlyMap<string, string>;
-  onSelect(id: string, kind: RailSelectionKind): void;
+  onActivate(id: string, kind: RailSelectionKind): void;
   onScrollToAnchor?(id: string, kind: RailSelectionKind): void;
   onInspect(spanId: string): void;
 }
@@ -44,7 +46,7 @@ export function StreamView(props: StreamViewProps) {
             props.selectedKind,
           )}
           staged={props.claimDecisions[item.id]}
-          onSelect={() => props.onSelect(item.id, "claim")}
+          onSelect={() => props.onActivate(item.id, "claim")}
           inspectSpanId={props.inspectSpanByClaim.get(item.id)}
           onInspect={props.onInspect}
           onScrollToAnchor={scrollTo}
@@ -61,7 +63,7 @@ export function StreamView(props: StreamViewProps) {
           props.selectedKind,
         )}
         staged={props.decisions[item.id]}
-        onSelect={() => props.onSelect(item.id, "proposal")}
+        onSelect={() => props.onActivate(item.id, "proposal")}
         onScrollToAnchor={scrollTo}
       />
     );

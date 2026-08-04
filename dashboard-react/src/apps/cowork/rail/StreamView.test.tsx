@@ -18,7 +18,7 @@ function baseProps() {
     decisions: {},
     claimDecisions: {},
     inspectSpanByClaim: emptySpanMap,
-    onSelect: vi.fn(),
+    onActivate: vi.fn(),
     onInspect: vi.fn(),
   };
 }
@@ -46,7 +46,7 @@ describe("StreamView", () => {
     await userEvent.click(
       screen.getByText("Add the vault content hash to the cache key."),
     );
-    expect(props.onSelect).toHaveBeenCalledWith("s1", "proposal");
+    expect(props.onActivate).toHaveBeenCalledWith("s1", "proposal");
   });
 
   it("navigates explicitly to a card's document passage", async () => {

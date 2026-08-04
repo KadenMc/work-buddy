@@ -80,18 +80,18 @@ export interface ReviewRailProvider {
   createVerifyCheck?(check: VerifyCheckInput): Promise<void>;
 }
 
-/** How an explicit Review affordance should move attention in the editor. */
-export interface AnchorFocusOptions {
-  /** Bring the anchor into view. */
-  readonly scroll?: boolean;
+/** How a one-shot Review activation should reveal its target in the editor. */
+export interface AnchorRevealOptions {
   /** Briefly flash the anchor in addition to its persistent focused treatment. */
   readonly flash?: boolean;
 }
 
 /**
  * The editor-owned Review-anchor seam. Review cards remain in normal document
- * order; this controller owns only focused passage treatment and explicit
- * passage navigation.
+ * order; this controller owns focused passage treatment and explicit passage
+ * navigation. Those are deliberately separate operations: persistent focus is
+ * safe to replay after projection refreshes, while a reveal is a one-shot user
+ * command and must never become refreshable state.
  */
 export interface ReviewAnchorController {
   /**
@@ -103,7 +103,17 @@ export interface ReviewAnchorController {
   focusAnchor(
     id: string,
     kind: ReviewAnchorKind,
-    options?: AnchorFocusOptions,
+  ): void;
+  /**
+   * Focus and bring one target into view because the user activated a Review
+   * card, moved through Queue, or used an explicit passage affordance. A
+   * projection refresh may restore the focus treatment but must not replay this
+   * navigation.
+   */
+  revealAnchor(
+    id: string,
+    kind: ReviewAnchorKind,
+    options?: AnchorRevealOptions,
   ): void;
   /** Clear only the focused treatment, never the underlying annotations. */
   clearFocusedAnchor(): void;

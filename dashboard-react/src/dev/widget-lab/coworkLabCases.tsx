@@ -189,7 +189,7 @@ export function CoworkLabSection() {
             decisions={{}}
             claimDecisions={{}}
             inspectSpanByClaim={new Map()}
-            onSelect={noop}
+            onActivate={noop}
             onInspect={noop}
           />
         </LabPanel>
