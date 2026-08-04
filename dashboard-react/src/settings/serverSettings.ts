@@ -198,6 +198,19 @@ function normalizeControl(value: unknown): StandardSettingControl {
       }),
     };
   }
+  if (kind === "keybinding-map") {
+    return {
+      kind,
+      commands: array(value.commands).map((command) => {
+        if (!isRecord(command)) throw new Error("Invalid keybinding command");
+        return {
+          commandId: requiredString(command, "command_id", "commandId"),
+          label: requiredString(command, "label"),
+          description: optionalString(command, "description"),
+        };
+      }),
+    };
+  }
   throw new Error(`Unsupported settings control: ${kind}`);
 }
 

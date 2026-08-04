@@ -17,7 +17,15 @@ import type {
   SettingDefinition,
   SettingId,
   SettingsPageContribution,
+  StandardSettingControl,
 } from "./contracts";
+import { KeybindingMapEditor } from "./KeybindingMapEditor";
+import {
+  coerceKeybindingMap,
+  keybindingMapsEqual,
+  validateKeybindingMap,
+  type KeybindingMap,
+} from "./keybindings";
 import { JOURNAL_DAY_BOUNDARY_SETTING_ID } from "./nativeContributions";
 import type { SettingsRegistry } from "./registry";
 import {
@@ -624,6 +632,131 @@ function SelectSetting({
   );
 }
 
+function KeybindingMapSetting({
+  projected,
+  values,
+}: {
+  readonly projected: ProjectedSetting;
+  readonly values: SettingsValuesState;
+}) {
+  const { definition } = projected;
+  const control = definition.control as Extract<
+    StandardSettingControl,
+    { readonly kind: "keybinding-map" }
+  >;
+  const commands = control.commands;
+  const value = values.snapshot?.values.get(definition.settingId);
+  const defaultValue = useMemo(
+    () => coerceKeybindingMap(definition.defaultValue, {}, commands),
+    [commands, definition.defaultValue],
+  );
+  const storedValue = value?.configuredValue ?? value?.effectiveValue;
+  const initialValue = useMemo(
+    () => coerceKeybindingMap(storedValue, defaultValue, commands),
+    [commands, defaultValue, storedValue],
+  );
+  const revision = value?.revision ?? "unavailable";
+  const [draft, setDraft] = useState<KeybindingMap>(initialValue);
+  const [baseline, setBaseline] = useState({ revision, value: initialValue });
+  const [externalChange, setExternalChange] = useState(false);
+
+  useEffect(() => {
+    if (revision === baseline.revision) return;
+    const mayAdopt =
+      keybindingMapsEqual(draft, baseline.value, commands) ||
+      keybindingMapsEqual(draft, initialValue, commands);
+    if (mayAdopt) setDraft(initialValue);
+    setExternalChange(!mayAdopt);
+    setBaseline({ revision, value: initialValue });
+  }, [baseline, commands, draft, initialValue, revision]);
+
+  const issues = validateKeybindingMap(draft, commands);
+  const generalIssues = issues.filter((issue) => issue.commandId === undefined);
+  const serverUnavailable =
+    values.status === "unavailable" || values.status === "error";
+  const disabled =
+    serverUnavailable ||
+    values.status === "loading" ||
+    values.snapshot?.readOnly === true ||
+    values.mutationSettingId === definition.settingId;
+  const changed = !keybindingMapsEqual(draft, initialValue, commands);
+
+  return (
+    <SettingCard projected={projected} value={value}>
+      {values.status === "loading" ? (
+        <InlineAlert tone="info">Loading the authoritative setting…</InlineAlert>
+      ) : null}
+      {serverUnavailable ? (
+        <InlineAlert tone="warning">
+          The Settings service is unavailable. These shortcuts remain visible,
+          but editing is disabled until its authority reconnects.
+        </InlineAlert>
+      ) : null}
+      {values.snapshot?.readOnly ? (
+        <InlineAlert tone="warning">
+          Work Buddy is read-only. You can inspect these shortcuts but cannot change
+          them.
+        </InlineAlert>
+      ) : null}
+      {externalChange ? (
+        <InlineAlert tone="warning" role="status" aria-live="polite">
+          <span>
+            The authoritative shortcuts changed while you were editing. Your draft
+            was preserved.
+          </span>
+          <Button
+            variant="secondary"
+            size="small"
+            onClick={() => {
+              setDraft(initialValue);
+              setExternalChange(false);
+            }}
+          >
+            Use latest value
+          </Button>
+        </InlineAlert>
+      ) : null}
+      {generalIssues.map((issue) => (
+        <InlineAlert key={issue.message} tone="danger" role="alert">
+          {issue.message}
+        </InlineAlert>
+      ))}
+
+      <KeybindingMapEditor
+        commands={commands}
+        value={draft}
+        issues={issues}
+        disabled={disabled}
+        onChange={(next) => {
+          setDraft(next);
+          if (keybindingMapsEqual(next, initialValue, commands)) {
+            setExternalChange(false);
+          }
+        }}
+      />
+
+      <div className="wb-settings-control-actions">
+        <Button
+          variant="primary"
+          size="small"
+          disabled={disabled || !changed || issues.length > 0}
+          onClick={() => void values.write(definition.settingId, draft)}
+        >
+          Save shortcuts
+        </Button>
+        <Button
+          variant="secondary"
+          size="small"
+          disabled={disabled || !value?.isModified}
+          onClick={() => void values.reset(definition.settingId)}
+        >
+          Reset to {definition.ownerLabel} default
+        </Button>
+      </div>
+    </SettingCard>
+  );
+}
+
 function UnsupportedSetting({ projected }: { readonly projected: ProjectedSetting }) {
   return (
     <SettingCard projected={projected}>
@@ -653,6 +786,9 @@ function SettingControl({
   }
   if (projected.definition.control.kind === "select") {
     return <SelectSetting projected={projected} values={values} />;
+  }
+  if (projected.definition.control.kind === "keybinding-map") {
+    return <KeybindingMapSetting projected={projected} values={values} />;
   }
   return <UnsupportedSetting projected={projected} />;
 }

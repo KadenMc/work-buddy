@@ -26,9 +26,9 @@ import {
   saveChatDraft,
   saveRailTab,
 } from "../guards";
+import type { CoworkShortcutBindings } from "../keyboard";
 import { ReviewPanel } from "./ReviewPanel";
 import type { VerificationRecheckIntent } from "./contracts";
-import type { QueueBindings } from "./QueueView";
 import type { ReviewAnchorController, ReviewRailProvider } from "./provider";
 import { RailStore, type RailTab } from "./store";
 import { useRailState } from "./useRailState";
@@ -62,7 +62,7 @@ export interface CoworkRailProps {
   /** Saves and detaches Review before a view change can clamp its geometry. */
   readonly onReviewScrollWillDetach?: () => void;
   readonly reviewAnchors?: ReviewAnchorController;
-  readonly queueBindings?: QueueBindings;
+  readonly shortcutBindings?: CoworkShortcutBindings;
   readonly initialTab?: RailTab;
   /** Whether the containing workspace currently exposes the Review pane. */
   readonly reviewVisible?: boolean;
@@ -258,7 +258,7 @@ export function CoworkRail(props: CoworkRailProps) {
           scrollContainerRef={reviewActive ? props.reviewScrollRef : undefined}
           onScrollContainerWillDetach={props.onReviewScrollWillDetach}
           reviewAnchors={props.reviewAnchors}
-          queueBindings={props.queueBindings}
+          shortcutBindings={props.shortcutBindings}
           active={reviewActive}
           onDiscussCothink={continueCothinkInChat}
           onRecheckIntent={props.onRecheckIntent}

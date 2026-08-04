@@ -220,9 +220,11 @@ removes it from the active catalog while preserving any source artifact,
 writeback file, managed projections, and durable history.
 After a route resolves, the dashboard uses the first eight characters of
 `store_id` only when that prefix uniquely identifies one entry in the
-authoritative Folder catalog. Exact full IDs remain valid, and a collision
-keeps the full ID. The prefix is presentation-only: provider state and every
-API request use the full permanent store identity.
+authoritative Folder catalog, and the first eight characters of `document_id`
+only when that prefix uniquely identifies one document inside the resolved
+folder. Exact full IDs remain valid, and a collision keeps the corresponding
+full ID. Both prefixes are presentation-only: provider state, durability keys,
+and every API request use the full permanent identities.
 For a detached import, removal first retries and flushes pending edits, validates
 the canonical head, and compacts the Yjs tail into a durable internal snapshot.
 It may therefore retain a newer structured head than its latest managed
@@ -433,13 +435,27 @@ a strikethrough. Flags, expressions or claims, and confirmed agent provenance
 have distinct visual and non-colour treatments, and a flag remains a warning
 underline rather than looking like removed text. The Review **Stream** is a
 conventional normal-flow list in document order, with filters acting as lenses
-over that list and **Queue** providing sequential focus. Activating a Review
-card or moving through Queue selects its kind-qualified target and reveals that
-passage in the editor without moving Review itself. The explicit passage
-affordance performs the same reveal and briefly flashes the anchor. Merely
-reconciling an already-selected item or remounting the editor projection
-restores its emphasis without scrolling; current selection is rail state, while
-navigation intent is a one-shot command.
+over that list and **Queue** providing sequential focus. An unselected Stream
+card keeps only its scan-level identity and title visible; selection discloses
+its quote, rationale, evidence, and item-specific controls. The whole
+non-control card surface is an efficient pointer target, while the title remains
+the semantic keyboard button and embedded passage or inspector controls keep
+their own actions. Activating a Review card or moving through Queue selects its
+kind-qualified target and reveals that passage in the editor without moving
+Review itself. The explicit passage affordance performs the same reveal and
+briefly flashes the anchor. Merely reconciling an already-selected item or
+remounting the editor projection restores its emphasis without scrolling;
+current selection is rail state, while navigation intent is a one-shot command.
+
+Queue keyboard commands come from the registry-backed Co-work settings page.
+The same atomic shortcut map owns previous, next, positive decision, amend,
+negative decision, and defer bindings, so the settings UI can reject conflicts
+before saving and the rendered key hints cannot drift from runtime behavior.
+Shortcuts operate only while Review's Queue is visibly active, never steal text
+entry or composition, and dispatch through the same applicability and staging
+paths as their corresponding buttons. The Co-work view links directly to its
+own App settings page; the reusable keybinding-map control is host Settings UI,
+not a Review-only configuration surface.
 
 The review rail groups proposals into a sitting so the user can decide them in
 context. Accepting or amending a proposal applies only the admitted,

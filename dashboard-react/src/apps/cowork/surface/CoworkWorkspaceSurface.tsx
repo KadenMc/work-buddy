@@ -65,7 +65,7 @@ import {
   saveRailTab,
   useUnsavedWorkGuard,
 } from "../guards";
-import { useCoworkNavBinding } from "../keyboard";
+import { useCoworkShortcutBindings } from "../keyboard";
 import {
   CoworkRail,
   InMemoryReviewProvider,
@@ -781,7 +781,7 @@ export function CoworkLiveWorkspace({
   useEffect(() => {
     setArmedVerifyRecheck(null);
   }, [documentId, storeId]);
-  const navBinding = useCoworkNavBinding();
+  const shortcutBindings = useCoworkShortcutBindings();
   const provenanceClient = useMemo(() => new CoworkHttpClient(), []);
   const defaultPasteProvenanceRecorder =
     useCallback<CoworkPasteProvenanceRecorder>(
@@ -1028,7 +1028,7 @@ export function CoworkLiveWorkspace({
             chat={chat}
             reviewAnchors={reviewAnchors}
             store={railStore}
-            queueBindings={navBinding}
+            shortcutBindings={shortcutBindings}
             chatAnnotations={annotations}
             chatExecution={presentedChatExecution}
             onScrollToChatAnchor={scrollToChatAnchor}

@@ -1,45 +1,62 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  DEFAULT_COWORK_NAV_BINDING,
-  NAV_BINDING_PRESETS,
-  isNavBindingPreset,
-  resolveNavBinding,
+  COWORK_SHORTCUT_COMMANDS,
+  DEFAULT_COWORK_SHORTCUT_BINDINGS,
+  resolveCoworkShortcutBindings,
 } from "./bindings";
 
-describe("Co-work nav binding presets", () => {
-  it("defaults to the inverted house pair (j previous, k next)", () => {
-    expect(DEFAULT_COWORK_NAV_BINDING).toEqual({ prev: "j", next: "k" });
-    expect(NAV_BINDING_PRESETS.inverted).toEqual({ prev: "j", next: "k" });
+describe("Co-work review shortcut bindings", () => {
+  it("ships one complete, collision-free default map", () => {
+    expect(DEFAULT_COWORK_SHORTCUT_BINDINGS).toEqual({
+      previous: "j",
+      next: "k",
+      accept: "a",
+      amend: "e",
+      reject: "x",
+      defer: ".",
+    });
+    expect(Object.keys(DEFAULT_COWORK_SHORTCUT_BINDINGS).sort()).toEqual(
+      COWORK_SHORTCUT_COMMANDS.map((command) => command.commandId).sort(),
+    );
+    expect(new Set(Object.values(DEFAULT_COWORK_SHORTCUT_BINDINGS)).size).toBe(6);
   });
 
-  it("offers a conventional vim pair (j next, k previous)", () => {
-    expect(NAV_BINDING_PRESETS.vim).toEqual({ prev: "k", next: "j" });
-  });
-});
-
-describe("resolveNavBinding", () => {
-  it("maps the inverted preset id to the inverted pair", () => {
-    expect(resolveNavBinding("inverted")).toEqual({ prev: "j", next: "k" });
-  });
-
-  it("maps the vim preset id to the vim pair (override)", () => {
-    expect(resolveNavBinding("vim")).toEqual({ prev: "k", next: "j" });
+  it("accepts a complete configured map atomically", () => {
+    const configured = {
+      previous: "ArrowUp",
+      next: "ArrowDown",
+      accept: "Mod+Enter",
+      amend: "m",
+      reject: "r",
+      defer: "d",
+    };
+    expect(resolveCoworkShortcutBindings(configured)).toEqual(configured);
   });
 
-  it("degrades an unknown or missing value to the inverted default", () => {
-    expect(resolveNavBinding(undefined)).toEqual(DEFAULT_COWORK_NAV_BINDING);
-    expect(resolveNavBinding(null)).toEqual(DEFAULT_COWORK_NAV_BINDING);
-    expect(resolveNavBinding("emacs")).toEqual(DEFAULT_COWORK_NAV_BINDING);
-    expect(resolveNavBinding(42)).toEqual(DEFAULT_COWORK_NAV_BINDING);
+  it("remains defensive around v1 preset values during rolling upgrades", () => {
+    expect(resolveCoworkShortcutBindings("inverted")).toEqual(
+      DEFAULT_COWORK_SHORTCUT_BINDINGS,
+    );
+    expect(resolveCoworkShortcutBindings("vim")).toEqual({
+      ...DEFAULT_COWORK_SHORTCUT_BINDINGS,
+      previous: "k",
+      next: "j",
+    });
   });
-});
 
-describe("isNavBindingPreset", () => {
-  it("recognizes only the two known preset ids", () => {
-    expect(isNavBindingPreset("inverted")).toBe(true);
-    expect(isNavBindingPreset("vim")).toBe(true);
-    expect(isNavBindingPreset("other")).toBe(false);
-    expect(isNavBindingPreset(undefined)).toBe(false);
+  it("falls back as one map when a value is partial, colliding, or unknown", () => {
+    expect(resolveCoworkShortcutBindings({ next: "n" })).toEqual(
+      DEFAULT_COWORK_SHORTCUT_BINDINGS,
+    );
+    expect(
+      resolveCoworkShortcutBindings({
+        ...DEFAULT_COWORK_SHORTCUT_BINDINGS,
+        next: "j",
+      }),
+    ).toEqual(DEFAULT_COWORK_SHORTCUT_BINDINGS);
+    expect(resolveCoworkShortcutBindings("emacs")).toEqual(
+      DEFAULT_COWORK_SHORTCUT_BINDINGS,
+    );
   });
 });

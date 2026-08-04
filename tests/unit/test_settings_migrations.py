@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 
 import pytest
@@ -30,7 +31,7 @@ def test_fresh_settings_database_reaches_current_schema(tmp_path) -> None:
     conn = sqlite3.connect(db_path)
     try:
         SETTINGS_MIGRATIONS.run(conn)
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
         assert {
             "setting_value_state",
             "journal_day_policy_epoch",
@@ -112,12 +113,65 @@ def test_unversioned_early_database_upgrades_without_losing_values(tmp_path) -> 
             "SELECT * FROM setting_value_state WHERE setting_id = ?",
             ("wb.journal.day-boundary",),
         ).fetchone()
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
         assert row[7] == '"05:00"'
         assert row[8] == '"04:00"'
         assert row[9] == "profile"
         assert row[14] == 7
         assert "journal_day_policy_epoch" in _tables(conn)
+    finally:
+        conn.close()
+
+
+def test_v1_cowork_presets_migrate_to_complete_v2_maps(tmp_path) -> None:
+    db_path = tmp_path / "settings.db"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        SETTINGS_MIGRATIONS.run(conn)
+        conn.execute(
+            """
+            INSERT INTO setting_value_state (
+                setting_id, scope, scope_id, bootstrap_default_value_json,
+                bootstrap_source, value_version, active_value_json,
+                pending_value_json, pending_source, applied_from_value_json,
+                revision, updated_at
+            ) VALUES (?, 'profile', 'default', ?, 'registry', 1, ?, ?,
+                      'profile', ?, 7, 'now')
+            """,
+            (
+                "wb.cowork.review.nav-binding",
+                '"inverted"',
+                '"vim"',
+                '"inverted"',
+                '"vim"',
+            ),
+        )
+        conn.execute("PRAGMA user_version = 3")
+        conn.execute("DELETE FROM _migration_history WHERE version = 4")
+        conn.commit()
+
+        SETTINGS_MIGRATIONS.run(conn)
+
+        row = conn.execute(
+            "SELECT * FROM setting_value_state WHERE setting_id = ?",
+            ("wb.cowork.review.nav-binding",),
+        ).fetchone()
+        defaults = {
+            "previous": "j",
+            "next": "k",
+            "accept": "a",
+            "amend": "e",
+            "reject": "x",
+            "defer": ".",
+        }
+        vim = {**defaults, "previous": "k", "next": "j"}
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert row["value_version"] == 2
+        assert json.loads(row["bootstrap_default_value_json"]) == defaults
+        assert json.loads(row["active_value_json"]) == vim
+        assert json.loads(row["pending_value_json"]) == defaults
+        assert json.loads(row["applied_from_value_json"]) == vim
     finally:
         conn.close()
 

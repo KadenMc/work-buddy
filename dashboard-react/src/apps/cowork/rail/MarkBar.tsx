@@ -8,8 +8,18 @@
  * before staging (S3), so a durable decision is never minted from a mis-click.
  */
 
-import { useId, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 
+import {
+  DEFAULT_COWORK_SHORTCUT_BINDINGS,
+  type CoworkShortcutBindings,
+} from "../keyboard";
+import {
+  formatShortcutChord,
+  shortcutAriaValue,
+  shortcutMatchesEvent,
+  shouldIgnoreShortcutEvent,
+} from "../../../settings/keybindings";
 import type {
   ClaimVerbKind,
   ProposalVerbKind,
@@ -43,6 +53,10 @@ export interface MarkBarProps {
   readonly disabled?: boolean;
   /** Show the single-key hint on each verb (queue mode). */
   readonly showHotkeys?: boolean;
+  /** Effective user bindings shared by Queue navigation and decision verbs. */
+  readonly bindings?: CoworkShortcutBindings;
+  /** Whether this visible Queue surface may handle its window-level shortcuts. */
+  readonly keyboardShortcutsEnabled?: boolean;
 }
 
 /** The inline-input label for each verb that collects one before staging. */
@@ -75,7 +89,22 @@ export function MarkBar(props: MarkBarProps) {
   const { target } = props;
   const [inputVerb, setInputVerb] = useState<ProposalVerbKind | null>(null);
   const [inputValue, setInputValue] = useState("");
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const fieldId = useId();
+  const bindings = props.bindings ?? DEFAULT_COWORK_SHORTCUT_BINDINGS;
+  const targetIdentity =
+    target.kind === "proposal"
+      ? `proposal:${target.proposal.proposalId}:${target.proposal.canonicalSha256}`
+      : `claim:${target.claim.claimId}:${target.claim.canonicalSha256}`;
+
+  useEffect(() => {
+    setInputVerb(null);
+    setInputValue("");
+  }, [targetIdentity]);
+
+  useEffect(() => {
+    if (inputVerb !== null) inputRef.current?.focus();
+  }, [inputVerb]);
 
   const contextLabel =
     target.kind === "proposal"
@@ -91,19 +120,19 @@ export function MarkBar(props: MarkBarProps) {
       ? props.stagedProposal?.verb
       : props.stagedClaim?.verb;
 
-  const openInput = (verb: ProposalVerbKind, prefill: string) => {
+  const openInput = useCallback((verb: ProposalVerbKind, prefill: string) => {
     if (props.disabled) return;
     setInputVerb(verb);
     setInputValue(prefill);
-  };
+  }, [props.disabled]);
 
-  const cancelInput = () => {
+  const cancelInput = useCallback(() => {
     if (props.disabled) return;
     setInputVerb(null);
     setInputValue("");
-  };
+  }, [props.disabled]);
 
-  const commitProposalVerb = (proposal: ReviewProposal, verb: ProposalVerbKind) => {
+  const commitProposalVerb = useCallback((proposal: ReviewProposal, verb: ProposalVerbKind) => {
     if (props.disabled) return;
     const needsAmend = verb === "edit_confirm";
     const needsRedirect = verb === "redirect";
@@ -138,7 +167,13 @@ export function MarkBar(props: MarkBarProps) {
       verb,
       canonicalSha256: proposal.canonicalSha256,
     });
-  };
+  }, [
+    openInput,
+    props.disabled,
+    props.onClearProposal,
+    props.onStageProposal,
+    stagedVerb,
+  ]);
 
   const submitInput = (proposal: ReviewProposal) => {
     if (props.disabled) return;
@@ -158,7 +193,7 @@ export function MarkBar(props: MarkBarProps) {
     cancelInput();
   };
 
-  const commitClaimVerb = (claim: ReviewClaim, verb: ClaimVerbKind) => {
+  const commitClaimVerb = useCallback((claim: ReviewClaim, verb: ClaimVerbKind) => {
     if (props.disabled) return;
     if (stagedVerb === verb) {
       props.onClearClaim(claim.claimId);
@@ -169,13 +204,59 @@ export function MarkBar(props: MarkBarProps) {
       verb,
       canonicalSha256: claim.canonicalSha256,
     });
-  };
+  }, [
+    props.disabled,
+    props.onClearClaim,
+    props.onStageClaim,
+    stagedVerb,
+  ]);
 
   const targetUnavailable =
     target.kind === "proposal" &&
     ((target.proposal.applicability !== undefined &&
       target.proposal.applicability.status !== "applicable") ||
       (target.proposal.applicability === undefined && !target.proposal.baseOk));
+
+  useEffect(() => {
+    if (!(props.keyboardShortcutsEnabled ?? false) || inputVerb !== null) {
+      return undefined;
+    }
+    const handler = (event: KeyboardEvent) => {
+      if (event.repeat || shouldIgnoreShortcutEvent(event)) return;
+      const options =
+        target.kind === "proposal"
+          ? verbsForProposal(target.proposal.kind)
+          : CLAIM_VERBS;
+      for (const option of options) {
+        if (option.shortcut === undefined) continue;
+        if (!shortcutMatchesEvent(bindings[option.shortcut], event)) continue;
+        if (
+          props.disabled ||
+          (target.kind === "proposal" &&
+            !isVerbDecidable(target.proposal, option.verb as ProposalVerbKind))
+        ) {
+          return;
+        }
+        event.preventDefault();
+        if (target.kind === "proposal") {
+          commitProposalVerb(target.proposal, option.verb as ProposalVerbKind);
+        } else {
+          commitClaimVerb(target.claim, option.verb as ClaimVerbKind);
+        }
+        return;
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [
+    bindings,
+    commitClaimVerb,
+    commitProposalVerb,
+    inputVerb,
+    props.disabled,
+    props.keyboardShortcutsEnabled,
+    target,
+  ]);
 
   return (
     <section
@@ -217,6 +298,11 @@ export function MarkBar(props: MarkBarProps) {
                     }
                     staged={stagedVerb === entry.verb}
                     showHotkey={props.showHotkeys ?? false}
+                    shortcut={
+                      entry.shortcut === undefined
+                        ? undefined
+                        : bindings[entry.shortcut]
+                    }
                     onClick={() =>
                       commitProposalVerb(target.proposal, entry.verb)
                     }
@@ -237,6 +323,11 @@ export function MarkBar(props: MarkBarProps) {
                   disabled={props.disabled ?? false}
                   staged={stagedVerb === entry.verb}
                   showHotkey={props.showHotkeys ?? false}
+                  shortcut={
+                    entry.shortcut === undefined
+                      ? undefined
+                      : bindings[entry.shortcut]
+                  }
                   onClick={() => commitClaimVerb(target.claim, entry.verb)}
                 />
               ),
@@ -255,6 +346,7 @@ export function MarkBar(props: MarkBarProps) {
             {INPUT_LABEL[inputVerb] ?? "Details"}
           </label>
           <textarea
+            ref={inputRef}
             id={fieldId}
             className="wb-cowork-rail__verb-input-field"
             value={inputValue}
@@ -290,6 +382,7 @@ interface VerbButtonProps<Verb extends string> {
   readonly disabled: boolean;
   readonly staged: boolean;
   readonly showHotkey: boolean;
+  readonly shortcut?: string;
   onClick(): void;
 }
 
@@ -298,6 +391,7 @@ function VerbButton<Verb extends string>({
   disabled,
   staged,
   showHotkey,
+  shortcut,
   onClick,
 }: VerbButtonProps<Verb>) {
   return (
@@ -306,12 +400,17 @@ function VerbButton<Verb extends string>({
       className={`${toneClass(option.tone)}${staged ? " is-staged" : ""}`}
       disabled={disabled}
       aria-pressed={staged}
+      aria-keyshortcuts={
+        showHotkey && shortcut !== undefined
+          ? shortcutAriaValue(shortcut)
+          : undefined
+      }
       onClick={onClick}
     >
       {option.label}
-      {showHotkey && option.hotkey !== undefined ? (
+      {showHotkey && shortcut !== undefined ? (
         <span className="wb-cowork-rail__verb-key" aria-hidden="true">
-          {option.hotkey}
+          {formatShortcutChord(shortcut)}
         </span>
       ) : null}
     </button>

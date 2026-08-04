@@ -8,6 +8,12 @@
 
 import { useEffect } from "react";
 
+import type { CoworkShortcutBindings } from "../keyboard";
+import {
+  formatShortcutChord,
+  shortcutMatchesEvent,
+  shouldIgnoreShortcutEvent,
+} from "../../../settings/keybindings";
 import { ClaimCard } from "./ClaimCard";
 import { ProposalCard } from "./ProposalCard";
 import type { StagedClaimDecision, StagedDecision } from "./contracts";
@@ -15,12 +21,15 @@ import { groupOf, railItemKey, type RailItem } from "./items";
 import type { RailSelectionKind } from "./store";
 
 /** The queue navigation binding. Defaults to j previous, k next (inverted). */
-export interface QueueBindings {
-  readonly prev: string;
-  readonly next: string;
-}
+export type QueueBindings = Pick<
+  CoworkShortcutBindings,
+  "previous" | "next"
+>;
 
-export const DEFAULT_QUEUE_BINDINGS: QueueBindings = { prev: "j", next: "k" };
+export const DEFAULT_QUEUE_BINDINGS: QueueBindings = {
+  previous: "j",
+  next: "k",
+};
 
 export interface QueueViewProps {
   readonly items: readonly RailItem[];
@@ -75,15 +84,11 @@ export function QueueView(props: QueueViewProps) {
   useEffect(() => {
     if (!keyboardNavigationEnabled) return undefined;
     const handler = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      const tag = target?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable) {
-        return;
-      }
-      if (event.key === bindings.prev) {
+      if (shouldIgnoreShortcutEvent(event)) return;
+      if (shortcutMatchesEvent(bindings.previous, event)) {
         event.preventDefault();
         props.onNavigate(-1);
-      } else if (event.key === bindings.next) {
+      } else if (shortcutMatchesEvent(bindings.next, event)) {
         event.preventDefault();
         props.onNavigate(1);
       }
@@ -93,7 +98,7 @@ export function QueueView(props: QueueViewProps) {
       window.removeEventListener("keydown", handler);
     };
   }, [
-    bindings.prev,
+    bindings.previous,
     bindings.next,
     keyboardNavigationEnabled,
     props.onNavigate,
@@ -170,10 +175,10 @@ export function QueueView(props: QueueViewProps) {
 
       <div className="wb-cowork-rail__kbhints" aria-hidden="true">
         <span>
-          <kbd>{bindings.prev}</kbd> previous
+          <kbd>{formatShortcutChord(bindings.previous)}</kbd> previous
         </span>
         <span>
-          <kbd>{bindings.next}</kbd> next
+          <kbd>{formatShortcutChord(bindings.next)}</kbd> next
         </span>
       </div>
 

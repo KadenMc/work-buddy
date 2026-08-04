@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -162,12 +163,12 @@ def _json_value(raw: str | None) -> Any | None:
     return None if raw is None else json.loads(raw)
 
 
-def _row_effective_value(row) -> str:
+def _row_effective_value(row) -> Any:
     active_override = _json_value(row["active_value_json"])
     return _row_default_value(row) if active_override is None else active_override
 
 
-def _row_default_value(row) -> str:
+def _row_default_value(row) -> Any:
     stored = _json_value(row["bootstrap_default_value_json"])
     # Additive migration fallback: _ensure_row persists this immediately.
     return _configured_default(row["setting_id"]) if stored is None else stored
@@ -714,10 +715,18 @@ def _validate_request(
         return
 
     value_schema = definition.get("value_schema", {})
-    if value_schema.get("type") == "string" and not isinstance(value, str):
+    value_type = value_schema.get("type")
+    if value_type == "string" and not isinstance(value, str):
         raise SettingsError(
             "validation_error",
             f"Value for {setting_id} must be a string.",
+            status_code=400,
+            field="value",
+        )
+    if value_type == "object" and not isinstance(value, dict):
+        raise SettingsError(
+            "validation_error",
+            f"Value for {setting_id} must be an object.",
             status_code=400,
             field="value",
         )
@@ -739,6 +748,86 @@ def _validate_request(
                 status_code=400,
                 field="value",
             ) from exc
+    if definition.get("presentation", {}).get("control") == "keybinding-map":
+        _validate_keybinding_map(value, definition)
+
+
+_SHORTCUT_NAMED_KEYS = {
+    "ArrowDown",
+    "ArrowLeft",
+    "ArrowRight",
+    "ArrowUp",
+    "Backspace",
+    "Delete",
+    "End",
+    "Enter",
+    "Home",
+    "Insert",
+    "PageDown",
+    "PageUp",
+    "Space",
+}
+
+
+def _is_canonical_shortcut_chord(value: str) -> bool:
+    parts = value.split("+")
+    if not parts or any(not part for part in parts):
+        return False
+    modifiers = parts[:-1]
+    if modifiers != [
+        modifier for modifier in ("Mod", "Alt", "Shift") if modifier in modifiers
+    ]:
+        return False
+    if len(set(modifiers)) != len(modifiers):
+        return False
+    key = parts[-1]
+    if key in {"Escape", "Tab"}:
+        return False
+    if len(key) == 1:
+        return key != "+" and not key.isspace() and key == key.lower()
+    return key in _SHORTCUT_NAMED_KEYS or re.fullmatch(
+        r"F(?:[1-9]|1\d|2[0-4])", key
+    ) is not None
+
+
+def _validate_keybinding_map(value: Any, definition: dict[str, Any]) -> None:
+    if not isinstance(value, dict):
+        return
+    commands = definition.get("presentation", {}).get("commands", [])
+    command_ids = [
+        command.get("command_id")
+        for command in commands
+        if isinstance(command, dict) and isinstance(command.get("command_id"), str)
+    ]
+    expected = set(command_ids)
+    if not expected or len(expected) != len(command_ids):
+        raise RuntimeError("keybinding-map definition has invalid command metadata")
+    actual = set(value)
+    if actual != expected:
+        raise SettingsError(
+            "validation_error",
+            "Shortcut bindings must contain exactly the registered commands.",
+            status_code=400,
+            field="value",
+        )
+    seen: set[str] = set()
+    for command_id in command_ids:
+        chord = value.get(command_id)
+        if not isinstance(chord, str) or not _is_canonical_shortcut_chord(chord):
+            raise SettingsError(
+                "validation_error",
+                f"Shortcut for {command_id!r} is invalid.",
+                status_code=400,
+                field="value",
+            )
+        if chord in seen:
+            raise SettingsError(
+                "validation_error",
+                f"Shortcut {chord!r} is assigned more than once.",
+                status_code=400,
+                field="value",
+            )
+        seen.add(chord)
 
 
 def _assert_revision(

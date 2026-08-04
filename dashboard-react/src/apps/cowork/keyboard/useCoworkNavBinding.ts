@@ -1,22 +1,26 @@
 import { useMemo } from "react";
 
 import { useSettingsValues } from "../../../settings/useSettingsValues";
-import { resolveNavBinding, type CoworkNavBinding } from "./bindings";
-import { COWORK_SETTINGS_PAGE_ID, readNavBindingValue } from "./settings";
+import {
+  resolveCoworkShortcutBindings,
+  type CoworkShortcutBindings,
+} from "./bindings";
+import {
+  COWORK_SETTINGS_PAGE_ID,
+  readCoworkShortcutBindingValue,
+} from "./settings";
 
 /**
- * Resolve the effective Co-work review navigation binding from the settings registry. Reads
- * the value snapshot for the Co-work settings context and maps it to a concrete key pair,
- * degrading to the inverted house default when the value is absent, the setting is not yet
- * registered, or the settings service is unavailable. The result is structurally the rail's
- * QueueBindings, so a consumer passes it straight to QueueView.
+ * Resolve the effective Co-work review shortcut map from the settings registry. The complete
+ * map falls back atomically when the value is absent, invalid, or unavailable, so Queue
+ * navigation and decision actions always agree on one effective configuration.
  */
-export function useCoworkNavBinding(
+export function useCoworkShortcutBindings(
   contextId: string = COWORK_SETTINGS_PAGE_ID,
-): CoworkNavBinding {
+): CoworkShortcutBindings {
   const { snapshot } = useSettingsValues(contextId);
   return useMemo(
-    () => resolveNavBinding(readNavBindingValue(snapshot)),
+    () => resolveCoworkShortcutBindings(readCoworkShortcutBindingValue(snapshot)),
     [snapshot],
   );
 }

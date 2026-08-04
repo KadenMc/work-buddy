@@ -43,7 +43,10 @@ import {
   scratchSessionDurabilityKey,
 } from "../session/CoworkSessionDurability";
 import {
+  COWORK_DOCUMENT_URL_PREFIX_LENGTH,
+  coworkDocumentUrlId,
   coworkStoreUrlId,
+  resolveCoworkDocumentUrlId,
   resolveCoworkRouteStoreId,
 } from "./storeRouteIdentity";
 
@@ -59,6 +62,11 @@ export interface HttpCoworkProviderOptions {
   readonly storage: Storage;
   readonly client?: CoworkHttpClient;
   readonly scratchTransportFactory?: CoworkScratchTransportFactory;
+}
+
+interface CoworkResolvedUrlRoute {
+  readonly route: CoworkRouteTarget;
+  readonly prefetchedDocuments?: readonly CoworkDocumentSummary[];
 }
 
 const emptyCatalog = (status: CoworkCatalogState["status"] = "empty"): CoworkCatalogState => ({
@@ -466,6 +474,80 @@ export class HttpCoworkProvider implements ViewProvider {
     this.#touch("document-reloaded");
   }
 
+  /**
+   * Expand a presentation-only document prefix before it can reach session
+   * durability or an API path. The authoritative document namespace is scoped
+   * to the already-resolved full Folder identity.
+   */
+  async #resolveDocumentUrlRoute(
+    route: CoworkRouteTarget,
+    isCurrent: () => boolean = () => true,
+  ): Promise<CoworkResolvedUrlRoute> {
+    if (
+      route.kind !== "registered" ||
+      route.documentId.length !== COWORK_DOCUMENT_URL_PREFIX_LENGTH
+    ) {
+      return { route };
+    }
+    let registeredRoute = route;
+    if (!this.#model.folders.some((folder) => folder.storeId === registeredRoute.storeId)) {
+      const folders = await this.#client.listFolders(true);
+      if (!isCurrent()) return { route };
+      this.#model = {
+        ...this.#model,
+        folders: folders.folders,
+        folderChooser: folders.chooser,
+        readOnly: folders.readOnly,
+      };
+      const refreshedRoute = resolveCoworkRouteStoreId(
+        registeredRoute,
+        folders.folders,
+      );
+      if (
+        refreshedRoute.kind !== "registered" ||
+        !folders.folders.some(
+          (folder) => folder.storeId === refreshedRoute.storeId,
+        )
+      ) {
+        throw new CoworkHttpError({
+          code: "folder_not_found",
+          message: "This folder is no longer available.",
+          retryable: true,
+        });
+      }
+      registeredRoute = refreshedRoute;
+    }
+
+    const documents = await this.#client.listDocuments(registeredRoute.storeId);
+    if (!isCurrent()) return { route };
+    const documentId = resolveCoworkDocumentUrlId(
+      registeredRoute.documentId,
+      documents,
+    );
+    if (documentId === null) {
+      const matchCount = documents.filter((document) =>
+        document.documentId.startsWith(registeredRoute.documentId),
+      ).length;
+      throw new CoworkHttpError({
+        code: matchCount > 1 ? "document_url_ambiguous" : "document_not_found",
+        message:
+          matchCount > 1
+            ? "This link matches more than one document in this folder. Open the document from the folder list."
+            : "This document is no longer available in this folder.",
+        retryable: matchCount === 0,
+        details: { documentId: registeredRoute.documentId },
+      });
+    }
+
+    return {
+      route:
+        documentId === registeredRoute.documentId
+          ? registeredRoute
+          : { ...registeredRoute, documentId },
+      prefetchedDocuments: documents,
+    };
+  }
+
   async #ensureBooted(): Promise<void> {
     if (this.#boot !== undefined) return this.#boot;
     this.#boot = this.#bootstrap();
@@ -486,9 +568,14 @@ export class HttpCoworkProvider implements ViewProvider {
         scratches: this.#scratches.list(),
         readOnly: folders.readOnly,
       };
-      const route = resolveCoworkRouteStoreId(requestedRoute, folders.folders);
-      await this.#resolveRoute(route, false);
-      this.#replaceWithCanonicalStoreUrl(route);
+      const storeRoute = resolveCoworkRouteStoreId(requestedRoute, folders.folders);
+      const resolved = await this.#resolveDocumentUrlRoute(storeRoute);
+      await this.#resolveRoute(
+        resolved.route,
+        false,
+        resolved.prefetchedDocuments,
+      );
+      this.#replaceWithCanonicalRouteUrl(resolved.route);
     } catch (error) {
       const apiError = asCoworkApiError(error);
       this.#model = {
@@ -502,17 +589,29 @@ export class HttpCoworkProvider implements ViewProvider {
 
   async #followLocation(search: string): Promise<void> {
     await this.#ensureBooted();
-    const route = resolveCoworkRouteStoreId(
-      routeFromSearch(search, this.#scratches),
-      this.#model.folders,
-    );
+    const epoch = ++this.#requestEpoch;
     const previousSearch = this.#activeSessionSearch();
     try {
-      await this.#withDurableSessionLeave(routeDurabilityKey(route), () =>
-        this.#resolveRoute(route, true),
+      const storeRoute = resolveCoworkRouteStoreId(
+        routeFromSearch(search, this.#scratches),
+        this.#model.folders,
       );
-      this.#replaceWithCanonicalStoreUrl(route);
+      const resolved = await this.#resolveDocumentUrlRoute(
+        storeRoute,
+        () => epoch === this.#requestEpoch,
+      );
+      if (epoch !== this.#requestEpoch) return;
+      await this.#withDurableSessionLeave(routeDurabilityKey(resolved.route), () =>
+        this.#resolveRoute(
+          resolved.route,
+          true,
+          resolved.prefetchedDocuments,
+          epoch,
+        ),
+      );
+      this.#replaceWithCanonicalRouteUrl(resolved.route);
     } catch (error) {
+      if (epoch !== this.#requestEpoch) return;
       // Browser Back/Forward changes the address before the provider can run its barrier.
       // Restore the still-open session when device-local persistence fails.
       this.#location.replaceSearch(previousSearch);
@@ -535,12 +634,23 @@ export class HttpCoworkProvider implements ViewProvider {
 
   #storeSearch(storeId: string, documentId?: string): string {
     const urlStoreId = coworkStoreUrlId(storeId, this.#model.folders);
+    const urlDocumentId =
+      documentId === undefined
+        ? undefined
+        : coworkDocumentUrlId(
+            documentId,
+            this.#model.activeFolderStoreId === storeId
+              ? this.#model.catalog.documents
+              : [],
+          );
     const documentSearch =
-      documentId === undefined ? "" : `&document_id=${encodeURIComponent(documentId)}`;
+      urlDocumentId === undefined
+        ? ""
+        : `&document_id=${encodeURIComponent(urlDocumentId)}`;
     return `?store_id=${encodeURIComponent(urlStoreId)}${documentSearch}`;
   }
 
-  #replaceWithCanonicalStoreUrl(route: CoworkRouteTarget): void {
+  #replaceWithCanonicalRouteUrl(route: CoworkRouteTarget): void {
     if (route.kind === "scratch" || route.kind === "unavailable" || route.storeId === null) {
       return;
     }
@@ -555,16 +665,26 @@ export class HttpCoworkProvider implements ViewProvider {
 
     const params = new URLSearchParams(this.#location.getSearch());
     const urlStoreId = coworkStoreUrlId(route.storeId, this.#model.folders);
-    if (params.get("store_id") === urlStoreId) return;
-
     params.set("store_id", urlStoreId);
+    if (route.kind === "registered") {
+      params.set(
+        "document_id",
+        coworkDocumentUrlId(route.documentId, this.#model.catalog.documents),
+      );
+    }
     const nextSearch = `?${params.toString()}`;
+    if (nextSearch === this.#location.getSearch()) return;
     this.#ignoredLocationSearch = nextSearch;
     this.#location.replaceSearch(nextSearch);
   }
 
-  async #resolveRoute(route: CoworkRouteTarget, notify: boolean): Promise<void> {
-    const epoch = ++this.#requestEpoch;
+  async #resolveRoute(
+    route: CoworkRouteTarget,
+    notify: boolean,
+    prefetchedDocuments?: readonly CoworkDocumentSummary[],
+    existingEpoch?: number,
+  ): Promise<void> {
+    const epoch = existingEpoch ?? ++this.#requestEpoch;
     this.#model = {
       ...this.#model,
       routeTarget: route,
@@ -645,6 +765,7 @@ export class HttpCoworkProvider implements ViewProvider {
       { storeId: route.storeId, documentId: route.documentId },
       false,
       epoch,
+      prefetchedDocuments,
     );
     if (notify && epoch === this.#requestEpoch) this.#touch("location:document");
   }
@@ -652,6 +773,7 @@ export class HttpCoworkProvider implements ViewProvider {
   async #activateFolder(
     storeId: string,
     isCurrent: () => boolean = () => true,
+    prefetchedDocuments?: readonly CoworkDocumentSummary[],
   ): Promise<boolean> {
     let folder = this.#model.folders.find((entry) => entry.storeId === storeId);
     if (folder === undefined) {
@@ -697,18 +819,22 @@ export class HttpCoworkProvider implements ViewProvider {
       folderSelection: { kind: "initialized", folder },
       navigationError: null,
     };
-    await this.#loadCatalog(folder.storeId);
+    await this.#loadCatalog(folder.storeId, prefetchedDocuments);
     return isCurrent();
   }
 
-  async #loadCatalog(storeId: string): Promise<void> {
+  async #loadCatalog(
+    storeId: string,
+    prefetchedDocuments?: readonly CoworkDocumentSummary[],
+  ): Promise<void> {
     const catalogEpoch = ++this.#catalogEpoch;
     this.#model = {
       ...this.#model,
       catalog: { ...this.#model.catalog, status: "loading", error: null },
     };
     try {
-      const documents = await this.#client.listDocuments(storeId);
+      const documents =
+        prefetchedDocuments ?? (await this.#client.listDocuments(storeId));
       if (
         catalogEpoch !== this.#catalogEpoch ||
         this.#model.activeFolderStoreId !== storeId
@@ -807,6 +933,7 @@ export class HttpCoworkProvider implements ViewProvider {
     input: CoworkDocumentOpenIntentPayload,
     navigate: boolean,
     existingEpoch?: number,
+    prefetchedDocuments?: readonly CoworkDocumentSummary[],
   ): Promise<void> {
     const previousTarget = this.#model.routeTarget;
     const previousFolderSelection = this.#model.folderSelection;
@@ -828,6 +955,7 @@ export class HttpCoworkProvider implements ViewProvider {
         const activated = await this.#activateFolder(
           input.storeId,
           () => epoch === this.#requestEpoch,
+          prefetchedDocuments,
         );
         if (!activated || epoch !== this.#requestEpoch) return;
       } catch (error) {
@@ -853,6 +981,9 @@ export class HttpCoworkProvider implements ViewProvider {
         if (navigate || hadActiveSession) throw new CoworkHttpError(apiError);
         return;
       }
+    } else if (prefetchedDocuments !== undefined) {
+      await this.#loadCatalog(input.storeId, prefetchedDocuments);
+      if (epoch !== this.#requestEpoch) return;
     }
     let document = this.#model.catalog.documents.find(
       (entry) => entry.documentId === input.documentId,

@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -763,6 +763,37 @@ describe("ReviewPanel", () => {
 
     await userEvent.keyboard("j");
     expect(screen.getByText("Item 1")).toBeVisible();
+  });
+
+  it("stages the focused Queue decision with its advertised shortcut only in Queue", async () => {
+    const { store } = renderPanel();
+    await waitFor(() => expect(screen.getByText(S1_TLDR)).toBeVisible());
+
+    await userEvent.click(screen.getByRole("button", { name: "Queue" }));
+    await userEvent.keyboard("a");
+    expect(store.getState().decisions.s1?.verb).toBe("confirm");
+
+    store.clearDecision("s1");
+    await userEvent.click(screen.getByRole("button", { name: "Stream" }));
+    await userEvent.keyboard("a");
+    expect(store.getState().decisions.s1).toBeUndefined();
+  });
+
+  it("keeps Queue navigation out of an amendment and clears the draft on target change", async () => {
+    renderPanel();
+    await waitFor(() => expect(screen.getByText(S1_TLDR)).toBeVisible());
+    await userEvent.click(screen.getByRole("button", { name: "Queue" }));
+
+    await userEvent.keyboard("e");
+    const draft = screen.getByLabelText("Your replacement");
+    expect(draft).toHaveFocus();
+    await userEvent.keyboard("k");
+    expect(screen.getByText("Item 1")).toBeVisible();
+
+    fireEvent.blur(draft);
+    fireEvent.keyDown(window, { key: "k" });
+    expect(screen.getByText("Item 2")).toBeVisible();
+    expect(screen.queryByLabelText("Your replacement")).not.toBeInTheDocument();
   });
 
   it("qualifies selection by kind when proposal and claim ids collide", async () => {

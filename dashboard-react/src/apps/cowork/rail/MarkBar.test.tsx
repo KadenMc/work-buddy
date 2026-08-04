@@ -1,8 +1,9 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { expectNoAccessibilityViolations } from "../../../test/setup";
+import { DEFAULT_COWORK_SHORTCUT_BINDINGS } from "../keyboard";
 import { MarkBar, type MarkBarProps } from "./MarkBar";
 import type { ReviewClaim, ReviewProposal } from "./contracts";
 
@@ -58,6 +59,99 @@ function handlers(): Pick<
 }
 
 describe("MarkBar edit verbs", () => {
+  it("dispatches the advertised Queue decision keys through the button actions", async () => {
+    const cbs = handlers();
+    render(
+      <MarkBar
+        target={{ kind: "proposal", proposal: proposal() }}
+        showHotkeys
+        keyboardShortcutsEnabled
+        {...cbs}
+      />,
+    );
+
+    await userEvent.keyboard("a");
+    expect(cbs.onStageProposal).toHaveBeenLastCalledWith({
+      proposalId: "p1",
+      verb: "confirm",
+      canonicalSha256: "canon-p1",
+    });
+
+    await userEvent.keyboard("e");
+    expect(screen.getByLabelText("Your replacement")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await userEvent.keyboard("x");
+    expect(cbs.onStageProposal).toHaveBeenLastCalledWith({
+      proposalId: "p1",
+      verb: "reject_plain",
+      canonicalSha256: "canon-p1",
+    });
+
+    await userEvent.keyboard(".");
+    expect(cbs.onStageProposal).toHaveBeenLastCalledWith({
+      proposalId: "p1",
+      verb: "defer",
+      canonicalSha256: "canon-p1",
+    });
+  });
+
+  it("derives visible hints, aria shortcuts, and dispatch from custom bindings", async () => {
+    const cbs = handlers();
+    render(
+      <MarkBar
+        target={{ kind: "proposal", proposal: proposal() }}
+        bindings={{
+          ...DEFAULT_COWORK_SHORTCUT_BINDINGS,
+          accept: "Mod+Enter",
+        }}
+        showHotkeys
+        keyboardShortcutsEnabled
+        {...cbs}
+      />,
+    );
+    const accept = screen.getByRole("button", { name: "Accept" });
+    expect(accept).toHaveAttribute(
+      "aria-keyshortcuts",
+      "Control+Enter Meta+Enter",
+    );
+    expect(accept).toHaveTextContent("Ctrl/⌘ + Enter");
+    await userEvent.keyboard("a");
+    expect(cbs.onStageProposal).not.toHaveBeenCalled();
+    fireEvent.keyDown(window, { key: "Enter", ctrlKey: true });
+    expect(cbs.onStageProposal).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores editable input, unrelated modifiers, and inactive Review", async () => {
+    const cbs = handlers();
+    const { rerender } = render(
+      <>
+        <input aria-label="Draft" />
+        <MarkBar
+          target={{ kind: "proposal", proposal: proposal() }}
+          keyboardShortcutsEnabled
+          {...cbs}
+        />
+      </>,
+    );
+    await userEvent.click(screen.getByRole("textbox", { name: "Draft" }));
+    await userEvent.keyboard("a");
+    expect(cbs.onStageProposal).not.toHaveBeenCalled();
+    await userEvent.click(document.body);
+    await userEvent.keyboard("{Control>}a{/Control}");
+    expect(cbs.onStageProposal).not.toHaveBeenCalled();
+
+    rerender(
+      <MarkBar
+        target={{ kind: "proposal", proposal: proposal() }}
+        keyboardShortcutsEnabled={false}
+        {...cbs}
+      />,
+    );
+    await userEvent.keyboard("a");
+    expect(cbs.onStageProposal).not.toHaveBeenCalled();
+  });
+
   it("renders the seven edit verbs and stages a no-input verb immediately", async () => {
     const cbs = handlers();
     render(
@@ -99,6 +193,65 @@ describe("MarkBar edit verbs", () => {
       canonicalSha256: "canon-p1",
       amendContent: "my version",
     });
+  });
+
+  it("focuses an opened amendment and discards it when the target changes", async () => {
+    const cbs = handlers();
+    const { rerender } = render(
+      <MarkBar
+        target={{ kind: "proposal", proposal: proposal() }}
+        keyboardShortcutsEnabled
+        {...cbs}
+      />,
+    );
+
+    await userEvent.keyboard("e");
+    const firstDraft = screen.getByLabelText("Your replacement");
+    expect(firstDraft).toHaveFocus();
+    await userEvent.clear(firstDraft);
+    await userEvent.type(firstDraft, "Only for proposal one");
+
+    rerender(
+      <MarkBar
+        target={{
+          kind: "proposal",
+          proposal: proposal({
+            proposalId: "p2",
+            canonicalSha256: "canon-p2",
+            replacement: "proposal two text",
+          }),
+        }}
+        keyboardShortcutsEnabled
+        {...cbs}
+      />,
+    );
+
+    expect(screen.queryByLabelText("Your replacement")).not.toBeInTheDocument();
+    expect(cbs.onStageProposal).not.toHaveBeenCalled();
+    await userEvent.keyboard("e");
+    expect(screen.getByLabelText("Your replacement")).toHaveValue(
+      "proposal two text",
+    );
+  });
+
+  it("ignores repeated, composing, and control-activation key events", () => {
+    const cbs = handlers();
+    render(
+      <MarkBar
+        target={{ kind: "proposal", proposal: proposal() }}
+        bindings={{ ...DEFAULT_COWORK_SHORTCUT_BINDINGS, accept: "Enter" }}
+        keyboardShortcutsEnabled
+        {...cbs}
+      />,
+    );
+
+    fireEvent.keyDown(window, { key: "Enter", repeat: true });
+    fireEvent.keyDown(window, { key: "Enter", isComposing: true });
+    const reject = screen.getByRole("button", { name: "Reject" });
+    reject.focus();
+    fireEvent.keyDown(reject, { key: "Enter" });
+
+    expect(cbs.onStageProposal).not.toHaveBeenCalled();
   });
 
   it("requires a note before staging a redirect", async () => {
@@ -271,6 +424,25 @@ describe("MarkBar flag verbs", () => {
       canonicalSha256: "canon-p1",
     });
   });
+
+  it("maps the positive and negative Queue shortcuts to flag verbs", async () => {
+    const cbs = handlers();
+    render(
+      <MarkBar
+        target={{ kind: "proposal", proposal: proposal({ kind: "flag", replacement: null }) }}
+        keyboardShortcutsEnabled
+        {...cbs}
+      />,
+    );
+    await userEvent.keyboard("a");
+    expect(cbs.onStageProposal).toHaveBeenLastCalledWith(
+      expect.objectContaining({ verb: "endorse" }),
+    );
+    await userEvent.keyboard("x");
+    expect(cbs.onStageProposal).toHaveBeenLastCalledWith(
+      expect.objectContaining({ verb: "dismiss" }),
+    );
+  });
 });
 
 describe("MarkBar claim verbs", () => {
@@ -293,6 +465,25 @@ describe("MarkBar claim verbs", () => {
       verb: "confirm",
       canonicalSha256: "canon-cl1",
     });
+  });
+
+  it("maps the positive and negative Queue shortcuts to claim verbs", async () => {
+    const cbs = handlers();
+    render(
+      <MarkBar
+        target={{ kind: "claim", claim: claim() }}
+        keyboardShortcutsEnabled
+        {...cbs}
+      />,
+    );
+    await userEvent.keyboard("a");
+    expect(cbs.onStageClaim).toHaveBeenLastCalledWith(
+      expect.objectContaining({ verb: "confirm" }),
+    );
+    await userEvent.keyboard("x");
+    expect(cbs.onStageClaim).toHaveBeenLastCalledWith(
+      expect.objectContaining({ verb: "reject" }),
+    );
   });
 
   it("has no accessibility violations", async () => {

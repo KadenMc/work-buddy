@@ -16,11 +16,12 @@ import {
   type RefCallback,
 } from "react";
 
+import type { CoworkShortcutBindings } from "../keyboard";
 import { Inspector } from "./Inspector";
 import { VerificationAttentionFeed } from "./VerificationAttentionFeed";
 import { FilterLens } from "./FilterLens";
 import { MarkBar, type MarkBarTarget } from "./MarkBar";
-import { QueueView, type QueueBindings } from "./QueueView";
+import { QueueView } from "./QueueView";
 import { RailDriftStrip } from "./RailDriftStrip";
 import { StreamView } from "./StreamView";
 import type {
@@ -138,7 +139,7 @@ export interface ReviewPanelProps {
   readonly scrollContainerRef?: RefCallback<HTMLElement>;
   readonly onScrollContainerWillDetach?: () => void;
   readonly reviewAnchors?: ReviewAnchorController;
-  readonly queueBindings?: QueueBindings;
+  readonly shortcutBindings?: CoworkShortcutBindings;
   /** Whether Review is currently visible and may handle global shortcuts. */
   readonly active?: boolean;
   readonly onDiscussCothink?: (
@@ -893,7 +894,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
             decisions={decisions}
             claimDecisions={claimDecisions}
             inspectSpanByClaim={spanByClaim}
-            bindings={props.queueBindings}
+            bindings={props.shortcutBindings}
             keyboardNavigationEnabled={props.active ?? true}
             onNavigate={navigate}
             onActivate={activateReviewTarget}
@@ -938,6 +939,10 @@ export function ReviewPanel(props: ReviewPanelProps) {
             store.clearClaimDecision(id);
           }}
           showHotkeys={mode === "queue"}
+          bindings={props.shortcutBindings}
+          keyboardShortcutsEnabled={
+            mode === "queue" && (props.active ?? true)
+          }
         />
       ) : (
         <p className="wb-cowork-rail__markbar-hint">

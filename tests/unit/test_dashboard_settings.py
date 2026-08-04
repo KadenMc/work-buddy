@@ -11,6 +11,14 @@ from work_buddy.settings import broker, store
 
 SETTING_ID = "wb.journal.day-boundary"
 COWORK_SETTING_ID = "wb.cowork.review.nav-binding"
+DEFAULT_SHORTCUTS = {
+    "previous": "j",
+    "next": "k",
+    "accept": "a",
+    "amend": "e",
+    "reject": "x",
+    "defer": ".",
+}
 
 
 @pytest.fixture
@@ -43,23 +51,24 @@ def test_registry_and_context_value_snapshot(client) -> None:
     assert snapshot["values"][0]["effective_value"] == "05:00"
 
 
-def test_cowork_context_and_immediate_enum_value_contract(client) -> None:
+def test_cowork_context_and_immediate_shortcut_map_contract(client) -> None:
+    configured = {**DEFAULT_SHORTCUTS, "accept": "Enter"}
     values = client.get(
         "/api/settings/values?context_id=wb.settings.app.cowork"
     )
     assert values.status_code == 200
     snapshot = values.get_json()
-    assert snapshot["registry_revision"] == "settings-registry:2"
+    assert snapshot["registry_revision"] == "settings-registry:3"
     assert snapshot["values"] == [
         {
             "apply_status": "effective",
             "configured_source": "default",
-            "configured_value": "inverted",
+            "configured_value": DEFAULT_SHORTCUTS,
             "default_source": "registry-default",
-            "default_value": "inverted",
+            "default_value": DEFAULT_SHORTCUTS,
             "diagnostics": [],
             "effective_at": None,
-            "effective_value": "inverted",
+            "effective_value": DEFAULT_SHORTCUTS,
             "impact_preview": None,
             "is_modified": False,
             "last_transition": None,
@@ -69,7 +78,7 @@ def test_cowork_context_and_immediate_enum_value_contract(client) -> None:
             "scope": {"kind": "profile", "subject_id": "default"},
             "setting_id": COWORK_SETTING_ID,
             "source": "default",
-            "value_version": 1,
+            "value_version": 2,
         }
     ]
 
@@ -77,13 +86,13 @@ def test_cowork_context_and_immediate_enum_value_contract(client) -> None:
         f"/api/settings/values/{COWORK_SETTING_ID}",
         json={
             "scope": "profile",
-            "value": "vim",
+            "value": configured,
             "expected_revision": "value:0",
         },
     )
     assert changed.status_code == 200
     body = changed.get_json()
-    assert body["value"]["effective_value"] == "vim"
+    assert body["value"]["effective_value"] == configured
     assert body["value"]["pending_value"] is None
     assert body["event"]["apply_status"] == "effective"
 
@@ -91,7 +100,7 @@ def test_cowork_context_and_immediate_enum_value_contract(client) -> None:
         f"/api/settings/values/{COWORK_SETTING_ID}",
         json={
             "scope": "profile",
-            "value": "emacs",
+            "value": {**DEFAULT_SHORTCUTS, "next": "j"},
             "expected_revision": "value:1",
         },
     )

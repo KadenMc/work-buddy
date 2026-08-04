@@ -589,6 +589,7 @@
   border-radius: var(--wb-radius-surface);
   background: var(--wb-color-surface-raised);
   box-shadow: var(--wb-shadow-raised);
+  cursor: pointer;
 }
 
 .wb-cowork-rail__card[data-kind="insertion"] {
@@ -711,7 +712,17 @@
   font-size: var(--wb-font-size-sm);
   font-weight: var(--wb-font-weight-medium);
   color: var(--wb-color-text-strong);
+  margin-block-end: 0;
+}
+
+.wb-cowork-rail__card[data-selected="true"] .wb-cowork-rail__card-tldr {
   margin-block-end: var(--wb-space-3);
+}
+
+.wb-cowork-rail__card-rationale,
+.wb-cowork-rail__card-quote,
+.wb-cowork-rail__claim-evidence {
+  cursor: text;
 }
 
 .wb-cowork-rail__card-quote {
