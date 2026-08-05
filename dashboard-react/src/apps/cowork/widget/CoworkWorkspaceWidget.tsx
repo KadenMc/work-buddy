@@ -43,6 +43,10 @@ import type {
 } from "../materialization/contracts";
 import { CoworkDocumentSession } from "../session/CoworkDocumentSession";
 import { finishScratchPromotion } from "../scratch/promotion";
+import type {
+  TruthPassageConnection,
+  TruthPassageNavigationTarget,
+} from "../truth";
 import {
   CoworkDemoWorkspace,
   CoworkScratchWorkspace,
@@ -148,6 +152,9 @@ export default function CoworkWorkspaceWidget({
   const folderActionBusy = useRef(false);
   const folderActionEpoch = useRef(0);
   const [localNotice, setLocalNotice] = useState<string | null>(null);
+  const [pendingTruthPassageNavigation, setPendingTruthPassageNavigation] =
+    useState<TruthPassageNavigationTarget | null>(null);
+  const truthPassageNavigationEpoch = useRef(0);
   const [syncStatus, setSyncStatus] = useState<CoworkSyncStatus>();
   const [documentSessionEpoch, setDocumentSessionEpoch] = useState(0);
   const [materializationState, setMaterializationState] =
@@ -251,6 +258,8 @@ export default function CoworkWorkspaceWidget({
     async (document: CoworkDocumentSummary): Promise<void> => {
       const storeId = model.activeFolderStoreId;
       if (storeId === null) throw new Error("Choose a folder before opening a document.");
+      // A picker choice supersedes any unfinished one-shot Truth navigation.
+      setPendingTruthPassageNavigation(null);
       await dispatch(COWORK_INTENTS.documentOpen, {
         storeId,
         documentId: document.documentId,
@@ -431,6 +440,42 @@ export default function CoworkWorkspaceWidget({
   );
 
   const session = model.activeSession;
+  const openTruthPassage = useCallback(
+    (connection: TruthPassageConnection): void => {
+      if (session.kind !== "registered") return;
+      const requestId = `truth-passage-${++truthPassageNavigationEpoch.current}`;
+      const pending: TruthPassageNavigationTarget = {
+        requestId,
+        storeId: session.storeId,
+        documentId: connection.documentId,
+        expressionId: connection.expressionId,
+        spanId: connection.spanId,
+        selector: { ...connection.selector },
+      };
+      setLocalNotice(null);
+      setPendingTruthPassageNavigation(pending);
+      void dispatch(COWORK_INTENTS.documentOpen, {
+        storeId: pending.storeId,
+        documentId: pending.documentId,
+      }).catch((error: unknown) => {
+        setPendingTruthPassageNavigation((current) =>
+          current?.requestId === requestId ? null : current,
+        );
+        setLocalNotice(
+          coworkErrorMessage(
+            asCoworkApiError(error),
+            "Co-work couldn’t open that connected document.",
+          ),
+        );
+      });
+    },
+    [dispatch, session],
+  );
+  const consumeTruthPassageNavigation = useCallback((requestId: string): void => {
+    setPendingTruthPassageNavigation((current) =>
+      current?.requestId === requestId ? null : current,
+    );
+  }, []);
   const markLocalEdit = useCallback((): void => {
     if (session.kind !== "scratch" || scratchTouchCooldown.current !== null) return;
     const scratchId = session.scratchId;
@@ -641,12 +686,14 @@ export default function CoworkWorkspaceWidget({
       onInitialize={() => runFolderAction("initialize")}
       onOpenFolder={(storeId) => {
         setLocalNotice(null);
+        setPendingTruthPassageNavigation(null);
         runFolderAction("open", { storeId });
       }}
       onOpenDocument={(document) => void openDocument(document)}
-      onOpenLocalDocument={(scratch) =>
-        void dispatch(COWORK_INTENTS.scratchOpen, { scratchId: scratch.scratchId })
-      }
+      onOpenLocalDocument={(scratch) => {
+        setPendingTruthPassageNavigation(null);
+        void dispatch(COWORK_INTENTS.scratchOpen, { scratchId: scratch.scratchId });
+      }}
     />
   );
 
@@ -663,6 +710,7 @@ export default function CoworkWorkspaceWidget({
         closingFolder={pendingFolderAction?.action === "close"}
         onChooseFolder={() => {
           setLocalNotice(null);
+          setPendingTruthPassageNavigation(null);
           runFolderAction("choose");
         }}
         onCloseFolder={() => {
@@ -670,6 +718,7 @@ export default function CoworkWorkspaceWidget({
           setDialog(null);
           setPendingLifecycleAfterFolder(null);
           setLocalNotice(null);
+          setPendingTruthPassageNavigation(null);
           runFolderAction("close");
         }}
         onOpenPicker={() => setPickerOpen(true)}
@@ -681,14 +730,15 @@ export default function CoworkWorkspaceWidget({
           }
         }}
         onImportFile={() => openLifecycleDialog("import")}
-        onCloseSession={() =>
+        onCloseSession={() => {
+          setPendingTruthPassageNavigation(null);
           void dispatch(
             session.kind === "scratch"
               ? COWORK_INTENTS.scratchClose
               : COWORK_INTENTS.documentClose,
             {},
-          )
-        }
+          );
+        }}
         onPromoteScratch={() => void beginScratchPromotion()}
         promotionBusy={promotionBusy}
         promotionReady={promotionReady}
@@ -775,6 +825,15 @@ export default function CoworkWorkspaceWidget({
               onMaterialized={() => {
                 void dispatch(COWORK_INTENTS.catalogRefresh, {});
               }}
+              onOpenTruthPassage={openTruthPassage}
+              pendingTruthPassageNavigation={
+                pendingTruthPassageNavigation?.storeId === session.storeId &&
+                pendingTruthPassageNavigation.documentId ===
+                  session.document.documentId
+                  ? pendingTruthPassageNavigation
+                  : null
+              }
+              onTruthPassageNavigationConsumed={consumeTruthPassageNavigation}
             />
           </div>
         ) : session.kind === "scratch" ? (
@@ -819,7 +878,12 @@ export default function CoworkWorkspaceWidget({
                       });
                     }
                   }}>Retry</Button>
-                  <Button onClick={() => void dispatch(COWORK_INTENTS.documentClose, {})}>
+                  <Button
+                    onClick={() => {
+                      setPendingTruthPassageNavigation(null);
+                      void dispatch(COWORK_INTENTS.documentClose, {});
+                    }}
+                  >
                     Return to folder
                   </Button>
                 </div>

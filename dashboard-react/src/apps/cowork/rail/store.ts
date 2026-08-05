@@ -8,8 +8,8 @@
 
 import type { StagedClaimDecision, StagedDecision } from "./contracts";
 
-/** Which rail tab is shown (section 5.1, Review or Chat). */
-export type RailTab = "review" | "chat";
+/** Which first-class interaction surface is shown in the Co-work rail. */
+export type RailTab = "review" | "truth" | "chat";
 
 /** The Review-tab layout: a document-order stream or queue focus mode. */
 export type RailMode = "stream" | "queue";

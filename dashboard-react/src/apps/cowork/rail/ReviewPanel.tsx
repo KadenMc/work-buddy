@@ -13,6 +13,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
   type RefCallback,
 } from "react";
 
@@ -148,6 +149,8 @@ export interface ReviewPanelProps {
   readonly onRecheckIntent?: (
     intent: VerificationRecheckIntent,
   ) => void | Promise<void>;
+  /** Actionable Truth claims cross-listed without reusing Review's old claim verbs. */
+  readonly truthAttention?: ReactNode;
   onSubmitted?(): void;
 }
 
@@ -236,6 +239,11 @@ export function ReviewPanel(props: ReviewPanelProps) {
   useEffect(() => {
     const source = props.reviewAnchors;
     if (source === undefined) return;
+    if (props.active === false) {
+      pendingActivationRef.current = null;
+      source.clearFocusedAnchor();
+      return;
+    }
     if (targetId === null || targetKind === null) {
       pendingActivationRef.current = null;
       source.clearFocusedAnchor();
@@ -256,7 +264,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
     } else {
       source.focusAnchor(targetId, targetKind);
     }
-  }, [props.reviewAnchors, targetId, targetKind]);
+  }, [props.active, props.reviewAnchors, targetId, targetKind]);
 
   useEffect(
     () => () => {
@@ -675,7 +683,6 @@ export function ReviewPanel(props: ReviewPanelProps) {
           {attentionError}
         </p>
       ) : null}
-
       <div className="wb-cowork-rail__toolbar">
         <div className="wb-cowork-rail__mode" role="group" aria-label="Review layout">
           <button
@@ -875,6 +882,7 @@ export function ReviewPanel(props: ReviewPanelProps) {
             : undefined
         }
       >
+        {props.truthAttention}
         {mode === "stream" ? (
           <StreamView
             items={visible}

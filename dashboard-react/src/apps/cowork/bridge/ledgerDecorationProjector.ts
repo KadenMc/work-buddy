@@ -2,6 +2,8 @@ import type { Editor } from "@tiptap/core";
 
 import {
   projectCoworkLedgerDecorations,
+  setCoworkEditorLens,
+  type CoworkEditorLens,
   type CoworkLedgerDecorationProjection,
 } from "../editor/ledgerDecorations";
 import type { ReviewRailData } from "../rail/contracts";
@@ -14,6 +16,12 @@ const EMPTY_LEDGER_PROJECTION: CoworkLedgerDecorationProjection = {
   claims: [],
   provenance: [],
   evaluations: [],
+};
+
+const claimIdFromReference = (reference: string): string | null => {
+  if (/^[0-9a-f]{32}$/u.test(reference)) return reference;
+  const match = reference.match(/\/claim\/([0-9a-f]{32})$/u);
+  return match?.[1] ?? null;
 };
 
 /**
@@ -56,15 +64,17 @@ export const ledgerDecorationProjectionFromReview = (
     claimRef: expression.claimRef,
     claimStatus: expression.claimStatus,
   })),
-  claims: data.claims.flatMap((claim) => {
-    const expression = data.expressions.find((candidate) =>
-      claimRefMatchesId(candidate.claimRef, claim.claimId),
+  claims: data.expressions.flatMap((expression) => {
+    const reviewClaim = data.claims.find((candidate) =>
+      claimRefMatchesId(expression.claimRef, candidate.claimId),
     );
-    return expression === undefined
+    const claimId =
+      reviewClaim?.claimId ?? claimIdFromReference(expression.claimRef);
+    return claimId === null
       ? []
       : [
           {
-            claimId: claim.claimId,
+            claimId,
             expressionId: expression.expressionId,
             spanId: expression.spanId,
             quote: expression.quote,
@@ -105,6 +115,7 @@ export const ledgerDecorationProjectionFromReview = (
 export class LedgerDecorationProjector {
   #editor: Editor | null = null;
   #projection: CoworkLedgerDecorationProjection | null = null;
+  #lens: CoworkEditorLens = "review";
 
   attach(editor: Editor): void {
     this.#editor = editor;
@@ -120,6 +131,12 @@ export class LedgerDecorationProjector {
     this.#flush();
   }
 
+  /** Retain the active rail lens across editor remounts and data refreshes. */
+  setLens(lens: CoworkEditorLens): void {
+    this.#lens = lens;
+    if (this.#editor !== null) setCoworkEditorLens(this.#editor, lens);
+  }
+
   clear(): void {
     this.#projection = null;
     if (this.#editor !== null) {
@@ -130,5 +147,6 @@ export class LedgerDecorationProjector {
   #flush(): void {
     if (this.#editor === null || this.#projection === null) return;
     projectCoworkLedgerDecorations(this.#editor, this.#projection);
+    setCoworkEditorLens(this.#editor, this.#lens);
   }
 }

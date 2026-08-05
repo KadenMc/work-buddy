@@ -22,7 +22,11 @@ const CLAIM_STATUS_LABEL: Record<ExpressionClaimStatus, string> = {
   confirmed: "Confirmed",
   needs_review: "Needs review",
   proposed: "Proposed",
+  challenged: "Challenged",
   rejected: "Rejected",
+  superseded: "Superseded",
+  retracted: "Retracted",
+  expired: "Expired",
 };
 
 const TRUST_LABEL: Record<TrustState, string> = {

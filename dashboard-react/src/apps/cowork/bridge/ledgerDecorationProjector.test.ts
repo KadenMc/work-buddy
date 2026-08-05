@@ -207,6 +207,14 @@ describe("ledgerDecorationProjectionFromReview", () => {
     ).toHaveTextContent("Revised");
     expect(
       editor.view.dom.querySelector('[data-wb-expression-id="expression-1"]'),
+    ).toBeNull();
+
+    projector.setLens("truth");
+    expect(
+      editor.view.dom.querySelector('[data-wb-decoration="flag"]'),
+    ).toBeNull();
+    expect(
+      editor.view.dom.querySelector('[data-wb-expression-id="expression-1"]'),
     ).toHaveClass(
       "wb-cowork-expression-mark",
       "wb-cowork-claim-anchor",

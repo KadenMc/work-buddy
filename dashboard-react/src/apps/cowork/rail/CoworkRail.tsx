@@ -1,11 +1,11 @@
 /**
- * The Review | Chat rail (section 5.1). This is the mount seam the view frame
- * wires in place of the rail placeholder: it owns the two tabs, the Review panel
- * (section 5.5), and the Chat panel. Every ready Chat path
+ * The Review | Truth | Chat rail. This is the mount seam the view frame wires
+ * in place of the rail placeholder: it owns all three tabs and their panels.
+ * Every ready Chat path
  * uses the shared ConversationChat surface through a thin Co-work adapter.
  */
 
-import { useEffect, useState, type RefCallback } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent, type RefCallback } from "react";
 
 import { HelpTarget, type HelpContent } from "../../../dashboard/help";
 import {
@@ -27,6 +27,13 @@ import {
   saveRailTab,
 } from "../guards";
 import type { CoworkShortcutBindings } from "../keyboard";
+import {
+  TruthAttentionFeed,
+  TruthPanel,
+  type TruthEditorIntegration,
+  type TruthRailProvider,
+  type TruthStore as CoworkTruthStore,
+} from "../truth";
 import { ReviewPanel } from "./ReviewPanel";
 import type { VerificationRecheckIntent } from "./contracts";
 import type { ReviewAnchorController, ReviewRailProvider } from "./provider";
@@ -48,8 +55,24 @@ const CHAT_TAB_HELP: HelpContent = {
     "Ask a question, leave feedback on a highlighted passage, and read the agent's replies without leaving the document.",
 };
 
+/** Hover-help for the Truth tab without adding explanatory chrome. */
+const TRUTH_TAB_HELP: HelpContent = {
+  summary: "See what this work rests on.",
+  details:
+    "Inspect claims, where the document expresses them, their evidence, provenance, and lifecycle. Truth also hosts contextual claim management.",
+};
+
+const RAIL_TABS: readonly RailTab[] = ["review", "truth", "chat"];
+
 export interface CoworkRailProps {
   readonly documentId: string;
+  readonly storeId?: string;
+  readonly truth?: {
+    readonly provider: TruthRailProvider;
+    readonly store: CoworkTruthStore;
+    readonly editor?: TruthEditorIntegration;
+    readonly readOnly?: boolean;
+  };
   readonly reviewProvider: ReviewRailProvider;
   readonly chat: CoworkRailChat;
   /** Fired only for a present user click on the wide Chat tab. */
@@ -61,12 +84,15 @@ export interface CoworkRailProps {
   readonly reviewScrollRef?: RefCallback<HTMLElement>;
   /** Saves and detaches Review before a view change can clamp its geometry. */
   readonly onReviewScrollWillDetach?: () => void;
+  readonly truthScrollRef?: RefCallback<HTMLElement>;
+  readonly onTruthScrollWillDetach?: () => void;
   readonly reviewAnchors?: ReviewAnchorController;
   readonly shortcutBindings?: CoworkShortcutBindings;
   readonly initialTab?: RailTab;
   /** Whether the containing workspace currently exposes the Review pane. */
   readonly reviewVisible?: boolean;
-  /** Narrow workspace peer tabs own Review / Chat selection when false. */
+  readonly truthVisible?: boolean;
+  /** Narrow workspace peer tabs own Review / Truth / Chat selection when false. */
   readonly showTabs?: boolean;
   /** Optional document linkage for passage accessories and routing notices. */
   readonly chatAnnotations?: CoworkChatAnnotations;
@@ -159,20 +185,26 @@ export function CoworkRail(props: CoworkRailProps) {
     // then the retained tab, then the Review default.
     const storage = props.storage ?? window.localStorage;
     const initialTab =
-      props.initialTab ?? loadRailTab(storage, props.documentId) ?? "review";
+      props.initialTab ??
+      loadRailTab(storage, props.documentId, props.storeId) ??
+      "review";
     return new RailStore(
       { tab: initialTab },
-      { onTabChange: (tab) => saveRailTab(storage, props.documentId, tab) },
+      {
+        onTabChange: (tab) =>
+          saveRailTab(storage, props.documentId, tab, props.storeId),
+      },
     );
   });
   const tab = useRailState(store, (state) => state.tab);
+  const tabRefs = useRef<Partial<Record<RailTab, HTMLButtonElement | null>>>({});
   const reviewActive = tab === "review" && props.reviewVisible !== false;
   const [messages, setMessages] = useState<readonly ChatMessage[]>([]);
   const conversationId =
     props.chat.kind === "ready" ? props.chat.conversationId : null;
   useEffect(() => setMessages([]), [conversationId]);
 
-  // Unread dot: an assistant message arrived while the Review tab was showing.
+  // Unread dot: an assistant message arrived while another rail tab was showing.
   const [seenCount, setSeenCount] = useState(0);
   useEffect(() => {
     if (tab === "chat") setSeenCount(messages.length);
@@ -188,7 +220,33 @@ export function CoworkRail(props: CoworkRailProps) {
     if (tab === "review" && next !== "review") {
       props.onReviewScrollWillDetach?.();
     }
+    if (tab === "truth" && next !== "truth") {
+      props.onTruthScrollWillDetach?.();
+    }
     store.setTab(next);
+  };
+
+  const navigateTabs = (
+    event: KeyboardEvent<HTMLButtonElement>,
+    current: RailTab,
+  ): void => {
+    const index = RAIL_TABS.indexOf(current);
+    let nextIndex: number | null = null;
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      nextIndex = (index + 1) % RAIL_TABS.length;
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      nextIndex = (index - 1 + RAIL_TABS.length) % RAIL_TABS.length;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = RAIL_TABS.length - 1;
+    }
+    if (nextIndex === null) return;
+    event.preventDefault();
+    const next = RAIL_TABS[nextIndex];
+    selectRailTab(next);
+    if (next === "chat") props.onChatSelected?.();
+    tabRefs.current[next]?.focus();
   };
 
   const continueCothinkInChat = async (): Promise<void> => {
@@ -201,33 +259,61 @@ export function CoworkRail(props: CoworkRailProps) {
       {props.showTabs !== false ? <div
         className="wb-cowork-rail__tabs"
         role="tablist"
-        aria-label="Review and chat"
+        aria-label="Co-work side panels"
       >
         <HelpTarget content={REVIEW_TAB_HELP} placement="bottom start">
           <button
             type="button"
+            ref={(element) => {
+              tabRefs.current.review = element;
+            }}
             role="tab"
             id="wb-cowork-rail-tab-review"
             className="wb-cowork-rail__tab"
             aria-selected={tab === "review"}
+            tabIndex={tab === "review" ? 0 : -1}
             aria-controls="wb-cowork-rail-panel-review"
             onClick={() => selectRailTab("review")}
+            onKeyDown={(event) => navigateTabs(event, "review")}
           >
             Review
+          </button>
+        </HelpTarget>
+        <HelpTarget content={TRUTH_TAB_HELP} placement="bottom">
+          <button
+            type="button"
+            ref={(element) => {
+              tabRefs.current.truth = element;
+            }}
+            role="tab"
+            id="wb-cowork-rail-tab-truth"
+            className="wb-cowork-rail__tab"
+            aria-selected={tab === "truth"}
+            tabIndex={tab === "truth" ? 0 : -1}
+            aria-controls="wb-cowork-rail-panel-truth"
+            onClick={() => selectRailTab("truth")}
+            onKeyDown={(event) => navigateTabs(event, "truth")}
+          >
+            Truth
           </button>
         </HelpTarget>
         <HelpTarget content={CHAT_TAB_HELP} placement="bottom">
           <button
             type="button"
+            ref={(element) => {
+              tabRefs.current.chat = element;
+            }}
             role="tab"
             id="wb-cowork-rail-tab-chat"
             className="wb-cowork-rail__tab"
             aria-selected={tab === "chat"}
+            tabIndex={tab === "chat" ? 0 : -1}
             aria-controls="wb-cowork-rail-panel-chat"
             onClick={() => {
               selectRailTab("chat");
               props.onChatSelected?.();
             }}
+            onKeyDown={(event) => navigateTabs(event, "chat")}
           >
             Chat
             {unread ? (
@@ -262,7 +348,51 @@ export function CoworkRail(props: CoworkRailProps) {
           active={reviewActive}
           onDiscussCothink={continueCothinkInChat}
           onRecheckIntent={props.onRecheckIntent}
+          truthAttention={
+            props.truth === undefined ? undefined : (
+              <TruthAttentionFeed
+                provider={props.truth.provider}
+                onOpenClaim={(claimId) => {
+                  props.truth?.store.selectClaim(claimId);
+                  selectRailTab("truth");
+                }}
+              />
+            )
+          }
         />
+      </div>
+
+      <div
+        role="tabpanel"
+        id="wb-cowork-rail-panel-truth"
+        aria-labelledby={
+          props.showTabs === false
+            ? "wb-cowork-mobile-tab-truth"
+            : "wb-cowork-rail-tab-truth"
+        }
+        className="wb-cowork-rail__tabpanel"
+        hidden={tab !== "truth"}
+      >
+        {props.truth === undefined || props.storeId === undefined ? (
+          <p className="wb-cowork-rail__empty">
+            Truth is available for documents opened from a Co-work folder.
+          </p>
+        ) : (
+          <TruthPanel
+            provider={props.truth.provider}
+            storeId={props.storeId}
+            documentId={props.documentId}
+            store={props.truth.store}
+            storage={props.storage}
+            editor={props.truth.editor}
+            readOnly={props.truth.readOnly}
+            active={tab === "truth" && props.truthVisible !== false}
+            scroll={{
+              scrollContainerRef: props.truthScrollRef,
+              onScrollContainerWillDetach: props.onTruthScrollWillDetach,
+            }}
+          />
+        )}
       </div>
 
       <div

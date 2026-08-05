@@ -9,6 +9,7 @@ context, and whole decision request so consent can fail closed on drift.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import sqlite3
 from typing import Any, Mapping
 
 from work_buddy.truth.contracts import InvariantViolation
@@ -79,9 +80,14 @@ class ClaimReviewPayload:
     body: str
 
 
-def _active_receipts(store: TruthStore, claim_id: str) -> tuple[ReviewReceipt, ...]:
-    with store.connect() as conn:
-        rows = conn.execute(
+def _active_receipts(
+    store: TruthStore,
+    claim_id: str,
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> tuple[ReviewReceipt, ...]:
+    def _read(read_conn: sqlite3.Connection):
+        return read_conn.execute(
             """
             SELECT l.id AS link_id,
                    s.id AS span_id,
@@ -109,6 +115,12 @@ def _active_receipts(store: TruthStore, claim_id: str) -> tuple[ReviewReceipt, .
             """,
             (claim_id,),
         ).fetchall()
+    if conn is None:
+        with store._read_connection() as read_conn:
+            rows = _read(read_conn)
+    else:
+        store._validate_connection_target(conn)
+        rows = _read(conn)
     return tuple(
         ReviewReceipt(
             link_id=row["link_id"],
@@ -136,13 +148,19 @@ def compose_claim_review(
     *,
     action: str,
     decision: Mapping[str, Any] | None = None,
+    additional_context: Mapping[str, Any] | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> ClaimReviewPayload:
     """Compose and hash the exact claim decision a human will see."""
 
     action_name = str(action).strip().lower()
     if action_name not in _ACTIONS:
         raise ValueError(f"unsupported Truth review action: {action!r}")
-    claim = store.get_claim(claim_id)
+    claim = (
+        store.get_claim(claim_id)
+        if conn is None
+        else store.get_claim(claim_id, conn=conn)
+    )
     if claim is None:
         raise InvariantViolation(f"claim does not exist: {claim_id}")
 
@@ -167,7 +185,7 @@ def compose_claim_review(
             f"claim canonical payload hash mismatch: {claim.id}"
         )
 
-    receipts = _active_receipts(store, claim.id)
+    receipts = _active_receipts(store, claim.id, conn=conn)
     usable_receipts = tuple(
         item
         for item in receipts
@@ -183,6 +201,8 @@ def compose_claim_review(
         "claim_id": claim.id,
         "receipts": [item.to_dict() for item in receipts],
     }
+    if additional_context is not None:
+        receipt_context["additional_context"] = dict(additional_context)
     context_sha256 = hash_context(receipt_context)
     decision_data = dict(decision or {})
     request_fingerprint = hash_context(

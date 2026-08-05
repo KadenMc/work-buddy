@@ -1,7 +1,8 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ComponentProps } from "react";
+import { StrictMode, type ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as Y from "yjs";
 
 import {
   asViewId,
@@ -12,12 +13,15 @@ import { DashboardEventProvider } from "../../../dashboard/events/DashboardEvent
 import { fallbackCanvasTheme } from "../../../theme/resolveTheme";
 import { expectNoAccessibilityViolations } from "../../../test/setup";
 import { DomReviewAnchorController } from "../bridge";
+import { CoworkPassageHighlighter } from "../bridge/CoworkPassageHighlighter";
+import { LedgerDecorationProjector } from "../bridge/ledgerDecorationProjector";
 import {
   COWORK_INTENTS,
   type CoworkDocumentSummary,
   type CoworkWorkspaceInput,
 } from "../contracts";
 import { saveRailTab } from "../guards";
+import { frameSegments } from "../persistence/framing";
 import CoworkWorkspaceWidget, {
   reimportReceiptMatchesDocument,
 } from "../widget/CoworkWorkspaceWidget";
@@ -1248,6 +1252,50 @@ const jsonResponse = (body: unknown, status = 200): Response =>
     arrayBuffer: async () => new ArrayBuffer(0),
   }) as unknown as Response;
 
+class MockCoworkEventSource {
+  static instances: MockCoworkEventSource[] = [];
+
+  closed = false;
+  readonly listeners = new Map<
+    string,
+    Set<EventListenerOrEventListenerObject>
+  >();
+
+  constructor(readonly url: string | URL) {
+    MockCoworkEventSource.instances.push(this);
+  }
+
+  addEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject,
+  ): void {
+    const listeners = this.listeners.get(type) ?? new Set();
+    listeners.add(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  removeEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject,
+  ): void {
+    this.listeners.get(type)?.delete(listener);
+  }
+
+  close(): void {
+    this.closed = true;
+  }
+
+  emitMessage(value: unknown): void {
+    const event = new MessageEvent<string>("message", {
+      data: JSON.stringify(value),
+    });
+    this.listeners.get("message")?.forEach((listener) => {
+      if (typeof listener === "function") listener(event);
+      else listener.handleEvent(event);
+    });
+  }
+}
+
 const emptyYdocResponse = (): Response =>
   ({
     ok: true,
@@ -1260,11 +1308,98 @@ const emptyYdocResponse = (): Response =>
     json: async () => ({}),
   }) as unknown as Response;
 
+const hydratedYdocResponse = (text: string): Response => {
+  const document = new Y.Doc();
+  const paragraph = new Y.XmlElement("paragraph");
+  paragraph.insert(0, [new Y.XmlText(text)]);
+  document.getXmlFragment("default").insert(0, [paragraph]);
+  const update = Y.encodeStateAsUpdate(document);
+  const body = Uint8Array.from(frameSegments([update])).buffer;
+  document.destroy();
+  return {
+    ok: true,
+    status: 200,
+    headers: {
+      get: (name: string) =>
+        name === "X-WB-Next-Offset"
+          ? "1"
+          : name === "X-WB-Doc-Sha256"
+            ? "h1"
+            : name === "X-WB-Snapshot-Sha256"
+              ? "snapshot-h1"
+              : name === "X-WB-Ydoc-Generation"
+                ? "generation-h1"
+                : null,
+    },
+    arrayBuffer: async () => body,
+    json: async () => ({}),
+  } as unknown as Response;
+};
+
+const emptyTruthPayload = (url: string) => {
+  const params = new URL(url, "https://work-buddy.test").searchParams;
+  return {
+    schema: "cowork-truth/v1",
+    store_id: "live-store",
+    document_id: "live-doc",
+    view: params.get("view") ?? "document",
+    filter: params.get("filter") ?? "all",
+    counts: {
+      all: 0,
+      facts: 0,
+      proposed: 0,
+      needs_review: 0,
+      challenged: 0,
+      unconnected: 0,
+    },
+    capabilities: {
+      can_observe: true,
+      can_modify: true,
+      can_decide: true,
+      allowed_claim_kinds: ["fact"],
+      mutation_unavailable_reason: null,
+    },
+    claims: [],
+    next_offset: null,
+  };
+};
+
+const RELATED_DOCUMENT: CoworkDocumentSummary = {
+  ...LIVE_DOCUMENT,
+  documentId: "related-doc",
+  path: "docs/related.md",
+  title: "Related doc",
+};
+
+const CROSS_DOCUMENT_PASSAGE = "The related document carries this exact passage.";
+const CROSS_DOCUMENT_CONNECTION = {
+  expression_id: "expression-related",
+  span_id: "span-related",
+  document_id: RELATED_DOCUMENT.documentId,
+  document_title: RELATED_DOCUMENT.title,
+  document_path: RELATED_DOCUMENT.path,
+  role: "quote",
+  quote: CROSS_DOCUMENT_PASSAGE,
+  selector: {
+    exact: CROSS_DOCUMENT_PASSAGE,
+    prefix: "",
+    suffix: "",
+    start: 0,
+    end: CROSS_DOCUMENT_PASSAGE.length,
+  },
+  claim_canonical_sha256: "claim-cross-canonical",
+  created_at: "2026-08-04T12:00:00Z",
+  created_by: { kind: "human", ref: "owner" },
+} as const;
+
 /** Route the live surface's direct route calls: R2 read, R3 ydoc pull, R4 ydoc push. */
 const liveFetch = () =>
   vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = String(input);
     const method = (init?.method ?? "GET").toUpperCase();
+    if (url.includes("/api/truth/doc/live-doc/truth")) {
+      return jsonResponse(emptyTruthPayload(url));
+    }
     if (url.includes("/api/truth/doc/live-doc/conversation")) {
       return jsonResponse({
         ok: true,
@@ -1287,6 +1422,138 @@ const liveFetch = () =>
     }
     return jsonResponse({ error: "not_found" }, 404);
   });
+
+const crossDocumentInput = (
+  document: CoworkDocumentSummary,
+): CoworkWorkspaceInput => ({
+  document,
+  sessionQuality: "complete",
+  folders: [LIVE_FOLDER],
+  folderSelection: { kind: "initialized", folder: LIVE_FOLDER },
+  activeFolderStoreId: LIVE_FOLDER.storeId,
+  catalog: {
+    status: "ready",
+    documents: [LIVE_DOCUMENT, RELATED_DOCUMENT],
+    refreshedAt: "2026-08-04T12:00:00Z",
+    error: null,
+  },
+  scratches: [],
+  routeTarget: {
+    kind: "registered",
+    storeId: LIVE_FOLDER.storeId,
+    documentId: document.documentId,
+  },
+  activeSession: {
+    kind: "registered",
+    storeId: LIVE_FOLDER.storeId,
+    document,
+  },
+  openingTarget: null,
+  navigationError: null,
+  readOnly: false,
+});
+
+const crossDocumentTruthFetch = () => {
+  const fallback = liveFetch();
+  const currentConnection = {
+    ...CROSS_DOCUMENT_CONNECTION,
+    expression_id: "expression-live",
+    span_id: "span-live",
+    document_id: LIVE_DOCUMENT.documentId,
+    document_title: LIVE_DOCUMENT.title,
+    document_path: LIVE_DOCUMENT.path,
+    quote: "The current document expresses this claim.",
+    selector: {
+      exact: "The current document expresses this claim.",
+      prefix: "",
+      suffix: "",
+      start: 0,
+      end: 41,
+    },
+  };
+  const claim = {
+    claim_id: "claim-cross",
+    proposition: "A claim connected across two documents.",
+    claim_kind: "fact",
+    canonical_sha256: "claim-cross-canonical",
+    scope: "store",
+    base_status: "proposed",
+    needs_review: false,
+    health: "clean",
+    voided: false,
+    redacted: false,
+    is_fact: false,
+    receipt_count: 0,
+    connection_count: 2,
+    document_connections: [currentConnection, CROSS_DOCUMENT_CONNECTION],
+    available_actions: [],
+    created_at: "2026-08-04T12:00:00Z",
+  };
+  return vi.fn(
+    async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = String(input);
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url.includes("/api/truth/doc/live-doc/truth/claims/claim-cross")) {
+        return jsonResponse({
+          claim,
+          connections: [currentConnection, CROSS_DOCUMENT_CONNECTION],
+          status_history: [],
+          receipts: [],
+          conflicts: [],
+          derivations: [],
+          decision_binding: {
+            payload_sha256: "payload-cross",
+            context_sha256: "context-cross",
+            agent_authored_only: false,
+          },
+        });
+      }
+      if (url.includes("/api/truth/doc/live-doc/truth")) {
+        const payload = emptyTruthPayload(url);
+        return jsonResponse({
+          ...payload,
+          counts: { ...payload.counts, all: 1, proposed: 1 },
+          claims: [claim],
+        });
+      }
+      if (url.includes("/api/truth/doc/related-doc/truth")) {
+        return jsonResponse({
+          ...emptyTruthPayload(url),
+          document_id: RELATED_DOCUMENT.documentId,
+        });
+      }
+      if (url.includes("/api/truth/doc/related-doc/conversation")) {
+        return jsonResponse({
+          ok: true,
+          conversation_id: LIVE_CONVERSATION_ID,
+          created: method === "POST",
+          agent: LIVE_AGENT,
+        });
+      }
+      if (url.includes("/ydoc")) return hydratedYdocResponse(CROSS_DOCUMENT_PASSAGE);
+      if (url.includes("/api/truth/doc/related-doc")) {
+        return jsonResponse({
+          ...R2_LIVE_PAYLOAD,
+          document_id: RELATED_DOCUMENT.documentId,
+          path: RELATED_DOCUMENT.path,
+          title: RELATED_DOCUMENT.title,
+          open_proposals: [],
+          expressions: [{
+            expression_id: CROSS_DOCUMENT_CONNECTION.expression_id,
+            span_id: CROSS_DOCUMENT_CONNECTION.span_id,
+            node_id_hint: null,
+            quote: CROSS_DOCUMENT_PASSAGE,
+            quote_anchor: CROSS_DOCUMENT_CONNECTION.selector,
+            claim_ref: "claim-cross",
+            claim_status: "proposed",
+            claim_kind: "fact",
+          }],
+        });
+      }
+      return fallback(input, init);
+    },
+  );
+};
 
 describe("CoworkWorkspaceWidget live mode", () => {
   const originalFetch = globalThis.fetch;
@@ -1345,6 +1612,200 @@ describe("CoworkWorkspaceWidget live mode", () => {
     expect(dock?.parentElement).toHaveClass("wb-cowork");
     expect(dock?.closest(".wb-cowork__editor-panel")).toBeNull();
   });
+
+  it("maps Review, Truth, and Chat selection to the editor's view-only lens", async () => {
+    const setLens = vi.spyOn(LedgerDecorationProjector.prototype, "setLens");
+    const user = userEvent.setup();
+    renderLive();
+
+    await waitFor(() => expect(setLens).toHaveBeenCalledWith("review"));
+    await user.click(screen.getByRole("tab", { name: "Truth" }));
+    await waitFor(() => expect(setLens).toHaveBeenLastCalledWith("truth"));
+
+    await user.click(screen.getByRole("tab", { name: /Chat/ }));
+    await waitFor(() => expect(setLens).toHaveBeenLastCalledWith("neutral"));
+
+    await user.click(screen.getByRole("tab", { name: "Review" }));
+    await waitFor(() => expect(setLens).toHaveBeenLastCalledWith("review"));
+  });
+
+  it("opens a connected document and reveals its exact Truth passage once when effects replay", async () => {
+    window.localStorage.clear();
+    const showPassage = vi.spyOn(
+      CoworkPassageHighlighter.prototype,
+      "show",
+    ).mockReturnValue(true);
+    const focusAnchor = vi.spyOn(
+      DomReviewAnchorController.prototype,
+      "focusAnchor",
+    );
+    const emit = vi.fn(noopEmit);
+    const fetchImpl = crossDocumentTruthFetch();
+    globalThis.fetch = fetchImpl as unknown as typeof fetch;
+    window.history.replaceState(
+      {},
+      "",
+      "/app/cowork?store_id=live-store&document_id=live-doc",
+    );
+    const { container, rerender } = render(
+      <StrictMode>
+        {workspaceElement(crossDocumentInput(LIVE_DOCUMENT), emit)}
+      </StrictMode>,
+    );
+
+    await userEvent.click(await screen.findByRole("tab", { name: "Truth" }));
+    await userEvent.click(await screen.findByRole("button", {
+      name: "A claim connected across two documents.",
+    }));
+    await userEvent.click(await screen.findByRole("button", {
+      name: "Open and show passage",
+    }));
+
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({
+      intent_type: COWORK_INTENTS.documentOpen,
+      payload: {
+        storeId: LIVE_FOLDER.storeId,
+        documentId: RELATED_DOCUMENT.documentId,
+      },
+    }));
+
+    window.history.replaceState(
+      {},
+      "",
+      "/app/cowork?store_id=live-store&document_id=related-doc",
+    );
+    rerender(
+      <StrictMode>
+        {workspaceElement(crossDocumentInput(RELATED_DOCUMENT), emit)}
+      </StrictMode>,
+    );
+
+    await waitFor(
+      () => expect(container.querySelector(".ProseMirror")).not.toBeNull(),
+      { timeout: 10_000 },
+    );
+    await waitFor(() => expect(
+      focusAnchor.mock.calls.filter(
+        ([id, kind]) =>
+          id === CROSS_DOCUMENT_CONNECTION.expression_id && kind === "expression",
+      ),
+    ).toHaveLength(1), { timeout: 10_000 });
+    await waitFor(() => expect(showPassage).toHaveBeenCalledWith({
+      spanId: CROSS_DOCUMENT_CONNECTION.span_id,
+      anchor: {
+        exact: CROSS_DOCUMENT_PASSAGE,
+        prefix: "",
+        suffix: "",
+      },
+    }), { timeout: 10_000 });
+    expect(screen.getByRole("tab", { name: "Truth" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+
+    // Rerendering the destination (and any later ledger refresh it causes) must
+    // preserve focus without replaying the user-commanded scroll/highlight.
+    rerender(
+      <StrictMode>
+        {workspaceElement(crossDocumentInput(RELATED_DOCUMENT), emit)}
+      </StrictMode>,
+    );
+    await act(async () => Promise.resolve());
+    expect(showPassage).toHaveBeenCalledTimes(1);
+    saveRailTab(window.localStorage, LIVE_DOCUMENT.documentId, "review", LIVE_FOLDER.storeId);
+    saveRailTab(window.localStorage, RELATED_DOCUMENT.documentId, "review", LIVE_FOLDER.storeId);
+  }, 15_000);
+
+  it("discards a cross-document Truth reveal when opening the document fails", async () => {
+    window.localStorage.clear();
+    const showPassage = vi.spyOn(
+      CoworkPassageHighlighter.prototype,
+      "show",
+    ).mockReturnValue(true);
+    const emit = vi.fn(async (intent: Parameters<typeof noopEmit>[0]) =>
+      intent.intent_type === COWORK_INTENTS.documentOpen
+        ? {
+            intent_id: intent.intent_id,
+            status: "rejected" as const,
+            message: "The connected document is unavailable.",
+          }
+        : {
+            intent_id: intent.intent_id,
+            status: "accepted" as const,
+          },
+    );
+    globalThis.fetch = crossDocumentTruthFetch() as unknown as typeof fetch;
+    const { container, rerender } = renderWorkspace(
+      crossDocumentInput(LIVE_DOCUMENT),
+      emit,
+    );
+
+    await userEvent.click(await screen.findByRole("tab", { name: "Truth" }));
+    await userEvent.click(await screen.findByRole("button", {
+      name: "A claim connected across two documents.",
+    }));
+    await userEvent.click(await screen.findByRole("button", {
+      name: "Open and show passage",
+    }));
+    expect(await screen.findByText("The connected document is unavailable.")).toBeVisible();
+
+    // A later ordinary visit to the same document cannot replay the failed request.
+    showPassage.mockClear();
+    rerender(workspaceElement(crossDocumentInput(RELATED_DOCUMENT), emit));
+    await waitFor(
+      () => expect(container.querySelector(".ProseMirror")).not.toBeNull(),
+      { timeout: 10_000 },
+    );
+    expect(showPassage).not.toHaveBeenCalled();
+    saveRailTab(window.localStorage, LIVE_DOCUMENT.documentId, "review", LIVE_FOLDER.storeId);
+    saveRailTab(window.localStorage, RELATED_DOCUMENT.documentId, "review", LIVE_FOLDER.storeId);
+  }, 15_000);
+
+  it("fans a Truth event out to both Review and Truth authoritative reads", async () => {
+    MockCoworkEventSource.instances = [];
+    vi.stubGlobal(
+      "EventSource",
+      MockCoworkEventSource as unknown as typeof EventSource,
+    );
+    const fallback = liveFetch();
+    let reviewReads = 0;
+    let truthReads = 0;
+    const fetchImpl = vi.fn(
+      async (
+        input: RequestInfo | URL,
+        init?: RequestInit,
+      ): Promise<Response> => {
+        const url = String(input);
+        if (url.includes("/api/truth/doc/live-doc/truth")) {
+          truthReads += 1;
+        } else if (
+          url === "/api/truth/doc/live-doc?store_id=live-store" &&
+          (init?.method ?? "GET") === "GET"
+        ) {
+          reviewReads += 1;
+        }
+        return fallback(input, init);
+      },
+    );
+    renderLive(noopEmit, fetchImpl as unknown as typeof fetch);
+
+    await waitFor(() => expect(MockCoworkEventSource.instances).toHaveLength(1));
+    await waitFor(() => expect(reviewReads).toBeGreaterThan(0));
+    await waitFor(() => expect(truthReads).toBeGreaterThan(0));
+    const initialReviewReads = reviewReads;
+    const initialTruthReads = truthReads;
+
+    act(() => {
+      MockCoworkEventSource.instances[0]?.emitMessage({
+        event_type: "truth.claim_confirmed",
+        payload: { event_id: "truth-event-1" },
+        ts: 1_786_000_000,
+      });
+    });
+
+    await waitFor(() => expect(reviewReads).toBeGreaterThan(initialReviewReads));
+    await waitFor(() => expect(truthReads).toBeGreaterThan(initialTruthReads));
+  }, 15_000);
 
   it("routes Review card activation to a one-shot editor reveal", async () => {
     const revealAnchor = vi.spyOn(
@@ -1423,11 +1884,11 @@ describe("CoworkWorkspaceWidget live mode", () => {
           init?.method === "POST",
       ),
     ).toHaveLength(0);
-    saveRailTab(window.localStorage, "live-doc", "review");
+    saveRailTab(window.localStorage, "live-doc", "review", "live-store");
   });
 
   it("restores a persisted Chat view with GET only", async () => {
-    saveRailTab(window.localStorage, "live-doc", "chat");
+    saveRailTab(window.localStorage, "live-doc", "chat", "live-store");
     const fetchImpl = liveFetch();
     renderLive(noopEmit, fetchImpl as unknown as typeof fetch);
 
@@ -1441,7 +1902,7 @@ describe("CoworkWorkspaceWidget live mode", () => {
           init?.method === "POST",
       ),
     ).toHaveLength(0);
-    saveRailTab(window.localStorage, "live-doc", "review");
+    saveRailTab(window.localStorage, "live-doc", "review", "live-store");
   });
 
   it("keeps a stopped Chat writable without exposing restart controls", async () => {
@@ -1490,7 +1951,7 @@ describe("CoworkWorkspaceWidget live mode", () => {
     expect(screen.queryByRole("button", { name: /Restart chat/i })).toBeNull();
     expect(screen.queryByText("Chat paused.")).toBeNull();
     expect(lifecyclePosts).toBe(0);
-    saveRailTab(window.localStorage, "live-doc", "review");
+    saveRailTab(window.localStorage, "live-doc", "review", "live-store");
   });
 
   it("hydrates persisted feedback span links on reload by exact message id", async () => {
@@ -1512,7 +1973,7 @@ describe("CoworkWorkspaceWidget live mode", () => {
       .mockImplementation((callback) =>
         window.setTimeout(() => callback(performance.now()), 0),
       );
-    saveRailTab(window.localStorage, "live-doc", "chat");
+    saveRailTab(window.localStorage, "live-doc", "chat", "live-store");
     const persistedFeedback = {
       evidence_id: "feedback-evidence-1",
       span_id: "feedback-span-1",
@@ -1610,7 +2071,7 @@ describe("CoworkWorkspaceWidget live mode", () => {
           init?.method === "POST",
       ),
     ).toHaveLength(0);
-    saveRailTab(window.localStorage, "live-doc", "review");
+    saveRailTab(window.localStorage, "live-doc", "review", "live-store");
   });
 
   it("prepares from Chat selection, then loads the returned opaque id", async () => {
@@ -1712,7 +2173,7 @@ describe("CoworkWorkspaceWidget live mode", () => {
         String(input).includes("/api/conversations/cowork-doc-"),
       ),
     ).toBe(false);
-    saveRailTab(window.localStorage, "live-doc", "review");
+    saveRailTab(window.localStorage, "live-doc", "review", "live-store");
   });
 
   it("selects a model after preparation without sending lifecycle instructions", async () => {
@@ -1829,7 +2290,7 @@ describe("CoworkWorkspaceWidget live mode", () => {
     expect(bindRequests[0]?.body).toBeUndefined();
     expect(screen.queryByRole("button", { name: /Start chat/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /Restart chat/i })).toBeNull();
-    saveRailTab(window.localStorage, "live-doc", "review");
+    saveRailTab(window.localStorage, "live-doc", "review", "live-store");
   });
 
   it("filters Documents to the open folder and shows browser-local work only without one", async () => {
@@ -2286,7 +2747,7 @@ describe("CoworkWorkspaceWidget live mode", () => {
     expect(screen.queryByText(/This is the editor pane/)).toBeNull();
   }, 15_000);
 
-  it("uses mounted Editor, Review, and Chat peer panes with roving focus on narrow screens", async () => {
+  it("uses mounted Editor, Review, Truth, and Chat peer panes with roving focus on narrow screens", async () => {
     vi.stubGlobal(
       "matchMedia",
       vi.fn((query: string) => ({
@@ -2306,10 +2767,12 @@ describe("CoworkWorkspaceWidget live mode", () => {
     const paneTabs = await screen.findByRole("tablist", { name: "Co-work panes" });
     const editorTab = within(paneTabs).getByRole("tab", { name: "Editor" });
     const reviewTab = within(paneTabs).getByRole("tab", { name: "Review" });
+    const truthTab = within(paneTabs).getByRole("tab", { name: "Truth" });
     const chatTab = within(paneTabs).getByRole("tab", { name: "Chat" });
     expect(editorTab).toHaveAttribute("aria-selected", "true");
     expect(editorTab).toHaveAttribute("tabindex", "0");
     expect(reviewTab).toHaveAttribute("tabindex", "-1");
+    expect(truthTab).toHaveAttribute("tabindex", "-1");
     expect(chatTab).toHaveAttribute("tabindex", "-1");
     expect(document.getElementById("wb-cowork-mobile-panel-editor")).toBeVisible();
     expect(document.getElementById("wb-cowork-rail-panel-review")).not.toBeVisible();
@@ -2346,6 +2809,14 @@ describe("CoworkWorkspaceWidget live mode", () => {
     expect(screen.getByText("Decision: Accept")).toBeVisible();
 
     reviewTab.focus();
+    await user.keyboard("{ArrowRight}");
+    expect(truthTab).toHaveFocus();
+    expect(truthTab).toHaveAttribute("aria-selected", "true");
+    expect(truthTab).toHaveAttribute("tabindex", "0");
+    expect(reviewTab).toHaveAttribute("tabindex", "-1");
+    expect(document.getElementById("wb-cowork-rail-panel-truth")).toBeVisible();
+    expect(document.getElementById("wb-cowork-rail-panel-review")).not.toBeVisible();
+
     await user.keyboard("{End}");
     expect(chatTab).toHaveFocus();
     expect(chatTab).toHaveAttribute("aria-selected", "true");

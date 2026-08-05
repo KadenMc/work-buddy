@@ -61,6 +61,7 @@ import type { CoworkEditorReadyContext } from "./CoworkBridgeEditor";
 import type { CoworkSittingWorkspace } from "./sittingWorkspace";
 import type { CoworkActionSnapshotController } from "../targets";
 import type { CoworkPasteProvenanceRecorder } from "../provenance";
+import type { CoworkEditorLens } from "../editor/ledgerDecorations";
 
 /** Registered documents are initialized by bootstrap; live hydration never fabricates text. */
 export const DEFAULT_BRIDGE_SEED_MARKDOWN = "";
@@ -157,6 +158,10 @@ export interface CoworkBridge {
   readonly verifyCapability: CoworkVerifyCapability | null;
   /** Exact target/action capture behavior owned by the currently mounted editor. */
   readonly actionSnapshotController: CoworkActionSnapshotController | null;
+  /** True only after the hydrated ProseMirror editor has mounted. */
+  readonly editorReady: boolean;
+  /** Selects the view-only editor overlay for the active interaction surface. */
+  readonly setEditorLens: (lens: CoworkEditorLens) => void;
   /** Durable, restart-surviving rechecks from the latest authoritative R2 pull. */
   readonly verificationRecheckIntents: readonly VerificationRecheckIntent[];
   /**
@@ -196,7 +201,7 @@ export const useCoworkBridge = (
 
   const editorRef = useRef<Editor | null>(null);
   const editorDomRef = useRef<HTMLElement | null>(null);
-  const editorReadyRef = useRef(false);
+  const [editorReady, setEditorReady] = useState(false);
   const sittingWorkspaceRef = useRef<CoworkSittingWorkspace | null>(null);
   const proposalCatalogRef = useRef<readonly ProposalInput[]>([]);
   const [health, setHealth] = useState<CoworkLiveHealth | null>(null);
@@ -318,14 +323,14 @@ export const useCoworkBridge = (
       onReady: ({ editor, dom }) => {
         editorRef.current = editor;
         editorDomRef.current = dom;
-        editorReadyRef.current = true;
         core.ledgerProjector.attach(editor);
         core.reviewAnchors.attachEditor(editor);
+        setEditorReady(true);
       },
       onTeardown: () => {
         core.passageHighlighter.clear();
         core.reviewAnchors.detachEditor();
-        editorReadyRef.current = false;
+        setEditorReady(false);
         editorRef.current = null;
         editorDomRef.current = null;
         core.ledgerProjector.detach();
@@ -383,6 +388,11 @@ export const useCoworkBridge = (
     [core],
   );
 
+  const setEditorLens = useMemo(
+    () => (lens: CoworkEditorLens): void => core.ledgerProjector.setLens(lens),
+    [core],
+  );
+
   return {
     reviewProvider: core.reviewProvider,
     reviewAnchors: core.reviewAnchors,
@@ -392,6 +402,8 @@ export const useCoworkBridge = (
     verifyCapability,
     verificationRecheckIntents,
     actionSnapshotController,
+    editorReady,
+    setEditorLens,
     scrollToSpanAnchor,
   };
 };

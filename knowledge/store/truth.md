@@ -31,5 +31,11 @@ The machine registry is discovery and health metadata, not a second claim store.
 The sidecar's authoritative record is append-only except for sanctioned content
 redaction. Human decisions bind one exact claim hash and its displayed receipts.
 
+Within Co-work, the **Truth** rail is the first-class observability and contextual
+management surface for this ledger. **Facts** is its current-authoritative-claims
+filter, not a second claim kind. Document expressions identify where prose says
+a claim; evidence remains the distinct basis for believing it. See
+`cowork/truth-surface` for the interaction and editor-lens contract.
+
 Use the `truth_*` capabilities for agent access. Use `wbuddy truth` for direct
 local inspection and interactive CLI confirmation.

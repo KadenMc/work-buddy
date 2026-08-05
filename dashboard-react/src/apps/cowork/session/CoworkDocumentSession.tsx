@@ -10,6 +10,10 @@ import type {
   CoworkInvitePerspectiveHandler,
   CoworkRunVerifyHandler,
 } from "../targets";
+import type {
+  TruthPassageConnection,
+  TruthPassageNavigationTarget,
+} from "../truth";
 
 export interface CoworkDocumentSessionProps {
   readonly storeId: string;
@@ -23,6 +27,9 @@ export interface CoworkDocumentSessionProps {
   readonly onMaterialized?: (receipt: CoworkMaterializeReceipt) => void;
   readonly onRunVerify?: CoworkRunVerifyHandler;
   readonly onInvitePerspective?: CoworkInvitePerspectiveHandler;
+  readonly onOpenTruthPassage?: (connection: TruthPassageConnection) => void;
+  readonly pendingTruthPassageNavigation?: TruthPassageNavigationTarget | null;
+  readonly onTruthPassageNavigationConsumed?: (requestId: string) => void;
 }
 
 /** Key this boundary by store/document so no live editor resource crosses a switch. */
@@ -36,6 +43,9 @@ export function CoworkDocumentSession({
   onMaterialized,
   onRunVerify,
   onInvitePerspective,
+  onOpenTruthPassage,
+  pendingTruthPassageNavigation,
+  onTruthPassageNavigationConsumed,
 }: CoworkDocumentSessionProps) {
   return (
     <CoworkLiveWorkspace
@@ -52,6 +62,9 @@ export function CoworkDocumentSession({
       onMaterialized={onMaterialized}
       onRunVerify={onRunVerify}
       onInvitePerspective={onInvitePerspective}
+      onOpenTruthPassage={onOpenTruthPassage}
+      pendingTruthPassageNavigation={pendingTruthPassageNavigation}
+      onTruthPassageNavigationConsumed={onTruthPassageNavigationConsumed}
     />
   );
 }

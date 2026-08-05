@@ -32,6 +32,8 @@ describe("rail tab retention", () => {
     expect(loadRailTab(storage, "doc-1")).toBe("chat");
     saveRailTab(storage, "doc-1", "review");
     expect(loadRailTab(storage, "doc-1")).toBe("review");
+    saveRailTab(storage, "doc-1", "truth");
+    expect(loadRailTab(storage, "doc-1")).toBe("truth");
   });
 
   it("returns null for a missing key", () => {
@@ -52,5 +54,16 @@ describe("rail tab retention", () => {
     expect(loadRailTab(storage, "doc-a")).toBe("chat");
     expect(loadRailTab(storage, "doc-b")).toBe("review");
     expect(railTabStorageKey("doc-a")).not.toBe(railTabStorageKey("doc-b"));
+  });
+
+  it("keeps identical document ids isolated per folder", () => {
+    const storage = new MemoryStorage();
+    saveRailTab(storage, "doc", "truth", "folder-a");
+    saveRailTab(storage, "doc", "chat", "folder-b");
+    expect(loadRailTab(storage, "doc", "folder-a")).toBe("truth");
+    expect(loadRailTab(storage, "doc", "folder-b")).toBe("chat");
+    expect(railTabStorageKey("doc", "folder-a")).not.toBe(
+      railTabStorageKey("doc", "folder-b"),
+    );
   });
 });

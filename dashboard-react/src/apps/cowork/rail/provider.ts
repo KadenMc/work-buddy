@@ -18,8 +18,15 @@ import type {
 } from "./contracts";
 import type { RailSelectionKind } from "./store";
 
-/** Editor-anchor namespaces include evidence results outside sitting selection state. */
-export type ReviewAnchorKind = RailSelectionKind | "evaluation_result";
+/**
+ * Editor-anchor namespaces shared by Review and Truth. The historical name is
+ * retained at the provider seam while the controller serves both rail views.
+ */
+export type ReviewAnchorKind =
+  | RailSelectionKind
+  | "expression"
+  | "provenance"
+  | "evaluation_result";
 
 /** Tear down a subscription registered through the provider. */
 export type ReviewUnsubscribe = () => void;
