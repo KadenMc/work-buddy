@@ -9,6 +9,7 @@ from enum import Enum
 _GENERATION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _SESSION_SUFFIX = "-cowork"
 _VERIFY_JOB_MARKER = "-cowork-verify-"
+_TRUTH_ANALYSIS_SUFFIX = "-cowork-truth-analysis"
 
 
 class CoworkVerifyRole(str, Enum):
@@ -90,11 +91,32 @@ def cowork_verify_job_from_session(
     return CoworkVerifyJobIdentity(job_id=job_id, role=role)
 
 
+def cowork_truth_analysis_session_id(run_id: str) -> str:
+    """Return the least-authority hosted-worker identity for one Truth run."""
+
+    normalized = str(run_id or "").strip()
+    if not _GENERATION_RE.fullmatch(normalized):
+        raise ValueError("Co-work Truth analysis run id is not a safe session identity")
+    return f"{normalized}{_TRUTH_ANALYSIS_SUFFIX}"
+
+
+def cowork_truth_analysis_run_from_session(session_id: str | None) -> str | None:
+    """Recover a server-authored Truth analysis run identity, if present."""
+
+    normalized = str(session_id or "").strip()
+    if not normalized.endswith(_TRUTH_ANALYSIS_SUFFIX):
+        return None
+    run_id = normalized[: -len(_TRUTH_ANALYSIS_SUFFIX)]
+    return run_id if _GENERATION_RE.fullmatch(run_id) else None
+
+
 __all__ = [
     "CoworkVerifyJobIdentity",
     "CoworkVerifyRole",
     "cowork_execution_session_id",
     "cowork_generation_from_session",
+    "cowork_truth_analysis_run_from_session",
+    "cowork_truth_analysis_session_id",
     "cowork_verify_job_from_session",
     "cowork_verify_job_session_id",
 ]

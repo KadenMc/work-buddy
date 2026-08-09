@@ -1772,9 +1772,13 @@ def _validate_capture(
     purpose: str = "verify_execution",
     authority_context: Mapping[str, Any] | None = None,
 ) -> ActionSnapshot:
-    if purpose not in {"verify_execution", "recheck_target_affirmation"}:
+    if purpose not in {
+        "verify_execution",
+        "recheck_target_affirmation",
+        "truth_analysis",
+    }:
         raise VerifyOrchestrationError("unsupported action snapshot purpose")
-    if purpose == "verify_execution" and selection is None:
+    if purpose in {"verify_execution", "truth_analysis"} and selection is None:
         raise VerifyOrchestrationError(
             "an execution selection is required for this action snapshot"
         )
@@ -1872,10 +1876,16 @@ def _validate_capture(
             ),
             target=selector,
             context_boundary={
-                "kind": "complete_frozen_document",
+                "kind": (
+                    "action_target"
+                    if purpose == "truth_analysis"
+                    else "complete_frozen_document"
+                ),
                 "purpose": (
                     "user_affirmed_exact_recheck_target"
                     if purpose == "recheck_target_affirmation"
+                    else "truth_claim_analysis"
+                    if purpose == "truth_analysis"
                     else "whole-context coordinator and bounded reviser"
                 ),
                 "capture_id": _required_text(
@@ -1906,7 +1916,11 @@ def _validate_capture(
                     "class": "account_backed_agent",
                     "provider_id": selection.provider_id,
                     "model_id": selection.model_id,
-                    "content": "complete_permitted_frozen_document",
+                    "content": (
+                        "captured_target_and_bounded_truth_context"
+                        if purpose == "truth_analysis"
+                        else "complete_permitted_frozen_document"
+                    ),
                 }
             ),
             actor=actor,

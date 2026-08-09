@@ -108,6 +108,22 @@ describe("HttpCoworkTruthClient", () => {
             document_connections: [],
             available_actions: ["confirm", "reject", "redact"],
             created_at: "2026-08-04T12:00:00Z",
+            created_by: { kind: "human", ref: "owner" },
+            provenance: {
+              prepared_by: {
+                kind: "agent_run",
+                surface: "cowork_truth_analysis",
+                analysis_run_id: "run-1",
+                candidate_id: "candidate-1",
+                provider_id: "claude-code",
+                model_id: "sonnet",
+              },
+              added_by: {
+                kind: "human",
+                ref: "owner",
+                at: "2026-08-04T12:00:05Z",
+              },
+            },
           },
           connections: [{
             expression_id: "expression-1",
@@ -117,6 +133,21 @@ describe("HttpCoworkTruthClient", () => {
             role: "quote",
             quote: "Selected source text",
             selector: { exact: "Selected source text", prefix: "", suffix: "", start: 10, end: 30 },
+            provenance: {
+              prepared_by: {
+                kind: "agent_run",
+                surface: "cowork_truth_analysis",
+                analysis_run_id: "run-1",
+                candidate_id: "candidate-1",
+                provider_id: "claude-code",
+                model_id: "sonnet",
+              },
+              added_by: {
+                kind: "human",
+                ref: "owner",
+                at: "2026-08-04T12:00:05Z",
+              },
+            },
           }],
           status_history: [{ id: "event-1", status: "proposed", at: "2026-08-04T12:00:00Z", actor_kind: "agent" }],
           receipts: [{
@@ -195,6 +226,19 @@ describe("HttpCoworkTruthClient", () => {
       payloadSha256: "payload-hash",
       contextSha256: "context-hash",
       agentAuthoredOnly: true,
+    });
+    expect(detail.provenance).toMatchObject({
+      preparedBy: {
+        analysisRunId: "run-1",
+        candidateId: "candidate-1",
+        providerId: "claude-code",
+        modelId: "sonnet",
+      },
+      addedBy: { kind: "human", ref: "owner" },
+    });
+    expect(detail.connections[0].provenance?.preparedBy).toMatchObject({
+      providerId: "claude-code",
+      modelId: "sonnet",
     });
   });
 

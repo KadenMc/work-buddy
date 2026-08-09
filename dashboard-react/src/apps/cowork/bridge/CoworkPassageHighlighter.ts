@@ -38,7 +38,18 @@ export class CoworkPassageHighlighter {
     this.#durationMs = options.durationMs ?? PASSAGE_HIGHLIGHT_MS;
   }
 
-  show(target: ScrollAnchorTarget): boolean {
+  #project(
+    target: ScrollAnchorTarget,
+    {
+      reveal,
+      temporary,
+      restoreFocus,
+    }: {
+      readonly reveal: boolean;
+      readonly temporary: boolean;
+      readonly restoreFocus: boolean;
+    },
+  ): boolean {
     const editor = this.#options.getEditor();
     const anchor = target.anchor;
     if (editor === null || anchor === undefined) return false;
@@ -62,11 +73,13 @@ export class CoworkPassageHighlighter {
     }
     this.#active = { editor, highlightId };
 
-    const targetElement = [...editor.view.dom.querySelectorAll<HTMLElement>(
-      '[data-wb-anchor-kind="passage"]',
-    )].find(
-      (element) => element.getAttribute("data-wb-anchor-id") === highlightId,
-    );
+    const targetElement = reveal
+      ? [...editor.view.dom.querySelectorAll<HTMLElement>(
+          '[data-wb-anchor-kind="passage"]',
+        )].find(
+          (element) => element.getAttribute("data-wb-anchor-id") === highlightId,
+        )
+      : undefined;
     if (
       targetElement !== undefined &&
       typeof targetElement.scrollIntoView === "function"
@@ -80,7 +93,7 @@ export class CoworkPassageHighlighter {
       });
     }
 
-    if (this.#window !== undefined) {
+    if (temporary && this.#window !== undefined) {
       this.#timer = this.#window.setTimeout(() => {
         this.#timer = undefined;
         const active = this.#active;
@@ -88,9 +101,37 @@ export class CoworkPassageHighlighter {
         if (active !== undefined && !active.editor.isDestroyed) {
           clearCoworkPassageHighlight(active.editor, active.highlightId);
         }
+        if (restoreFocus) this.focus(target);
       }, this.#durationMs);
     }
     return true;
+  }
+
+  /** One-shot user navigation used by explicit “Show in document” actions. */
+  show(target: ScrollAnchorTarget): boolean {
+    return this.#project(target, {
+      reveal: true,
+      temporary: true,
+      restoreFocus: false,
+    });
+  }
+
+  /** Explicit navigation that restores the expanded candidate's passive focus. */
+  showAndRefocus(target: ScrollAnchorTarget): boolean {
+    return this.#project(target, {
+      reveal: true,
+      temporary: true,
+      restoreFocus: true,
+    });
+  }
+
+  /** Persistent view-only emphasis with no scrolling for passive rail focus. */
+  focus(target: ScrollAnchorTarget): boolean {
+    return this.#project(target, {
+      reveal: false,
+      temporary: false,
+      restoreFocus: false,
+    });
   }
 
   clear(): void {

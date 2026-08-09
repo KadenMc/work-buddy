@@ -2117,6 +2117,7 @@ def register_routes(app):
     from work_buddy.cowork.retirement_api import retirement_blueprint
     from work_buddy.cowork.sitting_api import sitting_blueprint
     from work_buddy.cowork.truth_api import truth_blueprint
+    from work_buddy.cowork.truth_analysis_api import truth_analysis_blueprint
     from work_buddy.cowork.verify_api import verify_blueprint
 
     app.register_blueprint(bootstrap_blueprint)
@@ -2128,6 +2129,7 @@ def register_routes(app):
     app.register_blueprint(retirement_blueprint)
     app.register_blueprint(sitting_blueprint)
     app.register_blueprint(truth_blueprint)
+    app.register_blueprint(truth_analysis_blueprint)
     app.register_blueprint(verify_blueprint)
     return app
 
