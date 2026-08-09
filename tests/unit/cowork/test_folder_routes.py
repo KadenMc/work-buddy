@@ -196,6 +196,30 @@ def test_manual_inspect_then_explicit_initialize_and_list(tmp_path: Path) -> Non
     assert listed["chooser"]["available"] is False
 
 
+def test_folder_list_revalidates_and_revives_a_recovered_store(
+    tmp_path: Path,
+) -> None:
+    client, manager, registry = _client(tmp_path)
+    folder, store_id = _initialize_active_folder(tmp_path, manager, registry)
+    sidecar = folder / ".wbuddy" / "cowork"
+    offline = tmp_path / "offline-cowork-sidecar"
+
+    sidecar.rename(offline)
+    unavailable = registry.get_by_path(folder)
+    assert unavailable is not None
+    assert unavailable.reachable is False
+    offline.rename(sidecar)
+    assert registry.list_stores(refresh=False)[0].reachable is False
+
+    listed = client.get("/api/truth/cowork/folders")
+
+    assert listed.status_code == 200
+    payload = listed.get_json()
+    assert [item["store_id"] for item in payload["folders"]] == [store_id]
+    assert payload["folders"][0]["eligibility"] == "eligible"
+    assert registry.list_stores(refresh=False)[0].reachable is True
+
+
 def test_inspect_route_reports_redirected_managed_layout_without_writing_target(
     tmp_path: Path,
 ) -> None:

@@ -7,10 +7,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from work_buddy.truth import documents, ydoc_store
 from work_buddy.truth.anchors import CompositeSelector
 from work_buddy.truth.contracts import Actor, GestureError, InvariantViolation
 from work_buddy.truth.export import export_store
-from work_buddy.truth.identity import new_id, utc_now
+from work_buddy.truth.identity import new_id, sha256_bytes, utc_now
 from work_buddy.truth.lifecycle import TruthLifecycle
 from work_buddy.truth.migrations import REDACTED_SELECTOR_JSON
 from work_buddy.truth.redact import TruthRedactor, policy_basis_ref
@@ -482,6 +483,79 @@ def test_post_commit_hook_failure_still_deletes_redacted_blob(
 
     assert store.get_evidence(evidence.id).redacted_at is not None
     assert not path.exists()
+
+
+def test_redaction_defers_export_for_uncompacted_document_without_blocking_open(
+    store: TruthStore,
+    redactor: TruthRedactor,
+) -> None:
+    """An unrelated live editor tail cannot turn a redaction into a store outage."""
+
+    source = b"# Unrelated document\n"
+    snapshot = b"YDOC:" + source
+    source_sha256 = sha256_bytes(source)
+    store._store_blob_bytes(source_sha256, source)
+    snapshot_sha256 = ydoc_store.write_snapshot(store, snapshot=snapshot)
+    document = documents.register_document(
+        store,
+        path="docs/unrelated.md",
+        title="Unrelated document",
+        document_class="co_authored",
+        content_sha256=source_sha256,
+        ydoc_snapshot_sha256=snapshot_sha256,
+        actor=HUMAN,
+    )
+    structured_head = ydoc_store.current_structured_head(
+        store,
+        document_id=document.id,
+        snapshot_sha256=snapshot_sha256,
+    )
+    _, live_head = ydoc_store.append_update_cas(
+        store,
+        document_id=document.id,
+        update=b"opaque-live-edit",
+        snapshot_sha256=snapshot_sha256,
+        expected_structured_head_sha256=structured_head,
+    )
+    assert not store.paths.claims_export.exists()
+
+    secret = "REMOVE-THIS-CLAIM-WITHOUT-HIDING-THE-FOLDER"
+    claim = _claim(store, secret)
+    gesture = _gesture(
+        store,
+        subject_ref=claim.id,
+        payload_sha256=claim.canonical_sha256,
+    )
+
+    result = redactor.redact(
+        subject_kind="claim",
+        subject_ref=claim.id,
+        actor=HUMAN,
+        reason="privacy",
+        basis_kind="gesture",
+        basis_ref=gesture.id,
+    )
+
+    marker = store._redaction_recovery_intent_path(result.event.id)
+    assert store.get_claim(claim.id).proposition == "[redacted]"
+    assert not store.paths.claims_export.exists()
+    assert not marker.exists()
+
+    reopened = TruthStore.open(store.paths.sidecar, inline_content_bytes=8)
+    assert reopened.get_claim(claim.id).proposition == "[redacted]"
+    assert len(documents.list_documents(reopened)) == 1
+
+    compacted_snapshot = b"YDOC:compacted-live-edit"
+    ydoc_store.compact_and_advance(
+        reopened,
+        document_id=document.id,
+        snapshot=compacted_snapshot,
+        expected_snapshot_sha256=sha256_bytes(compacted_snapshot),
+        expected_structured_head_sha256=live_head,
+        actor=HUMAN,
+    )
+    assert reopened.paths.claims_export.is_file()
+    assert secret.encode() not in reopened.paths.claims_export.read_bytes()
 
 
 def test_commit_boundary_crash_recovers_export_marker_and_blob_on_open(
