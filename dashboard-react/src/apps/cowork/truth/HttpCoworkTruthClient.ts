@@ -21,6 +21,7 @@ import type {
   TruthQuery,
   TruthQuoteSelector,
   TruthRailProvider,
+  TruthRecordProvenance,
   TruthPremiseAssessment,
   TruthSupportAssessment,
   TruthUnsubscribe,
@@ -126,6 +127,72 @@ const quoteSelector = (raw: unknown, fallbackQuote = ""): TruthQuoteSelector => 
   };
 };
 
+const recordProvenance = (
+  raw: unknown,
+  fallbackCreator: JsonObject,
+  fallbackAt: string,
+): TruthRecordProvenance => {
+  if (raw === undefined || raw === null) {
+    return {
+      preparedBy: null,
+      addedBy: {
+        kind: stringValue(first(fallbackCreator, "kind"), "unknown"),
+        ref: nullableString(first(fallbackCreator, "ref")),
+        at: fallbackAt,
+      },
+    };
+  }
+  const value = objectValue(raw);
+  const rawPrepared = first(value, "prepared_by", "preparedBy");
+  const rawAdded = first(value, "added_by", "addedBy");
+  const added = objectValue(rawAdded);
+  const addedKind = stringValue(first(added, "kind"));
+  const addedAt = stringValue(first(added, "at"));
+  if (rawAdded === undefined || addedKind.length === 0 || addedAt.length === 0) {
+    throw new Error("Truth returned invalid record provenance.");
+  }
+  if (rawPrepared === null) {
+    return {
+      preparedBy: null,
+      addedBy: {
+        kind: addedKind,
+        ref: nullableString(first(added, "ref")),
+        at: addedAt,
+      },
+    };
+  }
+  const prepared = objectValue(rawPrepared);
+  const analysisRunId = stringValue(first(prepared, "analysis_run_id", "analysisRunId"));
+  const candidateId = stringValue(first(prepared, "candidate_id", "candidateId"));
+  const providerId = stringValue(first(prepared, "provider_id", "providerId"));
+  const modelId = stringValue(first(prepared, "model_id", "modelId"));
+  if (
+    first(prepared, "kind") !== "agent_run" ||
+    first(prepared, "surface") !== "cowork_truth_analysis" ||
+    analysisRunId.length === 0 ||
+    candidateId.length === 0 ||
+    providerId.length === 0 ||
+    modelId.length === 0
+  ) {
+    throw new Error("Truth returned invalid preparation provenance.");
+  }
+  return {
+    preparedBy: {
+      kind: "agent_run",
+      surface: "cowork_truth_analysis",
+      analysisRunId,
+      candidateId,
+      providerId,
+      modelId,
+    },
+    addedBy: {
+      kind: addedKind,
+      ref: nullableString(first(added, "ref")),
+      at: addedAt,
+    },
+  };
+};
+
 const passageConnection = (
   raw: unknown,
   currentDocumentId: string,
@@ -138,6 +205,7 @@ const passageConnection = (
   );
   const rawCreator = first(value, "created_by", "createdBy");
   const creator = objectValue(rawCreator);
+  const createdAt = stringValue(first(value, "created_at", "createdAt"));
   return {
     expressionId: stringValue(first(value, "expression_id", "expressionId")),
     spanId: stringValue(first(value, "span_id", "spanId")),
@@ -159,7 +227,7 @@ const passageConnection = (
     claimCanonicalSha256: stringValue(
       first(value, "claim_canonical_sha256", "claimCanonicalSha256"),
     ),
-    createdAt: stringValue(first(value, "created_at", "createdAt")),
+    createdAt,
     createdBy:
       rawCreator === undefined || rawCreator === null
         ? null
@@ -167,6 +235,7 @@ const passageConnection = (
             kind: stringValue(first(creator, "kind"), "unknown"),
             ref: nullableString(first(creator, "ref")),
           },
+    provenance: recordProvenance(first(value, "provenance"), creator, createdAt),
   };
 };
 
@@ -197,6 +266,7 @@ const claimSummary = (
   const serverFact = first(value, "is_fact", "isFact");
   const rawCreator = first(value, "created_by", "createdBy");
   const creator = objectValue(rawCreator);
+  const createdAt = stringValue(first(value, "created_at", "createdAt"));
   return {
     claimId: stringValue(first(value, "claim_id", "claimId", "id")),
     proposition: stringValue(first(value, "proposition"), "[redacted claim]"),
@@ -233,7 +303,7 @@ const claimSummary = (
       connections.length,
     ),
     connections,
-    createdAt: stringValue(first(value, "created_at", "createdAt")),
+    createdAt,
     createdBy:
       rawCreator === undefined || rawCreator === null
         ? null
@@ -241,6 +311,7 @@ const claimSummary = (
             kind: stringValue(first(creator, "kind"), "unknown"),
             ref: nullableString(first(creator, "ref")),
           },
+    provenance: recordProvenance(first(value, "provenance"), creator, createdAt),
     isFact:
       typeof serverFact === "boolean"
         ? serverFact

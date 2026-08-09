@@ -12,6 +12,7 @@ from work_buddy.cowork.policy import document_surface_allowed
 from work_buddy.truth import documents, ydoc_store
 from work_buddy.truth.contracts import Actor, InvariantViolation
 from work_buddy.truth.events import emit_truth_event
+from work_buddy.truth.store import PostCommitHookError
 
 
 truth_blueprint = Blueprint("cowork_truth_surface", __name__)
@@ -397,6 +398,44 @@ def api_truth_claim_decision(document_id: str, claim_id: str):
                 )
     except truth_surface.TruthSurfaceError as exc:
         return _surface_error(exc)
+    except PostCommitHookError:
+        # The authoritative Truth transaction has already committed. A
+        # recovery-export or observer failure must not be reported as though
+        # the user's decision was rejected, which would invite an unsafe retry
+        # of a mutation that already happened.
+        committed_action = str(body["action"]).strip().lower().replace("_", "-")
+        event_type = {
+            "confirm": "truth.claim_confirmed",
+            "reaffirm": "truth.claim_confirmed",
+            "reject": "truth.claim_rejected",
+            "redact": "truth.claim_redacted",
+        }.get(committed_action)
+        if event_type is not None:
+            _emit_claim_event(
+                event_type,
+                store_id=store.store_id,
+                claim_id=claim_id,
+                data={"action": committed_action, "document_id": document.id},
+            )
+        return (
+            jsonify(
+                {
+                    "ok": True,
+                    "action": committed_action,
+                    "claim_id": claim_id,
+                    "status": "committed_with_recovery_warning",
+                    "warning": {
+                        "code": "post_commit_recovery_failed",
+                        "message": (
+                            "Your decision was saved, but some background "
+                            "recovery work still needs attention."
+                        ),
+                        "retryable": False,
+                    },
+                }
+            ),
+            202,
+        )
     except InvariantViolation as exc:
         return _error("decision_rejected", str(exc), status=409)
 

@@ -172,6 +172,10 @@ export interface CoworkBridge {
    * pull does not deliver in v1.
    */
   readonly scrollToSpanAnchor: (target: ScrollAnchorTarget) => boolean;
+  /** Passive passage emphasis for staged Truth candidates; null clears it. */
+  readonly focusSpanAnchor: (target: ScrollAnchorTarget | null) => boolean;
+  /** One-shot reveal that returns to persistent passive focus after the flash. */
+  readonly revealFocusedSpanAnchor: (target: ScrollAnchorTarget) => boolean;
 }
 
 export const useCoworkBridge = (
@@ -388,6 +392,25 @@ export const useCoworkBridge = (
     [core],
   );
 
+  const focusSpanAnchor = useMemo(
+    () =>
+      (target: ScrollAnchorTarget | null): boolean => {
+        if (target === null) {
+          core.passageHighlighter.clear();
+          return true;
+        }
+        return core.passageHighlighter.focus(target);
+      },
+    [core],
+  );
+
+  const revealFocusedSpanAnchor = useMemo(
+    () =>
+      (target: ScrollAnchorTarget): boolean =>
+        core.passageHighlighter.showAndRefocus(target),
+    [core],
+  );
+
   const setEditorLens = useMemo(
     () => (lens: CoworkEditorLens): void => core.ledgerProjector.setLens(lens),
     [core],
@@ -405,5 +428,7 @@ export const useCoworkBridge = (
     editorReady,
     setEditorLens,
     scrollToSpanAnchor,
+    focusSpanAnchor,
+    revealFocusedSpanAnchor,
   };
 };

@@ -715,7 +715,11 @@ def create_folder_blueprint(
     def folders_list():
         include_ineligible = request.args.get("include_ineligible", "0") == "1"
         registry = registry_factory()
-        rows = registry.list_stores(refresh=False)
+        # The folder chooser is an observability boundary, not a snapshot of
+        # the registry cache. A transient open/recovery failure can mark a
+        # store unreachable; revalidate registered stores here so a repaired
+        # store becomes selectable again without a separate manual open.
+        rows = registry.list_stores(refresh=True)
         summaries = [folder_summary(row, read_only=read_only()) for row in rows]
         diagnostics = [
             {

@@ -54,6 +54,14 @@ _COWORK_VERIFY_JOB_CAPABILITIES = frozenset(
         "cowork_verify_job_submit",
     }
 )
+_COWORK_TRUTH_ANALYSIS_CAPABILITIES = frozenset(
+    {
+        "cowork_truth_analysis_job_get",
+        "cowork_truth_analysis_search",
+        "cowork_truth_analysis_fetch",
+        "cowork_truth_analysis_job_submit",
+    }
+)
 
 
 def _builtin_session_acl(session_id: str | None) -> frozenset[str] | None:
@@ -61,6 +69,7 @@ def _builtin_session_acl(session_id: str | None) -> frozenset[str] | None:
 
     from work_buddy.cowork.execution_identity import (
         cowork_generation_from_session,
+        cowork_truth_analysis_run_from_session,
         cowork_verify_job_from_session,
     )
 
@@ -69,6 +78,8 @@ def _builtin_session_acl(session_id: str | None) -> frozenset[str] | None:
     # the transport session; a caller-provided role cannot widen this ACL.
     if cowork_verify_job_from_session(session_id) is not None:
         return _COWORK_VERIFY_JOB_CAPABILITIES
+    if cowork_truth_analysis_run_from_session(session_id) is not None:
+        return _COWORK_TRUTH_ANALYSIS_CAPABILITIES
     if cowork_generation_from_session(session_id) is None:
         return None
     return _COWORK_EXECUTION_CAPABILITIES

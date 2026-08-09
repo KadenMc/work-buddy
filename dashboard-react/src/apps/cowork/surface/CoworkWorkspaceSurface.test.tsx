@@ -190,6 +190,47 @@ describe("CoworkWorkspaceWidget default (empty) mode", () => {
     expect(screen.queryByText("Co-work demo document")).toBeNull();
   }, 15_000);
 
+  it("does not present a failed Folder catalog as an empty Folder", () => {
+    const catalogError = {
+      code: "request_failed",
+      message: "The documents could not be loaded.",
+      retryable: true,
+    } as const;
+    const folderInput: CoworkWorkspaceInput = {
+      ...emptyInput,
+      folders: [selectedFolder],
+      folderSelection: { kind: "initialized", folder: selectedFolder },
+      activeFolderStoreId: selectedFolder.storeId,
+      catalog: {
+        status: "error",
+        documents: [],
+        refreshedAt: null,
+        error: catalogError,
+      },
+      routeTarget: { kind: "launcher", storeId: selectedFolder.storeId },
+    };
+    const { rerender } = renderWorkspace(folderInput);
+
+    expect(screen.getByText(catalogError.message)).toBeVisible();
+    expect(screen.queryByText("No documents yet.")).toBeNull();
+
+    rerender(
+      workspaceElement({
+        ...folderInput,
+        catalog: {
+          ...folderInput.catalog!,
+          documents: [DEMO_DOCUMENT],
+        },
+      }),
+    );
+
+    expect(screen.getByText(catalogError.message)).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: /Co-work demo document/ }),
+    ).toBeVisible();
+    expect(screen.queryByText("No documents yet.")).toBeNull();
+  });
+
   it("offers a normal new document without exposing its local persistence implementation", async () => {
     const { container } = renderWorkspace(emptyInput);
     expect(screen.getByRole("button", { name: "New" })).toBeVisible();

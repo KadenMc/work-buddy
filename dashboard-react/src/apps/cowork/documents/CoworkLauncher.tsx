@@ -444,14 +444,16 @@ export function CoworkLauncher({
             </Button>
           </InlineAlert>
         ) : null}
-        <Documents
-          registered={readyDocuments}
-          local={[]}
-          folderName={folder.folderName}
-          onOpenRegistered={onOpenDocument}
-          onOpenLocal={onOpenLocalDocument}
-          disabled={navigationBusy}
-        />
+        {model.catalog.error === null || readyDocuments.length > 0 ? (
+          <Documents
+            registered={readyDocuments}
+            local={[]}
+            folderName={folder.folderName}
+            onOpenRegistered={onOpenDocument}
+            onOpenLocal={onOpenLocalDocument}
+            disabled={navigationBusy}
+          />
+        ) : null}
       </section>
     );
   }

@@ -85,6 +85,7 @@ import {
 } from "../targets";
 import {
   createPersistedTruthStore,
+  HttpCoworkTruthAnalysisClient,
   HttpCoworkTruthClient,
   type TruthEditorIntegration,
   type TruthPassageConnection,
@@ -718,6 +719,10 @@ export function CoworkLiveWorkspace({
     () => new HttpCoworkTruthClient({ documentId, storeId }),
     [documentId, storeId],
   );
+  const truthAnalysisProvider = useMemo(
+    () => new HttpCoworkTruthAnalysisClient({ documentId, storeId }),
+    [documentId, storeId],
+  );
   const ensureConversation = useCallback(async (): Promise<void> => {
     await conversation.ensure();
   }, [conversation.ensure]);
@@ -993,6 +998,13 @@ export function CoworkLiveWorkspace({
   );
   const truthEditor = useMemo<TruthEditorIntegration>(
     () => ({
+      captureAnalysisTarget: async (target) => {
+        const controller = bridge.actionSnapshotController;
+        if (controller === null) {
+          throw new Error("The editor is still preparing. Try again in a moment.");
+        }
+        return controller.capture(target);
+      },
       captureSelection: async (): Promise<TruthSelectionCapture> => {
         const controller = bridge.actionSnapshotController;
         if (controller === null) {
@@ -1054,10 +1066,52 @@ export function CoworkLiveWorkspace({
         if (claimId === null) bridge.reviewAnchors.clearFocusedAnchor();
         else bridge.reviewAnchors.focusAnchor(claimId, "claim");
       },
+      focusAnalysisPassage: (target) => {
+        bridge.focusSpanAnchor(
+          target === null
+            ? null
+            : {
+                spanId: `truth-analysis:${target.candidateId}`,
+                anchor: {
+                  exact: target.selector.exact,
+                  prefix: target.selector.prefix,
+                  suffix: target.selector.suffix,
+                },
+              },
+        );
+      },
+      revealAnalysisPassage: (target) => {
+        const reveal = (): void => {
+          const found = bridge.revealFocusedSpanAnchor({
+            spanId: `truth-analysis:${target.candidateId}`,
+            anchor: {
+              exact: target.selector.exact,
+              prefix: target.selector.prefix,
+              suffix: target.selector.suffix,
+            },
+          });
+          if (!found) {
+            setPassageAnnouncement(
+              "That analyzed passage could not be located in the current document.",
+            );
+          }
+        };
+        if (!narrowWorkspace) {
+          reveal();
+          return;
+        }
+        selectPane("editor");
+        window.requestAnimationFrame(() => {
+          editorPaneTabRef.current?.focus();
+          reveal();
+        });
+      },
     }),
     [
       bridge.actionSnapshotController,
+      bridge.focusSpanAnchor,
       bridge.reviewAnchors,
+      bridge.revealFocusedSpanAnchor,
       documentId,
       narrowWorkspace,
       onOpenTruthPassage,
@@ -1154,14 +1208,16 @@ export function CoworkLiveWorkspace({
     if (
       invalidationReason?.startsWith("truth.doc_") === true ||
       invalidationReason?.startsWith("truth.claim_") === true ||
-      invalidationReason?.startsWith("truth.expression_") === true
+      invalidationReason?.startsWith("truth.expression_") === true ||
+      invalidationReason?.startsWith("truth.analysis_") === true
     ) {
       bridge.reviewProvider.invalidate();
       truthProvider.invalidate();
+      truthAnalysisProvider.invalidate();
     }
     // Fire once per new invalidation, keyed by its sequence.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [invalidationSequence, truthProvider]);
+  }, [invalidationSequence, truthAnalysisProvider, truthProvider]);
 
   const health: CoworkHealthView | null =
     bridge.health === null
@@ -1240,6 +1296,7 @@ export function CoworkLiveWorkspace({
             store={railStore}
             truth={{
               provider: truthProvider,
+              analysisProvider: truthAnalysisProvider,
               store: truthStore,
               editor: truthEditor,
               readOnly,

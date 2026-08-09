@@ -15,6 +15,16 @@ const objectRecord = (value: unknown): Record<string, unknown> | null =>
     ? (value as Record<string, unknown>)
     : null;
 
+const LEGACY_ERROR_CODE = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
+
+const legacyErrorString = (payload: unknown): string | null => {
+  const outer = objectRecord(payload);
+  const value = typeof outer?.error === "string" ? outer.error : payload;
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length === 0 ? null : trimmed;
+};
+
 export const normalizeCoworkError = (
   payload: unknown,
   status?: number,
@@ -23,12 +33,14 @@ export const normalizeCoworkError = (
   const outer = objectRecord(payload);
   const nested = objectRecord(outer?.error);
   const source = nested ?? outer;
-  const rawError = outer?.error;
+  const legacyError = legacyErrorString(payload);
+  const legacyErrorIsCode =
+    legacyError !== null && LEGACY_ERROR_CODE.test(legacyError);
   const code =
     typeof source?.code === "string"
       ? source.code
-      : typeof rawError === "string"
-        ? rawError
+      : legacyErrorIsCode
+        ? legacyError
         : status === 404
           ? "not_found"
           : status === 403
@@ -39,7 +51,9 @@ export const normalizeCoworkError = (
       ? source.message
       : typeof outer?.message === "string"
         ? outer.message
-        : fallback;
+        : legacyError !== null && !legacyErrorIsCode
+          ? legacyError
+          : fallback;
   return {
     code,
     message,

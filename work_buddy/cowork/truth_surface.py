@@ -105,6 +105,42 @@ def _selector_wire(selector_json: str) -> dict[str, Any]:
     }
 
 
+def _preparation_provenance(meta_json: str | None) -> dict[str, Any] | None:
+    meta = _json_object(meta_json)
+    if meta is None or meta.get("source") != "cowork_truth_analysis":
+        return None
+    fields = {
+        "analysis_run_id": meta.get("analysis_run_id"),
+        "candidate_id": meta.get("candidate_id"),
+        "provider_id": meta.get("provider_id"),
+        "model_id": meta.get("model_id"),
+    }
+    if not all(isinstance(value, str) and value for value in fields.values()):
+        return None
+    return {
+        "kind": "agent_run",
+        "surface": "cowork_truth_analysis",
+        **fields,
+    }
+
+
+def _provenance_wire(
+    *,
+    meta_json: str | None,
+    created_by_kind: str,
+    created_by_ref: str | None,
+    created_at: str,
+) -> dict[str, Any]:
+    return {
+        "prepared_by": _preparation_provenance(meta_json),
+        "added_by": {
+            "kind": created_by_kind,
+            "ref": created_by_ref,
+            "at": created_at,
+        },
+    }
+
+
 def _connections(
     store: TruthStore,
     conn: sqlite3.Connection,
@@ -142,6 +178,16 @@ def _connections(
                     "kind": row["created_by_kind"],
                     "ref": row["created_by_ref"],
                 },
+                "provenance": _provenance_wire(
+                    meta_json=row["meta_json"],
+                    created_by_kind=str(row["created_by_kind"]),
+                    created_by_ref=(
+                        None
+                        if row["created_by_ref"] is None
+                        else str(row["created_by_ref"])
+                    ),
+                    created_at=str(row["created_at"]),
+                ),
             }
         )
     return by_claim
@@ -207,6 +253,12 @@ def _claim_summary(
             "kind": claim.created_by_kind,
             "ref": claim.created_by_ref,
         },
+        "provenance": _provenance_wire(
+            meta_json=claim.meta_json,
+            created_by_kind=claim.created_by_kind,
+            created_by_ref=claim.created_by_ref,
+            created_at=claim.created_at,
+        ),
         "receipt_count": receipt_count,
         "connection_count": len(connections),
         "connected_to_document": bool(current_connections),
@@ -680,6 +732,7 @@ def _current_connection_target(
     expected_structured_head_sha256: str,
     expected_ydoc_generation_sha256: str | None,
     expected_projection_sha256: str,
+    allow_safe_reanchor: bool = False,
 ) -> tuple[CompositeSelector, Any]:
     state = readiness.classify_document(store, document, read_only=False)
     if state.initialization_state != "ready" or state.structured_head_sha256 is None:
@@ -689,7 +742,10 @@ def _current_connection_target(
             status=409,
             retryable=True,
         )
-    if state.structured_head_sha256 != expected_structured_head_sha256:
+    if (
+        not allow_safe_reanchor
+        and state.structured_head_sha256 != expected_structured_head_sha256
+    ):
         raise TruthSurfaceError(
             "stale_document",
             "The document changed before the Truth connection was saved.",
@@ -699,7 +755,8 @@ def _current_connection_target(
         )
     generation = documents.current_ydoc_generation(store, document.id)
     if (
-        expected_ydoc_generation_sha256 is not None
+        not allow_safe_reanchor
+        and expected_ydoc_generation_sha256 is not None
         and generation != expected_ydoc_generation_sha256
     ):
         raise TruthSurfaceError(
@@ -722,7 +779,10 @@ def _current_connection_target(
             retryable=True,
             details={"reason": reason},
         )
-    if projection.projection_sha256 != expected_projection_sha256:
+    if (
+        not allow_safe_reanchor
+        and projection.projection_sha256 != expected_projection_sha256
+    ):
         raise TruthSurfaceError(
             "stale_document",
             "The document changed before the Truth connection was saved.",
@@ -731,10 +791,27 @@ def _current_connection_target(
             details={"projection_sha256": projection.projection_sha256},
         )
     try:
+        # Async agent output remains bound to its immutable frozen selector,
+        # while unrelated live-document edits need not veto a later human
+        # decision.  In the explicit safe-reanchor path, strip positional
+        # offsets so resolution can only succeed through a unique exact quote
+        # or unique quote-context match.  Positions from an older projection
+        # are never used to guess.
+        selector_for_resolution = (
+            CompositeSelector(
+                exact=selector.exact,
+                prefix=selector.prefix,
+                suffix=selector.suffix,
+            )
+            if allow_safe_reanchor
+            else selector
+        )
         resolved = reanchor(
             projection.text,
-            selector,
-            expected_snapshot_sha256=expected_projection_sha256,
+            selector_for_resolution,
+            expected_snapshot_sha256=(
+                None if allow_safe_reanchor else expected_projection_sha256
+            ),
         )
     except InvariantViolation as exc:
         raise TruthSurfaceError(
@@ -768,6 +845,13 @@ def connect_claim(
     expected_ydoc_generation_sha256: str | None = None,
     claim_id: str | None = None,
     claim_input: Mapping[str, Any] | None = None,
+    require_new_claim: bool = False,
+    claim_meta: Mapping[str, Any] | None = None,
+    claim_record_id: str | None = None,
+    claim_status_event_id: str | None = None,
+    expression_meta: Mapping[str, Any] | None = None,
+    conn: sqlite3.Connection | None = None,
+    allow_safe_reanchor: bool = False,
 ) -> ConnectionWrite:
     """Atomically connect selected prose to an existing or newly proposed claim."""
 
@@ -802,10 +886,11 @@ def connect_claim(
         expected_structured_head_sha256=expected_structured_head_sha256,
         expected_ydoc_generation_sha256=expected_ydoc_generation_sha256,
         expected_projection_sha256=expected_projection_sha256,
+        allow_safe_reanchor=allow_safe_reanchor,
     )
     selector_json = serialize_selector(resolved_selector)
 
-    with store.write_transaction() as conn:
+    with store.write_transaction(conn) as conn:
         if claim_input is not None:
             proposition = claim_input.get("proposition")
             claim_kind = claim_input.get("claim_kind")
@@ -818,11 +903,21 @@ def connect_claim(
                 valid_from=claim_input.get("valid_from"),
                 valid_to=claim_input.get("valid_to"),
                 confidence_extraction=claim_input.get("confidence_extraction"),
-                meta={"surface": "cowork_truth"},
+                meta={"surface": "cowork_truth", **dict(claim_meta or {})},
+                record_id=claim_record_id,
+                status_event_id=claim_status_event_id,
                 conn=conn,
             )
             claim = written.claim
             claim_created = written.created
+            if require_new_claim and not claim_created:
+                raise TruthSurfaceError(
+                    "existing_claim_requires_connection",
+                    "This claim already exists. Connect the passage to the existing claim instead.",
+                    status=409,
+                    retryable=True,
+                    details={"claim_id": claim.id},
+                )
         else:
             claim = store.get_claim(str(claim_id or ""), conn=conn)
             if claim is None:
@@ -886,6 +981,7 @@ def connect_claim(
                 "base_structured_head_sha256": projection.structured_head_sha256,
                 "base_ydoc_generation_sha256": projection.generation_sha256,
                 "projection_binding_id": projection.binding_id,
+                **dict(expression_meta or {}),
             },
         )
     return ConnectionWrite(

@@ -128,4 +128,47 @@ describe("CoworkPassageHighlighter", () => {
     ).toBe(false);
     expect(readCoworkLedgerDecorationState(current)?.highlight).toBeNull();
   });
+
+  it("passively focuses a staged passage without scrolling until explicitly cleared", () => {
+    vi.useFakeTimers();
+    const current = mountEditor();
+    const scrollIntoView = vi.fn();
+    scrollDescriptor = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "scrollIntoView",
+    );
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    const highlighter = new CoworkPassageHighlighter({
+      getEditor: () => current,
+      windowRef: window,
+    });
+
+    expect(highlighter.focus({
+      spanId: "analysis-candidate-1",
+      anchor: {
+        exact: "Beta passage",
+        prefix: "passage. ",
+        suffix: ". Gamma",
+      },
+    })).toBe(true);
+    expect(scrollIntoView).not.toHaveBeenCalled();
+    expect(readCoworkLedgerDecorationState(current)?.highlight).not.toBeNull();
+    expect(highlighter.showAndRefocus({
+      spanId: "analysis-candidate-1",
+      anchor: {
+        exact: "Beta passage",
+        prefix: "passage. ",
+        suffix: ". Gamma",
+      },
+    })).toBe(true);
+    expect(scrollIntoView).toHaveBeenCalledOnce();
+    vi.advanceTimersByTime(PASSAGE_HIGHLIGHT_MS);
+    expect(readCoworkLedgerDecorationState(current)?.highlight).not.toBeNull();
+
+    highlighter.clear();
+    expect(readCoworkLedgerDecorationState(current)?.highlight).toBeNull();
+  });
 });

@@ -21,7 +21,10 @@ from work_buddy.truth.identity import canonical_json, sha256_text
 
 INTERNAL_OPERATION_TYPE = "internal"
 COWORK_VERIFY_LAUNCH = "cowork_verify_launch"
-_ALLOWED_HANDLERS = frozenset({COWORK_VERIFY_LAUNCH})
+COWORK_TRUTH_ANALYSIS_LAUNCH = "cowork_truth_analysis_launch"
+_ALLOWED_HANDLERS = frozenset(
+    {COWORK_VERIFY_LAUNCH, COWORK_TRUTH_ANALYSIS_LAUNCH}
+)
 
 
 class InternalOperationError(RuntimeError):
@@ -191,11 +194,17 @@ def execute_internal_operation(record: Mapping[str, Any]) -> dict[str, Any]:
     if record.get("type") != INTERNAL_OPERATION_TYPE:
         raise InternalOperationError("record is not an internal operation")
     name = str(record.get("name") or "")
-    if name != COWORK_VERIFY_LAUNCH:
-        raise InternalOperationError(f"unknown internal operation: {name}")
-    from work_buddy.cowork.verify_dispatch import dispatch_verify_launch
+    if name == COWORK_VERIFY_LAUNCH:
+        from work_buddy.cowork.verify_dispatch import dispatch_verify_launch
 
-    return dispatch_verify_launch(record)
+        return dispatch_verify_launch(record)
+    if name == COWORK_TRUTH_ANALYSIS_LAUNCH:
+        from work_buddy.cowork.truth_analysis_dispatch import (
+            dispatch_truth_analysis_launch,
+        )
+
+        return dispatch_truth_analysis_launch(record)
+    raise InternalOperationError(f"unknown internal operation: {name}")
 
 
 def reconcile_internal_operations(
@@ -204,9 +213,17 @@ def reconcile_internal_operations(
 ) -> dict[str, int]:
     """Repair durable internal handoffs before the queue scans its records."""
 
+    from work_buddy.cowork.truth_analysis_dispatch import (
+        reconcile_truth_analysis_launches,
+    )
     from work_buddy.cowork.verify_dispatch import reconcile_verify_launches
 
-    return reconcile_verify_launches(operations_dir=operations_dir)
+    verify = reconcile_verify_launches(operations_dir=operations_dir)
+    truth = reconcile_truth_analysis_launches(operations_dir=operations_dir)
+    return {
+        **verify,
+        **{f"truth_analysis_{key}": value for key, value in truth.items()},
+    }
 
 
 def internal_operation_exhausted(
@@ -224,10 +241,20 @@ def internal_operation_exhausted(
         )
 
         exhaust_verify_launch(record, error=error)
+    elif (
+        record.get("type") == INTERNAL_OPERATION_TYPE
+        and record.get("name") == COWORK_TRUTH_ANALYSIS_LAUNCH
+    ):
+        from work_buddy.cowork.truth_analysis_dispatch import (
+            exhaust_truth_analysis_launch,
+        )
+
+        exhaust_truth_analysis_launch(record, error=error)
 
 
 __all__ = [
     "COWORK_VERIFY_LAUNCH",
+    "COWORK_TRUTH_ANALYSIS_LAUNCH",
     "INTERNAL_OPERATION_TYPE",
     "InternalOperationError",
     "InternalOperationRetry",

@@ -8,7 +8,7 @@ from work_buddy.truth.anchors import CompositeSelector
 from work_buddy.truth.contracts import Actor
 from work_buddy.truth.identity import sha256_bytes, utc_now
 from work_buddy.truth.lifecycle import TruthLifecycle
-from work_buddy.truth.store import AcquisitionOrigin
+from work_buddy.truth.store import AcquisitionOrigin, PostCommitHookError, TruthStore
 
 from .conftest import AGENT, DOC_BODY, DOC_QUOTE, HUMAN, NOW
 
@@ -438,7 +438,7 @@ def test_truth_decision_binding_invalidates_when_visible_lifecycle_context_chang
     assert queries.resolve_claim_states(store)[0].base_status == "proposed"
 
 
-def test_truth_redaction_is_guarded_and_history_remains_observable(
+def test_truth_redaction_with_live_editor_tail_keeps_folder_observable(
     client,
     seeded,
 ):
@@ -451,6 +451,18 @@ def test_truth_redaction_is_guarded_and_history_remains_observable(
     ).claim
     detail_url = _url(seeded, f"/claims/{claim.id}")
     binding = client.get(detail_url).get_json()["decision_binding"]
+    current_head = ydoc_store.current_structured_head(
+        seeded["store"],
+        document_id=seeded["document"].id,
+        snapshot_sha256=seeded["snapshot_sha256"],
+    )
+    ydoc_store.append_update_cas(
+        seeded["store"],
+        document_id=seeded["document"].id,
+        update=b"opaque-live-edit-before-redaction",
+        snapshot_sha256=seeded["snapshot_sha256"],
+        expected_structured_head_sha256=current_head,
+    )
 
     redacted = client.post(
         _url(seeded, f"/claims/{claim.id}/decisions"),
@@ -463,15 +475,77 @@ def test_truth_redaction_is_guarded_and_history_remains_observable(
         },
     )
     observed = client.get(detail_url)
+    catalog = client.get(
+        f"/api/truth/doc/list?store_id={seeded['store_id']}"
+    )
 
     assert redacted.status_code == 200
     assert observed.status_code == 200
+    assert catalog.status_code == 200
+    assert [item["document_id"] for item in catalog.get_json()["docs"]] == [
+        seeded["document"].id
+    ]
     payload = observed.get_json()
     assert payload["claim"]["redacted"] is True
     assert payload["claim"]["proposition"] is None
     assert payload["claim"]["available_actions"] == []
     assert payload["decision_binding"] is None
     assert payload["status_history"][0]["status"] == "proposed"
+    assert not seeded["store"]._pending_redaction_recovery_paths()
+    assert not seeded["store"].paths.claims_export.exists()
+
+
+def test_truth_decision_reports_a_committed_post_commit_failure_as_saved(
+    client,
+    seeded,
+    monkeypatch,
+):
+    claim = seeded["store"].propose_claim(
+        proposition="This claim is committed before recovery fails.",
+        claim_kind="fact",
+        actor=AGENT,
+        created_at=NOW,
+        status_at=NOW,
+    ).claim
+    binding = client.get(_url(seeded, f"/claims/{claim.id}")).get_json()[
+        "decision_binding"
+    ]
+
+    def fail_post_commit_export(_store: TruthStore) -> None:
+        raise PostCommitHookError("simulated post-commit recovery failure")
+
+    monkeypatch.setattr(
+        TruthStore,
+        "_publish_recovery_export",
+        fail_post_commit_export,
+    )
+    response = client.post(
+        _url(seeded, f"/claims/{claim.id}/decisions"),
+        headers={"X-WB-User-Ref": "truth-reviewer"},
+        json={
+            "action": "redact",
+            "reason": "privacy",
+            "expected_canonical_sha256": binding["payload_sha256"],
+            "expected_context_sha256": binding["context_sha256"],
+        },
+    )
+
+    assert response.status_code == 202
+    assert response.get_json() == {
+        "ok": True,
+        "action": "redact",
+        "claim_id": claim.id,
+        "status": "committed_with_recovery_warning",
+        "warning": {
+            "code": "post_commit_recovery_failed",
+            "message": (
+                "Your decision was saved, but some background recovery work "
+                "still needs attention."
+            ),
+            "retryable": False,
+        },
+    }
+    assert seeded["store"].get_claim(claim.id).proposition == "[redacted]"
 
 
 def test_truth_retired_documents_stay_observable_but_expose_no_mutations(

@@ -4,9 +4,16 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { expectNoAccessibilityViolations } from "../../../test/setup";
+import { DashboardHelpProvider } from "../../../dashboard/help";
+import type { ChatExecutionControl } from "../../../widget-library/chat";
+import type { CoworkCapturedActionSnapshot } from "../targets";
 
 import type {
+  TruthAnalysisCandidate,
+  TruthAnalysisCapabilities,
   TruthClaimDetail,
+  TruthAnalysisProvider,
+  TruthAnalysisRun,
   TruthClaimSummary,
   TruthClaimsSnapshot,
   TruthEditorIntegration,
@@ -16,6 +23,7 @@ import type {
 import { TruthAttentionFeed } from "./TruthAttentionFeed";
 import { TruthPanel } from "./TruthPanel";
 import { TruthStore } from "./store";
+import truthStyles from "./styles.css?raw";
 
 const connection = {
   expressionId: "expression-1",
@@ -192,7 +200,508 @@ const setupEditor = () => {
   return { editor, captureSelection, revealPassage, focusClaim };
 };
 
+const capturedAnalysisTarget: CoworkCapturedActionSnapshot = {
+  schema: "wb.cowork.action-snapshot/v1",
+  captureId: "analysis-capture-1",
+  storeId: "store-1",
+  documentId: "doc-1",
+  capturedAt: "2026-08-09T12:00:00Z",
+  editGeneration: 3,
+  ydocGenerationSha256: "a".repeat(64),
+  snapshotBase64: "c25hcHNob3Q=",
+  snapshotSha256: "b".repeat(64),
+  stateVectorBase64: "dmVjdG9y",
+  stateVectorSha256: "c".repeat(64),
+  structuredHeadSha256: "d".repeat(64),
+  projectionMarkdown: "The document has a heading.",
+  projectionSha256: "e".repeat(64),
+  projectionReceiptId: "projection-receipt-1",
+  target: {
+    source: "current_selection",
+    label: "Selected passage",
+    wordCount: 5,
+    proseMirrorRange: { from: 1, to: 28 },
+    selector: {
+      kind: "text_quote",
+      exact: "The document has a heading.",
+      prefix: "",
+      suffix: "",
+      start: 0,
+      end: 27,
+    },
+    targetTextSha256: "f".repeat(64),
+  },
+};
+
+const analysisRun: TruthAnalysisRun = {
+  schema: "wb.cowork.truth-analysis-run/v1",
+  analysisRunId: "analysis-run-1",
+  storeId: "store-1",
+  documentId: "doc-1",
+  status: "queued",
+  targetChoice: "current_selection",
+  targetLabel: "Selected passage",
+  capturedAt: "2026-08-09T12:00:00Z",
+  structuredHeadSha256: "d".repeat(64),
+  projectionSha256: "e".repeat(64),
+  execution: {
+    providerId: "claude-code",
+    modelId: "sonnet",
+    providerLabel: "Claude Code",
+    modelLabel: "Sonnet",
+  },
+  candidates: [],
+  sourceCoverage: [],
+  limitations: [],
+  error: null,
+  createdAt: "2026-08-09T12:00:00Z",
+  finishedAt: null,
+};
+
+const analysisCandidate: TruthAnalysisCandidate = {
+  candidateId: "candidate-1",
+  canonicalSha256: "1".repeat(64),
+  status: "pending",
+  decision: null,
+  proposition: "A bounded proposition.",
+  claimKind: "fact",
+  confidenceExtraction: 0.9,
+  expression: {
+    role: "paraphrase",
+    quote: "A selected factual passage.",
+    selector: {
+      kind: "text_quote",
+      exact: "A selected factual passage.",
+      prefix: "",
+      suffix: "",
+      start: 0,
+      end: 27,
+    },
+  },
+  existingClaimMatch: null,
+  evidence: [],
+  sourceCoverage: [],
+  limitations: [],
+};
+
+const pendingAnalysisRun: TruthAnalysisRun = {
+  ...analysisRun,
+  status: "completed",
+  candidates: [analysisCandidate],
+  finishedAt: "2026-08-09T12:00:05Z",
+};
+
+const analysisCapabilities: TruthAnalysisCapabilities = {
+  schema: "wb.cowork.truth-analysis-capabilities/v1",
+  requiredCostControl: {
+    enforcementClass: "hard_ceiling",
+    scope: "worker_model_session",
+    maximumUsdPerModelSession: 2,
+  },
+  researchCostControl: {
+    enforcementClass: "unavailable",
+    scope: "web_search_and_fetch",
+    ceilingUsd: null,
+    basis: "research_provider_cost_not_enforced",
+  },
+  providers: [{
+    providerId: "claude-code",
+    analysisAvailable: true,
+    unavailableReason: null,
+    appliesToAllModels: true,
+    costControl: {
+      enforcementClass: "hard_ceiling",
+      ceilingUsdPerWorkerSession: 2,
+      basis: "claude_code_max_budget_usd",
+    },
+  }],
+};
+
+const setupAnalysis = () => {
+  const provider: TruthAnalysisProvider = {
+    loadCapabilities: vi.fn(async () => analysisCapabilities),
+    loadCurrent: vi.fn(async () => null),
+    loadRun: vi.fn(async () => analysisRun),
+    start: vi.fn(async () => analysisRun),
+    decideCandidate: vi.fn(async () => ({
+      ok: true,
+      analysisRunId: analysisRun.analysisRunId,
+      candidateId: "candidate-1",
+      candidateStatus: "saved" as const,
+      claimId: "claim-1",
+      expressionId: "expression-1",
+    })),
+    subscribe: vi.fn(() => () => undefined),
+  };
+  const execution: ChatExecutionControl = {
+    snapshot: {
+      selection: {
+        providerId: "claude-code",
+        modelId: "sonnet",
+        providerLabel: "Claude Code",
+        modelLabel: "Sonnet",
+        revision: "execution:1",
+      },
+      providers: [{
+        id: "claude-code",
+        label: "Claude Code",
+        available: true,
+        models: [{ id: "sonnet", label: "Sonnet", available: true }],
+      }],
+    },
+    status: "ready",
+    selecting: false,
+    error: null,
+    announcement: null,
+    currentAvailable: true,
+    select: vi.fn(async () => undefined),
+    retry: vi.fn(),
+  };
+  return { provider, execution };
+};
+
+const openManualAction = async (
+  name: "Add claim manually" | "Connect selection manually",
+): Promise<void> => {
+  await userEvent.click(screen.getByRole("button", { name: "Add manually" }));
+  await userEvent.click(await screen.findByRole("menuitem", { name }));
+};
+
 describe("TruthPanel", () => {
+  it("styles only explicitly primary Truth actions as primary", () => {
+    expect(truthStyles).not.toMatch(
+      /\.wb-cowork-truth__actions\s+button:first-child/u,
+    );
+    expect(truthStyles).toMatch(/\.wb-cowork-truth\s+\.is-primary\s*\{/u);
+  });
+
+  it("does not start a second analysis before durable history restores", async () => {
+    const { provider, execution } = setupAnalysis();
+    let resolveCurrent: (run: TruthAnalysisRun | null) => void = () => undefined;
+    const current = new Promise<TruthAnalysisRun | null>((resolve) => {
+      resolveCurrent = resolve;
+    });
+    vi.mocked(provider.loadCurrent).mockReturnValue(current);
+    const { editor } = setupEditor();
+    const captureAnalysisTarget = vi.fn(async () => capturedAnalysisTarget);
+
+    render(
+      <TruthPanel
+        provider={setupProvider()}
+        storeId="store-1"
+        documentId="doc-1"
+        store={new TruthStore()}
+        editor={{ ...editor, captureAnalysisTarget }}
+        analysis={{ provider, execution }}
+      />,
+    );
+
+    await screen.findByText(summary.proposition);
+    const analyze = screen.getByRole("button", { name: "Analyze passage" });
+    expect(analyze).toHaveAttribute("aria-disabled", "true");
+    await userEvent.click(analyze);
+    expect(captureAnalysisTarget).not.toHaveBeenCalled();
+    expect(provider.start).not.toHaveBeenCalled();
+
+    resolveCurrent(analysisRun);
+    expect(await screen.findByRole("button", { name: "Analyzing…" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    expect(provider.start).not.toHaveBeenCalled();
+  });
+
+  it("keeps unavailable Analyze help keyboard reachable", async () => {
+    const { provider, execution } = setupAnalysis();
+    const { editor } = setupEditor();
+    render(
+      <DashboardHelpProvider enabled>
+        <TruthPanel
+          provider={setupProvider()}
+          storeId="store-1"
+          documentId="doc-1"
+          store={new TruthStore()}
+          editor={editor}
+          analysis={{
+            provider,
+            execution: { ...execution, currentAvailable: false },
+          }}
+        />
+      </DashboardHelpProvider>,
+    );
+
+    const analyze = await screen.findByRole("button", { name: "Analyze passage" });
+    expect(analyze).toHaveAttribute("aria-disabled", "true");
+    expect(analyze).toHaveAttribute("data-help-target", "true");
+    expect(analyze).not.toBeDisabled();
+    analyze.focus();
+    expect(analyze).toHaveFocus();
+  });
+
+  it("captures one exact selected passage and starts analysis with the shared model", async () => {
+    const railProvider = setupProvider();
+    const { provider, execution } = setupAnalysis();
+    const { editor } = setupEditor();
+    const captureAnalysisTarget = vi.fn(async () => capturedAnalysisTarget);
+    const analysisEditor = { ...editor, captureAnalysisTarget };
+    render(
+      <DashboardHelpProvider enabled>
+        <TruthPanel
+          provider={railProvider}
+          storeId="store-1"
+          documentId="doc-1"
+          store={new TruthStore()}
+          editor={analysisEditor}
+          analysis={{ provider, execution }}
+        />
+      </DashboardHelpProvider>,
+    );
+
+    const analyze = await screen.findByRole("button", { name: "Analyze passage" });
+    await waitFor(() => expect(analyze).not.toHaveAttribute("aria-disabled"));
+    await userEvent.hover(analyze);
+    expect(
+      await screen.findByText(/sent to Claude Code · Sonnet/u),
+    ).toBeVisible();
+    expect(
+      screen.getByText(/\$2\.00 limit is enforced on the selected account model/u),
+    ).toBeVisible();
+    expect(
+      screen.getByText(/Web research may incur separate provider charges that Co-work cannot cap yet/u),
+    ).toBeVisible();
+    await userEvent.keyboard("{Escape}");
+    await userEvent.click(analyze);
+
+    await waitFor(() => expect(provider.start).toHaveBeenCalledOnce());
+    expect(captureAnalysisTarget).toHaveBeenCalledOnce();
+    expect(captureAnalysisTarget).toHaveBeenCalledWith("current_selection");
+    expect(provider.start).toHaveBeenCalledWith({
+      targetChoice: "current_selection",
+      capture: capturedAnalysisTarget,
+      execution: {
+        providerId: "claude-code",
+        modelId: "sonnet",
+        providerLabel: "Claude Code",
+        modelLabel: "Sonnet",
+      },
+    });
+  });
+
+  it("blocks a provider without a server-attested hard ceiling", async () => {
+    const railProvider = setupProvider();
+    const { provider, execution } = setupAnalysis();
+    vi.mocked(provider.loadCapabilities).mockResolvedValue({
+      ...analysisCapabilities,
+      providers: [{
+        providerId: "codex",
+        analysisAvailable: false,
+        unavailableReason:
+          "Truth analysis requires a provider-enforced hard spending ceiling.",
+        appliesToAllModels: true,
+        costControl: {
+          enforcementClass: "unavailable",
+          ceilingUsdPerWorkerSession: null,
+          basis: "codex_worker_has_no_budget_enforcement",
+        },
+      }],
+    });
+    const codexExecution: ChatExecutionControl = {
+      ...execution,
+      snapshot: {
+        selection: {
+          providerId: "codex",
+          modelId: "gpt-5",
+          providerLabel: "Codex",
+          modelLabel: "GPT-5",
+          revision: "execution:2",
+        },
+        providers: [{
+          id: "codex",
+          label: "Codex",
+          available: true,
+          models: [{ id: "gpt-5", label: "GPT-5", available: true }],
+        }],
+      },
+    };
+    const { editor } = setupEditor();
+    const captureAnalysisTarget = vi.fn(async () => capturedAnalysisTarget);
+    render(
+      <DashboardHelpProvider enabled>
+        <TruthPanel
+          provider={railProvider}
+          storeId="store-1"
+          documentId="doc-1"
+          store={new TruthStore()}
+          editor={{ ...editor, captureAnalysisTarget }}
+          analysis={{ provider, execution: codexExecution }}
+        />
+      </DashboardHelpProvider>,
+    );
+
+    const analyze = await screen.findByRole("button", { name: "Analyze passage" });
+    await waitFor(() => expect(analyze).toHaveAttribute("aria-disabled", "true"));
+    await userEvent.hover(analyze);
+    expect(
+      await screen.findByText(
+        /Truth analysis requires a provider-enforced hard spending ceiling/u,
+      ),
+    ).toBeVisible();
+    expect(screen.queryByText(/\$2\.00/u)).not.toBeInTheDocument();
+    await userEvent.click(analyze);
+    expect(captureAnalysisTarget).not.toHaveBeenCalled();
+    expect(provider.start).not.toHaveBeenCalled();
+  });
+
+  it("serializes rapid Analyze activation into one capture and one run", async () => {
+    const railProvider = setupProvider();
+    const { provider, execution } = setupAnalysis();
+    let resolveCapture: (capture: CoworkCapturedActionSnapshot) => void = () => undefined;
+    const capture = new Promise<CoworkCapturedActionSnapshot>((resolve) => {
+      resolveCapture = resolve;
+    });
+    const { editor } = setupEditor();
+    const captureAnalysisTarget = vi.fn(() => capture);
+    render(
+      <TruthPanel
+        provider={railProvider}
+        storeId="store-1"
+        documentId="doc-1"
+        store={new TruthStore()}
+        editor={{ ...editor, captureAnalysisTarget }}
+        analysis={{ provider, execution }}
+      />,
+    );
+
+    const analyze = await screen.findByRole("button", { name: "Analyze passage" });
+    await waitFor(() => expect(analyze).not.toHaveAttribute("aria-disabled"));
+    fireEvent.click(analyze);
+    fireEvent.click(analyze);
+    await waitFor(() => expect(captureAnalysisTarget).toHaveBeenCalledOnce());
+    expect(provider.start).not.toHaveBeenCalled();
+
+    resolveCapture(capturedAnalysisTarget);
+    await waitFor(() => expect(provider.start).toHaveBeenCalledOnce());
+  });
+
+  it("makes a terminal timed-out run rerunnable without a restart control", async () => {
+    const railProvider = setupProvider();
+    const { provider, execution } = setupAnalysis();
+    const timedOutRun: TruthAnalysisRun = {
+      ...analysisRun,
+      status: "failed",
+      error: "The account-model session timed out. Analyze the passage again.",
+      finishedAt: "2026-08-09T12:02:00Z",
+      sourceCoverage: [{
+        source: "selected_passage",
+        status: "supplied",
+        detail: "The exact passage capture was supplied to the run.",
+        externalEgress: false,
+      }],
+    };
+    vi.mocked(provider.loadCurrent)
+      .mockResolvedValueOnce(analysisRun)
+      .mockResolvedValueOnce(timedOutRun);
+    let invalidate = (): void => undefined;
+    provider.subscribe = vi.fn((listener) => {
+      invalidate = listener;
+      return () => undefined;
+    });
+    const { editor } = setupEditor();
+    const captureAnalysisTarget = vi.fn(async () => capturedAnalysisTarget);
+    render(
+      <TruthPanel
+        provider={railProvider}
+        storeId="store-1"
+        documentId="doc-1"
+        store={new TruthStore()}
+        editor={{ ...editor, captureAnalysisTarget }}
+        analysis={{ provider, execution }}
+      />,
+    );
+
+    expect(await screen.findByRole("button", { name: "Analyzing…" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
+    act(() => invalidate());
+    expect(
+      await screen.findByText(
+        "The account-model session timed out. Analyze the passage again.",
+      ),
+    ).toBeVisible();
+    const analyze = screen.getByRole("button", { name: "Analyze passage" });
+    await waitFor(() => expect(analyze).not.toHaveAttribute("aria-disabled"));
+    expect(screen.queryByRole("button", { name: /restart/u })).not.toBeInTheDocument();
+    await userEvent.click(analyze);
+    await waitFor(() => expect(provider.start).toHaveBeenCalledOnce());
+  });
+
+  it("keeps a completed run with pending claims reachable before another analysis", async () => {
+    const railProvider = setupProvider();
+    const { provider, execution } = setupAnalysis();
+    vi.mocked(provider.loadCurrent).mockResolvedValue(pendingAnalysisRun);
+    const { editor } = setupEditor();
+    const captureAnalysisTarget = vi.fn(async () => capturedAnalysisTarget);
+    render(
+      <TruthPanel
+        provider={railProvider}
+        storeId="store-1"
+        documentId="doc-1"
+        store={new TruthStore()}
+        editor={{ ...editor, captureAnalysisTarget }}
+        analysis={{ provider, execution }}
+      />,
+    );
+
+    await screen.findByText("1 claim ready to review.");
+    const analyze = screen.getByRole("button", { name: "Analyze passage" });
+    expect(analyze).toHaveAttribute("aria-disabled", "true");
+    await userEvent.click(analyze);
+    expect(captureAnalysisTarget).not.toHaveBeenCalled();
+    expect(provider.start).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a completed empty run", { ...analysisRun, status: "completed", finishedAt: "2026-08-09T12:00:05Z" }],
+    [
+      "a fully reviewed run",
+      {
+        ...pendingAnalysisRun,
+        candidates: [{ ...analysisCandidate, status: "saved", decision: "save_as_proposed" }],
+      },
+    ],
+    [
+      "a failed run",
+      {
+        ...analysisRun,
+        status: "failed",
+        error: "Analysis failed safely.",
+        finishedAt: "2026-08-09T12:00:05Z",
+      },
+    ],
+  ] satisfies readonly (readonly [string, TruthAnalysisRun])[])(
+    "allows another analysis after %s",
+    async (_label, restoredRun) => {
+      const railProvider = setupProvider();
+      const { provider, execution } = setupAnalysis();
+      vi.mocked(provider.loadCurrent).mockResolvedValue(restoredRun);
+      const { editor } = setupEditor();
+      render(
+        <TruthPanel
+          provider={railProvider}
+          storeId="store-1"
+          documentId="doc-1"
+          store={new TruthStore()}
+          editor={{ ...editor, captureAnalysisTarget: vi.fn(async () => capturedAnalysisTarget) }}
+          analysis={{ provider, execution }}
+        />,
+      );
+
+      const analyze = await screen.findByRole("button", { name: "Analyze passage" });
+      await waitFor(() => expect(analyze).not.toHaveAttribute("aria-disabled"));
+    },
+  );
+
   it("does not clear an editor focus it did not establish", async () => {
     const { editor, focusClaim } = setupEditor();
     render(
@@ -222,6 +731,49 @@ describe("TruthPanel", () => {
     expect(revealPassage).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole("button", { name: "Show in document" }));
     expect(revealPassage).toHaveBeenCalledWith(connection);
+  });
+
+  it("separates AI preparation from the human who added a reviewed claim", async () => {
+    const provenance = {
+      preparedBy: {
+        kind: "agent_run" as const,
+        surface: "cowork_truth_analysis" as const,
+        analysisRunId: "run-1",
+        candidateId: "candidate-1",
+        providerId: "claude-code",
+        modelId: "sonnet",
+      },
+      addedBy: {
+        kind: "human",
+        ref: "owner",
+        at: "2026-08-09T12:05:00Z",
+      },
+    };
+    const preparedConnection = { ...connection, provenance };
+    const preparedSummary = {
+      ...summary,
+      connections: [preparedConnection],
+      provenance,
+    };
+    render(
+      <TruthPanel
+        provider={setupProvider(
+          [preparedSummary],
+          { ...detail, ...preparedSummary },
+        )}
+        storeId="store-1"
+        documentId="doc-1"
+        store={new TruthStore()}
+      />,
+    );
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: summary.proposition }),
+    );
+    expect(screen.getAllByText(/Prepared by/u)).toHaveLength(2);
+    expect(screen.getByText("Added by")).toBeVisible();
+    expect(screen.getAllByText(/claude-code/u)).toHaveLength(2);
+    expect(screen.queryByText("Created by")).not.toBeInTheDocument();
   });
 
   it("shows claim health separately from the append-only lifecycle status", async () => {
@@ -277,7 +829,7 @@ describe("TruthPanel", () => {
     render(<TruthPanel provider={provider} storeId="store-1" documentId="doc-1" store={new TruthStore()} editor={editor} />);
     await screen.findByText(summary.proposition);
 
-    await userEvent.click(screen.getByRole("button", { name: "Propose from selection" }));
+    await openManualAction("Add claim manually");
     expect(await screen.findByText("Selected passage")).toBeVisible();
     expect(captureSelection).toHaveBeenCalledTimes(1);
     await userEvent.click(screen.getByRole("button", { name: "Propose and connect" }));
@@ -305,9 +857,7 @@ describe("TruthPanel", () => {
     );
     await screen.findByText(summary.proposition);
 
-    await userEvent.click(
-      screen.getByRole("button", { name: "Propose from selection" }),
-    );
+    await openManualAction("Add claim manually");
 
     expect(await screen.findByText("Selected passage")).toBeVisible();
     expect(captureSelection).toHaveBeenCalledTimes(1);
@@ -330,9 +880,7 @@ describe("TruthPanel", () => {
     );
     await screen.findByText(summary.proposition);
 
-    await userEvent.click(
-      screen.getByRole("button", { name: "Connect selection" }),
-    );
+    await openManualAction("Connect selection manually");
     expect(await screen.findByText("Selected passage")).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "Connect claim" }));
 
@@ -359,7 +907,7 @@ describe("TruthPanel", () => {
     render(<TruthPanel provider={provider} storeId="store-1" documentId="doc-1" store={new TruthStore()} editor={editor} />);
     await screen.findByText(summary.proposition);
 
-    await userEvent.click(screen.getByRole("button", { name: "Connect selection" }));
+    await openManualAction("Connect selection manually");
     await screen.findByText("Selected passage");
     await userEvent.click(screen.getByRole("button", { name: "Connect claim" }));
 
@@ -398,6 +946,43 @@ describe("TruthPanel", () => {
     expect(screen.getByText(/document is retired/i)).toBeVisible();
     expect(screen.queryByRole("button", { name: "Propose from selection" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Connect selection" })).toBeNull();
+  });
+
+  it("does not offer a paid analysis mutation for a retired document", async () => {
+    const railProvider = setupProvider([]);
+    vi.mocked(railProvider.load).mockImplementation(async (query) => ({
+      ...snapshot([]),
+      scope: query.scope,
+      filter: query.filter,
+      capabilities: {
+        ...snapshot([]).capabilities,
+        canModify: false,
+        canDecide: false,
+        mutationUnavailableReason:
+          "This document is retired, so its Truth connections cannot change.",
+      },
+    }));
+    const { provider, execution } = setupAnalysis();
+    const { editor } = setupEditor();
+    const captureAnalysisTarget = vi.fn(async () => capturedAnalysisTarget);
+
+    render(
+      <TruthPanel
+        provider={railProvider}
+        storeId="store-1"
+        documentId="doc-1"
+        store={new TruthStore()}
+        editor={{ ...editor, captureAnalysisTarget }}
+        analysis={{ provider, execution }}
+      />,
+    );
+
+    const analyze = await screen.findByRole("button", { name: "Analyze passage" });
+    await waitFor(() => expect(provider.loadCurrent).toHaveBeenCalled());
+    expect(analyze).toHaveAttribute("aria-disabled", "true");
+    await userEvent.click(analyze);
+    expect(captureAnalysisTarget).not.toHaveBeenCalled();
+    expect(provider.start).not.toHaveBeenCalled();
   });
 
   it("binds a visible confirmation to the exact server decision hashes", async () => {

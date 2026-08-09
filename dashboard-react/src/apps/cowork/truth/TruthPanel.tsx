@@ -5,9 +5,23 @@ import {
   useRef,
   useState,
 } from "react";
+import {
+  Button as AriaButton,
+  Menu,
+  MenuItem,
+  MenuTrigger,
+  Popover,
+  type Key,
+} from "react-aria-components";
+
+import { HelpTarget, type HelpContent } from "../../../dashboard/help";
+import type { ChatExecutionControl } from "../../../widget-library/chat";
 
 import type {
   TruthClaimDecisionRequest,
+  TruthAnalysisCandidate,
+  TruthAnalysisCandidateDecisionRequest,
+  TruthAnalysisProvider,
   TruthClaimFilter,
   TruthEditorIntegration,
   TruthMutationReceipt,
@@ -18,6 +32,7 @@ import type {
 } from "./contracts";
 import { TruthClaimCard } from "./TruthClaimCard";
 import { TruthClaimDetails } from "./TruthClaimDetails";
+import { TruthAnalysisReview } from "./TruthAnalysisReview";
 import { TruthSelectionComposer } from "./TruthSelectionComposer";
 import {
   createPersistedTruthStore,
@@ -25,6 +40,7 @@ import {
   useTruthState,
 } from "./store";
 import { useTruthClaimDetail, useTruthData } from "./useTruthData";
+import { useTruthAnalysis } from "./useTruthAnalysis";
 import "./styles.css";
 
 const FILTERS: readonly {
@@ -45,6 +61,12 @@ const fallbackError = (cause: unknown): string =>
     ? cause.message
     : "Truth could not complete that change.";
 
+const MANUAL_HELP: HelpContent = {
+  summary: "Add or connect a claim yourself.",
+  details:
+    "Use these manual actions when you already know the exact claim and how the selected passage expresses it.",
+};
+
 export interface TruthPanelProps {
   readonly provider: TruthRailProvider;
   readonly storeId: string;
@@ -53,6 +75,10 @@ export interface TruthPanelProps {
   readonly store?: TruthStore;
   readonly storage?: Storage;
   readonly editor?: TruthEditorIntegration;
+  readonly analysis?: {
+    readonly provider: TruthAnalysisProvider;
+    readonly execution?: ChatExecutionControl;
+  };
   readonly scroll?: TruthScrollIntegration;
   readonly readOnly?: boolean;
   /** False detaches the persisted scroll ref while the containing tab is hidden. */
@@ -66,6 +92,7 @@ export function TruthPanel({
   store: injectedStore,
   storage,
   editor,
+  analysis,
   scroll,
   readOnly: forcedReadOnly = false,
   active = true,
@@ -84,15 +111,21 @@ export function TruthPanel({
   const selectedClaimId = useTruthState(store, (state) => state.selectedClaimId);
   const composer = useTruthState(store, (state) => state.composer);
   const { data, status, error, reload } = useTruthData(provider, { scope, filter });
+  const analysisData = useTruthAnalysis(analysis?.provider ?? null);
   const claimDetail = useTruthClaimDetail(provider, selectedClaimId);
   const [decisionBusy, setDecisionBusy] = useState(false);
   const [decisionError, setDecisionError] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState("");
+  const [analysisStarting, setAnalysisStarting] = useState(false);
+  const analysisStartingRef = useRef(false);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
+  const [busyCandidateId, setBusyCandidateId] = useState<string | null>(null);
+  const [candidateErrorId, setCandidateErrorId] = useState<string | null>(null);
+  const [candidateError, setCandidateError] = useState<string | null>(null);
   const [scrollAttachmentEpoch, setScrollAttachmentEpoch] = useState(0);
   const bodyElementRef = useRef<HTMLElement | null>(null);
   const panelElementRef = useRef<HTMLElement | null>(null);
-  const proposeButtonRef = useRef<HTMLButtonElement | null>(null);
-  const connectButtonRef = useRef<HTMLButtonElement | null>(null);
+  const moreButtonRef = useRef<HTMLButtonElement | null>(null);
   const scrollContainerRef = scroll?.scrollContainerRef;
   const detachScrollContainer = scroll?.onScrollContainerWillDetach;
   const listMode = composer === null && selectedClaimId === null;
@@ -123,9 +156,48 @@ export function TruthPanel({
     return () => editor?.focusClaim?.(null);
   }, [active, editor, selectedClaimId]);
 
+  useEffect(() => {
+    if (!active) editor?.focusAnalysisPassage?.(null);
+  }, [active, editor]);
+
   const readOnly = forcedReadOnly || data?.readOnly === true;
   const canModify =
     !forcedReadOnly && data?.capabilities.canModify === true;
+  const analysisExecution = analysis?.execution?.snapshot?.selection;
+  const analysisProviderCapability =
+    analysisExecution === undefined
+      ? null
+      : analysisData.capabilities?.providers.find(
+          (item) => item.providerId === analysisExecution.providerId,
+        ) ?? null;
+  const requiredCostControl = analysisData.capabilities?.requiredCostControl ?? null;
+  const analysisCostAttested =
+    analysisProviderCapability?.analysisAvailable === true &&
+    analysisProviderCapability.appliesToAllModels &&
+    analysisProviderCapability.costControl.enforcementClass === "hard_ceiling" &&
+    analysisProviderCapability.costControl.ceilingUsdPerWorkerSession !== null &&
+    requiredCostControl?.enforcementClass === "hard_ceiling" &&
+    analysisProviderCapability.costControl.ceilingUsdPerWorkerSession <=
+      requiredCostControl.maximumUsdPerModelSession;
+  const analysisRunActive =
+    analysisData.run?.status === "queued" ||
+    analysisData.run?.status === "running";
+  const pendingAnalysisCandidateCount =
+    analysisData.run?.candidates.filter(
+      (candidate) => candidate.status === "pending",
+    ).length ?? 0;
+  const canAnalyze =
+    canModify &&
+    pendingAnalysisCandidateCount === 0 &&
+    data?.capabilities.canObserve === true &&
+    analysisData.status === "ready" &&
+    analysisData.capabilitiesStatus === "ready" &&
+    analysisCostAttested &&
+    editor?.captureAnalysisTarget !== undefined &&
+    analysis !== undefined &&
+    analysisExecution !== undefined &&
+    analysis.execution?.status === "ready" &&
+    analysis.execution.currentAvailable;
   const counts = data?.counts ?? {
     all: 0,
     facts: 0,
@@ -138,6 +210,61 @@ export function TruthPanel({
   const composerCaptureRef = useRef<Promise<TruthSelectionCapture> | null>(null);
   const controlsLocked =
     composer !== null || selectedClaimId !== null || decisionBusy;
+  const analyzeBlockedReason = controlsLocked
+    ? "Return to the claims list first."
+    : analysisStarting || analysisRunActive
+      ? "The current analysis is still running."
+      : analysisData.status === "loading"
+        ? "Truth history is still loading."
+        : analysisData.status === "error"
+          ? "Reload Truth history before starting another analysis."
+          : readOnly
+            ? "Truth analysis is unavailable in read-only mode."
+            : !canModify
+              ? data?.capabilities.mutationUnavailableReason ??
+                "Truth analysis is unavailable for this document."
+              : pendingAnalysisCandidateCount > 0
+                ? "Add, connect, or skip the prepared claims before analyzing another passage."
+                : data?.capabilities.canObserve !== true
+                  ? "Truth context is not available yet."
+                  : editor?.captureAnalysisTarget === undefined
+                    ? "The editor cannot capture a passage right now."
+                    : analysisExecution === undefined ||
+                        analysis?.execution?.status !== "ready" ||
+                        !analysis.execution.currentAvailable
+                      ? "Choose an available account model first."
+                      : analysisData.capabilitiesStatus === "loading"
+                        ? "Truth analysis availability is still loading."
+                        : analysisData.capabilitiesStatus === "error"
+                          ? "Truth analysis availability could not be verified. Try again."
+                          : analysisProviderCapability === null
+                            ? "Truth analysis is not available for this provider."
+                            : !analysisProviderCapability.analysisAvailable
+                              ? analysisProviderCapability.unavailableReason ??
+                                "Truth analysis is not available for this provider."
+                              : !analysisCostAttested
+                                ? "Truth analysis requires a provider-enforced hard spending ceiling."
+                      : null;
+  const attestedWorkerCeiling = analysisCostAttested
+    ? analysisProviderCapability?.costControl.ceilingUsdPerWorkerSession ?? null
+    : null;
+  const analyzeHelp: HelpContent = {
+    summary: "Prepare claims from selected prose.",
+    details: `${
+      analysisExecution === undefined
+        ? "Choose an available account model, then analyze one exact selected passage."
+        : `The exact selected passage and bounded existing Truth context are sent to ${analysisExecution.providerLabel} · ${analysisExecution.modelLabel}. Analysis may run bounded web searches for factual grounding; results report what was actually searched.${
+            attestedWorkerCeiling === null
+                ? ""
+              : ` A ${attestedWorkerCeiling.toLocaleString("en-US", {
+                  style: "currency",
+                  currency: "USD",
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 2,
+                })} limit is enforced on the selected account model for this analysis. Web research may incur separate provider charges that Co-work cannot cap yet.`
+          }`
+    }${analyzeBlockedReason === null ? "" : ` ${analyzeBlockedReason}`}`,
+  };
 
   useEffect(() => {
     if (composer === null) composerCaptureRef.current = null;
@@ -191,14 +318,103 @@ export function TruthPanel({
     store.openComposer(mode);
   };
 
+  const analyzePassage = (): void => {
+    if (
+      analysis === undefined ||
+      editor?.captureAnalysisTarget === undefined ||
+      analysisExecution === undefined ||
+      !canAnalyze ||
+      analyzeBlockedReason !== null ||
+      analysisStartingRef.current ||
+      analysisRunActive
+    ) {
+      return;
+    }
+    analysisStartingRef.current = true;
+    setAnalysisStarting(true);
+    setAnalysisError(null);
+    const captureAnalysisTarget = editor.captureAnalysisTarget;
+    void Promise.resolve()
+      .then(() => captureAnalysisTarget("current_selection"))
+      .then((frozen) =>
+        analysis.provider.start({
+          targetChoice: "current_selection",
+          capture: frozen,
+          execution: {
+            providerId: analysisExecution.providerId,
+            modelId: analysisExecution.modelId,
+            providerLabel: analysisExecution.providerLabel,
+            modelLabel: analysisExecution.modelLabel,
+          },
+        }),
+      )
+      .then((run) => {
+        analysisData.adopt(run);
+        setAnnouncement("Truth analysis started.");
+      })
+      .catch((cause: unknown) => setAnalysisError(fallbackError(cause)))
+      .finally(() => {
+        analysisStartingRef.current = false;
+        setAnalysisStarting(false);
+      });
+  };
+
+  const decideAnalysisCandidate = async (
+    request: TruthAnalysisCandidateDecisionRequest,
+  ): Promise<void> => {
+    if (analysis === undefined || busyCandidateId !== null) return;
+    setBusyCandidateId(request.candidateId);
+    setCandidateErrorId(null);
+    setCandidateError(null);
+    try {
+      const receipt = await analysis.provider.decideCandidate(request);
+      const next = await analysis.provider.loadRun(request.analysisRunId);
+      analysisData.adopt(next);
+      if (receipt.candidateStatus === "saved") {
+        setAnnouncement(
+          request.decision === "connect_existing"
+            ? "Passage connected to the existing claim."
+            : "Claim added as proposed.",
+        );
+        reload();
+      } else {
+        setAnnouncement("Candidate claim skipped.");
+      }
+    } catch (cause: unknown) {
+      setCandidateErrorId(request.candidateId);
+      setCandidateError(fallbackError(cause));
+      throw cause;
+    } finally {
+      setBusyCandidateId(null);
+    }
+  };
+
+  const focusAnalysisCandidate = useCallback(
+    (candidate: TruthAnalysisCandidate | null): void =>
+      editor?.focusAnalysisPassage?.(
+        candidate === null
+          ? null
+          : {
+              candidateId: candidate.candidateId,
+              selector: candidate.expression.selector,
+            },
+      ),
+    [editor],
+  );
+  const revealAnalysisCandidate = useCallback(
+    (candidate: TruthAnalysisCandidate): void =>
+      editor?.revealAnalysisPassage?.({
+        candidateId: candidate.candidateId,
+        selector: candidate.expression.selector,
+      }),
+    [editor],
+  );
+
   const cancelComposer = (): void => {
-    const returningTo = composer;
     composerCaptureRef.current = null;
     store.closeComposer();
     window.requestAnimationFrame(() => {
-      (returningTo === "connect"
-        ? connectButtonRef.current
-        : proposeButtonRef.current)?.focus();
+      moreButtonRef.current?.focus();
     });
   };
 
@@ -309,8 +525,8 @@ export function TruthPanel({
             : filtered
             ? "No claims in this view match the selected filter."
             : scope === "document"
-              ? "Connect selected prose to an existing claim, or propose a new one."
-              : "Propose a claim from selected prose when you are ready."}
+              ? "Select a passage and choose Analyze passage to prepare claims and source findings for review."
+              : "Analyze a passage in a document to begin, or add one manually."}
         </p>
         {unconnectedRequiresFolder || filtered ? (
           <div className="wb-cowork-truth__empty-actions">
@@ -342,6 +558,21 @@ export function TruthPanel({
     );
   }
 
+  const analysisContent =
+    listMode && analysisData.run !== null ? (
+      <TruthAnalysisReview
+        run={analysisData.run}
+        busyCandidateId={busyCandidateId}
+        errorCandidateId={candidateErrorId}
+        error={candidateError}
+        canModify={canModify}
+        allowedClaimKinds={allowedClaimKinds}
+        onFocusCandidate={focusAnalysisCandidate}
+        onRevealCandidate={revealAnalysisCandidate}
+        onDecide={decideAnalysisCandidate}
+      />
+    ) : null;
+
   return (
     <section ref={panelElementRef} className="wb-cowork-truth" aria-label="Truth">
       <h2 className="wb-cowork-truth__visually-hidden">Truth</h2>
@@ -350,10 +581,65 @@ export function TruthPanel({
           <button type="button" disabled={controlsLocked} aria-pressed={scope === "document"} onClick={() => changeScope("document")}>This document</button>
           <button type="button" disabled={controlsLocked} aria-pressed={scope === "folder"} onClick={() => changeScope("folder")}>Folder</button>
         </div>
-        {canModify ? (
+        {analysis !== undefined || canModify ? (
           <div className="wb-cowork-truth__actions">
-            <button ref={proposeButtonRef} type="button" disabled={editor === undefined || controlsLocked} onClick={() => openComposer("propose")}>Propose from selection</button>
-            <button ref={connectButtonRef} type="button" disabled={editor === undefined || controlsLocked} onClick={() => openComposer("connect")}>Connect selection</button>
+            {analysis === undefined ? null : (
+              <HelpTarget content={analyzeHelp} placement="bottom end">
+                <button
+                  type="button"
+                  className="is-primary"
+                  aria-disabled={analyzeBlockedReason === null ? undefined : true}
+                  onClick={analyzePassage}
+                >
+                  {analysisStarting || analysisRunActive
+                    ? "Analyzing…"
+                    : "Analyze passage"}
+                </button>
+              </HelpTarget>
+            )}
+            {canModify ? <div className="wb-cowork-truth__more">
+              <MenuTrigger>
+                <HelpTarget
+                  content={MANUAL_HELP}
+                  placement="bottom end"
+                  reactAriaComposite
+                >
+                  <AriaButton
+                    ref={moreButtonRef}
+                    isDisabled={controlsLocked || analysisStarting}
+                  >
+                    Add manually
+                  </AriaButton>
+                </HelpTarget>
+                <Popover
+                  className="wb-popover wb-cowork-truth__more-popover"
+                  placement="bottom end"
+                >
+                  <Menu
+                    className="wb-cowork-truth__more-menu"
+                    aria-label="Manual Truth actions"
+                    onAction={(key: Key) =>
+                      openComposer(key === "connect" ? "connect" : "propose")
+                    }
+                  >
+                    <MenuItem
+                      id="propose"
+                      className="wb-cowork-truth__more-item"
+                      isDisabled={editor === undefined}
+                    >
+                      Add claim manually
+                    </MenuItem>
+                    <MenuItem
+                      id="connect"
+                      className="wb-cowork-truth__more-item"
+                      isDisabled={editor === undefined}
+                    >
+                      Connect selection manually
+                    </MenuItem>
+                  </Menu>
+                </Popover>
+              </MenuTrigger>
+            </div> : null}
           </div>
         ) : null}
       </div>
@@ -376,6 +662,17 @@ export function TruthPanel({
           <button type="button" onClick={reload}>Try again</button>
         </div>
       ) : null}
+      {analysisError === null ? null : (
+        <p className="wb-cowork-truth__error" role="alert">
+          {analysisError}
+        </p>
+      )}
+      {analysisData.error !== null ? (
+        <div className="wb-cowork-truth__refresh-warning" role="status">
+          <span>{analysisData.error}</span>
+          <button type="button" onClick={analysisData.reload}>Try again</button>
+        </div>
+      ) : null}
       <p
         className="wb-cowork-truth__visually-hidden"
         role="status"
@@ -388,6 +685,7 @@ export function TruthPanel({
         ref={attachScrollContainer}
         data-truth-scroll-container="true"
       >
+        {analysisContent}
         {content}
       </div>
     </section>

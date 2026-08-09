@@ -1,5 +1,7 @@
 import type { RefCallback } from "react";
 
+import type { CoworkCapturedActionSnapshot } from "../targets";
+
 /** The two truthful read scopes exposed by Co-work's Truth surface. */
 export type TruthViewScope = "document" | "folder";
 
@@ -83,6 +85,25 @@ export interface TruthPassageConnection {
     readonly kind: string;
     readonly ref: string | null;
   } | null;
+  readonly provenance?: TruthRecordProvenance;
+}
+
+export interface TruthAnalysisPreparationProvenance {
+  readonly kind: "agent_run";
+  readonly surface: "cowork_truth_analysis";
+  readonly analysisRunId: string;
+  readonly candidateId: string;
+  readonly providerId: string;
+  readonly modelId: string;
+}
+
+export interface TruthRecordProvenance {
+  readonly preparedBy: TruthAnalysisPreparationProvenance | null;
+  readonly addedBy: {
+    readonly kind: string;
+    readonly ref: string | null;
+    readonly at: string;
+  };
 }
 
 /**
@@ -124,6 +145,7 @@ export interface TruthClaimSummary {
     readonly kind: string;
     readonly ref: string | null;
   } | null;
+  readonly provenance?: TruthRecordProvenance;
   /** Server-derived fact classification; clients use a conservative fallback. */
   readonly isFact: boolean;
   /** Authoritative actions for this claim in the current policy context. */
@@ -308,6 +330,214 @@ export interface TruthMutationReceipt {
   readonly status: string | null;
 }
 
+/** Exact editor target accepted by the first AI-assisted Truth slice. */
+export type TruthAnalysisTargetChoice =
+  | "current_selection"
+  | "working_target";
+
+export type TruthAnalysisRunStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "completed_with_failures"
+  | "failed"
+  | "cancelled";
+
+export type TruthAnalysisCandidateStatus =
+  | "pending"
+  | "saved"
+  | "dismissed";
+
+export type TruthEvidenceRelationship =
+  | "supports"
+  | "partially_supports"
+  | "contradicts"
+  | "mentions"
+  | "does_not_address"
+  | "inconclusive";
+
+/** Explicit account-backed execution selection frozen when a run starts. */
+export interface TruthAnalysisExecutionSelection {
+  readonly providerId: string;
+  readonly modelId: string;
+  readonly providerLabel: string;
+  readonly modelLabel: string;
+}
+
+export interface TruthAnalysisExistingClaimMatch {
+  readonly claimId: string;
+  readonly proposition: string;
+  readonly relationship:
+    | "exact"
+    | "equivalent"
+    | "overlaps"
+    | "conflicts"
+    | "unknown";
+  readonly confidence: number | null;
+  readonly rationale: string | null;
+}
+
+export interface TruthAnalysisEvidenceCandidate {
+  readonly evidenceCandidateId: string;
+  readonly sourceKind: "truth_span" | "web_fetch" | "passage_citation";
+  /** Server-authoritative admission flag; absent/false is never selectable. */
+  readonly attachable: boolean;
+  readonly relationship: TruthEvidenceRelationship;
+  readonly quote: string | null;
+  readonly sourceLocator: string;
+  readonly sourceTitle: string | null;
+  readonly trustClass: string | null;
+  readonly integrityState: string | null;
+  readonly capture: {
+    readonly textTruncated: boolean;
+    readonly capturedTextBytes: number;
+    readonly extractedTextBytes: number;
+    readonly capturedTextSha256: string;
+    readonly fullExtractedTextSha256: string;
+    readonly maximumCapturedTextBytes: number;
+  } | null;
+  readonly rationale: string | null;
+}
+
+/** One server-reported search boundary. The client never infers coverage. */
+export interface TruthAnalysisSourceCoverage {
+  readonly source: string;
+  readonly status:
+    | "supplied"
+    | "searched"
+    | "partial"
+    | "not_searched"
+    | "unavailable"
+    | "failed";
+  readonly detail: string | null;
+  readonly externalEgress: boolean | null;
+}
+
+export interface TruthAnalysisCandidate {
+  readonly candidateId: string;
+  readonly canonicalSha256: string;
+  readonly status: TruthAnalysisCandidateStatus;
+  readonly decision:
+    | "save_as_proposed"
+    | "connect_existing"
+    | "dismiss"
+    | null;
+  readonly proposition: string;
+  readonly claimKind: string;
+  /** Confidence that the passage expresses this claim, not that it is true. */
+  readonly confidenceExtraction: number | null;
+  readonly expression: {
+    readonly role: TruthExpressionRole;
+    readonly quote: string;
+    readonly selector: TruthQuoteSelector;
+  };
+  readonly existingClaimMatch: TruthAnalysisExistingClaimMatch | null;
+  readonly evidence: readonly TruthAnalysisEvidenceCandidate[];
+  readonly sourceCoverage: readonly TruthAnalysisSourceCoverage[];
+  readonly limitations: readonly string[];
+}
+
+export interface TruthAnalysisRun {
+  readonly schema: string;
+  readonly analysisRunId: string;
+  readonly storeId: string;
+  readonly documentId: string;
+  readonly status: TruthAnalysisRunStatus;
+  readonly targetChoice: TruthAnalysisTargetChoice;
+  readonly targetLabel: string;
+  readonly capturedAt: string;
+  readonly structuredHeadSha256: string;
+  readonly projectionSha256: string;
+  readonly execution: TruthAnalysisExecutionSelection;
+  readonly candidates: readonly TruthAnalysisCandidate[];
+  readonly sourceCoverage: readonly TruthAnalysisSourceCoverage[];
+  readonly limitations: readonly string[];
+  readonly error: string | null;
+  readonly createdAt: string;
+  readonly finishedAt: string | null;
+}
+
+export interface TruthStartAnalysisRequest {
+  readonly targetChoice: TruthAnalysisTargetChoice;
+  /** Full frozen capture; the transport never rebuilds it from visible text. */
+  readonly capture: CoworkCapturedActionSnapshot;
+  readonly execution: TruthAnalysisExecutionSelection;
+}
+
+export interface TruthAnalysisCandidateEdits {
+  readonly proposition: string;
+  readonly claimKind: string;
+  readonly expressionRole: TruthExpressionRole;
+  readonly evidenceCandidateIds: readonly string[];
+}
+
+export interface TruthAnalysisCandidateDecisionRequest {
+  readonly analysisRunId: string;
+  readonly candidateId: string;
+  readonly decision:
+    | "save_as_proposed"
+    | "connect_existing"
+    | "dismiss";
+  readonly expectedCanonicalSha256: string;
+  readonly existingClaimId?: string;
+  readonly edits?: TruthAnalysisCandidateEdits;
+}
+
+export interface TruthAnalysisCandidateDecisionReceipt {
+  readonly ok: boolean;
+  readonly analysisRunId: string;
+  readonly candidateId: string;
+  readonly candidateStatus: TruthAnalysisCandidateStatus;
+  readonly claimId: string | null;
+  readonly expressionId: string | null;
+}
+
+export interface TruthAnalysisCostControl {
+  readonly enforcementClass: "hard_ceiling" | "unavailable";
+  readonly ceilingUsdPerWorkerSession: number | null;
+  readonly basis: string;
+}
+
+export interface TruthAnalysisProviderCapability {
+  readonly providerId: string;
+  readonly analysisAvailable: boolean;
+  readonly unavailableReason: string | null;
+  readonly appliesToAllModels: boolean;
+  readonly costControl: TruthAnalysisCostControl;
+}
+
+/** Server-attested execution eligibility; the client treats absence as unsafe. */
+export interface TruthAnalysisCapabilities {
+  readonly schema: "wb.cowork.truth-analysis-capabilities/v1";
+  readonly requiredCostControl: {
+    readonly enforcementClass: "hard_ceiling";
+    readonly scope: "worker_model_session";
+    readonly maximumUsdPerModelSession: number;
+  };
+  readonly researchCostControl: {
+    readonly enforcementClass: "unavailable";
+    readonly scope: "web_search_and_fetch";
+    readonly ceilingUsd: null;
+    readonly basis: string;
+  };
+  readonly providers: readonly TruthAnalysisProviderCapability[];
+}
+
+/**
+ * Operational AI-analysis seam kept separate from the authoritative ledger
+ * provider. Losing this provider must never make Truth observation fail.
+ */
+export interface TruthAnalysisProvider {
+  loadCapabilities(): Promise<TruthAnalysisCapabilities>;
+  loadCurrent(): Promise<TruthAnalysisRun | null>;
+  loadRun(analysisRunId: string): Promise<TruthAnalysisRun>;
+  start(request: TruthStartAnalysisRequest): Promise<TruthAnalysisRun>;
+  decideCandidate(
+    request: TruthAnalysisCandidateDecisionRequest,
+  ): Promise<TruthAnalysisCandidateDecisionReceipt>;
+  subscribe(listener: TruthInvalidationListener): TruthUnsubscribe;
+}
+
 export type TruthInvalidationListener = () => void;
 export type TruthUnsubscribe = () => void;
 
@@ -325,10 +555,23 @@ export interface TruthRailProvider {
 export interface TruthEditorIntegration {
   /** Capture and freeze the current non-empty selection. */
   captureSelection(): Promise<TruthSelectionCapture>;
+  /** Capture one full immutable action snapshot for AI-assisted analysis. */
+  captureAnalysisTarget?(
+    target: TruthAnalysisTargetChoice,
+  ): Promise<CoworkCapturedActionSnapshot>;
   /** One-shot present-user navigation; passive selection must never call it. */
   revealPassage(connection: TruthPassageConnection): void;
   /** Optional persistent emphasis without scrolling. */
   focusClaim?(claimId: string | null): void;
+  /** View-only focus for a staged candidate that is not a ledger expression yet. */
+  focusAnalysisPassage?(target: TruthAnalysisPassageTarget | null): void;
+  /** One-shot explicit navigation to a staged candidate's exact expression. */
+  revealAnalysisPassage?(target: TruthAnalysisPassageTarget): void;
+}
+
+export interface TruthAnalysisPassageTarget {
+  readonly candidateId: string;
+  readonly selector: TruthQuoteSelector;
 }
 
 export interface TruthScrollIntegration {

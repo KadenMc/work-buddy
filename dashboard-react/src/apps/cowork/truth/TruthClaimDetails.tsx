@@ -214,11 +214,32 @@ export function TruthClaimDetails({
           <dt>Created</dt>
           <dd>{displayTime(claim.createdAt)}</dd>
         </div>
-        {claim.createdBy === null || claim.createdBy === undefined ? null : (
-          <div>
-            <dt>Created by</dt>
-            <dd>{actorLabel(claim.createdBy.kind, claim.createdBy.ref)}</dd>
-          </div>
+        {claim.provenance?.preparedBy === null ||
+        claim.provenance?.preparedBy === undefined ? (
+          claim.createdBy === null || claim.createdBy === undefined ? null : (
+            <div>
+              <dt>Created by</dt>
+              <dd>{actorLabel(claim.createdBy.kind, claim.createdBy.ref)}</dd>
+            </div>
+          )
+        ) : (
+          <>
+            <div>
+              <dt>Prepared by</dt>
+              <dd>
+                {claim.provenance.preparedBy.providerId} · {claim.provenance.preparedBy.modelId}
+              </dd>
+            </div>
+            <div>
+              <dt>Added by</dt>
+              <dd>
+                {actorLabel(
+                  claim.provenance.addedBy.kind,
+                  claim.provenance.addedBy.ref,
+                )}
+              </dd>
+            </div>
+          </>
         )}
         {claim.validFrom == null && claim.validTo == null ? null : (
           <div>
@@ -291,7 +312,25 @@ export function TruthClaimDetails({
                       : ""}
                 </span>
                 <q>{connection.quote}</q>
-                {connection.createdAt.length > 0 || connection.createdBy !== null ? (
+                {connection.provenance?.preparedBy !== null &&
+                connection.provenance?.preparedBy !== undefined ? (
+                  <>
+                    <p className="wb-cowork-truth__connection-meta">
+                      Prepared by {connection.provenance.preparedBy.providerId} ·{" "}
+                      {connection.provenance.preparedBy.modelId}
+                    </p>
+                    <p className="wb-cowork-truth__connection-meta">
+                      Added
+                      {connection.provenance.addedBy.at.length === 0
+                        ? ""
+                        : ` ${displayTime(connection.provenance.addedBy.at)}`} by{" "}
+                      {actorLabel(
+                        connection.provenance.addedBy.kind,
+                        connection.provenance.addedBy.ref,
+                      )}
+                    </p>
+                  </>
+                ) : connection.createdAt.length > 0 || connection.createdBy !== null ? (
                   <p className="wb-cowork-truth__connection-meta">
                     Connected
                     {connection.createdAt.length === 0

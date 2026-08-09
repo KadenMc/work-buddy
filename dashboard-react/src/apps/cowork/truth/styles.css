@@ -29,7 +29,7 @@
   cursor: pointer;
 }
 
-.wb-cowork-truth button:hover:not(:disabled),
+.wb-cowork-truth button:hover:not(:disabled):not([aria-disabled="true"]),
 .wb-cowork-truth-attention button:hover:not(:disabled) {
   border-color: var(--wb-color-border-interactive);
   background: var(--wb-color-action-secondary-hover);
@@ -97,11 +97,226 @@
   box-shadow: var(--wb-shadow-raised);
 }
 
-.wb-cowork-truth__actions button:first-child,
 .wb-cowork-truth .is-primary {
   border-color: var(--wb-color-action-primary);
   background: var(--wb-color-action-primary);
   color: var(--wb-color-text-on-accent);
+}
+
+.wb-cowork-truth__actions button[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.wb-cowork-truth__more-popover {
+  min-inline-size: 13rem;
+}
+
+.wb-cowork-truth__more-menu {
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-1);
+  padding: var(--wb-space-2);
+  outline: none;
+}
+
+.wb-cowork-truth__more-item {
+  padding: var(--wb-space-2) var(--wb-space-3);
+  border-radius: var(--wb-radius-control);
+  color: var(--wb-color-text-primary);
+  cursor: pointer;
+  outline: none;
+}
+
+.wb-cowork-truth__more-item[data-focused] {
+  background: var(--wb-color-action-secondary-hover);
+  box-shadow: var(--wb-shadow-focus);
+}
+
+.wb-cowork-truth__more-item[data-disabled] {
+  color: var(--wb-color-text-disabled);
+  cursor: default;
+}
+
+.wb-cowork-truth-analysis {
+  margin: var(--wb-space-4) var(--wb-space-4) 0;
+  border: 1px solid var(--wb-color-border-subtle);
+  border-radius: var(--wb-radius-surface);
+  background: var(--wb-color-surface-raised);
+  box-shadow: var(--wb-shadow-raised);
+}
+
+.wb-cowork-truth-analysis__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--wb-space-3);
+  padding: var(--wb-space-3);
+  border-block-end: 1px solid var(--wb-color-border-subtle);
+}
+
+.wb-cowork-truth-analysis__head > div,
+.wb-cowork-truth-analysis__candidate-toggle {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--wb-space-1);
+}
+
+.wb-cowork-truth-analysis__head small,
+.wb-cowork-truth-analysis__candidate-toggle small,
+.wb-cowork-truth-analysis__match small {
+  color: var(--wb-color-text-muted);
+  font-size: var(--wb-font-size-2xs);
+}
+
+.wb-cowork-truth-analysis__candidates,
+.wb-cowork-truth-analysis__evidence ul,
+.wb-cowork-truth-analysis__coverage ul,
+.wb-cowork-truth-analysis__limitations {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.wb-cowork-truth-analysis__content > .wb-cowork-truth-analysis__coverage,
+.wb-cowork-truth-analysis__run-limitations {
+  padding: var(--wb-space-3);
+  border-block-start: 1px solid var(--wb-color-border-subtle);
+}
+
+.wb-cowork-truth-analysis__run-limitations h5 {
+  margin: 0 0 var(--wb-space-1);
+}
+
+.wb-cowork-truth-analysis__candidate + .wb-cowork-truth-analysis__candidate {
+  border-block-start: 1px solid var(--wb-color-border-subtle);
+}
+
+.wb-cowork-truth-analysis__candidate-toggle {
+  inline-size: 100%;
+  padding: var(--wb-space-3);
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  text-align: start;
+}
+
+.wb-cowork-truth-analysis__candidate-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-3);
+  padding: 0 var(--wb-space-3) var(--wb-space-3);
+}
+
+.wb-cowork-truth-analysis__candidate-body h5 {
+  margin: 0 0 var(--wb-space-1);
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-2xs);
+  text-transform: uppercase;
+}
+
+.wb-cowork-truth-analysis blockquote {
+  margin: 0;
+  padding-inline-start: var(--wb-space-3);
+  border-inline-start: 2px solid var(--wb-color-border-default);
+  color: var(--wb-color-text-secondary);
+}
+
+.wb-cowork-truth-analysis__match,
+.wb-cowork-truth-analysis__evidence > p {
+  margin: 0;
+}
+
+.wb-cowork-truth-analysis__evidence li {
+  display: flex;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: var(--wb-space-2);
+  padding: var(--wb-space-2) 0;
+}
+
+.wb-cowork-truth-analysis__evidence li > div {
+  display: flex;
+  min-inline-size: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--wb-space-1);
+}
+
+.wb-cowork-truth-analysis__evidence li p {
+  margin: 0;
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-xs);
+}
+
+.wb-cowork-truth-analysis__evidence li .wb-cowork-truth-analysis__partial-capture {
+  padding: var(--wb-space-2);
+  border-inline-start: 3px solid var(--wb-color-status-warning);
+  background: var(--wb-color-status-warning-surface);
+  color: var(--wb-color-text-primary);
+}
+
+.wb-cowork-truth-analysis__evidence-choice {
+  display: inline-flex;
+  min-block-size: 2.5rem;
+  align-items: center;
+  gap: var(--wb-space-2);
+  padding: var(--wb-space-2) var(--wb-space-3);
+  border: 1px solid var(--wb-color-border-default);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-surface-raised);
+  cursor: pointer;
+  font-size: var(--wb-font-size-xs);
+  font-weight: var(--wb-font-weight-semibold);
+}
+
+.wb-cowork-truth-analysis__evidence-choice input {
+  margin: 0;
+}
+
+.wb-cowork-truth-analysis__coverage li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--wb-space-2);
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-xs);
+}
+
+.wb-cowork-truth-analysis__coverage li p {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.wb-cowork-truth-analysis__edit {
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-2);
+  padding: var(--wb-space-3);
+  border: 1px solid var(--wb-color-border-subtle);
+  border-radius: var(--wb-radius-control);
+}
+
+.wb-cowork-truth-analysis__edit textarea,
+.wb-cowork-truth-analysis__edit input,
+.wb-cowork-truth-analysis__edit select {
+  inline-size: 100%;
+  padding: var(--wb-space-2);
+  border: 1px solid var(--wb-color-border-default);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-surface-raised);
+  color: var(--wb-color-text-primary);
+  font: inherit;
+}
+
+.wb-cowork-truth-analysis__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--wb-space-2);
+}
+
+.wb-cowork-truth-analysis__actions button {
+  padding: var(--wb-space-2) var(--wb-space-3);
 }
 
 .wb-cowork-truth__filters {

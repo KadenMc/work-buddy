@@ -1030,14 +1030,21 @@ class TruthStore:
             redaction_recoveries
         ):
             # The transaction that published these markers rolled back after
-            # removing the rebuildable export.  Restore that projection, but do
-            # not report a commit that never happened.
+            # removing the rebuildable export. Attempt to restore that
+            # projection, but do not report a commit that never happened. An
+            # existing Y.Doc tail remains the durable reason a replacement may
+            # need to wait for compaction.
             self._publish_recovery_export()
             self._clear_redaction_recovery_paths(redaction_recoveries)
             return
-        self._publish_recovery_export(
-            allow_uncompacted_defer=not redaction_recoveries
-        )
+        # An uncompacted Y.Doc tail is already a durable declaration that the
+        # recovery export cannot currently be rebuilt losslessly. Redaction
+        # removes the pre-commit export before SQLite commits, so deferring the
+        # replacement remains privacy-safe: no stale readable payload survives,
+        # and the later compaction commit will rebuild the projection. Treating
+        # that expected state as a failed store open would make every document
+        # in the Folder unavailable after an otherwise successful redaction.
+        self._publish_recovery_export()
         try:
             if self._on_commit is not None:
                 self._on_commit(self)
@@ -1053,11 +1060,7 @@ class TruthStore:
                 "marker could not be cleared"
             ) from exc
 
-    def _publish_recovery_export(
-        self,
-        *,
-        allow_uncompacted_defer: bool = False,
-    ) -> None:
+    def _publish_recovery_export(self) -> None:
         """Publish the configured recovery export with privacy-safe failure."""
 
         from work_buddy.truth.export import (
@@ -1080,16 +1083,15 @@ class TruthStore:
                     "truth ledger commit succeeded but the required recovery "
                     "export failed and its stale predecessor could not be removed"
                 ) from cleanup_exc
-            if (
-                allow_uncompacted_defer
-                and isinstance(exc, UncompactedDocumentError)
-            ):
+            if isinstance(exc, UncompactedDocumentError):
                 # A live Y.Doc update tail is authoritative but cannot yet be
-                # represented losslessly by the recovery export. Ordinary
-                # unrelated commits must still succeed: remove the now-stale
-                # projection and let the next compaction-backed commit rebuild
-                # it. Redaction commits never opt into this deferral, so their
-                # privacy-critical export failure remains visible.
+                # represented losslessly by an automatic recovery export.
+                # Remove the now-stale projection and let the next
+                # compaction-backed commit rebuild it. Redaction has already
+                # removed its stale predecessor before COMMIT, so the same
+                # deferral preserves privacy while allowing its recovery marker
+                # to be retired normally. Explicit export_store callers remain
+                # strict and receive UncompactedDocumentError directly.
                 logger.info("deferring Truth recovery export: %s", exc)
                 return
             raise PostCommitHookError(

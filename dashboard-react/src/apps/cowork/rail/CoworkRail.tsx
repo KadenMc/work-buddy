@@ -29,6 +29,7 @@ import {
 import type { CoworkShortcutBindings } from "../keyboard";
 import {
   TruthAttentionFeed,
+  type TruthAnalysisProvider,
   TruthPanel,
   type TruthEditorIntegration,
   type TruthRailProvider,
@@ -69,6 +70,7 @@ export interface CoworkRailProps {
   readonly storeId?: string;
   readonly truth?: {
     readonly provider: TruthRailProvider;
+    readonly analysisProvider?: TruthAnalysisProvider;
     readonly store: CoworkTruthStore;
     readonly editor?: TruthEditorIntegration;
     readonly readOnly?: boolean;
@@ -385,6 +387,14 @@ export function CoworkRail(props: CoworkRailProps) {
             store={props.truth.store}
             storage={props.storage}
             editor={props.truth.editor}
+            analysis={
+              props.truth.analysisProvider === undefined
+                ? undefined
+                : {
+                    provider: props.truth.analysisProvider,
+                    execution: props.chatExecution,
+                  }
+            }
             readOnly={props.truth.readOnly}
             active={tab === "truth" && props.truthVisible !== false}
             scroll={{

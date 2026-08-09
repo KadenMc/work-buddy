@@ -1012,6 +1012,73 @@ def cowork_verify_job_submit(
 
 
 # --------------------------------------------------------------------------
+# Least-authority Co-work Truth-analysis worker capabilities.
+# --------------------------------------------------------------------------
+
+
+def cowork_truth_analysis_job_get(
+    run_id: str,
+    agent_session_id: str | None = None,
+) -> dict[str, Any]:
+    """Return the exact passage and bounded context bound to this transport."""
+
+    from work_buddy.cowork.truth_analysis import get_worker_context
+
+    return get_worker_context(
+        run_id=run_id,
+        agent_session_id=agent_session_id,
+    )
+
+
+def cowork_truth_analysis_search(
+    run_id: str,
+    query: str,
+    agent_session_id: str | None = None,
+) -> dict[str, Any]:
+    """Run one capped search for the bound Truth-analysis worker."""
+
+    from work_buddy.cowork.truth_analysis import search_web
+
+    return search_web(
+        run_id=run_id,
+        query=query,
+        agent_session_id=agent_session_id,
+    )
+
+
+def cowork_truth_analysis_fetch(
+    run_id: str,
+    hit_id: str,
+    agent_session_id: str | None = None,
+) -> dict[str, Any]:
+    """Fetch only a server-issued hit already admitted to this exact run."""
+
+    from work_buddy.cowork.truth_analysis import fetch_search_hit
+
+    return fetch_search_hit(
+        run_id=run_id,
+        hit_id=hit_id,
+        agent_session_id=agent_session_id,
+    )
+
+
+def cowork_truth_analysis_job_submit(
+    run_id: str,
+    payload: Mapping[str, Any],
+    agent_session_id: str | None = None,
+) -> dict[str, Any]:
+    """Stage one typed output; this capability has no Truth-ledger authority."""
+
+    from work_buddy.cowork.truth_analysis import submit_worker_output
+
+    return submit_worker_output(
+        run_id=run_id,
+        payload=payload,
+        agent_session_id=agent_session_id,
+    )
+
+
+# --------------------------------------------------------------------------
 # Registration.
 # --------------------------------------------------------------------------
 
@@ -1048,6 +1115,26 @@ def register_ops(*, replace: bool = True) -> None:
         cowork_verify_job_submit,
         replace=replace,
     )
+    register_op(
+        "op.wb.cowork_truth_analysis_job_get",
+        cowork_truth_analysis_job_get,
+        replace=replace,
+    )
+    register_op(
+        "op.wb.cowork_truth_analysis_search",
+        cowork_truth_analysis_search,
+        replace=replace,
+    )
+    register_op(
+        "op.wb.cowork_truth_analysis_fetch",
+        cowork_truth_analysis_fetch,
+        replace=replace,
+    )
+    register_op(
+        "op.wb.cowork_truth_analysis_job_submit",
+        cowork_truth_analysis_job_submit,
+        replace=replace,
+    )
 
 
 register_ops()
@@ -1062,5 +1149,9 @@ __all__ = [
     "cowork_doc_propose_edit",
     "cowork_verify_job_get",
     "cowork_verify_job_submit",
+    "cowork_truth_analysis_fetch",
+    "cowork_truth_analysis_job_get",
+    "cowork_truth_analysis_job_submit",
+    "cowork_truth_analysis_search",
     "register_ops",
 ]
