@@ -76,7 +76,11 @@ export interface R2Expression {
     | "confirmed"
     | "needs_review"
     | "proposed"
+    | "challenged"
     | "rejected"
+    | "superseded"
+    | "retracted"
+    | "expired"
     | null;
   readonly claim_kind: string | null;
 }

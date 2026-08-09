@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, type RefCallback } from "react";
 
-export type CoworkScrollSurface = "editor" | "review";
+export type CoworkScrollSurface = "editor" | "review" | "truth";
 
 const STORAGE_PREFIX = "wb.cowork.scroll-position.v1";
 const DEFAULT_WRITE_DELAY_MS = 250;

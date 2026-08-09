@@ -10,6 +10,7 @@ import {
   focusCoworkLedgerAnchor,
   projectCoworkLedgerDecorations,
   readCoworkLedgerDecorationState,
+  setCoworkEditorLens,
 } from "./ledgerDecorations";
 
 const CONTENT =
@@ -40,6 +41,42 @@ afterEach(() => {
 });
 
 describe("CoworkLedgerDecorations", () => {
+  it("switches lenses without changing prose or the editor selection", () => {
+    const current = mountEditor();
+    current.commands.setTextSelection({ from: 3, to: 9 });
+    const beforeJson = current.getJSON();
+    const beforeSelection = current.state.selection.toJSON();
+    projectCoworkLedgerDecorations(current, {
+      edits: [],
+      flags: [
+        {
+          proposalId: "lens-flag",
+          quoteAnchor: { exact: "flagged phrase", prefix: "A ", suffix: ". An" },
+        },
+      ],
+      expressions: [
+        {
+          expressionId: "lens-expression",
+          spanId: "lens-span",
+          quote: "expression phrase",
+          claimRef: "lens-claim",
+          claimStatus: "confirmed",
+        },
+      ],
+      claims: [],
+      provenance: [],
+    });
+
+    expect(current.view.dom.querySelector('[data-wb-decoration="flag"]')).not.toBeNull();
+    setCoworkEditorLens(current, "truth");
+    expect(current.view.dom.querySelector('[data-wb-decoration="flag"]')).toBeNull();
+    expect(current.view.dom.querySelector('[data-wb-decoration="expression"]')).not.toBeNull();
+    setCoworkEditorLens(current, "neutral");
+    expect(current.view.dom.querySelector(".wb-cowork-ledger-decoration")).toBeNull();
+    expect(current.getJSON()).toEqual(beforeJson);
+    expect(current.state.selection.toJSON()).toEqual(beforeSelection);
+  });
+
   it("creates no Yjs structs or updates when projecting an edit", () => {
     const collaborativeDocument = new Y.Doc();
     host = document.createElement("div");
@@ -226,6 +263,14 @@ describe("CoworkLedgerDecorations", () => {
     expect(flag).toHaveAttribute("data-wb-anchor-id", "same-id");
     expect(flag).toHaveClass("wb-cowork-flag-mark");
 
+    expect(
+      current.view.dom.querySelector('[data-wb-decoration="expression"]'),
+    ).toBeNull();
+    setCoworkEditorLens(current, "truth");
+    expect(
+      current.view.dom.querySelector('[data-wb-decoration="flag"]'),
+    ).toBeNull();
+
     const expression = current.view.dom.querySelector<HTMLElement>(
       '[data-wb-decoration="expression"]',
     );
@@ -254,7 +299,7 @@ describe("CoworkLedgerDecorations", () => {
     expect(current.getHTML()).toBe(beforeHtml);
   });
 
-  it("persists kind-qualified Review focus and clears only that active treatment", () => {
+  it("persists kind-qualified Truth focus without leaking Review marks", () => {
     const current = mountEditor();
     projectCoworkLedgerDecorations(current, {
       edits: [],
@@ -287,6 +332,7 @@ describe("CoworkLedgerDecorations", () => {
       ],
       provenance: [],
     });
+    setCoworkEditorLens(current, "truth");
 
     focusCoworkLedgerAnchor(
       current,
@@ -302,7 +348,7 @@ describe("CoworkLedgerDecorations", () => {
       current.view.dom.querySelector(
         '[data-wb-anchor-kind="proposal"][data-wb-anchor-id="same-id"]',
       ),
-    ).not.toHaveClass("wb-cowork-anchor--active");
+    ).toBeNull();
     expect(readCoworkLedgerDecorationState(current)?.focused).toEqual({
       id: "same-id",
       kind: "claim",
@@ -340,6 +386,7 @@ describe("CoworkLedgerDecorations", () => {
       claims: [],
       provenance: [],
     });
+    setCoworkEditorLens(current, "truth");
 
     const expressions = current.view.dom.querySelectorAll<HTMLElement>(
       '[data-wb-decoration="expression"]',

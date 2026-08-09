@@ -1,7 +1,7 @@
 ---
 name: Co-work
 kind: concept
-description: The human-and-agent surface for living documents, with durable editing, source-safe file import, explicit file writes, content provenance, and proposal review.
+description: The human-and-agent surface for living documents, with durable editing, source-safe file import, explicit file writes, content provenance, proposal review, and first-class Truth observability and management.
 summary: A user opens an ordinary folder, Co-work inspects it without mutation, and a one-time confirmation discloses the .wbuddy support data before setup. An invariant toolbar owns New, From file, folder selection, document selection, and explicit folder closing. From file uses a format-neutral importer boundary with Markdown support today; it creates a managed Co-work document without rewriting the source artifact. Co-work keeps structured editing state durable through an offline-capable outbox, records frozen-target authorship and human-review attestations for imported and pasted text, binds each document to one durable conversation with exact feedback anchors, and routes agent contributions through human-reviewed proposals.
 tags:
 - cowork

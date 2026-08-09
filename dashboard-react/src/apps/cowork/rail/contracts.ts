@@ -98,7 +98,11 @@ export type ExpressionClaimStatus =
   | "confirmed"
   | "needs_review"
   | "proposed"
-  | "rejected";
+  | "challenged"
+  | "rejected"
+  | "superseded"
+  | "retracted"
+  | "expired";
 
 /** One expression row, the claim underneath a passage (PRD section 5 read path). */
 export interface ReviewExpression {

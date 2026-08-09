@@ -1,5 +1,5 @@
 import { Editor } from "@tiptap/core";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
 
 import { bootstrapCoworkYdoc } from "../documents/bootstrapCoworkYdoc";
@@ -106,9 +106,78 @@ afterEach(() => {
   editor = null;
   document = null;
   window.localStorage.clear();
+  vi.useRealTimers();
 });
 
 describe("DefaultCoworkActionSnapshotController", () => {
+  it("coalesces StrictMode replays of the same semantic selection", async () => {
+    const opened = await open();
+    const risk = resolveQuoteAnchor(opened.editor.state.doc, {
+      exact: "Risk one.",
+      prefix: "",
+      suffix: "",
+    });
+    if (risk === null) throw new Error("fixture did not resolve");
+    opened.editor.commands.setTextSelection(risk);
+    const persistence = new FakeCapturePersistence(opened.document);
+    const controller = new DefaultCoworkActionSnapshotController({
+      document: opened.document,
+      documentId: "doc-a",
+      storeId: "store-a",
+      persistence,
+      getEditGeneration: () => 0,
+      storage: window.localStorage,
+    });
+    controller.attach(opened.editor);
+
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-09T12:00:00.000Z"));
+    const first = controller.capture("current_selection");
+    vi.setSystemTime(new Date("2026-08-09T12:00:01.000Z"));
+    const replay = controller.capture("current_selection");
+    vi.useRealTimers();
+
+    expect(replay).toBe(first);
+    const [firstCapture, replayCapture] = await Promise.all([first, replay]);
+    expect(replayCapture).toBe(firstCapture);
+    expect(persistence.compactCalls).toBe(1);
+    controller.detach();
+  });
+
+  it("still rejects a genuinely different target while capture is active", async () => {
+    const opened = await open();
+    const risk = resolveQuoteAnchor(opened.editor.state.doc, {
+      exact: "Risk one.",
+      prefix: "",
+      suffix: "",
+    });
+    const done = resolveQuoteAnchor(opened.editor.state.doc, {
+      exact: "Done.",
+      prefix: "",
+      suffix: "",
+    });
+    if (risk === null || done === null) throw new Error("fixture did not resolve");
+    opened.editor.commands.setTextSelection(risk);
+    const persistence = new FakeCapturePersistence(opened.document);
+    const controller = new DefaultCoworkActionSnapshotController({
+      document: opened.document,
+      documentId: "doc-a",
+      storeId: "store-a",
+      persistence,
+      getEditGeneration: () => 0,
+      storage: window.localStorage,
+    });
+    controller.attach(opened.editor);
+
+    const first = controller.capture("current_selection");
+    opened.editor.commands.setTextSelection(done);
+    await expect(controller.capture("current_selection")).rejects.toThrow(
+      "Another document action is finishing. Try again in a moment.",
+    );
+    await first;
+    controller.detach();
+  });
+
   it("retries a capture changed during compaction, then returns one frozen exact payload", async () => {
     const opened = await open();
     const risk = resolveQuoteAnchor(opened.editor.state.doc, {

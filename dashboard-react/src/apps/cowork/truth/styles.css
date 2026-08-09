@@ -1,0 +1,621 @@
+.wb-cowork-truth {
+  display: flex;
+  min-block-size: 0;
+  block-size: 100%;
+  flex-direction: column;
+  color: var(--wb-color-text-primary);
+  background: var(--wb-color-surface-canvas);
+}
+
+.wb-cowork-truth__visually-hidden {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.wb-cowork-truth button,
+.wb-cowork-truth-attention button {
+  border: 1px solid var(--wb-color-border-default);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-surface-raised);
+  color: var(--wb-color-text-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.wb-cowork-truth button:hover:not(:disabled),
+.wb-cowork-truth-attention button:hover:not(:disabled) {
+  border-color: var(--wb-color-border-interactive);
+  background: var(--wb-color-action-secondary-hover);
+}
+
+.wb-cowork-truth button:focus-visible,
+.wb-cowork-truth-attention button:focus-visible,
+.wb-cowork-truth input:focus-visible,
+.wb-cowork-truth select:focus-visible,
+.wb-cowork-truth textarea:focus-visible {
+  outline: none;
+  box-shadow: var(--wb-shadow-focus);
+}
+
+.wb-cowork-truth button:disabled {
+  color: var(--wb-color-text-disabled);
+  cursor: default;
+}
+
+.wb-cowork-truth__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--wb-space-3);
+  padding: var(--wb-space-3) var(--wb-space-4);
+  border-block-end: 1px solid var(--wb-color-border-subtle);
+}
+
+.wb-cowork-truth__scope,
+.wb-cowork-truth__actions,
+.wb-cowork-truth__composer-actions,
+.wb-cowork-truth__decision-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--wb-space-2);
+}
+
+.wb-cowork-truth__scope {
+  padding: 2px;
+  border: 1px solid var(--wb-color-border-subtle);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-surface-inset);
+}
+
+.wb-cowork-truth__scope button,
+.wb-cowork-truth__actions button,
+.wb-cowork-truth__composer-actions button,
+.wb-cowork-truth__decision-buttons button,
+.wb-cowork-truth__state button,
+.wb-cowork-truth__connection-list button {
+  padding: var(--wb-space-2) var(--wb-space-3);
+}
+
+.wb-cowork-truth__scope button {
+  border-color: transparent;
+  background: transparent;
+  font-size: var(--wb-font-size-xs);
+}
+
+.wb-cowork-truth__scope button[aria-pressed="true"] {
+  border-color: var(--wb-color-border-default);
+  background: var(--wb-color-surface-raised);
+  color: var(--wb-color-text-strong);
+  box-shadow: var(--wb-shadow-raised);
+}
+
+.wb-cowork-truth__actions button:first-child,
+.wb-cowork-truth .is-primary {
+  border-color: var(--wb-color-action-primary);
+  background: var(--wb-color-action-primary);
+  color: var(--wb-color-text-on-accent);
+}
+
+.wb-cowork-truth__filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--wb-space-2);
+  padding: var(--wb-space-3) var(--wb-space-4);
+  border-block-end: 1px solid var(--wb-color-border-subtle);
+}
+
+.wb-cowork-truth__filters button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--wb-space-2);
+  padding: var(--wb-space-1) var(--wb-space-3);
+  border-radius: var(--wb-radius-pill);
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-xs);
+}
+
+.wb-cowork-truth__filters button[aria-pressed="true"] {
+  border-color: var(--wb-color-accent);
+  background: var(--wb-color-accent-soft);
+  color: var(--wb-color-text-strong);
+}
+
+.wb-cowork-truth__count {
+  min-inline-size: 1.3em;
+  padding-inline: var(--wb-space-1);
+  border-radius: var(--wb-radius-pill);
+  background: var(--wb-color-surface-inset);
+  font-family: var(--wb-font-mono);
+  font-size: var(--wb-font-size-2xs);
+  text-align: center;
+}
+
+.wb-cowork-truth__read-only {
+  margin: 0;
+  padding: var(--wb-space-2) var(--wb-space-4);
+  border-block-end: 1px solid var(--wb-color-border-subtle);
+  background: var(--wb-color-status-warning-surface);
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-xs);
+}
+
+.wb-cowork-truth__refresh-warning {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--wb-space-3);
+  padding: var(--wb-space-2) var(--wb-space-4);
+  border-block-end: 1px solid var(--wb-color-border-subtle);
+  background: var(--wb-color-status-warning-surface);
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-xs);
+}
+
+.wb-cowork-truth__refresh-warning button {
+  flex: 0 0 auto;
+  padding: var(--wb-space-1) var(--wb-space-2);
+}
+
+.wb-cowork-truth__body {
+  flex: 1 1 auto;
+  min-block-size: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.wb-cowork-truth__claim-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-3);
+  margin: 0;
+  padding: var(--wb-space-4);
+  list-style: none;
+}
+
+.wb-cowork-truth__claim-card {
+  padding: var(--wb-space-4);
+  border: 1px solid var(--wb-color-border-subtle);
+  border-inline-start: 3px solid var(--wb-color-data-5);
+  border-radius: var(--wb-radius-surface);
+  background: var(--wb-color-surface-raised);
+  box-shadow: var(--wb-shadow-raised);
+  cursor: pointer;
+}
+
+.wb-cowork-truth__claim-card[data-status="challenged"],
+.wb-cowork-truth__claim-card[data-status="conflict"],
+.wb-cowork-truth__claim-card[data-status="needs_review"] {
+  border-inline-start-color: var(--wb-color-status-warning);
+}
+
+.wb-cowork-truth__claim-card[data-status="redacted"],
+.wb-cowork-truth__claim-card[data-status="voided"],
+.wb-cowork-truth__claim-card[data-status="failed"] {
+  border-inline-start-color: var(--wb-color-status-danger);
+}
+
+.wb-cowork-truth__claim-card[data-status="confirmed"] {
+  border-inline-start-color: var(--wb-color-status-success);
+}
+
+.wb-cowork-truth__claim-card[data-selected="true"] {
+  outline: 2px solid var(--wb-color-accent);
+  outline-offset: 1px;
+}
+
+.wb-cowork-truth__claim-head,
+.wb-cowork-truth__details-head,
+.wb-cowork-truth__evidence-list > li > div,
+.wb-cowork-truth-attention__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--wb-space-3);
+}
+
+.wb-cowork-truth__claim-kind {
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-2xs);
+  font-weight: var(--wb-font-weight-semibold);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.wb-cowork-truth__claim-status,
+.wb-cowork-truth__unconnected {
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-2xs);
+}
+
+.wb-cowork-truth__claim-status[data-status="confirmed"] {
+  color: var(--wb-color-status-success);
+}
+
+.wb-cowork-truth__claim-status[data-status="challenged"],
+.wb-cowork-truth__claim-status[data-status="conflict"],
+.wb-cowork-truth__claim-status[data-status="needs_review"] {
+  color: var(--wb-color-status-warning);
+}
+
+.wb-cowork-truth__claim-status[data-status="redacted"],
+.wb-cowork-truth__claim-status[data-status="voided"],
+.wb-cowork-truth__claim-status[data-status="failed"] {
+  color: var(--wb-color-status-danger);
+}
+
+.wb-cowork-truth__claim-select {
+  display: block;
+  inline-size: 100%;
+  margin-block: var(--wb-space-3);
+  padding: 0;
+  border: 0 !important;
+  background: transparent !important;
+  color: var(--wb-color-text-strong) !important;
+  font-weight: var(--wb-font-weight-semibold);
+  text-align: start;
+}
+
+.wb-cowork-truth__claim-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--wb-space-2);
+  margin: 0 0 var(--wb-space-3);
+  color: var(--wb-color-text-muted);
+  font-size: var(--wb-font-size-xs);
+}
+
+.wb-cowork-truth__passage-button {
+  padding: var(--wb-space-1) var(--wb-space-2);
+  font-size: var(--wb-font-size-xs);
+}
+
+.wb-cowork-truth__state,
+.wb-cowork-truth__empty {
+  margin: var(--wb-space-4);
+  padding: var(--wb-space-5);
+  border: 1px dashed var(--wb-color-border-default);
+  border-radius: var(--wb-radius-surface);
+  color: var(--wb-color-text-secondary);
+}
+
+.wb-cowork-truth__state p,
+.wb-cowork-truth__empty p,
+.wb-cowork-truth__empty h3 {
+  margin-block: 0 var(--wb-space-3);
+}
+
+.wb-cowork-truth__empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--wb-space-2);
+}
+
+.wb-cowork-truth__empty-actions button {
+  padding: var(--wb-space-2) var(--wb-space-3);
+}
+
+.wb-cowork-truth__state.is-error,
+.wb-cowork-truth__error {
+  color: var(--wb-color-status-danger);
+}
+
+.wb-cowork-truth__details,
+.wb-cowork-truth__composer {
+  padding: var(--wb-space-4);
+}
+
+.wb-cowork-truth__details-head {
+  align-items: flex-start;
+  padding-block-end: var(--wb-space-4);
+  border-block-end: 1px solid var(--wb-color-border-subtle);
+}
+
+.wb-cowork-truth__details-head h3 {
+  margin: var(--wb-space-2) 0 0;
+  color: var(--wb-color-text-strong);
+  font-size: var(--wb-font-size-lg);
+}
+
+.wb-cowork-truth__close {
+  flex: 0 0 auto;
+  padding: var(--wb-space-1) var(--wb-space-2);
+}
+
+.wb-cowork-truth__facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: var(--wb-space-3);
+  margin-block: var(--wb-space-4);
+}
+
+.wb-cowork-truth__facts div {
+  padding: var(--wb-space-3);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-surface-inset);
+}
+
+.wb-cowork-truth__facts dt {
+  color: var(--wb-color-text-muted);
+  font-size: var(--wb-font-size-2xs);
+  text-transform: uppercase;
+}
+
+.wb-cowork-truth__facts dd {
+  margin: var(--wb-space-1) 0 0;
+}
+
+.wb-cowork-truth__notice {
+  padding: var(--wb-space-3);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-status-warning-surface);
+  color: var(--wb-color-text-secondary);
+}
+
+.wb-cowork-truth__notice.is-important {
+  border-inline-start: 3px solid var(--wb-color-status-warning);
+  color: var(--wb-color-text-strong);
+}
+
+.wb-cowork-truth__structured {
+  display: grid;
+  gap: var(--wb-space-2);
+  margin: 0;
+}
+
+.wb-cowork-truth__structured div,
+.wb-cowork-truth__source-details dl {
+  display: grid;
+  grid-template-columns: minmax(7rem, auto) minmax(0, 1fr);
+  gap: var(--wb-space-2) var(--wb-space-3);
+}
+
+.wb-cowork-truth__structured dt,
+.wb-cowork-truth__source-details dt {
+  color: var(--wb-color-text-muted);
+  font-size: var(--wb-font-size-xs);
+}
+
+.wb-cowork-truth__structured dd,
+.wb-cowork-truth__source-details dd {
+  min-inline-size: 0;
+  margin: 0;
+}
+
+.wb-cowork-truth__structured pre {
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.wb-cowork-truth__connection-meta,
+.wb-cowork-truth__support-summary,
+.wb-cowork-truth__source-check {
+  color: var(--wb-color-text-muted);
+  font-size: var(--wb-font-size-xs);
+}
+
+.wb-cowork-truth__source-check[data-state="valid"] {
+  color: var(--wb-color-status-success);
+}
+
+.wb-cowork-truth__source-details {
+  margin-block-start: var(--wb-space-2);
+}
+
+.wb-cowork-truth__source-details summary {
+  cursor: pointer;
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-xs);
+}
+
+.wb-cowork-truth__source-details code {
+  overflow-wrap: anywhere;
+}
+
+.wb-cowork-truth__detail-section,
+.wb-cowork-truth__decisions {
+  padding-block: var(--wb-space-4);
+  border-block-start: 1px solid var(--wb-color-border-subtle);
+}
+
+.wb-cowork-truth__detail-section h4,
+.wb-cowork-truth__decisions h4 {
+  margin-block: 0 var(--wb-space-3);
+}
+
+.wb-cowork-truth__connection-list,
+.wb-cowork-truth__evidence-list,
+.wb-cowork-truth__plain-list,
+.wb-cowork-truth__timeline {
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.wb-cowork-truth__connection-list li,
+.wb-cowork-truth__evidence-list li,
+.wb-cowork-truth__timeline li,
+.wb-cowork-truth__derivation {
+  padding: var(--wb-space-3);
+  border: 1px solid var(--wb-color-border-subtle);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-surface-raised);
+}
+
+.wb-cowork-truth__connection-list q,
+.wb-cowork-truth__selection-preview blockquote,
+.wb-cowork-truth__decision-confirm blockquote,
+.wb-cowork-truth__evidence-list blockquote {
+  display: block;
+  margin: var(--wb-space-3) 0;
+  padding-inline-start: var(--wb-space-3);
+  border-inline-start: 2px solid var(--wb-color-border-default);
+  color: var(--wb-color-text-secondary);
+}
+
+.wb-cowork-truth__evidence-list span,
+.wb-cowork-truth__timeline time,
+.wb-cowork-truth__empty-inline {
+  color: var(--wb-color-text-muted);
+  font-size: var(--wb-font-size-xs);
+}
+
+.wb-cowork-truth__timeline time {
+  display: block;
+  margin-block-start: var(--wb-space-1);
+}
+
+.wb-cowork-truth__decision-confirm {
+  padding: var(--wb-space-4);
+  border: 1px solid var(--wb-color-border-default);
+  border-radius: var(--wb-radius-surface);
+  background: var(--wb-color-surface-inset);
+}
+
+.wb-cowork-truth .is-danger {
+  border-color: var(--wb-color-status-danger);
+  color: var(--wb-color-status-danger);
+}
+
+.wb-cowork-truth__danger-copy {
+  color: var(--wb-color-status-danger);
+}
+
+.wb-cowork-truth__composer fieldset,
+.wb-cowork-truth__decision-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--wb-space-2);
+}
+
+.wb-cowork-truth__composer fieldset {
+  margin: var(--wb-space-4) 0;
+  padding: 0;
+  border: 0;
+}
+
+.wb-cowork-truth__composer label,
+.wb-cowork-truth__decision-confirm label {
+  margin-block-start: var(--wb-space-2);
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-xs);
+  font-weight: var(--wb-font-weight-semibold);
+}
+
+.wb-cowork-truth__composer textarea,
+.wb-cowork-truth__composer select,
+.wb-cowork-truth__decision-confirm textarea,
+.wb-cowork-truth__decision-confirm select {
+  inline-size: 100%;
+  padding: var(--wb-space-3);
+  border: 1px solid var(--wb-color-border-default);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-surface-raised);
+  color: var(--wb-color-text-primary);
+  font: inherit;
+}
+
+.wb-cowork-truth__selection-preview {
+  margin-block: var(--wb-space-4);
+  padding: var(--wb-space-3);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-surface-inset);
+}
+
+.wb-cowork-truth__selection-preview > span {
+  color: var(--wb-color-text-muted);
+  font-size: var(--wb-font-size-2xs);
+  text-transform: uppercase;
+}
+
+.wb-cowork-truth-attention {
+  margin: var(--wb-space-4);
+  padding: var(--wb-space-3);
+  border: 1px solid var(--wb-color-border-subtle);
+  border-inline-start: 3px solid var(--wb-color-data-5);
+  border-radius: var(--wb-radius-surface);
+  background: var(--wb-color-surface-raised);
+}
+
+.wb-cowork-truth-attention__head h3 {
+  margin: 0;
+  font-size: var(--wb-font-size-sm);
+}
+
+.wb-cowork-truth-attention__head > span {
+  color: var(--wb-color-text-muted);
+  font-family: var(--wb-font-mono);
+  font-size: var(--wb-font-size-xs);
+}
+
+.wb-cowork-truth-attention ul {
+  margin: var(--wb-space-3) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.wb-cowork-truth-attention li + li {
+  margin-block-start: var(--wb-space-2);
+}
+
+.wb-cowork-truth-attention li button {
+  display: flex;
+  inline-size: 100%;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--wb-space-3);
+  padding: var(--wb-space-2) var(--wb-space-3);
+  text-align: start;
+}
+
+.wb-cowork-truth-attention li small {
+  flex: 0 0 auto;
+  color: var(--wb-color-status-warning);
+}
+
+.wb-cowork-truth-attention__state {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--wb-space-3);
+  margin: var(--wb-space-3) var(--wb-space-4);
+  color: var(--wb-color-text-muted);
+  font-size: var(--wb-font-size-xs);
+}
+
+.wb-cowork-truth-attention__state.is-error {
+  color: var(--wb-color-status-danger);
+}
+
+@media (max-width: 46rem) {
+  .wb-cowork-truth__facts {
+    grid-template-columns: 1fr;
+  }
+
+  .wb-cowork-truth__controls {
+    align-items: stretch;
+  }
+}
+
+@media (forced-colors: active) {
+  .wb-cowork-truth button:focus-visible,
+  .wb-cowork-truth-attention button:focus-visible,
+  .wb-cowork-truth input:focus-visible,
+  .wb-cowork-truth select:focus-visible,
+  .wb-cowork-truth textarea:focus-visible,
+  .wb-cowork-truth summary:focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+}

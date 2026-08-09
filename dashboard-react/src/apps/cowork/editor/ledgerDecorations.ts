@@ -19,6 +19,13 @@ export type CoworkEditorAnchorKind =
   | "evaluation_result"
   | "passage";
 
+/**
+ * The durable rail context currently projected over the editor. A lens changes
+ * view-only decorations; it never changes the ProseMirror document, Y.Doc, or
+ * the independent temporary passage highlight used by Chat and Working on.
+ */
+export type CoworkEditorLens = "neutral" | "review" | "truth";
+
 export interface CoworkFlagDecoration {
   readonly proposalId: string;
   readonly quoteAnchor: QuoteAnchor;
@@ -83,7 +90,12 @@ export interface CoworkLedgerDecorationProjection {
 
 export interface CoworkFocusedAnchor {
   readonly id: string;
-  readonly kind: "proposal" | "claim" | "evaluation_result";
+  readonly kind:
+    | "proposal"
+    | "claim"
+    | "expression"
+    | "provenance"
+    | "evaluation_result";
 }
 
 export interface CoworkPassageHighlight {
@@ -94,6 +106,7 @@ export interface CoworkPassageHighlight {
 
 interface CoworkLedgerDecorationState {
   readonly projection: CoworkLedgerDecorationProjection;
+  readonly lens: CoworkEditorLens;
   readonly focused: CoworkFocusedAnchor | null;
   readonly flashFocused: boolean;
   readonly highlight: CoworkPassageHighlight | null;
@@ -104,6 +117,10 @@ type CoworkLedgerDecorationMeta =
   | {
       readonly type: "project";
       readonly projection: CoworkLedgerDecorationProjection;
+    }
+  | {
+      readonly type: "set-lens";
+      readonly lens: CoworkEditorLens;
     }
   | {
       readonly type: "focus";
@@ -154,9 +171,6 @@ const anchorAttributes = (
   extra: Readonly<Record<string, string>> = {},
 ): Record<string, string> => {
   const active =
-    (kind === "proposal" ||
-      kind === "claim" ||
-      kind === "evaluation_result") &&
     focused?.kind === kind &&
     focused.id === id;
   return {
@@ -230,6 +244,7 @@ const atomSuggestion = (
 function buildDecorations(
   doc: ProseMirrorNode,
   projection: CoworkLedgerDecorationProjection,
+  lens: CoworkEditorLens,
   focused: CoworkFocusedAnchor | null,
   flashFocused: boolean,
   highlight: CoworkPassageHighlight | null,
@@ -247,7 +262,7 @@ function buildDecorations(
    * place and proposed text is a non-editable widget; neither operation changes
    * the ProseMirror document or its collaborative Y.Doc.
    */
-  for (const edit of projection.edits) {
+  for (const edit of lens === "review" ? projection.edits : []) {
     const range = resolveQuoteAnchor(doc, edit.quoteAnchor);
     if (range === null) continue;
     const common = {
@@ -330,7 +345,7 @@ function buildDecorations(
   // Suggestion marks already carry the proposed text. These extra wrappers add one
   // plain, namespace-qualified anchor identity so geometry never has to parse the
   // vendored mark's JSON-encoded data-id attribute.
-  doc.descendants((node, pos) => {
+  if (lens === "review") doc.descendants((node, pos) => {
     if (node.isText) {
       for (const mark of node.marks) {
         if (
@@ -383,7 +398,7 @@ function buildDecorations(
     return true;
   });
 
-  for (const flag of projection.flags) {
+  for (const flag of lens === "review" ? projection.flags : []) {
     const range = resolveQuoteAnchor(doc, flag.quoteAnchor);
     if (range === null) continue;
     const decoration = inlineDecoration(
@@ -410,7 +425,7 @@ function buildDecorations(
    * document pull as its Review card. The double underline distinguishes a
    * checked observation from proposals and provenance without relying on color.
    */
-  for (const evaluation of projection.evaluations ?? []) {
+  for (const evaluation of lens === "review" ? projection.evaluations ?? [] : []) {
     const range = resolveQuoteAnchor(doc, evaluation.quoteAnchor);
     if (range === null) continue;
     const decoration = inlineDecoration(
@@ -432,7 +447,7 @@ function buildDecorations(
     if (decoration !== null) decorations.push(decoration);
   }
 
-  for (const expression of projection.expressions) {
+  for (const expression of lens === "truth" ? projection.expressions : []) {
     const range = rangeForQuote(
       doc,
       expression.quote,
@@ -487,7 +502,7 @@ function buildDecorations(
   // Only confirmed AI provenance receives the confirmed-provenance treatment.
   // Human text is the unadorned baseline and proposed AI text is represented by
   // tracked-change/flag decorations.
-  for (const span of projection.provenance) {
+  for (const span of lens === "truth" ? projection.provenance : []) {
     if (span.trustState !== "ai_confirmed") continue;
     const range = rangeForQuote(doc, span.quote, span.quoteAnchor);
     if (range === null) continue;
@@ -564,18 +579,21 @@ const mappedHighlight = (
 function createPluginState(
   doc: ProseMirrorNode,
   projection: CoworkLedgerDecorationProjection,
+  lens: CoworkEditorLens,
   focused: CoworkFocusedAnchor | null,
   flashFocused: boolean,
   highlight: CoworkPassageHighlight | null,
 ): CoworkLedgerDecorationState {
   return {
     projection,
+    lens,
     focused,
     flashFocused,
     highlight,
     decorations: buildDecorations(
       doc,
       projection,
+      lens,
       focused,
       flashFocused,
       highlight,
@@ -588,7 +606,14 @@ export function coworkLedgerDecorationsPlugin(): Plugin<CoworkLedgerDecorationSt
     key: coworkLedgerDecorationsKey,
     state: {
       init: (_config, state) =>
-        createPluginState(state.doc, EMPTY_PROJECTION, null, false, null),
+        createPluginState(
+          state.doc,
+          EMPTY_PROJECTION,
+          "review",
+          null,
+          false,
+          null,
+        ),
       apply(transaction, value) {
         const meta = transaction.getMeta(coworkLedgerDecorationsKey) as
           | CoworkLedgerDecorationMeta
@@ -613,12 +638,28 @@ export function coworkLedgerDecorationsPlugin(): Plugin<CoworkLedgerDecorationSt
         }
 
         let projection = value.projection;
+        let lens = value.lens;
         let focused = value.focused;
         let flashFocused = value.flashFocused;
         let highlight = mappedHighlight(transaction, value.highlight);
 
         if (meta?.type === "project") {
           projection = meta.projection;
+        } else if (meta?.type === "set-lens") {
+          lens = meta.lens;
+          const visible =
+            focused === null ||
+            (lens === "review" &&
+              (focused.kind === "proposal" ||
+                focused.kind === "evaluation_result")) ||
+            (lens === "truth" &&
+              (focused.kind === "claim" ||
+                focused.kind === "expression" ||
+                focused.kind === "provenance"));
+          if (!visible) {
+            focused = null;
+            flashFocused = false;
+          }
         } else if (meta?.type === "focus") {
           focused = meta.focused;
           flashFocused = meta.focused === null ? false : meta.flash;
@@ -636,6 +677,7 @@ export function coworkLedgerDecorationsPlugin(): Plugin<CoworkLedgerDecorationSt
         return createPluginState(
           transaction.doc,
           projection,
+          lens,
           focused,
           flashFocused,
           highlight,
@@ -677,6 +719,12 @@ export const projectCoworkLedgerDecorations = (
   projection: CoworkLedgerDecorationProjection,
 ): boolean => dispatchMeta(editor, { type: "project", projection });
 
+/** Switch the editor's view-only ledger overlay without replaying navigation. */
+export const setCoworkEditorLens = (
+  editor: Editor,
+  lens: CoworkEditorLens,
+): boolean => dispatchMeta(editor, { type: "set-lens", lens });
+
 export const focusCoworkLedgerAnchor = (
   editor: Editor,
   focused: CoworkFocusedAnchor,
@@ -705,6 +753,7 @@ export const clearCoworkPassageHighlight = (
 export const readCoworkLedgerDecorationState = (
   editor: Editor,
 ): {
+  readonly lens: CoworkEditorLens;
   readonly focused: CoworkFocusedAnchor | null;
   readonly flashFocused: boolean;
   readonly highlight: CoworkPassageHighlight | null;
@@ -713,6 +762,7 @@ export const readCoworkLedgerDecorationState = (
   return state === undefined
     ? null
     : {
+        lens: state.lens,
         focused: state.focused,
         flashFocused: state.flashFocused,
         highlight: state.highlight,

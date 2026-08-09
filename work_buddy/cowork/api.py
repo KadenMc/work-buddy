@@ -276,7 +276,16 @@ def _open_proposal_entry(
 
 
 _EXPRESSION_CLAIM_STATUSES = frozenset(
-    {"confirmed", "needs_review", "proposed", "rejected"}
+    {
+        "confirmed",
+        "needs_review",
+        "proposed",
+        "challenged",
+        "rejected",
+        "superseded",
+        "retracted",
+        "expired",
+    }
 )
 
 
@@ -2107,6 +2116,7 @@ def register_routes(app):
     from work_buddy.cowork.reimport_api import reimport_blueprint
     from work_buddy.cowork.retirement_api import retirement_blueprint
     from work_buddy.cowork.sitting_api import sitting_blueprint
+    from work_buddy.cowork.truth_api import truth_blueprint
     from work_buddy.cowork.verify_api import verify_blueprint
 
     app.register_blueprint(bootstrap_blueprint)
@@ -2117,6 +2127,7 @@ def register_routes(app):
     app.register_blueprint(reimport_blueprint)
     app.register_blueprint(retirement_blueprint)
     app.register_blueprint(sitting_blueprint)
+    app.register_blueprint(truth_blueprint)
     app.register_blueprint(verify_blueprint)
     return app
 
