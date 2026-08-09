@@ -1,3 +1,4 @@
+import { StrictMode } from "react";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
@@ -286,6 +287,33 @@ describe("TruthPanel", () => {
       claimKind: "fact",
       role: "quote",
     }));
+  });
+
+  it("starts one selection capture when StrictMode replays the composer", async () => {
+    const provider = setupProvider();
+    const { editor, captureSelection } = setupEditor();
+    render(
+      <StrictMode>
+        <TruthPanel
+          provider={provider}
+          storeId="store-1"
+          documentId="doc-1"
+          store={new TruthStore()}
+          editor={editor}
+        />
+      </StrictMode>,
+    );
+    await screen.findByText(summary.proposition);
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Propose from selection" }),
+    );
+
+    expect(await screen.findByText("Selected passage")).toBeVisible();
+    expect(captureSelection).toHaveBeenCalledTimes(1);
+    expect(
+      screen.queryByText("Co-work is already capturing another document target."),
+    ).toBeNull();
   });
 
   it("connects the captured selection to the explicitly chosen existing claim", async () => {

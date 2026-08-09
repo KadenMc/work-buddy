@@ -12,6 +12,7 @@ import type {
   TruthEditorIntegration,
   TruthMutationReceipt,
   TruthRailProvider,
+  TruthSelectionCapture,
   TruthScrollIntegration,
   TruthViewScope,
 } from "./contracts";
@@ -134,8 +135,13 @@ export function TruthPanel({
     unconnected: 0,
   };
   const allowedClaimKinds = data?.capabilities.allowedClaimKinds ?? [];
+  const composerCaptureRef = useRef<Promise<TruthSelectionCapture> | null>(null);
   const controlsLocked =
     composer !== null || selectedClaimId !== null || decisionBusy;
+
+  useEffect(() => {
+    if (composer === null) composerCaptureRef.current = null;
+  }, [composer]);
 
   const changeScope = (next: TruthViewScope): void => {
     if (next === scope) return;
@@ -175,11 +181,19 @@ export function TruthPanel({
   };
 
   const openComposer = (mode: "propose" | "connect"): void => {
+    if (editor === undefined) return;
+    const capture = editor.captureSelection();
+    // The composer subscribes after this event update commits. Mark an
+    // immediate planning rejection handled during that short handoff while
+    // preserving the original promise for the composer's visible error state.
+    void capture.catch(() => undefined);
+    composerCaptureRef.current = capture;
     store.openComposer(mode);
   };
 
   const cancelComposer = (): void => {
     const returningTo = composer;
+    composerCaptureRef.current = null;
     store.closeComposer();
     window.requestAnimationFrame(() => {
       (returningTo === "connect"
@@ -215,6 +229,7 @@ export function TruthPanel({
           : "The matching claim was connected to the selected passage."
         : "Claim connected to the selected passage.";
     setAnnouncement(message);
+    composerCaptureRef.current = null;
     store.closeComposer();
     reload();
     if (receipt.claimId !== null) store.selectClaim(receipt.claimId);
@@ -233,6 +248,7 @@ export function TruthPanel({
         mode={composer}
         provider={provider}
         editor={editor}
+        initialCapture={composerCaptureRef.current ?? undefined}
         allowedClaimKinds={allowedClaimKinds}
         onCancel={cancelComposer}
         onComplete={completeComposer}

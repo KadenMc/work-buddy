@@ -26,6 +26,8 @@ export interface TruthSelectionComposerProps {
   readonly mode: Exclude<TruthComposer, null>;
   readonly provider: TruthRailProvider;
   readonly editor: TruthEditorIntegration;
+  /** Capture begun by the user's command, before the composer takes focus. */
+  readonly initialCapture?: Promise<TruthSelectionCapture>;
   readonly allowedClaimKinds: readonly string[];
   onCancel(): void;
   onComplete(receipt: TruthMutationReceipt): void;
@@ -43,6 +45,7 @@ export function TruthSelectionComposer({
   mode,
   provider,
   editor,
+  initialCapture,
   allowedClaimKinds,
   onCancel,
   onComplete,
@@ -67,11 +70,12 @@ export function TruthSelectionComposer({
   const roleId = useId();
   const claimIdControl = useId();
 
-  const captureSelection = useCallback(() => {
+  const captureSelection = useCallback((requested?: Promise<TruthSelectionCapture>) => {
     const request = ++captureSequence.current;
     setCapturing(true);
     setCaptureError(null);
-    void editor.captureSelection().then(
+    const pending = requested ?? editor.captureSelection();
+    void pending.then(
       (next) => {
         if (request !== captureSequence.current) return;
         if (next.selector.exact.trim().length === 0) {
@@ -97,12 +101,12 @@ export function TruthSelectionComposer({
   }, [editor]);
 
   useEffect(() => {
-    captureSelection();
+    captureSelection(initialCapture);
     headingRef.current?.focus();
     return () => {
       captureSequence.current += 1;
     };
-  }, [captureSelection]);
+  }, [captureSelection, initialCapture]);
 
   const loadCandidates = useCallback(() => {
     if (mode !== "connect") return;
@@ -193,7 +197,7 @@ export function TruthSelectionComposer({
       {captureError === null ? null : (
         <div className="wb-cowork-truth__state is-error" role="alert">
           <p>{captureError}</p>
-          <button type="button" onClick={captureSelection}>Try selection again</button>
+          <button type="button" onClick={() => captureSelection()}>Try selection again</button>
         </div>
       )}
       {capture === null ? null : (

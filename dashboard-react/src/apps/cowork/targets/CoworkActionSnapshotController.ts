@@ -60,6 +60,42 @@ interface CapturePlan {
   readonly reference: CoworkDocumentTargetReference | null;
 }
 
+/**
+ * Identity for single-flight capture work. Target references carry audit and
+ * presentation metadata, but neither timestamps nor labels make two ranges
+ * different capture targets. React StrictMode can legitimately request the
+ * same target twice while replaying an effect, so only durable range semantics
+ * belong in this key.
+ */
+const capturePlanKey = (plan: CapturePlan): string => {
+  const reference = plan.reference;
+  return JSON.stringify({
+    choice: plan.choice,
+    reference:
+      reference === null
+        ? null
+        : {
+            schema: reference.schema,
+            storeId: reference.storeId,
+            documentId: reference.documentId,
+            kind: reference.kind,
+            granularity: reference.granularity ?? "block",
+            relative: {
+              startBase64: reference.relative.startBase64,
+              endBase64: reference.relative.endBase64,
+            },
+            quote: {
+              exact: reference.quote.exact,
+              prefix: reference.quote.prefix,
+              suffix: reference.quote.suffix,
+            },
+            headingPath: reference.headingPath,
+            startBlockId: reference.startBlockId ?? null,
+            endBlockId: reference.endBlockId ?? null,
+          },
+  });
+};
+
 const loadingState = (): CoworkActionSnapshotControllerState => ({
   phase: "loading",
   selection: null,
@@ -333,16 +369,13 @@ export class DefaultCoworkActionSnapshotController
   #beginCapture(
     plan: CapturePlan,
   ): Promise<CoworkCapturedActionSnapshot> {
-    const captureKey = JSON.stringify({
-      choice: plan.choice,
-      reference: plan.reference,
-    });
+    const captureKey = capturePlanKey(plan);
     if (this.#captureInFlight !== null) {
       if (this.#captureInFlightKey === captureKey) {
         return this.#captureInFlight;
       }
       return Promise.reject(
-        new Error("Co-work is already capturing another document target."),
+        new Error("Another document action is finishing. Try again in a moment."),
       );
     }
     const run = this.#captureStable(plan);
