@@ -40,6 +40,7 @@ from work_buddy.truth.identity import (
     sha256_bytes,
 )
 from work_buddy.truth.migrations import (
+    REDACTED_ACTION_CONTEXT_JSON,
     REDACTED_SELECTOR_JSON,
     SCHEMA_VERSION,
     migrate,
@@ -58,7 +59,7 @@ from work_buddy.truth.store import TruthStore
 
 
 FORMAT_NAME = "work-buddy.truth-ledger"
-FORMAT_VERSION = 8
+FORMAT_VERSION = 9
 OLDEST_FORMAT_VERSION = 1
 _IMPORT_STAGING_PREFIX = ".wbuddy-cowork-import-"
 
@@ -230,6 +231,49 @@ _RECORD_COLUMNS: Mapping[str, tuple[str, tuple[str, ...]]] = {
             "created_by_ref",
         ),
     ),
+    "evidence_source_resolution": (
+        "evidence_source_resolution_records",
+        (
+            "id",
+            "evidence_id",
+            "source_ref_json",
+            "representation_id",
+            "content_sha256",
+            "media_type",
+            "byte_length",
+            "selector_json",
+            "resolver_id",
+            "resolver_version",
+            "observation_id",
+            "redaction_epoch",
+            "resolved_at",
+            "usage_id",
+            "authorization_context_sha256",
+            "canonical_sha256",
+            "created_at",
+            "created_by_kind",
+            "created_by_ref",
+            "created_by_meta_json",
+        ),
+    ),
+    "truth_source_usage_event": (
+        "truth_source_usage_events",
+        (
+            "id",
+            "resolution_record_id",
+            "usage_id",
+            "status",
+            "purpose",
+            "consumer_ref",
+            "redaction_epoch",
+            "error_code",
+            "canonical_sha256",
+            "created_at",
+            "created_by_kind",
+            "created_by_ref",
+            "created_by_meta_json",
+        ),
+    ),
     "claim": (
         "claims",
         (
@@ -299,6 +343,100 @@ _RECORD_COLUMNS: Mapping[str, tuple[str, tuple[str, ...]]] = {
             "basis_kind",
             "basis_ref",
             "note",
+        ),
+    ),
+    "provenance_attribution_event": (
+        "provenance_attribution_events",
+        (
+            "id",
+            "subject_kind",
+            "subject_ref",
+            "actor_ref_json",
+            "role",
+            "basis",
+            "assurance",
+            "run_ref",
+            "source_ref_json",
+            "asserted_at",
+            "supersedes_id",
+            "canonical_sha256",
+            "created_at",
+        ),
+    ),
+    "candidate_decision_event": (
+        "candidate_decision_events",
+        (
+            "id",
+            "candidate_id",
+            "candidate_sha256",
+            "decision",
+            "claim_id",
+            "actor_ref_json",
+            "basis",
+            "assurance",
+            "authorization_ref",
+            "authorization_context_sha256",
+            "run_ref",
+            "source_refs_json",
+            "decided_at",
+            "canonical_sha256",
+            "created_at",
+        ),
+    ),
+    "truth_operation_result": (
+        "truth_operation_results",
+        (
+            "id",
+            "operation_name",
+            "idempotency_key",
+            "request_sha256",
+            "result_json",
+            "result_sha256",
+            "actor_ref_json",
+            "canonical_sha256",
+            "created_at",
+        ),
+    ),
+    "document_content_redaction": (
+        "document_content_redactions",
+        (
+            "id",
+            "document_id",
+            "replacement_document_version_id",
+            "source_usage_id",
+            "source_ref_json",
+            "source_redaction_event_id",
+            "content_class",
+            "redaction_policy",
+            "actor_ref_json",
+            "coverage_sha256",
+            "canonical_sha256",
+            "created_at",
+        ),
+    ),
+    "document_content_redaction_target": (
+        "document_content_redaction_targets",
+        (
+            "id",
+            "redaction_id",
+            "target_kind",
+            "target_ref",
+            "field_name",
+            "content_sha256",
+            "disposition",
+            "canonical_sha256",
+            "created_at",
+        ),
+    ),
+    "document_content_redaction_status": (
+        "document_content_redaction_status_events",
+        (
+            "id",
+            "redaction_id",
+            "status",
+            "detail_json",
+            "canonical_sha256",
+            "created_at",
         ),
     ),
     "gesture": (
@@ -389,6 +527,7 @@ _RECORD_COLUMNS: Mapping[str, tuple[str, tuple[str, ...]]] = {
             "created_at",
             "created_by_kind",
             "created_by_ref",
+            "redacted_at",
         ),
     ),
     "document_provenance_attestation": (
@@ -581,6 +720,7 @@ _RECORD_COLUMNS: Mapping[str, tuple[str, tuple[str, ...]]] = {
             "created_by_kind",
             "created_by_ref",
             "created_by_meta_json",
+            "redacted_at",
         ),
     ),
     "evaluation_plan_snapshot": (
@@ -793,10 +933,18 @@ _ID_KEY_TYPES = frozenset(
     {
         "evidence",
         "evidence_span",
+        "evidence_source_resolution",
+        "truth_source_usage_event",
         "claim",
         "derivation",
         "claim_link",
         "claim_status_event",
+        "provenance_attribution_event",
+        "candidate_decision_event",
+        "truth_operation_result",
+        "document_content_redaction",
+        "document_content_redaction_target",
+        "document_content_redaction_status",
         "gesture",
         "redaction_event",
         "sweep",
@@ -865,6 +1013,7 @@ _PROPOSAL_DECISIONS = frozenset(
 
 _LINK_TARGETS: Mapping[str, frozenset[str]] = {
     "supports_span": frozenset({"evidence_span"}),
+    "evidence_relation": frozenset({"evidence_span"}),
     "about_entity": frozenset({"entity"}),
     "supersedes": frozenset({"claim"}),
     "conflicts_with": frozenset({"claim"}),
@@ -976,6 +1125,34 @@ def _actor_record(row: Mapping[str, Any], label: str) -> None:
         f"{label}.created_by_meta_json",
         mapping=True,
     )
+
+
+def _actor_ref_json(value: Any, label: str):
+    from work_buddy.truth.source_provenance import validate_actor_ref_json
+
+    if not isinstance(value, str):
+        raise TruthImportError(f"{label} must be canonical ActorRef JSON")
+    try:
+        actor = validate_actor_ref_json(value, label)
+        if canonical_json(actor.to_dict()) != value:
+            raise TruthImportError(f"{label} must use canonical JSON")
+        return actor
+    except InvariantViolation as exc:
+        raise TruthImportError(str(exc)) from exc
+
+
+def _source_ref_json(value: Any, label: str):
+    from work_buddy.truth.source_provenance import validate_source_ref_json
+
+    if not isinstance(value, str):
+        raise TruthImportError(f"{label} must be canonical SourceRef JSON")
+    try:
+        source_ref = validate_source_ref_json(value, label)
+        if canonical_json(source_ref.to_dict()) != value:
+            raise TruthImportError(f"{label} must use canonical JSON")
+        return source_ref
+    except InvariantViolation as exc:
+        raise TruthImportError(str(exc)) from exc
 
 
 def _portable_record(row: Mapping[str, Any], label: str) -> None:
@@ -1121,6 +1298,103 @@ def _validate_record_values(item: _DataRecord) -> None:
         _timestamp(row["created_at"], "evidence_span.created_at")
         return
 
+    if record_type == "evidence_source_resolution":
+        from work_buddy.sources.models import RESOLUTION_RECORD_SCHEMA
+        source_ref = _source_ref_json(
+            row["source_ref_json"], "source resolution.source_ref_json"
+        )
+        if not isinstance(row["byte_length"], int) or isinstance(
+            row["byte_length"], bool
+        ) or row["byte_length"] < 0:
+            raise TruthImportError("source resolution byte_length is invalid")
+        if not isinstance(row["redaction_epoch"], int) or isinstance(
+            row["redaction_epoch"], bool
+        ) or row["redaction_epoch"] < 0:
+            raise TruthImportError("source resolution redaction_epoch is invalid")
+        selector = _json_value(
+            row["selector_json"], "source resolution.selector_json", mapping=True
+        )
+        for field in (
+            "representation_id",
+            "media_type",
+            "resolver_id",
+            "resolver_version",
+            "observation_id",
+            "usage_id",
+        ):
+            _nonempty_text(row[field], f"source resolution.{field}")
+        _digest(row["content_sha256"], "source resolution.content_sha256")
+        _digest(
+            row["authorization_context_sha256"],
+            "source resolution.authorization_context_sha256",
+        )
+        _timestamp(row["resolved_at"], "source resolution.resolved_at")
+        _timestamp(row["created_at"], "source resolution.created_at")
+        _actor_record(row, "source resolution")
+        if row["created_by_ref"] is None:
+            raise TruthImportError("source resolution requires an ActorRef")
+        _actor_ref_json(row["created_by_ref"], "source resolution.created_by_ref")
+        payload = {
+            "schema": RESOLUTION_RECORD_SCHEMA,
+            "evidence_id": row["evidence_id"],
+            "source_ref": source_ref.to_dict(),
+            "representation_id": row["representation_id"],
+            "content_sha256": row["content_sha256"],
+            "media_type": row["media_type"],
+            "byte_length": row["byte_length"],
+            "selector": selector,
+            "resolver_id": row["resolver_id"],
+            "resolver_version": row["resolver_version"],
+            "observation_id": row["observation_id"],
+            "redaction_epoch": row["redaction_epoch"],
+            "resolved_at": row["resolved_at"],
+            "usage_id": row["usage_id"],
+            "authorization_context_sha256": row[
+                "authorization_context_sha256"
+            ],
+        }
+        expected = sha256_bytes(canonical_json(payload).encode("utf-8"))
+        if expected != row["canonical_sha256"]:
+            raise TruthImportError(
+                "source resolution canonical_sha256 does not match"
+            )
+        return
+
+    if record_type == "truth_source_usage_event":
+        from work_buddy.truth.source_provenance import SOURCE_USAGE_STATUSES
+
+        if row["status"] not in SOURCE_USAGE_STATUSES:
+            raise TruthImportError("source usage event has an invalid status")
+        if not isinstance(row["redaction_epoch"], int) or isinstance(
+            row["redaction_epoch"], bool
+        ) or row["redaction_epoch"] < 0:
+            raise TruthImportError("source usage event redaction_epoch is invalid")
+        for field in ("usage_id", "purpose", "consumer_ref"):
+            _nonempty_text(row[field], f"source usage event.{field}")
+        if row["error_code"] is not None:
+            _nonempty_text(row["error_code"], "source usage event.error_code")
+        _timestamp(row["created_at"], "source usage event.created_at")
+        _actor_record(row, "source usage event")
+        if row["created_by_ref"] is None:
+            raise TruthImportError("source usage event requires an ActorRef")
+        _actor_ref_json(row["created_by_ref"], "source usage event.created_by_ref")
+        payload = {
+            "resolution_record_id": row["resolution_record_id"],
+            "usage_id": row["usage_id"],
+            "status": row["status"],
+            "purpose": row["purpose"],
+            "consumer_ref": row["consumer_ref"],
+            "redaction_epoch": row["redaction_epoch"],
+            "error_code": row["error_code"],
+            "created_at": row["created_at"],
+        }
+        expected = sha256_bytes(canonical_json(payload).encode("utf-8"))
+        if expected != row["canonical_sha256"]:
+            raise TruthImportError(
+                "source usage event canonical_sha256 does not match"
+            )
+        return
+
     if record_type == "claim":
         digest = _digest(row["canonical_sha256"], "claim.canonical_sha256")
         proposition = _nonempty_text(row["proposition"], "claim.proposition")
@@ -1172,7 +1446,16 @@ def _validate_record_values(item: _DataRecord) -> None:
         to_kind = _nonempty_text(row["to_kind"], "claim_link.to_kind")
         if link_type not in _LINK_TARGETS or to_kind not in _LINK_TARGETS[link_type]:
             raise TruthImportError("claim link type and target kind are incompatible")
-        _json_value(row["role_json"], "claim_link.role_json", mapping=True)
+        role = _json_value(row["role_json"], "claim_link.role_json", mapping=True)
+        if link_type == "evidence_relation":
+            from work_buddy.truth.evidence_relations import (
+                validate_claim_evidence_role,
+            )
+
+            try:
+                validate_claim_evidence_role(role or {})
+            except InvariantViolation as exc:
+                raise TruthImportError(str(exc)) from exc
         if row["target_fingerprint"] is not None:
             _digest(row["target_fingerprint"], "claim_link.target_fingerprint")
         if to_kind == "external_uri" and not urlparse(row["to_ref"]).scheme:
@@ -1191,6 +1474,256 @@ def _validate_record_values(item: _DataRecord) -> None:
         if row["actor_kind"] not in VALID_ACTOR_KINDS:
             raise TruthImportError("claim status event has an invalid actor kind")
         _timestamp(row["at"], "claim_status_event.at")
+        return
+
+    if record_type == "provenance_attribution_event":
+        from work_buddy.truth.source_provenance import (
+            ATTRIBUTION_ROLES,
+            ATTRIBUTION_SUBJECT_KINDS,
+        )
+
+        if row["subject_kind"] not in ATTRIBUTION_SUBJECT_KINDS:
+            raise TruthImportError("attribution subject kind is invalid")
+        if row["role"] not in ATTRIBUTION_ROLES:
+            raise TruthImportError("attribution role is invalid")
+        actor = _actor_ref_json(row["actor_ref_json"], "attribution.actor_ref_json")
+        source = (
+            None
+            if row["source_ref_json"] is None
+            else _source_ref_json(row["source_ref_json"], "attribution.source_ref_json")
+        )
+        for field in ("basis", "assurance"):
+            _nonempty_text(row[field], f"attribution.{field}")
+        if row["run_ref"] is not None:
+            _nonempty_text(row["run_ref"], "attribution.run_ref")
+        _timestamp(row["asserted_at"], "attribution.asserted_at")
+        _timestamp(row["created_at"], "attribution.created_at")
+        payload = {
+            "subject_kind": row["subject_kind"],
+            "subject_ref": row["subject_ref"],
+            "actor_ref": actor.to_dict(),
+            "role": row["role"],
+            "basis": row["basis"],
+            "assurance": row["assurance"],
+            "run_ref": row["run_ref"],
+            "source_ref": None if source is None else source.to_dict(),
+            "asserted_at": row["asserted_at"],
+            "supersedes_id": row["supersedes_id"],
+        }
+        expected = sha256_bytes(canonical_json(payload).encode("utf-8"))
+        if expected != row["canonical_sha256"]:
+            raise TruthImportError("attribution canonical_sha256 does not match")
+        return
+
+    if record_type == "candidate_decision_event":
+        from work_buddy.truth.source_provenance import CANDIDATE_DECISIONS
+
+        if row["decision"] not in CANDIDATE_DECISIONS:
+            raise TruthImportError("candidate decision is invalid")
+        if (row["decision"] == "dismiss") != (row["claim_id"] is None):
+            raise TruthImportError("candidate decision claim binding is invalid")
+        actor = _actor_ref_json(
+            row["actor_ref_json"], "candidate decision.actor_ref_json"
+        )
+        sources = _json_value(
+            row["source_refs_json"], "candidate decision.source_refs_json"
+        )
+        if not isinstance(sources, list):
+            raise TruthImportError("candidate decision source_refs must be a list")
+        source_values = []
+        for value in sources:
+            if not isinstance(value, Mapping):
+                raise TruthImportError("candidate decision SourceRef is invalid")
+            source_values.append(
+                _source_ref_json(
+                    canonical_json(dict(value)), "candidate decision.source_ref"
+                ).to_dict()
+            )
+        if len({canonical_json(item) for item in source_values}) != len(source_values):
+            raise TruthImportError("candidate decision source_refs contain duplicates")
+        for field in ("candidate_id", "basis", "assurance", "authorization_ref"):
+            _nonempty_text(row[field], f"candidate decision.{field}")
+        _digest(row["candidate_sha256"], "candidate decision.candidate_sha256")
+        _digest(
+            row["authorization_context_sha256"],
+            "candidate decision.authorization_context_sha256",
+        )
+        if row["run_ref"] is not None:
+            _nonempty_text(row["run_ref"], "candidate decision.run_ref")
+        _timestamp(row["decided_at"], "candidate decision.decided_at")
+        _timestamp(row["created_at"], "candidate decision.created_at")
+        payload = {
+            "candidate_id": row["candidate_id"],
+            "candidate_sha256": row["candidate_sha256"],
+            "decision": row["decision"],
+            "claim_id": row["claim_id"],
+            "actor_ref": actor.to_dict(),
+            "basis": row["basis"],
+            "assurance": row["assurance"],
+            "authorization_ref": row["authorization_ref"],
+            "authorization_context_sha256": row[
+                "authorization_context_sha256"
+            ],
+            "run_ref": row["run_ref"],
+            "source_refs": source_values,
+            "decided_at": row["decided_at"],
+        }
+        expected = sha256_bytes(canonical_json(payload).encode("utf-8"))
+        if expected != row["canonical_sha256"]:
+            raise TruthImportError(
+                "candidate decision canonical_sha256 does not match"
+            )
+        return
+
+    if record_type == "truth_operation_result":
+        actor = _actor_ref_json(
+            row["actor_ref_json"], "truth operation result.actor_ref_json"
+        )
+        for field in ("operation_name", "idempotency_key"):
+            _nonempty_text(row[field], f"truth operation result.{field}")
+        _digest(row["request_sha256"], "truth operation result.request_sha256")
+        _digest(row["result_sha256"], "truth operation result.result_sha256")
+        result = _json_value(
+            row["result_json"], "truth operation result.result_json", mapping=True
+        )
+        if sha256_bytes(canonical_json(result).encode("utf-8")) != row[
+            "result_sha256"
+        ]:
+            raise TruthImportError("truth operation result digest does not match")
+        _timestamp(row["created_at"], "truth operation result.created_at")
+        payload = {
+            "operation_name": row["operation_name"],
+            "idempotency_key": row["idempotency_key"],
+            "request_sha256": row["request_sha256"],
+            "result_sha256": row["result_sha256"],
+            "actor_ref": actor.to_dict(),
+        }
+        expected = sha256_bytes(canonical_json(payload).encode("utf-8"))
+        if expected != row["canonical_sha256"]:
+            raise TruthImportError(
+                "truth operation result canonical_sha256 does not match"
+            )
+        return
+
+    if record_type == "document_content_redaction":
+        source = _source_ref_json(
+            row["source_ref_json"], "document content redaction.source_ref_json"
+        )
+        actor = _actor_ref_json(
+            row["actor_ref_json"], "document content redaction.actor_ref_json"
+        )
+        if row["content_class"] != "exact_copy":
+            raise TruthImportError(
+                "document content redaction content_class must be exact_copy"
+            )
+        if row["redaction_policy"] != "scrub":
+            raise TruthImportError(
+                "document content redaction policy must be scrub"
+            )
+        for field in ("source_usage_id", "source_redaction_event_id"):
+            _nonempty_text(row[field], f"document content redaction.{field}")
+        _digest(row["coverage_sha256"], "document content redaction.coverage")
+        _timestamp(row["created_at"], "document content redaction.created_at")
+        payload = {
+            "schema": "wb.document-content-redaction/v1",
+            "document_id": row["document_id"],
+            "replacement_document_version_id": row[
+                "replacement_document_version_id"
+            ],
+            "source_usage_id": row["source_usage_id"],
+            "source_ref": source.to_dict(),
+            "source_redaction_event_id": row["source_redaction_event_id"],
+            "content_class": row["content_class"],
+            "redaction_policy": row["redaction_policy"],
+            "actor_ref": actor.to_dict(),
+            "coverage_sha256": row["coverage_sha256"],
+            "created_at": row["created_at"],
+        }
+        if sha256_bytes(canonical_json(payload).encode("utf-8")) != row[
+            "canonical_sha256"
+        ]:
+            raise TruthImportError(
+                "document content redaction canonical_sha256 does not match"
+            )
+        return
+
+    if record_type == "document_content_redaction_target":
+        if row["target_kind"] not in {
+            "document_version_blob",
+            "document_source_blob",
+            "action_snapshot_blob",
+            "action_snapshot_metadata",
+            "document_span",
+            "proposal",
+            "semantic_derivative",
+        }:
+            raise TruthImportError("document content redaction target kind is invalid")
+        if row["disposition"] not in {
+            "blob_cleanup",
+            "sql_tombstone",
+            "review_required",
+        }:
+            raise TruthImportError(
+                "document content redaction target disposition is invalid"
+            )
+        _nonempty_text(row["target_ref"], "document content redaction.target_ref")
+        _nonempty_text(row["field_name"], "document content redaction.field_name")
+        if row["content_sha256"] is not None:
+            _digest(
+                row["content_sha256"],
+                "document content redaction target.content_sha256",
+            )
+        if (row["disposition"] == "blob_cleanup") != (
+            row["content_sha256"] is not None
+        ):
+            raise TruthImportError(
+                "document content redaction blob targets require one digest"
+            )
+        _timestamp(row["created_at"], "document content redaction target.created_at")
+        payload = {
+            "schema": "wb.document-content-redaction-target/v1",
+            "redaction_id": row["redaction_id"],
+            "target_kind": row["target_kind"],
+            "target_ref": row["target_ref"],
+            "field_name": row["field_name"],
+            "content_sha256": row["content_sha256"],
+            "disposition": row["disposition"],
+            "created_at": row["created_at"],
+        }
+        if sha256_bytes(canonical_json(payload).encode("utf-8")) != row[
+            "canonical_sha256"
+        ]:
+            raise TruthImportError(
+                "document content redaction target canonical_sha256 does not match"
+            )
+        return
+
+    if record_type == "document_content_redaction_status":
+        if row["status"] not in {
+            "content_tombstoned",
+            "cleanup_complete",
+            "cleanup_incomplete",
+        }:
+            raise TruthImportError("document content redaction status is invalid")
+        detail = _json_value(
+            row["detail_json"],
+            "document content redaction status.detail_json",
+            mapping=True,
+        )
+        _timestamp(row["created_at"], "document content redaction status.created_at")
+        payload = {
+            "schema": "wb.document-content-redaction-status/v1",
+            "redaction_id": row["redaction_id"],
+            "status": row["status"],
+            "detail": detail,
+            "created_at": row["created_at"],
+        }
+        if sha256_bytes(canonical_json(payload).encode("utf-8")) != row[
+            "canonical_sha256"
+        ]:
+            raise TruthImportError(
+                "document content redaction status canonical_sha256 does not match"
+            )
         return
 
     if record_type == "gesture":
@@ -1252,6 +1785,24 @@ def _validate_record_values(item: _DataRecord) -> None:
         if row["actor_kind"] not in VALID_ACTOR_KINDS:
             raise TruthImportError("document version actor kind is invalid")
         _timestamp(row["created_at"], "document_version.created_at")
+        return
+
+    if record_type == "document_span":
+        _digest(row["span_sha256"], "document_span.span_sha256")
+        if row["redacted_at"] is None:
+            _json_value(row["selector_json"], "document_span.selector_json")
+            if not isinstance(row["quote_exact"], str):
+                raise TruthImportError("live document span requires an exact quote")
+        else:
+            _timestamp(row["redacted_at"], "document_span.redacted_at")
+            if (
+                row["selector_json"] != REDACTED_SELECTOR_JSON
+                or row["quote_exact"] is not None
+            ):
+                raise TruthImportError(
+                    "redacted document span must contain only its tombstone"
+                )
+        _timestamp(row["created_at"], "document_span.created_at")
         return
 
     if record_type == "document_provenance_attestation":
@@ -1477,6 +2028,16 @@ def _validate_record_values(item: _DataRecord) -> None:
             raise TruthImportError(
                 "action snapshot allowed change ranges must be a list"
             )
+        if row["redacted_at"] is not None:
+            _timestamp(row["redacted_at"], "action snapshot.redacted_at")
+            if (
+                row["target_selector_json"] != REDACTED_ACTION_CONTEXT_JSON
+                or row["context_boundary_json"] != REDACTED_ACTION_CONTEXT_JSON
+                or allowed
+            ):
+                raise TruthImportError(
+                    "redacted action snapshot must contain only metadata tombstones"
+                )
         _json_value(
             row["egress_boundary_json"],
             "action snapshot.egress_boundary_json",
@@ -2064,6 +2625,31 @@ def _validate_foreign_refs(records: tuple[_DataRecord, ...]) -> None:
         row = item.record
         if item.record_type == "evidence_span":
             require_prior("evidence", row["evidence_id"], item.seq, "evidence_id")
+        elif item.record_type == "evidence_source_resolution":
+            evidence = require_prior(
+                "evidence",
+                row["evidence_id"],
+                item.seq,
+                "source resolution.evidence_id",
+            )
+            if evidence["content_sha256"] != row["content_sha256"]:
+                raise TruthImportError(
+                    "source resolution digest does not match its evidence"
+                )
+        elif item.record_type == "truth_source_usage_event":
+            resolution = require_prior(
+                "evidence_source_resolution",
+                row["resolution_record_id"],
+                item.seq,
+                "source usage event.resolution_record_id",
+            )
+            if (
+                resolution["usage_id"] != row["usage_id"]
+                or resolution["redaction_epoch"] != row["redaction_epoch"]
+            ):
+                raise TruthImportError(
+                    "source usage event does not match its resolution"
+                )
         elif item.record_type == "derivation":
             require_prior("claim", row["claim_id"], item.seq, "derivation.claim_id")
         elif item.record_type == "derivation_premise":
@@ -2098,6 +2684,79 @@ def _validate_foreign_refs(records: tuple[_DataRecord, ...]) -> None:
             require_prior("claim", row["claim_id"], item.seq, "status.claim_id")
             if row["basis_kind"] == "gesture" and row["basis_ref"] is not None:
                 require_prior("gesture", row["basis_ref"], item.seq, "status.basis_ref")
+        elif item.record_type == "provenance_attribution_event":
+            subject_type = row["subject_kind"]
+            require_prior(
+                subject_type,
+                row["subject_ref"],
+                item.seq,
+                "attribution.subject_ref",
+            )
+            if row["supersedes_id"] is not None:
+                prior = require_prior(
+                    "provenance_attribution_event",
+                    row["supersedes_id"],
+                    item.seq,
+                    "attribution.supersedes_id",
+                )
+                if (
+                    prior["subject_kind"] != row["subject_kind"]
+                    or prior["subject_ref"] != row["subject_ref"]
+                    or prior["role"] != row["role"]
+                ):
+                    raise TruthImportError(
+                        "attribution supersession changes its subject or role"
+                    )
+        elif item.record_type == "candidate_decision_event":
+            if row["claim_id"] is not None:
+                require_prior(
+                    "claim", row["claim_id"], item.seq, "candidate decision.claim_id"
+                )
+        elif item.record_type == "document_content_redaction":
+            require_prior(
+                "document",
+                row["document_id"],
+                item.seq,
+                "document content redaction.document_id",
+            )
+            replacement = require_prior(
+                "document_version",
+                row["replacement_document_version_id"],
+                item.seq,
+                "document content redaction.replacement_document_version_id",
+            )
+            if replacement["document_id"] != row["document_id"]:
+                raise TruthImportError(
+                    "document content redaction replacement belongs to another document"
+                )
+        elif item.record_type == "document_content_redaction_target":
+            require_prior(
+                "document_content_redaction",
+                row["redaction_id"],
+                item.seq,
+                "document content redaction target.redaction_id",
+            )
+            target_type = {
+                "document_version_blob": "document_version",
+                "action_snapshot_blob": "action_snapshot",
+                "action_snapshot_metadata": "action_snapshot",
+                "document_span": "document_span",
+                "proposal": "proposal",
+            }.get(row["target_kind"])
+            if target_type is not None:
+                require_prior(
+                    target_type,
+                    row["target_ref"],
+                    item.seq,
+                    "document content redaction target.target_ref",
+                )
+        elif item.record_type == "document_content_redaction_status":
+            require_prior(
+                "document_content_redaction",
+                row["redaction_id"],
+                item.seq,
+                "document content redaction status.redaction_id",
+            )
         elif item.record_type == "redaction_event":
             subject_type = {
                 "claim": "claim",
@@ -2960,6 +3619,152 @@ def _validate_foreign_refs(records: tuple[_DataRecord, ...]) -> None:
                     "review application.applied_proposal_ids",
                 )
 
+    redaction_receipts = {
+        item.record_key: item.record
+        for item in records
+        if item.record_type == "document_content_redaction"
+    }
+    targets_by_receipt: dict[str, list[Mapping[str, Any]]] = {}
+    statuses_by_receipt: dict[str, list[Mapping[str, Any]]] = {}
+    for item in records:
+        if item.record_type == "document_content_redaction_target":
+            targets_by_receipt.setdefault(item.record["redaction_id"], []).append(
+                item.record
+            )
+        elif item.record_type == "document_content_redaction_status":
+            statuses_by_receipt.setdefault(item.record["redaction_id"], []).append(
+                item.record
+            )
+    for receipt_id, receipt in redaction_receipts.items():
+        receipt_seq = index[("document_content_redaction", receipt_id)]
+        targets = sorted(
+            targets_by_receipt.get(receipt_id, []),
+            key=lambda row: (
+                row["target_kind"],
+                row["target_ref"],
+                row["field_name"],
+                row["id"],
+            ),
+        )
+        coverage = [
+            {
+                "target_kind": row["target_kind"],
+                "target_ref": row["target_ref"],
+                "field_name": row["field_name"],
+                "content_sha256": row["content_sha256"],
+                "disposition": row["disposition"],
+            }
+            for row in targets
+        ]
+        if sha256_bytes(canonical_json(coverage).encode("utf-8")) != receipt[
+            "coverage_sha256"
+        ]:
+            raise TruthImportError(
+                "document content redaction coverage_sha256 does not match targets"
+            )
+        statuses = statuses_by_receipt.get(receipt_id, [])
+        if not statuses or statuses[0]["status"] != "content_tombstoned":
+            raise TruthImportError(
+                "document content redaction requires an initial tombstone status"
+            )
+        if sum(row["status"] == "cleanup_complete" for row in statuses) > 1:
+            raise TruthImportError(
+                "document content redaction has duplicate completion statuses"
+            )
+
+        document_id = receipt["document_id"]
+        replacement_id = receipt["replacement_document_version_id"]
+        version_rows = sorted(
+            [
+                (key, row)
+                for (kind, key), row in record_by_identity.items()
+                if kind == "document_version"
+                and row["document_id"] == document_id
+                and index[(kind, key)] < receipt_seq
+            ],
+            key=lambda item: index[("document_version", item[0])],
+        )
+        if not version_rows or version_rows[-1][0] != replacement_id:
+            raise TruthImportError(
+                "document content redaction replacement is not the final version"
+            )
+        target_keys = {
+            (
+                row["target_kind"],
+                row["target_ref"],
+                row["field_name"],
+                row["content_sha256"],
+                row["disposition"],
+            )
+            for row in targets
+        }
+        for version_id, version in version_rows:
+            if version_id == replacement_id:
+                continue
+            for field in ("projection_sha256", "ydoc_snapshot_sha256"):
+                if (
+                    "document_version_blob",
+                    version_id,
+                    field,
+                    version[field],
+                    "blob_cleanup",
+                ) not in target_keys:
+                    raise TruthImportError(
+                        "document content redaction does not cover every old version blob"
+                    )
+        for (kind, action_id), action in record_by_identity.items():
+            if (
+                kind != "action_snapshot"
+                or action["document_id"] != document_id
+                or index[(kind, action_id)] >= receipt_seq
+            ):
+                continue
+            for field in ("projection_blob_sha256", "target_blob_sha256"):
+                if (
+                    "action_snapshot_blob",
+                    action_id,
+                    field,
+                    action[field],
+                    "blob_cleanup",
+                ) not in target_keys:
+                    raise TruthImportError(
+                        "document content redaction does not cover every action blob"
+                    )
+            if action["redacted_at"] is None:
+                raise TruthImportError(
+                    "document content redaction retains readable action metadata"
+                )
+        for (kind, span_id), span in record_by_identity.items():
+            if (
+                kind != "document_span"
+                or span["document_id"] != document_id
+                or index[(kind, span_id)] >= receipt_seq
+            ):
+                continue
+            if span["redacted_at"] is None or not any(
+                row["target_kind"] == "document_span"
+                and row["target_ref"] == span_id
+                for row in targets
+            ):
+                raise TruthImportError(
+                    "document content redaction retains a readable document span"
+                )
+        for (kind, proposal_id), proposal in record_by_identity.items():
+            if (
+                kind != "proposal"
+                or proposal["document_id"] != document_id
+                or index[(kind, proposal_id)] >= receipt_seq
+            ):
+                continue
+            if proposal["redacted_at"] is None or not any(
+                row["target_kind"] == "proposal"
+                and row["target_ref"] == proposal_id
+                for row in targets
+            ):
+                raise TruthImportError(
+                    "document content redaction retains a readable proposal"
+                )
+
     item_ids = {
         item.record_key
         for item in records
@@ -3008,6 +3813,27 @@ def _validate_bundle(bundle: _Bundle) -> StoreProfile:
             raise TruthImportError("blob bytes do not match content_sha256")
         blob_map[digest] = blob.content
 
+    redacted_version_ids = {
+        str(item.record["target_ref"])
+        for item in bundle.records
+        if item.record_type == "document_content_redaction_target"
+        and item.record["target_kind"] == "document_version_blob"
+        and item.record["disposition"] == "blob_cleanup"
+    }
+    redacted_action_ids = {
+        str(item.record["target_ref"])
+        for item in bundle.records
+        if item.record_type == "document_content_redaction_target"
+        and item.record["target_kind"] == "action_snapshot_blob"
+        and item.record["disposition"] == "blob_cleanup"
+    }
+    redacted_source_documents = {
+        str(item.record["target_ref"])
+        for item in bundle.records
+        if item.record_type == "document_content_redaction_target"
+        and item.record["target_kind"] == "document_source_blob"
+        and item.record["disposition"] == "blob_cleanup"
+    }
     required_blobs: set[str] = set()
     optional_source_blobs: set[str] = set()
     for item in bundle.records:
@@ -3019,14 +3845,16 @@ def _validate_bundle(bundle: _Bundle) -> StoreProfile:
             if row["ydoc_snapshot_sha256"] is not None:
                 required_blobs.add(row["ydoc_snapshot_sha256"])
             source_digest = retained_file_import_source_sha256(row["meta_json"])
-            if source_digest is not None:
+            if source_digest is not None and row["id"] not in redacted_source_documents:
                 optional_source_blobs.add(source_digest)
         elif item.record_type == "document_version":
-            required_blobs.add(row["projection_sha256"])
-            required_blobs.add(row["ydoc_snapshot_sha256"])
+            if row["id"] not in redacted_version_ids:
+                required_blobs.add(row["projection_sha256"])
+                required_blobs.add(row["ydoc_snapshot_sha256"])
         elif item.record_type == "action_snapshot":
-            required_blobs.add(row["projection_blob_sha256"])
-            required_blobs.add(row["target_blob_sha256"])
+            if row["id"] not in redacted_action_ids:
+                required_blobs.add(row["projection_blob_sha256"])
+                required_blobs.add(row["target_blob_sha256"])
     missing = sorted(required_blobs - set(blob_map))
     extra = sorted(set(blob_map) - required_blobs - optional_source_blobs)
     if missing or extra:
@@ -3161,6 +3989,27 @@ def _collect_export_bundle(
             )
         _assert_all_rows_are_ordered(export_conn, ordered_keys)
 
+        redacted_version_ids = {
+            str(item.record["target_ref"])
+            for item in records
+            if item.record_type == "document_content_redaction_target"
+            and item.record["target_kind"] == "document_version_blob"
+            and item.record["disposition"] == "blob_cleanup"
+        }
+        redacted_action_ids = {
+            str(item.record["target_ref"])
+            for item in records
+            if item.record_type == "document_content_redaction_target"
+            and item.record["target_kind"] == "action_snapshot_blob"
+            and item.record["disposition"] == "blob_cleanup"
+        }
+        redacted_source_documents = {
+            str(item.record["target_ref"])
+            for item in records
+            if item.record_type == "document_content_redaction_target"
+            and item.record["target_kind"] == "document_source_blob"
+            and item.record["disposition"] == "blob_cleanup"
+        }
         blobs: dict[str, bytes] = {}
         for item in records:
             if item.record_type == "evidence":
@@ -3208,7 +4057,11 @@ def _collect_export_bundle(
                 source_digest = retained_file_import_source_sha256(
                     item.record["meta_json"]
                 )
-                if source_digest is not None and source_digest not in blobs:
+                if (
+                    source_digest is not None
+                    and item.record["id"] not in redacted_source_documents
+                    and source_digest not in blobs
+                ):
                     path = store.resolve_blob_path("blobs/" + source_digest)
                     if path.exists():
                         try:
@@ -3224,6 +4077,8 @@ def _collect_export_bundle(
                             )
                         blobs[source_digest] = content
             elif item.record_type == "document_version":
+                if item.record["id"] in redacted_version_ids:
+                    continue
                 for field in ("projection_sha256", "ydoc_snapshot_sha256"):
                     digest = str(item.record[field])
                     path = store.resolve_blob_path("blobs/" + digest)
@@ -3239,6 +4094,8 @@ def _collect_export_bundle(
                         )
                     blobs[digest] = content
             elif item.record_type == "action_snapshot":
+                if item.record["id"] in redacted_action_ids:
+                    continue
                 for field in ("projection_blob_sha256", "target_blob_sha256"):
                     digest = str(item.record[field])
                     path = store.resolve_blob_path("blobs/" + digest)
@@ -3322,6 +4179,11 @@ def export_store(
     destination: str | Path | None = None,
 ) -> ExportResult:
     """Write a deterministic, atomic recovery export for ``store``."""
+    from work_buddy.backups.source_foundation_restore import (
+        require_source_foundation_writable,
+    )
+
+    require_source_foundation_writable("truth.export")
     if not isinstance(store, TruthStore):
         raise TypeError("store must be a TruthStore")
     path = (
@@ -3854,6 +4716,7 @@ def _build_staged_store(
     container: Path,
     bundle: _Bundle,
     profile: StoreProfile,
+    causality_bundle: Mapping[str, Any] | None = None,
 ) -> TruthStore:
     paths = StorePaths.from_root(container)
     paths.sidecar.mkdir(parents=True)
@@ -3865,6 +4728,21 @@ def _build_staged_store(
         atomic_write_bytes(paths.blobs / blob.content_sha256, blob.content)
     _insert_records(staged, bundle)
     _validate_staged_integrity(staged)
+    if causality_bundle is not None:
+        from work_buddy.document_kernel.causality import DocumentCausalityStore
+
+        conn = staged.connect()
+        try:
+            document_ids = {
+                str(row[0]) for row in conn.execute("SELECT id FROM documents")
+            }
+        finally:
+            conn.close()
+        DocumentCausalityStore(staged.paths.sidecar).import_recovery_bundle(
+            causality_bundle,
+            expected_store_id=profile.store_id,
+            expected_document_ids=document_ids,
+        )
     expected = _serialize_bundle(bundle)
     result = export_store(staged)
     if result.path.read_bytes() != expected:
@@ -3918,15 +4796,81 @@ def _canonical_import_target(target: str | Path) -> StorePaths:
     return StorePaths.canonical(root)
 
 
+def _parse_causality_recovery_source(
+    source: str | Path | bytes | bytearray | memoryview | None,
+    *,
+    expected_store_id: str,
+    expected_sha256: str | None,
+) -> Mapping[str, Any] | None:
+    if source is None:
+        if expected_sha256 is not None:
+            raise TruthImportError(
+                "causality_sha256 requires a document causality recovery payload"
+            )
+        return None
+    if isinstance(source, (bytes, bytearray, memoryview)):
+        payload = bytes(source)
+    else:
+        try:
+            payload = Path(source).expanduser().resolve().read_bytes()
+        except OSError as exc:
+            raise TruthImportError("cannot read document causality recovery payload") from exc
+    if expected_sha256 is not None:
+        expected_sha256 = _digest(expected_sha256, "causality_sha256")
+        if sha256_bytes(payload) != expected_sha256:
+            raise TruthImportError("document causality recovery archive digest mismatch")
+    try:
+        parsed = json.loads(
+            payload.decode("utf-8"),
+            object_pairs_hook=_unique_object,
+            parse_constant=_reject_json_constant,
+        )
+    except (UnicodeError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise TruthImportError("document causality recovery payload is malformed") from exc
+    if not isinstance(parsed, dict):
+        raise TruthImportError("document causality recovery payload must be an object")
+    from work_buddy.document_kernel.causality import (
+        DocumentCausalityError,
+        DocumentCausalityStore,
+    )
+
+    try:
+        DocumentCausalityStore.validate_recovery_bundle(
+            parsed,
+            expected_store_id=expected_store_id,
+        )
+    except DocumentCausalityError as exc:
+        raise TruthImportError(str(exc)) from exc
+    return parsed
+
+
 def import_store(
     source: str | Path | bytes | bytearray | memoryview,
     target: str | Path,
     *,
     registry: StoreRegistry,
+    causality_source: str | Path | bytes | bytearray | memoryview | None = None,
+    causality_sha256: str | None = None,
 ) -> ImportResult:
-    """Preflight and atomically rebuild one empty target from JSONL."""
+    """Preflight and atomically rebuild one empty target from portable state.
+
+    When supplied, ``causality_source`` is the identity-bound companion
+    exported beside ``claims.jsonl``.  Its outer digest, permanent store ID,
+    referenced document IDs, row counts, and SQLite foreign keys are checked
+    before the staged Co-work sidecar is published.
+    """
+    from work_buddy.backups.source_foundation_restore import (
+        require_source_foundation_writable,
+    )
+
+    require_source_foundation_writable("truth.import")
     bundle = _parse_bundle(source)
     profile = _validate_bundle(bundle)
+    causality_bundle = _parse_causality_recovery_source(
+        causality_source,
+        expected_store_id=profile.store_id,
+        expected_sha256=causality_sha256,
+    )
     target_paths = _canonical_import_target(target)
     from work_buddy.truth.locks import folder_operation_locks
 
@@ -3948,6 +4892,7 @@ def import_store(
             profile,
             target_paths,
             registry=registry,
+            causality_bundle=causality_bundle,
         )
 
 
@@ -3957,6 +4902,7 @@ def _import_store_locked(
     target_paths: StorePaths,
     *,
     registry: StoreRegistry,
+    causality_bundle: Mapping[str, Any] | None = None,
 ) -> ImportResult:
     """Publish an already validated bundle while holding Folder locks."""
 
@@ -3971,7 +4917,12 @@ def _import_store_locked(
     manifest_snapshot = None
     published_manifest: bytes | None = None
     try:
-        staged = _build_staged_store(container, bundle, profile)
+        staged = _build_staged_store(
+            container,
+            bundle,
+            profile,
+            causality_bundle=causality_bundle,
+        )
         staged_sidecar = staged.paths.sidecar.resolve()
         staged_wbuddy = staged_sidecar.parent
         if staged_wbuddy.parent != container.resolve():

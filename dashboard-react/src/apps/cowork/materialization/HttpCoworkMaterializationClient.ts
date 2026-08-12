@@ -1,4 +1,5 @@
 import { CoworkHttpError, normalizeCoworkError } from "../providers/errors";
+import { coworkHumanAuthorityHeaders } from "../../../security/humanAuthority";
 import type {
   CoworkMaterializeReceipt,
   CoworkMaterializeRequest,
@@ -24,19 +25,29 @@ export class HttpCoworkMaterializationClient {
   ): Promise<CoworkMaterializeReceipt> {
     let response: Response;
     try {
+      const body = {
+        rendered_markdown: request.renderedMarkdown,
+        rendered_sha256: request.renderedSha256,
+        expected_file_sha256: request.expectedFileSha256,
+        expected_ydoc_head_sha256: request.expectedStructuredHeadSha256,
+        snapshot_sha256: request.snapshotSha256,
+        idempotency_key: request.idempotencyKey,
+      };
+      const authorityHeaders = await coworkHumanAuthorityHeaders(
+        {
+          operation: "document.materialize",
+          storeId,
+          documentId,
+          body,
+        },
+        this.#fetch,
+      );
       response = await this.#fetch(
         `/api/truth/doc/${encodeURIComponent(documentId)}/materialize?store_id=${encodeURIComponent(storeId)}`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            rendered_markdown: request.renderedMarkdown,
-            rendered_sha256: request.renderedSha256,
-            expected_file_sha256: request.expectedFileSha256,
-            expected_ydoc_head_sha256: request.expectedStructuredHeadSha256,
-            snapshot_sha256: request.snapshotSha256,
-            idempotency_key: request.idempotencyKey,
-          }),
+          headers: { "Content-Type": "application/json", ...authorityHeaders },
+          body: JSON.stringify(body),
         },
       );
     } catch (error) {

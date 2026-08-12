@@ -22,17 +22,13 @@ fills new gaps.
 from __future__ import annotations
 
 import re
-from pathlib import Path
 from typing import Any
 
-from work_buddy.config import load_config
 from work_buddy.logging_config import get_logger
 from work_buddy.obsidian import bridge
 from work_buddy.obsidian.tasks import store
 
 logger = get_logger(__name__)
-
-TASK_NOTES_DIR = "tasks/notes"
 
 # "handoff prompt from session <uuid|short-id>" — case-insensitive. The
 # id is a Claude Code session UUID (36 chars) or an 8+ char prefix.
@@ -49,13 +45,12 @@ def _read_note(note_uuid: str) -> str | None:
     matches the live read surface (and degrades the same way when the
     bridge is down).
     """
-    note_path = f"{TASK_NOTES_DIR}/{note_uuid}.md"
-    content = bridge.read_file(note_path)
-    if content is None:
-        fs_path = Path(load_config()["vault_root"]) / note_path
-        if fs_path.exists():
-            content = fs_path.read_text(encoding="utf-8")
-    return content
+    from work_buddy.task_notes import get_task_note_adapter
+
+    return get_task_note_adapter(bridge_client=bridge).read(
+        note_uuid,
+        filesystem_fallback=True,
+    )
 
 
 def _extract_creator_session(note_body: str) -> str | None | _Ambiguous:

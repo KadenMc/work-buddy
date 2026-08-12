@@ -13,6 +13,7 @@ import sqlite3
 from typing import Any, Mapping
 
 from work_buddy.truth.contracts import InvariantViolation
+from work_buddy.truth.evidence_relations import classify_claim_evidence_role
 from work_buddy.truth.identity import (
     canonical_claim_payload,
     canonical_json,
@@ -90,6 +91,8 @@ def _active_receipts(
         return read_conn.execute(
             """
             SELECT l.id AS link_id,
+                   l.link_type,
+                   l.role_json,
                    s.id AS span_id,
                    s.span_sha256,
                    s.quote_exact,
@@ -109,7 +112,7 @@ def _active_receipts(
               JOIN evidence AS e ON e.id = s.evidence_id
               LEFT JOIN link_retractions AS r ON r.link_id = l.id
              WHERE l.from_claim_id = ?
-               AND l.link_type = 'supports_span'
+               AND l.link_type IN ('supports_span', 'evidence_relation')
                AND r.link_id IS NULL
              ORDER BY l.created_at, l.id
             """,
@@ -139,6 +142,9 @@ def _active_receipts(
             evidence_redacted_at=row["evidence_redacted_at"],
         )
         for row in rows
+        if classify_claim_evidence_role(
+            link_type=row["link_type"], role_json=row["role_json"]
+        ).is_positive
     )
 
 

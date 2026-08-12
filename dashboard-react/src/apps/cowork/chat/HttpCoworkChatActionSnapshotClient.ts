@@ -2,6 +2,7 @@ import type {
   ChatActionSnapshotContext,
 } from "../../../widget-library/chat";
 import type { CoworkCapturedActionSnapshot } from "../targets";
+import { coworkHumanAuthorityHeaders } from "../../../security/humanAuthority";
 
 type FetchLike = typeof fetch;
 
@@ -113,6 +114,16 @@ export class HttpCoworkChatActionSnapshotClient
     ) {
       throw new Error("Document context belongs to another Co-work document.");
     }
+    const body = { capture };
+    const authorityHeaders = await coworkHumanAuthorityHeaders(
+      {
+        operation: "chat.action_snapshot_create",
+        storeId: this.#storeId,
+        documentId: this.#documentId,
+        body,
+      },
+      this.#fetch,
+    );
     const response = await this.#fetch(
       `/api/truth/doc/${encodeURIComponent(this.#documentId)}/chat/action-snapshots?store_id=${encodeURIComponent(this.#storeId)}`,
       {
@@ -120,8 +131,9 @@ export class HttpCoworkChatActionSnapshotClient
         headers: {
           "Content-Type": "application/json",
           Accept: "application/json",
+          ...authorityHeaders,
         },
-        body: JSON.stringify({ capture }),
+        body: JSON.stringify(body),
       },
     );
     let payload: unknown;

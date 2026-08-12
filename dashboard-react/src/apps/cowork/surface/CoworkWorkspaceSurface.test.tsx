@@ -4,6 +4,11 @@ import { StrictMode, type ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
 
+vi.mock("../../../security/humanAuthority", () => ({
+  coworkHumanAuthorityHeaders: vi.fn(async () => ({})),
+  exactHumanAuthorityHeaders: vi.fn(async () => ({})),
+}));
+
 import {
   asViewId,
   asWidgetInstanceId,

@@ -19,6 +19,7 @@ import type {
   VerifyCriterionDraftInput,
   VerifyRunInspection,
 } from "../rail/contracts";
+import { coworkHumanAuthorityHeaders } from "../../../security/humanAuthority";
 
 type JsonObject = Record<string, unknown>;
 
@@ -89,6 +90,21 @@ export class HttpCoworkDocClient implements CoworkDocClient {
     return `/api/truth/doc/${encodeURIComponent(this.#documentId)}?store_id=${encodeURIComponent(this.#storeId)}`;
   }
 
+  #authority(
+    operation: string,
+    body: JsonObject,
+  ): Promise<Record<string, string>> {
+    return coworkHumanAuthorityHeaders(
+      {
+        operation,
+        storeId: this.#storeId,
+        documentId: this.#documentId,
+        body,
+      },
+      this.#fetch,
+    );
+  }
+
   async fetchDoc(): Promise<R2DocPayload> {
     const response = await this.#fetch(this.#endpoint(), { method: "GET" });
     if (!response.ok) {
@@ -102,16 +118,21 @@ export class HttpCoworkDocClient implements CoworkDocClient {
     enabled: boolean,
     expectedActivationId: string | null,
   ): Promise<R2VerificationConfiguration> {
+    const body = {
+      enabled,
+      expected_activation_id: expectedActivationId,
+    };
+    const authorityHeaders = await this.#authority(
+      "verify.criterion_update",
+      body,
+    );
     const response = await this.#fetch(
       `/api/truth/doc/${encodeURIComponent(this.#documentId)}/verify/criteria/${encodeURIComponent(criterionKey)}?store_id=${encodeURIComponent(this.#storeId)}`,
       {
         method: "PATCH",
         credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          enabled,
-          expected_activation_id: expectedActivationId,
-        }),
+        headers: { "Content-Type": "application/json", ...authorityHeaders },
+        body: JSON.stringify(body),
       },
     );
     if (!response.ok) {
@@ -142,16 +163,18 @@ export class HttpCoworkDocClient implements CoworkDocClient {
     action: "park" | "dismiss",
     canonicalSha256: string,
   ): Promise<void> {
+    const body = { action, canonical_sha256: canonicalSha256 };
+    const authorityHeaders = await this.#authority(
+      "cothink.item_action",
+      body,
+    );
     const response = await this.#fetch(
       `/api/truth/doc/${encodeURIComponent(this.#documentId)}/cothink/items/${encodeURIComponent(itemId)}/actions?store_id=${encodeURIComponent(this.#storeId)}`,
       {
         method: "POST",
         credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action,
-          canonical_sha256: canonicalSha256,
-        }),
+        headers: { "Content-Type": "application/json", ...authorityHeaders },
+        body: JSON.stringify(body),
       },
     );
     if (!response.ok) {
@@ -170,16 +193,18 @@ export class HttpCoworkDocClient implements CoworkDocClient {
     itemId: string,
     canonicalSha256: string,
   ): Promise<CothinkDiscussionReceipt> {
+    const body = { action: "discuss", canonical_sha256: canonicalSha256 };
+    const authorityHeaders = await this.#authority(
+      "cothink.item_action",
+      body,
+    );
     const response = await this.#fetch(
       `/api/truth/doc/${encodeURIComponent(this.#documentId)}/cothink/items/${encodeURIComponent(itemId)}/actions?store_id=${encodeURIComponent(this.#storeId)}`,
       {
         method: "POST",
         credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "discuss",
-          canonical_sha256: canonicalSha256,
-        }),
+        headers: { "Content-Type": "application/json", ...authorityHeaders },
+        body: JSON.stringify(body),
       },
     );
     const payload = objectValue(await response.json().catch(() => ({})));
@@ -306,18 +331,23 @@ export class HttpCoworkDocClient implements CoworkDocClient {
   async createVerifyCriterionDraft(
     draft: VerifyCriterionDraftInput,
   ): Promise<R2VerificationConfiguration> {
+    const body = {
+      title: draft.title,
+      description: draft.description,
+      evaluation_instructions: draft.evaluationInstructions,
+      limitations: draft.limitations,
+    };
+    const authorityHeaders = await this.#authority(
+      "verify.criterion_draft_create",
+      body,
+    );
     const response = await this.#fetch(
       `/api/truth/doc/${encodeURIComponent(this.#documentId)}/verify/criteria/drafts?store_id=${encodeURIComponent(this.#storeId)}`,
       {
         method: "POST",
         credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title: draft.title,
-          description: draft.description,
-          evaluation_instructions: draft.evaluationInstructions,
-          limitations: draft.limitations,
-        }),
+        headers: { "Content-Type": "application/json", ...authorityHeaders },
+        body: JSON.stringify(body),
       },
     );
     if (!response.ok) {
@@ -336,18 +366,23 @@ export class HttpCoworkDocClient implements CoworkDocClient {
   async createVerifyCheck(
     check: VerifyCheckInput,
   ): Promise<R2VerificationConfiguration> {
+    const body = {
+      title: check.title,
+      description: check.description,
+      evaluation_instructions: check.evaluationInstructions,
+      limitations: check.limitations,
+    };
+    const authorityHeaders = await this.#authority(
+      "verify.check_create",
+      body,
+    );
     const response = await this.#fetch(
       `/api/truth/doc/${encodeURIComponent(this.#documentId)}/verify/checks?store_id=${encodeURIComponent(this.#storeId)}`,
       {
         method: "POST",
         credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title: check.title,
-          description: check.description,
-          evaluation_instructions: check.evaluationInstructions,
-          limitations: check.limitations,
-        }),
+        headers: { "Content-Type": "application/json", ...authorityHeaders },
+        body: JSON.stringify(body),
       },
     );
     if (!response.ok) {

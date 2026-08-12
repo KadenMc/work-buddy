@@ -194,6 +194,11 @@ def spawn_truth_analysis_job(
         from work_buddy.agent_execution.registry import start_detached
 
         spawn_detached = start_detached
+    from work_buddy.backups.source_foundation_restore import (
+        require_source_foundation_writable,
+    )
+
+    require_source_foundation_writable("cowork.truth_analysis.dispatch")
     outcome = spawn_detached(request)
     if not isinstance(outcome, AgentSpawnOutcome):
         raise TypeError("Truth analysis spawner must return AgentSpawnOutcome")

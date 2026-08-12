@@ -202,12 +202,32 @@ def _append_to_note_impl(
         }
 
     try:
-        existing = resolved.read_text(encoding="utf-8")
+        adapter = None
+        snapshot = None
+        if (
+            resolved.parent.name.lower() == "journal"
+            and re.fullmatch(r"\d{4}-\d{2}-\d{2}", resolved.stem)
+        ):
+            from work_buddy.journal_capture.content_adapter import JournalContentAdapter
+
+            adapter = JournalContentAdapter(resolved.parent.parent)
+            snapshot = adapter.snapshot(resolved.stem)
+            existing = snapshot.content
+        else:
+            existing = resolved.read_text(encoding="utf-8")
         if existing and not existing.endswith("\n"):
             existing += "\n"
         existing += "\n" + content + "\n"
-        resolved.write_text(existing, encoding="utf-8")
-    except OSError as e:
+        if adapter is not None and snapshot is not None:
+            adapter.write_day_cas(
+                resolved.stem,
+                expected_file_sha256=snapshot.file_sha256,
+                content=existing,
+                content_hint="wb:journal-backlog-append/v1",
+            )
+        else:
+            resolved.write_text(existing, encoding="utf-8")
+    except (OSError, RuntimeError) as e:
         return {"success": False, "message": f"File write error: {e}"}
 
     logger.info(f"Appended to note: {note_path}")

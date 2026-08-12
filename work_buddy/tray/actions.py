@@ -59,18 +59,51 @@ def open_dashboard(target_hash: str = "", *, app: bool = False) -> dict:
     from work_buddy.cli.commands import dashboard_app_url, dashboard_local_url
 
     base = dashboard_app_url(local=True) if app else dashboard_local_url()
+    identity_bootstrap = False
+    launch_hash = target_hash
+    if app:
+        try:
+            from work_buddy.dashboard.local_identity_launch import (
+                bootstrap_fragment_for_dashboard,
+            )
+
+            launch_hash = bootstrap_fragment_for_dashboard(
+                base,
+                next_hash=target_hash,
+            )
+            identity_bootstrap = True
+        except Exception as exc:
+            # Keep the pre-existing observability UI reachable during migration.
+            # New human-authority writes still fail closed without a session.
+            logger.warning("Could not mint dashboard identity bootstrap: %s", exc)
     try:
         from work_buddy.collectors.chrome_collector import focus_or_create_tab
 
-        res = focus_or_create_tab(base, target_hash=target_hash, timeout_seconds=10)
+        res = focus_or_create_tab(base, target_hash=launch_hash, timeout_seconds=10)
         if res is not None:
-            return {"ok": True, "via": "extension", "result": res}
+            result = {
+                "ok": True,
+                "via": "extension",
+                "result": res,
+            }
+            if app:
+                result["identity_bootstrap"] = identity_bootstrap
+            return result
         logger.info("focus_or_create_tab timed out; falling back to webbrowser")
     except Exception as exc:
         logger.warning("focus_or_create_tab failed (%s); falling back", exc)
 
     import webbrowser
 
-    url = base + target_hash if target_hash else base
+    url = base + launch_hash if launch_hash else base
     webbrowser.open(url)
-    return {"ok": True, "via": "webbrowser", "url": url}
+    # Do not return/log the bearer-bearing launch URL.  The fragment is removed
+    # by React before redemption, but it is still a short-lived credential.
+    result = {
+        "ok": True,
+        "via": "webbrowser",
+        "url": base if identity_bootstrap else url,
+    }
+    if app:
+        result["identity_bootstrap"] = identity_bootstrap
+    return result

@@ -9,13 +9,25 @@ from flask import Blueprint, jsonify, request
 
 from work_buddy.cowork import lifecycle_lock, truth_surface
 from work_buddy.cowork.policy import document_surface_allowed
+from work_buddy.dashboard.local_identity_api import require_human_authority_request
+from work_buddy.security.local_identity import (
+    HumanAuthorityContext,
+    LocalIdentityError,
+)
 from work_buddy.truth import documents, ydoc_store
 from work_buddy.truth.contracts import Actor, InvariantViolation
 from work_buddy.truth.events import emit_truth_event
+from work_buddy.truth.identity import canonical_json, sha256_text
 from work_buddy.truth.store import PostCommitHookError
 
 
 truth_blueprint = Blueprint("cowork_truth_surface", __name__)
+
+TRUTH_MUTATION_GESTURE_SCHEMA = "wb.cowork.truth-mutation-gesture/v1"
+TRUTH_PROPOSE_ACTION = "cowork.truth.propose_and_connect"
+TRUTH_CONNECT_ACTION = "cowork.truth.connect"
+TRUTH_LIFECYCLE_ACTION = "cowork.truth.claim_decision"
+TRUTH_CHALLENGE_ACTION = "cowork.truth.claim_challenge"
 
 
 def _error(
@@ -52,6 +64,54 @@ def _surface_error(exc: truth_surface.TruthSurfaceError):
     )
 
 
+def truth_mutation_subject(
+    *,
+    operation: str,
+    store_id: str,
+    document_id: str,
+    claim_id: str | None = None,
+) -> str:
+    parts = ["cowork-truth", operation, store_id, document_id]
+    if claim_id is not None:
+        parts.append(claim_id)
+    return ":".join(parts)
+
+
+def truth_mutation_context_sha256(
+    *,
+    operation: str,
+    store_id: str,
+    document_id: str,
+    payload: Mapping[str, Any],
+) -> str:
+    return sha256_text(
+        canonical_json(
+            {
+                "schema": TRUTH_MUTATION_GESTURE_SCHEMA,
+                "operation": operation,
+                "store_id": store_id,
+                "document_id": document_id,
+                "payload": dict(payload),
+            }
+        )
+    )
+
+
+def _authority_actor(authority: HumanAuthorityContext) -> Actor:
+    actor = authority.principal.actor
+    if actor.kind != "human":
+        raise LocalIdentityError(
+            "human_authority_required",
+            "An authenticated local human profile is required.",
+            status=403,
+        )
+    return Actor("human", actor.canonical_id)
+
+
+def _authority_error(exc: LocalIdentityError):
+    return _error(exc.code, str(exc), status=exc.status)
+
+
 def _store_and_document(document_id: str):
     from work_buddy.cowork.api import _resolve_document, _resolve_store
 
@@ -72,12 +132,6 @@ def _store_and_document(document_id: str):
             ),
         )
     return store, document, None
-
-
-def _actor() -> Actor:
-    from work_buddy.cowork.api import dashboard_user_ref
-
-    return Actor("human", dashboard_user_ref(request.headers))
 
 
 def _read_only() -> bool:
@@ -266,6 +320,31 @@ def _connect(document_id: str, *, create: bool):
     from work_buddy.consent import user_initiated
 
     try:
+        operation = "propose" if create else "connect"
+        action = TRUTH_PROPOSE_ACTION if create else TRUTH_CONNECT_ACTION
+        mutation_payload = {
+            "selector": dict(body["selector"]),
+            "role": role,
+            "expected_structured_head_sha256": expected_head,
+            "expected_ydoc_generation_sha256": expected_generation,
+            "expected_projection_sha256": expected_projection,
+            "claim": dict(body["claim"]) if create else None,
+            "claim_id": None if create else body["claim_id"],
+        }
+        authority = require_human_authority_request(
+            action=action,
+            subject=truth_mutation_subject(
+                operation=operation,
+                store_id=store.store_id,
+                document_id=document.id,
+            ),
+            context_sha256=truth_mutation_context_sha256(
+                operation=operation,
+                store_id=store.store_id,
+                document_id=document.id,
+                payload=mutation_payload,
+            ),
+        )
         with lifecycle_lock.document_lifecycle_lock(store.store_id, document.id):
             with ydoc_store.document_lock(
                 store,
@@ -276,7 +355,8 @@ def _connect(document_id: str, *, create: bool):
                     result = truth_surface.connect_claim(
                         store,
                         document,
-                        actor=_actor(),
+                        actor=_authority_actor(authority),
+                        authority_context=authority,
                         selector_input=body.get("selector"),
                         role=body.get("role"),
                         expected_structured_head_sha256=expected_head.strip().lower(),
@@ -289,6 +369,8 @@ def _connect(document_id: str, *, create: bool):
                         claim_id=None if create else body.get("claim_id"),
                         claim_input=body.get("claim") if create else None,
                     )
+    except LocalIdentityError as exc:
+        return _authority_error(exc)
     except truth_surface.TruthSurfaceError as exc:
         return _surface_error(exc)
     except InvariantViolation as exc:
@@ -383,19 +465,45 @@ def api_truth_claim_decision(document_id: str, claim_id: str):
     from work_buddy.consent import user_initiated
 
     try:
+        decision_payload = {
+            "claim_id": claim_id,
+            "action": body["action"],
+            "expected_canonical_sha256": body["expected_canonical_sha256"],
+            "expected_context_sha256": body["expected_context_sha256"],
+            "gesture_kind": body.get("gesture_kind"),
+            "reason": body.get("reason"),
+        }
+        authority = require_human_authority_request(
+            action=TRUTH_LIFECYCLE_ACTION,
+            subject=truth_mutation_subject(
+                operation="decision",
+                store_id=store.store_id,
+                document_id=document.id,
+                claim_id=claim_id,
+            ),
+            context_sha256=truth_mutation_context_sha256(
+                operation="decision",
+                store_id=store.store_id,
+                document_id=document.id,
+                payload=decision_payload,
+            ),
+        )
         with lifecycle_lock.document_lifecycle_lock(store.store_id, document.id):
             with user_initiated("dashboard.cowork.truth"):
                 result = truth_surface.decide_claim(
                     store,
                     document,
                     claim_id,
-                    actor=_actor(),
+                    actor=_authority_actor(authority),
+                    authority_context=authority,
                     action=body["action"],
                     expected_canonical_sha256=body["expected_canonical_sha256"],
                     expected_context_sha256=body["expected_context_sha256"],
                     gesture_kind=body.get("gesture_kind"),
                     reason=body.get("reason"),
                 )
+    except LocalIdentityError as exc:
+        return _authority_error(exc)
     except truth_surface.TruthSurfaceError as exc:
         return _surface_error(exc)
     except PostCommitHookError:
@@ -487,18 +595,43 @@ def api_truth_claim_challenge(document_id: str, claim_id: str):
     from work_buddy.consent import user_initiated
 
     try:
+        challenge_payload = {
+            "claim_id": claim_id,
+            "challenging_claim_id": body["challenging_claim_id"],
+            "expected_canonical_sha256": body["expected_canonical_sha256"],
+            "expected_challenger_sha256": body["expected_challenger_sha256"],
+            "note": body.get("note"),
+        }
+        authority = require_human_authority_request(
+            action=TRUTH_CHALLENGE_ACTION,
+            subject=truth_mutation_subject(
+                operation="challenge",
+                store_id=store.store_id,
+                document_id=document.id,
+                claim_id=claim_id,
+            ),
+            context_sha256=truth_mutation_context_sha256(
+                operation="challenge",
+                store_id=store.store_id,
+                document_id=document.id,
+                payload=challenge_payload,
+            ),
+        )
         with lifecycle_lock.document_lifecycle_lock(store.store_id, document.id):
             with user_initiated("dashboard.cowork.truth"):
                 result = truth_surface.challenge_claim(
                     store,
                     document,
                     claim_id,
-                    actor=_actor(),
+                    actor=_authority_actor(authority),
+                    authority_context=authority,
                     challenging_claim_id=body["challenging_claim_id"],
                     expected_canonical_sha256=body["expected_canonical_sha256"],
                     expected_challenger_sha256=body["expected_challenger_sha256"],
                     note=body.get("note"),
                 )
+    except LocalIdentityError as exc:
+        return _authority_error(exc)
     except truth_surface.TruthSurfaceError as exc:
         return _surface_error(exc)
     except InvariantViolation as exc:

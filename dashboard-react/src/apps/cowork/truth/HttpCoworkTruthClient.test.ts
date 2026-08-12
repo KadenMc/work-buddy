@@ -1,5 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { resetLocalIdentityForTests } from "../../../security/localIdentity";
 import type { TruthSelectionCapture } from "./contracts";
 import { HttpCoworkTruthClient } from "./HttpCoworkTruthClient";
 
@@ -29,7 +30,58 @@ const capture: TruthSelectionCapture = {
   },
 };
 
+const authenticatedFetch = (
+  response: (input: RequestInfo | URL, init?: RequestInit) => Response | Promise<Response>,
+) => {
+  let gestureIndex = 0;
+  return vi.fn<typeof fetch>(async (input, init) => {
+    const url = String(input);
+    if (url === "/api/local-identity/session/csrf") {
+      return jsonResponse({
+        ok: true,
+        authenticated: true,
+        csrf_token: "csrf-token",
+        principal: {
+          actor: {
+            schema: "wb.actor-ref/v1",
+            issuer_authority_id: "issuer-authority",
+            subject: "dashboard-user",
+            kind: "human",
+            tenant_scope_id: "tenant-scope",
+          },
+          origin: window.location.origin,
+          audience: "work-buddy-dashboard",
+          session_expires_at: 9_999_999_999,
+          rotation_due_at: 9_999_999_000,
+          assurance: "enrolled_local_session",
+        },
+      });
+    }
+    if (url === "/api/local-identity/gestures") {
+      gestureIndex += 1;
+      const request = JSON.parse(String(init?.body)) as {
+        action: string;
+        subject: string;
+        context_sha256: string;
+      };
+      return jsonResponse({
+        ok: true,
+        gesture: {
+          token: `gesture-${gestureIndex}`,
+          action: request.action,
+          subject_sha256: "a".repeat(64),
+          context_sha256: request.context_sha256,
+          expires_at: 9_999_999_999,
+        },
+      });
+    }
+    return response(input, init);
+  });
+};
+
 describe("HttpCoworkTruthClient", () => {
+  beforeEach(() => resetLocalIdentityForTests());
+
   it("loads every page and never overrides an authoritative non-fact classification", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async (input) => {
       const offset = new URL(String(input), "https://work-buddy.test").searchParams.get("offset");
@@ -243,7 +295,7 @@ describe("HttpCoworkTruthClient", () => {
   });
 
   it("posts selection-bound create/connect requests and exact guarded decisions", async () => {
-    const fetchImpl = vi.fn<typeof fetch>(async () =>
+    const fetchImpl = authenticatedFetch(async () =>
       jsonResponse({
         ok: true,
         claim_id: "claim-1",
@@ -264,7 +316,10 @@ describe("HttpCoworkTruthClient", () => {
       gestureKind: "confirm",
     });
 
-    const propose = JSON.parse(String(fetchImpl.mock.calls[0][1]?.body)) as Record<string, unknown>;
+    const mutations = fetchImpl.mock.calls.filter(([input]) =>
+      String(input).startsWith("/api/truth/"),
+    );
+    const propose = JSON.parse(String(mutations[0][1]?.body)) as Record<string, unknown>;
     expect(propose).toMatchObject({
       expected_structured_head_sha256: capture.structuredHeadSha256,
       expected_ydoc_generation_sha256: capture.ydocGenerationSha256,
@@ -273,22 +328,35 @@ describe("HttpCoworkTruthClient", () => {
       role: "quote",
       claim: { proposition: "A precise claim.", claim_kind: "fact" },
     });
-    const connect = JSON.parse(String(fetchImpl.mock.calls[1][1]?.body)) as Record<string, unknown>;
+    const connect = JSON.parse(String(mutations[1][1]?.body)) as Record<string, unknown>;
     expect(connect).toMatchObject({ claim_id: "claim-2", role: "paraphrase" });
-    const decision = JSON.parse(String(fetchImpl.mock.calls[2][1]?.body)) as Record<string, unknown>;
+    const decision = JSON.parse(String(mutations[2][1]?.body)) as Record<string, unknown>;
     expect(decision).toMatchObject({
       action: "confirm",
       expected_canonical_sha256: "payload-hash",
       expected_context_sha256: "context-hash",
       gesture_kind: "confirm",
     });
+    expect(mutations.map(([, init]) => init?.headers)).toEqual([
+      expect.objectContaining({ "X-WB-CSRF": "csrf-token", "X-WB-Gesture": "gesture-1" }),
+      expect.objectContaining({ "X-WB-CSRF": "csrf-token", "X-WB-Gesture": "gesture-2" }),
+      expect.objectContaining({ "X-WB-CSRF": "csrf-token", "X-WB-Gesture": "gesture-3" }),
+    ]);
+    const gestures = fetchImpl.mock.calls
+      .filter(([input]) => String(input) === "/api/local-identity/gestures")
+      .map(([, init]) => JSON.parse(String(init?.body)) as Record<string, unknown>);
+    expect(gestures.map((item) => item.action)).toEqual([
+      "cowork.truth.propose_and_connect",
+      "cowork.truth.connect",
+      "cowork.truth.claim_decision",
+    ]);
   });
 
   it("preserves idempotency flags from connection receipts", async () => {
     const client = new HttpCoworkTruthClient({
       storeId: "store-1",
       documentId: "doc-1",
-      fetchImpl: vi.fn<typeof fetch>(async () =>
+      fetchImpl: authenticatedFetch(async () =>
         jsonResponse({
           ok: true,
           claim_id: "claim-1",
@@ -305,6 +373,29 @@ describe("HttpCoworkTruthClient", () => {
       claimCreated: false,
       expressionCreated: false,
     });
+  });
+
+  it("fails closed before a Truth mutation when local identity is unavailable", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      jsonResponse({
+        ok: false,
+        authenticated: false,
+        error: { code: "local_session_required", message: "No local session." },
+      }, 401),
+    );
+    const client = new HttpCoworkTruthClient({
+      storeId: "store-1",
+      documentId: "doc-1",
+      fetchImpl,
+    });
+
+    await expect(
+      client.connectClaim({ capture, claimId: "claim-1", role: "quote" }),
+    ).rejects.toThrow("No authenticated local session");
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(String(fetchImpl.mock.calls[0][0])).toBe(
+      "/api/local-identity/session/csrf",
+    );
   });
 
   it("surfaces the server's nested actionable error message", async () => {

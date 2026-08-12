@@ -15,7 +15,7 @@ aliases:
 parents:
 - journal
 dev_notes: |-
-  The root-dashboard compatibility provider is read-only for these mutations. The React in-memory provider proves the typed mutation seam but is not the durable source of truth. A durable provider must preserve IDs and versions across serialization, support idempotency keys, and tombstone deletions.
+  The production `HttpJournalProvider` now preserves IDs and versions through the Journal capture store, supports mutation idempotency, and tombstones deletions. The React in-memory provider remains for fixtures only. Preexisting unmarked Markdown lines remain a separate read-only compatibility projection until migration assigns reviewed stable identities; never mint line-position IDs.
 ---
 
 Running Notes are mutable atomic Markdown entries. They differ from records: a record represents something that already happened, while a Running Note remains working material that the user may refine or remove.
@@ -32,6 +32,13 @@ The widget owns editing interaction and temporary drafts. The Journal provider o
 
 Provider capability is explicit. A read-only compatibility provider disables or omits mutation actions. A fixture/in-memory provider remains visibly non-durable and never masquerades as live persisted data after a provider failure.
 
-The durable backend provider and tombstone store remain an implementation gap. The contract above defines the seam that implementation must satisfy.
+The durable source-first capture/provider and tombstone store implement this
+contract for newly captured Running Notes. Existing unmarked legacy notes stay
+read-only until the explicit migration/parity gate assigns stable identities.
+An individual Running Note may cut its content authority to a domain-bound
+Co-work document; after cutover, its Markdown block is a non-clobbering
+compatibility projection guarded by an authority epoch and base hashes.
 
-See `journal/running_notes`, `services/dashboard/react/widget-platform`, and `services/dashboard/react`.
+See `journal/running_notes`, `journal/source-backed-capture`,
+`cowork/source-backed-documents`, `services/dashboard/react/widget-platform`,
+and `services/dashboard/react`.

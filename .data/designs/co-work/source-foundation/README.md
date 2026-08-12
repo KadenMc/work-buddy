@@ -1,10 +1,13 @@
 # Source foundation for Co-work and Work Buddy
 
-**Status:** Proposed design and implementation plan, 2026-08-09. No product
-implementation is authorized by this document.
+**Status:** Accepted design with an end-to-end implementation candidate. This
+is a rollout-gated foundation, not a claim that Journal/task-note authority cutover,
+optional model processing, or Hindsight projection is enabled. See the
+[implementation report](implementation-report.md) for the as-built boundary,
+checkpoint validation evidence, closed gates, and remaining release work.
 
-**Primary input:** `C:\Users\Owner\OneDrive\Desktop\AI-human verbatim recording.md`,
-reconciled against current `main` after PR #269.
+**Primary input:** the user-provided exported conversation,
+reconciled against the corresponding production baseline.
 
 - captured file size: 139,334 bytes;
 - captured modified time: `2026-08-06T23:15:02.5336899Z`; and
@@ -131,8 +134,10 @@ distributed atomic transaction across independent SQLite stores.
 
 ## Delivery shape
 
-The implementation is organized as four meaningful, user-testable stacked
-pull requests rather than many narrow plumbing PRs:
+The implementation is organized as four meaningful, user-testable vertical
+slices inside one larger pull request, following the user's implementation
+preference. The original PR labels below remain useful as architectural and
+validation boundaries; they no longer imply four separately merged PRs:
 
 1. Sources core, an authenticated loopback principal/gesture boundary, and a
    real Journal Quick Capture vertical slice.
@@ -150,12 +155,15 @@ planned follow-ons after these four foundation slices rather than being hidden
 inside the final migration PR. Work Buddy's own stable conversation provider and
 the bounded Hindsight projection proof land with PR 2.
 
-Each PR has internal checkpoints suitable for `/wb-dev-pr`, while the PR
-description remains additive across checkpoints. See
+Each slice has internal checkpoints suitable for `/wb-dev-pr`, while the one
+PR description remains additive across checkpoints. See
 [implementation-plan.md](implementation-plan.md).
 
 ## Document map
 
+- [implementation-report.md](implementation-report.md) — the as-built slice
+  map, trust and recovery guarantees, rollout gates, checkpoint evidence, and
+  explicit follow-ons.
 - [tldr.md](tldr.md) — the human-scannable decision and build order.
 - [terminology-and-invariants.md](terminology-and-invariants.md) — candidate local
   vocabulary, standards alignment, trust rules, and actor distinctions.
@@ -167,6 +175,15 @@ description remains additive across checkpoints. See
   vertical slices, acceptance criteria, and sequencing.
 - [migration-validation-and-risks.md](migration-validation-and-risks.md) —
   compatibility, rollout, test matrix, failure recovery, privacy, and risks.
+- [journal-content-migration-implementation.md](journal-content-migration-implementation.md)
+  — the implemented PR 4 Journal adapter, per-entity authority, recovery,
+  divergence, restore-fence, and derived-exit-evidence contract.
+- [task-note-migration-implementation.md](task-note-migration-implementation.md)
+  — the implemented, disabled-by-default task-note compatibility adapter,
+  authority epochs, projection, recovery, and intentionally gated append seam.
+- [restore-and-reconstitution.md](restore-and-reconstitution.md) — the
+  read-only restore fence, portable scoped Truth recovery, cohort
+  reconciliation, and no-force-clear invariant.
 
 ## Standards posture
 

@@ -8,8 +8,12 @@ import sqlite3
 import tarfile
 from pathlib import Path
 
+import pytest
+
+from work_buddy.document_kernel.causality import DocumentCausalityStore
 from work_buddy.truth.identity import new_id, sha256_bytes
 from work_buddy.truth.registry import TruthStoreRegistry
+from work_buddy.truth.export import TruthImportError, export_store, import_store
 from work_buddy.truth.store import TruthStore
 
 
@@ -41,13 +45,17 @@ def _store(
     root: Path,
     *,
     export_committed: bool = True,
+    with_causality: bool = True,
 ) -> TruthStore:
     root.mkdir()
     store_id = new_id()
-    return TruthStore.create(
+    store = TruthStore.create(
         root,
         _profile(store_id, export_committed=export_committed),
     )
+    if with_causality:
+        DocumentCausalityStore(store.paths.sidecar)
+    return store
 
 
 def test_truth_registry_is_a_vital_migrated_database(tmp_path: Path) -> None:
@@ -93,7 +101,7 @@ def test_backup_stages_portable_payload_and_reports_unreachable_store(
     registry_path = tmp_path / "live" / "truth_registry.db"
     registry = TruthStoreRegistry(registry_path)
     included = _store(tmp_path / "included")
-    unavailable = _store(tmp_path / "unavailable")
+    unavailable = _store(tmp_path / "unavailable", with_causality=False)
     unavailable_id = unavailable.store_id
     registry.register(included)
     registry.register(unavailable)
@@ -118,10 +126,15 @@ def test_backup_stages_portable_payload_and_reports_unreachable_store(
         names = set(archive.getnames())
         profile_member = f"truth_stores/{included.store_id}/store.yaml"
         export_member = f"truth_stores/{included.store_id}/claims.jsonl"
+        causality_member = (
+            f"truth_stores/{included.store_id}/document-causality.json"
+        )
         assert profile_member in names
         assert export_member in names
+        assert causality_member in names
         assert f"truth_stores/{unavailable_id}/claims.jsonl" not in names
         export_bytes = archive.extractfile(export_member).read()
+        causality_bytes = archive.extractfile(causality_member).read()
         assert archive.extractfile(profile_member).read()
 
     assert hashlib.sha256(export_bytes).hexdigest() == by_id[included.store_id][
@@ -130,6 +143,43 @@ def test_backup_stages_portable_payload_and_reports_unreachable_store(
     assert json.loads(export_bytes.splitlines()[0])["store_info"]["store_id"] == (
         included.store_id
     )
+    assert hashlib.sha256(causality_bytes).hexdigest() == by_id[included.store_id][
+        "causality_sha256"
+    ]
+    causality = json.loads(causality_bytes)
+    assert causality["store_id"] == included.store_id
+    assert causality["payload_sha256"] == by_id[included.store_id][
+        "causality_payload_sha256"
+    ]
+
+
+def test_backup_marks_reachable_store_without_causality_as_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from work_buddy.backups import local
+
+    registry_path = tmp_path / "live" / "truth_registry.db"
+    registry = TruthStoreRegistry(registry_path)
+    incomplete = _store(tmp_path / "incomplete", with_causality=False)
+    registry.register(incomplete)
+    monkeypatch.setattr(
+        local,
+        "_resolve_vital_dbs",
+        lambda: {"truth_registry": registry_path},
+    )
+    monkeypatch.setattr(local, "data_dir", lambda name="": tmp_path / name)
+
+    result = local.run_backup(manual=True)
+    row = result["truth_store_errors"][0]
+    assert row["store_id"] == incomplete.store_id
+    assert row["backup_status"] == "error"
+    assert "causality" in row["error"]
+    with tarfile.open(result["tarball_path"], "r:gz") as archive:
+        assert not any(
+            name.startswith(f"truth_stores/{incomplete.store_id}/")
+            for name in archive.getnames()
+        )
 
 
 def _seed_document_with_snapshot(store: TruthStore) -> str:
@@ -208,3 +258,80 @@ def test_backup_generates_private_ephemeral_export_without_raw_store_db(
         assert f"truth_stores/{private.store_id}/claims.jsonl" in names
         assert f"truth_stores/{private.store_id}/store.db" not in names
     assert not private.paths.claims_export.exists()
+
+
+class _EmptyRegistry:
+    def paths_for_store_id(self, _store_id: str) -> tuple[Path, ...]:
+        return ()
+
+
+def test_truth_import_publishes_matching_document_causality_companion(
+    tmp_path: Path,
+) -> None:
+    source = _store(tmp_path / "source-recovery")
+    _seed_document_with_snapshot(source)
+    conn = source.connect()
+    try:
+        document_id = str(conn.execute("SELECT id FROM documents").fetchone()[0])
+    finally:
+        conn.close()
+    causality = DocumentCausalityStore(source.paths.sidecar)
+    binding = causality.ensure_binding(
+        domain_namespace="journal",
+        domain_kind="daily_note",
+        domain_entity_id="1" * 32,
+        domain_revision="revision-1",
+        store_id=source.store_id,
+        document_id=document_id,
+        role="daily_note",
+        created_by="service:test",
+    )
+    companion = (
+        json.dumps(
+            causality.export_recovery_bundle(store_id=source.store_id),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+    ledger = export_store(source)
+    target = tmp_path / "restored-recovery"
+    target.mkdir()
+
+    restored = import_store(
+        ledger.path,
+        target,
+        registry=_EmptyRegistry(),
+        causality_source=companion,
+        causality_sha256=hashlib.sha256(companion).hexdigest(),
+    ).store
+
+    assert restored.store_id == source.store_id
+    restored_binding = DocumentCausalityStore(restored.paths.sidecar).get_binding(
+        binding.binding_id
+    )
+    assert restored_binding == binding
+
+
+def test_truth_import_rejects_causality_for_another_store_before_publish(
+    tmp_path: Path,
+) -> None:
+    source = _store(tmp_path / "source-wrong-identity")
+    ledger = export_store(source)
+    envelope = DocumentCausalityStore(source.paths.sidecar).export_recovery_bundle(
+        store_id=source.store_id
+    )
+    envelope["store_id"] = "f" * 32
+    companion = json.dumps(envelope, sort_keys=True, separators=(",", ":")).encode()
+    target = tmp_path / "rejected-recovery"
+    target.mkdir()
+
+    with pytest.raises(TruthImportError):
+        import_store(
+            ledger.path,
+            target,
+            registry=_EmptyRegistry(),
+            causality_source=companion,
+        )
+    assert not (target / ".wbuddy" / "cowork" / "store.db").exists()

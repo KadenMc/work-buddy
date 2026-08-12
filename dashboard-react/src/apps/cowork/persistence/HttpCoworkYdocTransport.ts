@@ -20,6 +20,10 @@ import type {
   CoworkYdocPushResult,
   CoworkYdocTransport,
 } from "./transport";
+import {
+  currentLocalIdentity,
+  localIdentityHeaders,
+} from "../../../security/localIdentity";
 
 export interface HttpCoworkYdocTransportOptions {
   readonly documentId: string;
@@ -102,6 +106,9 @@ export class HttpCoworkYdocTransport implements CoworkYdocTransport {
         request.baseStructuredHeadSha256 ?? request.baseSha256,
       "X-WB-Base-Ydoc-Generation": request.baseYdocGeneration,
     };
+    if (currentLocalIdentity().authenticated) {
+      Object.assign(headers, localIdentityHeaders());
+    }
     let body: Uint8Array;
     if (request.compaction !== undefined) {
       headers["X-WB-Compacted-Snapshot-Sha256"] = request.compaction.snapshotSha256;

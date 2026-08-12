@@ -1,5 +1,6 @@
 import { CoworkHttpError, normalizeCoworkError } from "../providers/errors";
 import { sha256Hex } from "../persistence/hashing";
+import { coworkHumanAuthorityHeaders } from "../../../security/humanAuthority";
 import type {
   DecisionItem,
   SittingDocumentCommit,
@@ -116,11 +117,20 @@ export class HttpCoworkSittingTransport implements CoworkSittingTransport {
   }
 
   async prepare(request: CoworkSittingPrepareRequest): Promise<SittingPrepared> {
+    const authorityHeaders = await coworkHumanAuthorityHeaders(
+      {
+        operation: "review.sitting_prepare",
+        storeId: request.storeId,
+        documentId: request.documentId,
+        body: request.body as unknown as Record<string, unknown>,
+      },
+      this.#fetch,
+    );
     return (await this.#request(
       `/api/truth/doc/${encodeURIComponent(request.documentId)}/sitting/prepare?store_id=${encodeURIComponent(request.storeId)}`,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authorityHeaders },
         body: JSON.stringify(request.body),
       },
     )) as unknown as SittingPrepared;
@@ -129,20 +139,32 @@ export class HttpCoworkSittingTransport implements CoworkSittingTransport {
   async commit(request: CoworkSittingCommitRequest): Promise<SittingResponse> {
     const url = `/api/truth/doc/${encodeURIComponent(request.documentId)}/sitting/${encodeURIComponent(request.intentId)}/commit?store_id=${encodeURIComponent(request.storeId)}`;
     if (request.documentCommit === null) {
+      const authorityHeaders = await coworkHumanAuthorityHeaders(
+        {
+          operation: "review.sitting_commit",
+          storeId: request.storeId,
+          documentId: request.documentId,
+          body: {
+            intent_id: request.intentId,
+            metadata: {},
+            snapshot_sha256: null,
+            rendered_sha256: null,
+          },
+        },
+        this.#fetch,
+      );
       return (await this.#request(url, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authorityHeaders },
         body: "{}",
       })) as unknown as SittingResponse;
     }
     const form = new FormData();
-    form.append(
-      "metadata",
-      JSON.stringify({
+    const metadata = {
         snapshot_sha256: request.documentCommit.snapshot_sha256,
         rendered_sha256: request.documentCommit.rendered_sha256,
-      }),
-    );
+      };
+    form.append("metadata", JSON.stringify(metadata));
     form.append(
       "snapshot",
       new Blob([request.documentCommit.snapshot as BlobPart], {
@@ -157,13 +179,42 @@ export class HttpCoworkSittingTransport implements CoworkSittingTransport {
       }),
       "document.md",
     );
-    return (await this.#request(url, { method: "PUT", body: form })) as unknown as SittingResponse;
+    const authorityHeaders = await coworkHumanAuthorityHeaders(
+      {
+        operation: "review.sitting_commit",
+        storeId: request.storeId,
+        documentId: request.documentId,
+        body: {
+          intent_id: request.intentId,
+          metadata,
+          snapshot_sha256: await sha256Hex(request.documentCommit.snapshot),
+          rendered_sha256: await sha256Hex(
+            new TextEncoder().encode(request.documentCommit.rendered_markdown),
+          ),
+        },
+      },
+      this.#fetch,
+    );
+    return (await this.#request(url, {
+      method: "PUT",
+      headers: authorityHeaders,
+      body: form,
+    })) as unknown as SittingResponse;
   }
 
   async cancel(documentId: string, storeId: string, intentId: string): Promise<void> {
+    const authorityHeaders = await coworkHumanAuthorityHeaders(
+      {
+        operation: "review.sitting_cancel",
+        storeId,
+        documentId,
+        body: { intent_id: intentId },
+      },
+      this.#fetch,
+    );
     await this.#request(
       `/api/truth/doc/${encodeURIComponent(documentId)}/sitting/${encodeURIComponent(intentId)}?store_id=${encodeURIComponent(storeId)}`,
-      { method: "DELETE" },
+      { method: "DELETE", headers: authorityHeaders },
     );
   }
 }

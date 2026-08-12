@@ -203,7 +203,7 @@ def test_append_passes_insert_mode_witness_to_vault_write(tmp_path, monkeypatch)
         captured["content_hint"] = content_hint
         # Mimic a successful filesystem write so the rest of the function
         # proceeds normally.
-        abs_path.write_text(content, encoding="utf-8")
+        abs_path.write_bytes(content.encode("utf-8"))
         return True
 
     # Patch the import inside _append_to_journal_locked (it does a local

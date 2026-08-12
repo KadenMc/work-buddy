@@ -1742,11 +1742,15 @@ def create_task(
     task_id = cached_task_id or generate_task_id()
     note_uuid: str | None = None
     note_path: str | None = None
+    note_saga_id: str | None = None
 
     # --- Note creation (optional) ---
     if summary:
+        from work_buddy.task_notes import get_task_note_adapter
+
+        note_adapter = get_task_note_adapter(bridge_client=bridge)
         note_uuid = cached_note_uuid or str(uuid.uuid4())
-        note_path = f"{TASK_NOTES_DIR}/{note_uuid}.md"
+        note_path = note_adapter.relative_path(note_uuid)
         today = date.today().isoformat()
 
         # Stash IDs immediately after deciding on them so a PWU mid-write
@@ -1758,7 +1762,7 @@ def create_task(
         # Idempotency check: if a previous attempt already wrote the
         # note (PWU body landed before timeout), skip the rewrite. The
         # bridge.read_file call here is cheap relative to a wasted write.
-        existing_note = bridge.read_file(note_path)
+        existing_note = note_adapter.read(note_uuid, filesystem_fallback=False)
         if existing_note is None:
             template = bridge.read_file(TASK_NOTE_TEMPLATE)
             if template:
@@ -1792,8 +1796,24 @@ def create_task(
             # Slice C.2: on retry, the cache_key + existing-note check
             # above means we reach this write only when the note isn't
             # already on disk — no orphan-note proliferation.
-            bridge.write_file(note_path, note_content)
+            mutation = note_adapter.create(
+                note_uuid,
+                note_content,
+                idempotency_key=idem_key,
+                task_id=task_id,
+            )
+            note_saga_id = mutation.saga_id
         else:
+            # Register/recover the same creation saga without rewriting the
+            # already-landed note.  The exact existing body is the retry
+            # witness; a later differing request cannot reuse the saga key.
+            mutation = note_adapter.create(
+                note_uuid,
+                existing_note,
+                idempotency_key=idem_key,
+                task_id=task_id,
+            )
+            note_saga_id = mutation.saga_id
             logger.info(
                 "create_task: note %s already exists on disk — skipping "
                 "write (retry-safety idempotency)",
@@ -1838,6 +1858,8 @@ def create_task(
             write_mode="insert",
             content_hint=task_line,
         )
+    if note_uuid and note_saga_id:
+        note_adapter.mark_saga_step(note_saga_id, "master")
 
     # --- Store record ---
     if store.get(task_id) is None:
@@ -1887,6 +1909,8 @@ def create_task(
             required_contexts_source=required_contexts_source,
             created_by_session=created_by_session,
         )
+    if note_uuid and note_saga_id:
+        note_adapter.mark_saga_step(note_saga_id, "metadata")
 
     # --- Seed tag cache ---
     # Mark user-supplied tags as namespacey by default (they were explicitly
@@ -1970,7 +1994,12 @@ def _verify_task_creation(task_id: str, note_path: str | None) -> dict[str, str]
     # Check note file (if applicable). Same indeterminate-vs-absent
     # distinction as the master-list check.
     if note_path:
-        note_content = bridge.read_file(note_path)
+        from work_buddy.task_notes import get_task_note_adapter, note_uuid_from_path
+
+        note_content = get_task_note_adapter(bridge_client=bridge).read(
+            note_uuid_from_path(note_path),
+            filesystem_fallback=False,
+        )
         if note_content is None:
             result["note"] = "indeterminate"
         else:
@@ -2246,18 +2275,18 @@ def delete_task(
     meta = store.get(task_id)
     note_uuid = meta.get("note_uuid") if meta else None
     if note_uuid:
-        note_path = f"{TASK_NOTES_DIR}/{note_uuid}.md"
+        from work_buddy.task_notes import get_task_note_adapter
+
+        note_adapter = get_task_note_adapter(bridge_client=bridge)
         try:
-            # Use the internal (non-consent-gated) eval since the
-            # outer task_delete already holds tasks.delete_task
-            # consent which covers note removal.
-            js = (
-                f'const f = app.vault.getAbstractFileByPath("{note_path}");'
-                f'if (f) {{ await app.vault.delete(f); return "deleted"; }} '
-                f'else {{ return "not_found"; }}'
+            note_mutation = note_adapter.delete(
+                note_uuid,
+                idempotency_key=f"delete:{task_id}",
+                task_id=task_id,
             )
-            del_result = bridge.eval_js_internal(js)
-            removed["note"] = del_result == "deleted"
+            removed["note"] = note_mutation.changed
+            if removed["task_line"]:
+                note_adapter.mark_saga_step(note_mutation.saga_id, "master")
         except ObsidianError:
             # Transient bridge issue — don't silently mark False.
             # Re-raise so @bridge_retry can retry.
@@ -2278,6 +2307,8 @@ def delete_task(
     #    its next pass.
     if removed["task_line"]:
         removed["store"] = store.delete(task_id)
+        if note_uuid and 'note_mutation' in locals():
+            note_adapter.mark_saga_step(note_mutation.saga_id, "metadata")
     else:
         removed["store"] = False
         logger.warning(
@@ -2504,16 +2535,14 @@ def _load_task_payload(task_id: str) -> dict[str, Any]:
     note_path = None
     note_content = None
     if meta.get("note_uuid"):
-        note_path = f"{TASK_NOTES_DIR}/{meta['note_uuid']}.md"
-        note_content = bridge.read_file(note_path)
-        # Fallback: direct filesystem read if bridge unavailable
-        if note_content is None:
-            from pathlib import Path
-            from work_buddy.config import load_config
-            fs_path = Path(load_config()["vault_root"]) / note_path
-            if fs_path.exists():
-                note_content = fs_path.read_text(encoding="utf-8")
-                logger.info("Read task note via filesystem fallback: %s", note_path)
+        from work_buddy.task_notes import get_task_note_adapter
+
+        note_adapter = get_task_note_adapter(bridge_client=bridge)
+        note_path = note_adapter.relative_path(meta["note_uuid"])
+        note_content = note_adapter.read(
+            meta["note_uuid"],
+            filesystem_fallback=True,
+        )
 
     # Provenance roles (created-by / assigned / developed-by). Computed
     # WITHOUT the awareness JSONL scan to keep this read path fast — the

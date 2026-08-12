@@ -12,7 +12,6 @@ from work_buddy.agent_execution.models import AgentExecutionSelection
 from work_buddy.consent import user_initiated
 from work_buddy.cowork import truth_analysis, truth_analysis_runtime, truth_surface
 from work_buddy.cowork.api import (
-    _actor_for_request,
     _document_surface_or_403,
     _emit,
     _fail,
@@ -22,6 +21,8 @@ from work_buddy.cowork.api import (
 )
 from work_buddy.cowork.policy import document_surface_allowed
 from work_buddy.cowork.truth_analysis_dispatch import enqueue_truth_analysis_launch
+from work_buddy.dashboard.local_identity_api import require_human_authority_request
+from work_buddy.security.local_identity import LocalIdentityError
 from work_buddy.truth import documents
 from work_buddy.truth.contracts import InvariantViolation
 
@@ -90,6 +91,17 @@ def _context(document_id: str, *, mutation: bool):
 
 
 def _safe_error(exc: Exception):
+    if isinstance(exc, LocalIdentityError):
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "code": exc.code,
+                    "error": {"code": exc.code, "message": str(exc)},
+                }
+            ),
+            exc.status,
+        )
     if isinstance(exc, (truth_analysis.TruthAnalysisError, truth_surface.TruthSurfaceError)):
         payload: dict[str, Any] = {
             "ok": False,
@@ -147,13 +159,31 @@ def api_start_truth_analysis(document_id: str):
             raise truth_analysis.TruthAnalysisError(
                 "invalid_request", "capture is required"
             )
+        selection = _selection(body)
+        authority = require_human_authority_request(
+            action=truth_analysis.ANALYSIS_START_ACTION,
+            subject=truth_analysis.analysis_start_subject(document.id),
+            context_sha256=truth_analysis.analysis_start_context_sha256(
+                store_id=store.store_id,
+                document_id=document.id,
+                capture=capture,
+                selection=selection,
+            ),
+        )
+        actor = truth_analysis.human_analysis_start_actor(
+            authority,
+            store_id=store.store_id,
+            document_id=document.id,
+            capture=capture,
+            selection=selection,
+        )
         with user_initiated("dashboard.cowork.truth_analysis"):
             view = truth_analysis.prepare_analysis_run(
                 store,
                 document_id=document.id,
                 capture=capture,
-                selection=_selection(body),
-                actor=_actor_for_request(),
+                selection=selection,
+                actor=actor,
             )
             run = _bound_run(store.store_id, document.id, view["analysis_run_id"])
             if run.status in {"prepared", "launching", "running"}:
@@ -220,21 +250,41 @@ def api_truth_analysis_candidate_decision(
             raise truth_analysis.TruthAnalysisError(
                 "invalid_candidate_edits", "edits must be an object"
             )
+        submitted_edits = None if edits is None else dict(edits)
+        existing_claim_id = (
+            None
+            if body.get("existing_claim_id") is None
+            else str(body.get("existing_claim_id"))
+        )
+        expected_canonical_sha256 = str(
+            body.get("expected_canonical_sha256") or ""
+        )
+        decision = str(body.get("decision") or "")
+        authority = require_human_authority_request(
+            action=truth_analysis.CANDIDATE_DECISION_ACTION,
+            subject=truth_analysis.candidate_decision_subject(
+                run_id, candidate_id
+            ),
+            context_sha256=truth_analysis.candidate_decision_context_sha256(
+                store_id=store.store_id,
+                document_id=document.id,
+                run_id=run_id,
+                candidate_id=candidate_id,
+                expected_canonical_sha256=expected_canonical_sha256,
+                decision=decision,
+                existing_claim_id=existing_claim_id,
+                edits=submitted_edits,
+            ),
+        )
         with user_initiated("dashboard.cowork.truth_analysis_decision"):
             result = truth_analysis.commit_candidate_decision(
                 run_id=run_id,
                 candidate_id=candidate_id,
-                expected_canonical_sha256=str(
-                    body.get("expected_canonical_sha256") or ""
-                ),
-                decision=str(body.get("decision") or ""),
-                actor=_actor_for_request(),
-                edits=None if edits is None else dict(edits),
-                existing_claim_id=(
-                    None
-                    if body.get("existing_claim_id") is None
-                    else str(body.get("existing_claim_id"))
-                ),
+                expected_canonical_sha256=expected_canonical_sha256,
+                decision=decision,
+                authority_context=authority,
+                edits=submitted_edits,
+                existing_claim_id=existing_claim_id,
             )
     except Exception as exc:  # noqa: BLE001
         return _safe_error(exc)

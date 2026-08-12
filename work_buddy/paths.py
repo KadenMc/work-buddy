@@ -80,6 +80,24 @@ RESOURCES: dict[str, str] = {
     "db/vault-index":            "db/vault-index.db",  # Vault semantic-index chunk store
     "db/index-consolidated":     "db/index-consolidated.db",  # Consolidated index (flag-gated; index.enabled)
     "db/broker-metrics":         "db/broker_metrics.db",  # Persisted LocalInferenceBroker call metrics
+    "db/agent-execution":        "db/agent_execution.db",  # Run-owned source disclosure manifests
+    "db/cowork-conversation-source-dependencies": (
+        "db/cowork_conversation_source_dependencies.db"
+    ),  # Document-source dependencies retained by Co-work conversation history
+    # Source bytes and metadata share one directory so blob and SQLite
+    # restore/export operations cannot accidentally treat them as separable.
+    # This resource is intentionally absent from the current unencrypted
+    # VITAL_DBS backup set; Sources owns its authorized export contract.
+    "stores/sources":            "db/sources",
+    "db/journal-capture":        "db/journal_capture.db",
+    # Compatibility-migration state for task-note bodies. Journal prose
+    # migration lives with Journal captures; the task master list remains in
+    # the existing Tasks store/vault file.
+    "db/task-note-migration":    "db/task_note_migration.db",
+    # Persistent local dashboard identity, browser sessions, and one-time
+    # human-authority gestures.  This is deliberately separate from settings:
+    # caller-editable configuration must never define the canonical actor.
+    "db/local-identity":         "db/local_identity.db",
 
     # Logs
     "logs/gateway-debug":        "logs/gateway_debug.log",

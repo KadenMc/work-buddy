@@ -99,6 +99,16 @@ def _require_text(value: object, label: str) -> str:
     return value
 
 
+def _require_source_foundation_writable(operation: str) -> None:
+    """Fence document-bound conversation mutations during restore recovery."""
+
+    from work_buddy.backups.source_foundation_restore import (
+        require_source_foundation_writable,
+    )
+
+    require_source_foundation_writable(operation)
+
+
 def _find_bound_conversation(
     conn: sqlite3.Connection,
     *,
@@ -160,6 +170,46 @@ def find_document_conversation(
             active.close()
 
 
+def document_binding_for_conversation(
+    conversation_id: str,
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> ConversationBinding | None:
+    """Resolve the server-authored Co-work document tags for one conversation."""
+
+    conversation = _require_text(conversation_id, "conversation_id")
+    own_conn = conn is None
+    active = get_connection() if own_conn else conn
+    try:
+        row = active.execute(
+            "SELECT source, metadata FROM conversations WHERE conversation_id = ?",
+            (conversation,),
+        ).fetchone()
+        if row is None or row["source"] != CONVERSATION_SOURCE:
+            return None
+        try:
+            metadata = json.loads(row["metadata"] or "{}")
+        except (TypeError, ValueError) as exc:
+            raise ConversationBindingCorrupt(
+                "Saved Co-work conversation metadata is invalid"
+            ) from exc
+        if not isinstance(metadata, dict):
+            raise ConversationBindingCorrupt(
+                "Saved Co-work conversation metadata is invalid"
+            )
+        document_id = _require_text(metadata.get(_DOCUMENT_ID_KEY), "document_id")
+        store_id = _require_text(metadata.get(_STORE_ID_KEY), "store_id")
+        return ConversationBinding(
+            conversation_id=conversation,
+            document_id=document_id,
+            store_id=store_id,
+            created=False,
+        )
+    finally:
+        if own_conn:
+            active.close()
+
+
 def ensure_document_conversation(
     *,
     document_id: str,
@@ -196,6 +246,9 @@ def ensure_document_conversation(
                     store_id=store_ref,
                     created=False,
                 )
+            _require_source_foundation_writable(
+                "cowork.document_conversation.create"
+            )
             conversation = create_conversation(
                 title=title or _DEFAULT_TITLE,
                 source=CONVERSATION_SOURCE,
@@ -236,6 +289,9 @@ def post_feedback_message(
     conversation = _require_text(conversation_id, "conversation_id")
     if not isinstance(text, str) or not text.strip():
         raise InvariantViolation("feedback text must be a nonempty string")
+    _require_source_foundation_writable(
+        "cowork.document_conversation.post_feedback"
+    )
     own_conn = conn is None
     active = get_connection() if own_conn else conn
     try:
@@ -283,6 +339,19 @@ def feedback_poster(
                 "could not post feedback into conversation "
                 f"{binding.conversation_id}"
             )
+        from work_buddy.cowork.conversation_source_dependencies import (
+            record_conversation_source_dependency,
+        )
+
+        record_conversation_source_dependency(
+            store_id=store_ref,
+            document_id=doc_id,
+            conversation_id=binding.conversation_id,
+            message_id=message.message_id,
+            role="user",
+            content=message.content,
+            frozen_markdown=None,
+        )
         return PostedFeedback(
             conversation_id=binding.conversation_id,
             message_id=message.message_id,
@@ -339,6 +408,9 @@ def deliver_decision(
     proposal = _require_text(proposal_id, "proposal_id")
     if verb == "redirect" and not (isinstance(note, str) and note.strip()):
         raise InvariantViolation("redirect delivery requires a typed note")
+    _require_source_foundation_writable(
+        "cowork.document_conversation.deliver_decision"
+    )
 
     own_conn = conn is None
     active = get_connection() if own_conn else conn
@@ -369,6 +441,19 @@ def deliver_decision(
                 message_id=None,
                 reason="conversation_unavailable",
             )
+        from work_buddy.cowork.conversation_source_dependencies import (
+            record_conversation_source_dependency,
+        )
+
+        record_conversation_source_dependency(
+            store_id=binding.store_id,
+            document_id=binding.document_id,
+            conversation_id=binding.conversation_id,
+            message_id=message.message_id,
+            role="user",
+            content=message.content,
+            frozen_markdown=None,
+        )
         return DeliveryStatus(
             delivered=True,
             conversation_id=binding.conversation_id,
@@ -391,6 +476,7 @@ __all__ = [
     "deliver_decision",
     "ensure_document_conversation",
     "find_document_conversation",
+    "document_binding_for_conversation",
     "feedback_poster",
     "post_feedback_message",
 ]

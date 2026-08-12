@@ -44,6 +44,7 @@ def test_registry_exposes_all_first_party_schemes() -> None:
         "pmid",
         "swh",
         "wb-session",
+        "wb-source",
     )
 
 

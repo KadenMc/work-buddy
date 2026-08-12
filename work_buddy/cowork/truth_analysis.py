@@ -12,11 +12,13 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from work_buddy.agent_execution.models import AgentExecutionSelection
 from work_buddy.cowork import (
+    truth_analysis_disclosure,
     truth_analysis_research,
     truth_analysis_runtime,
     truth_surface,
@@ -25,6 +27,7 @@ from work_buddy.cowork.chat_targets import action_snapshot_view
 from work_buddy.cowork.execution_identity import cowork_truth_analysis_session_id
 from work_buddy.cowork.truth_analysis_jobs import DEFAULT_TRUTH_ANALYSIS_BUDGET_USD
 from work_buddy.cowork.truth_analysis_runtime import TruthAnalysisRuntimeRun
+from work_buddy.agent_execution.disclosure import DisclosureError, ManifestDigest
 from work_buddy.cowork.verify import (
     ActionSnapshot,
     record_model_call_authorization,
@@ -35,6 +38,20 @@ from work_buddy.cowork.verify_orchestration import (
     _validate_capture,
 )
 from work_buddy.cowork.verify_execution import provider_cost_control
+from work_buddy.paths import resolve
+from work_buddy.security.actors import ActorRef
+from work_buddy.security.local_identity import (
+    HUMAN_AUTHORITY_ASSURANCE,
+    HUMAN_AUTHORITY_BASIS,
+    HumanAuthorityContext,
+)
+from work_buddy.sources import (
+    CoworkActionSnapshotProvider,
+    ProviderRegistry,
+    SourceStore,
+    cowork_action_snapshot_origin,
+    source_capture_from_origin,
+)
 from work_buddy.truth import documents
 from work_buddy.truth.anchors import CompositeSelector, reanchor, serialize_selector
 from work_buddy.truth.contracts import Actor, InvariantViolation, TERMINAL_STATUSES
@@ -45,7 +62,23 @@ from work_buddy.truth.identity import (
     utc_now,
 )
 from work_buddy.truth.profiles import validate_new_claim
+from work_buddy.truth import queries as truth_queries
 from work_buddy.truth.registry import TruthStoreRegistry
+from work_buddy.truth.source_claims import (
+    CandidateDecisionAuthorization,
+    OPERATION_NAME as SOURCE_CLAIM_OPERATION,
+    SOURCE_PURPOSE as SOURCE_CLAIM_PURPOSE,
+    SourceClaimActors,
+    SourceClaimCandidate,
+    prepare_source_claim,
+    reconcile_source_usage,
+    source_claim_request_sha256,
+    write_prepared_source_claim,
+)
+from work_buddy.truth.source_provenance import (
+    record_candidate_decision as record_truth_candidate_decision,
+    record_operation_result as record_truth_operation_result,
+)
 from work_buddy.truth.store import (
     EXPRESSION_ROLES,
     AcquisitionOrigin,
@@ -57,6 +90,12 @@ from work_buddy.truth.store import (
 ANALYSIS_REQUEST_SCHEMA = "wb.cowork.truth-analysis-request/v1"
 ANALYSIS_CONTEXT_SCHEMA = "wb.cowork.truth-analysis-job/v1"
 ANALYSIS_OUTPUT_SCHEMA = "wb.cowork.truth-analysis-output/v1"
+ANALYSIS_START_ACTION = "cowork.truth.analysis_start"
+ANALYSIS_START_GESTURE_SCHEMA = "wb.cowork.truth-analysis-start-gesture/v1"
+CANDIDATE_DECISION_ACTION = "cowork.truth.candidate_decision"
+CANDIDATE_DECISION_GESTURE_SCHEMA = (
+    "wb.cowork.truth-candidate-decision-gesture/v1"
+)
 MAX_CANDIDATES = 20
 MAX_EVIDENCE_PER_CANDIDATE = 10
 MAX_EXISTING_CLAIMS = 200
@@ -115,6 +154,20 @@ class TruthAnalysisError(InvariantViolation):
         self.status = status
         self.retryable = retryable
         self.details = dict(details or {})
+
+
+def _disclosure_failure(exc: Exception) -> TruthAnalysisError:
+    code = (
+        exc.error_code
+        if isinstance(exc, DisclosureError)
+        else "analysis_disclosure_unavailable"
+    )
+    return TruthAnalysisError(
+        str(code),
+        "Truth analysis could not safely account for model/provider disclosure.",
+        status=409,
+        retryable=False,
+    )
 
 
 def analysis_provider_capability(provider_id: str) -> dict[str, Any]:
@@ -1153,6 +1206,9 @@ def get_worker_context(
     *,
     run_id: str,
     agent_session_id: str | None,
+    disclosure_boundary: (
+        truth_analysis_disclosure.TruthAnalysisDisclosureBoundary | None
+    ) = None,
 ) -> dict[str, Any]:
     """Return only the exact target and bounded Truth context for this worker."""
 
@@ -1178,7 +1234,7 @@ def get_worker_context(
             "The staged Truth analysis context failed integrity validation.",
             status=409,
         )
-    return _worker_context_contract(
+    context = _worker_context_contract(
         run_id=run.run_id,
         document_id=run.document_id,
         target_text=str(snapshot["target"]["text"]),
@@ -1188,6 +1244,30 @@ def get_worker_context(
         source_coverage=_current_source_coverage(run),
         allowed_claim_kinds=store.profile.allowed_claim_kinds,
     )
+    boundary = (
+        disclosure_boundary
+        or truth_analysis_disclosure.configured_truth_analysis_disclosure()
+    )
+    if boundary is not None:
+        try:
+            from work_buddy.security.local_identity import get_default_authority
+
+            _source_store, target_source_ref, _representation_id = (
+                _capture_analysis_source(
+                    run,
+                    action,
+                    human=get_default_authority().enrolled_actor(),
+                )
+            )
+            truth_analysis_disclosure.account_worker_context(
+                boundary,
+                run,
+                context,
+                target_derivation_ref=target_source_ref.uri,
+            )
+        except Exception as exc:
+            raise _disclosure_failure(exc) from exc
+    return context
 
 
 def search_web(
@@ -1195,21 +1275,74 @@ def search_web(
     run_id: str,
     query: str,
     agent_session_id: str | None,
+    disclosure_boundary: (
+        truth_analysis_disclosure.TruthAnalysisDisclosureBoundary | None
+    ) = None,
 ) -> dict[str, Any]:
     """Run one replay-safe query through the guarded research broker."""
 
-    result = truth_analysis_research.search(
-        run_id=run_id,
-        query=query,
-        agent_session_id=agent_session_id,
-    )
     run = _bound_run(run_id, agent_session_id)
-    return {
+    normalized_query = truth_analysis_research.normalize_query(query)
+
+    def search() -> truth_analysis_research.ResearchSearchResult:
+        return truth_analysis_research.search(
+            run_id=run_id,
+            query=normalized_query,
+            agent_session_id=agent_session_id,
+        )
+
+    boundary = (
+        disclosure_boundary
+        or truth_analysis_disclosure.configured_truth_analysis_disclosure()
+    )
+    try:
+        result = (
+            boundary.execute_outbound(
+                run,
+                exact_content=normalized_query.encode("utf-8"),
+                source_role="agent_output",
+                tool_call_id=(
+                    "truth-analysis-search:"
+                    f"{sha256_text(normalized_query)[:32]}"
+                ),
+                idempotency_key=(
+                    "truth-analysis-search-query:"
+                    f"{sha256_text(normalized_query)}"
+                ),
+                recipient="web_search_provider",
+                provider_id="websearch",
+                call=search,
+                external_egress=lambda item: item.external_egress,
+            )
+            if boundary is not None
+            else search()
+        )
+    except Exception as exc:
+        if boundary is not None and not isinstance(
+            exc, truth_analysis_research.TruthAnalysisResearchError
+        ):
+            raise _disclosure_failure(exc) from exc
+        raise
+    response = {
         "ok": result.status == "completed",
         "analysis_run_id": run.run_id,
         **result.to_dict(),
         "source_coverage": _current_source_coverage(run),
     }
+    if boundary is not None:
+        try:
+            boundary.account_inbound(
+                run,
+                payload=response,
+                source_role="derived_content",
+                tool_call_id=f"truth-analysis-search-response:{result.search_id}",
+                idempotency_key=(
+                    f"truth-analysis-search-response:{result.search_id}"
+                ),
+            )
+        except Exception as exc:
+            raise _disclosure_failure(exc) from exc
+    return response
 
 
 def fetch_search_hit(
@@ -1217,21 +1350,79 @@ def fetch_search_hit(
     run_id: str,
     hit_id: str,
     agent_session_id: str | None,
+    disclosure_boundary: (
+        truth_analysis_disclosure.TruthAnalysisDisclosureBoundary | None
+    ) = None,
 ) -> dict[str, Any]:
     """Fetch one admitted hit through the guarded public-network broker."""
 
-    result = truth_analysis_research.fetch(
-        run_id=run_id,
-        hit_id=hit_id,
-        agent_session_id=agent_session_id,
-    )
     run = _bound_run(run_id, agent_session_id)
-    return {
+    admitted_hit = truth_analysis_runtime.search_hit_for_run(run.run_id, hit_id)
+    if admitted_hit is None:
+        # Preserve the research broker's typed rejection and avoid capturing a
+        # caller-controlled arbitrary URL/source.
+        return truth_analysis_research.fetch_search_hit(
+            run_id=run_id,
+            hit_id=hit_id,
+            agent_session_id=agent_session_id,
+        )
+    admitted_url = str(admitted_hit.get("url") or "")
+
+    def fetch() -> truth_analysis_research.ResearchFetchResult:
+        return truth_analysis_research.fetch(
+            run_id=run_id,
+            hit_id=hit_id,
+            agent_session_id=agent_session_id,
+        )
+
+    boundary = (
+        disclosure_boundary
+        or truth_analysis_disclosure.configured_truth_analysis_disclosure()
+    )
+    try:
+        result = (
+            boundary.execute_outbound(
+                run,
+                exact_content=admitted_url.encode("utf-8"),
+                source_role="derived_content",
+                tool_call_id=f"truth-analysis-fetch:{hit_id}",
+                idempotency_key=f"truth-analysis-fetch-request:{hit_id}",
+                recipient="public_web_origin",
+                provider_id="direct_http",
+                call=fetch,
+                external_egress=lambda item: item.receipt.external_egress,
+            )
+            if boundary is not None
+            else fetch()
+        )
+    except Exception as exc:
+        if boundary is not None and not isinstance(
+            exc, truth_analysis_research.TruthAnalysisResearchError
+        ):
+            raise _disclosure_failure(exc) from exc
+        raise
+    response = {
         "ok": result.receipt.status == "completed",
         "analysis_run_id": run.run_id,
         **result.to_dict(),
         "source_coverage": _current_source_coverage(run),
     }
+    if boundary is not None:
+        try:
+            boundary.account_inbound(
+                run,
+                payload=response,
+                source_role="fetched_passage",
+                tool_call_id=(
+                    f"truth-analysis-fetch-response:{result.receipt.fetch_id}"
+                ),
+                idempotency_key=(
+                    f"truth-analysis-fetch-response:{result.receipt.fetch_id}"
+                ),
+            )
+        except Exception as exc:
+            raise _disclosure_failure(exc) from exc
+    return response
 
 
 def _normalized_coverage(
@@ -1742,6 +1933,8 @@ def _normalize_worker_output(
     store: TruthStore,
     run: TruthAnalysisRuntimeRun,
     payload: Mapping[str, Any],
+    *,
+    input_manifest: ManifestDigest | None = None,
 ) -> dict[str, Any]:
     if payload.get("schema") != ANALYSIS_OUTPUT_SCHEMA:
         raise TruthAnalysisError("invalid_output", "unsupported Truth analysis output schema")
@@ -1854,6 +2047,8 @@ def _normalize_worker_output(
                 candidate.get("limitations"), f"candidates[{index}].limitations"
             ),
         }
+        if input_manifest is not None:
+            normalized["input_manifest_sha256"] = input_manifest.manifest_sha256
         canonical_sha256 = sha256_text(canonical_json(normalized))
         candidate_id = sha256_text(
             canonical_json(
@@ -1907,6 +2102,8 @@ def _normalize_worker_output(
         "reported_source_coverage": reported_coverage,
         "candidates": normalized_candidates,
     }
+    if input_manifest is not None:
+        normalized_output["input_manifest"] = input_manifest.to_dict()
     serialized_bytes = len(
         json.dumps(
             normalized_output,
@@ -1934,6 +2131,9 @@ def submit_worker_output(
     run_id: str,
     payload: Mapping[str, Any],
     agent_session_id: str | None,
+    disclosure_boundary: (
+        truth_analysis_disclosure.TruthAnalysisDisclosureBoundary | None
+    ) = None,
 ) -> dict[str, Any]:
     """Validate and stage one immutable typed worker result, without Truth writes."""
 
@@ -1945,7 +2145,43 @@ def submit_worker_output(
             status=409,
         )
     store = TruthStoreRegistry().open_store(run.store_id)
-    normalized = _normalize_worker_output(store, run, _mapping(payload, "payload"))
+    boundary = (
+        disclosure_boundary
+        or truth_analysis_disclosure.configured_truth_analysis_disclosure()
+    )
+    try:
+        input_manifest = (
+            boundary.manifest_digest(run) if boundary is not None else None
+        )
+        normalized = _normalize_worker_output(
+            store,
+            run,
+            _mapping(payload, "payload"),
+            input_manifest=input_manifest,
+        )
+        binding = None
+        if boundary is not None:
+            normalized_sha256 = sha256_text(canonical_json(normalized))
+            binding = boundary.bind_output(
+                run,
+                output_ref=f"truth-analysis-output:{normalized_sha256}",
+                idempotency_key=f"truth-analysis-output-bind:{normalized_sha256}",
+            )
+            if (
+                input_manifest is None
+                or binding.manifest_sha256 != input_manifest.manifest_sha256
+                or binding.entry_count != input_manifest.entry_count
+                or binding.through_sequence != input_manifest.through_sequence
+            ):
+                raise TruthAnalysisError(
+                    "analysis_disclosure_changed",
+                    "Truth analysis inputs changed while binding the output.",
+                    status=409,
+                )
+    except TruthAnalysisError:
+        raise
+    except Exception as exc:
+        raise _disclosure_failure(exc) from exc
     try:
         completed = truth_analysis_runtime.update_run(
             run.run_id,
@@ -1956,13 +2192,16 @@ def submit_worker_output(
         raise TruthAnalysisError(
             "analysis_output_conflict", str(exc), status=409
         ) from exc
-    return {
+    receipt = {
         "ok": True,
         "schema": "wb.cowork.truth-analysis-submit-receipt/v1",
         "analysis_run_id": completed.run_id,
         "status": _public_status(completed.status),
         "output_sha256": completed.output_sha256,
     }
+    if binding is not None:
+        receipt["input_manifest_sha256"] = binding.manifest_sha256
+    return receipt
 
 
 def _candidate_for_commit(
@@ -2341,41 +2580,55 @@ def _attach_admitted_support(
             )
         else:
             continue
-        existing = conn.execute(
-            "SELECT l.id FROM claim_links l "
-            "LEFT JOIN link_retractions r ON r.link_id = l.id "
-            "WHERE l.from_claim_id = ? AND l.link_type = 'supports_span' "
-            "AND l.to_kind = 'evidence_span' AND l.to_ref = ? "
-            "AND r.link_id IS NULL ORDER BY l.created_at, l.id LIMIT 1",
-            (claim_id, span_id),
-        ).fetchone()
-        if existing is not None:
-            attached.append(str(existing["id"]))
-            continue
+        relation_role = {
+            "schema": "claim-evidence/v1",
+            "evidential_effect": str(item.get("relationship")),
+            # The staged verifier assessed evidential effect, but did not
+            # establish a stronger extraction relationship for this separate
+            # support item. Keep that axis explicit and conservative.
+            "derivation_relationship": "context",
+            "diagnostics": {
+                "source": "cowork_truth_analysis",
+                "analysis_run_id": run_id,
+                "candidate_id": candidate["candidate_id"],
+            },
+        }
         link_id = sha256_text(
             canonical_json(
                 {
-                    "domain": "work-buddy.cowork-truth-analysis-support/v1",
+                    "domain": "work-buddy.cowork-truth-analysis-evidence-relation/v1",
                     "run_id": run_id,
                     "candidate_id": candidate["candidate_id"],
                     "claim_id": claim_id,
                     "span_id": span_id,
+                    "role": relation_role,
                 }
             )
         )[:32]
+        existing = store.get_link(link_id, conn=conn)
+        if existing is not None:
+            if (
+                existing.from_claim_id != claim_id
+                or existing.link_type != "evidence_relation"
+                or existing.to_kind != "evidence_span"
+                or existing.to_ref != span_id
+                or json.loads(existing.role_json or "null") != relation_role
+            ):
+                raise TruthAnalysisError(
+                    "staged_evidence_conflict",
+                    "The canonical evidence relationship identity conflicts.",
+                    status=409,
+                )
+            attached.append(existing.id)
+            continue
         try:
             link = store.add_link(
                 from_claim_id=claim_id,
-                link_type="supports_span",
+                link_type="evidence_relation",
                 to_kind="evidence_span",
                 to_ref=span_id,
                 actor=actor,
-                role={
-                    "assessment": item.get("relationship"),
-                    "source": "cowork_truth_analysis",
-                    "analysis_run_id": run_id,
-                    "candidate_id": candidate["candidate_id"],
-                },
+                role=relation_role,
                 record_id=link_id,
                 conn=conn,
             )
@@ -2538,22 +2791,358 @@ def _recover_decision_connection(
     )
 
 
+def candidate_decision_subject(run_id: str, candidate_id: str) -> str:
+    """Return the exact local-gesture subject for one staged candidate."""
+
+    return f"cowork-truth-candidate-decision:{run_id}:{candidate_id}"
+
+
+def analysis_start_subject(document_id: str) -> str:
+    """Return the exact local-gesture subject for starting document analysis."""
+
+    return f"cowork-truth-analysis-start:{document_id}"
+
+
+def analysis_start_context_sha256(
+    *,
+    store_id: str,
+    document_id: str,
+    capture: Mapping[str, Any],
+    selection: AgentExecutionSelection,
+) -> str:
+    """Bind a one-use browser gesture to the frozen capture and model IDs."""
+
+    return sha256_text(
+        canonical_json(
+            {
+                "schema": ANALYSIS_START_GESTURE_SCHEMA,
+                "store_id": store_id,
+                "document_id": document_id,
+                "capture": dict(capture),
+                "execution": {
+                    "provider_id": selection.provider_id,
+                    "model_id": selection.model_id,
+                },
+            }
+        )
+    )
+
+
+def human_analysis_start_actor(
+    authority: HumanAuthorityContext,
+    *,
+    store_id: str,
+    document_id: str,
+    capture: Mapping[str, Any],
+    selection: AgentExecutionSelection,
+) -> Actor:
+    """Validate analysis-start authority and derive its canonical Truth actor."""
+
+    actor = authority.principal.actor
+    expected_subject = analysis_start_subject(document_id)
+    expected_context = analysis_start_context_sha256(
+        store_id=store_id,
+        document_id=document_id,
+        capture=capture,
+        selection=selection,
+    )
+    if (
+        actor.kind != "human"
+        or authority.action != ANALYSIS_START_ACTION
+        or authority.subject_sha256 != sha256_text(expected_subject)
+        or authority.context_sha256 != expected_context
+        or authority.assurance != HUMAN_AUTHORITY_ASSURANCE
+        or authority.basis != HUMAN_AUTHORITY_BASIS
+    ):
+        raise TruthAnalysisError(
+            "human_authority_required",
+            "An authenticated gesture for this exact Truth analysis is required.",
+            status=403,
+        )
+    return Actor("human", actor.canonical_id)
+
+
+def candidate_decision_context_sha256(
+    *,
+    store_id: str,
+    document_id: str,
+    run_id: str,
+    candidate_id: str,
+    expected_canonical_sha256: str,
+    decision: str,
+    existing_claim_id: str | None,
+    edits: Mapping[str, Any] | None,
+) -> str:
+    """Bind a browser gesture to the complete candidate-decision request."""
+
+    return sha256_text(
+        canonical_json(
+            {
+                "schema": CANDIDATE_DECISION_GESTURE_SCHEMA,
+                "store_id": store_id,
+                "document_id": document_id,
+                "analysis_run_id": run_id,
+                "candidate_id": candidate_id,
+                "expected_canonical_sha256": expected_canonical_sha256,
+                "decision": decision,
+                "existing_claim_id": existing_claim_id,
+                "edits": None if edits is None else dict(edits),
+            }
+        )
+    )
+
+
+def _human_decision_actors(
+    authority: HumanAuthorityContext,
+    *,
+    run: TruthAnalysisRuntimeRun,
+    candidate_id: str,
+    expected_canonical_sha256: str,
+    decision: str,
+    existing_claim_id: str | None,
+    edits: Mapping[str, Any] | None,
+) -> tuple[ActorRef, Actor]:
+    """Validate defense-in-depth authority and derive the compatibility actor."""
+
+    actor = authority.principal.actor
+    expected_subject = candidate_decision_subject(run.run_id, candidate_id)
+    expected_context = candidate_decision_context_sha256(
+        store_id=run.store_id,
+        document_id=run.document_id,
+        run_id=run.run_id,
+        candidate_id=candidate_id,
+        expected_canonical_sha256=expected_canonical_sha256,
+        decision=decision,
+        existing_claim_id=existing_claim_id,
+        edits=edits,
+    )
+    if (
+        actor.kind != "human"
+        or authority.action != CANDIDATE_DECISION_ACTION
+        or authority.subject_sha256 != sha256_text(expected_subject)
+        or authority.context_sha256 != expected_context
+        or authority.assurance != HUMAN_AUTHORITY_ASSURANCE
+        or authority.basis != HUMAN_AUTHORITY_BASIS
+    ):
+        raise TruthAnalysisError(
+            "human_authority_required",
+            "An authenticated gesture for this exact Truth decision is required.",
+            status=403,
+        )
+    return actor, Actor("human", actor.canonical_id)
+
+
+def _analysis_actor_ref(run: TruthAnalysisRuntimeRun, human: ActorRef) -> ActorRef:
+    return ActorRef(
+        issuer_authority_id=human.issuer_authority_id,
+        subject=run.session_id,
+        kind="agent_run",
+        tenant_scope_id=human.tenant_scope_id,
+    )
+
+
+def _analysis_actor(run: TruthAnalysisRuntimeRun) -> Actor:
+    return Actor(
+        "agent_run",
+        run.session_id,
+        {
+            "model": str(run.selection.get("model_id") or "unknown"),
+            "harness": "work-buddy-agent-execution",
+            "surface": "cowork_truth_analysis",
+            "session_id": run.session_id,
+            "call_id": run.run_id,
+        },
+    )
+
+
+def _truth_service_actor(human: ActorRef, subject: str) -> ActorRef:
+    return ActorRef(
+        issuer_authority_id=human.issuer_authority_id,
+        subject=subject,
+        kind="service",
+        tenant_scope_id=human.tenant_scope_id,
+    )
+
+
+def _open_truth_source_store() -> SourceStore:
+    """Open the one local Sources authority through its public store seam."""
+
+    return SourceStore.create(resolve("stores/sources"))
+
+
+def _capture_analysis_source(
+    run: TruthAnalysisRuntimeRun,
+    action: ActionSnapshot,
+    *,
+    human: ActorRef,
+) -> tuple[SourceStore, Any, str]:
+    """Capture the exact frozen target as a stable Sources occurrence."""
+
+    source_store = _open_truth_source_store()
+    source_principal = _truth_service_actor(human, "work-buddy-truth-service")
+    provider_registry = ProviderRegistry()
+    provider_registry.register(
+        CoworkActionSnapshotProvider(
+            tenant_scope_id=human.tenant_scope_id,
+            issuer=_truth_service_actor(human, "work-buddy-cowork-source"),
+            registry=TruthStoreRegistry(),
+        )
+    )
+    origin = cowork_action_snapshot_origin(
+        store_id=run.store_id,
+        action_snapshot_id=action.id,
+        revision=action.canonical_sha256,
+        part="target",
+    )
+    source_ref = source_capture_from_origin(
+        source_store,
+        provider_registry,
+        provider_id="cowork-document",
+        origin_ref=origin,
+        principal=source_principal,
+        purpose=SOURCE_CLAIM_PURPOSE,
+        tenant_scope_id=human.tenant_scope_id,
+        originating_surface="cowork_truth_analysis",
+        expected_revision=action.canonical_sha256,
+        expected_digest=action.target_text_sha256,
+        namespace=run.run_id,
+    )
+    item = source_store.get_item(source_ref)
+    if item is None:
+        raise TruthAnalysisError(
+            "analysis_source_unavailable",
+            "The frozen passage source could not be resolved.",
+            status=409,
+            retryable=True,
+        )
+    return source_store, source_ref, item.primary_representation_id
+
+
+def _source_claim_candidate(
+    effective: Mapping[str, Any],
+    *,
+    candidate_id: str,
+    candidate_sha256: str,
+) -> SourceClaimCandidate:
+    expression = _mapping(effective.get("expression"), "candidate.expression")
+    role = str(expression.get("role") or "")
+    target_selector = _mapping(
+        expression.get("target_selector"), "candidate.expression.target_selector"
+    )
+    derivation = {
+        "quote": "direct_statement",
+        "paraphrase": "paraphrase",
+        "summary": "paraphrase",
+        "instantiation": "inference",
+    }[role]
+    return SourceClaimCandidate(
+        proposition=str(effective["proposition"]),
+        claim_kind=str(effective["claim_kind"]),
+        structured=effective.get("structured"),
+        scope="store",
+        confidence_extraction=effective.get("confidence_extraction"),
+        selector=dict(target_selector),
+        # The selected document passage is the extraction premise. It does not
+        # by itself establish independent support for the proposition.
+        evidential_effect="mentions",
+        derivation_relationship=derivation,
+        relation_diagnostics={
+            "source": "cowork_truth_analysis",
+            "expression_role": role,
+        },
+        candidate_id=candidate_id,
+        candidate_sha256=candidate_sha256,
+    )
+
+
+def _source_claim_actors(
+    run: TruthAnalysisRuntimeRun,
+    *,
+    human: ActorRef,
+    original: Mapping[str, Any],
+    effective: Mapping[str, Any],
+    edits: Mapping[str, Any] | None,
+    connect_existing: bool,
+) -> SourceClaimActors:
+    ai = _analysis_actor_ref(run, human)
+    edit_keys = frozenset() if edits is None else frozenset(edits)
+    semantic_changed = any(
+        original.get(key) != effective.get(key)
+        for key in ("proposition", "claim_kind", "structured")
+    )
+    return SourceClaimActors(
+        semantic_producer=ai,
+        selector=ai,
+        candidate_preparer=ai,
+        matcher=ai if connect_existing else None,
+        semantic_reviser=human if semantic_changed else None,
+        evidence_selector=(human if "evidence_candidate_ids" in edit_keys else None),
+        expression_relation_assessor=(
+            human if "expression_role" in edit_keys else None
+        ),
+        applier=_truth_service_actor(human, "work-buddy-truth-kernel"),
+        producer_meta=dict(_analysis_actor(run).meta or {}),
+        run_ref=run.run_id,
+    )
+
+
+def _candidate_operation_key(run_id: str, candidate_id: str) -> str:
+    return f"cowork-truth-analysis:{run_id}:{candidate_id}"
+
+
+def _stable_analysis_id(domain: str, value: Mapping[str, Any]) -> str:
+    return sha256_text(canonical_json({"domain": domain, **dict(value)}))[:32]
+
+
+def _replay_canonical_candidate_result(
+    store: TruthStore,
+    *,
+    operation_name: str,
+    idempotency_key: str,
+    run_id: str,
+    candidate_id: str,
+    candidate_sha256: str,
+    decision: str,
+    decision_payload_sha256: str,
+) -> dict[str, Any] | None:
+    prior = truth_queries.truth_operation_result(
+        store,
+        operation_name=operation_name,
+        idempotency_key=idempotency_key,
+    )
+    if prior is None:
+        return None
+    result = json.loads(prior.result_json)
+    expected = {
+        "analysis_run_id": run_id,
+        "candidate_id": candidate_id,
+        "candidate_canonical_sha256": candidate_sha256,
+        "analysis_decision": decision,
+        "decision_payload_sha256": decision_payload_sha256,
+    }
+    if not isinstance(result, Mapping) or any(
+        result.get(key) != value for key, value in expected.items()
+    ):
+        raise TruthAnalysisError(
+            "candidate_already_decided",
+            "This Truth candidate already has another decision.",
+            status=409,
+        )
+    return dict(result)
+
+
 def commit_candidate_decision(
     *,
     run_id: str,
     candidate_id: str,
     expected_canonical_sha256: str,
     decision: str,
-    actor: Actor,
+    authority_context: HumanAuthorityContext,
     edits: Mapping[str, Any] | None = None,
     existing_claim_id: str | None = None,
 ) -> dict[str, Any]:
     """Apply one explicit human staging decision through canonical Truth APIs."""
 
-    if actor.kind != "human" or not actor.ref:
-        raise TruthAnalysisError(
-            "human_actor_required", "A dashboard human must decide a Truth candidate."
-        )
     if decision not in {"save_as_proposed", "connect_existing", "dismiss"}:
         raise TruthAnalysisError(
             "invalid_decision",
@@ -2564,10 +3153,20 @@ def commit_candidate_decision(
         raise TruthAnalysisError(
             "analysis_run_not_found", "Truth analysis run does not exist.", status=404
         )
+    submitted_edits = None if edits is None else dict(edits)
+    human_ref, actor = _human_decision_actors(
+        authority_context,
+        run=run,
+        candidate_id=candidate_id,
+        expected_canonical_sha256=expected_canonical_sha256,
+        decision=decision,
+        existing_claim_id=existing_claim_id,
+        edits=submitted_edits,
+    )
     candidate = _candidate_for_commit(
         run, candidate_id, expected_canonical_sha256
     )
-    decision_edits = {} if edits is None else dict(edits)
+    decision_edits = {} if submitted_edits is None else dict(submitted_edits)
     if decision == "connect_existing":
         decision_edits["existing_claim_id"] = str(existing_claim_id or "")
     prior = _existing_decision(run_id, candidate_id)
@@ -2593,7 +3192,22 @@ def commit_candidate_decision(
             "result": dict(prior.result),
             "replayed": True,
         }
+    store = TruthStoreRegistry().open_store(run.store_id)
+    decision_payload_sha256 = sha256_text(
+        canonical_json({"decision": decision, "edits": decision_edits})
+    )
+    operation_key = _candidate_operation_key(run_id, candidate_id)
     if decision == "dismiss":
+        canonical = _replay_canonical_candidate_result(
+            store,
+            operation_name="cowork_truth_candidate_dismiss",
+            idempotency_key=operation_key,
+            run_id=run_id,
+            candidate_id=candidate_id,
+            candidate_sha256=expected_canonical_sha256,
+            decision=decision,
+            decision_payload_sha256=decision_payload_sha256,
+        )
         try:
             truth_analysis_runtime.prepare_candidate_decision(
                 run_id=run_id,
@@ -2601,7 +3215,7 @@ def commit_candidate_decision(
                 candidate_canonical_sha256=expected_canonical_sha256,
                 decision=decision,
                 edits=decision_edits,
-                decided_by_ref=actor.ref,
+                decided_by_ref=human_ref.canonical_id,
             )
         except ValueError as exc:
             raise TruthAnalysisError(
@@ -2609,6 +3223,81 @@ def commit_candidate_decision(
                 str(exc),
                 status=409,
             ) from exc
+        if canonical is None:
+            request_sha256 = sha256_text(
+                canonical_json(
+                    {
+                        "schema": "wb.cowork.truth-candidate-dismiss/v1",
+                        "analysis_run_id": run_id,
+                        "candidate_id": candidate_id,
+                        "candidate_canonical_sha256": expected_canonical_sha256,
+                        "analysis_decision": decision,
+                        "decision_payload_sha256": decision_payload_sha256,
+                        "actor": human_ref.to_dict(),
+                        "authorization_context_sha256": authority_context.context_sha256,
+                    }
+                )
+            )
+            canonical = {
+                "status": "dismissed",
+                "claim_id": None,
+                "expression_id": None,
+                "analysis_run_id": run_id,
+                "candidate_id": candidate_id,
+                "candidate_canonical_sha256": expected_canonical_sha256,
+                "analysis_decision": decision,
+                "decision_payload_sha256": decision_payload_sha256,
+            }
+            try:
+                with store.write_transaction() as conn:
+                    candidate_decision = record_truth_candidate_decision(
+                        store,
+                        candidate_id=candidate_id,
+                        candidate_sha256=expected_canonical_sha256,
+                        decision="dismiss",
+                        claim_id=None,
+                        actor=human_ref,
+                        basis=authority_context.basis,
+                        assurance=authority_context.assurance,
+                        authorization_ref=authority_context.gesture_id,
+                        authorization_context_sha256=authority_context.context_sha256,
+                        run_ref=run_id,
+                        record_id=_stable_analysis_id(
+                            "work-buddy.cowork-truth-candidate-dismiss/v1",
+                            {
+                                "run_id": run_id,
+                                "candidate_id": candidate_id,
+                                "candidate_sha256": expected_canonical_sha256,
+                            },
+                        ),
+                        conn=conn,
+                    )
+                    canonical["candidate_decision_id"] = candidate_decision.id
+                    record_truth_operation_result(
+                        store,
+                        operation_name="cowork_truth_candidate_dismiss",
+                        idempotency_key=operation_key,
+                        request_sha256=request_sha256,
+                        result=canonical,
+                        actor=_truth_service_actor(
+                            human_ref, "work-buddy-truth-kernel"
+                        ),
+                        record_id=_stable_analysis_id(
+                            "work-buddy.cowork-truth-candidate-dismiss-result/v1",
+                            {"idempotency_key": operation_key},
+                        ),
+                        conn=conn,
+                    )
+            except Exception:
+                truth_analysis_runtime.clear_candidate_decision_intent(
+                    run_id=run_id,
+                    candidate_id=candidate_id,
+                    candidate_canonical_sha256=expected_canonical_sha256,
+                    decision=decision,
+                    edits=decision_edits,
+                    decided_by_ref=human_ref.canonical_id,
+                )
+                raise
         result = {"status": "dismissed"}
         receipt, replayed = truth_analysis_runtime.record_candidate_decision(
             run_id=run_id,
@@ -2617,7 +3306,7 @@ def commit_candidate_decision(
             decision=decision,
             edits=decision_edits,
             result=result,
-            decided_by_ref=actor.ref,
+            decided_by_ref=human_ref.canonical_id,
         )
         return {
             "ok": True,
@@ -2631,7 +3320,6 @@ def commit_candidate_decision(
             "replayed": replayed,
         }
 
-    store = TruthStoreRegistry().open_store(run.store_id)
     document = documents.get_document(store, run.document_id)
     action = _action(store, run)
     effective = _effective_candidate(store, candidate, edits)
@@ -2717,9 +3405,6 @@ def commit_candidate_decision(
         _mapping(effective.get("expression"), "candidate.expression").get("selector"),
         "candidate.expression.selector",
     )
-    decision_payload_sha256 = sha256_text(
-        canonical_json({"decision": decision, "edits": decision_edits})
-    )
     decision_meta = {
         "source": "cowork_truth_analysis",
         "analysis_run_id": run_id,
@@ -2729,6 +3414,118 @@ def commit_candidate_decision(
         "provider_id": run.selection.get("provider_id"),
         "model_id": run.selection.get("model_id"),
     }
+    source_candidate = _source_claim_candidate(
+        effective,
+        candidate_id=candidate_id,
+        candidate_sha256=expected_canonical_sha256,
+    )
+    source_actors = _source_claim_actors(
+        run,
+        human=human_ref,
+        original=candidate,
+        effective=effective,
+        edits=submitted_edits,
+        connect_existing=decision == "connect_existing",
+    )
+    source_decision = CandidateDecisionAuthorization(
+        decision="connect" if decision == "connect_existing" else "add",
+        actor=human_ref,
+        basis=authority_context.basis,
+        assurance=authority_context.assurance,
+        authorization_ref=authority_context.gesture_id,
+        authorization_context_sha256=authority_context.context_sha256,
+    )
+    canonical = _replay_canonical_candidate_result(
+        store,
+        operation_name=SOURCE_CLAIM_OPERATION,
+        idempotency_key=operation_key,
+        run_id=run_id,
+        candidate_id=candidate_id,
+        candidate_sha256=expected_canonical_sha256,
+        decision=decision,
+        decision_payload_sha256=decision_payload_sha256,
+    )
+    if canonical is not None:
+        try:
+            truth_analysis_runtime.prepare_candidate_decision(
+                run_id=run_id,
+                candidate_id=candidate_id,
+                candidate_canonical_sha256=expected_canonical_sha256,
+                decision=decision,
+                edits=decision_edits,
+                decided_by_ref=human_ref.canonical_id,
+            )
+        except ValueError as exc:
+            raise TruthAnalysisError(
+                "candidate_already_decided", str(exc), status=409
+            ) from exc
+        required_reconcile = {
+            "resolution_record_id",
+            "usage_id",
+            "redaction_epoch",
+            "consumer_ref",
+        }
+        if required_reconcile.issubset(canonical):
+            reconcile_source_usage(
+                store,
+                _open_truth_source_store(),
+                resolution_record_id=str(canonical["resolution_record_id"]),
+                usage_id=str(canonical["usage_id"]),
+                redaction_epoch=int(canonical["redaction_epoch"]),
+                consumer_ref=str(canonical["consumer_ref"]),
+                actor=source_actors.applier,
+            )
+        result = {
+            "status": "saved",
+            "claim_id": str(canonical["claim_id"]),
+            "claim_created": bool(canonical["claim_created"]),
+            "expression_id": str(canonical["expression_id"]),
+            "expression_created": bool(canonical["expression_created"]),
+            "support_link_ids": list(canonical.get("support_link_ids") or []),
+        }
+        receipt, replayed = truth_analysis_runtime.record_candidate_decision(
+            run_id=run_id,
+            candidate_id=candidate_id,
+            candidate_canonical_sha256=expected_canonical_sha256,
+            decision=decision,
+            edits=decision_edits,
+            result=result,
+            decided_by_ref=human_ref.canonical_id,
+        )
+        return {
+            "ok": True,
+            "analysis_run_id": run_id,
+            "candidate_id": candidate_id,
+            "decision": receipt.decision,
+            "candidate_status": "saved",
+            "claim_id": result["claim_id"],
+            "expression_id": result["expression_id"],
+            "result": result,
+            "replayed": replayed,
+        }
+
+    source_store, source_ref, representation_id = _capture_analysis_source(
+        run, action, human=human_ref
+    )
+    prepared = prepare_source_claim(
+        store,
+        source_store,
+        source_ref=source_ref,
+        representation_id=representation_id,
+        expected_content_sha256=action.target_text_sha256,
+        expected_native_revision=action.canonical_sha256,
+        source_principal=_truth_service_actor(
+            human_ref, "work-buddy-truth-service"
+        ),
+        candidate=source_candidate,
+        actors=source_actors,
+        idempotency_key=operation_key,
+        existing_claim_id=(
+            matched_claim_id if decision == "connect_existing" else None
+        ),
+        decision=source_decision,
+    )
+    source_store.precommit_recheck_usage(prepared.reservation.usage_id)
     try:
         truth_analysis_runtime.prepare_candidate_decision(
             run_id=run_id,
@@ -2736,9 +3533,14 @@ def commit_candidate_decision(
             candidate_canonical_sha256=expected_canonical_sha256,
             decision=decision,
             edits=decision_edits,
-            decided_by_ref=actor.ref,
+            decided_by_ref=human_ref.canonical_id,
         )
     except ValueError as exc:
+        source_store.release_usage(prepared.reservation.usage_id)
+        if prepared.blob_created:
+            store._remove_unreferenced_blob(
+                prepared.resolved.representation.content_sha256
+            )
         raise TruthAnalysisError(
             "candidate_already_decided",
             str(exc),
@@ -2746,6 +3548,7 @@ def commit_candidate_decision(
         ) from exc
     recovered_canonical_decision = False
     canonical_boundary_may_have_crossed = False
+    ai_actor = _analysis_actor(run)
     try:
         with store.write_transaction() as conn:
             if decision == "connect_existing":
@@ -2805,7 +3608,7 @@ def commit_candidate_decision(
                         candidate_id=candidate_id,
                         candidate_canonical_sha256=expected_canonical_sha256,
                         decision_payload_sha256=decision_payload_sha256,
-                        actor=actor,
+                        actor=ai_actor,
                     ):
                         raise TruthAnalysisError(
                             "candidate_decision_recovery_conflict",
@@ -2833,6 +3636,24 @@ def commit_candidate_decision(
                             status=409,
                         )
                 else:
+                    written = store.propose_claim(
+                        proposition=str(effective["proposition"]),
+                        claim_kind=str(effective["claim_kind"]),
+                        actor=ai_actor,
+                        structured=effective.get("structured"),
+                        scope="store",
+                        confidence_extraction=effective["confidence_extraction"],
+                        meta=decision_meta,
+                        record_id=claim_record_id,
+                        status_event_id=claim_status_event_id,
+                        conn=conn,
+                    )
+                    if not written.created:
+                        raise TruthAnalysisError(
+                            "candidate_decision_recovery_conflict",
+                            "The candidate claim identity was already used.",
+                            status=409,
+                        )
                     connection = truth_surface.connect_claim(
                         store,
                         document,
@@ -2844,25 +3665,12 @@ def commit_candidate_decision(
                         expected_ydoc_generation_sha256=(
                             action.ydoc_generation_sha256
                         ),
-                        claim_input={
-                            "proposition": effective["proposition"],
-                            "claim_kind": effective["claim_kind"],
-                            "structured": effective.get("structured"),
-                            "scope": "store",
-                            "confidence_extraction": effective[
-                                "confidence_extraction"
-                            ],
-                        },
-                        require_new_claim=True,
-                        claim_meta={
-                            **decision_meta,
-                        },
-                        claim_record_id=claim_record_id,
-                        claim_status_event_id=claim_status_event_id,
+                        claim_id=written.claim.id,
                         expression_meta=decision_meta,
                         conn=conn,
                         allow_safe_reanchor=True,
                     )
+                    connection = replace(connection, claim_created=True)
             support_link_ids = _attach_admitted_support(
                 store,
                 claim_id=connection.claim.id,
@@ -2871,20 +3679,65 @@ def commit_candidate_decision(
                 actor=actor,
                 conn=conn,
             )
+            source_write = write_prepared_source_claim(
+                store,
+                prepared,
+                candidate=source_candidate,
+                actors=source_actors,
+                decision=source_decision,
+                claim=connection.claim,
+                claim_created=(
+                    connection.claim_created or recovered_canonical_decision
+                ),
+                expression_id=connection.expression_id,
+                extra_result={
+                    "status": "saved",
+                    "expression_id": connection.expression_id,
+                    "expression_created": (
+                        connection.expression_created
+                        or recovered_canonical_decision
+                    ),
+                    "support_link_ids": support_link_ids,
+                    "analysis_run_id": run_id,
+                    "candidate_id": candidate_id,
+                    "candidate_canonical_sha256": expected_canonical_sha256,
+                    "analysis_decision": decision,
+                    "decision_payload_sha256": decision_payload_sha256,
+                    "redaction_epoch": prepared.reservation.redaction_epoch,
+                    "consumer_ref": prepared.consumer_ref,
+                },
+                conn=conn,
+            )
             # Set before leaving the transaction.  If COMMIT itself raises, the
             # outcome is ambiguous and the immutable recovery fence must stay.
             canonical_boundary_may_have_crossed = True
     except Exception:
         if not canonical_boundary_may_have_crossed:
-            truth_analysis_runtime.clear_candidate_decision_intent(
-                run_id=run_id,
-                candidate_id=candidate_id,
-                candidate_canonical_sha256=expected_canonical_sha256,
-                decision=decision,
-                edits=decision_edits,
-                decided_by_ref=actor.ref,
-            )
+            try:
+                source_store.release_usage(prepared.reservation.usage_id)
+            finally:
+                if prepared.blob_created:
+                    store._remove_unreferenced_blob(
+                        prepared.resolved.representation.content_sha256
+                    )
+                truth_analysis_runtime.clear_candidate_decision_intent(
+                    run_id=run_id,
+                    candidate_id=candidate_id,
+                    candidate_canonical_sha256=expected_canonical_sha256,
+                    decision=decision,
+                    edits=decision_edits,
+                    decided_by_ref=human_ref.canonical_id,
+                )
         raise
+    reconcile_source_usage(
+        store,
+        source_store,
+        resolution_record_id=source_write.resolution.id,
+        usage_id=prepared.reservation.usage_id,
+        redaction_epoch=prepared.reservation.redaction_epoch,
+        consumer_ref=prepared.consumer_ref,
+        actor=source_actors.applier,
+    )
     result = {
         "status": "saved",
         "claim_id": connection.claim.id,
@@ -2902,7 +3755,7 @@ def commit_candidate_decision(
         decision=decision,
         edits=decision_edits,
         result=result,
-        decided_by_ref=actor.ref,
+        decided_by_ref=human_ref.canonical_id,
     )
     return {
         "ok": True,

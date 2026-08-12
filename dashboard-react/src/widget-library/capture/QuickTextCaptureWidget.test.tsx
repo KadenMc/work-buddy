@@ -220,20 +220,30 @@ describe("QuickTextCaptureWidget", () => {
   it("reveals Smart's full explanation only through Hover help", async () => {
     render(
       <DashboardHelpProvider enabled>
-        {renderCapture(baseInput, vi.fn())}
+        {renderCapture(
+          {
+            ...baseInput,
+            smartHelp: {
+              summary: "Smart uses the configured Journal model.",
+              details:
+                "The exact saved capture is sent to anthropic · claude-haiku-test for one classification. This processor has no tools or web access.",
+            },
+          },
+          vi.fn(),
+        )}
       </DashboardHelpProvider>,
     );
 
     const smart = await screen.findByRole("switch", { name: "Smart" });
-    expect(screen.queryByText("Run a smart follow-up after capturing.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Smart uses the configured Journal model.")).not.toBeInTheDocument();
     await userEvent.hover(smart);
     expect(
-      await screen.findByText("Run a smart follow-up after capturing."),
+      await screen.findByText("Smart uses the configured Journal model."),
     ).toBeVisible();
-    expect(screen.getByText(/governed operations still follow/i)).toBeVisible();
+    expect(screen.getByText(/no tools or web access/i)).toBeVisible();
     await userEvent.keyboard("{Escape}");
     await waitFor(() =>
-      expect(screen.queryByText("Run a smart follow-up after capturing.")).not.toBeInTheDocument(),
+      expect(screen.queryByText("Smart uses the configured Journal model.")).not.toBeInTheDocument(),
     );
   });
 

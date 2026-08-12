@@ -37,6 +37,10 @@ export interface HttpChatConfig {
   readonly pollIntervalMs?: number;
   /** Base path of the house conversation surface. Defaults to /api/conversations. */
   readonly basePath?: string;
+  /** Optional host authority for a send; ordinary dashboard chats omit it. */
+  readonly authorizeSend?: (
+    body: Record<string, unknown>,
+  ) => Promise<Record<string, string>>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -71,6 +75,9 @@ export class HttpChatConversationProvider implements ChatConversationProvider {
   private readonly injectedFetch: typeof fetch | undefined;
   private readonly pollIntervalMs: number;
   private readonly basePath: string;
+  private readonly authorizeSend:
+    | ((body: Record<string, unknown>) => Promise<Record<string, string>>)
+    | undefined;
   private readonly listeners = new Set<ChatInvalidationListener>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private lastSnapshot: ChatConversationSnapshot | null = null;
@@ -84,6 +91,7 @@ export class HttpChatConversationProvider implements ChatConversationProvider {
     this.injectedFetch = config.fetchImpl;
     this.pollIntervalMs = config.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.basePath = config.basePath ?? DEFAULT_BASE_PATH;
+    this.authorizeSend = config.authorizeSend;
   }
 
   // Resolved at call time so a missing global fetch is a clear runtime error at
@@ -208,30 +216,40 @@ export class HttpChatConversationProvider implements ChatConversationProvider {
     input: ChatSendInput,
   ): Promise<ChatConversationSnapshot> {
     this.assertBound(conversationId);
+    const body = {
+      value: input.value,
+      ...(input.messageId === undefined
+        ? {}
+        : { message_id: input.messageId }),
+      ...(input.inReplyTo === undefined
+        ? {}
+        : { in_reply_to: input.inReplyTo }),
+      ...(input.context === undefined
+        ? {}
+        : {
+            context: {
+              kind: input.context.kind,
+              action_snapshot_id: input.context.actionSnapshotId,
+              store_id: input.context.storeId,
+              document_id: input.context.documentId,
+            },
+          }),
+    };
+    const authorityHeaders =
+      this.authorizeSend === undefined
+        ? {}
+        : await this.authorizeSend(body);
     const response = await this.fetcher()(this.endpoint("/respond"), {
       method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      credentials: "same-origin",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        ...authorityHeaders,
+      },
       // Structured replies carry the exact pending-question message id. A
       // plain composer turn omits it and remains an ordinary user message.
-      body: JSON.stringify({
-        value: input.value,
-        ...(input.messageId === undefined
-          ? {}
-          : { message_id: input.messageId }),
-        ...(input.inReplyTo === undefined
-          ? {}
-          : { in_reply_to: input.inReplyTo }),
-        ...(input.context === undefined
-          ? {}
-          : {
-              context: {
-                kind: input.context.kind,
-                action_snapshot_id: input.context.actionSnapshotId,
-                store_id: input.context.storeId,
-                document_id: input.context.documentId,
-              },
-            }),
-      }),
+      body: JSON.stringify(body),
     });
     const payload = await this.readJson(response);
     const failed =

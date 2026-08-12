@@ -1,7 +1,7 @@
 import type { Editor } from "@tiptap/core";
 import * as Y from "yjs";
 
-import { createCoworkMarkdownManager } from "./extensions";
+import { createDocumentMarkdownManager } from "../document-kernel/markdown";
 import { reattachFrontmatter } from "./frontmatter";
 
 export type CoworkNewlineStyle = "crlf" | "lf" | "cr" | "none";
@@ -102,7 +102,7 @@ export const serializeCoworkEditorMarkdownProjection = (
   document: Y.Doc,
 ): CoworkMarkdownProjection => {
   const { frontmatter, fidelity } = coworkMarkdownFidelity(document);
-  const rawBody = createCoworkMarkdownManager().serialize(editor.getJSON());
+  const rawBody = createDocumentMarkdownManager().serialize(editor.getJSON());
   const normalizedFrontmatter =
     frontmatter === null
       ? ""
@@ -137,7 +137,7 @@ export const serializeCoworkEditorMarkdown = (
   document?: Y.Doc,
 ): string => {
   if (document === undefined) {
-    return createCoworkMarkdownManager().serialize(editor.getJSON());
+    return createDocumentMarkdownManager().serialize(editor.getJSON());
   }
   return serializeCoworkEditorMarkdownProjection(editor, document).markdown;
 };

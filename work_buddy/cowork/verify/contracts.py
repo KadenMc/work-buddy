@@ -155,6 +155,7 @@ class ActionSnapshot(_Record):
     created_by_kind: str
     created_by_ref: str | None
     created_by_meta_json: str | None
+    redacted_at: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

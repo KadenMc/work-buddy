@@ -2,19 +2,46 @@
 
 ## Planning posture
 
-This plan favors four substantial, user-testable stacked pull requests. Each
-slice establishes a durable foundation for the next and can be exercised in
-the product. The split is justified by genuine authority and rollback
-boundaries, not by code-layer granularity.
+The accepted delivery uses one substantial pull request with four
+user-testable vertical-slice gates. Each slice establishes a durable foundation
+for the next and can be exercised independently. The gates reflect genuine
+authority and rollback boundaries, not separate merge units or code-layer
+granularity.
 
-If implementation is kept in one unusually large PR, preserve the same four
-phase gates and run `/wb-dev-pr` after every gate so architecture docs,
-migrations, recovery notes, test evidence, and the cumulative PR description
-do not trail the code. Do not open five or more fine-grained PRs for this work.
+Run `/wb-dev-pr` at the cumulative release boundary and keep architecture docs,
+migrations, recovery notes, test evidence, and the PR description current as
+each gate closes.
 
 No frontend polish beyond the minimum interaction required to validate a
 vertical slice belongs in these PRs. The larger Truth/Journal/Co-work UX pass
 starts only after the foundation is proven.
+
+## Implementation reconciliation
+
+The accepted work is implemented as one cumulative branch. The `PR 1` through
+`PR 4` labels retained below are historical architecture, test, and rollback
+boundaries; they are not separate merge units and do not imply that a rollout
+gate has been opened.
+
+| Slice | Branch disposition | Deliberately closed boundary |
+|---|---|---|
+| 1 — Sources and Journal capture | Implemented: Sources authority, authenticated loopback ingress, production Journal provider, durable capture/outbox, and Log/Running Notes materialization | Journal smart processing is off by default |
+| 2 — Truth and Hindsight | Implemented: source-backed Truth composition, multi-role provenance, Work Buddy conversation sources, Agent Execution disclosure, durable projection authorization/outbox/reconciliation | Truth-to-Hindsight projection is off until an exact durable authorization matches configuration |
+| 3 — Co-work causality | Implemented: shared headless TypeScript document kernel, Python protocol/causality service, domain bindings, prepared/committed changes, projection, recovery, and minimal source inspection UI | Arbitrary per-character authorship and the larger frontend redesign remain out of scope |
+| 4 — Journal and task-note migration | Implemented: compatibility adapters, shadow/parity tooling, per-entity authority epochs, projection/divergence handling, rollback, current Journal exit evidence, and operator seams | Journal and task-note cutover gates ship closed; arbitrary append into a Co-work-authoritative task note still fails closed |
+
+Cross-cutting implementation also includes local backup policy, a central
+read-only restore fence, high-consent reconstitution/quarantine paths,
+source-usage redaction dispatch, and portable Sources/Truth recovery. See
+[implementation-report.md](implementation-report.md) for the as-built summary
+and the validation evidence available at this checkpoint.
+
+The implementation is not equivalent to production migration. Opening a gate
+requires current inventory/parity evidence, the applicable explicit consent or
+authorization, a rollback window where required, and the final cumulative
+release validation. Historical acceptance criteria below remain the source for
+that validation; unchecked full-suite or process-kill exercises are not
+implicitly complete merely because the code exists.
 
 ## Cross-cutting definition of done
 
@@ -812,9 +839,9 @@ A user-supplied ChatGPT export remains a file/import source unless a trusted
 native provider establishes individual message identity. Parsing this design's
 input file does not retroactively verify ChatGPT-native authorship.
 
-## Program-level validation
+## Cumulative release validation
 
-After all four PRs:
+After all four slices:
 
 1. Run focused source, Truth, Co-work, Journal, Tasks, event, retry, backup, and
    redaction suites.

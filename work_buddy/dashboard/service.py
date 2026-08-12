@@ -24,6 +24,9 @@ from pathlib import Path
 from flask import Flask, Response, jsonify, request, send_file
 
 from work_buddy.config import load_config
+from work_buddy.backups.source_foundation_restore import (
+    SourceFoundationRestorePending,
+)
 from work_buddy.conversations.store import UserMessageIdConflictError
 from work_buddy.dashboard.api import (
     get_chats_summary,
@@ -4775,6 +4778,43 @@ def api_conversation_respond(conversation_id: str):
             400,
         )
 
+    def authorize_cowork_send():
+        from work_buddy.dashboard import local_identity_api
+        from work_buddy.security.local_identity import LocalIdentityError
+        from work_buddy.truth.identity import canonical_json, sha256_text
+
+        try:
+            return local_identity_api.require_human_authority_request(
+                action="cowork.chat.message_send",
+                subject=f"cowork-conversation:{conversation_id}",
+                context_sha256=sha256_text(canonical_json(data)),
+            )
+        except LocalIdentityError as exc:
+            return local_identity_api._error(exc)
+
+    def record_cowork_user_dependency(message) -> None:
+        from work_buddy.cowork.conversation_source_dependencies import (
+            record_conversation_source_dependency,
+        )
+        from work_buddy.cowork.conversations import (
+            document_binding_for_conversation,
+        )
+
+        binding = document_binding_for_conversation(conversation_id)
+        if binding is None:
+            raise RuntimeError("Co-work conversation binding is unavailable")
+        record_conversation_source_dependency(
+            store_id=binding.store_id,
+            document_id=binding.document_id,
+            conversation_id=conversation_id,
+            message_id=message.message_id,
+            role="user",
+            content=message.content,
+            # Untargeted composition has no immutable quotation witness. Keep
+            # it conservatively review-required during document redaction.
+            frozen_markdown=None,
+        )
+
     try:
         if context is not None:
             # The Co-work path acquires the document lifecycle lock before
@@ -4785,14 +4825,30 @@ def api_conversation_respond(conversation_id: str):
                 CoworkChatTargetError,
                 post_targeted_chat_message,
             )
+            from work_buddy.backups.source_foundation_restore import (
+                require_source_foundation_writable,
+                restore_fence_lock,
+            )
 
             try:
-                msg = post_targeted_chat_message(
-                    conversation_id=conversation_id,
-                    content=str(value),
-                    context=context,
-                    message_id=message_id,
-                )
+                # Serialize the restore precheck, one-use gesture, authored
+                # message, and document dependency.  A restore marker can no
+                # longer appear between those operations and leave an orphan
+                # conversation turn after consuming the human gesture.
+                with restore_fence_lock():
+                    require_source_foundation_writable(
+                        "dashboard.cowork.chat_message_send"
+                    )
+                    authority = authorize_cowork_send()
+                    if not hasattr(authority, "principal"):
+                        return authority
+                    msg = post_targeted_chat_message(
+                        conversation_id=conversation_id,
+                        content=str(value),
+                        context=context,
+                        message_id=message_id,
+                        ingress=authority.to_input_ingress(),
+                    )
             except CoworkChatTargetError as exc:
                 return (
                     jsonify(
@@ -4824,6 +4880,64 @@ def api_conversation_respond(conversation_id: str):
         conversation = get_conversation(conversation_id)
         if conversation is None or conversation.status == "closed":
             return jsonify({"error": "Conversation not found or closed"}), 404
+        if conversation.source == "cowork_document":
+            from work_buddy.backups.source_foundation_restore import (
+                require_source_foundation_writable,
+                restore_fence_lock,
+            )
+
+            with restore_fence_lock():
+                require_source_foundation_writable(
+                    "dashboard.cowork.chat_message_send"
+                )
+                authority = authorize_cowork_send()
+                if not hasattr(authority, "principal"):
+                    return authority
+                ingress = authority.to_input_ingress()
+                if in_reply_to is not None:
+                    msg = respond_to_message_with_user_message(
+                        conversation_id,
+                        in_reply_to,
+                        str(value),
+                        user_message_id=message_id,
+                        ingress=ingress,
+                    )
+                    if msg is None:
+                        return (
+                            jsonify(
+                                {
+                                    "error": (
+                                        "That question is no longer awaiting a reply."
+                                    ),
+                                    "code": "question_unavailable",
+                                }
+                            ),
+                            409,
+                        )
+                else:
+                    msg = post_user_message(
+                        conversation_id,
+                        str(value),
+                        message_id=message_id,
+                        ingress=ingress,
+                    )
+                    if msg is None:
+                        return (
+                            jsonify({"error": "Conversation not found or closed"}),
+                            404,
+                        )
+                record_cowork_user_dependency(msg)
+
+            _wake_persisted_cowork_turn(conversation_id)
+            if in_reply_to is not None:
+                return jsonify(
+                    {
+                        "responded": True,
+                        "message_id": msg.message_id,
+                        "in_reply_to": in_reply_to,
+                    }
+                )
+            return jsonify({"sent": True, "message_id": msg.message_id})
         if in_reply_to is not None:
             msg = respond_to_message_with_user_message(
                 conversation_id,
@@ -4841,8 +4955,6 @@ def api_conversation_respond(conversation_id: str):
                     ),
                     409,
                 )
-            if conversation.source == "cowork_document":
-                _wake_persisted_cowork_turn(conversation_id)
             return jsonify(
                 {
                     "responded": True,
@@ -4872,8 +4984,6 @@ def api_conversation_respond(conversation_id: str):
         )
         if msg is None:
             return jsonify({"error": "Conversation not found or closed"}), 404
-        if conversation.source == "cowork_document":
-            _wake_persisted_cowork_turn(conversation_id)
         return jsonify({"sent": True, "message_id": msg.message_id})
     except UserMessageIdConflictError:
         return (
@@ -4881,6 +4991,17 @@ def api_conversation_respond(conversation_id: str):
                 {
                     "error": "That message identity was already used for a different turn.",
                     "code": "message_id_conflict",
+                }
+            ),
+            409,
+        )
+    except SourceFoundationRestorePending as exc:
+        return (
+            jsonify(
+                {
+                    "error": str(exc),
+                    "code": exc.code,
+                    "retryable": exc.retryable,
                 }
             ),
             409,
@@ -5612,7 +5733,13 @@ def _prewarm_costs() -> None:
 # Co-work (K2) document surface. The routes live in their own package and mount
 # through a one-line join, so this module stays free of the route bodies.
 from work_buddy.cowork import register_routes as _register_cowork_routes
+from work_buddy.dashboard.local_identity_api import (
+    register_routes as _register_local_identity_routes,
+)
+from work_buddy.journal_capture.api import register_routes as _register_journal_capture_routes
 
+_register_local_identity_routes(app)
+_register_journal_capture_routes(app)
 _register_cowork_routes(app)
 
 

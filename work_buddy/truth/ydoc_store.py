@@ -28,6 +28,9 @@ from pathlib import Path
 from typing import Iterator
 
 from work_buddy.artifacts.io import atomic_write_bytes
+from work_buddy.backups.source_foundation_restore import (
+    require_source_foundation_writable,
+)
 from work_buddy.truth.contracts import InvariantViolation
 from work_buddy.truth.identity import sha256_bytes
 from work_buddy.truth.store import TruthStore, _valid_digest
@@ -104,6 +107,7 @@ def _runtime_dir(store: TruthStore, document_id: str, *, create: bool) -> Path:
 def runtime_dir(store: TruthStore, document_id: str) -> Path:
     """Create and return the gitignored per-document runtime directory."""
 
+    require_source_foundation_writable("truth.ydoc_runtime_create")
     return _runtime_dir(store, document_id, create=True)
 
 
@@ -366,6 +370,7 @@ def append_update(store: TruthStore, *, document_id: str, update: object) -> str
     The batch is never interpreted as Yjs. The returned offset token is opaque:
     a later read_updates(since_offset=token) yields the batches appended after it.
     """
+    require_source_foundation_writable("truth.ydoc_append")
     with document_lock(store, document_id):
         repair_update_log_locked(store, document_id=document_id)
         return _append_update_unlocked(
@@ -405,6 +410,7 @@ def repair_update_log_locked(store: TruthStore, *, document_id: str) -> bool:
     hard error; only a short final header or payload is discarded.
     """
 
+    require_source_foundation_writable("truth.ydoc_repair")
     log_path = _update_log_path(store, document_id)
     if not log_path.is_file():
         return False
@@ -510,6 +516,7 @@ def append_update_cas(
 ) -> tuple[str, str]:
     """Append one opaque update iff the structured head still matches."""
 
+    require_source_foundation_writable("truth.ydoc_append")
     expected = _valid_digest(
         expected_structured_head_sha256, "expected_structured_head_sha256"
     )
@@ -550,6 +557,7 @@ def write_snapshot(
     Verifies the blob re-hashes to expected_sha256 when supplied and returns its
     digest (the evidence-blob idiom). Bytes are never parsed.
     """
+    require_source_foundation_writable("truth.ydoc_snapshot")
     payload = _as_bytes(snapshot, "snapshot")
     if len(payload) > MAX_OPAQUE_SEGMENT_BYTES:
         raise InvariantViolation("opaque Y.Doc snapshot exceeds the segment size limit")
@@ -589,6 +597,7 @@ def compact(
     digest, truncates the superseded runtime update log, and returns the snapshot
     digest for advance_snapshot(). The server does not compute the snapshot.
     """
+    require_source_foundation_writable("truth.ydoc_compact")
     with document_lock(store, document_id):
         repair_update_log_locked(store, document_id=document_id)
         digest = write_snapshot(
@@ -685,6 +694,7 @@ def prepare_snapshot_replacement_locked(
     call ``finish_snapshot_replacement_locked`` or roll back and call ``abort``.
     """
 
+    require_source_foundation_writable("truth.ydoc_snapshot_replace")
     from work_buddy.truth import documents
 
     repair_update_log_locked(store, document_id=document_id)
@@ -771,6 +781,7 @@ def finish_snapshot_replacement_locked(
 ) -> None:
     """Finish the prepared log rotation after its pointer transaction commits."""
 
+    require_source_foundation_writable("truth.ydoc_snapshot_finish")
     from work_buddy.truth import documents
 
     expected = _valid_digest(expected_snapshot_sha256, "expected_snapshot_sha256")
@@ -795,6 +806,7 @@ def abort_snapshot_replacement_locked(
 ) -> None:
     """Remove an uncommitted marker while retaining its harmless content blob."""
 
+    require_source_foundation_writable("truth.ydoc_snapshot_abort")
     from work_buddy.truth import documents
 
     expected = _valid_digest(expected_snapshot_sha256, "expected_snapshot_sha256")
@@ -815,6 +827,7 @@ def abort_snapshot_replacement_locked(
 def recover_compaction_locked(store: TruthStore, *, document_id: str) -> bool:
     """Recover one compaction while the caller holds ``document_lock``."""
 
+    require_source_foundation_writable("truth.ydoc_compaction_recover")
     marker = _read_marker(store, document_id)
     if marker is None:
         return False
@@ -841,6 +854,7 @@ def compaction_recovery_pending(store: TruthStore, *, document_id: str) -> bool:
 def recover_compaction(store: TruthStore, *, document_id: str) -> bool:
     """Deterministically finish or roll back one interrupted compaction."""
 
+    require_source_foundation_writable("truth.ydoc_compaction_recover")
     with document_lock(store, document_id):
         return recover_compaction_locked(store, document_id=document_id)
 
@@ -866,6 +880,7 @@ def compact_and_advance(
     update-log rotation.
     """
 
+    require_source_foundation_writable("truth.ydoc_compact_advance")
     from work_buddy.cowork.paths import resolve_document_source_path
     from work_buddy.truth import documents
     from work_buddy.truth.contracts import Actor
@@ -998,6 +1013,7 @@ def prune_snapshot_blob(store: TruthStore, *, snapshot_sha256: str) -> bool:
     import-source references all keep the blob live. Returns True only when a
     blob was actually removed.
     """
+    require_source_foundation_writable("truth.ydoc_snapshot_prune")
     digest = _valid_digest(snapshot_sha256, "snapshot_sha256")
     cleanup = store._open_connection()
     removed = False

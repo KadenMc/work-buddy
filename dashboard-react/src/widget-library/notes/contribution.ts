@@ -32,6 +32,7 @@ export const NOTES_APP_CONTRIBUTION = {
         { schemaId: "wb.notes.edit-requested", version: 1 },
         { schemaId: "wb.notes.delete-requested", version: 1 },
         { schemaId: "wb.notes.open-thread-requested", version: 1 },
+        { schemaId: "wb.notes.open-document-requested", version: 1 },
       ],
     },
   ],
@@ -51,6 +52,7 @@ export const NOTES_APP_CONTRIBUTION = {
         { schemaId: "wb.notes.edit-requested", version: 1 },
         { schemaId: "wb.notes.delete-requested", version: 1 },
         { schemaId: "wb.notes.open-thread-requested", version: 1 },
+        { schemaId: "wb.notes.open-document-requested", version: 1 },
       ],
       outputIntentEffects: [
         {
@@ -65,6 +67,11 @@ export const NOTES_APP_CONTRIBUTION = {
         },
         {
           schema: { schemaId: "wb.notes.open-thread-requested", version: 1 },
+          effect: "navigation",
+          preview: "block",
+        },
+        {
+          schema: { schemaId: "wb.notes.open-document-requested", version: 1 },
           effect: "navigation",
           preview: "block",
         },

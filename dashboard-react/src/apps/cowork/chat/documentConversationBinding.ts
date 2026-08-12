@@ -11,6 +11,7 @@
 import type { FeedbackCapture } from "./contracts";
 import { normalizeChatExecutionSnapshot } from "../../../dashboard/conversations";
 import type { ChatExecutionSnapshot } from "../../../widget-library/chat";
+import { coworkHumanAuthorityHeaders } from "../../../security/humanAuthority";
 
 export type CoworkDocumentAgentStatus =
   | "not_started"
@@ -286,13 +287,25 @@ export class HttpCoworkDocumentConversationBindingClient
     storeId: string,
     method: "GET" | "POST",
   ): Promise<CoworkDocumentConversationBinding> {
+    const authorityHeaders =
+      method === "POST"
+        ? await coworkHumanAuthorityHeaders(
+            {
+              operation: "chat.bind",
+              storeId,
+              documentId,
+              body: {},
+            },
+            this.#fetch,
+          )
+        : {};
     const response = await this.#fetch(
       method === "GET"
         ? coworkConversationEndpoint(documentId, storeId)
         : coworkConversationBindEndpoint(documentId, storeId),
       {
         method,
-        headers: { Accept: "application/json" },
+        headers: { Accept: "application/json", ...authorityHeaders },
       },
     );
     const payload = await readJson(response);

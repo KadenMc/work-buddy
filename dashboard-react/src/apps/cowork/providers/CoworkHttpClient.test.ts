@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
+vi.mock("../../../security/humanAuthority", () => ({
+  coworkHumanAuthorityHeaders: vi.fn(async () => ({})),
+}));
+
 import type { CoworkPasteProvenanceRequest } from "../provenance";
 import {
   COWORK_FOLDER_PICKER_INTENT,

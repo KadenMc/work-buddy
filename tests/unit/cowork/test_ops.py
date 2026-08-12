@@ -9,6 +9,7 @@ comment producing a flag, and an expression minted with its role.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -92,6 +93,28 @@ def _make_store(
         return TruthEventEmission(f"event-{len(emitted)}", True)
 
     monkeypatch.setattr(cowork_ops, "emit_truth_event", emit)
+    disclosures: list[tuple[str, object, dict[str, object]]] = []
+
+    class RecordingDisclosureBoundary:
+        def account_payload(self, run, **kwargs):
+            disclosures.append(("input", run, dict(kwargs)))
+            return None
+
+        def bind_output(self, run, **kwargs):
+            disclosures.append(("output", run, dict(kwargs)))
+            return SimpleNamespace(
+                manifest_sha256="d" * 64,
+                entry_count=1,
+                through_sequence=1,
+            )
+
+    from work_buddy.cowork import worker_disclosure
+
+    monkeypatch.setattr(
+        worker_disclosure,
+        "get_cowork_worker_disclosure",
+        lambda: RecordingDisclosureBoundary(),
+    )
     store_id = new_id()
     root = tmp_path / "scope"
     root.mkdir()
@@ -103,6 +126,7 @@ def _make_store(
         "registry": registry,
         "root": root,
         "emitted": emitted,
+        "disclosures": disclosures,
     }
 
 
@@ -160,6 +184,10 @@ def _activate_document_lease(store_id: str, document_id: str, generation: str):
         binding.conversation_id,
         consumer,
         generation,
+        execution={
+            "provider_id": "test-provider",
+            "model_id": "test-model",
+        },
     )
     assert claim is not None and claim["claimed"] is True
     assert conversation_store.activate_agent_lease(
@@ -329,6 +357,10 @@ def test_cowork_execution_session_cannot_read_another_document(
     )
 
     assert own["ok"] is True
+    disclosures = cowork["disclosures"]
+    assert len(disclosures) == 1
+    assert disclosures[0][0] == "input"
+    assert disclosures[0][2]["payload"]["document_id"] == own_doc_id
     assert other == {
         "ok": False,
         "status": "lease_lost",
@@ -778,6 +810,46 @@ def test_cowork_execution_session_cannot_omit_its_document_write_fence(
         cowork["store"],
         document_id=doc_id,
     ) == ()
+
+
+def test_bound_document_output_manifest_is_written_before_truth_proposal(
+    cowork: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store_id = str(cowork["store_id"])
+    store = cowork["store"]
+    doc_id, _ = _register_doc(store)
+    generation = "generation-write-ahead"
+    binding, consumer = _activate_document_lease(store_id, doc_id, generation)
+    calls: list[str] = []
+
+    def bind_before_truth(**kwargs):
+        assert proposals.open_proposals(store, document_id=doc_id) == ()
+        calls.append(str(kwargs["output_ref"]))
+        return {
+            "manifest_sha256": "d" * 64,
+            "entry_count": 1,
+            "through_sequence": 1,
+        }
+
+    monkeypatch.setattr(cowork_ops, "_bind_document_worker_output", bind_before_truth)
+    result = cowork_ops.cowork_doc_propose_edit(
+        store_id,
+        doc_id,
+        _one_hunk(),
+        "reason",
+        "tldr",
+        MODEL,
+        agent_session_id=f"{generation}-cowork",
+        conversation_id=binding.conversation_id,
+        consumer=consumer,
+        generation=generation,
+    )
+
+    assert result["created_count"] == 1
+    assert result["input_manifest"]["manifest_sha256"] == "d" * 64
+    assert len(calls) == 1
+    assert calls[0].startswith("cowork-document-proposals-request:")
 
 
 # --------------------------------------------------------------------------

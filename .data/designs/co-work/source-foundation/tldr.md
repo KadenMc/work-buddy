@@ -1,5 +1,12 @@
 # TL;DR — the source foundation
 
+**Implementation status:** The four accepted foundation slices are implemented
+together. Safety-sensitive migrations,
+optional model processing, and Truth-to-Hindsight egress remain disabled by
+default. The sections below preserve the accepted reasoning and slice order;
+[implementation-report.md](implementation-report.md) is the concise as-built
+record and distinguishes checkpoint evidence from final release validation.
+
 ## The problem
 
 We are about to make Truth much more AI-powered, but Work Buddy still lacks a
@@ -66,8 +73,8 @@ That means:
 - Exact quotation does not make a claim true.
 - A Yjs update hash does not prove per-character authorship.
 
-Current `main` does not have an authenticated dashboard-human boundary. PR 1
-therefore adds a persistent installation authority/local profile, a short-lived
+The implementation adds the previously missing authenticated dashboard-human
+boundary: a persistent installation authority/local profile, a short-lived
 loopback bootstrap into a revocable browser session, and one-time
 context-bound decision gestures. Request headers do not establish identity.
 Same-origin routing and `user_initiated()` consent are not proof of human
@@ -154,9 +161,9 @@ opaque Yjs structure.
 - We do not keep Markdown and Co-work as permanent peer authorities.
 - We do not start the large frontend/UX redesign yet.
 
-## Recommended build order
+## Implemented slice order
 
-### PR 1 — Exact capture that genuinely works
+### Slice 1 — Exact capture that genuinely works
 
 Build Sources v1 and connect Journal Quick Capture to a real backend/provider.
 Preserve the actual `auto | log | running_notes` and `dumb | smart` contract.
@@ -167,7 +174,7 @@ Routing/smart processing can fail without losing the capture.
 **Foundation proved:** defensible local submission provenance, exact retention,
 idempotency, restart recovery, and honest saved-versus-processing UX.
 
-### PR 2 — Source-backed Truth
+### Slice 2 — Source-backed Truth
 
 Add the atomic source-to-claim operation, typed claim–evidence relations,
 portable source-resolution records, and correct AI-producer/human-decision
@@ -178,7 +185,7 @@ search/connector arguments leave Work Buddy. Ambiguous sends are conservatively
 recorded and never automatically replayed. Reuse the existing Truth review
 surface rather than redesigning it.
 
-This PR also completes the original message path: exact Work Buddy conversation
+This slice also completes the original message path: exact Work Buddy conversation
 message → AI preference proposal → human add/connect decision → separate claim
 confirmation → eligible current-claim projection into Hindsight. Hindsight
 retains the Truth reference and never becomes verbatim source authority.
@@ -188,7 +195,7 @@ missed event or ambiguous Hindsight acknowledgement cannot strand stale memory.
 **Foundation proved:** the original use case works and an AI interpretation no
 longer masquerades as human authorship.
 
-### PR 3 — Source-backed Co-work changes
+### Slice 3 — Source-backed Co-work changes
 
 Build the shared headless document kernel, domain-owned bindings with a Co-work
 mirror, document change records, recovery, and a real Running Note capture →
@@ -199,7 +206,7 @@ changes—into its managed Markdown section and pauses on external divergence.
 **Foundation proved:** headless domain prose changes are safe, recoverable, and
 honestly attributable.
 
-### PR 4 — Migrate Journal and task-note prose
+### Slice 4 — Migrate Journal and task-note prose
 
 Move Journal prose and task-note bodies through compatibility adapters into
 bound Co-work documents; retain safe, externally editable Markdown projections
@@ -216,11 +223,11 @@ requires a trusted current-turn bridge to capture the exact prompt before
 normalization/TTL loss and inject an opaque prompt-scoped `SourceRef`; it never
 uses “latest message” or turn index as identity.
 
-These are four genuinely separate vertical slices, so stacked PRs fit the
-existing preference exception. Within each, use larger phase checkpoints and
-amend the cumulative PR description rather than replacing it.
+These remain four genuinely separate architectural and test boundaries, but
+the accepted delivery is one larger PR. Use larger phase checkpoints and amend
+the cumulative PR description rather than replacing it.
 
-## The decisions I recommend approving
+## Accepted implementation decisions
 
 1. Use **Sources** as the local subsystem name and **source item** as its unit.
 2. Capture exact source content before AI interpretation.
@@ -231,7 +238,7 @@ amend the cumulative PR description rather than replacing it.
    authority.
 6. Add a shared headless TypeScript document kernel instead of reimplementing
    ProseMirror/Yjs semantics in Python, and label its trust honestly.
-7. Deliver four substantial stacked PRs in the order above.
+7. Deliver the four substantial slices above in one cumulative PR, in order.
 8. Defer the major Truth/Co-work frontend redesign until these foundations
    pass their end-to-end gates.
 9. Require a crash-safe usage/redaction handshake, external-model egress policy,

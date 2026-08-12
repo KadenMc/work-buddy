@@ -56,10 +56,10 @@ def test_durable_delivery_ops_are_discoverable_with_their_runtime_schema(
     )
 
     ask = capabilities["conversation_ask"]
-    assert {"consumer", "generation"} <= set(ask.parameters)
+    assert {"consumer", "generation", "message_id"} <= set(ask.parameters)
     assert all(
         ask.parameters[name].get("required", False) is False
-        for name in ("consumer", "generation")
+        for name in ("consumer", "generation", "message_id")
     )
 
     receive = capabilities["conversation_receive"]
@@ -98,7 +98,11 @@ def test_durable_delivery_ops_are_discoverable_with_their_runtime_schema(
         op_registry.get_op("op.wb.conversation_ack")
     )
 
-    for name in ("cowork_doc_propose_edit", "cowork_doc_comment"):
+    for name in (
+        "cowork_doc_propose_edit",
+        "cowork_doc_comment",
+        "cowork_doc_expression_mark",
+    ):
         capability = capabilities[name]
         assert {"conversation_id", "consumer", "generation"} <= set(
             capability.parameters

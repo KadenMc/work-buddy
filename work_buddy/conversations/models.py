@@ -31,6 +31,7 @@ class ConversationMessage:
         status: "sent" | "pending" (awaiting response) | "answered".
         producer: Trusted execution provenance for an agent-authored message.
         context: Durable typed context explicitly attached to this user turn.
+        ingress: Server-authored inputter/gesture provenance for a user turn.
     """
 
     message_id: str = ""
@@ -45,6 +46,7 @@ class ConversationMessage:
     status: str = "sent"
     producer: dict[str, Any] | None = None
     context: dict[str, Any] | None = None
+    ingress: dict[str, Any] | None = None
 
     def is_question(self) -> bool:
         return self.message_type == "question"
@@ -92,6 +94,14 @@ class ConversationMessage:
                 context = None
         if not isinstance(context, dict):
             context = None
+        ingress = row.get("ingress_json")
+        if isinstance(ingress, str) and ingress:
+            try:
+                ingress = json.loads(ingress)
+            except (TypeError, ValueError):
+                ingress = None
+        if not isinstance(ingress, dict):
+            ingress = None
         return cls(
             message_id=row["message_id"],
             conversation_id=row["conversation_id"],
@@ -105,6 +115,7 @@ class ConversationMessage:
             status=row.get("status", "sent"),
             producer=producer,
             context=context,
+            ingress=ingress,
         )
 
 

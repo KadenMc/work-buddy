@@ -14,6 +14,7 @@ EXPECTED = {
     "truth_evidence_capture",
     "truth_span_mark",
     "truth_claim_propose",
+    "truth_claim_propose_from_conversation",
     "truth_claim_confirm",
     "truth_claim_reject",
     "truth_claim_challenge",
@@ -21,6 +22,9 @@ EXPECTED = {
     "truth_claim_redact",
     "truth_query",
     "truth_sweep",
+    "truth_hindsight_projection_tick",
+    "truth_hindsight_projection_authorization",
+    "truth_source_usage_reconcile",
 }
 
 

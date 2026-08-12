@@ -229,7 +229,9 @@ def infer_activity(
         journal_file = journal_path_for_date(date_str)
         if not journal_file.exists():
             continue
-        content = journal_file.read_text(encoding="utf-8")
+        from work_buddy.journal_capture.content_adapter import JournalContentAdapter
+
+        content = JournalContentAdapter(journal_file.parent.parent).read_day(date_str)
         entries = parse_journal_log(content, date_str)
         all_entries.extend(entries)
 

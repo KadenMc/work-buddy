@@ -19,6 +19,7 @@ place. Tests can call it explicitly.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any, Optional
 
 from work_buddy.threads.cleanup import (
@@ -66,14 +67,6 @@ def _journal_note_can_clean_up(thread) -> bool:  # type: ignore[no-untyped-def]
 
 def _journal_note_cleanup(thread) -> CleanupResult:  # type: ignore[no-untyped-def]
     """Remove the inciting line from the journal note."""
-    try:
-        from work_buddy.obsidian import bridge
-    except Exception as e:
-        return CleanupResult(
-            success=False,
-            detail=f"obsidian bridge import failed: {e}",
-        )
-
     summary = getattr(thread, "inciting_event_summary", None) or {}
     note_path: str = summary.get("note_path")
     line_text: str = summary.get("line_text")
@@ -83,7 +76,26 @@ def _journal_note_cleanup(thread) -> CleanupResult:  # type: ignore[no-untyped-d
             detail="inciting summary missing note_path or line_text",
         )
 
-    content = bridge.read_file(note_path)
+    from work_buddy.config import load_config
+    from work_buddy.journal_capture.content_adapter import JournalContentAdapter
+
+    path = Path(note_path.replace("\\", "/"))
+    if (
+        path.is_absolute()
+        or len(path.parts) < 2
+        or ".." in path.parts
+        or path.suffix.lower() != ".md"
+    ):
+        return CleanupResult(success=False, detail="journal note path is invalid")
+    adapter = JournalContentAdapter(
+        load_config()["vault_root"],
+        journal_dir=path.parent,
+    )
+    try:
+        snapshot = adapter.snapshot(path.stem)
+        content = snapshot.content
+    except RuntimeError:
+        content = None
     if content is None:
         # File missing or bridge unreachable — we can't tell which.
         # Conservative: report as failure (don't claim source-gone
@@ -113,15 +125,17 @@ def _journal_note_cleanup(thread) -> CleanupResult:  # type: ignore[no-untyped-d
     new_lines = lines[:idx] + lines[idx + 1:]
     new_content = "\n".join(new_lines)
 
-    ok = bridge.write_file(
-        note_path, new_content,
-        write_mode="replace",
-        content_hint=None,
-    )
-    if not ok:
+    try:
+        adapter.write_day_cas(
+            path.stem,
+            expected_file_sha256=snapshot.file_sha256,
+            content=new_content,
+            content_hint="wb:journal-thread-cleanup/v1",
+        )
+    except RuntimeError:
         return CleanupResult(
             success=False,
-            detail=f"bridge.write_file failed for {note_path!r}",
+            detail=f"Journal content adapter refused the update for {note_path!r}",
         )
     return CleanupResult(
         success=True,

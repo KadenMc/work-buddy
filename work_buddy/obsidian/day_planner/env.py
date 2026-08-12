@@ -127,7 +127,15 @@ def get_todays_plan(journal_path: str) -> dict[str, Any]:
     # or regenerate from scratch). We let the typed exception propagate: the
     # @bridge_retry-wrapped day_planner capability replays it, and the
     # best-effort collector catches it and renders "unavailable".
-    content = bridge.read_file_raw(journal_path)
+    from work_buddy.config import load_config
+    from work_buddy.journal_capture.content_adapter import JournalContentAdapter
+
+    day_id = Path(journal_path.replace("\\", "/")).stem
+    adapter = JournalContentAdapter(load_config()["vault_root"])
+    try:
+        content = adapter.read_day(day_id)
+    except RuntimeError:
+        content = None
     if content is None:
         # 404 — the journal genuinely has no file for this date.
         return {"found": False, "entries": [], "unscheduled": [],
@@ -197,7 +205,16 @@ def write_plan(
     # read_file_raw raises a typed ObsidianError on a transient (propagates to
     # the @bridge_retry-wrapped day_planner capability, which replays the
     # write); 404 → None means the journal file genuinely does not exist.
-    content = bridge.read_file_raw(journal_path)
+    from work_buddy.config import load_config
+    from work_buddy.journal_capture.content_adapter import JournalContentAdapter
+
+    day_id = Path(journal_path.replace("\\", "/")).stem
+    adapter = JournalContentAdapter(load_config()["vault_root"])
+    try:
+        snapshot = adapter.snapshot(day_id)
+        content = snapshot.content
+    except RuntimeError:
+        content = None
     if content is None:
         return {"success": False,
                 "reason": f"Journal file does not exist: {journal_path}"}
@@ -220,7 +237,12 @@ def write_plan(
     # by retry policy; let exceptions propagate to the gateway exception
     # handler (which classifies + enqueues + verifies post-write
     # uncertain).
-    bridge.write_file(journal_path, new_content)
+    adapter.write_day_cas(
+        day_id,
+        expected_file_sha256=snapshot.file_sha256,
+        content=new_content,
+        content_hint="wb:journal-day-planner/v1",
+    )
 
     logger.info("Wrote %d plan entries to %s", len(entries), journal_path)
     return {

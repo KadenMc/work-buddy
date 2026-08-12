@@ -1,7 +1,7 @@
 import type { JSONContent } from "@tiptap/core";
 import type { MarkdownManager } from "@tiptap/markdown";
 
-import { createCoworkMarkdownManager } from "./extensions";
+import { createDocumentMarkdownManager } from "../document-kernel/markdown";
 import { reattachFrontmatter, splitFrontmatter } from "./frontmatter";
 
 /**
@@ -23,7 +23,7 @@ export interface CoworkMarkdownImport {
  */
 export const importCoworkMarkdown = (
   source: string,
-  manager: MarkdownManager = createCoworkMarkdownManager(),
+  manager: MarkdownManager = createDocumentMarkdownManager(),
 ): CoworkMarkdownImport => {
   const { frontmatter, body } = splitFrontmatter(source);
   return { doc: manager.parse(body), frontmatter };
@@ -38,5 +38,5 @@ export const importCoworkMarkdown = (
  */
 export const serializeCoworkMarkdown = (
   imported: CoworkMarkdownImport,
-  manager: MarkdownManager = createCoworkMarkdownManager(),
+  manager: MarkdownManager = createDocumentMarkdownManager(),
 ): string => reattachFrontmatter(imported.frontmatter, manager.serialize(imported.doc));

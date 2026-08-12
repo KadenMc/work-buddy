@@ -305,11 +305,8 @@ def email_record_into_task(
            "email_count": int, "note_path": str | None,
            "error": str | None, "skipped_empty": bool}``.
     """
-    from pathlib import Path
-
-    from work_buddy.config import load_config
-    from work_buddy.journal_backlog.route import _append_to_note_impl
     from work_buddy.obsidian.tasks.mutations import read_task
+    from work_buddy.task_notes import get_task_note_adapter, note_uuid_from_path
 
     thread = _get_thread_or_raise(thread_id)
     emails = _emails_from_thread(thread)
@@ -357,26 +354,30 @@ def email_record_into_task(
     bullet_lines = _email_summary_lines(emails)
     section = f"## {heading}\n\n" + "\n".join(bullet_lines)
 
-    # Append directly via the journal_backlog primitive (which does the
-    # path-traversal guard + .md check + filesystem write). The call
-    # site here is consent-gated at the capability level
+    # Append through the authority-aware task-note adapter. The call site is
+    # consent-gated at the capability level
     # (email_record_into_task has mutates_state=True + requires obsidian)
     # so going through the consent-wrapped append_to_note here would
     # double-prompt for the same user-initiated click.
-    cfg = load_config() or {}
-    vault_root = Path(cfg.get("vault_root") or "")
-    if not vault_root or not vault_root.exists():
+    try:
+        note_uuid = note_uuid_from_path(note_path)
+        note_adapter = get_task_note_adapter()
+    except (ValueError, OSError):
         return {
             "thread_id": thread_id,
             "target_task_id": target_task_id,
             "appended": False,
             "email_count": len(emails),
             "note_path": note_path,
-            "error": "vault_root not configured or missing",
+            "error": "task-note storage is not configured or missing",
         }
 
     try:
-        result = _append_to_note_impl(section, vault_root, note_path)
+        note_adapter.append(
+            note_uuid,
+            section,
+            idempotency_key=f"email-thread:{thread_id}:task:{target_task_id}",
+        )
     except Exception as exc:
         logger.warning(
             "email_record_into_task: append failed for %s: %s",
@@ -389,16 +390,6 @@ def email_record_into_task(
             "email_count": len(emails),
             "note_path": note_path,
             "error": str(exc),
-        }
-
-    if not result.get("success"):
-        return {
-            "thread_id": thread_id,
-            "target_task_id": target_task_id,
-            "appended": False,
-            "email_count": len(emails),
-            "note_path": note_path,
-            "error": result.get("message") or "append_to_note failed",
         }
 
     return {

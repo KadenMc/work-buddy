@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from contextlib import contextmanager
+from types import SimpleNamespace
 
 import pytest
 
@@ -23,8 +24,40 @@ def dashboard_client(tmp_path, monkeypatch):
         conn.close()
 
     from work_buddy.dashboard import service
+    from work_buddy.dashboard import local_identity_api
+    from work_buddy.cowork import conversation_source_dependencies
 
     monkeypatch.setattr(service, "_is_read_only", lambda: False)
+    monkeypatch.setattr(
+        conversation_source_dependencies,
+        "_DB_PATH",
+        tmp_path / "throwaway-conversation-dependencies.db",
+    )
+    monkeypatch.setattr(
+        local_identity_api,
+        "require_human_authority_request",
+        lambda **_kwargs: SimpleNamespace(
+            principal=SimpleNamespace(actor=SimpleNamespace(canonical_id="reviewer")),
+            to_input_ingress=lambda: {
+                "schema": "wb.conversation-message-ingress/v1",
+                "inputter": {
+                    "schema": "wb.actor-ref/v1",
+                    "issuer_authority_id": "issuer-dashboard-tests",
+                    "subject": "human-dashboard-tests",
+                    "kind": "human",
+                    "tenant_scope_id": "tenant-dashboard-tests",
+                },
+                "session_id_sha256": "1" * 64,
+                "gesture_id": "gesture-dashboard-tests",
+                "action": "cowork.chat.message_send",
+                "subject_sha256": "2" * 64,
+                "context_sha256": "3" * 64,
+                "assurance": "enrolled_local_session_gesture",
+                "basis": "authenticated_loopback_ui_gesture",
+                "threat_model_limit": "single_local_os_user_not_proven",
+            },
+        ),
+    )
     service.app.config.update(TESTING=True)
     with service.app.test_client() as client:
         yield client
@@ -270,6 +303,7 @@ def test_targeted_turn_uses_exact_cowork_context_dispatch(
         "content": "Use the exact working passage.",
         "context": durable_context,
         "message_id": "targeted-user-stable-id",
+        "ingress": received["ingress"],
     }
     assert wake_calls == [conversation.conversation_id]
     assert response.get_json() == {
@@ -415,3 +449,79 @@ def test_cowork_conversation_get_projects_persisted_lease_liveness(
     assert payload["agent_alive"] is True
     assert payload["agent_status"] == "running"
     assert payload["agent_error"] is None
+
+
+def test_restore_fence_blocks_before_human_gesture_and_message_mutation(
+    dashboard_client,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from work_buddy.backups import source_foundation_restore
+    from work_buddy.dashboard import local_identity_api
+
+    conversation = _conversation()
+    fence = tmp_path / "restore-pending.json"
+    source_foundation_restore.write_restore_fence(
+        {"snapshot_id": "snapshot-security-test"},
+        path=fence,
+    )
+    monkeypatch.setattr(source_foundation_restore, "restore_fence_path", lambda: fence)
+    authority_calls = 0
+
+    def _must_not_consume(**_kwargs):
+        nonlocal authority_calls
+        authority_calls += 1
+        raise AssertionError("restore fence must precede gesture consumption")
+
+    monkeypatch.setattr(
+        local_identity_api,
+        "require_human_authority_request",
+        _must_not_consume,
+    )
+    response = dashboard_client.post(
+        f"/api/conversations/{conversation.conversation_id}/respond",
+        json={"value": "Must remain unpersisted while restore is pending."},
+    )
+
+    assert response.status_code == 409
+    assert response.get_json()["code"] == "source_foundation_restore_pending"
+    assert authority_calls == 0
+    bundle = store.get_conversation_with_messages(conversation.conversation_id)
+    assert bundle is not None
+    assert bundle["messages"] == []
+
+
+def test_stable_message_retry_preserves_original_ingress_gesture(
+    dashboard_client,
+) -> None:
+    del dashboard_client
+    conversation = _conversation()
+    ingress = {
+        "schema": "wb.conversation-message-ingress/v1",
+        "inputter": {"subject": "human-dashboard-tests"},
+        "session_id_sha256": "1" * 64,
+        "gesture_id": "gesture-original",
+        "action": "cowork.chat.message_send",
+        "subject_sha256": "2" * 64,
+        "context_sha256": "3" * 64,
+    }
+    first = store.post_user_message(
+        conversation.conversation_id,
+        "Idempotent authored turn.",
+        message_id="stable-ingress-turn",
+        ingress=ingress,
+    )
+    replay = store.post_user_message(
+        conversation.conversation_id,
+        "Idempotent authored turn.",
+        message_id="stable-ingress-turn",
+        ingress={
+            **ingress,
+            "session_id_sha256": "4" * 64,
+            "gesture_id": "gesture-retry",
+        },
+    )
+
+    assert first is not None and replay is not None
+    assert replay.message_id == first.message_id
+    assert replay.ingress == ingress

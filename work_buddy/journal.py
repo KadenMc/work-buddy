@@ -48,6 +48,18 @@ def journal_path_for_date(date_str: str | None = None, vault_root: Path | None =
     return vault_root / "journal" / f"{date_str}.md"
 
 
+def _journal_content_adapter(vault_root: Path):
+    # Lazy import avoids the compatibility adapter's use of Journal time and
+    # section helpers becoming a module-import cycle.
+    from work_buddy.journal_capture.content_adapter import JournalContentAdapter
+
+    return JournalContentAdapter(vault_root)
+
+
+def _journal_content_adapter_for_path(journal_path: Path):
+    return _journal_content_adapter(journal_path.resolve().parent.parent)
+
+
 # ---------------------------------------------------------------------------
 # Journal existence + Obsidian availability
 # ---------------------------------------------------------------------------
@@ -518,7 +530,7 @@ def read_journal_state(
 
     # 4. Read journal and extract activity window.
     journal_path = vault_root / "journal" / f"{resolved.date}.md"
-    content = journal_path.read_text(encoding="utf-8")
+    content = _journal_content_adapter(vault_root).read_day(resolved.date)
     last_log_ts = get_activity_window(
         content,
         journal_date=resolved.date,
@@ -756,6 +768,44 @@ def append_to_journal(
             "message": "No entries provided.",
         }
 
+    # Once this logical day has a canonical Co-work authority epoch, all Log
+    # changes go through the bound document and its source/change/projection
+    # receipts. Markdown remains a compatibility projection only.
+    from work_buddy.journal_capture.models import JournalMigrationState
+    from work_buddy.journal_capture.store import JournalCaptureStore
+
+    migration_store = JournalCaptureStore()
+    migration = migration_store.get_migration("logical_day_log", date_str)
+    if migration is not None and migration.mirrored_state in {
+        JournalMigrationState.COWORK,
+        JournalMigrationState.PAUSED_DIVERGED,
+    }:
+        from work_buddy.dashboard import local_identity_api
+        from work_buddy.document_kernel.runtime_service import shared_document_kernel
+        from work_buddy.journal_capture.migration import JournalMigrationService
+        from work_buddy.paths import resolve
+        from work_buddy.sources import ActorRef, SourceStore
+
+        enrolled = local_identity_api._authority().enrolled_actor()
+        principal = ActorRef(
+            issuer_authority_id=enrolled.issuer_authority_id,
+            subject="work-buddy-journal-service",
+            kind="service",
+            tenant_scope_id=enrolled.tenant_scope_id,
+        )
+        with JournalMigrationService(
+            vault_root=vault_root,
+            journal_store=migration_store,
+            source_store=SourceStore.create(resolve("stores/sources")),
+            principal=principal,
+            cutover_enabled=False,
+            kernel=shared_document_kernel(),
+        ) as coordinator:
+            result = coordinator.append_log_entries(date_str, entries)
+        if result is None:
+            raise RuntimeError("journal_authority_mirror_disagrees")
+        return result
+
     # Serialize concurrent read-modify-write cycles. Without this lock,
     # two sessions calling append_to_journal simultaneously will read the
     # same file version, modify independently, and the second write
@@ -770,7 +820,9 @@ def _append_to_journal_locked(
     date_str: str,
 ) -> dict[str, Any]:
     """Inner logic for append_to_journal, called under _journal_write_lock."""
-    file_content = journal_file.read_text(encoding="utf-8")
+    adapter = _journal_content_adapter_for_path(journal_file)
+    initial = adapter.snapshot(date_str)
+    file_content = initial.content
 
     if _get_log_section_bounds(file_content) is None:
         return {
@@ -890,13 +942,15 @@ def _append_to_journal_locked(
     # construction not in the pre-write file (the already_present check above
     # filtered it out), so verify succeeds iff our write actually landed.
     vault_rel_path = f"journal/{date_str}.md"
-    from work_buddy.obsidian.vault_writer import vault_write
-
-    ok = vault_write(
-        vault_rel_path, journal_file, file_content,
-        write_mode="insert", content_hint=first_inserted_line,
-    )
-    if not ok:
+    try:
+        adapter.write_day_cas(
+            date_str,
+            expected_file_sha256=initial.file_sha256,
+            content=file_content,
+            write_mode="insert",
+            content_hint=first_inserted_line,
+        )
+    except OSError:
         # Only reachable when Obsidian was down AND the direct filesystem
         # fallback itself hit an OSError. Surface as a failure rather than a
         # false success.
@@ -963,7 +1017,7 @@ def extract_sign_in(journal_path: Path) -> dict[str, Any]:
             "check_in": None, "motto": None, "all_filled": False,
         }
 
-    content = journal_path.read_text(encoding="utf-8")
+    content = _journal_content_adapter_for_path(journal_path).read_day(journal_path.stem)
 
     result: dict[str, Any] = {
         "sleep": None, "energy": None, "mood": None,
@@ -1064,7 +1118,9 @@ def write_sign_in(journal_path: Path, fields: dict[str, Any]) -> dict[str, Any]:
     if not journal_path.exists():
         raise FileNotFoundError(f"Journal file not found: {journal_path}")
 
-    content = journal_path.read_text(encoding="utf-8")
+    adapter = _journal_content_adapter_for_path(journal_path)
+    snapshot = adapter.snapshot(journal_path.stem)
+    content = snapshot.content
     written: list[str] = []
 
     # Write numeric metrics (replace value after the tag)
@@ -1102,7 +1158,12 @@ def write_sign_in(journal_path: Path, fields: dict[str, Any]) -> dict[str, Any]:
                 logger.debug("Sign-in %s already filled, skipping", field)
 
     if written:
-        journal_path.write_text(content, encoding="utf-8")
+        adapter.write_day_cas(
+            journal_path.stem,
+            expected_file_sha256=snapshot.file_sha256,
+            content=content,
+            content_hint="#dailyworkq/",
+        )
         logger.info("Wrote sign-in fields %s to %s", written, journal_path)
 
     return {"success": True, "fields_written": written, "path": journal_path.as_posix()}
@@ -1192,14 +1253,21 @@ def persist_briefing_to_journal(
     if not journal_path.exists():
         raise FileNotFoundError(f"Journal file not found: {journal_path}")
 
-    content = journal_path.read_text(encoding="utf-8")
+    adapter = _journal_content_adapter(Path(vault_root))
+    snapshot = adapter.snapshot(date_str)
+    content = snapshot.content
     callout = format_briefing_callout(briefing_md, date_str)
 
     # Check for existing callout — replace if found
     existing = _BRIEFING_CALLOUT_RE.search(content)
     if existing:
         new_content = content[:existing.start()] + callout + "\n" + content[existing.end():]
-        journal_path.write_text(new_content, encoding="utf-8")
+        adapter.write_day_cas(
+            date_str,
+            expected_file_sha256=snapshot.file_sha256,
+            content=new_content,
+            content_hint="[!briefing]",
+        )
         logger.info("Replaced existing briefing callout in %s", journal_path)
         return {"success": True, "action": "replaced", "path": journal_path.as_posix()}
 
@@ -1210,7 +1278,12 @@ def persist_briefing_to_journal(
         insert_pos = len(content)
 
     new_content = content[:insert_pos] + callout + "\n\n" + content[insert_pos:]
-    journal_path.write_text(new_content, encoding="utf-8")
+    adapter.write_day_cas(
+        date_str,
+        expected_file_sha256=snapshot.file_sha256,
+        content=new_content,
+        content_hint="[!briefing]",
+    )
     logger.info("Inserted briefing callout in %s", journal_path)
     return {"success": True, "action": "inserted", "path": journal_path.as_posix()}
 

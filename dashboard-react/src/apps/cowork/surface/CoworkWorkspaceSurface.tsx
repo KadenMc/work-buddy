@@ -9,6 +9,10 @@ import {
   type ReactNode,
 } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
+import {
+  coworkHumanAuthorityHeaders,
+  exactHumanAuthorityHeaders,
+} from "../../../security/humanAuthority";
 
 import { useOptionalDashboardEvents } from "../../../dashboard/events/DashboardEventProvider";
 import {
@@ -660,6 +664,13 @@ export function CoworkLiveWorkspace({
         targetId: workspaceIdentity,
         loadUrl: coworkConversationEndpoint(documentId, storeId),
         selectUrl: coworkConversationExecutionEndpoint(documentId, storeId),
+        authorizeSelect: (body) =>
+          coworkHumanAuthorityHeaders({
+            operation: "chat.execution_select",
+            storeId,
+            documentId,
+            body,
+          }),
         onEnvelope: (envelope) => {
           if (
             workspaceIdentityRef.current !== providerWorkspaceIdentity
@@ -707,6 +718,12 @@ export function CoworkLiveWorkspace({
       conversation.phase === "ready" && conversation.conversationId !== null
         ? createHttpChatProvider({
             conversationId: conversation.conversationId,
+            authorizeSend: (body) =>
+              exactHumanAuthorityHeaders({
+                action: "cowork.chat.message_send",
+                subject: `cowork-conversation:${conversation.conversationId}`,
+                context: body,
+              }),
           })
         : null,
     [conversation.conversationId, conversation.phase],

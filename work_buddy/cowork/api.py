@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from ipaddress import ip_address
 from urllib.parse import urlsplit
@@ -48,6 +48,18 @@ from work_buddy.cowork.paths import (
     resolve_markdown_path,
 )
 from work_buddy.cowork.policy import document_surface_allowed
+from work_buddy.dashboard import local_identity_api
+from work_buddy.dashboard.local_identity_api import authenticate_request_session
+from work_buddy.document_kernel.cowork_integration import (
+    apply_bound_direct_push,
+    current_domain_binding,
+    project_bound_document,
+)
+from work_buddy.document_kernel.causality import DocumentCausalityStore
+from work_buddy.paths import resolve
+from work_buddy.security.local_identity import HumanAuthorityContext, LocalIdentityError
+from work_buddy.sources import ActorRef as SourceActorRef
+from work_buddy.sources import SourceRef, SourceStore
 from work_buddy.cowork.proposal_applicability import (
     ProposalApplicability,
     assess_proposal_applicability,
@@ -58,7 +70,7 @@ from work_buddy.truth.anchors import CompositeSelector
 from work_buddy.truth.contracts import Actor, InvariantViolation
 from work_buddy.truth.events import emit_truth_event
 from work_buddy.truth.expressions import ensure_document_span
-from work_buddy.truth.identity import parse_truth_uri
+from work_buddy.truth.identity import canonical_json, parse_truth_uri, sha256_text
 from work_buddy.truth.registry import TruthStoreRegistry
 from work_buddy.truth.store import DocumentRecord, TruthStore
 
@@ -102,39 +114,65 @@ def _reject_read_only():
     return None
 
 
-def dashboard_user_ref(headers=None) -> str:
-    """Resolve the acting dashboard user ref, never the MCP single-user constant.
+def cowork_mutation_context_sha256(
+    *,
+    operation: str,
+    store_id: str,
+    document_id: str,
+    body: Mapping[str, Any] | None,
+) -> str:
+    """Canonical exact-body digest shared by Co-work gesture-gated routes."""
 
-    A single local dashboard has no auth boundary, so the ref is threaded from an
-    explicit request header, else configured dashboard identity, else a stable
-    non-MCP default. The value is what lands on the gesture actor ref (I17).
-    """
-    if headers is not None:
-        supplied = (headers.get("X-WB-User-Ref") or "").strip()
-        if supplied and supplied != _MCP_HUMAN_REF:
-            return supplied
-    try:
-        from work_buddy.config import load_config
-
-        configured = str(
-            (load_config().get("dashboard", {}) or {}).get("user_ref") or ""
-        ).strip()
-    except Exception:  # noqa: BLE001
-        configured = ""
-    if configured and configured != _MCP_HUMAN_REF:
-        return configured
-    return "dashboard-user"
+    return sha256_text(
+        canonical_json(
+            {
+                "body": {} if body is None else dict(body),
+                "document_id": document_id,
+                "operation": operation,
+                "store_id": store_id,
+            }
+        )
+    )
 
 
-def _actor_for_request() -> Actor:
-    return Actor("human", dashboard_user_ref(request.headers))
+def _require_human_action(
+    *,
+    operation: str,
+    store_id: str,
+    document_id: str,
+    body: Mapping[str, Any] | None,
+) -> tuple[HumanAuthorityContext, Actor]:
+    """Consume one exact local gesture and derive the Truth actor server-side."""
+
+    authority = local_identity_api.require_human_authority_request(
+        action=f"cowork.{operation}",
+        subject=f"cowork-document:{store_id}:{document_id}",
+        context_sha256=cowork_mutation_context_sha256(
+            operation=operation,
+            store_id=store_id,
+            document_id=document_id,
+            body=body,
+        ),
+    )
+    return authority, Actor("human", authority.principal.actor.canonical_id)
+
+
+def _local_identity_error(exc: LocalIdentityError):
+    return local_identity_api._error(exc)
 
 
 @cowork_blueprint.get("/api/truth/cowork/current-actor")
 def api_cowork_current_actor():
     """Expose the immutable identity binding used by provenance ``Me`` values."""
-
-    return jsonify(provenance.actor_binding(_actor_for_request()))
+    try:
+        principal = authenticate_request_session()
+    except LocalIdentityError as exc:
+        return _local_identity_error(exc)
+    return jsonify(
+        provenance.actor_binding(
+            Actor("human", principal.actor.canonical_id)
+        )
+    )
 
 
 def _fail(message: str, status: int = 400):
@@ -626,6 +664,136 @@ def api_doc_get(document_id: str):
     return jsonify(payload)
 
 
+@cowork_blueprint.get("/api/truth/doc/<document_id>/changes/<change_id>")
+def api_doc_change_get(document_id: str, change_id: str):
+    """Return content-free origin and causality for one recorded document change.
+
+    This is the inspection target carried by source-backed Journal links.  The
+    immutable source bytes stay behind the Sources authorization boundary; the
+    response contains only identity, hashes, actors, and recorded assurances.
+    """
+
+    store, error = _resolve_store(request.args.get("store_id"))
+    if error:
+        return error
+    gate = _document_surface_or_403(store)
+    if gate:
+        return gate
+    document, doc_error = _resolve_document(store, document_id)
+    if doc_error:
+        return doc_error
+    try:
+        causality = DocumentCausalityStore(store.paths.sidecar)
+        change = causality.get_change(change_id)
+    except (KeyError, ValueError):
+        change = None
+    if change is None or change.document_id != document.id:
+        return _fail("That document change is unavailable.", 404)
+    binding = (
+        causality.get_binding(change.binding_id)
+        if change.binding_id is not None
+        else None
+    )
+    source = None
+    if change.source_ref is not None:
+        try:
+            source_ref = SourceRef.parse(change.source_ref)
+            source_store = SourceStore.create(resolve("stores/sources"))
+            item = source_store.get_item(source_ref)
+            representation = (
+                source_store.get_representation(change.source_representation_id)
+                if change.source_representation_id is not None
+                else None
+            )
+            source = {
+                "source_ref": source_ref.uri,
+                "source_role": item.source_role if item is not None else "unknown",
+                "fidelity": item.fidelity if item is not None else "unknown",
+                "originating_surface": (
+                    item.originating_surface if item is not None else "unknown"
+                ),
+                "provider_id": (
+                    item.origin_ref.provider_id
+                    if item is not None and item.origin_ref is not None
+                    else None
+                ),
+                "lifecycle_state": (
+                    item.lifecycle_state if item is not None else "unavailable"
+                ),
+                "content_sha256": change.source_content_sha256,
+                "representation_id": change.source_representation_id,
+                "media_type": (
+                    representation.media_type if representation is not None else None
+                ),
+                "byte_length": (
+                    representation.byte_length if representation is not None else None
+                ),
+                "copy_relation": (
+                    "exact_copy"
+                    if change.exact_copied_text_sha256 is not None
+                    else "source_backed_change"
+                ),
+            }
+        except Exception as exc:
+            logger.warning(
+                "Could not project source metadata for document change %s (%s)",
+                change_id,
+                getattr(exc, "code", type(exc).__name__),
+            )
+            source = {
+                "source_ref": change.source_ref,
+                "source_role": "unknown",
+                "fidelity": "unknown",
+                "originating_surface": "unknown",
+                "provider_id": None,
+                "lifecycle_state": "unavailable",
+                "content_sha256": change.source_content_sha256,
+                "representation_id": change.source_representation_id,
+                "media_type": None,
+                "byte_length": None,
+                "copy_relation": (
+                    "exact_copy"
+                    if change.exact_copied_text_sha256 is not None
+                    else "source_backed_change"
+                ),
+            }
+    return jsonify(
+        {
+            "schema": "wb.cowork-document-change-inspection/v1",
+            "store_id": store.store_id,
+            "document_id": document.id,
+            "change_id": change.change_id,
+            "operation_kind": change.operation_kind,
+            "committed_at": change.committed_at,
+            "actors": json.loads(change.actors_json),
+            "assurance": json.loads(change.assurance_json),
+            "source": source,
+            "binding": (
+                None
+                if binding is None
+                else {
+                    "binding_id": binding.binding_id,
+                    "domain_namespace": binding.domain_namespace,
+                    "domain_kind": binding.domain_kind,
+                    "domain_entity_id": binding.domain_entity_id,
+                    "role": binding.role,
+                    "content_authority": binding.content_authority,
+                    "content_authority_epoch": binding.content_authority_epoch,
+                    "lifecycle": binding.lifecycle,
+                }
+            ),
+            "heads": {
+                "base_structured_head_sha256": (
+                    change.base_structured_head_sha256
+                ),
+                "result_structured_head_sha256": (
+                    change.result_structured_head_sha256
+                ),
+            },
+        }
+    )
+
+
 # ---------------------------------------------------------------------------
 # Document conversation binding and explicit driver lifecycle.
 # ---------------------------------------------------------------------------
@@ -1009,6 +1177,15 @@ def api_doc_conversation_bind(document_id: str):
     gate = _document_surface_or_403(store)
     if gate:
         return gate
+    try:
+        _require_human_action(
+            operation="chat.bind",
+            store_id=store.store_id,
+            document_id=document_id,
+            body={},
+        )
+    except LocalIdentityError as exc:
+        return _local_identity_error(exc)
 
     from work_buddy.consent import user_initiated
 
@@ -1102,13 +1279,23 @@ def api_doc_conversation_ensure(document_id: str):
     gate = _document_surface_or_403(store)
     if gate:
         return gate
+    request_body = request.get_json(silent=True)
     try:
         requested_execution = _requested_execution(
-            request.get_json(silent=True),
+            request_body,
             require_expected_revision=False,
         )
     except Exception as exc:
         return _execution_error(exc)
+    try:
+        _require_human_action(
+            operation="chat.start",
+            store_id=store.store_id,
+            document_id=document_id,
+            body=request_body if isinstance(request_body, Mapping) else {},
+        )
+    except LocalIdentityError as exc:
+        return _local_identity_error(exc)
 
     from work_buddy.consent import user_initiated
 
@@ -1274,13 +1461,23 @@ def api_doc_conversation_execution(document_id: str):
     gate = _document_surface_or_403(store)
     if gate:
         return gate
+    request_body = request.get_json(silent=True)
     try:
         selected, expected_revision = _requested_execution(
-            request.get_json(silent=True),
+            request_body,
             require_expected_revision=True,
         )
     except Exception as exc:
         return _execution_error(exc)
+    try:
+        _require_human_action(
+            operation="chat.execution_select",
+            store_id=store.store_id,
+            document_id=document_id,
+            body=request_body if isinstance(request_body, Mapping) else {},
+        )
+    except LocalIdentityError as exc:
+        return _local_identity_error(exc)
 
     from work_buddy.consent import user_initiated
     from work_buddy.conversations.store import get_agent_lease
@@ -1462,24 +1659,123 @@ def api_doc_ydoc_push(document_id: str):
     compacted_projection = (
         request.headers.get("X-WB-Compacted-Projection-Sha256") or None
     )
-    actor = _actor_for_request()
+    enrolled = local_identity_api._authority().enrolled_actor()
+    source_principal = SourceActorRef(
+        issuer_authority_id=enrolled.issuer_authority_id,
+        subject="work-buddy-journal-service",
+        kind="service",
+        tenant_scope_id=enrolled.tenant_scope_id,
+    )
+    input_assurance = "legacy_dashboard_surface_unverified"
+    try:
+        local_principal = authenticate_request_session(require_csrf=True)
+        actor = Actor("human", local_principal.actor.canonical_id)
+        input_actor = local_principal.actor.canonical_id
+        input_assurance = "enrolled_local_session"
+    except LocalIdentityError:
+        # Compatibility only.  An unauthenticated local editor update is
+        # explicitly system/local-surface input, never human authorship.
+        actor = Actor(
+            "system",
+            "work-buddy-local-surface",
+            {"source_actor_kind": "local_surface"},
+        )
+        input_actor = json.dumps(
+            {"kind": "local_surface", "ref": "work-buddy-local-surface"},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
     try:
         from work_buddy.consent import user_initiated
 
         with user_initiated("dashboard.cowork.ydoc_push"):
-            payload, status = transport.push_ydoc(
-                store,
-                document,
-                actor,
-                body=body,
-                base_sha256=base_sha256,
-                base_structured_head_sha256=base_structured_head_sha256,
-                base_ydoc_generation=base_ydoc_generation,
-                compacted_snapshot_sha256=compacted,
-                compacted_projection_sha256=compacted_projection,
-            )
+            bound = current_domain_binding(store, document.id)
+            direct = None
+            if (
+                bound is not None
+                and compacted is None
+                and base_structured_head_sha256
+                and base_ydoc_generation
+            ):
+                expected_snapshot = document.ydoc_snapshot_sha256
+
+                def _bound_guard() -> None:
+                    current = documents.get_document(store, document.id)
+                    if documents.current_lifecycle(store, current.id) != "active":
+                        raise InvariantViolation("document_retired")
+                    if not document_surface_allowed(store, current):
+                        raise InvariantViolation("policy_forbidden")
+                    if current.ydoc_snapshot_sha256 != expected_snapshot:
+                        raise InvariantViolation("structured_snapshot_changed")
+                    if (
+                        documents.current_ydoc_generation(store, current.id)
+                        != base_ydoc_generation
+                    ):
+                        raise InvariantViolation("ydoc_generation_changed")
+
+                direct = apply_bound_direct_push(
+                    store,
+                    document,
+                    update=body,
+                    expected_head=base_structured_head_sha256,
+                    expected_generation=base_ydoc_generation,
+                    actors={"input_by": input_actor},
+                    input_assurance=input_assurance,
+                    source_store=SourceStore.create(resolve("stores/sources")),
+                    source_principal=source_principal,
+                    lock_guard=_bound_guard,
+                )
+            if direct is not None:
+                payload = {
+                    "ok": True,
+                    "applied": True,
+                    "doc_sha256": document.content_sha256,
+                    "projection_sha256": document.content_sha256,
+                    "structured_head_sha256": direct.change.result_structured_head_sha256,
+                    "ydoc_head_sha256": direct.change.result_structured_head_sha256,
+                    "ydoc_generation": base_ydoc_generation,
+                    "next_offset": direct.next_offset,
+                    "document_change_id": direct.change.change_id,
+                    "domain_projection_status": (
+                        direct.projection.status if direct.projection is not None else "pending"
+                    ),
+                }
+                status = 200
+            else:
+                payload, status = transport.push_ydoc(
+                    store,
+                    document,
+                    actor,
+                    body=body,
+                    base_sha256=base_sha256,
+                    base_structured_head_sha256=base_structured_head_sha256,
+                    base_ydoc_generation=base_ydoc_generation,
+                    compacted_snapshot_sha256=compacted,
+                    compacted_projection_sha256=compacted_projection,
+                )
+                if bound is not None and status == 200 and payload.get("ok") is True:
+                    cursor = project_bound_document(
+                        store,
+                        binding=bound,
+                        change=None,
+                        source_store=SourceStore.create(resolve("stores/sources")),
+                        source_principal=source_principal,
+                    )
+                    payload["domain_projection_status"] = (
+                        cursor.status if cursor is not None else "pending"
+                    )
     except InvariantViolation as exc:
         return _fail(str(exc), 400)
+    except RuntimeError as exc:
+        code = str(exc)
+        if code in {
+            "direct_edit_base_conflict",
+            "direct_edit_generation_conflict",
+            "direct_edit_snapshot_conflict",
+        }:
+            return jsonify({"ok": False, "error": "stale_base"}), 409
+        logger.exception("Bound Co-work document update failed (%s)", code)
+        return _fail("The bound document update could not be completed.", 500)
     return jsonify(payload), status
 
 
@@ -1544,7 +1840,15 @@ def api_doc_authorship_attestation(document_id: str):
     }:
         return _fail("basis_kind is invalid", 400)
 
-    actor = _actor_for_request()
+    try:
+        _authority_context, actor = _require_human_action(
+            operation="provenance.attest",
+            store_id=store.store_id,
+            document_id=document.id,
+            body=body,
+        )
+    except LocalIdentityError as exc:
+        return _local_identity_error(exc)
     try:
         normalized_attestation = provenance.normalize_attestation(
             attestation,
@@ -1803,7 +2107,15 @@ def api_doc_feedback(document_id: str):
         return _fail("span.exact is required", 400)
     if not isinstance(text, str) or not text.strip():
         return _fail("text is required", 400)
-    actor = _actor_for_request()
+    try:
+        _authority_context, actor = _require_human_action(
+            operation="feedback.capture",
+            store_id=store.store_id,
+            document_id=document_id,
+            body=body,
+        )
+    except LocalIdentityError as exc:
+        return _local_identity_error(exc)
     feedback_span = {
         "exact": span["exact"],
         "prefix": span.get("prefix") or "",
@@ -2136,6 +2448,5 @@ def register_routes(app):
 
 __all__ = [
     "cowork_blueprint",
-    "dashboard_user_ref",
     "register_routes",
 ]

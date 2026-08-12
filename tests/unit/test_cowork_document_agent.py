@@ -40,7 +40,7 @@ def _conversation():
     )
 
 
-def test_prompt_binds_authority_delivery_and_durable_anchor_recovery() -> None:
+def test_prompt_binds_authority_but_contains_no_source_content() -> None:
     prompt = document_agent.build_document_agent_prompt(
         store_id="store-a",
         document_id="doc-a",
@@ -78,8 +78,6 @@ def test_prompt_binds_authority_delivery_and_durable_anchor_recovery() -> None:
     assert "exact message_id" in prompt
     assert "Never infer this" in prompt
     assert "association by matching text" in prompt
-    assert "restart context only" in prompt
-    assert "never act on it directly" in prompt
     assert 'message_id="cowork-reply-<that user' in prompt
     assert "created=true or replayed=true" in prompt
     assert "conversation_ack" in prompt
@@ -89,8 +87,17 @@ def test_prompt_binds_authority_delivery_and_durable_anchor_recovery() -> None:
     assert "producer_model='configured-model'" in prompt
     assert "consumer='cowork-document:store-a:doc-a'" in prompt
     assert "generation='generation-a'" in prompt
-    assert '"message_id": "user-new"' in prompt
-    assert '"exact": "Selected sentence."' in prompt
+    assert "Source delivery boundary" in prompt
+    assert "intentionally contains no document" in prompt
+    for protected in (
+        "Already handled.",
+        "Needs support.",
+        "Selected sentence.",
+        "user-new",
+        "BEGIN COWORK CONVERSATION JSON",
+        "BEGIN COWORK FEEDBACK JSON",
+    ):
+        assert protected not in prompt
 
 
 def test_bound_wake_reuses_selected_execution_and_preserves_lock_order(
@@ -647,7 +654,9 @@ def test_spawn_session_uses_explicit_model_and_authorized_executor(
         generation="generation-a",
         producer_model="configured-model",
         execution=selection,
-        history_loader=lambda _conversation_id: {"messages": []},
+        history_loader=lambda _conversation_id: pytest.fail(
+            "a source-free launch must not read conversation history"
+        ),
     )
     assert result["status"] == "ok"
     assert result["pid"] == 70123
@@ -657,3 +666,39 @@ def test_spawn_session_uses_explicit_model_and_authorized_executor(
     assert request.max_budget_usd == 2.0
     assert request.selection == selection
     assert request.session_id == "generation-a-cowork"
+
+
+def test_restore_fence_blocks_document_agent_before_lease_or_transport(
+    document_agent_store,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    del document_agent_store
+    from work_buddy.backups.source_foundation_restore import (
+        SourceFoundationRestorePending,
+        write_restore_fence,
+    )
+
+    conversation = _conversation()
+    marker = tmp_path / "restore" / "source_foundation_restore_pending.json"
+    monkeypatch.setattr(
+        "work_buddy.backups.source_foundation_restore.restore_fence_path",
+        lambda: marker,
+    )
+    write_restore_fence({"snapshot_id": "document-agent-restore"}, path=marker)
+
+    with pytest.raises(SourceFoundationRestorePending) as exc_info:
+        document_agent.ensure_document_agent(
+            store_id="store-a",
+            document_id="doc-a",
+            conversation_id=conversation.conversation_id,
+            spawn_agent=lambda **_kwargs: pytest.fail(
+                "provider transport must not run while restore is fenced"
+            ),
+        )
+
+    assert exc_info.value.operation == "cowork.document_agent.ensure"
+    assert conversation_store.get_agent_lease(
+        conversation.conversation_id,
+        document_agent.document_agent_consumer("store-a", "doc-a"),
+    ) is None

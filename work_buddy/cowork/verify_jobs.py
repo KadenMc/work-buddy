@@ -306,6 +306,11 @@ def spawn_verify_job(
         from work_buddy.agent_execution.registry import start_detached
 
         spawn_detached = start_detached
+    from work_buddy.backups.source_foundation_restore import (
+        require_source_foundation_writable,
+    )
+
+    require_source_foundation_writable("cowork.verify.dispatch")
     outcome = spawn_detached(request)
     if not isinstance(outcome, AgentSpawnOutcome):
         raise TypeError("Verify job spawner must return AgentSpawnOutcome")

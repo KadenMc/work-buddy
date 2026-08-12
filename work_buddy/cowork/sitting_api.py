@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 from typing import Any
 
@@ -15,7 +16,8 @@ from work_buddy.cowork import (
     sitting_lifecycle,
 )
 from work_buddy.truth import documents
-from work_buddy.truth.contracts import Actor, InvariantViolation
+from work_buddy.security.local_identity import LocalIdentityError
+from work_buddy.truth.contracts import InvariantViolation
 
 
 sitting_blueprint = Blueprint("cowork_sitting_lifecycle", __name__)
@@ -187,12 +189,6 @@ def _store():
         ) from exc
 
 
-def _actor() -> Actor:
-    from work_buddy.cowork.api import dashboard_user_ref
-
-    return Actor("human", dashboard_user_ref(request.headers))
-
-
 def _error(exc: sitting_lifecycle.SittingError):
     return (
         jsonify(
@@ -229,6 +225,14 @@ def api_prepare_sitting(document_id: str):
                 "invalid_request", "request body must be a JSON object"
             )
         store = _store()
+        from work_buddy.cowork.api import _require_human_action
+
+        _authority, actor = _require_human_action(
+            operation="review.sitting_prepare",
+            store_id=store.store_id,
+            document_id=document_id,
+            body=body,
+        )
         from work_buddy.consent import user_initiated
 
         # A repeated prepare may recover a committed receipt after the client
@@ -242,7 +246,7 @@ def api_prepare_sitting(document_id: str):
                 intent, created = sitting_lifecycle.prepare_sitting(
                     store,
                     document_id=document_id,
-                    actor=_actor(),
+                    actor=actor,
                     items=body.get("items"),
                     expected_file_sha256=body.get("expected_file_sha256"),
                     expected_structured_head_sha256=body.get(
@@ -276,6 +280,10 @@ def api_prepare_sitting(document_id: str):
         return jsonify(payload), 201 if created else 200
     except sitting_lifecycle.SittingError as exc:
         return _error(exc)
+    except LocalIdentityError as exc:
+        from work_buddy.cowork.api import _local_identity_error
+
+        return _local_identity_error(exc)
     except InvariantViolation as exc:
         return _error(sitting_lifecycle.SittingError("invalid_request", str(exc)))
 
@@ -323,6 +331,26 @@ def api_commit_sitting(document_id: str, intent_id: str):
         _reject_read_only()
         metadata, snapshot, markdown = _commit_parts()
         store = _store()
+        from work_buddy.cowork.api import _require_human_action
+
+        authority_body = {
+            "intent_id": intent_id,
+            "metadata": metadata,
+            "snapshot_sha256": (
+                None if snapshot is None else hashlib.sha256(snapshot).hexdigest()
+            ),
+            "rendered_sha256": (
+                None
+                if markdown is None
+                else hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+            ),
+        }
+        _authority, actor = _require_human_action(
+            operation="review.sitting_commit",
+            store_id=store.store_id,
+            document_id=document_id,
+            body=authority_body,
+        )
         from work_buddy.consent import user_initiated
 
         # The lifecycle lock is outer to the Truth/Ydoc sitting commit, the
@@ -338,7 +366,7 @@ def api_commit_sitting(document_id: str, intent_id: str):
                     store,
                     document_id=document_id,
                     intent_id=intent_id,
-                    actor=_actor(),
+                    actor=actor,
                     snapshot=snapshot,
                     snapshot_sha256=metadata.get("snapshot_sha256"),
                     rendered_markdown=markdown,
@@ -361,6 +389,10 @@ def api_commit_sitting(document_id: str, intent_id: str):
         return jsonify(receipt)
     except sitting_lifecycle.SittingError as exc:
         return _error(exc)
+    except LocalIdentityError as exc:
+        from work_buddy.cowork.api import _local_identity_error
+
+        return _local_identity_error(exc)
     except InvariantViolation as exc:
         return _error(sitting_lifecycle.SittingError("invalid_request", str(exc)))
 
@@ -371,16 +403,30 @@ def api_cancel_sitting(document_id: str, intent_id: str):
         _reject_read_only()
         from work_buddy.consent import user_initiated
 
+        store = _store()
+        from work_buddy.cowork.api import _require_human_action
+
+        _authority, actor = _require_human_action(
+            operation="review.sitting_cancel",
+            store_id=store.store_id,
+            document_id=document_id,
+            body={"intent_id": intent_id},
+        )
+
         with user_initiated("dashboard.cowork.sitting"):
             receipt = sitting_lifecycle.cancel_sitting(
-                _store(),
+                store,
                 document_id=document_id,
                 intent_id=intent_id,
-                actor=_actor(),
+                actor=actor,
             )
         return jsonify(receipt)
     except sitting_lifecycle.SittingError as exc:
         return _error(exc)
+    except LocalIdentityError as exc:
+        from work_buddy.cowork.api import _local_identity_error
+
+        return _local_identity_error(exc)
 
 
 def register_sitting_routes(app):

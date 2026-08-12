@@ -9,6 +9,7 @@ live-test data rule.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable
 
 import pytest
@@ -137,6 +138,85 @@ def fake_document_agent(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]
     return calls
 
 
+@pytest.fixture(autouse=True)
+def fake_cowork_human_authority(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep domain route tests focused; authority attacks have their own suite."""
+
+    from work_buddy.cowork import api, chat_api, verify_api
+
+    authority = SimpleNamespace(
+        principal=SimpleNamespace(
+            actor=SimpleNamespace(canonical_id=USER_REF),
+            assurance="enrolled_local_session",
+        ),
+        to_input_ingress=lambda: {
+            "schema": "wb.conversation-message-ingress/v1",
+            "inputter": {
+                "schema": "wb.actor-ref/v1",
+                "issuer_authority_id": "issuer-cowork-tests",
+                "subject": "human-cowork-tests",
+                "kind": "human",
+                "tenant_scope_id": "tenant-cowork-tests",
+            },
+            "session_id_sha256": "1" * 64,
+            "gesture_id": "gesture-cowork-tests",
+            "action": "cowork.test.action",
+            "subject_sha256": "2" * 64,
+            "context_sha256": "3" * 64,
+            "assurance": "enrolled_local_session_gesture",
+            "basis": "authenticated_loopback_ui_gesture",
+            "threat_model_limit": "single_local_os_user_not_proven",
+        },
+    )
+    require = lambda **_kwargs: (authority, HUMAN)
+    monkeypatch.setattr(api, "_require_human_action", require)
+    monkeypatch.setattr(chat_api, "_require_human_action", require)
+    monkeypatch.setattr(verify_api, "_require_human_action", require)
+    monkeypatch.setattr(api, "authenticate_request_session", lambda **_kwargs: authority.principal)
+
+
+@pytest.fixture(autouse=True)
+def isolated_cowork_disclosure(tmp_path: Path):
+    """Keep exact worker disclosures inside each route test's temp authority."""
+
+    from work_buddy.agent_execution.disclosure import (
+        DisclosureGateway,
+        DisclosureManifestStore,
+    )
+    from work_buddy.cowork.worker_disclosure import (
+        CoworkWorkerDisclosureBoundary,
+        configure_cowork_worker_disclosure,
+    )
+    from work_buddy.sources import ActorRef, SourceStore
+    from work_buddy.sources.disclosure import SourcesDisclosureService
+
+    source_store = SourceStore.create(tmp_path / "worker-sources")
+    issuer = ActorRef(
+        source_store.authority_id,
+        "cowork-disclosure-tests",
+        "service",
+        "tenant-cowork-tests",
+    )
+    sources = SourcesDisclosureService(
+        source_store,
+        tenant_scope_id=issuer.tenant_scope_id,
+        issuer=issuer,
+    )
+    configure_cowork_worker_disclosure(
+        CoworkWorkerDisclosureBoundary(
+            DisclosureGateway(
+                DisclosureManifestStore(tmp_path / "worker-disclosures.db"),
+                sources,
+            ),
+            sources,
+        )
+    )
+    try:
+        yield
+    finally:
+        configure_cowork_worker_disclosure(None)
+
+
 def _profile(store_id: str | None = None) -> dict[str, Any]:
     profile: dict[str, Any] = {
         "store_id": store_id or new_id(),
@@ -168,13 +248,18 @@ def store_ctx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]
     the feedback route and the redirect/endorse routing land in an isolated
     conversation log rather than the real one (live-test data rule).
     """
-    from work_buddy.cowork import api
+    from work_buddy.cowork import api, conversation_source_dependencies
     from work_buddy.conversations import store as conversations_store
 
     registry = TruthStoreRegistry(tmp_path / "truth-registry.db")
     monkeypatch.setattr(api, "_registry", lambda: registry)
     conversations_db = tmp_path / "throwaway-conversations.db"
     monkeypatch.setattr(conversations_store, "_DB_PATH", conversations_db)
+    monkeypatch.setattr(
+        conversation_source_dependencies,
+        "_DB_PATH",
+        tmp_path / "throwaway-conversation-dependencies.db",
+    )
     conversations_conn = conversations_store.get_connection()
     try:
         conversations_store._ensure_schema(conversations_conn)

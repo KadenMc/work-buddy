@@ -3216,6 +3216,7 @@ def get_worker_job(
     *,
     job_id: str,
     agent_session_id: str | None,
+    disclosure_boundary=None,
 ) -> dict[str, Any]:
     job = _bound_job(job_id, agent_session_id)
     if job.status not in {"prepared", "launching", "running", "submitted"}:
@@ -3249,7 +3250,7 @@ def get_worker_job(
         )
         record_coordination_status(store, failed_job)
         raise VerifyOrchestrationError("Verify job context failed integrity validation")
-    return {
+    result = {
         "ok": True,
         "job_id": job.job_id,
         "role": job.role.value,
@@ -3257,6 +3258,31 @@ def get_worker_job(
         "authorization_receipt_id": receipt.id,
         "context": context,
     }
+    if disclosure_boundary is not None:
+        from work_buddy.cowork.worker_disclosure import CoworkWorkerRun
+
+        derivation_refs = disclosure_boundary.capture_action_snapshot_origins(
+            store_id=store.store_id,
+            action_snapshot_id=job.action_snapshot_id,
+            purpose="cowork_verify",
+            namespace=job.job_id,
+        )
+        disclosure_boundary.account_payload(
+            CoworkWorkerRun(
+                run_id=job.job_id,
+                worker_session_id=job.session_id,
+                provider_id=str(job.selection.get("provider_id") or ""),
+                model_id=str(job.selection.get("model_id") or ""),
+                authorization_ref=receipt.id,
+                purpose="cowork_verify",
+            ),
+            payload=result,
+            source_role="document_action_snapshot",
+            tool_call_id="cowork_verify_job_get",
+            idempotency_key=f"verify-job-context:{job.context_sha256}",
+            derivation_refs=derivation_refs,
+        )
+    return result
 
 
 def _results_for_job(
@@ -4367,6 +4393,7 @@ def submit_worker_job(
     payload: Mapping[str, Any],
     agent_session_id: str | None,
     spawn_detached: SpawnDetached | None = None,
+    disclosure_boundary=None,
 ) -> dict[str, Any]:
     """Validate one role output and append only its authorized consequences."""
 
@@ -4374,6 +4401,37 @@ def submit_worker_job(
     normalized_input = _mapping(payload, "job payload")
     store = TruthStoreRegistry().open_store(job.store_id)
     replayed = job.output_sha256 is not None
+    manifest_binding = None
+
+    def bind_manifest(output_sha256: str):
+        if disclosure_boundary is None:
+            return None
+        from work_buddy.cowork.worker_disclosure import CoworkWorkerRun
+
+        return disclosure_boundary.bind_output(
+            CoworkWorkerRun(
+                run_id=job.job_id,
+                worker_session_id=job.session_id,
+                provider_id=str(job.selection.get("provider_id") or ""),
+                model_id=str(job.selection.get("model_id") or ""),
+                authorization_ref=job.authorization_receipt_id,
+                purpose="cowork_verify",
+            ),
+            output_ref=f"cowork-verify-job:{job.job_id}:{output_sha256}",
+            idempotency_key=f"cowork-verify-output:{job.job_id}:{output_sha256}",
+        )
+
+    def with_manifest(result: dict[str, Any]) -> dict[str, Any]:
+        if manifest_binding is None:
+            return result
+        return {
+            **result,
+            "input_manifest": {
+                "manifest_sha256": manifest_binding.manifest_sha256,
+                "entry_count": manifest_binding.entry_count,
+                "through_sequence": manifest_binding.through_sequence,
+            },
+        }
     if job.output_sha256 is not None:
         normalized = (
             _validate_specialist_output(store, job, normalized_input)
@@ -4387,8 +4445,9 @@ def submit_worker_job(
             raise VerifyOrchestrationError(
                 "Verify job already received a different submission"
             )
+        manifest_binding = bind_manifest(normalized_sha256)
         if job.status == "completed":
-            return _completed_submission_response(store, job)
+            return with_manifest(_completed_submission_response(store, job))
         if job.status != "submitted":
             raise VerifyOrchestrationError(
                 f"Verify job cannot resume submission in state {job.status}"
@@ -4409,6 +4468,9 @@ def submit_worker_job(
         else:
             raise VerifyOrchestrationError("unsupported Verify worker role")
         normalized_sha256 = _typed_output_sha256(normalized)
+        # Bind the typed output to the exact ordered input manifest before the
+        # runtime row or any portable Truth consequence can become visible.
+        manifest_binding = bind_manifest(normalized_sha256)
         job = update_job(
             job.job_id,
             status="submitted",
@@ -4428,15 +4490,15 @@ def submit_worker_job(
         spawn_detached=spawn_detached,
     )
     if projected is not None:
-        return projected
-    return {
+        return with_manifest(projected)
+    return with_manifest({
         "ok": True,
         "job_id": job.job_id,
         "status": "submitted",
         "projection_status": "in_progress",
         "replayed": True,
         "output_sha256": normalized_sha256,
-    }
+    })
 
 
 def run_status_projection(

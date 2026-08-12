@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 from work_buddy.agent_execution.models import (
     AgentExecutionSelection,
     AgentSpawnOutcome,
@@ -101,3 +105,31 @@ def test_spawn_uses_exact_account_backed_selection_and_session():
     assert requests[0].selection is SELECTION
     assert requests[0].session_id == cowork_truth_analysis_session_id("c" * 32)
     assert requests[0].max_budget_usd == 2.0
+
+
+def test_restore_fence_blocks_truth_worker_before_transport(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from work_buddy.backups.source_foundation_restore import (
+        SourceFoundationRestorePending,
+        write_restore_fence,
+    )
+
+    marker = tmp_path / "restore-pending.json"
+    monkeypatch.setattr(
+        "work_buddy.backups.source_foundation_restore.restore_fence_path",
+        lambda: marker,
+    )
+    write_restore_fence({"snapshot_id": "truth-worker-restore"}, path=marker)
+
+    with pytest.raises(SourceFoundationRestorePending):
+        spawn_truth_analysis_job(
+            store_id="store-1",
+            document_id="doc-1",
+            run_id="d" * 32,
+            selection=SELECTION,
+            spawn_detached=lambda _request: pytest.fail(
+                "provider transport must not run while restore is fenced"
+            ),
+        )

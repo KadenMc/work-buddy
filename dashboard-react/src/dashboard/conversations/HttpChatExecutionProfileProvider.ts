@@ -215,6 +215,10 @@ export interface HttpChatExecutionProfileConfig {
   readonly selectUrl: string;
   readonly initialSnapshot?: ChatExecutionSnapshot;
   readonly fetchImpl?: typeof fetch;
+  /** Feature-owned exact-action authority; omitted for ordinary chats. */
+  readonly authorizeSelect?: (
+    body: Record<string, unknown>,
+  ) => Promise<Record<string, string>>;
   /** Lets a feature adopt lifecycle data returned in the same transaction. */
   readonly onEnvelope?: (envelope: HttpChatExecutionEnvelope) => void;
 }
@@ -235,6 +239,9 @@ export class HttpChatExecutionProfileProvider
   readonly #loadUrl: string;
   readonly #selectUrl: string;
   readonly #injectedFetch: typeof fetch | undefined;
+  readonly #authorizeSelect:
+    | ((body: Record<string, unknown>) => Promise<Record<string, string>>)
+    | undefined;
   readonly #onEnvelope:
     | ((envelope: HttpChatExecutionEnvelope) => void)
     | undefined;
@@ -250,6 +257,7 @@ export class HttpChatExecutionProfileProvider
     this.#loadUrl = config.loadUrl;
     this.#selectUrl = config.selectUrl;
     this.#injectedFetch = config.fetchImpl;
+    this.#authorizeSelect = config.authorizeSelect;
     this.#onEnvelope = config.onEnvelope;
     this.#snapshot = config.initialSnapshot ?? null;
   }
@@ -379,17 +387,20 @@ export class HttpChatExecutionProfileProvider
     selection: ChatExecutionSelectionInput,
   ): Promise<ChatExecutionSnapshot> {
     this.#assertTarget(targetId);
+    const body = {
+      provider_id: selection.providerId,
+      model_id: selection.modelId,
+      expected_revision: selection.expectedRevision,
+    };
+    const authorityHeaders = await this.#authorizeSelect?.(body);
     const response = await this.#fetcher()(this.#selectUrl, {
       method: "PATCH",
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
+        ...authorityHeaders,
       },
-      body: JSON.stringify({
-        provider_id: selection.providerId,
-        model_id: selection.modelId,
-        expected_revision: selection.expectedRevision,
-      }),
+      body: JSON.stringify(body),
     });
     const payload = await this.#json(response);
     if (response.status === 409) {

@@ -283,10 +283,15 @@ def _read_task_note(task_id: str) -> str | None:
     if not note_uuid:
         return None
     from work_buddy.obsidian import bridge
-    # read_file_raw raises a typed ObsidianError on a transient (let it
-    # propagate so drill_down surfaces "unavailable" rather than a false "no
-    # note found"); a genuine 404 → None means the note really doesn't exist.
-    return bridge.read_file_raw(f"tasks/notes/{note_uuid}.md")
+    from work_buddy.task_notes import get_task_note_adapter
+
+    # The task-note adapter preserves the same typed transient behavior while
+    # selecting the per-note authority epoch.  A genuine absence remains None.
+    return get_task_note_adapter(bridge_client=bridge).read(
+        note_uuid,
+        filesystem_fallback=False,
+        strict_bridge=True,
+    )
 
 
 def _cap_for_depth(depth: ContextDepth) -> int:

@@ -352,3 +352,30 @@ def test_spawn_requires_provider_neutral_outcome_contract():
             selection=REQUESTED_SELECTION,
             spawn_detached=wrong_type,
         )
+
+
+def test_restore_fence_blocks_verify_worker_before_transport(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from work_buddy.backups.source_foundation_restore import (
+        SourceFoundationRestorePending,
+        write_restore_fence,
+    )
+
+    marker = tmp_path / "restore-pending.json"
+    monkeypatch.setattr(
+        "work_buddy.backups.source_foundation_restore.restore_fence_path",
+        lambda: marker,
+    )
+    write_restore_fence({"snapshot_id": "verify-worker-restore"}, path=marker)
+
+    with pytest.raises(SourceFoundationRestorePending):
+        spawn_verify_job(
+            **COMMON_BINDING,
+            role="specialist",
+            selection=REQUESTED_SELECTION,
+            spawn_detached=lambda _request: pytest.fail(
+                "provider transport must not run while restore is fenced"
+            ),
+        )

@@ -38,9 +38,24 @@ from work_buddy.threads.models import Thread
 @pytest.fixture(autouse=True)
 def _clean(tmp_path, monkeypatch):
     db = tmp_path / "threads.db"
+    vault = tmp_path / "vault"
+    daily = vault / "Daily"
+    daily.mkdir(parents=True)
+    paths = {
+        "day": daily / "2026-05-02.md",
+        "x": daily / "x.md",
+        "test": daily / "test.md",
+    }
+    for path in paths.values():
+        path.write_bytes(b"")
+    monkeypatch.setattr(
+        "work_buddy.config.load_config",
+        lambda: {"vault_root": str(vault), "obsidian": {"journal_dir": "Daily"}},
+    )
+    monkeypatch.setattr("work_buddy.obsidian.bridge.is_available", lambda: False)
     monkeypatch.setattr(store, "_db_path", lambda: db)
     bootstrap.teardown_threads()
-    yield
+    yield paths
     bootstrap.teardown_threads()
 
 
@@ -93,20 +108,22 @@ class TestJournalNoteCleanup:
             **inciting_extras,
         })
 
-    def test_removes_matching_line(self):
+    def test_removes_matching_line(self, _clean):
         original = (
             "# Daily 2026-05-02\n"
             "- [ ] Talk to Anna\n"
             "- [ ] Buy gift for Sarah\n"
             "- [ ] Submit grant application\n"
         )
+        _clean["day"].write_bytes(original.encode())
         captured = {}
-        with patch("work_buddy.obsidian.bridge.read_file",
-                   return_value=original) as _read, \
-             patch("work_buddy.obsidian.bridge.write_file",
-                   side_effect=lambda path, content, **kw:
-                       (captured.update({"path": path, "content": content})
-                        or True)) as _write:
+
+        def write(path, abs_path, content, **_kw):
+            captured.update({"path": path, "content": content})
+            abs_path.write_bytes(content.encode())
+            return True
+
+        with patch("work_buddy.obsidian.vault_writer.vault_write", side_effect=write):
             r = cleanup_adapters._journal_note_cleanup(self._thread())
         assert r.success is True
         assert r.source_already_gone is False
@@ -114,49 +131,48 @@ class TestJournalNoteCleanup:
         assert "Talk to Anna" in captured["content"]
         assert "Submit grant application" in captured["content"]
 
-    def test_line_not_found_is_source_already_gone(self):
+    def test_line_not_found_is_source_already_gone(self, _clean):
         # Original doesn't contain the target line — user already
         # edited it out.
         original = (
             "# Daily 2026-05-02\n"
             "- [ ] Talk to Anna\n"
         )
-        with patch("work_buddy.obsidian.bridge.read_file",
-                   return_value=original), \
-             patch("work_buddy.obsidian.bridge.write_file") as _write:
+        _clean["day"].write_bytes(original.encode())
+        with patch("work_buddy.obsidian.vault_writer.vault_write") as _write:
             r = cleanup_adapters._journal_note_cleanup(self._thread())
         assert r.success is True
         assert r.source_already_gone is True
         # Did NOT call write_file
         _write.assert_not_called()
 
-    def test_file_unreachable_is_failure(self):
-        with patch("work_buddy.obsidian.bridge.read_file",
-                   return_value=None):
-            r = cleanup_adapters._journal_note_cleanup(self._thread())
+    def test_file_unreachable_is_failure(self, _clean):
+        _clean["day"].unlink()
+        r = cleanup_adapters._journal_note_cleanup(self._thread())
         assert r.success is False
         assert "could not read" in r.detail.lower()
 
-    def test_write_failure_returns_failure(self):
-        with patch("work_buddy.obsidian.bridge.read_file",
-                   return_value="- [ ] Buy gift for Sarah\n"), \
-             patch("work_buddy.obsidian.bridge.write_file",
-                   return_value=False):
+    def test_write_failure_returns_failure(self, _clean):
+        _clean["day"].write_bytes(b"- [ ] Buy gift for Sarah\n")
+        with patch("work_buddy.obsidian.vault_writer.vault_write", return_value=False):
             r = cleanup_adapters._journal_note_cleanup(self._thread())
         assert r.success is False
-        assert "write_file" in r.detail.lower()
+        assert "adapter" in r.detail.lower()
 
-    def test_only_removes_first_match(self):
+    def test_only_removes_first_match(self, _clean):
         original = (
             "- [ ] Buy gift for Sarah\n"
             "- [ ] Buy gift for Sarah\n"
         )
+        _clean["day"].write_bytes(original.encode())
         captured = {}
-        with patch("work_buddy.obsidian.bridge.read_file",
-                   return_value=original), \
-             patch("work_buddy.obsidian.bridge.write_file",
-                   side_effect=lambda path, content, **kw:
-                       (captured.update({"content": content}) or True)):
+
+        def write(_path, abs_path, content, **_kw):
+            captured.update({"content": content})
+            abs_path.write_bytes(content.encode())
+            return True
+
+        with patch("work_buddy.obsidian.vault_writer.vault_write", side_effect=write):
             r = cleanup_adapters._journal_note_cleanup(self._thread())
         assert r.success is True
         # Exactly one match left
@@ -202,13 +218,16 @@ class TestCleanupRunnerHandler:
         store.insert_thread(t)
         return t
 
-    def test_success_path_advances_to_done_cleanup_successful(self):
+    def test_success_path_advances_to_done_cleanup_successful(self, _clean):
         t = self._setup_thread()
         cleanup_runner.register_cleanup_runner()
-        with patch("work_buddy.obsidian.bridge.read_file",
-                   return_value="- [ ] todo\n"), \
-             patch("work_buddy.obsidian.bridge.write_file",
-                   return_value=True):
+        _clean["x"].write_bytes(b"- [ ] todo\n")
+
+        def write(_path, abs_path, content, **_kw):
+            abs_path.write_bytes(content.encode())
+            return True
+
+        with patch("work_buddy.obsidian.vault_writer.vault_write", side_effect=write):
             # Synthesize a TransitionResult and fire side effects
             engine.register_state_entry_handler(  # already registered, but ok
                 FSMState.CLEANING_UP, cleanup_runner.cleanup_state_entry_handler,
@@ -229,11 +248,11 @@ class TestCleanupRunnerHandler:
         kinds = [e.kind for e in events]
         assert KIND_SOURCE_CLEANED_UP in kinds
 
-    def test_failure_path_advances_to_unsuccessful(self):
+    def test_failure_path_advances_to_unsuccessful(self, _clean):
         t = self._setup_thread()
         cleanup_runner.register_cleanup_runner()
-        with patch("work_buddy.obsidian.bridge.read_file",
-                   return_value=None):  # file unreachable
+        _clean["x"].unlink()
+        with patch("work_buddy.obsidian.vault_writer.vault_write"):
             engine._fire_side_effects(engine.TransitionResult(
                 thread_id=t.thread_id,
                 prev_state=FSMState.AWAITING_CONFIRMATION,
@@ -267,7 +286,7 @@ class TestCleanupRunnerHandler:
 
 
 class TestEndToEnd:
-    def test_bootstrap_then_cleanup_walks_full_flow(self):
+    def test_bootstrap_then_cleanup_walks_full_flow(self, _clean):
         bootstrap.bootstrap_threads(clear_first=True)
         # Thread with valid inciting source
         t = Thread(
@@ -280,10 +299,13 @@ class TestEndToEnd:
         )
         store.insert_thread(t)
 
-        with patch("work_buddy.obsidian.bridge.read_file",
-                   return_value="- [ ] test todo\n"), \
-             patch("work_buddy.obsidian.bridge.write_file",
-                   return_value=True):
+        _clean["test"].write_bytes(b"- [ ] test todo\n")
+
+        def write(_path, abs_path, content, **_kw):
+            abs_path.write_bytes(content.encode())
+            return True
+
+        with patch("work_buddy.obsidian.vault_writer.vault_write", side_effect=write):
             engine.transition(t.thread_id, TRIG_CLEANUP_REQUESTED)
 
         fetched = store.get_thread(t.thread_id)

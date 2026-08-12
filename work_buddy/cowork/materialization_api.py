@@ -5,7 +5,8 @@ from __future__ import annotations
 from flask import Blueprint, jsonify, request
 
 from work_buddy.cowork import materialization
-from work_buddy.truth.contracts import Actor, InvariantViolation
+from work_buddy.security.local_identity import LocalIdentityError
+from work_buddy.truth.contracts import InvariantViolation
 from work_buddy.truth.identity import sha256_text
 
 
@@ -32,12 +33,6 @@ def _store():
         raise materialization.MaterializationError(
             "store_unreachable", "That folder is not reachable by Co-work.", status=404
         ) from exc
-
-
-def _actor() -> Actor:
-    from work_buddy.cowork.api import dashboard_user_ref
-
-    return Actor("human", dashboard_user_ref(request.headers))
 
 
 def _error(exc: materialization.MaterializationError):
@@ -74,6 +69,14 @@ def api_materialize(document_id: str):
                 "invalid_request", "request body must be a JSON object"
             )
         store = _store()
+        from work_buddy.cowork.api import _require_human_action
+
+        _authority, actor = _require_human_action(
+            operation="document.materialize",
+            store_id=store.store_id,
+            document_id=document_id,
+            body=body,
+        )
         result = materialization.publish_projection(
             store,
             document_id=document_id,
@@ -86,7 +89,7 @@ def api_materialize(document_id: str):
                 or ""
             ),
             snapshot_sha256=str(body.get("snapshot_sha256") or ""),
-            actor=_actor(),
+            actor=actor,
             idempotency_key=body.get("idempotency_key"),
         )
         try:
@@ -110,6 +113,10 @@ def api_materialize(document_id: str):
         return jsonify(result)
     except materialization.MaterializationError as exc:
         return _error(exc)
+    except LocalIdentityError as exc:
+        from work_buddy.cowork.api import _local_identity_error
+
+        return _local_identity_error(exc)
     except InvariantViolation as exc:
         return _error(
             materialization.MaterializationError("invalid_request", str(exc))

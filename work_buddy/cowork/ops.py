@@ -33,6 +33,7 @@ from typing import Any
 from work_buddy.conversations.store import (
     ConversationLeaseLost,
     conversation_agent_write_guard,
+    get_agent_lease,
     record_action_snapshot_consumption,
     resolve_action_snapshot_consumption,
 )
@@ -48,7 +49,7 @@ from work_buddy.truth import documents, expressions, proposals, ydoc_store
 from work_buddy.truth.anchors import CompositeSelector, parse_selector
 from work_buddy.truth.contracts import InvariantViolation
 from work_buddy.truth.events import emit_truth_event
-from work_buddy.truth.identity import new_id
+from work_buddy.truth.identity import canonical_json, new_id, sha256_text
 from work_buddy.truth.registry import TruthStoreRegistry
 from work_buddy.truth.store import EXPRESSION_ROLES, TruthStore
 
@@ -103,6 +104,142 @@ def _require_document_surface(store: TruthStore) -> None:
         raise InvariantViolation(
             "store profile does not enable the document_surface block"
         )
+
+
+def _account_document_worker_payload(
+    *,
+    store_id: str,
+    document_id: str,
+    conversation_id: str,
+    generation: str,
+    agent_session_id: str,
+    payload: Mapping[str, Any],
+    source_role: str,
+    tool_call_id: str,
+    idempotency_suffix: str,
+    derivation_refs: Sequence[str] = (),
+) -> None:
+    """Account an exact response to the currently leased document agent."""
+
+    from work_buddy.cowork.worker_disclosure import (
+        CoworkWorkerRun,
+        get_cowork_worker_disclosure,
+    )
+
+    consumer = document_agent_consumer(store_id, document_id)
+    lease = get_agent_lease(conversation_id, consumer)
+    if (
+        lease is None
+        or lease.get("generation") != generation
+        or lease.get("status") not in {"starting", "running"}
+    ):
+        raise ConversationLeaseLost("lease_lost")
+    execution = lease.get("execution")
+    if not isinstance(execution, Mapping):
+        raise InvariantViolation("document-agent execution binding is unavailable")
+    provider_id = str(execution.get("provider_id") or "").strip()
+    model_id = str(execution.get("model_id") or "").strip()
+    if not provider_id or not model_id:
+        raise InvariantViolation("document-agent execution binding is invalid")
+    get_cowork_worker_disclosure().account_payload(
+        CoworkWorkerRun(
+            run_id=agent_session_id,
+            worker_session_id=agent_session_id,
+            provider_id=provider_id,
+            model_id=model_id,
+            authorization_ref=(
+                f"cowork-document-agent:{conversation_id}:{generation}"
+            ),
+            purpose="cowork_document_agent",
+        ),
+        payload=payload,
+        source_role=source_role,
+        tool_call_id=tool_call_id,
+        idempotency_key=f"{tool_call_id}:{idempotency_suffix}",
+        derivation_refs=derivation_refs,
+    )
+
+
+def _bind_document_worker_output(
+    *,
+    store_id: str,
+    document_id: str,
+    conversation_id: str | None,
+    generation: str | None,
+    agent_session_id: str | None,
+    output_ref: str,
+) -> dict[str, Any] | None:
+    """Bind one document-agent proposal/mark to its ordered inputs."""
+
+    from work_buddy.cowork.execution_identity import cowork_generation_from_session
+    from work_buddy.cowork.worker_disclosure import (
+        CoworkWorkerRun,
+        get_cowork_worker_disclosure,
+    )
+
+    session_generation = cowork_generation_from_session(agent_session_id)
+    if session_generation is None:
+        return None
+    if (
+        conversation_id is None
+        or generation != session_generation
+        or agent_session_id is None
+    ):
+        raise ConversationLeaseLost("lease_lost")
+    consumer = document_agent_consumer(store_id, document_id)
+    lease = get_agent_lease(conversation_id, consumer)
+    execution = None if lease is None else lease.get("execution")
+    if (
+        lease is None
+        or lease.get("generation") != generation
+        or lease.get("status") not in {"starting", "running"}
+        or not isinstance(execution, Mapping)
+    ):
+        raise ConversationLeaseLost("lease_lost")
+    provider_id = str(execution.get("provider_id") or "").strip()
+    model_id = str(execution.get("model_id") or "").strip()
+    if not provider_id or not model_id:
+        raise InvariantViolation("document-agent execution binding is invalid")
+    binding = get_cowork_worker_disclosure().bind_output(
+        CoworkWorkerRun(
+            run_id=agent_session_id,
+            worker_session_id=agent_session_id,
+            provider_id=provider_id,
+            model_id=model_id,
+            authorization_ref=(
+                f"cowork-document-agent:{conversation_id}:{generation}"
+            ),
+            purpose="cowork_document_agent",
+        ),
+        output_ref=output_ref,
+        idempotency_key=f"cowork-document-output:{output_ref}",
+    )
+    return {
+        "manifest_sha256": binding.manifest_sha256,
+        "entry_count": binding.entry_count,
+        "through_sequence": binding.through_sequence,
+    }
+
+
+def _document_worker_output_intent_ref(
+    kind: str,
+    payload: Mapping[str, Any],
+) -> str:
+    """Hash the exact proposed consequence before any Truth mutation.
+
+    ``canonical_json`` intentionally normalizes text whitespace for semantic
+    Truth identities.  Proposal replacements are byte-significant, so the
+    disclosure write-ahead key uses strict JSON serialization instead.
+    """
+
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return f"cowork-document-{kind}-request:{sha256_text(encoded)}"
 
 
 @contextmanager
@@ -369,13 +506,14 @@ def cowork_doc_list(store_id: str, profile: str | None = None) -> dict[str, Any]
                     "updated_at": updated_at,
                 }
             )
-    return {
+    result = {
         "ok": True,
         "store_id": store.store_id,
         "profile": store.profile.profile,
         "count": len(docs_payload),
         "docs": docs_payload,
     }
+    return result
 
 
 def cowork_doc_get(
@@ -490,7 +628,7 @@ def cowork_doc_get(
             "document_id": document_id,
             "store_id": store.store_id,
         }
-    return {
+    result = {
         "ok": True,
         "document_id": document.id,
         "store_id": store.store_id,
@@ -516,6 +654,23 @@ def cowork_doc_get(
         "feedback": feedback_payload,
         "authorship_attestations": provenance_payload,
     }
+    if (
+        session_generation is not None
+        and conversation_id is not None
+        and agent_session_id is not None
+    ):
+        _account_document_worker_payload(
+            store_id=store.store_id,
+            document_id=document_id,
+            conversation_id=conversation_id,
+            generation=session_generation,
+            agent_session_id=agent_session_id,
+            payload=result,
+            source_role="managed_document_context",
+            tool_call_id="cowork_doc_get",
+            idempotency_suffix=sha256_text(canonical_json(result)),
+        )
+    return result
 
 
 def cowork_action_snapshot_get(
@@ -634,6 +789,40 @@ def cowork_action_snapshot_get(
                         "consumer": consumer,
                         "generation": session_generation,
                     }
+        assert agent_session_id is not None
+        from work_buddy.cowork.worker_disclosure import (
+            get_cowork_worker_disclosure,
+        )
+
+        derivation_refs = (
+            get_cowork_worker_disclosure().capture_action_snapshot_origins(
+                store_id=store.store_id,
+                action_snapshot_id=action_snapshot_id,
+                purpose="cowork_document_agent",
+                namespace=agent_session_id,
+                truth_registry=_registry(),
+            )
+            if result.get("ok") is True
+            else ()
+        )
+        _account_document_worker_payload(
+            store_id=store.store_id,
+            document_id=document_id,
+            conversation_id=conversation_id,
+            generation=session_generation,
+            agent_session_id=agent_session_id,
+            payload=result,
+            source_role=(
+                "document_action_snapshot"
+                if result.get("ok") is True
+                else "derived_content"
+            ),
+            tool_call_id="cowork_action_snapshot_get",
+            idempotency_suffix=(
+                f"{action_snapshot_id}:{message_id}:{session_generation}"
+            ),
+            derivation_refs=derivation_refs,
+        )
         return result
     except ConversationLeaseLost:
         return {
@@ -753,6 +942,32 @@ def cowork_doc_propose_edit(
                     store,
                     document,
                 )
+                manifest = _bind_document_worker_output(
+                    store_id=store.store_id,
+                    document_id=document.id,
+                    conversation_id=conversation_id,
+                    generation=generation,
+                    agent_session_id=agent_session_id,
+                    output_ref=_document_worker_output_intent_ref(
+                        "proposals",
+                        {
+                            "store_id": store.store_id,
+                            "document_id": document.id,
+                            "base_doc_sha256": base,
+                            "base_structured_head_sha256": structured_base,
+                            "hunks": [
+                                {
+                                    "selector": selector.to_web_annotation(),
+                                    "replacement": replacement,
+                                }
+                                for selector, _quote, replacement in prepared_hunks
+                            ],
+                            "rationale": rationale,
+                            "tldr": tldr,
+                            "claim_refs": list(claim_refs or ()),
+                        },
+                    ),
+                )
                 all_records: list[Any] = []
                 created_records: list[Any] = []
                 for selector, quote, replacement in prepared_hunks:
@@ -795,13 +1010,16 @@ def cowork_doc_propose_edit(
                 )
                 for record in created_records
             ]
-            return {
+            result = {
                 "ok": True,
                 "document_id": document.id,
                 "created_count": len(created_records),
                 "proposals": [_serialize(record) for record in all_records],
                 "events": events,
             }
+            if manifest is not None:
+                result["input_manifest"] = manifest
+            return result
     except ConversationLeaseLost:
         return {"ok": False, "status": "lease_lost"}
 
@@ -853,6 +1071,26 @@ def cowork_doc_comment(
                 else base_doc_sha256
             )
             structured_base = _structured_head_for_document(store, document)
+            manifest = _bind_document_worker_output(
+                store_id=store.store_id,
+                document_id=document.id,
+                conversation_id=conversation_id,
+                generation=generation,
+                agent_session_id=agent_session_id,
+                output_ref=_document_worker_output_intent_ref(
+                    "comment",
+                    {
+                        "store_id": store.store_id,
+                        "document_id": document.id,
+                        "base_doc_sha256": base,
+                        "base_structured_head_sha256": structured_base,
+                        "selector": selector.to_web_annotation(),
+                        "body": body,
+                        "tldr": tldr,
+                        "claim_refs": list(claim_refs or ()),
+                    },
+                ),
+            )
             proposal_id = new_id()
             record = proposals.propose_edit(
                 store,
@@ -884,13 +1122,16 @@ def cowork_doc_comment(
                         },
                     )
                 )
-            return {
+            result = {
                 "ok": True,
                 "document_id": document.id,
                 "created": created,
                 "proposal": _serialize(record),
                 "event": event,
             }
+            if manifest is not None:
+                result["input_manifest"] = manifest
+            return result
     except ConversationLeaseLost:
         return {"ok": False, "status": "lease_lost"}
 
@@ -904,6 +1145,9 @@ def cowork_doc_expression_mark(
     producer_model: str,
     producer_call_id: str | None = None,
     agent_session_id: str | None = None,
+    conversation_id: str | None = None,
+    consumer: str | None = None,
+    generation: str | None = None,
 ) -> dict[str, Any]:
     """Propose linking an existing passage to an existing claim (an expression).
 
@@ -923,45 +1167,80 @@ def cowork_doc_expression_mark(
     selector, quote = _selector_from_anchor(span)
     store = _open_store(store_id)
     _require_document_surface(store)
-    document = documents.get_document(store, document_id)
-    document_span = expressions.ensure_document_span(
-        store,
-        document_id=document.id,
-        selector=selector,
-        quote_exact=quote,
-        actor=actor,
-        # This operation links a claim to prose that already exists. The
-        # agent discovered the expression; it did not author the passage.
-        author_kind="unknown",
-        author_ref=None,
-    )
-    expression = expressions.mark_expression(
-        store,
-        document_span_id=document_span.id,
-        claim_ref=claim_ref,
-        role=role,
-        actor=actor,
-    )
-    event = _serialize(
-        emit_truth_event(
-            "truth.doc_expression_marked",
+    try:
+        with _document_agent_write_fence(
             store_id=store.store_id,
-            subject_kind="expression",
-            subject_id=expression.id,
-            data={
+            document_id=document_id,
+            conversation_id=conversation_id,
+            consumer=consumer,
+            generation=generation,
+            agent_session_id=agent_session_id,
+        ):
+            document = documents.get_document(store, document_id)
+            if documents.current_lifecycle(store, document.id) != "active":
+                raise InvariantViolation(
+                    "retired documents cannot receive Co-work expression marks"
+                )
+            manifest = _bind_document_worker_output(
+                store_id=store.store_id,
+                document_id=document.id,
+                conversation_id=conversation_id,
+                generation=generation,
+                agent_session_id=agent_session_id,
+                output_ref=_document_worker_output_intent_ref(
+                    "expression",
+                    {
+                        "store_id": store.store_id,
+                        "document_id": document.id,
+                        "selector": selector.to_web_annotation(),
+                        "claim_ref": claim_ref,
+                        "role": role,
+                    },
+                ),
+            )
+            document_span = expressions.ensure_document_span(
+                store,
+                document_id=document.id,
+                selector=selector,
+                quote_exact=quote,
+                actor=actor,
+                # This operation links a claim to prose that already exists.
+                # The agent discovered the expression; it did not author it.
+                author_kind="unknown",
+                author_ref=None,
+            )
+            expression = expressions.mark_expression(
+                store,
+                document_span_id=document_span.id,
+                claim_ref=claim_ref,
+                role=role,
+                actor=actor,
+            )
+            event = _serialize(
+                emit_truth_event(
+                    "truth.doc_expression_marked",
+                    store_id=store.store_id,
+                    subject_kind="expression",
+                    subject_id=expression.id,
+                    data={
+                        "document_id": document.id,
+                        "expression_id": expression.id,
+                        "claim_ref": claim_ref,
+                    },
+                )
+            )
+            result = {
+                "ok": True,
                 "document_id": document.id,
-                "expression_id": expression.id,
-                "claim_ref": claim_ref,
-            },
-        )
-    )
-    return {
-        "ok": True,
-        "document_id": document.id,
-        "document_span": _serialize(document_span),
-        "expression": _serialize(expression),
-        "event": event,
-    }
+                "document_span": _serialize(document_span),
+                "expression": _serialize(expression),
+                "event": event,
+            }
+            if manifest is not None:
+                result["input_manifest"] = manifest
+            return result
+    except ConversationLeaseLost:
+        return {"ok": False, "status": "lease_lost"}
 
 
 # --------------------------------------------------------------------------
@@ -981,10 +1260,12 @@ def cowork_verify_job_get(
     """
 
     from work_buddy.cowork.verify_orchestration import get_worker_job
+    from work_buddy.cowork.worker_disclosure import get_cowork_worker_disclosure
 
     return get_worker_job(
         job_id=job_id,
         agent_session_id=agent_session_id,
+        disclosure_boundary=get_cowork_worker_disclosure(),
     )
 
 
@@ -998,12 +1279,14 @@ def cowork_verify_job_submit(
     from work_buddy.cowork.verify_events import emit_verify_completion_event
     from work_buddy.cowork.verify_orchestration import submit_worker_job
     from work_buddy.cowork.verify_runtime import get_job
+    from work_buddy.cowork.worker_disclosure import get_cowork_worker_disclosure
 
     job = get_job(job_id)
     result = submit_worker_job(
         job_id=job_id,
         payload=payload,
         agent_session_id=agent_session_id,
+        disclosure_boundary=get_cowork_worker_disclosure(),
     )
     event = emit_verify_completion_event(job, result)
     if event is not None:
@@ -1023,10 +1306,14 @@ def cowork_truth_analysis_job_get(
     """Return the exact passage and bounded context bound to this transport."""
 
     from work_buddy.cowork.truth_analysis import get_worker_context
+    from work_buddy.cowork.truth_analysis_disclosure import (
+        get_default_truth_analysis_disclosure,
+    )
 
     return get_worker_context(
         run_id=run_id,
         agent_session_id=agent_session_id,
+        disclosure_boundary=get_default_truth_analysis_disclosure(),
     )
 
 
@@ -1038,11 +1325,15 @@ def cowork_truth_analysis_search(
     """Run one capped search for the bound Truth-analysis worker."""
 
     from work_buddy.cowork.truth_analysis import search_web
+    from work_buddy.cowork.truth_analysis_disclosure import (
+        get_default_truth_analysis_disclosure,
+    )
 
     return search_web(
         run_id=run_id,
         query=query,
         agent_session_id=agent_session_id,
+        disclosure_boundary=get_default_truth_analysis_disclosure(),
     )
 
 
@@ -1054,11 +1345,15 @@ def cowork_truth_analysis_fetch(
     """Fetch only a server-issued hit already admitted to this exact run."""
 
     from work_buddy.cowork.truth_analysis import fetch_search_hit
+    from work_buddy.cowork.truth_analysis_disclosure import (
+        get_default_truth_analysis_disclosure,
+    )
 
     return fetch_search_hit(
         run_id=run_id,
         hit_id=hit_id,
         agent_session_id=agent_session_id,
+        disclosure_boundary=get_default_truth_analysis_disclosure(),
     )
 
 
@@ -1070,11 +1365,15 @@ def cowork_truth_analysis_job_submit(
     """Stage one typed output; this capability has no Truth-ledger authority."""
 
     from work_buddy.cowork.truth_analysis import submit_worker_output
+    from work_buddy.cowork.truth_analysis_disclosure import (
+        get_default_truth_analysis_disclosure,
+    )
 
     return submit_worker_output(
         run_id=run_id,
         payload=payload,
         agent_session_id=agent_session_id,
+        disclosure_boundary=get_default_truth_analysis_disclosure(),
     )
 
 
