@@ -794,10 +794,13 @@ def _display_time(value: str | None) -> str:
     if value:
         try:
             parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-            return parsed.astimezone().strftime("%-I:%M %p")
+            # ``stated_at`` is already the user's wall-clock occurrence.  A
+            # projection must not reinterpret it in the host machine's local
+            # timezone (for example UTC on a Linux CI runner).
+            return parsed.strftime("%-I:%M %p")
         except (ValueError, OSError):
             try:
-                return parsed.astimezone().strftime("%I:%M %p").lstrip("0")
+                return parsed.strftime("%I:%M %p").lstrip("0")
             except (UnboundLocalError, ValueError, OSError):
                 pass
     return datetime.now().strftime("%I:%M %p").lstrip("0")

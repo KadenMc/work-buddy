@@ -69,29 +69,51 @@ class TestReadFileRaw:
 class TestDayPlanner:
     def test_get_todays_plan_transient_propagates(self):
         from work_buddy.obsidian.day_planner import env
-        with patch.object(env, "bridge") as mb:
-            mb.read_file_raw.side_effect = ObsidianTimeout("blink")
+        from work_buddy.journal_capture.content_adapter import JournalContentAdapter
+
+        with patch.object(
+            JournalContentAdapter,
+            "read_day",
+            side_effect=ObsidianTimeout("blink"),
+        ):
             with pytest.raises(ObsidianTimeout):
                 env.get_todays_plan("journal/2026-06-15.md")
 
     def test_get_todays_plan_404_is_found_false(self):
         from work_buddy.obsidian.day_planner import env
-        with patch.object(env, "bridge") as mb:
-            mb.read_file_raw.return_value = None
+        from work_buddy.journal_capture.content_adapter import JournalContentAdapter
+        from work_buddy.journal_capture.models import JournalProjectionError
+
+        with patch.object(
+            JournalContentAdapter,
+            "read_day",
+            side_effect=JournalProjectionError("missing"),
+        ):
             result = env.get_todays_plan("journal/2026-06-15.md")
         assert result["found"] is False
 
     def test_write_plan_transient_propagates(self):
         from work_buddy.obsidian.day_planner import env
-        with patch.object(env, "bridge") as mb:
-            mb.read_file_raw.side_effect = ObsidianTimeout("blink")
+        from work_buddy.journal_capture.content_adapter import JournalContentAdapter
+
+        with patch.object(
+            JournalContentAdapter,
+            "snapshot",
+            side_effect=ObsidianTimeout("blink"),
+        ):
             with pytest.raises(ObsidianTimeout):
                 env.write_plan("journal/2026-06-15.md", [])
 
     def test_write_plan_404_is_non_transient_failure(self):
         from work_buddy.obsidian.day_planner import env
-        with patch.object(env, "bridge") as mb:
-            mb.read_file_raw.return_value = None
+        from work_buddy.journal_capture.content_adapter import JournalContentAdapter
+        from work_buddy.journal_capture.models import JournalProjectionError
+
+        with patch.object(
+            JournalContentAdapter,
+            "snapshot",
+            side_effect=JournalProjectionError("missing"),
+        ):
             result = env.write_plan("journal/2026-06-15.md", [])
         assert result["success"] is False
         assert "does not exist" in result["reason"]

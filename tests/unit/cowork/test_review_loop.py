@@ -19,6 +19,7 @@ import pytest
 from work_buddy.truth import proposals
 from work_buddy.truth.identity import sha256_bytes, sha256_text
 
+from .conftest import USER_REF as ENROLLED_USER_REF
 from .conftest import gesture_actor_ref, gesture_count
 
 DOC_REL = "docs/review-loop.md"
@@ -36,7 +37,7 @@ RENDERED_AFTER_ACCEPT = (
 )
 MODEL = "review-loop-model"
 SESSION_ID = "session-review-loop"
-USER_REF = "e2e-reviewer"
+SPOOFED_USER_REF = "e2e-reviewer"
 
 
 def _url(path: str, store_id: str) -> str:
@@ -178,7 +179,7 @@ def test_full_review_loop(loop):
             "expected_ydoc_head_sha256": registered["structured_head_sha256"],
             "idempotency_key": "review-loop-sitting-0001",
         },
-        headers={"X-WB-User-Ref": USER_REF},
+        headers={"X-WB-User-Ref": SPOOFED_USER_REF},
     )
     assert prepared_sitting.status_code == 201
     sitting = prepared_sitting.get_json()
@@ -205,7 +206,7 @@ def test_full_review_loop(loop):
             ),
         },
         content_type="multipart/form-data",
-        headers={"X-WB-User-Ref": USER_REF},
+        headers={"X-WB-User-Ref": SPOOFED_USER_REF},
     )
     assert response.status_code == 200
     payload = response.get_json()
@@ -235,11 +236,13 @@ def test_full_review_loop(loop):
     assert payload["materialize"]["new_file_sha256"] == post_apply_sha256
     assert (loop["root"] / DOC_REL).read_text(encoding="utf-8") == RENDERED_AFTER_ACCEPT
 
-    # Exactly three gestures minted, each bound to the real dashboard user.
+    # Exactly three gestures were minted for the enrolled local principal;
+    # the legacy caller-controlled header cannot replace that identity.
     assert gesture_count(store) == 3
     for result in payload["results"]:
         ref = gesture_actor_ref(store, result["gesture_id"])
-        assert ref == USER_REF
+        assert ref == ENROLLED_USER_REF
+        assert ref != SPOOFED_USER_REF
         assert ref != "work-buddy-user"
 
     # Statuses recorded on the ledger.
