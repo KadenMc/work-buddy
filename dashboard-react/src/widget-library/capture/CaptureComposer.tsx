@@ -31,7 +31,9 @@ export interface CaptureComposerProps {
 const statusTone = (status: string) => {
   if (status === "failed") return "danger" as const;
   if (status === "pending") return "warning" as const;
-  if (status === "succeeded" || status === "persisted") return "success" as const;
+  if (status === "succeeded" || status === "persisted" || status === "placed") {
+    return "success" as const;
+  }
   return "neutral" as const;
 };
 
@@ -64,8 +66,8 @@ export function CaptureComposer({ input, density, onSubmit }: CaptureComposerPro
   );
   const readOnly = input.access.mode === "read_only";
   const targetSupportsMode = target?.supportedModes.includes(mode) ?? false;
-  const smartAvailable = input.targets.some((candidate) =>
-    candidate.supportedModes.includes("smart"),
+  const smartAvailable = input.targets.some(
+    (candidate) => candidate.enabled && candidate.supportedModes.includes("smart"),
   );
 
   useEffect(() => {
@@ -179,11 +181,13 @@ export function CaptureComposer({ input, density, onSubmit }: CaptureComposerPro
           <SwitchField
             className="wb-capture__smart"
             label="Smart"
-            help={{
-              summary: "Run a smart follow-up after capturing.",
-              details:
-                "After preserving your exact text, Smart asks the owning App to interpret its context and run the configured follow-up processing. That may classify or enrich the capture and propose further actions; governed operations still follow Work Buddy's permission and confirmation rules.",
-            }}
+            help={
+              input.smartHelp ?? {
+                summary: "Run a smart follow-up after capturing.",
+                details:
+                  "After preserving your exact text, Smart asks the owning App to interpret its context and run the configured follow-up processing. That may classify or enrich the capture and propose further actions; governed operations still follow Work Buddy's permission and confirmation rules.",
+              }
+            }
             selected={mode === "smart"}
             disabled={readOnly}
             onChange={(selected) =>
@@ -246,12 +250,20 @@ export function CaptureComposer({ input, density, onSubmit }: CaptureComposerPro
           <ul>
             {recent.map((submission) => (
               <li key={submission.clientMutationId}>
-                <span className="wb-capture__exact-text">{submission.exactText}</span>
+                <span className="wb-capture__exact-text">
+                  {submission.exactText ?? "Saved capture awaiting its Journal destination"}
+                </span>
                 <span className="wb-library-meta-row">
                   <StatusBadge
                     label={submission.persistenceStatus}
                     tone={statusTone(submission.persistenceStatus)}
                   />
+                  {submission.placementStatus ? (
+                    <StatusBadge
+                      label={submission.placementStatus}
+                      tone={statusTone(submission.placementStatus)}
+                    />
+                  ) : null}
                   <StatusBadge
                     label={submission.processingStatus.replace(/_/g, " ")}
                     tone={statusTone(submission.processingStatus)}

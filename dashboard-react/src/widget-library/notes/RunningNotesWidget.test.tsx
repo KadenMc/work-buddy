@@ -193,4 +193,44 @@ describe("RunningNotesWidget", () => {
     expect(screen.getByRole("button", { name: "Edit" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Delete" })).toBeDisabled();
   });
+
+  it("offers the source-bound Co-work document action even while note editing is read-only", async () => {
+    const emit = vi.fn().mockResolvedValue({
+      intent_id: "open-note",
+      status: "accepted",
+    });
+    render(
+      renderNotes(
+        {
+          ...input,
+          access: { mode: "read_only", reason: "Managed by the daily note." },
+          items: [
+            {
+              ...item,
+              document: {
+                state: "available",
+                gestureContextSha256: "a".repeat(64),
+              },
+            },
+          ],
+        },
+        emit,
+      ),
+    );
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Open in Co-work" }),
+    );
+
+    expect(emit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        intent_type: "wb.notes.open-document-requested",
+        payload: {
+          item_id: "note-1",
+          expected_version: 3,
+          gesture_context_sha256: "a".repeat(64),
+        },
+      }),
+    );
+  });
 });

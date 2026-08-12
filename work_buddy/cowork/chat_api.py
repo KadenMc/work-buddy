@@ -7,12 +7,13 @@ from collections.abc import Mapping
 from flask import Blueprint, jsonify, request
 
 from work_buddy.cowork.api import (
-    _actor_for_request,
     _document_surface_or_403,
     _emit,
     _fail,
+    _local_identity_error,
     _open_store,
     _reject_read_only,
+    _require_human_action,
     _resolve_document,
 )
 from work_buddy.cowork.chat_targets import (
@@ -23,6 +24,7 @@ from work_buddy.cowork.lifecycle_lock import document_lifecycle_lock
 from work_buddy.cowork.policy import document_surface_allowed
 from work_buddy.truth import documents
 from work_buddy.truth.contracts import InvariantViolation
+from work_buddy.security.local_identity import LocalIdentityError
 
 
 chat_blueprint = Blueprint("cowork_chat_context", __name__)
@@ -72,12 +74,20 @@ def api_prepare_chat_action_snapshot(document_id: str):
                     "This document is not available in Co-work for this folder.",
                     403,
                 )
+            _authority, actor = _require_human_action(
+                operation="chat.action_snapshot_create",
+                store_id=store.store_id,
+                document_id=document.id,
+                body=body,
+            )
             result = prepare_chat_action_snapshot(
                 store,
                 document_id=document.id,
                 capture=capture,
-                actor=_actor_for_request(),
+                actor=actor,
             )
+    except LocalIdentityError as exc:
+        return _local_identity_error(exc)
     except CoworkChatTargetError as exc:
         return (
             jsonify(

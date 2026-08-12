@@ -36,6 +36,7 @@ _DURATION_MULTIPLIERS = {
 _PROJECTION_MODES = frozenset({"resident", "on_demand", "none"})
 _REJECTED_CONTENT_POLICIES = frozenset({"redact", "retain"})
 _DOCUMENT_CLASSES = frozenset({"co_authored", "generated"})
+_POSITIVE_EVIDENCE_EFFECTS = frozenset({"supports", "partially_supports"})
 
 _TOP_LEVEL_KEYS = frozenset(
     {
@@ -47,6 +48,7 @@ _TOP_LEVEL_KEYS = frozenset(
         "required_fields",
         "gate",
         "document_surface",
+        "support_policy",
         "projection",
         "export_committed",
         "proposal_max_age",
@@ -66,6 +68,13 @@ _DOCUMENT_SURFACE_KEYS = frozenset(
         "enabled",
         "allowed_document_classes",
         "feedback_capture",
+    }
+)
+_SUPPORT_POLICY_KEYS = frozenset(
+    {
+        "minimum_usable_supports",
+        "allowed_effects",
+        "allow_human_assertion_as_source",
     }
 )
 
@@ -198,6 +207,26 @@ class DocumentSurfacePolicy:
 
 
 @dataclass(frozen=True, slots=True)
+class ClaimSupportPolicy:
+    """Current support requirements for one claim kind.
+
+    The compatibility default requires no evidence. Tightening a profile only
+    governs future decisions and never reinterprets historical claim status.
+    """
+
+    minimum_usable_supports: int = 0
+    allowed_effects: tuple[str, ...] = ("supports",)
+    allow_human_assertion_as_source: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "minimum_usable_supports": self.minimum_usable_supports,
+            "allowed_effects": list(self.allowed_effects),
+            "allow_human_assertion_as_source": self.allow_human_assertion_as_source,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class StoreProfile:
     """Validated declarative policy for one targeted truth store."""
 
@@ -213,6 +242,7 @@ class StoreProfile:
     document_surface: DocumentSurfacePolicy = field(
         default_factory=DocumentSurfacePolicy
     )
+    support_policy: Mapping[str, ClaimSupportPolicy] = field(default_factory=dict)
     validators: Mapping[str, Any] = field(default_factory=dict)
     extensions: Mapping[str, Any] = field(default_factory=dict)
     extra: Mapping[str, Any] = field(default_factory=dict)
@@ -221,6 +251,11 @@ class StoreProfile:
     def proposal_max_age_seconds(self) -> int | None:
         """Return the configured proposal lifetime in seconds."""
         return _proposal_max_age_seconds(self.proposal_max_age)
+
+    def support_policy_for(self, claim_kind: str) -> ClaimSupportPolicy:
+        """Return an explicit rule or the zero-support compatibility policy."""
+
+        return self.support_policy.get(claim_kind, ClaimSupportPolicy())
 
     def to_dict(self) -> dict[str, Any]:
         """Return a YAML-safe mapping without discarding extension data."""
@@ -242,6 +277,11 @@ class StoreProfile:
         # gaining an implicit block.
         if self.document_surface != DocumentSurfacePolicy():
             data["document_surface"] = self.document_surface.to_dict()
+        if self.support_policy:
+            data["support_policy"] = {
+                kind: policy.to_dict()
+                for kind, policy in self.support_policy.items()
+            }
         if self.validators:
             data["validators"] = _plain_copy(dict(self.validators))
         if self.extensions:
@@ -340,6 +380,58 @@ def _parse_required_fields(
     return parsed
 
 
+def _parse_support_policy(
+    value: Any,
+    allowed_claim_kinds: tuple[str, ...],
+) -> dict[str, ClaimSupportPolicy]:
+    if value is None:
+        return {}
+    raw = _require_mapping(value, "support_policy")
+    allowed = set(allowed_claim_kinds)
+    parsed: dict[str, ClaimSupportPolicy] = {}
+    for raw_kind, raw_policy in raw.items():
+        kind = _require_nonempty_string(raw_kind, "support_policy claim kind")
+        if kind not in allowed:
+            raise ProfileError(
+                f"support_policy declares disallowed claim kind {kind!r}"
+            )
+        policy = _require_mapping(raw_policy, f"support_policy.{kind}")
+        unknown = set(policy) - _SUPPORT_POLICY_KEYS
+        if unknown:
+            raise ProfileError(
+                f"support_policy.{kind} has unknown keys: {sorted(unknown)}"
+            )
+        minimum = policy.get("minimum_usable_supports", 0)
+        if isinstance(minimum, bool) or not isinstance(minimum, int) or minimum < 0:
+            raise ProfileError(
+                f"support_policy.{kind}.minimum_usable_supports must be a nonnegative integer"
+            )
+        effects = _unique_strings(
+            policy.get("allowed_effects", ["supports"]),
+            f"support_policy.{kind}.allowed_effects",
+            nonempty=False,
+        )
+        invalid = sorted(set(effects) - _POSITIVE_EVIDENCE_EFFECTS)
+        if invalid:
+            raise ProfileError(
+                f"support_policy.{kind}.allowed_effects contains nonpositive effects: {invalid}"
+            )
+        if minimum > 0 and not effects:
+            raise ProfileError(
+                f"support_policy.{kind}.allowed_effects cannot be empty when support is required"
+            )
+        allow_assertion = _require_bool(
+            policy.get("allow_human_assertion_as_source", True),
+            f"support_policy.{kind}.allow_human_assertion_as_source",
+        )
+        parsed[kind] = ClaimSupportPolicy(
+            minimum_usable_supports=minimum,
+            allowed_effects=effects,
+            allow_human_assertion_as_source=allow_assertion,
+        )
+    return parsed
+
+
 def validate_profile(value: StoreProfile | Mapping[str, Any]) -> StoreProfile:
     """Validate profile data and return its normalized model.
 
@@ -376,6 +468,9 @@ def validate_profile(value: StoreProfile | Mapping[str, Any]) -> StoreProfile:
     required_fields = _parse_required_fields(
         raw.get("required_fields", {}), allowed_claim_kinds
     )
+    support_policy = _parse_support_policy(
+        raw.get("support_policy"), allowed_claim_kinds
+    )
     gate = _parse_gate(raw.get("gate"))
     document_surface = _parse_document_surface(raw.get("document_surface"))
 
@@ -401,6 +496,7 @@ def validate_profile(value: StoreProfile | Mapping[str, Any]) -> StoreProfile:
         required_fields=required_fields,
         gate=gate,
         document_surface=document_surface,
+        support_policy=support_policy,
         projection=projection,
         export_committed=_require_bool(raw.get("export_committed"), "export_committed"),
         proposal_max_age=_normalize_proposal_max_age(raw.get("proposal_max_age")),
@@ -523,6 +619,7 @@ def validate_new_claim(
 
 
 __all__ = [
+    "ClaimSupportPolicy",
     "DocumentSurfacePolicy",
     "GatePolicy",
     "StoreProfile",

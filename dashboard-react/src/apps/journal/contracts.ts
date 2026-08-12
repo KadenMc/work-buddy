@@ -71,6 +71,7 @@ export type TimelinePrecision = "exact" | "derived" | "approximate";
 export type TimelineProvenanceSource =
   | "user"
   | "agent"
+  | "local_submission"
   | "calendar"
   | "conversation_observability"
   | "planner";
@@ -136,7 +137,13 @@ export interface JournalCaptureTarget {
 }
 
 export type CapturePersistenceStatus = "persisted" | "failed";
-export type CaptureProcessingStatus = "not_requested" | "pending" | "succeeded" | "failed";
+export type CaptureProcessingStatus =
+  | "not_requested"
+  | "pending"
+  | "running"
+  | "succeeded"
+  | "failed";
+export type CapturePlacementStatus = "pending" | "placed" | "failed";
 
 export interface CaptureAnnotation {
   readonly summary: string;
@@ -144,17 +151,20 @@ export interface CaptureAnnotation {
 }
 
 export interface JournalCaptureSubmission {
+  readonly captureId?: string;
   readonly clientMutationId: string;
   readonly targetId: JournalCaptureTargetId;
   readonly mode: JournalCaptureMode;
   /** Exact user input. Providers and renderers must not trim, normalize, or rewrite it. */
-  readonly exactText: string;
+  readonly exactText?: string;
   readonly submittedAt: IsoDateTime;
   readonly persistenceStatus: CapturePersistenceStatus;
+  readonly placementStatus?: CapturePlacementStatus;
   /** Dumb captures always use `not_requested`; they never enter per-entry processing. */
   readonly processingStatus: CaptureProcessingStatus;
   readonly annotation?: CaptureAnnotation;
   readonly errorMessage?: string;
+  readonly sourceRef?: string;
 }
 
 export interface JournalCaptureInput {
@@ -162,12 +172,21 @@ export interface JournalCaptureInput {
   readonly revision: JournalRevision;
   readonly dayId: string;
   readonly access: JournalAccess;
+  readonly smartHelp?: {
+    readonly summary: string;
+    readonly details: string;
+  };
   readonly targets: readonly JournalCaptureTarget[];
   readonly capturesToday: number;
   readonly recentSubmissions: readonly JournalCaptureSubmission[];
 }
 
-export type RunningNoteProcessingState = "not_requested" | "pending" | "succeeded" | "failed";
+export type RunningNoteProcessingState =
+  | "not_requested"
+  | "pending"
+  | "running"
+  | "succeeded"
+  | "failed";
 export type RunningNoteResolutionState =
   | "open"
   | "routed_to_task"
@@ -194,6 +213,20 @@ export interface JournalRunningNoteItem {
   readonly groupId?: string;
   readonly threadId?: string;
   readonly version: number;
+  readonly document?:
+    | {
+        readonly state: "available";
+        readonly gestureContextSha256: string;
+      }
+    | {
+        readonly state: "current" | "paused_diverged";
+        readonly gestureContextSha256: string;
+        readonly href: string;
+        readonly storeId: string;
+        readonly documentId: string;
+        readonly changeId: string;
+        readonly contentAuthorityEpoch: number;
+      };
 }
 
 /**
@@ -330,6 +363,18 @@ export interface JournalRunningNoteOpenThreadIntent
   readonly payload: { readonly item_id: string; readonly thread_id: string };
 }
 
+export interface JournalRunningNoteOpenDocumentIntent
+  extends JournalIntentEnvelope<
+    "wb.notes.open-document-requested",
+    typeof JOURNAL_WIDGET_INSTANCE_IDS.runningNotes
+  > {
+  readonly payload: {
+    readonly item_id: string;
+    readonly expected_version: number;
+    readonly gesture_context_sha256: string;
+  };
+}
+
 export type JournalIntent =
   | JournalCaptureSubmitIntent
   | JournalTimelineOpenItemIntent
@@ -338,7 +383,8 @@ export type JournalIntent =
   | JournalTimelineSetRenderModeIntent
   | JournalRunningNoteEditIntent
   | JournalRunningNoteDeleteIntent
-  | JournalRunningNoteOpenThreadIntent;
+  | JournalRunningNoteOpenThreadIntent
+  | JournalRunningNoteOpenDocumentIntent;
 
 export type JournalFixtureLoadStatus = "loading" | "ready" | "stale" | "offline" | "error";
 

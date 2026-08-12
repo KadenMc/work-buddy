@@ -11,11 +11,12 @@ from flask import Blueprint, jsonify, request
 from work_buddy.agent_execution.models import AgentExecutionSelection
 from work_buddy.consent import user_initiated
 from work_buddy.cowork.api import (
-    _actor_for_request,
     _document_surface_or_403,
     _emit,
     _fail,
+    _local_identity_error,
     _reject_read_only,
+    _require_human_action,
     _resolve_document,
     _resolve_store,
 )
@@ -42,6 +43,7 @@ from work_buddy.cowork.verify_configuration import (
 )
 from work_buddy.truth import documents
 from work_buddy.truth.contracts import InvariantViolation
+from work_buddy.security.local_identity import LocalIdentityError
 
 
 verify_blueprint = Blueprint("cowork_verify", __name__)
@@ -102,6 +104,8 @@ def _mutation_context(document_id: str):
 
 
 def _safe_error(exc: Exception):
+    if isinstance(exc, LocalIdentityError):
+        return _local_identity_error(exc)
     if isinstance(exc, (VerifyOrchestrationError, InvariantViolation, ValueError)):
         return _fail(str(exc), 409)
     return _fail("Co-work could not start this exact action.", 500)
@@ -119,12 +123,18 @@ def api_affirm_verify_recheck_target(document_id: str):
         capture = body.get("capture")
         if not isinstance(capture, Mapping):
             raise VerifyOrchestrationError("capture is required")
+        _authority, actor = _require_human_action(
+            operation="verify.recheck_target_affirm",
+            store_id=store.store_id,
+            document_id=document.id,
+            body=body,
+        )
         with user_initiated("dashboard.cowork.verify_target_affirmation"):
             result = affirm_verify_recheck_target(
                 store,
                 document_id=document.id,
                 capture=capture,
-                actor=_actor_for_request(),
+                actor=actor,
                 recheck_intent_id=str(body.get("recheck_intent_id") or ""),
                 source_run_id=str(body.get("source_run_id") or ""),
                 proposal_ids=body.get("proposal_ids", ()),
@@ -159,13 +169,19 @@ def api_start_verify_run(document_id: str):
         capture = body.get("capture")
         if not isinstance(capture, Mapping):
             raise VerifyOrchestrationError("capture is required")
+        _authority, actor = _require_human_action(
+            operation="verify.run",
+            store_id=store.store_id,
+            document_id=document.id,
+            body=body,
+        )
         with user_initiated("dashboard.cowork.verify_run"):
             result = start_verify_run(
                 store,
                 document_id=document.id,
                 capture=capture,
                 selection=_selection(body),
-                actor=_actor_for_request(),
+                actor=actor,
                 user_goal=str(body.get("user_goal") or ""),
                 protected_intent=str(body.get("protected_intent") or ""),
                 recheck_of_proposal_ids=body.get(
@@ -279,13 +295,19 @@ def api_verify_criterion_update(document_id: str, criterion_key: str):
             raise VerifyOrchestrationError(
                 "expected_activation_id must be a string or null"
             )
+        _authority, actor = _require_human_action(
+            operation="verify.criterion_update",
+            store_id=store.store_id,
+            document_id=document.id,
+            body=body,
+        )
         with user_initiated("dashboard.cowork.verify_configuration"):
             result = set_document_criterion_enabled(
                 store,
                 document_id=document.id,
                 criterion_key=criterion_key,
                 enabled=body["enabled"],
-                actor=_actor_for_request(),
+                actor=actor,
                 expected_activation_id=expected_activation_id,
             )
     except Exception as exc:  # noqa: BLE001
@@ -321,6 +343,12 @@ def api_verify_criterion_draft_create(document_id: str):
             raise VerifyOrchestrationError(
                 "limitations must be an array of strings"
             )
+        _authority, actor = _require_human_action(
+            operation="verify.criterion_draft_create",
+            store_id=store.store_id,
+            document_id=document.id,
+            body=body,
+        )
         with user_initiated("dashboard.cowork.verify_criterion_draft"):
             result = create_user_criterion_draft(
                 store,
@@ -331,7 +359,7 @@ def api_verify_criterion_draft_create(document_id: str):
                     body.get("evaluation_instructions") or ""
                 ),
                 limitations=limitations,
-                actor=_actor_for_request(),
+                actor=actor,
             )
     except Exception as exc:  # noqa: BLE001
         return _safe_error(exc)
@@ -365,6 +393,12 @@ def api_verify_check_create(document_id: str):
             raise VerifyOrchestrationError(
                 "limitations must be an array of strings"
             )
+        _authority, actor = _require_human_action(
+            operation="verify.check_create",
+            store_id=store.store_id,
+            document_id=document.id,
+            body=body,
+        )
         with user_initiated("dashboard.cowork.verify_check"):
             result = create_user_verification_check(
                 store,
@@ -375,7 +409,7 @@ def api_verify_check_create(document_id: str):
                     body.get("evaluation_instructions") or ""
                 ),
                 limitations=limitations,
-                actor=_actor_for_request(),
+                actor=actor,
             )
     except Exception as exc:  # noqa: BLE001
         return _safe_error(exc)
@@ -407,13 +441,19 @@ def api_start_cothink(document_id: str):
         capture = body.get("capture")
         if not isinstance(capture, Mapping):
             raise VerifyOrchestrationError("capture is required")
+        _authority, actor = _require_human_action(
+            operation="cothink.run",
+            store_id=store.store_id,
+            document_id=document.id,
+            body=body,
+        )
         with user_initiated("dashboard.cowork.cothink"):
             result = start_cothink(
                 store,
                 document_id=document.id,
                 capture=capture,
                 selection=_selection(body),
-                actor=_actor_for_request(),
+                actor=actor,
                 purpose=str(
                     body.get("purpose")
                     or "Invite one useful alternative perspective."
@@ -467,6 +507,22 @@ def api_cothink_item_action(
             raise VerifyOrchestrationError(
                 "action must be discuss, park, or dismiss"
             )
+        if action == "discuss":
+            # Fail before consuming the one-use human gesture.  The lower
+            # persistence boundary checks again immediately before mutation.
+            from work_buddy.backups.source_foundation_restore import (
+                require_source_foundation_writable,
+            )
+
+            require_source_foundation_writable(
+                "dashboard.cowork.cothink_discussion"
+            )
+        authority, actor = _require_human_action(
+            operation="cothink.item_action",
+            store_id=store.store_id,
+            document_id=document.id,
+            body=body,
+        )
         canonical_sha256 = body.get("canonical_sha256")
         if not isinstance(canonical_sha256, str):
             raise VerifyOrchestrationError("canonical_sha256 is required")
@@ -498,6 +554,7 @@ def api_cothink_item_action(
                     document_id=document.id,
                     item_id=item.id,
                     canonical_sha256=item.canonical_sha256,
+                    ingress=authority.to_input_ingress(),
                 )
                 try:
                     # The discussion turn is already durable and its original
@@ -527,7 +584,7 @@ def api_cothink_item_action(
                 store,
                 cothink_item_id=item.id,
                 status="parked" if action == "park" else "dismissed",
-                actor=_actor_for_request(),
+                actor=actor,
             )
     except Exception as exc:  # noqa: BLE001
         return _safe_error(exc)

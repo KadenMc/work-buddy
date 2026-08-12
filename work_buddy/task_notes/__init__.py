@@ -1,0 +1,83 @@
+"""Task-note compatibility adapter and separately gated migration."""
+
+from work_buddy.task_notes.adapter import (
+    CoworkTaskNotePort,
+    TaskNoteContentAdapter,
+    TaskNoteContentConflict,
+    TaskNoteContentError,
+    TaskNoteMutationResult,
+    get_task_note_adapter,
+    note_uuid_from_path,
+    validate_note_uuid,
+)
+from work_buddy.task_notes.models import (
+    AuthorityEpoch,
+    AuthorityState,
+    ChangeOperationState,
+    ComparisonState,
+    ProjectionOutcome,
+    ProjectionState,
+    SagaState,
+    SourceDependencyState,
+    TaskNoteChangeOperation,
+    TaskNoteDescriptor,
+    TaskNoteMigration,
+    TaskNoteSaga,
+    TaskNoteSourceDependency,
+)
+from work_buddy.task_notes.change_service import (
+    TaskNoteChangeResult,
+    TaskNoteSourceChangeService,
+)
+from work_buddy.task_notes.migration import (
+    BoundTaskNoteReader,
+    ShadowImportResult,
+    TaskNoteProjectionWorker,
+    TaskNoteProjectionDiverged,
+    TaskNoteShadowImporter,
+    normalized_markdown_sha256,
+)
+from work_buddy.task_notes.store import (
+    JournalAuthorityCoordinator,
+    TaskNoteCutoverBlocked,
+    TaskNoteMigrationConflict,
+    TaskNoteMigrationError,
+    TaskNoteMigrationStore,
+)
+
+__all__ = [
+    "AuthorityEpoch",
+    "AuthorityState",
+    "BoundTaskNoteReader",
+    "ChangeOperationState",
+    "ComparisonState",
+    "CoworkTaskNotePort",
+    "JournalAuthorityCoordinator",
+    "ProjectionOutcome",
+    "ProjectionState",
+    "SagaState",
+    "SourceDependencyState",
+    "ShadowImportResult",
+    "TaskNoteContentAdapter",
+    "TaskNoteContentConflict",
+    "TaskNoteContentError",
+    "TaskNoteCutoverBlocked",
+    "TaskNoteDescriptor",
+    "TaskNoteChangeOperation",
+    "TaskNoteChangeResult",
+    "TaskNoteMigration",
+    "TaskNoteMigrationConflict",
+    "TaskNoteMigrationError",
+    "TaskNoteMigrationStore",
+    "TaskNoteMutationResult",
+    "TaskNoteSaga",
+    "TaskNoteSourceChangeService",
+    "TaskNoteSourceDependency",
+    "TaskNoteProjectionWorker",
+    "TaskNoteProjectionDiverged",
+    "TaskNoteShadowImporter",
+    "get_task_note_adapter",
+    "note_uuid_from_path",
+    "normalized_markdown_sha256",
+    "validate_note_uuid",
+]

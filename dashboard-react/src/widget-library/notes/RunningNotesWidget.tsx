@@ -46,6 +46,16 @@ export default function RunningNotesWidget({
       }) as RunningNotesIntent,
     );
   };
+  const openDocument = (item: MarkdownNoteItem) => {
+    if (!item.document) return;
+    return emit(
+      createWidgetIntent(presentation, "wb.notes.open-document-requested", {
+        item_id: item.itemId,
+        expected_version: item.version,
+        gesture_context_sha256: item.document.gestureContextSha256,
+      }) as RunningNotesIntent,
+    );
+  };
 
   return (
     <div className="wb-running-notes">
@@ -62,6 +72,7 @@ export default function RunningNotesWidget({
           onEdit={edit}
           onDelete={deleteItem}
           onOpenThread={openThread}
+          onOpenDocument={openDocument}
           simulateMutations={presentation.interactionMode === "preview"}
         />
       )}

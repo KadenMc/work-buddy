@@ -20,6 +20,7 @@ MUTABLE_LINK_TYPES = frozenset({"about_entity", "cites_external"})
 IMMUTABLE_LINK_TYPES = frozenset(
     {
         "supports_span",
+        "evidence_relation",
         "supersedes",
         "conflicts_with",
         "refutes",

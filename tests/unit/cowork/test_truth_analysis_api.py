@@ -4,13 +4,24 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from work_buddy.agent_execution.models import AgentExecutionSelection
 from work_buddy.cowork import (
     api as cowork_api,
     truth_analysis,
     truth_analysis_api,
     truth_analysis_runtime,
 )
+from work_buddy.security.actors import ActorRef
+from work_buddy.security.local_identity import (
+    HUMAN_AUTHORITY_ASSURANCE,
+    HUMAN_AUTHORITY_BASIS,
+    HumanAuthorityContext,
+    LocalIdentityError,
+    LocalPrincipal,
+)
+from work_buddy.sources import SourceStore
 from work_buddy.truth import documents
+from work_buddy.truth.identity import sha256_text
 
 from .conftest import HUMAN
 from .test_truth_analysis import _capture, _candidate, _payload
@@ -28,13 +39,59 @@ def analysis_api_env(client, seeded, tmp_path, monkeypatch):
         "TruthStoreRegistry",
         lambda: seeded["registry"],
     )
+    source_store = SourceStore.create(
+        tmp_path / "truth-analysis-api-sources",
+        authority_id="truth-analysis-api-source-authority",
+    )
+    monkeypatch.setattr(
+        truth_analysis,
+        "_open_truth_source_store",
+        lambda: source_store,
+    )
+    authority_calls = []
+
+    def _authority(*, action, subject, context_sha256):
+        authority_calls.append((action, subject, context_sha256))
+        actor = ActorRef(
+            issuer_authority_id="test-api-issuer",
+            subject="dashboard-user",
+            kind="human",
+            tenant_scope_id="test-api-tenant",
+        )
+        return HumanAuthorityContext(
+            principal=LocalPrincipal(
+                actor=actor,
+                session_id="test-api-session",
+                origin="http://localhost",
+                audience="work-buddy-dashboard",
+                session_expires_at=9_999_999_999.0,
+                rotation_due_at=9_999_999_000.0,
+            ),
+            action=action,
+            subject_sha256=sha256_text(subject),
+            context_sha256=context_sha256,
+            gesture_id="test-api-gesture",
+            assurance=HUMAN_AUTHORITY_ASSURANCE,
+            basis=HUMAN_AUTHORITY_BASIS,
+        )
+
+    monkeypatch.setattr(
+        truth_analysis_api,
+        "require_human_authority_request",
+        _authority,
+    )
     enqueued = []
     monkeypatch.setattr(
         truth_analysis_api,
         "enqueue_truth_analysis_launch",
         lambda run, **_kwargs: enqueued.append(run.run_id) or {"queued": True},
     )
-    return {**seeded, "client": client, "enqueued": enqueued}
+    return {
+        **seeded,
+        "client": client,
+        "enqueued": enqueued,
+        "authority_calls": authority_calls,
+    }
 
 
 def _base(env):
@@ -139,6 +196,21 @@ def test_start_load_and_dismiss_candidate_over_http(analysis_api_env):
     assert started["status"] == "queued"
     assert started["target_choice"] == "current_selection"
     assert env["enqueued"] == [started["analysis_run_id"]]
+    with env["store"]._read_connection() as conn:
+        action_actor = conn.execute(
+            "SELECT created_by_kind, created_by_ref FROM action_snapshots "
+            "WHERE id = ?",
+            (started["action_snapshot_id"],),
+        ).fetchone()
+    assert tuple(action_actor) == (
+        "human",
+        ActorRef(
+            issuer_authority_id="test-api-issuer",
+            subject="dashboard-user",
+            kind="human",
+            tenant_scope_id="test-api-tenant",
+        ).canonical_id,
+    )
     current = env["client"].get(_url(env, "/current"))
     specific = env["client"].get(
         _url(env, f"/{started['analysis_run_id']}")
@@ -184,6 +256,130 @@ def test_start_load_and_dismiss_candidate_over_http(analysis_api_env):
         "claim_id": None,
         "expression_id": None,
     }
+    assert env["authority_calls"] == [
+        (
+            truth_analysis.ANALYSIS_START_ACTION,
+            truth_analysis.analysis_start_subject(env["document"].id),
+            truth_analysis.analysis_start_context_sha256(
+                store_id=env["store"].store_id,
+                document_id=env["document"].id,
+                capture=_capture(env),
+                selection=AgentExecutionSelection(
+                    provider_id="claude-code",
+                    model_id="sonnet",
+                    provider_label="",
+                    model_label="",
+                ),
+            ),
+        ),
+        (
+            truth_analysis.CANDIDATE_DECISION_ACTION,
+            truth_analysis.candidate_decision_subject(
+                run.run_id, candidate["candidate_id"]
+            ),
+            truth_analysis.candidate_decision_context_sha256(
+                store_id=env["store"].store_id,
+                document_id=env["document"].id,
+                run_id=run.run_id,
+                candidate_id=candidate["candidate_id"],
+                expected_canonical_sha256=candidate["canonical_sha256"],
+                decision="dismiss",
+                existing_claim_id=None,
+                edits=None,
+            ),
+        )
+    ]
+
+
+def test_start_fails_closed_without_local_identity_and_ignores_spoofed_actor(
+    analysis_api_env,
+    monkeypatch,
+):
+    env = analysis_api_env
+    monkeypatch.setattr(
+        truth_analysis_api,
+        "require_human_authority_request",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            LocalIdentityError(
+                "local_session_required",
+                "An authenticated local session is required.",
+                status=401,
+            )
+        ),
+    )
+
+    response = env["client"].post(
+        _url(env),
+        json={
+            "capture": _capture(env),
+            "execution": {
+                "provider_id": "claude-code",
+                "model_id": "sonnet",
+            },
+            "actor": {"kind": "human", "ref": "spoofed-body"},
+        },
+        headers={"X-WB-User-Ref": "spoofed-header"},
+    )
+
+    assert response.status_code == 401
+    assert response.get_json()["error"]["code"] == "local_session_required"
+    assert env["enqueued"] == []
+    assert truth_analysis_runtime.runs_for_document(
+        env["store"].store_id, env["document"].id
+    ) == ()
+
+
+def test_candidate_decision_fails_closed_without_local_identity(
+    analysis_api_env,
+    monkeypatch,
+):
+    env = analysis_api_env
+    started = env["client"].post(
+        _url(env),
+        json={
+            "capture": _capture(env),
+            "execution": {"provider_id": "claude-code", "model_id": "sonnet"},
+        },
+    ).get_json()
+    run = truth_analysis_runtime.get_run(started["analysis_run_id"])
+    context = truth_analysis.get_worker_context(
+        run_id=run.run_id, agent_session_id=run.session_id
+    )
+    truth_analysis.submit_worker_output(
+        run_id=run.run_id,
+        agent_session_id=run.session_id,
+        payload=_payload(context, [_candidate("A gated candidate.")]),
+    )
+    candidate = truth_analysis.analysis_run_view(run, store=env["store"])[
+        "candidates"
+    ][0]
+    monkeypatch.setattr(
+        truth_analysis_api,
+        "require_human_authority_request",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            LocalIdentityError(
+                "local_session_required",
+                "An authenticated local session is required.",
+                status=401,
+            )
+        ),
+    )
+
+    response = env["client"].post(
+        _url(
+            env,
+            f"/{run.run_id}/candidates/{candidate['candidate_id']}/decisions",
+        ),
+        json={
+            "decision": "dismiss",
+            "expected_canonical_sha256": candidate["canonical_sha256"],
+            "actor": {"kind": "human", "ref": "spoofed"},
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.get_json()["code"] == "local_session_required"
+    assert truth_analysis_runtime.candidate_decisions_for_run(run.run_id) == ()
 
 
 def test_current_returns_404_when_document_has_no_analysis(analysis_api_env):

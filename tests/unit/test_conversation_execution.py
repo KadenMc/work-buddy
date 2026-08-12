@@ -691,7 +691,6 @@ def test_cowork_long_wait_stops_reading_after_generation_fence(
         "consumer": consumer,
         "generation": generation,
         "timeout_seconds": 1,
-        "agent_session_id": f"{generation}-cowork",
     }
     result = (
         operation(question="Continue?", **common)

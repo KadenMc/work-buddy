@@ -35,6 +35,9 @@ See ``architecture/backups`` for the full subsystem reference.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -49,6 +52,7 @@ from work_buddy.backups.manifest import (
     MANIFEST_FILENAME, Manifest, read_manifest,
 )
 from work_buddy.backups.remote import get_backup_repo
+from work_buddy.backups.source_foundation_restore import write_restore_fence
 from work_buddy.logging_config import get_logger
 from work_buddy.paths import data_dir, repo_root
 
@@ -283,6 +287,11 @@ def restore(
     Raises :class:`RestoreRefused` on safety-check failures (when
     ``force=False``) and :class:`RestoreFailed` on pipeline errors.
     """
+    from work_buddy.backups.source_foundation_restore import (
+        require_source_foundation_writable,
+    )
+
+    require_source_foundation_writable("backup.restore")
     # 1. Source
     if from_remote:
         snapshot_dir = _download_remote_snapshot(
@@ -320,8 +329,26 @@ def restore(
     # Scoped truth payloads require an explicit Truth import/recovery flow.
     # Keep them in the snapshot tarball and out of the host database swap.
     truth_payloads = staging_dir / "truth_stores"
+    portable_truth_member = None
     if truth_payloads.exists():
-        shutil.rmtree(truth_payloads)
+        # Keep portable scoped recovery material inside the fenced cohort, but
+        # outside the machine DB namespace.  The high-consent reconciliation
+        # operator is the only code allowed to publish it into a user-selected
+        # Folder.  Deleting it here made a fresh restore impossible to finish.
+        recovery_root = staging_dir / "source_foundation_recovery" / snapshot_dir.name
+        recovery_root.mkdir(parents=True, exist_ok=False)
+        portable_truth = recovery_root / "truth_stores"
+        os.replace(truth_payloads, portable_truth)
+        portable_truth_member = portable_truth.relative_to(staging_dir).as_posix()
+    enrollment_path = staging_dir / "local_identity_enrollment.json"
+    enrollment_evidence = None
+    if enrollment_path.is_file():
+        enrollment_bytes = enrollment_path.read_bytes()
+        enrollment_evidence = {
+            "member": enrollment_path.name,
+            "sha256": hashlib.sha256(enrollment_bytes).hexdigest(),
+            "trusted": False,
+        }
 
     # 4. Migrate each DB in staging forward.
     #    The on-disk file's basename (e.g. "task_metadata.db") is the
@@ -352,6 +379,47 @@ def restore(
 
     # 7. Atomic swap
     pre_restore_dir = data_dir("") / f"db.pre_restore_{swap_ts}"
+    # Sensitive Source Foundation stores are intentionally absent from the
+    # unencrypted archive. Move live copies only after every staging check has
+    # passed; a disaster restore with no live copy leaves them absent and
+    # therefore unable to claim prior authority/provenance.
+    marker_payload = {
+        "snapshot_id": snapshot_dir.name,
+        "restored_at": datetime.now(timezone.utc).isoformat(),
+        "reason": "authority_and_projection_reconciliation_required",
+        "pre_restore_dir": str(pre_restore_dir),
+        "identity_enrollment": enrollment_evidence,
+        "portable_truth_root": portable_truth_member,
+        "truth_stores": [
+            {
+                key: item.get(key)
+                for key in (
+                    "path",
+                    "store_id",
+                    "backup_status",
+                    "profile_member",
+                    "export_member",
+                    "export_sha256",
+                    "causality_member",
+                    "causality_sha256",
+                    "causality_payload_sha256",
+                )
+            }
+            for item in manifest.truth_stores
+        ],
+        "reconciliation": {
+            "state": "pending",
+            "identity_trust": None,
+        },
+    }
+    # Publish the fence inside staging before the directory swap. Once staging
+    # becomes the live database directory there is no crash window in which
+    # restored authorities are visible without the central read-only marker.
+    write_restore_fence(
+        marker_payload,
+        path=staging_dir / "source_foundation_restore_pending.json",
+    )
+    _copy_preserved_source_foundation_state(db_dir, staging_dir)
     if db_dir.exists():
         db_dir.rename(pre_restore_dir)
     staging_dir.rename(db_dir)
@@ -405,6 +473,96 @@ def _apply_migrations_inplace(db_name: str, db_path: Path) -> None:
         runner.run(conn)
     finally:
         conn.close()
+
+
+def _copy_sqlite_snapshot(source: Path, destination: Path) -> None:
+    """Hot-copy one SQLite authority without changing its live location."""
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    source_conn = sqlite3.connect(str(source))
+    destination_conn = sqlite3.connect(str(destination))
+    try:
+        source_conn.backup(destination_conn)
+    finally:
+        destination_conn.close()
+        source_conn.close()
+
+
+def _copy_sources_snapshot(source: Path, destination: Path) -> None:
+    """Copy Sources metadata and registered blobs under its writer lock."""
+
+    from work_buddy.sources.store import SourceStore
+
+    store = SourceStore.open(source)
+    destination.mkdir(parents=True, exist_ok=False)
+    (destination / "blobs").mkdir()
+    # Hold SQLite's cross-process writer reservation while a *separate* read
+    # connection performs the backup.  sqlite3_backup on the connection that
+    # owns BEGIN IMMEDIATE can wait forever for its own transaction on Windows.
+    writer = store.connect()
+    source_conn = sqlite3.connect(
+        f"file:{store.paths.db.resolve()}?mode=ro",
+        uri=True,
+    )
+    source_conn.row_factory = sqlite3.Row
+    try:
+        writer.execute("BEGIN IMMEDIATE")
+        destination_conn = sqlite3.connect(str(destination / "store.db"))
+        try:
+            source_conn.backup(destination_conn)
+        finally:
+            destination_conn.close()
+        rows = source_conn.execute(
+            "SELECT content_sha256,relative_path FROM source_blobs "
+            "ORDER BY content_sha256"
+        ).fetchall()
+        for row in rows:
+            relative = Path(str(row["relative_path"]))
+            source_blob = store.paths.blobs / relative
+            destination_blob = destination / "blobs" / relative
+            destination_blob.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_blob, destination_blob)
+    finally:
+        if writer.in_transaction:
+            writer.rollback()
+        source_conn.close()
+        writer.close()
+
+
+def _copy_preserved_source_foundation_state(live_db: Path, staging: Path) -> None:
+    """Snapshot non-archived live state without touching the live cohort.
+
+    A prior implementation renamed these authorities out of ``live_db`` before
+    the database-directory swap.  A stop between that rename and publication
+    destroyed the currently running installation's only live copy.  Every
+    source remains in place now; the ordinary directory swap retains it in the
+    pre-restore rollback directory as well.
+    """
+
+    if not live_db.is_dir():
+        return
+    for name in (
+        "journal_capture.db",
+        "local_identity.db",
+        "cowork_conversation_source_dependencies.db",
+    ):
+        source = live_db / name
+        destination = staging / name
+        if not source.exists():
+            continue
+        if destination.exists():
+            destination.unlink()
+        _copy_sqlite_snapshot(source, destination)
+    sources = live_db / "sources"
+    if sources.is_dir():
+        destination = staging / "sources"
+        if destination.exists():
+            shutil.rmtree(destination)
+        _copy_sources_snapshot(sources, destination)
+
+
+# Compatibility for tests and internal callers that imported the old helper.
+_move_preserved_source_foundation_state = _copy_preserved_source_foundation_state
 
 
 def _verify_integrity(db_path: Path) -> None:

@@ -28,8 +28,33 @@ import type {
   TruthViewScope,
   TruthConflict,
 } from "./contracts";
+import {
+  initializeLocalIdentity,
+  issueHumanGesture,
+  localIdentityHeaders,
+  sha256Hex,
+} from "../../../security/localIdentity";
 
 type JsonObject = Record<string, unknown>;
+
+const canonicalJson = (value: unknown): string => {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (typeof value === "object") {
+    const entries = Object.entries(value as JsonObject)
+      .filter(([, item]) => item !== undefined)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+    return `{${entries
+      .map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+};
+
+const TRUTH_MUTATION_GESTURE_SCHEMA = "wb.cowork.truth-mutation-gesture/v1";
+const TRUTH_PROPOSE_ACTION = "cowork.truth.propose_and_connect";
+const TRUTH_CONNECT_ACTION = "cowork.truth.connect";
+const TRUTH_LIFECYCLE_ACTION = "cowork.truth.claim_decision";
 
 const objectValue = (value: unknown): JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value)
@@ -667,6 +692,50 @@ export class HttpCoworkTruthClient implements TruthRailProvider {
     return payload;
   }
 
+  async #authorizedJson(input: {
+    readonly action: string;
+    readonly operation: string;
+    readonly claimId?: string;
+    readonly payload: JsonObject;
+    readonly url: string;
+    readonly body: JsonObject;
+  }): Promise<unknown> {
+    const identity = await initializeLocalIdentity({ fetchImpl: this.#fetch });
+    if (!identity.authenticated) {
+      throw new Error(
+        identity.reason || "An authenticated local session is required.",
+      );
+    }
+    const contextSha256 = await sha256Hex(
+      canonicalJson({
+        schema: TRUTH_MUTATION_GESTURE_SCHEMA,
+        operation: input.operation,
+        store_id: this.#storeId,
+        document_id: this.#documentId,
+        payload: input.payload,
+      }),
+    );
+    const subject = [
+      "cowork-truth",
+      input.operation,
+      this.#storeId,
+      this.#documentId,
+      ...(input.claimId ? [input.claimId] : []),
+    ].join(":");
+    const gesture = await issueHumanGesture(
+      { action: input.action, subject, contextSha256 },
+      this.#fetch,
+    );
+    return this.#json(input.url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...localIdentityHeaders(gesture.token),
+      },
+      body: JSON.stringify(input.body),
+    });
+  }
+
   async load(query: TruthQuery): Promise<TruthClaimsSnapshot> {
     const claimsById = new Map<string, TruthClaimSummary>();
     const visitedOffsets = new Set<number>();
@@ -773,20 +842,23 @@ export class HttpCoworkTruthClient implements TruthRailProvider {
   async proposeClaim(
     request: TruthProposeClaimRequest,
   ): Promise<TruthMutationReceipt> {
-    const payload = await this.#json(
-      `${this.#base()}/claims?${this.#query()}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...captureBody(request),
-          claim: {
-            proposition: request.proposition,
-            claim_kind: request.claimKind,
-          },
-        }),
+    const capture = captureBody(request);
+    const claim = {
+      proposition: request.proposition,
+      claim_kind: request.claimKind,
+    };
+    const body = { ...capture, claim };
+    const payload = await this.#authorizedJson({
+      action: TRUTH_PROPOSE_ACTION,
+      operation: "propose",
+      payload: {
+        ...capture,
+        claim,
+        claim_id: null,
       },
-    );
+      url: `${this.#base()}/claims?${this.#query()}`,
+      body,
+    });
     this.invalidate();
     return mutationReceipt(payload);
   }
@@ -794,17 +866,19 @@ export class HttpCoworkTruthClient implements TruthRailProvider {
   async connectClaim(
     request: TruthConnectClaimRequest,
   ): Promise<TruthMutationReceipt> {
-    const payload = await this.#json(
-      `${this.#base()}/connections?${this.#query()}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          ...captureBody(request),
-          claim_id: request.claimId,
-        }),
+    const capture = captureBody(request);
+    const body = { ...capture, claim_id: request.claimId };
+    const payload = await this.#authorizedJson({
+      action: TRUTH_CONNECT_ACTION,
+      operation: "connect",
+      payload: {
+        ...capture,
+        claim: null,
+        claim_id: request.claimId,
       },
-    );
+      url: `${this.#base()}/connections?${this.#query()}`,
+      body,
+    });
     this.invalidate();
     return mutationReceipt(payload);
   }
@@ -812,20 +886,28 @@ export class HttpCoworkTruthClient implements TruthRailProvider {
   async decideClaim(
     request: TruthClaimDecisionRequest,
   ): Promise<TruthMutationReceipt> {
-    const payload = await this.#json(
-      `${this.#base()}/claims/${encodeURIComponent(request.claimId)}/decisions?${this.#query()}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: request.action,
-          expected_canonical_sha256: request.expectedCanonicalSha256,
-          expected_context_sha256: request.expectedContextSha256,
-          gesture_kind: request.gestureKind,
-          reason: request.reason,
-        }),
+    const body = {
+      action: request.action,
+      expected_canonical_sha256: request.expectedCanonicalSha256,
+      expected_context_sha256: request.expectedContextSha256,
+      gesture_kind: request.gestureKind,
+      reason: request.reason,
+    };
+    const payload = await this.#authorizedJson({
+      action: TRUTH_LIFECYCLE_ACTION,
+      operation: "decision",
+      claimId: request.claimId,
+      payload: {
+        claim_id: request.claimId,
+        action: request.action,
+        expected_canonical_sha256: request.expectedCanonicalSha256,
+        expected_context_sha256: request.expectedContextSha256,
+        gesture_kind: request.gestureKind ?? null,
+        reason: request.reason ?? null,
       },
-    );
+      url: `${this.#base()}/claims/${encodeURIComponent(request.claimId)}/decisions?${this.#query()}`,
+      body,
+    });
     this.invalidate();
     return mutationReceipt(payload);
   }

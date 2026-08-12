@@ -30,6 +30,9 @@ parameters:
   generation:
     type: string
     description: Optional live lease generation. Supply together with consumer; a stale or revoked generation returns lease_lost without asking.
+  message_id:
+    type: string
+    description: Caller-stable idempotency key; required for Co-work document-agent questions so their output-manifest binding can be replayed safely.
 mutates_state: true
 retry_policy: manual
 auto_retry: false
@@ -50,3 +53,7 @@ parents:
 conversation drivers. They must be supplied together. The question and lease
 check share one transaction, so a stopped, rotated, or closed generation cannot
 ask a late question.
+
+Co-work document-agent questions also require ``message_id``. The stable key
+binds the persisted assistant turn to the exact ordered Sources/Agent Execution
+input manifest and prevents an ambiguous retry from creating another question.

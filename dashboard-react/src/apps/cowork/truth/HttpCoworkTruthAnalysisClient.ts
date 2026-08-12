@@ -18,8 +18,28 @@ import type {
   TruthStartAnalysisRequest,
   TruthUnsubscribe,
 } from "./contracts";
+import {
+  initializeLocalIdentity,
+  issueHumanGesture,
+  localIdentityHeaders,
+  sha256Hex,
+} from "../../../security/localIdentity";
 
 type JsonObject = Record<string, unknown>;
+
+const canonicalJson = (value: unknown): string => {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (typeof value === "object") {
+    const entries = Object.entries(value as JsonObject)
+      .filter(([, item]) => item !== undefined)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+    return `{${entries
+      .map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+};
 
 const objectValue = (value: unknown): JsonObject =>
   typeof value === "object" && value !== null && !Array.isArray(value)
@@ -675,17 +695,45 @@ export class HttpCoworkTruthAnalysisClient implements TruthAnalysisProvider {
   }
 
   async start(request: TruthStartAnalysisRequest): Promise<TruthAnalysisRun> {
+    const body: JsonObject = {
+      capture: request.capture,
+      execution: {
+        provider_id: request.execution.providerId,
+        model_id: request.execution.modelId,
+      },
+    };
+    const identity = await initializeLocalIdentity({ fetchImpl: this.#fetch });
+    if (!identity.authenticated) {
+      throw new Error(
+        identity.reason || "An authenticated local session is required.",
+      );
+    }
+    const subject = `cowork-truth-analysis-start:${this.#documentId}`;
+    const contextSha256 = await sha256Hex(
+      canonicalJson({
+        schema: "wb.cowork.truth-analysis-start-gesture/v1",
+        store_id: this.#storeId,
+        document_id: this.#documentId,
+        capture: request.capture,
+        execution: body.execution,
+      }),
+    );
+    const gesture = await issueHumanGesture(
+      {
+        action: "cowork.truth.analysis_start",
+        subject,
+        contextSha256,
+      },
+      this.#fetch,
+    );
     const response = await this.#fetch(`${this.#base()}?${this.#query()}`, {
       method: "POST",
       credentials: "same-origin",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        capture: request.capture,
-        execution: {
-          provider_id: request.execution.providerId,
-          model_id: request.execution.modelId,
-        },
-      }),
+      headers: {
+        "Content-Type": "application/json",
+        ...localIdentityHeaders(gesture.token),
+      },
+      body: JSON.stringify(body),
     });
     if (!response.ok) {
       throw new Error(
@@ -706,31 +754,66 @@ export class HttpCoworkTruthAnalysisClient implements TruthAnalysisProvider {
   async decideCandidate(
     request: TruthAnalysisCandidateDecisionRequest,
   ): Promise<TruthAnalysisCandidateDecisionReceipt> {
+    const body: JsonObject = {
+      decision: request.decision,
+      expected_canonical_sha256: request.expectedCanonicalSha256,
+      ...(request.decision === "connect_existing"
+        ? { existing_claim_id: request.existingClaimId }
+        : {}),
+      ...((request.decision === "save_as_proposed" ||
+        request.decision === "connect_existing") &&
+      request.edits !== undefined
+        ? {
+            edits: {
+              proposition: request.edits.proposition,
+              claim_kind: request.edits.claimKind,
+              expression_role: request.edits.expressionRole,
+              evidence_candidate_ids: request.edits.evidenceCandidateIds,
+            },
+          }
+        : {}),
+    };
+    const identity = await initializeLocalIdentity({ fetchImpl: this.#fetch });
+    if (!identity.authenticated) {
+      throw new Error(
+        identity.reason || "An authenticated local session is required.",
+      );
+    }
+    const subject = `cowork-truth-candidate-decision:${request.analysisRunId}:${request.candidateId}`;
+    const contextSha256 = await sha256Hex(
+      canonicalJson({
+        schema: "wb.cowork.truth-candidate-decision-gesture/v1",
+        store_id: this.#storeId,
+        document_id: this.#documentId,
+        analysis_run_id: request.analysisRunId,
+        candidate_id: request.candidateId,
+        expected_canonical_sha256: request.expectedCanonicalSha256,
+        decision: request.decision,
+        existing_claim_id:
+          request.decision === "connect_existing"
+            ? request.existingClaimId
+            : null,
+        edits: body.edits ?? null,
+      }),
+    );
+    const gesture = await issueHumanGesture(
+      {
+        action: "cowork.truth.candidate_decision",
+        subject,
+        contextSha256,
+      },
+      this.#fetch,
+    );
     const response = await this.#fetch(
       `${this.#base()}/${encodeURIComponent(request.analysisRunId)}/candidates/${encodeURIComponent(request.candidateId)}/decisions?${this.#query()}`,
       {
         method: "POST",
         credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          decision: request.decision,
-          expected_canonical_sha256: request.expectedCanonicalSha256,
-          ...(request.decision === "connect_existing"
-            ? { existing_claim_id: request.existingClaimId }
-            : {}),
-          ...((request.decision === "save_as_proposed" ||
-            request.decision === "connect_existing") &&
-          request.edits !== undefined
-            ? {
-                edits: {
-                  proposition: request.edits.proposition,
-                  claim_kind: request.edits.claimKind,
-                  expression_role: request.edits.expressionRole,
-                  evidence_candidate_ids: request.edits.evidenceCandidateIds,
-                },
-              }
-            : {}),
-        }),
+        headers: {
+          "Content-Type": "application/json",
+          ...localIdentityHeaders(gesture.token),
+        },
+        body: JSON.stringify(body),
       },
     );
     if (!response.ok) {

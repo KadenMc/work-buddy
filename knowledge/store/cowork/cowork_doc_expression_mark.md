@@ -35,6 +35,18 @@ parameters:
     type: str
     description: Optional durable model call identifier.
     required: false
+  conversation_id:
+    type: str
+    description: Bound document conversation id. Required with consumer and generation for a persistent Co-work driver.
+    required: false
+  consumer:
+    type: str
+    description: Server-derived document-agent consumer identity. Supply with conversation_id and generation.
+    required: false
+  generation:
+    type: str
+    description: Live document-agent lease generation. A stale generation is fenced before mutation.
+    required: false
 mutates_state: true
 retry_policy: manual
 auto_retry: false

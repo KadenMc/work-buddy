@@ -6,8 +6,10 @@ export type CapturePersistenceStatus = "persisted" | "failed";
 export type CaptureProcessingStatus =
   | "not_requested"
   | "pending"
+  | "running"
   | "succeeded"
   | "failed";
+export type CapturePlacementStatus = "pending" | "placed" | "failed";
 
 export interface CaptureTargetOption {
   readonly targetId: string;
@@ -20,15 +22,18 @@ export interface CaptureTargetOption {
 }
 
 export interface CaptureSubmissionRecord {
+  readonly captureId?: string;
   readonly clientMutationId: string;
   readonly targetId: string;
   readonly mode: CaptureSubmitMode;
-  readonly exactText: string;
+  readonly exactText?: string;
   readonly submittedAt: string;
   readonly persistenceStatus: CapturePersistenceStatus;
+  readonly placementStatus?: CapturePlacementStatus;
   readonly processingStatus: CaptureProcessingStatus;
   readonly annotation?: AsyncAnnotation;
   readonly errorMessage?: string;
+  readonly sourceRef?: string;
 }
 
 export interface QuickTextCaptureInput {
@@ -36,6 +41,10 @@ export interface QuickTextCaptureInput {
   readonly revision: string;
   readonly dayId: string;
   readonly access: WidgetAccess;
+  readonly smartHelp?: {
+    readonly summary: string;
+    readonly details: string;
+  };
   readonly targets: readonly CaptureTargetOption[];
   readonly capturesToday: number;
   readonly recentSubmissions: readonly CaptureSubmissionRecord[];

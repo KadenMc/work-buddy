@@ -15,13 +15,21 @@ from typing import Any, Mapping
 from work_buddy.cowork import readiness
 from work_buddy.cowork.policy import document_surface_allowed
 from work_buddy.cowork.proposal_applicability import load_current_projection
+from work_buddy.security.local_identity import HumanAuthorityContext
 from work_buddy.truth import documents, expressions, queries
 from work_buddy.truth.anchors import CompositeSelector, reanchor, serialize_selector
 from work_buddy.truth.contracts import Actor, InvariantViolation, TERMINAL_STATUSES
-from work_buddy.truth.identity import parse_truth_uri, utc_now
+from work_buddy.truth.evidence_relations import classify_claim_evidence_role
+from work_buddy.truth.identity import canonical_json, parse_truth_uri, sha256_text, utc_now
 from work_buddy.truth.lifecycle import TruthLifecycle
 from work_buddy.truth.redact import REDACTION_REASONS, TruthRedactor
 from work_buddy.truth.review import compose_claim_review
+from work_buddy.truth.source_provenance import (
+    provenance_for_subject,
+    record_attribution_event,
+    record_candidate_decision,
+    validate_actor_ref_json,
+)
 from work_buddy.truth.store import ClaimRecord, DocumentRecord, TruthStore
 
 
@@ -60,6 +68,150 @@ class ConnectionWrite:
     projection_sha256: str
     structured_head_sha256: str
     ydoc_generation_sha256: str
+
+
+def _authority_actor_ref(
+    actor: Actor,
+    authority_context: HumanAuthorityContext | None,
+):
+    if authority_context is None:
+        return None
+    principal = authority_context.principal.actor
+    if principal.kind != "human" or actor != Actor("human", principal.canonical_id):
+        raise TruthSurfaceError(
+            "human_authority_required",
+            "The Truth mutation is not bound to its authenticated local profile.",
+            status=403,
+        )
+    return principal
+
+
+def _attribution_id(
+    *,
+    gesture_id: str,
+    subject_kind: str,
+    subject_ref: str,
+    role: str,
+) -> str:
+    return sha256_text(
+        canonical_json(
+            {
+                "domain": "work-buddy.cowork-truth-authority-attribution/v1",
+                "gesture_id": gesture_id,
+                "subject_kind": subject_kind,
+                "subject_ref": subject_ref,
+                "role": role,
+            }
+        )
+    )[:32]
+
+
+def _record_connection_authority(
+    store: TruthStore,
+    *,
+    claim: ClaimRecord,
+    claim_created: bool,
+    expression_id: str,
+    expression_role: str,
+    selector_json: str,
+    actor: Actor,
+    authority_context: HumanAuthorityContext | None,
+    conn: sqlite3.Connection,
+) -> None:
+    principal = _authority_actor_ref(actor, authority_context)
+    if principal is None or authority_context is None:
+        return
+    candidate_payload = {
+        "schema": "wb.cowork.truth-manual-candidate/v1",
+        "claim_id": claim.id,
+        "claim_canonical_sha256": claim.canonical_sha256,
+        "claim_created": claim_created,
+        "expression_id": expression_id,
+        "expression_role": expression_role,
+        "selector_json": json.loads(selector_json),
+    }
+    candidate_sha256 = sha256_text(canonical_json(candidate_payload))
+    record_candidate_decision(
+        store,
+        candidate_id=f"cowork-manual:{authority_context.gesture_id}",
+        candidate_sha256=candidate_sha256,
+        decision="add" if claim_created else "connect",
+        claim_id=claim.id,
+        actor=principal,
+        basis=authority_context.basis,
+        assurance=authority_context.assurance,
+        authorization_ref=authority_context.gesture_id,
+        authorization_context_sha256=authority_context.context_sha256,
+        record_id=sha256_text(
+            canonical_json(
+                {
+                    "domain": "work-buddy.cowork-truth-manual-candidate-decision/v1",
+                    "gesture_id": authority_context.gesture_id,
+                    "candidate_sha256": candidate_sha256,
+                }
+            )
+        )[:32],
+        conn=conn,
+    )
+
+    def attribute(subject_kind: str, subject_ref: str, role: str) -> None:
+        record_attribution_event(
+            store,
+            subject_kind=subject_kind,
+            subject_ref=subject_ref,
+            actor=principal,
+            role=role,
+            basis=authority_context.basis,
+            assurance=authority_context.assurance,
+            record_id=_attribution_id(
+                gesture_id=authority_context.gesture_id,
+                subject_kind=subject_kind,
+                subject_ref=subject_ref,
+                role=role,
+            ),
+            conn=conn,
+        )
+
+    if claim_created:
+        attribute("claim", claim.id, "semantic_producer")
+    attribute("claim", claim.id, "candidate_decision_actor")
+    attribute("expression", expression_id, "selector")
+    attribute("expression", expression_id, "expression_relation_assessor")
+    attribute("expression", expression_id, "candidate_decision_actor")
+
+
+def _record_lifecycle_authority(
+    store: TruthStore,
+    *,
+    claim_id: str,
+    action: str,
+    actor: Actor,
+    authority_context: HumanAuthorityContext | None,
+    conn: sqlite3.Connection,
+) -> None:
+    principal = _authority_actor_ref(actor, authority_context)
+    if principal is None or authority_context is None:
+        return
+    record_attribution_event(
+        store,
+        subject_kind="claim",
+        subject_ref=claim_id,
+        actor=principal,
+        role="lifecycle_decision_actor",
+        basis=authority_context.basis,
+        assurance=authority_context.assurance,
+        record_id=sha256_text(
+            canonical_json(
+                {
+                    "domain": "work-buddy.cowork-truth-lifecycle-attribution/v1",
+                    "gesture_id": authority_context.gesture_id,
+                    "claim_id": claim_id,
+                    "action": action,
+                }
+            )
+        )[:32],
+        conn=conn,
+    )
 
 
 def _json_value(value: Any) -> Any:
@@ -126,17 +278,61 @@ def _preparation_provenance(meta_json: str | None) -> dict[str, Any] | None:
 
 def _provenance_wire(
     *,
+    store: TruthStore,
+    conn: sqlite3.Connection,
+    subject_kind: str,
+    subject_ref: str,
     meta_json: str | None,
     created_by_kind: str,
     created_by_ref: str | None,
     created_at: str,
 ) -> dict[str, Any]:
-    return {
-        "prepared_by": _preparation_provenance(meta_json),
-        "added_by": {
+    projection = provenance_for_subject(
+        store,
+        subject_kind=subject_kind,
+        subject_ref=subject_ref,
+        conn=conn,
+    )
+    prepared = _preparation_provenance(meta_json)
+    decision_event = None
+    preparation_event = None
+    for event in projection.events:
+        if event.role == "candidate_preparer":
+            preparation_event = event
+        elif event.role == "semantic_producer" and preparation_event is None:
+            preparation_event = event
+        elif event.role == "candidate_decision_actor":
+            decision_event = event
+    if prepared is not None and preparation_event is not None:
+        prepared = {
+            **prepared,
+            "actor_ref": validate_actor_ref_json(
+                preparation_event.actor_ref_json
+            ).to_dict(),
+            "basis": preparation_event.basis,
+            "assurance": preparation_event.assurance,
+        }
+    if decision_event is None:
+        added_by = {
             "kind": created_by_kind,
             "ref": created_by_ref,
             "at": created_at,
+        }
+    else:
+        decision_actor = validate_actor_ref_json(decision_event.actor_ref_json)
+        added_by = {
+            "kind": decision_actor.kind,
+            "ref": decision_actor.subject,
+            "at": decision_event.asserted_at,
+            "actor_ref": decision_actor.to_dict(),
+            "basis": decision_event.basis,
+            "assurance": decision_event.assurance,
+        }
+    return {
+        "classification": projection.classification,
+        "prepared_by": prepared,
+        "added_by": {
+            **added_by,
         },
     }
 
@@ -179,6 +375,10 @@ def _connections(
                     "ref": row["created_by_ref"],
                 },
                 "provenance": _provenance_wire(
+                    store=store,
+                    conn=conn,
+                    subject_kind="expression",
+                    subject_ref=str(row["id"]),
                     meta_json=row["meta_json"],
                     created_by_kind=str(row["created_by_kind"]),
                     created_by_ref=(
@@ -223,6 +423,7 @@ def _claim_summary(
     connections: list[dict[str, Any]],
     document_id: str,
     receipt_count: int,
+    provenance: Mapping[str, Any],
     can_modify: bool,
     can_decide: bool,
 ) -> dict[str, Any]:
@@ -253,12 +454,7 @@ def _claim_summary(
             "kind": claim.created_by_kind,
             "ref": claim.created_by_ref,
         },
-        "provenance": _provenance_wire(
-            meta_json=claim.meta_json,
-            created_by_kind=claim.created_by_kind,
-            created_by_ref=claim.created_by_ref,
-            created_at=claim.created_at,
-        ),
+        "provenance": dict(provenance),
         "receipt_count": receipt_count,
         "connection_count": len(connections),
         "connected_to_document": bool(current_connections),
@@ -273,14 +469,22 @@ def _claim_summary(
 
 def _receipt_counts(conn: sqlite3.Connection) -> dict[str, int]:
     rows = conn.execute(
-        "SELECT l.from_claim_id, COUNT(*) AS count "
+        "SELECT l.from_claim_id, l.link_type, l.role_json "
         "FROM claim_links AS l "
         "LEFT JOIN link_retractions AS r ON r.link_id = l.id "
-        "WHERE l.link_type = 'supports_span' "
+        "WHERE l.link_type IN ('supports_span', 'evidence_relation') "
         "AND l.to_kind = 'evidence_span' AND r.link_id IS NULL "
-        "GROUP BY l.from_claim_id"
     ).fetchall()
-    return {str(row["from_claim_id"]): int(row["count"]) for row in rows}
+    counts: dict[str, int] = {}
+    for row in rows:
+        relation = classify_claim_evidence_role(
+            link_type=str(row["link_type"]),
+            role_json=row["role_json"],
+        )
+        if relation.is_positive:
+            claim_id = str(row["from_claim_id"])
+            counts[claim_id] = counts.get(claim_id, 0) + 1
+    return counts
 
 
 def truth_list(
@@ -329,6 +533,19 @@ def truth_list(
             )
             by_claim = _connections(store, conn)
             receipt_counts = _receipt_counts(conn)
+            provenance_by_claim = {
+                state.claim_id: _provenance_wire(
+                    store=store,
+                    conn=conn,
+                    subject_kind="claim",
+                    subject_ref=state.claim_id,
+                    meta_json=state.claim.meta_json,
+                    created_by_kind=state.claim.created_by_kind,
+                    created_by_ref=state.claim.created_by_ref,
+                    created_at=state.claim.created_at,
+                )
+                for state in states
+            }
         finally:
             if conn.in_transaction:
                 conn.execute("ROLLBACK")
@@ -345,6 +562,7 @@ def truth_list(
             connections=by_claim.get(state.claim_id, []),
             document_id=document.id,
             receipt_count=receipt_counts.get(state.claim_id, 0),
+            provenance=provenance_by_claim[state.claim_id],
             can_modify=can_modify,
             can_decide=can_decide,
         )
@@ -435,6 +653,7 @@ def _claim_state(
 def _receipts(conn: sqlite3.Connection, claim_id: str) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT l.id AS link_id, l.created_at AS linked_at, "
+        "l.link_type, l.role_json, "
         "s.id AS span_id, s.selector_json, s.quote_exact, s.span_sha256, "
         "s.author_kind, s.author_ref, s.redacted_at AS span_redacted_at, "
         "e.id AS evidence_id, e.kind AS evidence_kind, e.source_locator, "
@@ -444,15 +663,34 @@ def _receipts(conn: sqlite3.Connection, claim_id: str) -> list[dict[str, Any]]:
         "JOIN evidence_spans AS s ON s.id = l.to_ref "
         "JOIN evidence AS e ON e.id = s.evidence_id "
         "LEFT JOIN link_retractions AS r ON r.link_id = l.id "
-        "WHERE l.from_claim_id = ? AND l.link_type = 'supports_span' "
+        "WHERE l.from_claim_id = ? "
+        "AND l.link_type IN ('supports_span', 'evidence_relation') "
         "AND l.to_kind = 'evidence_span' AND r.link_id IS NULL "
         "ORDER BY l.created_at, l.id",
         (claim_id,),
     ).fetchall()
-    return [
-        {
+    receipts: list[dict[str, Any]] = []
+    for row in rows:
+        relation = classify_claim_evidence_role(
+            link_type=str(row["link_type"]),
+            role_json=row["role_json"],
+        )
+        if not relation.is_positive:
+            continue
+        receipts.append(
+            {
             "link_id": row["link_id"],
             "linked_at": row["linked_at"],
+            "relation": {
+                "classification": relation.classification,
+                "evidential_effect": relation.evidential_effect,
+                "derivation_relationship": relation.derivation_relationship,
+                "diagnostics": (
+                    None
+                    if relation.diagnostics is None
+                    else dict(relation.diagnostics)
+                ),
+            },
             "span_id": row["span_id"],
             "selector": _selector_wire(row["selector_json"]),
             "quote": row["quote_exact"],
@@ -469,9 +707,9 @@ def _receipts(conn: sqlite3.Connection, claim_id: str) -> list[dict[str, Any]]:
             "acquired_at": row["acquired_at"],
             "acquisition_method": row["acquisition_method"],
             "evidence_redacted_at": row["evidence_redacted_at"],
-        }
-        for row in rows
-    ]
+            }
+        )
+    return receipts
 
 
 def _claim_observability_context(
@@ -655,6 +893,16 @@ def truth_claim_detail(
                 connections=connections,
                 document_id=document.id,
                 receipt_count=len(receipts),
+                provenance=_provenance_wire(
+                    store=store,
+                    conn=conn,
+                    subject_kind="claim",
+                    subject_ref=state.claim_id,
+                    meta_json=state.claim.meta_json,
+                    created_by_kind=state.claim.created_by_kind,
+                    created_by_ref=state.claim.created_by_ref,
+                    created_at=state.claim.created_at,
+                ),
                 can_modify=can_modify,
                 can_decide=can_decide,
             )
@@ -838,6 +1086,7 @@ def connect_claim(
     document: DocumentRecord,
     *,
     actor: Actor,
+    authority_context: HumanAuthorityContext | None = None,
     selector_input: Any,
     role: str,
     expected_structured_head_sha256: str,
@@ -947,6 +1196,17 @@ def connect_claim(
             (document.id, selector_json, claim.id, normalized_role),
         ).fetchone()
         if existing is not None:
+            _record_connection_authority(
+                store,
+                claim=claim,
+                claim_created=claim_created,
+                expression_id=str(existing["expression_id"]),
+                expression_role=normalized_role,
+                selector_json=selector_json,
+                actor=actor,
+                authority_context=authority_context,
+                conn=conn,
+            )
             return ConnectionWrite(
                 claim=claim,
                 claim_created=claim_created,
@@ -983,6 +1243,17 @@ def connect_claim(
                 "projection_binding_id": projection.binding_id,
                 **dict(expression_meta or {}),
             },
+        )
+        _record_connection_authority(
+            store,
+            claim=claim,
+            claim_created=claim_created,
+            expression_id=expression.id,
+            expression_role=normalized_role,
+            selector_json=selector_json,
+            actor=actor,
+            authority_context=authority_context,
+            conn=conn,
         )
     return ConnectionWrite(
         claim=claim,
@@ -1104,6 +1375,7 @@ def decide_claim(
     claim_id: str,
     *,
     actor: Actor,
+    authority_context: HumanAuthorityContext | None = None,
     action: str,
     expected_canonical_sha256: str,
     expected_context_sha256: str,
@@ -1249,6 +1521,14 @@ def decide_claim(
             )
         else:  # pragma: no cover - validated by _require_decision_action
             raise AssertionError(f"unhandled validated Truth decision: {normalized}")
+        _record_lifecycle_authority(
+            store,
+            claim_id=claim_id,
+            action=normalized,
+            actor=actor,
+            authority_context=authority_context,
+            conn=conn,
+        )
     return {
         "action": normalized,
         "claim_id": claim_id,
@@ -1263,6 +1543,7 @@ def challenge_claim(
     claim_id: str,
     *,
     actor: Actor,
+    authority_context: HumanAuthorityContext | None = None,
     challenging_claim_id: str,
     expected_canonical_sha256: str,
     expected_challenger_sha256: str,
@@ -1300,6 +1581,14 @@ def challenge_claim(
             challenging_claim_id=challenging_claim_id,
             actor=actor,
             note=note,
+            conn=conn,
+        )
+        _record_lifecycle_authority(
+            store,
+            claim_id=claim_id,
+            action="challenge",
+            actor=actor,
+            authority_context=authority_context,
             conn=conn,
         )
     return {"action": "challenge", "claim_id": claim_id, "result": _json_value(result)}

@@ -28,6 +28,8 @@ dev_notes: |-
 
   Process ownership is `(pid, generation-owner-token)`, not PID alone. Natural-exit cleanup removes only the exact registered handle, failed termination retains ownership for a later retry, and cleanup must never kill an unowned or recycled PID.
 
+  Content egress uses `work_buddy.agent_execution.disclosure`: create a run manifest, grant and reserve the exact Source representation/boundary, write `possibly_sent` before provider invocation, then mark `sent` and bind output to the ordered manifest digest. Raw source bytes never belong in manifest arguments or rows. A `possibly_sent` handoff is not automatically replayable.
+
   Claude runs against a per-run clean `CLAUDE_CONFIG_DIR`; user/project/local settings are absent rather than merely overlaid. On Windows and Linux it receives a private `0600` `.credentials.json` projection containing only `claudeAiOauth`; unrelated `mcpOAuth` credentials are never exposed. On macOS it starts empty because Claude Code reads the account credential from Keychain. Operating-system or organization-managed policy remains part of the host administrator trust boundary and cannot be bypassed by a child process. Do not describe the worker as suppressing that managed layer.
 ---
 

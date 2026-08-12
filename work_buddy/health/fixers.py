@@ -282,15 +282,21 @@ def _append_section(header: str) -> dict[str, Any]:
     if not note.exists():
         # Create today's note with just this section
         try:
-            note.parent.mkdir(parents=True, exist_ok=True)
-            note.write_text(f"# {header}\n\n", encoding="utf-8")
+            from work_buddy.journal_capture.content_adapter import JournalContentAdapter
+
+            adapter = JournalContentAdapter(note.parent.parent)
+            adapter.create_day_if_absent(
+                note.stem,
+                content=f"# {header}\n\n",
+                content_hint=f"# {header}",
+            )
             side_effects.append(f"Created {note}")
             return {
                 "ok": True,
                 "detail": f"Created today's note with '# {header}' section.",
                 "side_effects": side_effects,
             }
-        except OSError as exc:
+        except (OSError, RuntimeError) as exc:
             return {
                 "ok": False,
                 "detail": f"Could not create {note}: {exc}",
@@ -299,8 +305,12 @@ def _append_section(header: str) -> dict[str, Any]:
 
     # Note exists — check whether the header is already there
     try:
-        content = note.read_text(encoding="utf-8")
-    except OSError as exc:
+        from work_buddy.journal_capture.content_adapter import JournalContentAdapter
+
+        adapter = JournalContentAdapter(note.parent.parent)
+        snapshot = adapter.snapshot(note.stem)
+        content = snapshot.content
+    except (OSError, RuntimeError) as exc:
         return {
             "ok": False,
             "detail": f"Could not read {note}: {exc}",
@@ -321,7 +331,12 @@ def _append_section(header: str) -> dict[str, Any]:
     sep = "" if content.endswith("\n\n") else ("\n" if content.endswith("\n") else "\n\n")
     new_content = content + sep + f"# {header}\n\n"
     try:
-        note.write_text(new_content, encoding="utf-8")
+        adapter.write_day_cas(
+            note.stem,
+            expected_file_sha256=snapshot.file_sha256,
+            content=new_content,
+            content_hint=f"# {header}",
+        )
         side_effects.append(f"Appended '# {header}' to {note}")
         prefix = "" if which == "today" else f"(operating on last available daily note: {which}) "
         return {
@@ -329,7 +344,7 @@ def _append_section(header: str) -> dict[str, Any]:
             "detail": f"{prefix}Added '# {header}' section to {note.name}",
             "side_effects": side_effects,
         }
-    except OSError as exc:
+    except (OSError, RuntimeError) as exc:
         return {
             "ok": False,
             "detail": f"Could not write {note}: {exc}",

@@ -11,6 +11,7 @@ import json
 import os
 import struct
 from contextlib import contextmanager
+from types import SimpleNamespace
 
 import pytest
 
@@ -751,7 +752,7 @@ def test_current_actor_exposes_the_binding_provenance_clients_must_freeze(
     assert response.status_code == 200
     assert response.get_json() == {
         "kind": "human",
-        "ref": "local-author",
+        "ref": "reviewer-kaden",
         "identity_status": "local_actor_ref",
     }
 
@@ -783,7 +784,7 @@ def test_paste_authorship_attestation_targets_exact_structured_head(
                 "contributors": [
                     {
                         "kind": "current_user",
-                        "ref": "local-author",
+                        "ref": "reviewer-kaden",
                         "identity_status": "local_actor_ref",
                     }
                 ],
@@ -815,7 +816,7 @@ def test_paste_authorship_attestation_targets_exact_structured_head(
         {
             "identity_status": "local_actor_ref",
             "kind": "human",
-            "ref": "local-author",
+            "ref": "reviewer-kaden",
         }
     ]
     assert listed[0]["basis"]["kind"] == "automatic_short_text_attribution"
@@ -829,21 +830,13 @@ def test_paste_authorship_attestation_targets_exact_structured_head(
     assert replay.get_json()["attestation_id"] == receipt["attestation_id"]
     assert len(provenance.list_attestations(seeded["store"], document.id)) == 1
 
-    switched_actor_replay = client.post(
+    forged_header_replay = client.post(
         url,
         json=body,
         headers={"X-WB-User-Ref": "different-local-author"},
     )
-    assert switched_actor_replay.status_code == 409
-    assert switched_actor_replay.get_json()["error"] == {
-        "code": "provenance_actor_changed",
-        "message": (
-            "The acting user changed after this provenance determination "
-            "was captured."
-        ),
-        "details": {},
-        "retryable": False,
-    }
+    assert forged_header_replay.status_code == 201
+    assert forged_header_replay.get_json()["attestation_id"] == receipt["attestation_id"]
     assert len(provenance.list_attestations(seeded["store"], document.id)) == 1
 
     opened = client.get(
@@ -903,7 +896,7 @@ def test_paste_authorship_attestation_rejects_stale_structured_head(
                     "contributors": [
                         {
                             "kind": "current_user",
-                            "ref": "local-author",
+                            "ref": "reviewer-kaden",
                             "identity_status": "local_actor_ref",
                         }
                     ],
@@ -1025,6 +1018,64 @@ def test_ydoc_push_appends_and_guards_stale_base(client, seeded):
     )
     assert stale.status_code == 409
     assert stale.get_json()["error"] == "stale_base"
+
+
+def test_bound_ydoc_push_uses_document_kernel_receipt_and_projection(
+    client, seeded, monkeypatch
+):
+    document = seeded["document"]
+    store = seeded["store"]
+    head = ydoc_store.current_structured_head(
+        store,
+        document_id=document.id,
+        snapshot_sha256=seeded["snapshot_sha256"],
+    )
+    generation = documents.current_ydoc_generation(store, document.id)
+    binding = SimpleNamespace(content_authority="co_work")
+    monkeypatch.setattr(api, "current_domain_binding", lambda *_args: binding)
+    source_store = object()
+    monkeypatch.setattr(api.SourceStore, "create", lambda *_args: source_store)
+    observed = {}
+
+    def apply_bound(*args, **kwargs):
+        observed["args"] = args
+        observed["kwargs"] = kwargs
+        return SimpleNamespace(
+            change=SimpleNamespace(
+                result_structured_head_sha256="f" * 64,
+                change_id="1" * 32,
+            ),
+            next_offset="42",
+            projection=SimpleNamespace(status="committed"),
+        )
+
+    monkeypatch.setattr(api, "apply_bound_direct_push", apply_bound)
+    response = client.post(
+        _url(f"/api/truth/doc/{document.id}/ydoc", seeded["store_id"]),
+        data=b"kernel-verified-update",
+        content_type="application/octet-stream",
+        headers={
+            "X-WB-Base-Ydoc-Sha256": head,
+            "X-WB-Base-Ydoc-Generation": generation,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "ok": True,
+        "applied": True,
+        "doc_sha256": document.content_sha256,
+        "projection_sha256": document.content_sha256,
+        "structured_head_sha256": "f" * 64,
+        "ydoc_head_sha256": "f" * 64,
+        "ydoc_generation": generation,
+        "next_offset": "42",
+        "document_change_id": "1" * 32,
+        "domain_projection_status": "committed",
+    }
+    assert observed["kwargs"]["update"] == b"kernel-verified-update"
+    assert observed["kwargs"]["source_store"] is source_store
+    assert observed["kwargs"]["input_assurance"] == "enrolled_local_session"
 
 
 def test_ydoc_capture_compaction_returns_projection_receipt(client, seeded):

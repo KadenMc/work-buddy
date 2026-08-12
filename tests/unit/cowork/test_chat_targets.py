@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import base64
 import os
+import pytest
 
+from work_buddy.agent_execution.disclosure import DisclosureReplayBlocked
 from work_buddy.conversations import store as conversation_store
 from work_buddy.cowork import chat_targets, conversations
 from work_buddy.cowork.document_agent import document_agent_consumer
@@ -263,6 +265,7 @@ def test_targeted_turn_is_bound_to_running_agent_and_exact_snapshot(
         binding.conversation_id,
         consumer,
         generation,
+        execution={"provider_id": "claude-code", "model_id": "sonnet"},
     )
     assert claim is not None and claim["claimed"] is True
     assert conversation_store.activate_agent_lease(
@@ -391,6 +394,7 @@ def test_missing_frozen_context_returns_receipt_bound_unavailable_path(
         binding.conversation_id,
         consumer,
         generation,
+        execution={"provider_id": "claude-code", "model_id": "sonnet"},
     )
     assert conversation_store.activate_agent_lease(
         binding.conversation_id,
@@ -429,15 +433,14 @@ def test_missing_frozen_context_returns_receipt_bound_unavailable_path(
     assert unavailable["status"] == "action_snapshot_unavailable"
     assert unavailable["fetch_outcome"] == "unavailable"
     receipt_id = unavailable["consumption_receipt_id"]
-    unavailable_replay = cowork_ops.cowork_action_snapshot_get(
-        seeded["store_id"],
-        seeded["document"].id,
-        context["action_snapshot_id"],
-        turn.message_id,
-        agent_session_id=cowork_execution_session_id(generation),
-    )
-    assert unavailable_replay["consumption_receipt_id"] == receipt_id
-    assert unavailable_replay["fetch_outcome"] == "unavailable"
+    with pytest.raises(DisclosureReplayBlocked):
+        cowork_ops.cowork_action_snapshot_get(
+            seeded["store_id"],
+            seeded["document"].id,
+            context["action_snapshot_id"],
+            turn.message_id,
+            agent_session_id=cowork_execution_session_id(generation),
+        )
 
     op_registry.load_builtin_ops()
     send = op_registry.get_op("op.wb.conversation_send")
@@ -512,6 +515,7 @@ def test_targeted_reply_replays_across_generation_restart_with_new_receipt(
         binding.conversation_id,
         consumer,
         generation_one,
+        execution={"provider_id": "claude-code", "model_id": "sonnet"},
     )
     assert conversation_store.activate_agent_lease(
         binding.conversation_id,
@@ -560,6 +564,7 @@ def test_targeted_reply_replays_across_generation_restart_with_new_receipt(
         binding.conversation_id,
         consumer,
         generation_two,
+        execution={"provider_id": "claude-code", "model_id": "sonnet"},
     )
     assert conversation_store.activate_agent_lease(
         binding.conversation_id,
@@ -731,6 +736,7 @@ def test_targeted_reply_cannot_echo_context_without_fetching_it(
         binding.conversation_id,
         consumer,
         generation,
+        execution={"provider_id": "claude-code", "model_id": "sonnet"},
     )
     assert conversation_store.activate_agent_lease(
         binding.conversation_id,

@@ -6,3 +6,7 @@
 # macOS installer launcher (packaging/macos/install.command) is bash too; a CRLF
 # shebang breaks it identically, and .command is not covered by *.sh.
 *.command text eol=lf
+
+# Deterministic, generated JavaScript bundle; preserve emitted bytes and do not
+# apply source-whitespace diagnostics to vendored dependencies in the bundle.
+work_buddy/document_kernel/runtime_dist/worker.mjs -whitespace

@@ -1,7 +1,12 @@
 import type { WidgetIntent } from "../../dashboard/contributions/contracts";
 import type { AsyncAnnotation, WidgetAccess, WidgetProvenance } from "../shared";
 
-export type NoteProcessingState = "not_requested" | "pending" | "succeeded" | "failed";
+export type NoteProcessingState =
+  | "not_requested"
+  | "pending"
+  | "running"
+  | "succeeded"
+  | "failed";
 export type NoteResolutionState =
   | "open"
   | "routed_to_task"
@@ -16,6 +21,21 @@ export interface NoteProcessing {
   readonly errorMessage?: string;
 }
 
+export type NoteDocumentState =
+  | {
+      readonly state: "available";
+      readonly gestureContextSha256: string;
+    }
+  | {
+      readonly state: "current" | "paused_diverged";
+      readonly gestureContextSha256: string;
+      readonly href: string;
+      readonly storeId: string;
+      readonly documentId: string;
+      readonly changeId: string;
+      readonly contentAuthorityEpoch: number;
+    };
+
 export interface MarkdownNoteItem {
   readonly itemId: string;
   readonly markdown: string;
@@ -28,6 +48,7 @@ export interface MarkdownNoteItem {
   readonly groupId?: string;
   readonly threadId?: string;
   readonly version: number;
+  readonly document?: NoteDocumentState;
 }
 
 export interface RunningNotesInput {
@@ -67,7 +88,17 @@ export interface NoteOpenThreadRequestedIntent
   readonly intent_type: "wb.notes.open-thread-requested";
 }
 
+export interface NoteOpenDocumentRequestedIntent
+  extends WidgetIntent<{
+    readonly item_id: string;
+    readonly expected_version: number;
+    readonly gesture_context_sha256: string;
+  }> {
+  readonly intent_type: "wb.notes.open-document-requested";
+}
+
 export type RunningNotesIntent =
   | NoteEditRequestedIntent
   | NoteDeleteRequestedIntent
-  | NoteOpenThreadRequestedIntent;
+  | NoteOpenThreadRequestedIntent
+  | NoteOpenDocumentRequestedIntent;

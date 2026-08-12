@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
+vi.mock("../../../security/humanAuthority", () => ({
+  coworkHumanAuthorityHeaders: vi.fn(async () => ({})),
+}));
+
 import type { ChatExecutionSelection } from "../../../widget-library/chat";
 import type { CoworkCapturedActionSnapshot } from "../targets";
 import { HttpCoworkVerifyClient } from "./HttpCoworkVerifyClient";

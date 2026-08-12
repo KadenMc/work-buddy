@@ -16,9 +16,15 @@ import { DashboardTemporalContextProvider } from "./dashboard/temporal/Dashboard
 import { DensityProvider } from "./theme/DensityProvider";
 import { ThemeProvider } from "./theme/ThemeProvider";
 import { TypographyScaleProvider } from "./theme/TypographyScaleProvider";
+import { initializeLocalIdentity } from "./security/localIdentity";
 import "./theme.css";
 
 const widgetDraftRepository = createBrowserWidgetDraftRepository();
+
+// Consume a launcher-delivered bootstrap before a feature can issue a
+// human-authority mutation. Providers remain explicitly read-only if this
+// local boundary is unavailable; startup itself is never blocked.
+void initializeLocalIdentity();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

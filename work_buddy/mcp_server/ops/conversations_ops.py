@@ -98,6 +98,134 @@ def _register() -> None:
             raise ConversationLeaseLost("lease_lost")
         return producer
 
+    def _cowork_output_authority(
+        *,
+        conversation_id,
+        consumer,
+        generation,
+        agent_session_id,
+        producer,
+        lease_conn,
+        message_id,
+        content,
+        reply_context,
+    ):
+        """Bind one Co-work assistant turn to its ordered worker inputs.
+
+        Generic conversations intentionally bypass this seam. A server-issued
+        Co-work execution session, however, may persist an assistant turn only
+        with a caller-stable message identity and a live Sources-backed input
+        manifest.
+        """
+
+        from work_buddy.cowork.conversations import (
+            document_binding_for_conversation,
+        )
+        from work_buddy.cowork.execution_identity import (
+            cowork_generation_from_session,
+        )
+        from work_buddy.cowork.worker_disclosure import (
+            CoworkWorkerRun,
+            get_cowork_worker_disclosure,
+        )
+        from work_buddy.truth.identity import sha256_text
+
+        session_generation = cowork_generation_from_session(agent_session_id)
+        if session_generation is None:
+            return None
+        if (
+            not isinstance(message_id, str)
+            or not message_id.strip()
+        ):
+            raise ValueError(
+                "Co-work assistant output requires a caller-stable message_id"
+            )
+        if (
+            generation != session_generation
+            or not isinstance(consumer, str)
+            or producer is None
+        ):
+            raise ConversationLeaseLost("lease_lost")
+        binding = document_binding_for_conversation(
+            conversation_id,
+            conn=lease_conn,
+        )
+        if binding is None:
+            raise ConversationLeaseLost("lease_lost")
+        provider_id = str(producer.get("provider_id") or "").strip()
+        model_id = str(producer.get("model_id") or "").strip()
+        if not provider_id or not model_id:
+            raise ConversationLeaseLost("lease_lost")
+        run = CoworkWorkerRun(
+            run_id=agent_session_id,
+            worker_session_id=agent_session_id,
+            provider_id=provider_id,
+            model_id=model_id,
+            authorization_ref=(
+                f"cowork-document-agent:{conversation_id}:{generation}"
+            ),
+            purpose="cowork_document_agent",
+        )
+        content_sha256 = sha256_text(content)
+        output_binding = get_cowork_worker_disclosure().bind_output(
+            run,
+            output_ref=(
+                f"cowork-chat-message:{conversation_id}:{message_id}:"
+                f"{content_sha256}"
+            ),
+            idempotency_key=f"cowork-chat-output:{message_id}",
+        )
+
+        frozen_markdown = None
+        action_snapshot_id = (
+            reply_context.get("action_snapshot_id")
+            if isinstance(reply_context, dict)
+            else None
+        )
+        if isinstance(action_snapshot_id, str) and action_snapshot_id:
+            try:
+                from work_buddy.cowork.chat_targets import action_snapshot_view
+                from work_buddy.truth.registry import TruthStoreRegistry
+
+                snapshot = action_snapshot_view(
+                    TruthStoreRegistry().open_store(binding.store_id),
+                    document_id=binding.document_id,
+                    action_snapshot_id=action_snapshot_id,
+                )
+                candidate = snapshot.get("frozen_markdown")
+                if isinstance(candidate, str):
+                    frozen_markdown = candidate
+            except Exception:
+                # Classification becomes semantic/review-required below. An
+                # unavailable quote witness must never be guessed as exact.
+                frozen_markdown = None
+        return binding, output_binding.manifest_sha256, frozen_markdown
+
+    def _record_cowork_output_dependency(
+        authority,
+        *,
+        conversation_id,
+        message_id,
+        content,
+    ) -> None:
+        if authority is None:
+            return
+        from work_buddy.cowork.conversation_source_dependencies import (
+            record_conversation_source_dependency,
+        )
+
+        binding, manifest_sha256, frozen_markdown = authority
+        record_conversation_source_dependency(
+            store_id=binding.store_id,
+            document_id=binding.document_id,
+            conversation_id=conversation_id,
+            message_id=message_id,
+            role="agent",
+            content=content,
+            frozen_markdown=frozen_markdown,
+            input_manifest_sha256=manifest_sha256,
+        )
+
     def _verify_cowork_read_scope(
         conversation_id,
         consumer,
@@ -127,6 +255,132 @@ def _register() -> None:
             generation,
         ):
             pass
+
+    def _account_cowork_read_payload(
+        *,
+        conversation_id,
+        consumer,
+        generation,
+        agent_session_id,
+        payload,
+        tool_call_id,
+    ) -> None:
+        """Account exact conversation bytes released to a Co-work worker."""
+
+        from work_buddy.cowork.conversations import (
+            document_binding_for_conversation,
+        )
+        from work_buddy.cowork.execution_identity import (
+            cowork_generation_from_session,
+        )
+        from work_buddy.cowork.worker_disclosure import (
+            CoworkWorkerRun,
+            get_cowork_worker_disclosure,
+        )
+        from work_buddy.sources.conversation import (
+            ConversationMessageProvider,
+            conversation_origin,
+        )
+        from work_buddy.sources.models import (
+            canonical_json,
+            canonical_sha256,
+            sha256_bytes,
+        )
+        from work_buddy.sources.providers import (
+            ProviderRegistry,
+            source_capture_from_origin,
+        )
+
+        session_generation = cowork_generation_from_session(agent_session_id)
+        if session_generation is None:
+            return
+        if (
+            not isinstance(consumer, str)
+            or not isinstance(generation, str)
+            or generation != session_generation
+            or not isinstance(agent_session_id, str)
+        ):
+            raise ConversationLeaseLost("lease_lost")
+        with _agent_write_guard(
+            conversation_id,
+            consumer,
+            generation,
+        ) as lease_conn:
+            producer = _trusted_producer(
+                conversation_id,
+                consumer,
+                generation,
+                lease_conn,
+                agent_session_id,
+            )
+            binding = document_binding_for_conversation(
+                conversation_id,
+                conn=lease_conn,
+            )
+            if binding is None or producer is None:
+                raise ConversationLeaseLost("lease_lost")
+            provider_id = str(producer.get("provider_id") or "").strip()
+            model_id = str(producer.get("model_id") or "").strip()
+            if not provider_id or not model_id:
+                raise ConversationLeaseLost("lease_lost")
+        exact = canonical_json(dict(payload)).encode("utf-8")
+        disclosure = get_cowork_worker_disclosure()
+        derivation_refs: list[str] = []
+        # conversation_receive releases one immutable native message. Capture
+        # that occurrence first, then make the exact JSON run-source an
+        # explicit quoted derivative so native-source redaction can reach it.
+        message = payload.get("message")
+        message_id = (
+            message.get("message_id") if isinstance(message, dict) else None
+        )
+        if isinstance(message_id, str) and message_id:
+            registry = ProviderRegistry()
+            registry.register(
+                ConversationMessageProvider(
+                    principal=disclosure.sources.issuer,
+                    authorization_fingerprint=canonical_sha256(
+                        {
+                            "purpose": "cowork_document_agent",
+                            "conversation_id": conversation_id,
+                            "message_id": message_id,
+                        }
+                    ),
+                )
+            )
+            source_ref = source_capture_from_origin(
+                disclosure.sources.store,
+                registry,
+                provider_id="work-buddy-conversation",
+                origin_ref=conversation_origin(
+                    conversation_id=conversation_id,
+                    message_id=message_id,
+                ),
+                principal=disclosure.sources.issuer,
+                purpose="cowork_document_agent",
+                tenant_scope_id=disclosure.sources.tenant_scope_id,
+                originating_surface="cowork_document_chat",
+                namespace=conversation_id,
+            )
+            derivation_refs.append(source_ref.uri)
+        disclosure.account_payload(
+            CoworkWorkerRun(
+                run_id=agent_session_id,
+                worker_session_id=agent_session_id,
+                provider_id=provider_id,
+                model_id=model_id,
+                authorization_ref=(
+                    f"cowork-document-agent:{conversation_id}:{generation}"
+                ),
+                purpose="cowork_document_agent",
+            ),
+            payload=payload,
+            source_role="conversation_message",
+            tool_call_id=tool_call_id,
+            idempotency_key=(
+                f"{tool_call_id}:{conversation_id}:{sha256_bytes(exact)}"
+            ),
+            derivation_refs=derivation_refs,
+        )
 
     def _notify_conversation_created(
         conversation_id: str, title: str, body: str = "",
@@ -223,6 +477,17 @@ def _register() -> None:
                         conn=lease_conn,
                     )
                 )
+                output_authority = _cowork_output_authority(
+                    conversation_id=conversation_id,
+                    consumer=consumer,
+                    generation=generation,
+                    agent_session_id=agent_session_id,
+                    producer=producer,
+                    lease_conn=lease_conn,
+                    message_id=message_id,
+                    content=message,
+                    reply_context=reply_context,
+                )
                 if message_id is None:
                     msg = _add_msg(
                         conversation_id,
@@ -272,6 +537,13 @@ def _register() -> None:
                         msg.message_id,
                         conn=lease_conn,
                     )
+                if msg is not None:
+                    _record_cowork_output_dependency(
+                        output_authority,
+                        conversation_id=conversation_id,
+                        message_id=msg.message_id,
+                        content=msg.content,
+                    )
         except ConversationLeaseLost:
             return {
                 "status": "lease_lost",
@@ -300,6 +572,7 @@ def _register() -> None:
         consumer: str | None = None,
         generation: str | None = None,
         agent_session_id: str | None = None,
+        message_id: str | None = None,
     ) -> dict:
         choice_dicts = None
         if choices:
@@ -324,6 +597,17 @@ def _register() -> None:
                     lease_conn,
                     agent_session_id,
                 )
+                output_authority = _cowork_output_authority(
+                    conversation_id=conversation_id,
+                    consumer=consumer,
+                    generation=generation,
+                    agent_session_id=agent_session_id,
+                    producer=producer,
+                    lease_conn=lease_conn,
+                    message_id=message_id,
+                    content=question,
+                    reply_context=None,
+                )
                 msg = _add_msg(
                     conversation_id,
                     "agent",
@@ -332,8 +616,16 @@ def _register() -> None:
                     response_type=response_type,
                     choices=choice_dicts,
                     conn=lease_conn,
+                    message_id=message_id,
                     producer=producer,
                 )
+                if msg is not None:
+                    _record_cowork_output_dependency(
+                        output_authority,
+                        conversation_id=conversation_id,
+                        message_id=msg.message_id,
+                        content=msg.content,
+                    )
         except ConversationLeaseLost:
             return {
                 "status": "lease_lost",
@@ -423,6 +715,18 @@ def _register() -> None:
                 )
                 return pending_question, conversation_data
 
+        def _account_result(result):
+            if "question" in result or "response" in result:
+                _account_cowork_read_payload(
+                    conversation_id=conversation_id,
+                    consumer=consumer,
+                    generation=generation,
+                    agent_session_id=agent_session_id,
+                    payload=result,
+                    tool_call_id="conversation_poll",
+                )
+            return result
+
         try:
             pending, data = _scoped_snapshot()
         except ConversationLeaseLost:
@@ -439,19 +743,19 @@ def _register() -> None:
                         if m.get("status") == "answered"]
             if answered:
                 last = answered[-1]
-                return {
+                return _account_result({
                     "status": "answered",
                     "message_id": last["message_id"],
                     "response": last.get("response"),
-                }
+                })
             return {"status": "no_pending_question"}
 
         if timeout_seconds is None:
-            return {
+            return _account_result({
                 "status": "pending",
                 "message_id": pending.message_id,
                 "question": pending.content,
-            }
+            })
 
         timeout_seconds = min(timeout_seconds, 110)
         deadline = time.time() + timeout_seconds
@@ -468,11 +772,11 @@ def _register() -> None:
                     answered = [m for m in data["messages"]
                                 if m.get("message_id") == pending.message_id]
                     if answered:
-                        return {
+                        return _account_result({
                             "status": "answered",
                             "message_id": pending.message_id,
                             "response": answered[0].get("response"),
-                        }
+                        })
                 return {"status": "answered", "message_id": pending.message_id}
             time.sleep(3)
 
@@ -500,12 +804,22 @@ def _register() -> None:
             }
         except ValueError as exc:
             return {"status": "invalid_request", "error": str(exc)}
-        return _receive_user(
+        result = _receive_user(
             conversation_id,
             consumer,
             generation,
             timeout_seconds=0 if timeout_seconds is None else timeout_seconds,
         )
+        if result.get("status") == "message":
+            _account_cowork_read_payload(
+                conversation_id=conversation_id,
+                consumer=consumer,
+                generation=generation,
+                agent_session_id=agent_session_id,
+                payload=result,
+                tool_call_id="conversation_receive",
+            )
+        return result
 
     def conversation_ack(
         conversation_id: str,

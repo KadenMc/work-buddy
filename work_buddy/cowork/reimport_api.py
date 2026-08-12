@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import hashlib
 
 from flask import Blueprint, Response, jsonify, request
 
 from work_buddy.cowork import reimport
-from work_buddy.truth.contracts import Actor, InvariantViolation
+from work_buddy.security.local_identity import LocalIdentityError
+from work_buddy.truth.contracts import InvariantViolation
 from work_buddy.truth.identity import sha256_text
 
 
@@ -32,10 +34,15 @@ def _store():
         ) from exc
 
 
-def _actor() -> Actor:
-    from work_buddy.cowork.api import dashboard_user_ref
+def _human_actor(*, operation: str, store_id: str, document_id: str, body: dict):
+    from work_buddy.cowork.api import _require_human_action
 
-    return Actor("human", dashboard_user_ref(request.headers))
+    return _require_human_action(
+        operation=operation,
+        store_id=store_id,
+        document_id=document_id,
+        body=body,
+    )[1]
 
 
 def _reject_read_only():
@@ -76,10 +83,16 @@ def api_prepare_reimport(document_id: str):
         from work_buddy.consent import user_initiated
 
         with user_initiated("dashboard.cowork.reimport"):
+            store = _store()
             intent, created = reimport.prepare_reimport(
-                _store(),
+                store,
                 document_id=document_id,
-                actor=_actor(),
+                actor=_human_actor(
+                    operation="reimport.prepare",
+                    store_id=store.store_id,
+                    document_id=document_id,
+                    body=body,
+                ),
                 idempotency_key=body.get("idempotency_key"),
             )
         payload = {
@@ -99,6 +112,10 @@ def api_prepare_reimport(document_id: str):
         return jsonify(payload), 201 if created else 200
     except reimport.ReimportError as exc:
         return _error(exc)
+    except LocalIdentityError as exc:
+        from work_buddy.cowork.api import _local_identity_error
+
+        return _local_identity_error(exc)
     except InvariantViolation as exc:
         return _error(reimport.ReimportError("invalid_request", str(exc)))
 
@@ -106,8 +123,16 @@ def api_prepare_reimport(document_id: str):
 @reimport_blueprint.get("/api/truth/doc/<document_id>/reimport/<intent_id>/source")
 def api_reimport_source(document_id: str, intent_id: str):
     try:
+        store = _store()
         intent, data = reimport.read_reimport_source(
-            _store(), intent_id=intent_id, actor=_actor()
+            store,
+            intent_id=intent_id,
+            actor=_human_actor(
+                operation="reimport.source_read",
+                store_id=store.store_id,
+                document_id=document_id,
+                body={"intent_id": intent_id},
+            ),
         )
         if intent.document_id != document_id:
             raise reimport.ReimportError(
@@ -126,6 +151,10 @@ def api_reimport_source(document_id: str, intent_id: str):
         return response
     except reimport.ReimportError as exc:
         return _error(exc)
+    except LocalIdentityError as exc:
+        from work_buddy.cowork.api import _local_identity_error
+
+        return _local_identity_error(exc)
 
 
 @reimport_blueprint.put("/api/truth/doc/<document_id>/reimport/<intent_id>/commit")
@@ -153,6 +182,7 @@ def api_commit_reimport(document_id: str, intent_id: str):
                 "snapshot_required", "A complete replacement snapshot is required."
             )
         store = _store()
+        replacement_snapshot = snapshot_part.read()
         from work_buddy.consent import user_initiated
 
         with user_initiated("dashboard.cowork.reimport"):
@@ -160,8 +190,19 @@ def api_commit_reimport(document_id: str, intent_id: str):
                 store,
                 document_id=document_id,
                 intent_id=intent_id,
-                actor=_actor(),
-                replacement_snapshot=snapshot_part.read(),
+                actor=_human_actor(
+                    operation="reimport.commit",
+                    store_id=store.store_id,
+                    document_id=document_id,
+                    body={
+                        "intent_id": intent_id,
+                        "metadata": metadata,
+                        "snapshot_sha256": hashlib.sha256(
+                            replacement_snapshot
+                        ).hexdigest(),
+                    },
+                ),
+                replacement_snapshot=replacement_snapshot,
                 replacement_snapshot_sha256=metadata.get("snapshot_sha256"),
             )
         from work_buddy.cowork.api import _emit
@@ -179,6 +220,10 @@ def api_commit_reimport(document_id: str, intent_id: str):
         return jsonify(receipt)
     except reimport.ReimportError as exc:
         return _error(exc)
+    except LocalIdentityError as exc:
+        from work_buddy.cowork.api import _local_identity_error
+
+        return _local_identity_error(exc)
     except InvariantViolation as exc:
         return _error(reimport.ReimportError("invalid_request", str(exc)))
 
@@ -190,15 +235,25 @@ def api_cancel_reimport(document_id: str, intent_id: str):
         from work_buddy.consent import user_initiated
 
         with user_initiated("dashboard.cowork.reimport"):
+            store = _store()
             receipt = reimport.cancel_reimport(
-                _store(),
+                store,
                 document_id=document_id,
                 intent_id=intent_id,
-                actor=_actor(),
+                actor=_human_actor(
+                    operation="reimport.cancel",
+                    store_id=store.store_id,
+                    document_id=document_id,
+                    body={"intent_id": intent_id},
+                ),
             )
         return jsonify(receipt)
     except reimport.ReimportError as exc:
         return _error(exc)
+    except LocalIdentityError as exc:
+        from work_buddy.cowork.api import _local_identity_error
+
+        return _local_identity_error(exc)
 
 
 def register_reimport_routes(app):

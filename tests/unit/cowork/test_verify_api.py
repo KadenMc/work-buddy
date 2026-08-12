@@ -470,7 +470,7 @@ def test_user_verification_check_route_creates_an_active_admitted_check(
     assert criterion["effective_activation"]["enabled"] is True
     assert criterion["effective_activation"]["authorized_by"] == {
         "kind": "human",
-        "ref": "verify-reviewer",
+        "ref": "reviewer-kaden",
         "meta": None,
     }
     assert criterion["checks"][0]["origin"]["definition_origin"] == "system"

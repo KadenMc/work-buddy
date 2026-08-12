@@ -47,6 +47,55 @@
   margin: var(--wb-space-2) var(--wb-space-5) 0;
 }
 
+.wb-cowork-origin-notice {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: var(--wb-space-2) var(--wb-space-5);
+  border-block-end: 1px solid var(--wb-color-border-default);
+  background: var(--wb-color-surface-raised);
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-sm);
+}
+
+.wb-cowork-origin-notice > summary {
+  display: flex;
+  align-items: baseline;
+  gap: var(--wb-space-2);
+  cursor: pointer;
+  color: var(--wb-color-text-primary);
+}
+
+.wb-cowork-origin-notice > summary span {
+  color: var(--wb-color-text-secondary);
+}
+
+.wb-cowork-origin-notice dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: var(--wb-space-3);
+  margin: var(--wb-space-3) 0 0;
+}
+
+.wb-cowork-origin-notice dl div {
+  min-inline-size: 0;
+}
+
+.wb-cowork-origin-notice dt {
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-xs);
+  text-transform: uppercase;
+}
+
+.wb-cowork-origin-notice dd {
+  margin: var(--wb-space-1) 0 0;
+  color: var(--wb-color-text-primary);
+  overflow-wrap: anywhere;
+}
+
+.wb-cowork-origin-notice--unavailable {
+  border-inline-start: 0.2rem solid var(--wb-color-status-warning);
+}
+
 .wb-cowork__document-bar {
   display: flex;
   flex: 0 0 auto;

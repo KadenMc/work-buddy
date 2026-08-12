@@ -265,8 +265,17 @@ def rewrite_running_notes(
 
     # Concurrent-modification check: refuse to write if the file changed.
     try:
-        current = path.read_text(encoding="utf-8")
-    except OSError as e:
+        adapter = None
+        snapshot = None
+        if path.parent.name.lower() == "journal":
+            from work_buddy.journal_capture.content_adapter import JournalContentAdapter
+
+            adapter = JournalContentAdapter(path.parent.parent)
+            snapshot = adapter.snapshot(path.stem)
+            current = snapshot.content
+        else:
+            current = path.read_text(encoding="utf-8")
+    except (OSError, RuntimeError) as e:
         return {
             "success": False, "file": str(path),
             "message": f"Read error: {e}", "preview": preview,
@@ -308,8 +317,16 @@ def rewrite_running_notes(
     )
 
     try:
-        path.write_text(new_content, encoding="utf-8")
-    except OSError as e:
+        if adapter is None or snapshot is None:
+            path.write_text(new_content, encoding="utf-8")
+        else:
+            adapter.write_day_cas(
+                path.stem,
+                expected_file_sha256=snapshot.file_sha256,
+                content=new_content,
+                content_hint="wb:journal-running-notes-rewrite/v1",
+            )
+    except (OSError, RuntimeError) as e:
         return {
             "success": False, "file": str(path),
             "message": f"File write error: {e}", "preview": preview,

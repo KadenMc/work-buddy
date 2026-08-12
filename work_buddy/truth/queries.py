@@ -18,13 +18,20 @@ from typing import Any
 from urllib.parse import urlparse
 
 from work_buddy.truth.anchors import parse_selector
-from work_buddy.truth.migrations import REDACTED_SELECTOR_JSON
+from work_buddy.truth.migrations import (
+    REDACTED_ACTION_CONTEXT_JSON,
+    REDACTED_SELECTOR_JSON,
+)
 from work_buddy.truth.contracts import (
     InvariantViolation,
     TERMINAL_STATUSES,
     VALID_ACTOR_KINDS,
     VALID_STATUSES,
     validate_agent_producer_meta,
+)
+from work_buddy.truth.evidence_relations import (
+    classify_claim_evidence_role,
+    validate_claim_evidence_role,
 )
 from work_buddy.truth.documents import retained_file_import_source_sha256
 from work_buddy.truth.fingerprints import (
@@ -73,6 +80,11 @@ from work_buddy.truth.store import (
     ClaimRecord,
     EvidenceRecord,
     TruthStore,
+)
+from work_buddy.truth.source_provenance import (
+    CandidateDecisionEventRecord,
+    EvidenceSourceResolutionRecord,
+    TruthOperationResultRecord,
 )
 
 _COTHINK_ITEM_TRANSITIONS = {
@@ -231,7 +243,16 @@ WITH RECURSIVE support_roots(claim_id) AS (
     JOIN evidence_spans AS s
       ON l.to_kind = 'evidence_span' AND l.to_ref = s.id
     JOIN evidence AS e ON e.id = s.evidence_id
-    WHERE l.link_type = 'supports_span'
+    WHERE (
+          l.link_type = 'supports_span'
+          OR (
+              l.link_type = 'evidence_relation'
+              AND json_valid(l.role_json)
+              AND json_extract(l.role_json, '$.schema') = 'claim-evidence/v1'
+              AND json_extract(l.role_json, '$.evidential_effect')
+                  IN ('supports', 'partially_supports')
+          )
+      )
       AND NOT EXISTS (
           SELECT 1 FROM link_retractions AS r WHERE r.link_id = l.id
       )
@@ -349,6 +370,21 @@ class ConflictState:
     role: Mapping[str, Any]
     from_status: str | None
     to_status: str | None
+    created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class ClaimEvidenceState:
+    """One active evidence edge with conservative role classification."""
+
+    link_id: str
+    claim_id: str
+    span_id: str
+    evidence_id: str
+    classification: str
+    evidential_effect: str | None
+    derivation_relationship: str | None
+    usable_support: bool
     created_at: str
 
 
@@ -1064,6 +1100,139 @@ def conflicts(
     return tuple(results)
 
 
+def claim_evidence_relations(
+    store: TruthStore,
+    claim_id: str,
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> tuple[ClaimEvidenceState, ...]:
+    """Project active v9 and legacy claim-evidence edges without guessing.
+
+    Arbitrary legacy role JSON is returned as ``legacy_unspecified`` and never
+    counts as support. Existing ``supports_span`` records retain their explicit
+    compatibility classification.
+    """
+
+    with _read_connection(store, conn) as read_conn:
+        claim = store._get_claim_locked(read_conn, claim_id)
+        if claim is None:
+            raise InvariantViolation(f"claim does not exist: {claim_id}")
+        policy = store.profile.support_policy_for(claim.claim_kind)
+        rows = read_conn.execute(
+            "SELECT l.id AS link_id, l.from_claim_id, l.link_type, l.role_json, "
+            "l.to_ref AS span_id, l.created_at, s.evidence_id, s.author_kind, "
+            "s.redacted_at AS span_redacted_at, e.kind AS evidence_kind, "
+            "e.trust_class, e.derived_from_store, "
+            "e.redacted_at AS evidence_redacted_at "
+            "FROM claim_links AS l "
+            "JOIN evidence_spans AS s "
+            "ON l.to_kind = 'evidence_span' AND l.to_ref = s.id "
+            "JOIN evidence AS e ON e.id = s.evidence_id "
+            "LEFT JOIN link_retractions AS r ON r.link_id = l.id "
+            "WHERE l.from_claim_id = ? AND l.to_kind = 'evidence_span' "
+            "AND l.link_type IN ('supports_span', 'evidence_relation') "
+            "AND r.link_id IS NULL ORDER BY l.created_at, l.id",
+            (claim.id,),
+        ).fetchall()
+    result: list[ClaimEvidenceState] = []
+    for row in rows:
+        relation = classify_claim_evidence_role(
+            link_type=row["link_type"], role_json=row["role_json"]
+        )
+        usable = (
+            relation.evidential_effect in policy.allowed_effects
+            and row["span_redacted_at"] is None
+            and row["evidence_redacted_at"] is None
+            and row["derived_from_store"] is None
+            and row["trust_class"] is not None
+            and (
+                policy.allow_human_assertion_as_source
+                or row["evidence_kind"] not in {"chat", "utterance"}
+                or row["author_kind"] != "human"
+            )
+        )
+        result.append(
+            ClaimEvidenceState(
+                link_id=row["link_id"],
+                claim_id=row["from_claim_id"],
+                span_id=row["span_id"],
+                evidence_id=row["evidence_id"],
+                classification=relation.classification,
+                evidential_effect=relation.evidential_effect,
+                derivation_relationship=relation.derivation_relationship,
+                usable_support=usable,
+                created_at=row["created_at"],
+            )
+        )
+    return tuple(result)
+
+
+def evidence_source_resolutions(
+    store: TruthStore,
+    evidence_id: str,
+    *,
+    conn: sqlite3.Connection | None = None,
+) -> tuple[EvidenceSourceResolutionRecord, ...]:
+    """Return portable source receipts without resolving source bytes."""
+
+    sql = (
+        "SELECT * FROM evidence_source_resolution_records WHERE evidence_id = ? "
+        "ORDER BY resolved_at, id"
+    )
+    with _read_connection(store, conn) as read_conn:
+        if store._get_evidence_locked(read_conn, evidence_id) is None:
+            raise InvariantViolation(f"evidence does not exist: {evidence_id}")
+        rows = read_conn.execute(sql, (evidence_id,)).fetchall()
+    return tuple(EvidenceSourceResolutionRecord(**dict(row)) for row in rows)
+
+
+def candidate_decisions(
+    store: TruthStore,
+    *,
+    candidate_id: str | None = None,
+    claim_id: str | None = None,
+    conn: sqlite3.Connection | None = None,
+) -> tuple[CandidateDecisionEventRecord, ...]:
+    """Return candidate decisions independently from claim lifecycle events."""
+
+    if candidate_id is None and claim_id is None:
+        raise InvariantViolation("candidate_id or claim_id is required")
+    clauses: list[str] = []
+    params: list[str] = []
+    if candidate_id is not None:
+        clauses.append("candidate_id = ?")
+        params.append(candidate_id)
+    if claim_id is not None:
+        clauses.append("claim_id = ?")
+        params.append(claim_id)
+    with _read_connection(store, conn) as read_conn:
+        rows = read_conn.execute(
+            "SELECT * FROM candidate_decision_events WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY decided_at, id",
+            params,
+        ).fetchall()
+    return tuple(CandidateDecisionEventRecord(**dict(row)) for row in rows)
+
+
+def truth_operation_result(
+    store: TruthStore,
+    *,
+    operation_name: str,
+    idempotency_key: str,
+    conn: sqlite3.Connection | None = None,
+) -> TruthOperationResultRecord | None:
+    """Read one durable idempotency result by its semantic key."""
+
+    with _read_connection(store, conn) as read_conn:
+        row = read_conn.execute(
+            "SELECT * FROM truth_operation_results "
+            "WHERE operation_name = ? AND idempotency_key = ?",
+            (operation_name, idempotency_key),
+        ).fetchone()
+    return None if row is None else TruthOperationResultRecord(**dict(row))
+
+
 def needs_review(
     store: TruthStore,
     *,
@@ -1645,6 +1814,16 @@ _DOCUMENT_SURFACE_TABLES = (
 )
 
 _VERIFY_RECORD_TABLES = {
+    "evidence_source_resolution": "evidence_source_resolution_records",
+    "truth_source_usage_event": "truth_source_usage_events",
+    "provenance_attribution_event": "provenance_attribution_events",
+    "candidate_decision_event": "candidate_decision_events",
+    "truth_operation_result": "truth_operation_results",
+    "document_content_redaction": "document_content_redactions",
+    "document_content_redaction_target": "document_content_redaction_targets",
+    "document_content_redaction_status": (
+        "document_content_redaction_status_events"
+    ),
     "criterion_definition_version": "criterion_definition_versions",
     "check_definition_version": "check_definition_versions",
     "criterion_check_binding": "criterion_check_bindings",
@@ -1803,6 +1982,26 @@ def _document_integrity_findings(
     )
     document_versions_by_id = {row["id"]: row for row in document_versions}
     provenance_by_id = {row["id"]: row for row in provenance_rows}
+    content_redactions = conn.execute(
+        "SELECT * FROM document_content_redactions ORDER BY created_at, id"
+    ).fetchall()
+    content_redaction_targets = conn.execute(
+        "SELECT * FROM document_content_redaction_targets "
+        "ORDER BY redaction_id, target_kind, target_ref, field_name, id"
+    ).fetchall()
+    content_redaction_statuses = conn.execute(
+        "SELECT s.* FROM document_content_redaction_status_events AS s "
+        "LEFT JOIN ledger_records AS l "
+        "ON l.record_type = 'document_content_redaction_status' "
+        "AND l.record_key = s.id ORDER BY l.seq, s.created_at, s.id"
+    ).fetchall()
+    content_redactions_by_id = {row["id"]: row for row in content_redactions}
+    content_targets_by_redaction: dict[str, list[sqlite3.Row]] = defaultdict(list)
+    content_statuses_by_redaction: dict[str, list[sqlite3.Row]] = defaultdict(list)
+    for row in content_redaction_targets:
+        content_targets_by_redaction[row["redaction_id"]].append(row)
+    for row in content_redaction_statuses:
+        content_statuses_by_redaction[row["redaction_id"]].append(row)
 
     latest_status: dict[str, sqlite3.Row] = {}
     for row in status_rows:
@@ -1985,6 +2184,389 @@ def _document_integrity_findings(
                 break
             visited.add(cursor)
             cursor = provenance_by_id[cursor]["supersedes_id"]
+
+    content_target_keys = {
+        (
+            row["redaction_id"],
+            row["target_kind"],
+            row["target_ref"],
+            row["field_name"],
+            row["content_sha256"],
+            row["disposition"],
+        )
+        for row in content_redaction_targets
+    }
+    covered_blob_keys = {
+        (
+            row["target_kind"],
+            row["target_ref"],
+            row["field_name"],
+            row["content_sha256"],
+        )
+        for row in content_redaction_targets
+        if row["disposition"] == "blob_cleanup"
+    }
+    document_ledger_sequence = {
+        (row["record_type"], row["record_key"]): int(row["seq"])
+        for row in conn.execute(
+            "SELECT seq, record_type, record_key FROM ledger_records WHERE "
+            "record_type IN ('document_content_redaction', 'document_version', "
+            "'action_snapshot', 'document_span', 'proposal')"
+        ).fetchall()
+    }
+
+    for target in content_redaction_targets:
+        target_id = target["id"]
+        if target["redaction_id"] not in content_redactions_by_id:
+            add(
+                "document-content-redaction-dangling-target",
+                "document_content_redaction_target",
+                target_id,
+                f"redaction_id {target['redaction_id']} has no receipt",
+            )
+        try:
+            payload = {
+                "schema": "wb.document-content-redaction-target/v1",
+                "redaction_id": target["redaction_id"],
+                "target_kind": target["target_kind"],
+                "target_ref": target["target_ref"],
+                "field_name": target["field_name"],
+                "content_sha256": target["content_sha256"],
+                "disposition": target["disposition"],
+                "created_at": target["created_at"],
+            }
+            expected = sha256_text(canonical_json(payload))
+        except (TypeError, ValueError) as exc:
+            add(
+                "document-content-redaction-target-invalid",
+                "document_content_redaction_target",
+                target_id,
+                f"target fields are invalid: {exc}",
+            )
+        else:
+            if expected != target["canonical_sha256"]:
+                add(
+                    "document-content-redaction-target-canonical-mismatch",
+                    "document_content_redaction_target",
+                    target_id,
+                    "recomputed canonical_sha256 differs from the stored value",
+                )
+        if (target["disposition"] == "blob_cleanup") != (
+            target["content_sha256"] is not None
+        ):
+            add(
+                "document-content-redaction-target-invalid-content",
+                "document_content_redaction_target",
+                target_id,
+                "only blob_cleanup targets may carry a content digest",
+            )
+
+    for status in content_redaction_statuses:
+        status_id = status["id"]
+        if status["redaction_id"] not in content_redactions_by_id:
+            add(
+                "document-content-redaction-dangling-status",
+                "document_content_redaction_status",
+                status_id,
+                f"redaction_id {status['redaction_id']} has no receipt",
+            )
+        try:
+            detail = json.loads(status["detail_json"])
+            if not isinstance(detail, dict):
+                raise ValueError("detail_json is not an object")
+            expected = sha256_text(
+                canonical_json(
+                    {
+                        "schema": "wb.document-content-redaction-status/v1",
+                        "redaction_id": status["redaction_id"],
+                        "status": status["status"],
+                        "detail": detail,
+                        "created_at": status["created_at"],
+                    }
+                )
+            )
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            add(
+                "document-content-redaction-status-invalid",
+                "document_content_redaction_status",
+                status_id,
+                f"status fields are invalid: {exc}",
+            )
+        else:
+            if expected != status["canonical_sha256"]:
+                add(
+                    "document-content-redaction-status-canonical-mismatch",
+                    "document_content_redaction_status",
+                    status_id,
+                    "recomputed canonical_sha256 differs from the stored value",
+                )
+
+    for receipt_id, receipt in content_redactions_by_id.items():
+        document_id = receipt["document_id"]
+        document = documents.get(document_id)
+        replacement = document_versions_by_id.get(
+            receipt["replacement_document_version_id"]
+        )
+        if document is None:
+            add(
+                "document-content-redaction-dangling-document",
+                "document_content_redaction",
+                receipt_id,
+                f"document_id {document_id} has no document row",
+            )
+        if replacement is None or replacement["document_id"] != document_id:
+            add(
+                "document-content-redaction-invalid-replacement",
+                "document_content_redaction",
+                receipt_id,
+                "replacement version is absent or belongs to another document",
+            )
+        elif replacement["detail"] != (
+            f"source-redaction:{receipt['source_redaction_event_id']}"
+        ):
+            add(
+                "document-content-redaction-unbound-replacement",
+                "document_content_redaction",
+                receipt_id,
+                "replacement version is not bound to this source redaction event",
+            )
+
+        try:
+            source_ref = json.loads(receipt["source_ref_json"])
+            actor_ref = json.loads(receipt["actor_ref_json"])
+            if not isinstance(source_ref, dict) or not source_ref:
+                raise ValueError("source_ref_json is not a nonempty object")
+            if not isinstance(actor_ref, dict) or not actor_ref:
+                raise ValueError("actor_ref_json is not a nonempty object")
+            expected = sha256_text(
+                canonical_json(
+                    {
+                        "schema": "wb.document-content-redaction/v1",
+                        "document_id": document_id,
+                        "replacement_document_version_id": receipt[
+                            "replacement_document_version_id"
+                        ],
+                        "source_usage_id": receipt["source_usage_id"],
+                        "source_ref": source_ref,
+                        "source_redaction_event_id": receipt[
+                            "source_redaction_event_id"
+                        ],
+                        "content_class": receipt["content_class"],
+                        "redaction_policy": receipt["redaction_policy"],
+                        "actor_ref": actor_ref,
+                        "coverage_sha256": receipt["coverage_sha256"],
+                        "created_at": receipt["created_at"],
+                    }
+                )
+            )
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            add(
+                "document-content-redaction-invalid",
+                "document_content_redaction",
+                receipt_id,
+                f"receipt fields are invalid: {exc}",
+            )
+        else:
+            if expected != receipt["canonical_sha256"]:
+                add(
+                    "document-content-redaction-canonical-mismatch",
+                    "document_content_redaction",
+                    receipt_id,
+                    "recomputed canonical_sha256 differs from the stored value",
+                )
+
+        targets = sorted(
+            content_targets_by_redaction.get(receipt_id, []),
+            key=lambda row: (
+                row["target_kind"],
+                row["target_ref"],
+                row["field_name"],
+                row["id"],
+            ),
+        )
+        coverage = [
+            {
+                "target_kind": row["target_kind"],
+                "target_ref": row["target_ref"],
+                "field_name": row["field_name"],
+                "content_sha256": row["content_sha256"],
+                "disposition": row["disposition"],
+            }
+            for row in targets
+        ]
+        if sha256_text(canonical_json(coverage)) != receipt["coverage_sha256"]:
+            add(
+                "document-content-redaction-coverage-mismatch",
+                "document_content_redaction",
+                receipt_id,
+                "coverage_sha256 differs from the durable target manifest",
+            )
+
+        statuses = content_statuses_by_redaction.get(receipt_id, [])
+        if not statuses or statuses[0]["status"] != "content_tombstoned":
+            add(
+                "document-content-redaction-missing-tombstone-status",
+                "document_content_redaction",
+                receipt_id,
+                "receipt has no initial content_tombstoned status",
+            )
+        if sum(row["status"] == "cleanup_complete" for row in statuses) > 1:
+            add(
+                "document-content-redaction-duplicate-completion",
+                "document_content_redaction",
+                receipt_id,
+                "receipt has more than one cleanup_complete status",
+            )
+
+        receipt_seq = document_ledger_sequence.get(
+            ("document_content_redaction", receipt_id)
+        )
+        if receipt_seq is None:
+            continue
+        for version in document_versions:
+            version_id = version["id"]
+            version_seq = document_ledger_sequence.get(
+                ("document_version", version_id)
+            )
+            if (
+                version["document_id"] != document_id
+                or version_id == receipt["replacement_document_version_id"]
+                or version_seq is None
+                or version_seq >= receipt_seq
+            ):
+                continue
+            for field in ("projection_sha256", "ydoc_snapshot_sha256"):
+                if (
+                    receipt_id,
+                    "document_version_blob",
+                    version_id,
+                    field,
+                    version[field],
+                    "blob_cleanup",
+                ) not in content_target_keys:
+                    add(
+                        "document-content-redaction-incomplete-version-coverage",
+                        "document_content_redaction",
+                        receipt_id,
+                        f"historical version {version_id} field {field} is uncovered",
+                    )
+
+        for action in conn.execute(
+            "SELECT * FROM action_snapshots WHERE document_id = ? ORDER BY id",
+            (document_id,),
+        ).fetchall():
+            action_id = action["id"]
+            action_seq = document_ledger_sequence.get(("action_snapshot", action_id))
+            if action_seq is None or action_seq >= receipt_seq:
+                continue
+            for field in ("projection_blob_sha256", "target_blob_sha256"):
+                if (
+                    receipt_id,
+                    "action_snapshot_blob",
+                    action_id,
+                    field,
+                    action[field],
+                    "blob_cleanup",
+                ) not in content_target_keys:
+                    add(
+                        "document-content-redaction-incomplete-action-coverage",
+                        "document_content_redaction",
+                        receipt_id,
+                        f"historical action {action_id} field {field} is uncovered",
+                    )
+            if (
+                action["redacted_at"] is None
+                or action["target_selector_json"] != REDACTED_ACTION_CONTEXT_JSON
+                or action["context_boundary_json"] != REDACTED_ACTION_CONTEXT_JSON
+                or action["allowed_change_ranges_json"] != "[]"
+            ):
+                add(
+                    "document-content-redaction-action-content-retained",
+                    "action_snapshot",
+                    action_id,
+                    "historical action snapshot retains readable target metadata",
+                )
+
+        for span_id, span in document_spans.items():
+            span_seq = document_ledger_sequence.get(("document_span", span_id))
+            if (
+                span["document_id"] != document_id
+                or span_seq is None
+                or span_seq >= receipt_seq
+            ):
+                continue
+            has_target = any(
+                row["target_kind"] == "document_span"
+                and row["target_ref"] == span_id
+                and row["disposition"] == "sql_tombstone"
+                for row in targets
+            )
+            if (
+                not has_target
+                or span["redacted_at"] is None
+                or span["selector_json"] != REDACTED_SELECTOR_JSON
+                or span["quote_exact"] is not None
+            ):
+                add(
+                    "document-content-redaction-span-content-retained",
+                    "document_span",
+                    span_id,
+                    "historical document span is uncovered or retains readable text",
+                )
+
+        for proposal in proposals:
+            proposal_id = proposal["id"]
+            proposal_seq = document_ledger_sequence.get(("proposal", proposal_id))
+            if (
+                proposal["document_id"] != document_id
+                or proposal_seq is None
+                or proposal_seq >= receipt_seq
+            ):
+                continue
+            has_target = any(
+                row["target_kind"] == "proposal"
+                and row["target_ref"] == proposal_id
+                and row["disposition"] == "sql_tombstone"
+                for row in targets
+            )
+            retained = any(
+                proposal[field] is not None
+                for field in (
+                    "quote_exact",
+                    "replacement",
+                    "rationale",
+                    "tldr",
+                    "claim_refs_json",
+                )
+            )
+            if (
+                not has_target
+                or proposal["redacted_at"] is None
+                or proposal["selector_json"] != REDACTED_SELECTOR_JSON
+                or retained
+            ):
+                add(
+                    "document-content-redaction-proposal-content-retained",
+                    "proposal",
+                    proposal_id,
+                    "historical proposal is uncovered or retains readable text",
+                )
+
+        if statuses and statuses[-1]["status"] == "cleanup_complete":
+            for target in targets:
+                digest = target["content_sha256"]
+                if target["disposition"] != "blob_cleanup" or digest is None:
+                    continue
+                path = store.resolve_blob_path(f"blobs/{digest}")
+                if path.exists() and store.blob_reference_count(
+                    digest, live_only=False
+                ) == 0:
+                    add(
+                        "document-content-redaction-blob-retained",
+                        "document_content_redaction_target",
+                        target["id"],
+                        f"unreferenced covered blob {digest} remains after completion",
+                    )
     for expr in expressions:
         if expr["document_span_id"] not in document_spans:
             add(
@@ -2009,8 +2591,16 @@ def _document_integrity_findings(
         source_digest = retained_file_import_source_sha256(doc["meta_json"])
         if source_digest is None:
             continue
+        source_is_covered = (
+            "document_source_blob",
+            doc_id,
+            "documents.meta_json.source.sha256",
+            source_digest,
+        ) in covered_blob_keys
         source_path = store.resolve_blob_path(f"blobs/{source_digest}")
         if not source_path.exists():
+            if source_is_covered:
+                continue
             add(
                 "document-source-blob-unavailable",
                 "document",
@@ -2037,6 +2627,46 @@ def _document_integrity_findings(
                 doc_id,
                 "retained import source bytes do not match source sha256",
             )
+
+    # Historical projections and action captures are live unless an exact-copy
+    # scrub receipt explicitly covers that immutable digest.  Covered digests
+    # remain as audit tombstones and may be absent from disk.
+    for version in document_versions:
+        for field in ("projection_sha256", "ydoc_snapshot_sha256"):
+            digest = version[field]
+            if (
+                "document_version_blob",
+                version["id"],
+                field,
+                digest,
+            ) in covered_blob_keys:
+                continue
+            if not store.resolve_blob_path(f"blobs/{digest}").exists():
+                add(
+                    "document-version-blob-missing",
+                    "document_version",
+                    version["id"],
+                    f"live {field} blob {digest} is absent",
+                )
+    for action in conn.execute(
+        "SELECT * FROM action_snapshots ORDER BY id"
+    ).fetchall():
+        for field in ("projection_blob_sha256", "target_blob_sha256"):
+            digest = action[field]
+            if (
+                "action_snapshot_blob",
+                action["id"],
+                field,
+                digest,
+            ) in covered_blob_keys:
+                continue
+            if not store.resolve_blob_path(f"blobs/{digest}").exists():
+                add(
+                    "action-snapshot-blob-missing",
+                    "action_snapshot",
+                    action["id"],
+                    f"live {field} blob {digest} is absent",
+                )
 
     for prop in proposals:
         proposal_id = prop["id"]
@@ -2963,9 +3593,13 @@ def integrity_findings(
                         tuple[sqlite3.Row, sqlite3.Row | None, sqlite3.Row | None]
                     ] = []
                     for support_link in link_rows:
+                        relation = classify_claim_evidence_role(
+                            link_type=support_link["link_type"],
+                            role_json=support_link["role_json"],
+                        )
                         if (
                             support_link["from_claim_id"] != claim_id
-                            or support_link["link_type"] != "supports_span"
+                            or not relation.is_positive
                             or support_link["to_kind"] != "evidence_span"
                         ):
                             continue
@@ -3007,7 +3641,31 @@ def integrity_findings(
                             boundary_event=row,
                         )
                         and evidence["derived_from_store"] is None
+                        and classify_claim_evidence_role(
+                            link_type=support_link["link_type"],
+                            role_json=support_link["role_json"],
+                        ).evidential_effect
+                        in store.profile.support_policy_for(
+                            claims_by_id[claim_id].claim_kind
+                        ).allowed_effects
+                        and (
+                            store.profile.support_policy_for(
+                                claims_by_id[claim_id].claim_kind
+                            ).allow_human_assertion_as_source
+                            or evidence["kind"] not in {"chat", "utterance"}
+                            or span["author_kind"] != "human"
+                        )
                     ]
+                    support_policy = store.profile.support_policy_for(
+                        claims_by_id[claim_id].claim_kind
+                    )
+                    if len(usable_support) < support_policy.minimum_usable_supports:
+                        add(
+                            "confirmation_below_support_policy",
+                            "status_event",
+                            event_id,
+                            "claim confirmation does not satisfy its current support policy",
+                        )
                     if support_rows and not usable_support:
                         add(
                             "confirmation_without_usable_support",
@@ -3344,9 +4002,16 @@ def integrity_findings(
             boundary_event: sqlite3.Row,
         ) -> bool:
             for link in link_rows:
+                relation = classify_claim_evidence_role(
+                    link_type=link["link_type"], role_json=link["role_json"]
+                )
                 if (
                     link["from_claim_id"] != challenger_id
-                    or link["link_type"] != "supports_span"
+                    or not relation.is_positive
+                    or relation.evidential_effect
+                    not in store.profile.support_policy_for(
+                        claims_by_id[challenger_id].claim_kind
+                    ).allowed_effects
                     or link["to_kind"] != "evidence_span"
                     or not link_active_at_event(link, boundary_event)
                 ):
@@ -3384,6 +4049,13 @@ def integrity_findings(
                     )
                     and evidence["derived_from_store"] is None
                     and evidence["trust_class"] is not None
+                    and (
+                        store.profile.support_policy_for(
+                            claims_by_id[challenger_id].claim_kind
+                        ).allow_human_assertion_as_source
+                        or evidence["kind"] not in {"chat", "utterance"}
+                        or span["author_kind"] != "human"
+                    )
                 ):
                     return True
             return False
@@ -3567,6 +4239,16 @@ def integrity_findings(
             role, role_error = _try_json_object(row["role_json"])
             if role_error is not None:
                 add("invalid_link_role", "claim_link", link_id, role_error)
+            elif link_type == "evidence_relation":
+                try:
+                    validate_claim_evidence_role(role)
+                except InvariantViolation as exc:
+                    add(
+                        "invalid_claim_evidence_role",
+                        "claim_link",
+                        link_id,
+                        str(exc),
+                    )
             rejection_binding_keys = set(REJECTION_BINDING_FIELDS) | {
                 REJECTION_BINDING_HASH_FIELD
             }
@@ -5043,6 +5725,8 @@ run_integrity_check = integrity_findings
 
 
 __all__ = [
+    "CandidateDecisionEventRecord",
+    "ClaimEvidenceState",
     "ConflictState",
     "ClaimState",
     "CrossStoreResolver",
@@ -5059,8 +5743,11 @@ __all__ = [
     "SweepCandidate",
     "SweepFindingSpec",
     "claims_as_of",
+    "candidate_decisions",
+    "claim_evidence_relations",
     "conflicts",
     "current_claims",
+    "evidence_source_resolutions",
     "integrity_findings",
     "link_fingerprint_states",
     "needs_review",
@@ -5076,4 +5763,5 @@ __all__ = [
     "source_sweep_candidates",
     "successor_races",
     "supersession_sweep_candidates",
+    "truth_operation_result",
 ]

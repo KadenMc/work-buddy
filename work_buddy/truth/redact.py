@@ -226,7 +226,7 @@ class TruthRedactor:
                 "SELECT 1 FROM claim_links AS link "
                 "JOIN claim_status_events AS event "
                 "ON event.claim_id = link.from_claim_id "
-                "WHERE link.link_type = 'supports_span' "
+                "WHERE link.link_type IN ('supports_span', 'evidence_relation') "
                 "AND link.to_kind = 'evidence_span' AND link.to_ref = ? "
                 "AND event.status = 'confirmed' LIMIT 1",
                 (subject_ref,),
@@ -234,7 +234,8 @@ class TruthRedactor:
         else:
             row = conn.execute(
                 "SELECT 1 FROM evidence_spans AS span "
-                "JOIN claim_links AS link ON link.link_type = 'supports_span' "
+                "JOIN claim_links AS link "
+                "ON link.link_type IN ('supports_span', 'evidence_relation') "
                 "AND link.to_kind = 'evidence_span' AND link.to_ref = span.id "
                 "JOIN claim_status_events AS event "
                 "ON event.claim_id = link.from_claim_id "
@@ -645,6 +646,37 @@ class TruthRedactor:
                         conn=write_conn,
                     )
                     status_event = transition.event if transition.created else None
+            elif kind in {"evidence", "span"}:
+                if kind == "evidence":
+                    affected_rows = write_conn.execute(
+                        "SELECT DISTINCT l.from_claim_id AS claim_id "
+                        "FROM claim_links AS l "
+                        "JOIN evidence_spans AS s ON s.id = l.to_ref "
+                        "LEFT JOIN link_retractions AS r ON r.link_id = l.id "
+                        "WHERE l.to_kind = 'evidence_span' "
+                        "AND s.evidence_id = ? AND r.link_id IS NULL",
+                        (subject.ref,),
+                    ).fetchall()
+                else:
+                    affected_rows = write_conn.execute(
+                        "SELECT DISTINCT l.from_claim_id AS claim_id "
+                        "FROM claim_links AS l "
+                        "LEFT JOIN link_retractions AS r ON r.link_id = l.id "
+                        "WHERE l.to_kind = 'evidence_span' AND l.to_ref = ? "
+                        "AND r.link_id IS NULL",
+                        (subject.ref,),
+                    ).fetchall()
+                from work_buddy.hindsight_projection.truth_reader import (
+                    enqueue_claim_projection_in_transaction,
+                )
+
+                for affected in affected_rows:
+                    enqueue_claim_projection_in_transaction(
+                        self.store,
+                        write_conn,
+                        claim_id=str(affected["claim_id"]),
+                        at=timestamp,
+                    )
             # Remove the pre-redaction recovery export before this transaction
             # can commit.  The content-free event marker survives any crash
             # until the post-commit hook republishes the redacted projection.

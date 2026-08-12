@@ -160,6 +160,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             status          TEXT NOT NULL DEFAULT 'sent',
             producer        TEXT,
             context_json    TEXT,
+            ingress_json    TEXT,
             FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id)
         );
 
@@ -229,6 +230,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     )
     _ensure_column(conn, "messages", "producer", "producer TEXT")
     _ensure_column(conn, "messages", "context_json", "context_json TEXT")
+    _ensure_column(conn, "messages", "ingress_json", "ingress_json TEXT")
     # Receipts written before fetch outcomes were recorded were minted only
     # after a successful view read, so ``available`` is the truthful migration
     # default. New receipts are inserted explicitly as ``pending`` below.
@@ -712,6 +714,7 @@ def _insert_user_message_locked(
     content: str,
     message_id: str | None = None,
     context: Mapping[str, Any] | None = None,
+    ingress: Mapping[str, Any] | None = None,
 ) -> tuple[ConversationMessage, bool]:
     """Insert one display-visible user message on an active write transaction."""
     now = _now()
@@ -724,12 +727,14 @@ def _insert_user_message_locked(
         message_type="text",
         status="sent",
         context=dict(context) if context is not None else None,
+        ingress=dict(ingress) if ingress is not None else None,
     )
     cursor = conn.execute(
         """INSERT OR IGNORE INTO messages
            (message_id, conversation_id, role, content, created_at,
-            message_type, response_type, choices, response, status, context_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           message_type, response_type, choices, response, status, context_json,
+           ingress_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             user_msg.message_id,
             user_msg.conversation_id,
@@ -742,6 +747,7 @@ def _insert_user_message_locked(
             None,
             user_msg.status,
             json.dumps(user_msg.context) if user_msg.context is not None else None,
+            json.dumps(user_msg.ingress) if user_msg.ingress is not None else None,
         ),
     )
     if cursor.rowcount != 0:
@@ -758,6 +764,7 @@ def _insert_user_message_locked(
         conversation_id=user_msg.conversation_id,
         content=user_msg.content,
         context=user_msg.context,
+        ingress=user_msg.ingress,
     ), False
 
 
@@ -767,16 +774,32 @@ def _validate_user_message_replay(
     conversation_id: str,
     content: str,
     context: Mapping[str, Any] | None,
+    ingress: Mapping[str, Any] | None,
 ) -> ConversationMessage:
     """Return an identical caller-keyed replay or raise a typed conflict."""
 
     expected_context = dict(context) if context is not None else None
+    expected_ingress = dict(ingress) if ingress is not None else None
+
+    def replay_identity(value: Mapping[str, Any] | None) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        # A retry is a fresh one-use gesture and may follow a dashboard
+        # session refresh. Those fields attest this transport attempt, not the
+        # identity of the already-authored turn. Every authority, actor,
+        # action, subject, and exact request-context field must still match.
+        return {
+            key: item
+            for key, item in value.items()
+            if key not in {"gesture_id", "session_id_sha256"}
+        }
     if (
         existing.conversation_id != conversation_id
         or existing.role != "user"
         or existing.content != content
         or existing.message_type != "text"
         or existing.context != expected_context
+        or replay_identity(existing.ingress) != replay_identity(expected_ingress)
     ):
         raise UserMessageIdConflictError(
             "message_id was reused for different user message content"
@@ -792,6 +815,7 @@ def respond_to_message_with_user_message(
     *,
     user_message_id: str | None = None,
     context: Mapping[str, Any] | None = None,
+    ingress: Mapping[str, Any] | None = None,
 ) -> ConversationMessage | None:
     """Answer one exact pending question and return its single user message.
 
@@ -826,6 +850,7 @@ def respond_to_message_with_user_message(
                     conversation_id=conversation_id,
                     content=response,
                     context=context,
+                    ingress=ingress,
                 )
                 if own_conn:
                     conn.commit()
@@ -846,6 +871,7 @@ def respond_to_message_with_user_message(
             content=response,
             message_id=user_message_id,
             context=context,
+            ingress=ingress,
         )
         if not inserted:
             # A replay of the same user-message id is already durable. It must
@@ -886,6 +912,7 @@ def post_user_message(
     *,
     message_id: str | None = None,
     context: Mapping[str, Any] | None = None,
+    ingress: Mapping[str, Any] | None = None,
 ) -> ConversationMessage | None:
     """Append one ordinary user turn without consuming a pending question."""
     own_conn = conn is None
@@ -905,6 +932,7 @@ def post_user_message(
             content=content,
             message_id=message_id,
             context=context,
+            ingress=ingress,
         )
         if inserted:
             conn.execute(
@@ -920,6 +948,59 @@ def post_user_message(
     finally:
         if own_conn:
             conn.close()
+
+
+def redact_message_content(
+    conversation_id: str,
+    message_id: str,
+    *,
+    expected_content_sha256: str,
+    replacement: str = "[Redacted because its source was removed.]",
+) -> bool:
+    """Scrub one exact persisted message without changing its stable identity.
+
+    This narrow maintenance operation is content-addressed: a message edited or
+    replaced since dependency capture is never overwritten.  Conversation and
+    message IDs, timestamps, producer metadata, and context remain available
+    for audit/recovery while the source-derived bytes are removed.
+    """
+
+    import hashlib
+
+    if not all(
+        isinstance(value, str) and value
+        for value in (
+            conversation_id,
+            message_id,
+            expected_content_sha256,
+            replacement,
+        )
+    ):
+        raise ValueError("conversation/message redaction fields are required")
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT content FROM messages WHERE conversation_id = ? AND message_id = ?",
+            (conversation_id, message_id),
+        ).fetchone()
+        if row is None:
+            conn.rollback()
+            return False
+        content = str(row["content"])
+        current_sha256 = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        replacement_sha256 = hashlib.sha256(replacement.encode("utf-8")).hexdigest()
+        if current_sha256 == replacement_sha256:
+            conn.commit()
+            return True
+        if current_sha256 != expected_content_sha256:
+            conn.rollback()
+            return False
+        conn.execute(
+            "UPDATE messages SET content = ? WHERE conversation_id = ? AND message_id = ?",
+            (replacement, conversation_id, message_id),
+        )
+        conn.commit()
+        return True
 
 
 def _timestamp_age_seconds(value: object, *, now: datetime) -> float | None:

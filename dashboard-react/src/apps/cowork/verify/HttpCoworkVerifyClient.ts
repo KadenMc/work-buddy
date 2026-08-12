@@ -4,6 +4,7 @@ import type {
   CoworkVerifyRecheckTargetAffirmationReceipt,
   CoworkVerifyRecheckTargetConfirmation,
 } from "../targets";
+import { coworkHumanAuthorityHeaders } from "../../../security/humanAuthority";
 
 type FetchLike = typeof fetch;
 
@@ -105,39 +106,47 @@ export class HttpCoworkVerifyClient {
       readonly recheckTargetConfirmation?: CoworkVerifyRecheckTargetConfirmation;
     },
   ): Promise<CoworkVerifyStartReceipt> {
+    const body = {
+      capture,
+      execution: executionPayload(selection),
+      user_goal: options.userGoal,
+      protected_intent: options.protectedIntent,
+      recheck_of_proposal_ids: options.recheckOfProposalIds ?? [],
+      recheck_of_run_id: options.recheckOfRunId ?? null,
+      recheck_intent_id: options.recheckIntentId ?? null,
+      recheck_target_confirmation:
+        options.recheckTargetConfirmation === undefined
+          ? null
+          : {
+              schema: options.recheckTargetConfirmation.schema,
+              method: options.recheckTargetConfirmation.method,
+              affirmed_capture_id:
+                options.recheckTargetConfirmation.affirmedCaptureId,
+              affirmed_action_snapshot_id:
+                options.recheckTargetConfirmation.affirmedActionSnapshotId,
+              run_capture_id: options.recheckTargetConfirmation.runCaptureId,
+              target_reference_sha256:
+                options.recheckTargetConfirmation.targetReferenceSha256,
+              target_text_sha256:
+                options.recheckTargetConfirmation.targetTextSha256,
+            },
+    };
+    const authorityHeaders = await coworkHumanAuthorityHeaders(
+      {
+        operation: "verify.run",
+        storeId: this.#storeId,
+        documentId: this.#documentId,
+        body,
+      },
+      this.#fetch,
+    );
     const response = await this.#fetch(
       endpoint(this.#documentId, this.#storeId, "verify/runs"),
       {
         method: "POST",
         credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          capture,
-          execution: executionPayload(selection),
-          user_goal: options.userGoal,
-          protected_intent: options.protectedIntent,
-          recheck_of_proposal_ids: options.recheckOfProposalIds ?? [],
-          recheck_of_run_id: options.recheckOfRunId ?? null,
-          recheck_intent_id: options.recheckIntentId ?? null,
-          recheck_target_confirmation:
-            options.recheckTargetConfirmation === undefined
-              ? null
-              : {
-                  schema: options.recheckTargetConfirmation.schema,
-                  method: options.recheckTargetConfirmation.method,
-                  affirmed_capture_id:
-                    options.recheckTargetConfirmation.affirmedCaptureId,
-                  affirmed_action_snapshot_id:
-                    options.recheckTargetConfirmation
-                      .affirmedActionSnapshotId,
-                  run_capture_id:
-                    options.recheckTargetConfirmation.runCaptureId,
-                  target_reference_sha256:
-                    options.recheckTargetConfirmation.targetReferenceSha256,
-                  target_text_sha256:
-                    options.recheckTargetConfirmation.targetTextSha256,
-                },
-        }),
+        headers: { "Content-Type": "application/json", ...authorityHeaders },
+        body: JSON.stringify(body),
       },
     );
     if (!response.ok) {
@@ -175,6 +184,23 @@ export class HttpCoworkVerifyClient {
     capture: CoworkCapturedActionSnapshot,
     intent: CoworkVerifyRecheckTargetAffirmationIntent,
   ): Promise<CoworkVerifyRecheckTargetAffirmationReceipt> {
+    const body = {
+      capture,
+      recheck_intent_id: intent.intentId,
+      source_run_id: intent.sourceRunId,
+      proposal_ids: intent.pendingProposalIds,
+      user_goal: intent.userGoal,
+      protected_intent: intent.protectedIntent,
+    };
+    const authorityHeaders = await coworkHumanAuthorityHeaders(
+      {
+        operation: "verify.recheck_target_affirm",
+        storeId: this.#storeId,
+        documentId: this.#documentId,
+        body,
+      },
+      this.#fetch,
+    );
     const response = await this.#fetch(
       endpoint(
         this.#documentId,
@@ -184,15 +210,8 @@ export class HttpCoworkVerifyClient {
       {
         method: "POST",
         credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          capture,
-          recheck_intent_id: intent.intentId,
-          source_run_id: intent.sourceRunId,
-          proposal_ids: intent.pendingProposalIds,
-          user_goal: intent.userGoal,
-          protected_intent: intent.protectedIntent,
-        }),
+        headers: { "Content-Type": "application/json", ...authorityHeaders },
+        body: JSON.stringify(body),
       },
     );
     if (!response.ok) {
@@ -239,19 +258,29 @@ export class HttpCoworkVerifyClient {
     capture: CoworkCapturedActionSnapshot,
     selection: CoworkVerifyExecutionSelection,
   ): Promise<CoworkCothinkStartReceipt> {
+    const body = {
+      capture,
+      execution: executionPayload(selection),
+      purpose: "Invite one useful alternative perspective.",
+      protected_intent:
+        "Support deliberation without presenting a defect claim.",
+    };
+    const authorityHeaders = await coworkHumanAuthorityHeaders(
+      {
+        operation: "cothink.run",
+        storeId: this.#storeId,
+        documentId: this.#documentId,
+        body,
+      },
+      this.#fetch,
+    );
     const response = await this.#fetch(
       endpoint(this.#documentId, this.#storeId, "cothink"),
       {
         method: "POST",
         credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          capture,
-          execution: executionPayload(selection),
-          purpose: "Invite one useful alternative perspective.",
-          protected_intent:
-            "Support deliberation without presenting a defect claim.",
-        }),
+        headers: { "Content-Type": "application/json", ...authorityHeaders },
+        body: JSON.stringify(body),
       },
     );
     if (!response.ok) {

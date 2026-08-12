@@ -8,7 +8,8 @@ from flask import Blueprint, jsonify, request
 
 from work_buddy.cowork import conversations, lifecycle_lock, retirement
 from work_buddy.conversations.store import close_conversation
-from work_buddy.truth.contracts import Actor, InvariantViolation
+from work_buddy.security.local_identity import LocalIdentityError
+from work_buddy.truth.contracts import InvariantViolation
 from work_buddy.truth.identity import sha256_text
 
 
@@ -75,12 +76,6 @@ def _store():
         ) from exc
 
 
-def _actor() -> Actor:
-    from work_buddy.cowork.api import dashboard_user_ref
-
-    return Actor("human", dashboard_user_ref(request.headers))
-
-
 def _error(exc: retirement.RetirementError):
     return (
         jsonify(
@@ -113,7 +108,14 @@ def api_retire_document(document_id: str):
                 "invalid_request", "Request body must be a JSON object."
             )
         store = _store()
-        actor = _actor()
+        from work_buddy.cowork.api import _require_human_action
+
+        _authority, actor = _require_human_action(
+            operation="document.retire",
+            store_id=store.store_id,
+            document_id=document_id,
+            body=body,
+        )
         from work_buddy.consent import user_initiated
 
         with user_initiated("dashboard.cowork.retire"):
@@ -172,6 +174,10 @@ def api_retire_document(document_id: str):
         return jsonify(payload), 201 if created else 200
     except retirement.RetirementError as exc:
         return _error(exc)
+    except LocalIdentityError as exc:
+        from work_buddy.cowork.api import _local_identity_error
+
+        return _local_identity_error(exc)
     except InvariantViolation as exc:
         return _error(retirement.RetirementError("invalid_request", str(exc)))
 

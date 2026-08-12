@@ -78,7 +78,7 @@ class TaskNoteSource:
         """
         from work_buddy.config import load_config
         from work_buddy.obsidian.tasks import store as task_store
-        from work_buddy.obsidian.tasks.mutations import TASK_NOTES_DIR
+        from work_buddy.task_notes import get_task_note_adapter
 
         cfg = load_config()
         vault_root = cfg.get("vault_root")
@@ -86,7 +86,7 @@ class TaskNoteSource:
             logger.warning("task_note source: vault_root not configured")
             return []
 
-        notes_dir = Path(vault_root) / TASK_NOTES_DIR
+        adapter = get_task_note_adapter(vault_root=vault_root)
 
         # Pull tasks with a note_uuid from the store. Default coverage excludes
         # archived (the working set); coverage="all" includes them for full
@@ -102,17 +102,10 @@ class TaskNoteSource:
         finally:
             conn.close()
 
-        results: list[tuple[str, float]] = []
-        missing = 0
-        for row in rows:
-            note_uuid = row["note_uuid"]
-            note_path = notes_dir / f"{note_uuid}.md"
-            try:
-                stat = note_path.stat()
-            except OSError:
-                missing += 1
-                continue
-            results.append((str(note_path), stat.st_mtime))
+        note_uuids = [str(row["note_uuid"]) for row in rows]
+        descriptors = adapter.discover(note_uuids)
+        results = [(item.item_id, item.modified_at) for item in descriptors]
+        missing = len(note_uuids) - len(descriptors)
 
         if missing:
             logger.info(
@@ -157,14 +150,23 @@ class TaskNoteSource:
         from work_buddy.config import load_config
         from work_buddy.obsidian.tasks import store as task_store
 
-        path = Path(item_id)
-        if not path.exists():
-            return []
+        from work_buddy.task_notes import get_task_note_adapter, validate_note_uuid
 
+        path = Path(item_id)
+        note_uuid = validate_note_uuid(path.stem)
         try:
-            raw = path.read_text(encoding="utf-8")
-        except OSError as exc:
+            # Discover keeps the historical absolute-path item identity.  Use
+            # that identity's vault root so parse cannot drift to a different
+            # configured vault between the two phases.
+            vault_root = path.parents[2]
+            raw = get_task_note_adapter(vault_root=vault_root).read(
+                note_uuid,
+                filesystem_fallback=True,
+            )
+        except Exception as exc:
             logger.warning("task_note parse: could not read %s: %s", path, exc)
+            return []
+        if raw is None:
             return []
 
         # Strip YAML frontmatter if present
@@ -184,7 +186,6 @@ class TaskNoteSource:
         # Map note_uuid → task_id + canonical task-line text so hits can
         # link back to the task AND so the ``line`` projection uses the
         # authoritative text (not the note's H1, which can drift).
-        note_uuid = path.stem
         task_id: str | None = None
         task_state: str | None = None
         conn = task_store.get_connection()

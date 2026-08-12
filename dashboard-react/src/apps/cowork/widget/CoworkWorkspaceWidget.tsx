@@ -23,6 +23,7 @@ import {
 } from "../documents/CoworkDocumentBar";
 import { CoworkDocumentLifecycleDialog } from "../documents/CoworkDocumentLifecycleDialog";
 import { CoworkLocalDiscardDialog } from "../documents/CoworkLocalDiscardDialog";
+import { CoworkDocumentOriginNotice } from "../documents/CoworkDocumentOriginNotice";
 import { CoworkDocumentPicker } from "../documents/CoworkDocumentPicker";
 import { CoworkLauncher } from "../documents/CoworkLauncher";
 import { CoworkReimportDialog } from "../documents/CoworkReimportDialog";
@@ -181,6 +182,13 @@ export default function CoworkWorkspaceWidget({
     import.meta.env.DEV && typeof window !== "undefined"
       ? new URLSearchParams(window.location.search).get("cowork_fixture")
       : null;
+  const originChangeId =
+    typeof window === "undefined"
+      ? null
+      : (() => {
+          const value = new URLSearchParams(window.location.search).get("change_id");
+          return value !== null && /^[0-9a-f]{32}$/.test(value) ? value : null;
+        })();
   const fixtureMode = resolveFixtureMode(
     input.sessionQuality,
     input.document?.documentId,
@@ -761,6 +769,14 @@ export default function CoworkWorkspaceWidget({
         onRemoveDocument={() => setRetirementOpen(true)}
         onDiscardLocalDocument={() => setLocalDiscardOpen(true)}
       />
+
+      {session.kind === "registered" && originChangeId !== null ? (
+        <CoworkDocumentOriginNotice
+          storeId={session.storeId}
+          documentId={session.document.documentId}
+          changeId={originChangeId}
+        />
+      ) : null}
 
       {localNotice !== null ? (
         <InlineAlert tone="info" className="wb-cowork-lifecycle__notice">

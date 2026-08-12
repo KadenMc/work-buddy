@@ -2,15 +2,65 @@
 
 from __future__ import annotations
 
-from work_buddy.cowork import api
+import pytest
+
+from work_buddy.cowork import api, truth_api
+from work_buddy.security.actors import ActorRef
+from work_buddy.security.local_identity import (
+    HUMAN_AUTHORITY_ASSURANCE,
+    HUMAN_AUTHORITY_BASIS,
+    HumanAuthorityContext,
+    LocalIdentityError,
+    LocalPrincipal,
+)
 from work_buddy.truth import documents, expressions, queries, ydoc_store
 from work_buddy.truth.anchors import CompositeSelector
 from work_buddy.truth.contracts import Actor
 from work_buddy.truth.identity import sha256_bytes, utc_now
 from work_buddy.truth.lifecycle import TruthLifecycle
+from work_buddy.truth.source_provenance import (
+    provenance_for_subject,
+    validate_actor_ref_json,
+)
 from work_buddy.truth.store import AcquisitionOrigin, PostCommitHookError, TruthStore
 
 from .conftest import AGENT, DOC_BODY, DOC_QUOTE, HUMAN, NOW
+
+
+@pytest.fixture(autouse=True)
+def _authenticated_truth_authority(monkeypatch):
+    issued = 0
+    calls: list[tuple[str, str, str]] = []
+
+    def authorize(*, action: str, subject: str, context_sha256: str):
+        nonlocal issued
+        issued += 1
+        calls.append((action, subject, context_sha256))
+        actor = ActorRef(
+            issuer_authority_id="truth-test-issuer",
+            subject="truth-reviewer",
+            kind="human",
+            tenant_scope_id="truth-test-tenant",
+        )
+        return HumanAuthorityContext(
+            principal=LocalPrincipal(
+                actor=actor,
+                session_id="truth-test-session",
+                origin="http://localhost",
+                audience="work-buddy-dashboard",
+                session_expires_at=9_999_999_999.0,
+                rotation_due_at=9_999_999_000.0,
+            ),
+            action=action,
+            subject_sha256=sha256_bytes(subject.encode("utf-8")),
+            context_sha256=context_sha256,
+            gesture_id=f"truth-test-gesture-{issued}",
+            assurance=HUMAN_AUTHORITY_ASSURANCE,
+            basis=HUMAN_AUTHORITY_BASIS,
+        )
+
+    monkeypatch.setattr(truth_api, "require_human_authority_request", authorize)
+    return calls
 
 
 def _url(seeded, suffix: str = "", **query: str) -> str:
@@ -159,6 +209,7 @@ def test_truth_detail_is_observational_and_exposes_exact_decision_binding(
 def test_truth_can_atomically_propose_and_connect_selected_prose(
     client,
     seeded,
+    _authenticated_truth_authority,
 ):
     structured_head, generation = _connectable_projection(seeded)
     request_body = {
@@ -189,6 +240,90 @@ def test_truth_can_atomically_propose_and_connect_selected_prose(
     listed = client.get(_url(seeded)).get_json()
     assert listed["claims"][0]["claim_id"] == created_payload["claim_id"]
     assert listed["claims"][0]["connected_to_document"] is True
+    expected_context = truth_api.truth_mutation_context_sha256(
+        operation="propose",
+        store_id=seeded["store_id"],
+        document_id=seeded["document"].id,
+        payload={
+            "selector": request_body["selector"],
+            "role": request_body["role"],
+            "expected_structured_head_sha256": structured_head,
+            "expected_ydoc_generation_sha256": generation,
+            "expected_projection_sha256": request_body[
+                "expected_projection_sha256"
+            ],
+            "claim": request_body["claim"],
+            "claim_id": None,
+        },
+    )
+    assert _authenticated_truth_authority[0] == (
+        truth_api.TRUTH_PROPOSE_ACTION,
+        truth_api.truth_mutation_subject(
+            operation="propose",
+            store_id=seeded["store_id"],
+            document_id=seeded["document"].id,
+        ),
+        expected_context,
+    )
+    claim = seeded["store"].get_claim(created_payload["claim_id"])
+    assert claim is not None
+    authenticated_actor = ActorRef(
+        issuer_authority_id="truth-test-issuer",
+        subject="truth-reviewer",
+        kind="human",
+        tenant_scope_id="truth-test-tenant",
+    )
+    assert claim.created_by_ref == authenticated_actor.canonical_id
+    candidate_events = queries.candidate_decisions(
+        seeded["store"], claim_id=claim.id
+    )
+    assert {event.decision for event in candidate_events} == {"add", "connect"}
+    assert all(
+        validate_actor_ref_json(event.actor_ref_json) == authenticated_actor
+        for event in candidate_events
+    )
+    roles = {
+        event.role
+        for event in provenance_for_subject(
+            seeded["store"], subject_kind="claim", subject_ref=claim.id
+        ).events
+    }
+    assert {"semantic_producer", "candidate_decision_actor"} <= roles
+
+
+def test_truth_mutation_fails_closed_without_authenticated_local_identity(
+    client,
+    seeded,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        truth_api,
+        "require_human_authority_request",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            LocalIdentityError(
+                "local_session_required",
+                "An authenticated local session is required.",
+                status=401,
+            )
+        ),
+    )
+
+    response = client.post(
+        _url(seeded, "/claims"),
+        headers={"X-WB-User-Ref": "spoofed-human"},
+        json={
+            **_selection_body(seeded),
+            "actor": {"kind": "human", "ref": "spoofed-human"},
+            "claim": {
+                "proposition": "This unauthenticated claim must not be stored.",
+                "claim_kind": "fact",
+            },
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.get_json()["error"]["code"] == "local_session_required"
+    assert queries.resolve_claim_states(seeded["store"]) == ()
 
 
 def test_truth_decisions_are_hash_bound_and_project_confirmed_facts(
@@ -229,6 +364,17 @@ def test_truth_decisions_are_hash_bound_and_project_confirmed_facts(
     assert confirmed.get_json()["action"] == "confirm"
     current = queries.current_claims(seeded["store"])
     assert [item.claim_id for item in current] == [claim.id]
+    lifecycle_events = [
+        event
+        for event in provenance_for_subject(
+            seeded["store"], subject_kind="claim", subject_ref=claim.id
+        ).events
+        if event.role == "lifecycle_decision_actor"
+    ]
+    assert len(lifecycle_events) == 1
+    assert validate_actor_ref_json(lifecycle_events[0].actor_ref_json).subject == (
+        "truth-reviewer"
+    )
     facts = client.get(_url(seeded, view="folder", filter="facts")).get_json()
     assert [item["claim_id"] for item in facts["claims"]] == [claim.id]
 

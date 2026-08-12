@@ -8,6 +8,9 @@ import tempfile
 from pathlib import Path
 
 from work_buddy.logging_config import get_logger
+from work_buddy.hindsight_projection.schema import (
+    install_truth_hindsight_projection_schema,
+)
 from work_buddy.storage.migrations import (
     HASH_FORMAT_CURRENT,
     Migration,
@@ -19,7 +22,7 @@ from work_buddy.storage.migrations import (
 
 logger = get_logger(__name__)
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 # Redacted spans retain their immutable identity/hash but not their quote or
 # quote context.  Keep the selector valid JSON (and valid for the existing
@@ -28,6 +31,7 @@ SCHEMA_VERSION = 8
 REDACTED_SELECTOR_JSON = (
     '[{"exact":"[redacted]","prefix":"","suffix":"","type":"TextQuoteSelector"}]'
 )
+REDACTED_ACTION_CONTEXT_JSON = '{"kind":"redacted"}'
 
 
 def _m001_initial_schema(conn: sqlite3.Connection) -> None:
@@ -1871,6 +1875,329 @@ def backfill_v8_legacy_import_provenance(
     return inserted
 
 
+def _m009_source_backed_truth_provenance(conn: sqlite3.Connection) -> None:
+    """Add portable source receipts and outcome-aware Truth provenance.
+
+    Historical creator fields are intentionally not rewritten or promoted to
+    issuer-qualified authorship. Read models classify subjects with no v9
+    attribution events as ``legacy_unspecified``.
+    """
+
+    # Exact managed-document source redaction retains immutable identities and
+    # digests while destroying every readable quotation/frozen input.  These
+    # nullable tombstone timestamps are deliberately introduced only in v9;
+    # historical rows remain live until an explicit, source-bound receipt is
+    # committed by the document-content redaction service.
+    document_span_columns = {
+        str(row[1]) for row in conn.execute("PRAGMA table_info(document_spans)")
+    }
+    if "redacted_at" not in document_span_columns:
+        conn.execute("ALTER TABLE document_spans ADD COLUMN redacted_at TEXT")
+    action_snapshot_columns = {
+        str(row[1]) for row in conn.execute("PRAGMA table_info(action_snapshots)")
+    }
+    if "redacted_at" not in action_snapshot_columns:
+        conn.execute("ALTER TABLE action_snapshots ADD COLUMN redacted_at TEXT")
+
+    statements = (
+        """
+        CREATE TABLE evidence_source_resolution_records (
+            id                           TEXT PRIMARY KEY,
+            evidence_id                  TEXT NOT NULL REFERENCES evidence(id),
+            source_ref_json              TEXT NOT NULL,
+            representation_id            TEXT NOT NULL,
+            content_sha256               TEXT NOT NULL,
+            media_type                   TEXT NOT NULL,
+            byte_length                  INTEGER NOT NULL CHECK(byte_length >= 0),
+            selector_json                TEXT,
+            resolver_id                  TEXT NOT NULL,
+            resolver_version             TEXT NOT NULL,
+            observation_id               TEXT NOT NULL,
+            redaction_epoch              INTEGER NOT NULL CHECK(redaction_epoch >= 0),
+            resolved_at                  TEXT NOT NULL,
+            usage_id                     TEXT NOT NULL UNIQUE,
+            authorization_context_sha256 TEXT NOT NULL,
+            canonical_sha256             TEXT NOT NULL UNIQUE,
+            created_at                   TEXT NOT NULL,
+            created_by_kind              TEXT NOT NULL,
+            created_by_ref               TEXT,
+            created_by_meta_json          TEXT
+        )
+        """,
+        "CREATE INDEX idx_evidence_source_resolution_evidence "
+        "ON evidence_source_resolution_records(evidence_id, created_at, id)",
+        "CREATE INDEX idx_evidence_source_resolution_source "
+        "ON evidence_source_resolution_records(source_ref_json)",
+        """
+        CREATE TABLE truth_source_usage_events (
+            id                     TEXT PRIMARY KEY,
+            resolution_record_id   TEXT NOT NULL
+                REFERENCES evidence_source_resolution_records(id),
+            usage_id               TEXT NOT NULL,
+            status                 TEXT NOT NULL CHECK(
+                status IN (
+                    'reserved', 'acknowledgement_pending', 'acknowledged',
+                    'release_pending', 'released', 'redaction_pending'
+                )
+            ),
+            purpose                TEXT NOT NULL,
+            consumer_ref           TEXT NOT NULL,
+            redaction_epoch        INTEGER NOT NULL CHECK(redaction_epoch >= 0),
+            error_code             TEXT,
+            canonical_sha256       TEXT NOT NULL UNIQUE,
+            created_at             TEXT NOT NULL,
+            created_by_kind        TEXT NOT NULL,
+            created_by_ref         TEXT,
+            created_by_meta_json   TEXT
+        )
+        """,
+        "CREATE INDEX idx_truth_source_usage_resolution "
+        "ON truth_source_usage_events(resolution_record_id, created_at, id)",
+        "CREATE INDEX idx_truth_source_usage_id "
+        "ON truth_source_usage_events(usage_id, created_at, id)",
+        """
+        CREATE TABLE provenance_attribution_events (
+            id                TEXT PRIMARY KEY,
+            subject_kind      TEXT NOT NULL CHECK(
+                subject_kind IN ('claim', 'expression', 'evidence', 'evidence_span')
+            ),
+            subject_ref       TEXT NOT NULL,
+            actor_ref_json    TEXT NOT NULL,
+            role              TEXT NOT NULL CHECK(
+                role IN (
+                    'semantic_producer', 'selector', 'candidate_preparer',
+                    'matcher', 'semantic_reviser', 'evidence_selector',
+                    'expression_relation_assessor', 'applier',
+                    'execution_authorizer', 'substantive_reviewer',
+                    'candidate_decision_actor', 'lifecycle_decision_actor'
+                )
+            ),
+            basis             TEXT NOT NULL,
+            assurance         TEXT NOT NULL,
+            run_ref           TEXT,
+            source_ref_json   TEXT,
+            asserted_at       TEXT NOT NULL,
+            supersedes_id     TEXT REFERENCES provenance_attribution_events(id),
+            canonical_sha256  TEXT NOT NULL UNIQUE,
+            created_at        TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX idx_provenance_attribution_subject "
+        "ON provenance_attribution_events(subject_kind, subject_ref, asserted_at, id)",
+        "CREATE INDEX idx_provenance_attribution_actor "
+        "ON provenance_attribution_events(actor_ref_json, asserted_at, id)",
+        "CREATE INDEX idx_provenance_attribution_supersedes "
+        "ON provenance_attribution_events(supersedes_id)",
+        """
+        CREATE TABLE candidate_decision_events (
+            id                           TEXT PRIMARY KEY,
+            candidate_id                 TEXT NOT NULL,
+            candidate_sha256             TEXT NOT NULL,
+            decision                     TEXT NOT NULL CHECK(
+                decision IN ('add', 'connect', 'dismiss')
+            ),
+            claim_id                     TEXT REFERENCES claims(id),
+            actor_ref_json               TEXT NOT NULL,
+            basis                        TEXT NOT NULL,
+            assurance                    TEXT NOT NULL,
+            authorization_ref            TEXT NOT NULL,
+            authorization_context_sha256 TEXT NOT NULL,
+            run_ref                      TEXT,
+            source_refs_json             TEXT NOT NULL,
+            decided_at                   TEXT NOT NULL,
+            canonical_sha256             TEXT NOT NULL UNIQUE,
+            created_at                   TEXT NOT NULL,
+            CHECK (
+                (decision = 'dismiss' AND claim_id IS NULL)
+                OR (decision IN ('add', 'connect') AND claim_id IS NOT NULL)
+            )
+        )
+        """,
+        "CREATE INDEX idx_candidate_decision_candidate "
+        "ON candidate_decision_events(candidate_id, decided_at, id)",
+        "CREATE INDEX idx_candidate_decision_claim "
+        "ON candidate_decision_events(claim_id, decided_at, id)",
+        """
+        CREATE TABLE truth_operation_results (
+            id                TEXT PRIMARY KEY,
+            operation_name    TEXT NOT NULL,
+            idempotency_key   TEXT NOT NULL,
+            request_sha256    TEXT NOT NULL,
+            result_json       TEXT NOT NULL,
+            result_sha256     TEXT NOT NULL,
+            actor_ref_json    TEXT NOT NULL,
+            canonical_sha256  TEXT NOT NULL UNIQUE,
+            created_at        TEXT NOT NULL,
+            UNIQUE(operation_name, idempotency_key)
+        )
+        """,
+        "CREATE INDEX idx_truth_operation_created "
+        "ON truth_operation_results(operation_name, created_at, id)",
+        """
+        CREATE TABLE document_content_redactions (
+            id                              TEXT PRIMARY KEY,
+            document_id                     TEXT NOT NULL REFERENCES documents(id),
+            replacement_document_version_id TEXT NOT NULL
+                REFERENCES document_versions(id),
+            source_usage_id                 TEXT NOT NULL,
+            source_ref_json                 TEXT NOT NULL,
+            source_redaction_event_id        TEXT NOT NULL,
+            content_class                   TEXT NOT NULL
+                CHECK(content_class = 'exact_copy'),
+            redaction_policy                TEXT NOT NULL
+                CHECK(redaction_policy = 'scrub'),
+            actor_ref_json                  TEXT NOT NULL,
+            coverage_sha256                 TEXT NOT NULL,
+            canonical_sha256                TEXT NOT NULL UNIQUE,
+            created_at                      TEXT NOT NULL,
+            UNIQUE(document_id, source_usage_id, source_redaction_event_id)
+        )
+        """,
+        "CREATE INDEX idx_document_content_redaction_document "
+        "ON document_content_redactions(document_id, created_at, id)",
+        """
+        CREATE TABLE document_content_redaction_targets (
+            id                 TEXT PRIMARY KEY,
+            redaction_id       TEXT NOT NULL
+                REFERENCES document_content_redactions(id),
+            target_kind        TEXT NOT NULL CHECK(target_kind IN (
+                'document_version_blob', 'document_source_blob',
+                'action_snapshot_blob', 'action_snapshot_metadata',
+                'document_span', 'proposal', 'semantic_derivative'
+            )),
+            target_ref         TEXT NOT NULL,
+            field_name         TEXT NOT NULL,
+            content_sha256     TEXT,
+            disposition        TEXT NOT NULL CHECK(disposition IN (
+                'blob_cleanup', 'sql_tombstone', 'review_required'
+            )),
+            canonical_sha256   TEXT NOT NULL UNIQUE,
+            created_at         TEXT NOT NULL,
+            UNIQUE(redaction_id, target_kind, target_ref, field_name)
+        )
+        """,
+        "CREATE INDEX idx_document_content_redaction_target_receipt "
+        "ON document_content_redaction_targets(redaction_id, target_kind, target_ref)",
+        "CREATE INDEX idx_document_content_redaction_target_blob "
+        "ON document_content_redaction_targets(content_sha256) "
+        "WHERE content_sha256 IS NOT NULL",
+        """
+        CREATE TABLE document_content_redaction_status_events (
+            id                 TEXT PRIMARY KEY,
+            redaction_id       TEXT NOT NULL
+                REFERENCES document_content_redactions(id),
+            status             TEXT NOT NULL CHECK(status IN (
+                'content_tombstoned', 'cleanup_complete', 'cleanup_incomplete'
+            )),
+            detail_json        TEXT NOT NULL,
+            canonical_sha256   TEXT NOT NULL UNIQUE,
+            created_at         TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX idx_document_content_redaction_status "
+        "ON document_content_redaction_status_events(redaction_id, created_at, id)",
+    )
+    for statement in statements:
+        conn.execute(statement)
+
+    for table in (
+        "evidence_source_resolution_records",
+        "truth_source_usage_events",
+        "provenance_attribution_events",
+        "candidate_decision_events",
+        "truth_operation_results",
+        "document_content_redactions",
+        "document_content_redaction_targets",
+        "document_content_redaction_status_events",
+    ):
+        conn.execute(
+            f"""
+            CREATE TRIGGER {table}_append_only_update
+            BEFORE UPDATE ON {table}
+            BEGIN
+                SELECT RAISE(ABORT, 'append-only');
+            END
+            """
+        )
+        conn.execute(
+            f"""
+            CREATE TRIGGER {table}_append_only_delete
+            BEFORE DELETE ON {table}
+            BEGIN
+                SELECT RAISE(ABORT, 'append-only');
+            END
+            """
+        )
+
+    # Recreate the two append-only guards with a single, one-way readable-
+    # content tombstone carve-out.  IDs, hashes, authorship, and timestamps
+    # remain immutable; only the exact quote/selector context can disappear.
+    conn.execute("DROP TRIGGER IF EXISTS document_spans_append_only_update")
+    conn.execute(
+        f"""
+        CREATE TRIGGER document_spans_append_only_update
+        BEFORE UPDATE ON document_spans
+        WHEN NOT (
+            OLD.redacted_at IS NULL
+            AND NEW.redacted_at IS NOT NULL
+            AND NEW.selector_json = '{REDACTED_SELECTOR_JSON}'
+            AND NEW.quote_exact IS NULL
+            AND NEW.id IS OLD.id
+            AND NEW.document_id IS OLD.document_id
+            AND NEW.span_sha256 IS OLD.span_sha256
+            AND NEW.author_kind IS OLD.author_kind
+            AND NEW.author_ref IS OLD.author_ref
+            AND NEW.created_at IS OLD.created_at
+            AND NEW.created_by_kind IS OLD.created_by_kind
+            AND NEW.created_by_ref IS OLD.created_by_ref
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'append-only');
+        END
+        """
+    )
+    conn.execute("DROP TRIGGER IF EXISTS action_snapshots_append_only_update")
+    conn.execute(
+        f"""
+        CREATE TRIGGER action_snapshots_append_only_update
+        BEFORE UPDATE ON action_snapshots
+        WHEN NOT (
+            OLD.redacted_at IS NULL
+            AND NEW.redacted_at IS NOT NULL
+            AND NEW.target_selector_json = '{REDACTED_ACTION_CONTEXT_JSON}'
+            AND NEW.context_boundary_json = '{REDACTED_ACTION_CONTEXT_JSON}'
+            AND NEW.allowed_change_ranges_json = '[]'
+            AND NEW.id IS OLD.id
+            AND NEW.document_id IS OLD.document_id
+            AND NEW.document_version_id IS OLD.document_version_id
+            AND NEW.ydoc_snapshot_sha256 IS OLD.ydoc_snapshot_sha256
+            AND NEW.structured_head_sha256 IS OLD.structured_head_sha256
+            AND NEW.ydoc_generation_sha256 IS OLD.ydoc_generation_sha256
+            AND NEW.baseline_projection_sha256 IS OLD.baseline_projection_sha256
+            AND NEW.projection_sha256 IS OLD.projection_sha256
+            AND NEW.projection_blob_sha256 IS OLD.projection_blob_sha256
+            AND NEW.target_kind IS OLD.target_kind
+            AND NEW.target_text_sha256 IS OLD.target_text_sha256
+            AND NEW.target_blob_sha256 IS OLD.target_blob_sha256
+            AND NEW.egress_boundary_json IS OLD.egress_boundary_json
+            AND NEW.canonical_sha256 IS OLD.canonical_sha256
+            AND NEW.created_at IS OLD.created_at
+            AND NEW.created_by_kind IS OLD.created_by_kind
+            AND NEW.created_by_ref IS OLD.created_by_ref
+            AND NEW.created_by_meta_json IS OLD.created_by_meta_json
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'append-only');
+        END
+        """
+    )
+
+    # Hindsight delivery is a Truth-owned, content-minimized outbox. Install
+    # its tables in this same migration transaction so lifecycle writes can
+    # enqueue a projection effect atomically with the authoritative decision.
+    install_truth_hindsight_projection_schema(conn)
+
+
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     row = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
@@ -1986,6 +2313,11 @@ TRUTH_MIGRATIONS = _TruthMigrationRunner(
             8,
             "document provenance attestations and import-source safety",
             _m008_document_provenance_attestations,
+        ),
+        Migration(
+            9,
+            "source-backed Truth receipts and outcome-aware provenance",
+            _m009_source_backed_truth_provenance,
         ),
     ],
 )

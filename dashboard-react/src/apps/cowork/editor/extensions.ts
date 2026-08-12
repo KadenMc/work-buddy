@@ -2,7 +2,6 @@ import type { AnyExtension, Editor } from "@tiptap/core";
 import StarterKit from "@tiptap/starter-kit";
 import { TableKit } from "@tiptap/extension-table";
 import { TaskItem, TaskList } from "@tiptap/extension-list";
-import Image from "@tiptap/extension-image";
 import { Collaboration, isChangeOrigin } from "@tiptap/extension-collaboration";
 import { UniqueID } from "@tiptap/extension-unique-id";
 import { Markdown, MarkdownManager } from "@tiptap/markdown";
@@ -19,45 +18,23 @@ import {
 import { CoworkSlashMenu } from "../menus";
 import { CoworkLedgerDecorations } from "./ledgerDecorations";
 import { CoworkWorkingTargetDecorations } from "./workingTargetDecorations";
+import {
+  buildDocumentSchemaExtensions,
+  COWORK_FRAGMENT_FIELD,
+  COWORK_LINK_OPTIONS,
+  COWORK_UNIQUE_ID_TYPES,
+} from "../document-kernel/schema";
+
+export {
+  COWORK_FRAGMENT_FIELD,
+  COWORK_UNIQUE_ID_TYPES,
+} from "../document-kernel/schema";
 
 /**
  * The Collaboration fragment field is fixed to `default` in the document-surface
  * profile (SP-2 load-order point 5, audit A9). Every seed-on-empty check and every
  * fragment read standardizes on this one field name.
  */
-export const COWORK_FRAGMENT_FIELD = "default";
-
-/**
- * UniqueID block allowlist (section 6). Explicitly a block-level set, NOT bare `'all'`,
- * because `'all'` also ids `hardBreak`, an inline atom, and pulls it out of its own
- * anchor namespace (SP-2 F2.2). Inline atoms keep node identity separate from block
- * identity so `node_id` and `span_id` remain distinct namespaces (point 8).
- */
-export const COWORK_UNIQUE_ID_TYPES = [
-  "paragraph",
-  "heading",
-  "blockquote",
-  "codeBlock",
-  "listItem",
-  "bulletList",
-  "orderedList",
-  "horizontalRule",
-] as const;
-
-/**
- * Link posture (section 6). Restricted so Markdown projection fidelity survives and
- * paste cannot smuggle a link: autolink is off (GFM autolink rewrites bare URLs, SP-3),
- * click-to-open is off inside the editor, paste does not auto-link, and the protocol
- * allowlist is exactly http / https / mailto / wb-truth.
- */
-const COWORK_LINK_OPTIONS = {
-  autolink: false,
-  openOnClick: false,
-  linkOnPaste: false,
-  defaultProtocol: "https",
-  protocols: ["http", "https", "mailto", "wb-truth"],
-};
-
 /**
  * The schema nodes and marks shared by the editor and the standalone MarkdownManager.
  * StarterKit ships with `undoRedo: false` because Collaboration owns history (SP-2
@@ -67,22 +44,12 @@ const COWORK_LINK_OPTIONS = {
  * and the suite fails if a construct lacks a schema node. The two wb marks carry the
  * paste-forgery-proof `parseHTML: () => []` posture.
  *
- * Collaboration and UniqueID are intentionally absent here: they are editor-runtime
- * concerns, not Markdown-schema concerns, and the standalone manager must stay DOM-free
- * (SP-3 case 5).
+ * Collaboration is intentionally absent here. UniqueID remains because its block `id`
+ * attribute is canonical structured state; its ProseMirror plugin is inert while the
+ * standalone MarkdownManager/getSchema path stays DOM-free (SP-3 case 5).
  */
-export const buildSchemaExtensions = (): AnyExtension[] => [
-  StarterKit.configure({
-    undoRedo: false,
-    link: COWORK_LINK_OPTIONS,
-  }),
-  TableKit,
-  TaskList,
-  TaskItem,
-  Image,
-  WbProvenanceTint,
-  WbExpressionMark,
-];
+export const buildSchemaExtensions = (): AnyExtension[] =>
+  buildDocumentSchemaExtensions();
 
 /**
  * The full editor extension set. Unlike the DOM-free MarkdownManager schema, the editor

@@ -18,6 +18,10 @@ from typing import Any
 from urllib.parse import urlparse
 
 from work_buddy.artifacts.io import atomic_write_bytes
+from work_buddy.backups.source_foundation_restore import (
+    require_source_foundation_writable,
+    source_foundation_read_only,
+)
 from work_buddy.storage.migrations import SchemaVersionTooNew
 from work_buddy.truth.anchors import (
     CompositeSelector,
@@ -35,6 +39,7 @@ from work_buddy.truth.contracts import (
     validate_agent_producer_meta,
 )
 from work_buddy.truth.fingerprints import compute_target_fingerprint
+from work_buddy.truth.evidence_relations import validate_claim_evidence_role
 from work_buddy.truth.identity import (
     canonical_claim_payload,
     canonical_json,
@@ -47,6 +52,7 @@ from work_buddy.truth.identity import (
 )
 from work_buddy.truth.migrations import (
     REDACTED_SELECTOR_JSON,
+    SCHEMA_VERSION,
     backfill_v8_legacy_import_provenance,
     current_version,
     migrate,
@@ -145,6 +151,7 @@ DOCUMENT_VERSION_KINDS = frozenset(
 EXPRESSION_ROLES = frozenset({"quote", "paraphrase", "summary", "instantiation"})
 LINK_TARGETS: Mapping[str, frozenset[str]] = {
     "supports_span": frozenset({"evidence_span"}),
+    "evidence_relation": frozenset({"evidence_span"}),
     "about_entity": frozenset({"entity"}),
     "supersedes": frozenset({"claim"}),
     "conflicts_with": frozenset({"claim"}),
@@ -359,6 +366,7 @@ class DocumentSpanRecord:
     created_at: str
     created_by_kind: str
     created_by_ref: str | None
+    redacted_at: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -663,6 +671,7 @@ class TruthStore:
         inline_content_bytes: int = DEFAULT_INLINE_CONTENT_BYTES,
         on_commit: Callable[["TruthStore"], None] | None = None,
     ) -> "TruthStore":
+        require_source_foundation_writable("truth.create")
         validated = validate_profile(profile)
         paths = StorePaths.from_root(root)
         paths.sidecar.mkdir(parents=True, exist_ok=True)
@@ -782,6 +791,7 @@ class TruthStore:
         # Version and identity checks must precede persistent PRAGMAs so an
         # older engine leaves a future store byte-for-byte untouched.
         conn = store._open_connection(configure_storage=False)
+        read_only = source_foundation_read_only()
         migrated = False
         compatibility_backfilled = False
         try:
@@ -789,9 +799,16 @@ class TruthStore:
                 starting_version = int(
                     conn.execute("PRAGMA user_version").fetchone()[0]
                 )
-                version = migrate(conn, paths.db)
-                migrated = version != starting_version
-                if needs_v8_legacy_import_provenance_backfill(conn):
+                if read_only:
+                    version = starting_version
+                    if version != SCHEMA_VERSION:
+                        raise StoreVersionError(
+                            "truth store requires migration while restore is fenced"
+                        )
+                else:
+                    version = migrate(conn, paths.db)
+                    migrated = version != starting_version
+                if not read_only and needs_v8_legacy_import_provenance_backfill(conn):
                     conn.execute("BEGIN IMMEDIATE")
                     try:
                         compatibility_backfilled = bool(
@@ -820,7 +837,8 @@ class TruthStore:
                 raise StoreVersionError(
                     "store_info schema version does not match SQLite user_version"
                 )
-            store._configure_storage(conn)
+            if not read_only:
+                store._configure_storage(conn)
         finally:
             conn.close()
         # Redaction removes the old rebuildable export before commit and leaves
@@ -828,6 +846,8 @@ class TruthStore:
         # Rebuild that projection before returning an interrupted store.  Blob
         # cleanup is attempted even if projection recovery reports a hook error,
         # so one failed observer cannot strand sensitive bytes indefinitely.
+        if read_only:
+            return store
         try:
             if migrated or compatibility_backfilled:
                 # Migration is itself a committed state change and retains its
@@ -865,15 +885,23 @@ class TruthStore:
         *,
         configure_storage: bool = True,
     ) -> sqlite3.Connection:
+        read_only = source_foundation_read_only()
         conn = sqlite3.connect(
-            str(self._paths.db),
+            (
+                f"file:{self._paths.db.resolve()}?mode=ro"
+                if read_only
+                else str(self._paths.db)
+            ),
             timeout=SQLITE_TIMEOUT_SECONDS,
             isolation_level=None,
+            uri=read_only,
         )
         conn.row_factory = sqlite3.Row
         conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
         conn.execute("PRAGMA foreign_keys = ON")
-        if configure_storage:
+        if read_only:
+            conn.execute("PRAGMA query_only = ON")
+        elif configure_storage:
             self._configure_storage(conn)
         return conn
 
@@ -971,6 +999,7 @@ class TruthStore:
         observer actions. A supplied connection leaves commit ownership, and
         the external migration lock, with its caller.
         """
+        require_source_foundation_writable("truth.write")
         if conn is not None:
             self._validate_connection_target(conn)
             if not conn.in_transaction:
@@ -1567,6 +1596,7 @@ class TruthStore:
         return resolved
 
     def _store_blob_bytes(self, digest: str, data: bytes) -> tuple[str, bool]:
+        require_source_foundation_writable("truth.blob_write")
         expected = _valid_digest(digest, "content_sha256")
         if sha256_bytes(data) != expected:
             raise InvariantViolation("blob bytes do not match content_sha256")
@@ -1601,6 +1631,7 @@ class TruthStore:
 
     def _remove_unreferenced_blob(self, digest: str) -> None:
         """Clean a blob created by a failed store-owned capture."""
+        require_source_foundation_writable("truth.blob_cleanup")
         cleanup = self._open_connection()
         try:
             cleanup.execute("BEGIN IMMEDIATE")
@@ -1637,6 +1668,7 @@ class TruthStore:
         blob.  The marker contains neither evidence content nor its locator.
         """
 
+        require_source_foundation_writable("truth.blob_cleanup_queue")
         self._require_transaction(conn)
         intent = self._blob_cleanup_intent_path(digest)
         atomic_write_bytes(intent, b"")
@@ -1682,8 +1714,11 @@ class TruthStore:
         with self._read_connection() as conn:
             for path in paths:
                 row = conn.execute(
-                    "SELECT 1 FROM redaction_events WHERE id = ?",
-                    (path.name,),
+                    "SELECT 1 FROM redaction_events WHERE id = ? "
+                    "UNION ALL "
+                    "SELECT 1 FROM document_content_redactions WHERE id = ? "
+                    "LIMIT 1",
+                    (path.name, path.name),
                 ).fetchone()
                 if row is not None:
                     committed.append(path)
@@ -1703,6 +1738,7 @@ class TruthStore:
         pre-redaction export containing the destroyed payload.
         """
 
+        require_source_foundation_writable("truth.redaction_recovery_queue")
         self._require_transaction(conn)
         intent = self._redaction_recovery_intent_path(event_id)
         atomic_write_bytes(intent, b"")
@@ -1719,6 +1755,7 @@ class TruthStore:
 
         if not paths:
             return
+        require_source_foundation_writable("truth.redaction_recovery_clear")
         recovery_dir = (
             self._paths.sidecar / _REDACTION_RECOVERY_DIRNAME
         ).resolve()
@@ -1751,6 +1788,7 @@ class TruthStore:
     def recover_pending_redactions(self) -> tuple[str, ...]:
         """Rebuild post-redaction projections and clear covered markers."""
 
+        require_source_foundation_writable("truth.redaction_recovery")
         pending = self._pending_redaction_recovery_paths()
         if not pending:
             return ()
@@ -1767,6 +1805,7 @@ class TruthStore:
         leaves an idempotent marker whose retry observes a missing blob.
         """
 
+        require_source_foundation_writable("truth.blob_cleanup")
         normalized = _valid_digest(digest, "content_sha256")
         intent = self._blob_cleanup_intent_path(normalized)
         cleanup_dir = intent.parent
@@ -1807,6 +1846,7 @@ class TruthStore:
     def recover_pending_blob_cleanups(self) -> tuple[str, ...]:
         """Retry every complete digest-only blob deletion intent."""
 
+        require_source_foundation_writable("truth.blob_cleanup_recover")
         cleanup_dir = self._paths.sidecar / _BLOB_CLEANUP_DIRNAME
         if not cleanup_dir.is_dir():
             return ()
@@ -1922,12 +1962,22 @@ class TruthStore:
             f"SELECT ({evidence_sql}) + "
             "(SELECT COUNT(*) FROM documents WHERE content_sha256 = ? "
             "OR ydoc_snapshot_sha256 = ?) + "
-            "(SELECT COUNT(*) FROM document_versions WHERE projection_sha256 = ? "
-            "OR ydoc_snapshot_sha256 = ?) + "
-            "(SELECT COUNT(*) FROM action_snapshots WHERE projection_blob_sha256 = ? "
-            "OR target_blob_sha256 = ?)"
+            "(SELECT COUNT(*) FROM document_versions AS v "
+            "WHERE (v.projection_sha256 = ? OR v.ydoc_snapshot_sha256 = ?) "
+            "AND NOT EXISTS ("
+            "SELECT 1 FROM document_content_redaction_targets AS t "
+            "WHERE t.target_kind = 'document_version_blob' "
+            "AND t.target_ref = v.id AND t.content_sha256 = ?"
+            ")) + "
+            "(SELECT COUNT(*) FROM action_snapshots AS a "
+            "WHERE (a.projection_blob_sha256 = ? OR a.target_blob_sha256 = ?) "
+            "AND NOT EXISTS ("
+            "SELECT 1 FROM document_content_redaction_targets AS t "
+            "WHERE t.target_kind = 'action_snapshot_blob' "
+            "AND t.target_ref = a.id AND t.content_sha256 = ?"
+            "))"
         )
-        params = (normalized,) * 7
+        params = (normalized,) * 9
 
         def count_with_import_sources(read_conn: sqlite3.Connection) -> int:
             count = int(read_conn.execute(sql, params).fetchone()[0])
@@ -1939,9 +1989,18 @@ class TruthStore:
             )
 
             source_refs = sum(
-                retained_file_import_source_sha256(row["meta_json"]) == normalized
+                retained_file_import_source_sha256(row["meta_json"])
+                == normalized
+                and not bool(
+                    read_conn.execute(
+                        "SELECT 1 FROM document_content_redaction_targets "
+                        "WHERE target_kind = 'document_source_blob' "
+                        "AND target_ref = ? AND content_sha256 = ? LIMIT 1",
+                        (row["id"], normalized),
+                    ).fetchone()
+                )
                 for row in read_conn.execute(
-                    "SELECT meta_json FROM documents"
+                    "SELECT id, meta_json FROM documents"
                 ).fetchall()
             )
             return count + source_refs
@@ -2365,6 +2424,11 @@ class TruthStore:
         identifier = _record_id(record_id, "link id")
         created = _timestamp(created_at, "created_at")
         role_data = _json_object(role)
+        if relation == "evidence_relation":
+            # New support and non-support evidence edges share one exact role
+            # schema. Legacy supports_span remains readable but is not created
+            # by source-backed v9 paths.
+            role_data = validate_claim_evidence_role(role_data).to_role()
         if relation == "supersedes":
             reason = role_data.get("supersession_reason")
             if reason not in SUPERSESSION_REASONS:
@@ -2777,7 +2841,8 @@ class TruthStore:
             "INSERT INTO document_spans "
             "(id, document_id, selector_json, quote_exact, span_sha256, "
             "author_kind, author_ref, created_at, created_by_kind, "
-            "created_by_ref) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "created_by_ref, redacted_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 record.id,
                 record.document_id,
@@ -2789,6 +2854,7 @@ class TruthStore:
                 record.created_at,
                 record.created_by_kind,
                 record.created_by_ref,
+                record.redacted_at,
             ),
         )
         self._insert_ledger_record_locked(conn, "document_span", record.id)

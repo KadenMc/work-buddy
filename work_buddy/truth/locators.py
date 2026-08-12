@@ -766,6 +766,33 @@ def _validate_file(
     return SchemeValidation(normalized_locator, "A", recipe, updates)
 
 
+def _validate_wb_source(
+    kind: str,
+    locator: str,
+    meta: Mapping[str, Any],
+    content_sha256: str | None,
+) -> SchemeValidation:
+    """Validate an authority-qualified retained Sources item reference."""
+
+    del kind
+    from work_buddy.sources.models import SourceRef
+
+    try:
+        source_ref = SourceRef.parse(_require_locator(locator))
+    except Exception as exc:
+        raise LocatorError("wb-source locator is malformed") from exc
+    digest = _require_sha256(content_sha256)
+    updates = _snapshot_updates(meta, digest)
+    updates["source_ref"] = source_ref.to_dict()
+    recipe = {
+        "method": "verify_retained_source_snapshot",
+        "expected_sha256": digest,
+        "network_required": False,
+        "requires_sources_authority": True,
+    }
+    return SchemeValidation(source_ref.uri, "A", recipe, updates)
+
+
 class LocatorRegistry:
     """Extensible, fail-closed registry of source locator schemes."""
 
@@ -815,6 +842,11 @@ class LocatorRegistry:
         self.register("arxiv", _validate_academic, kinds={"document"})
         self.register("pmid", _validate_academic, kinds={"document"})
         self.register("wb-session", _validate_session, kinds={"chat", "utterance"})
+        self.register(
+            "wb-source",
+            _validate_wb_source,
+            kinds={"document", "web", "chat", "utterance", "artifact"},
+        )
         self.register("file", _validate_file, kinds={"document", "artifact"})
 
     def validate(

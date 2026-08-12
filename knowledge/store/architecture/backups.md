@@ -57,7 +57,7 @@ The logical name is what appears in the manifest and the snapshot tag. The on-di
 
 ## Snapshot pipeline (`work_buddy/backups/local.py`)
 
-1. Open the Truth machine registry and refresh every known store. For each reachable store, stage `truth_stores/<store_id>/store.yaml` and `truth_stores/<store_id>/claims.jsonl`. Record unreachable stores and export errors instead of silently omitting them.
+1. Open the Truth machine registry and refresh every known store. For each reachable store, stage `truth_stores/<store_id>/store.yaml`, `truth_stores/<store_id>/claims.jsonl`, and the identity-bound `truth_stores/<store_id>/document-causality.json` companion. Record unreachable stores, a missing causality authority, and export errors instead of silently omitting them.
 2. For each vital DB, open it and call `sqlite3.Connection.backup(dest)`. This is SQLite's hot-backup API, a page-by-page logical copy under the lock protocol that does not block writers and is WAL-coherent. Output: `.data/backups/<snapshot_id>/<dbname>.db`.
 3. Write `MANIFEST.json` alongside the machine database snapshots and portable Truth payloads.
 4. Tar+gzip the directory via Python's `tarfile` standard library.
@@ -76,7 +76,7 @@ Keys:
 - `host` -- hostname of the snapshotting machine.
 - `schema_versions` -- map of logical DB name -> `PRAGMA user_version` at snapshot time. Restore uses this to refuse forward-time travel and to drive forward-migration.
 - `row_counts` -- map of table -> row count at snapshot time. Restore validates counts after schema upgrade against this, with tolerance for migration-added rows.
-- `truth_stores` -- one entry per registered store, including its permanent identity, registered path, profile, reachability, and `backup_status`. Included entries name the portable members and export hash. Unreachable and errored entries carry an explicit reason.
+- `truth_stores` -- one entry per registered store, including its permanent identity, registered path, profile, reachability, and `backup_status`. Included entries name the portable Truth and document-causality members plus their outer/inner hashes. Unreachable and errored entries carry an explicit reason.
 - `manifest_version` -- integer; future-proofs the manifest format itself. Restore checks it and refuses unknown values.
 
 ## Portable Truth coverage
@@ -84,9 +84,13 @@ Keys:
 Registry discovery turns the variable set of scoped `.wbuddy/cowork/` sidecars into deterministic
 recovery members. Each included store contributes exactly
 `truth_stores/<store_id>/store.yaml` and
-`truth_stores/<store_id>/claims.jsonl`. The profile preserves permanent
-identity and policy. The JSONL stream preserves the lossless ordered ledger
-representation used by Truth import.
+`truth_stores/<store_id>/claims.jsonl`, and
+`truth_stores/<store_id>/document-causality.json`. The profile preserves
+permanent identity and policy. The JSONL stream preserves the lossless ordered
+ledger representation used by Truth import. The causality companion preserves
+domain/document bindings, change intents/receipts, and projection cursors; it
+is bound to the same permanent store ID and imported only into a clean staged
+target whose document IDs match the portable Truth ledger.
 
 The backup pipeline never copies a scoped store's live `store.db`. This avoids treating a raw database image as the portable contract and avoids copying a database outside its own transaction protocol. If a store is unreachable, its manifest row is marked `unreachable`. If validation or export fails, the partial staged directory is removed and its row is marked `error`. Successful rows are marked `included` and carry the exported stream hash.
 
@@ -131,12 +135,32 @@ Fresh-repo gotcha: the first push to an empty repo errors with `Repository is em
 4. Open each staged DB through its migration authority (see `architecture/migrations`) -- the ladder rolls the staged schema forward to current. The Settings database and Truth registry use their own versioned ladders and the same forward-version guard.
 5. `PRAGMA integrity_check` + `PRAGMA foreign_key_check` per DB. Refuse on either failure.
 6. Verify row counts after schema upgrade match the manifest, with tolerance for migration-added rows.
-7. Move current `.data/db/` to `.data/db.pre_restore_<ts>/` (auto-rollback safety net).
-8. Move staging into place.
+7. Write `source_foundation_restore_pending.json` into the validated staging
+   directory, then move current `.data/db/` to `.data/db.pre_restore_<ts>/`
+   (auto-rollback safety net).
+8. Move staging into place. The marker becomes live in the same rename, so a
+   completed swap has no unfenced crash window.
 
-Steps 3-7 are reversible -- staging gets discarded on any failure and the live DB is never touched until step 8.
+Steps 3-6 are staging-only. The live DB is first touched in step 7, immediately
+before the directory swap, and is retained as the pre-restore rollback copy.
 
-The snapshot tarball retains its `truth_stores/` members for explicit scoped recovery. `data_restore` does not place those payloads automatically because the destination scope and duplicate store identity policy require a deliberate choice. Scoped import is available only through `work_buddy.truth.export.import_store`. No `truth_store_import` MCP capability or `wbuddy truth import` verb is registered.
+The restore marker is a fail-closed authority fence, not a warning. Normal
+Source Foundation mutations, background delivery, model/provider dispatch,
+and new snapshots remain paused while it exists. Read-only status remains
+available when existing state can be validated. The high-consent
+`source_foundation_restore_operator` compares identity, Agent
+Execution/Sources reservations and outcomes, retained Sources blob boundaries,
+Co-work conversation-source dependencies, Journal/task-note state, scoped
+Truth/causality identity, and Hindsight projection recovery. It never replays a
+`possibly_sent` transport. It clears only a fully reconciled cohort and archives
+the marker as a receipt; partial evidence leaves the system fenced.
+
+The Co-work conversation-source dependency database is hot-backed for disaster
+recovery. A local restore instead keeps its live copy aligned with the retained
+conversation database, which lives outside the machine `db/` swap; cohort
+reconciliation verifies every dependency against that retained history.
+
+The snapshot tarball retains its `truth_stores/` members for explicit scoped recovery. `data_restore` does not place those payloads automatically because the destination scope and duplicate store identity policy require a deliberate choice. Scoped import is available only through `work_buddy.truth.export.import_store`, which accepts the optional causality companion and digest as one staged import. No `truth_store_import` MCP capability or `wbuddy truth import` verb is registered.
 
 ## Health system integration
 

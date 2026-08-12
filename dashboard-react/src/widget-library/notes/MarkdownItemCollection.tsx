@@ -31,6 +31,7 @@ export interface MarkdownItemCollectionProps {
   onEdit(request: MarkdownEditRequest): Promise<IntentResult> | IntentResult | void;
   onDelete(request: MarkdownDeleteRequest): Promise<IntentResult> | IntentResult | void;
   onOpenThread?(item: MarkdownNoteItem): void;
+  onOpenDocument?(item: MarkdownNoteItem): Promise<IntentResult> | IntentResult | void;
   /** Preview may demonstrate the removal locally; Dashboard Core still blocks persistence. */
   readonly simulateMutations?: boolean;
 }
@@ -49,6 +50,7 @@ interface PendingEdit {
 const processingTone = (state: MarkdownNoteItem["processing"]["state"]) => {
   if (state === "failed") return "danger" as const;
   if (state === "pending") return "warning" as const;
+  if (state === "running") return "info" as const;
   if (state === "succeeded") return "success" as const;
   return "neutral" as const;
 };
@@ -83,6 +85,7 @@ export function MarkdownItemCollection({
   onEdit,
   onDelete,
   onOpenThread,
+  onOpenDocument,
   simulateMutations = false,
 }: MarkdownItemCollectionProps) {
   const { confirm } = useInteractionSurfaces();
@@ -96,6 +99,13 @@ export function MarkdownItemCollection({
     readonly itemId: string;
     readonly message: string;
   }>();
+  const [documentError, setDocumentError] = useState<{
+    readonly itemId: string;
+    readonly message: string;
+  }>();
+  const [openingDocumentIds, setOpeningDocumentIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const [pendingEdits, setPendingEdits] = useState<Readonly<Record<string, PendingEdit>>>(
     {},
   );
@@ -204,6 +214,26 @@ export function MarkdownItemCollection({
     }
     setPendingDeletes((current) => new Set(current).add(item.itemId));
   };
+  const openDocument = async (item: MarkdownNoteItem) => {
+    if (!item.document || !onOpenDocument || openingDocumentIds.has(item.itemId)) return;
+    setDocumentError(undefined);
+    setOpeningDocumentIds((current) => new Set(current).add(item.itemId));
+    try {
+      const result = await onOpenDocument(item);
+      if (result !== undefined && result.status !== "accepted") {
+        setDocumentError({
+          itemId: item.itemId,
+          message: result.message ?? `The Co-work document action was ${result.status}.`,
+        });
+      }
+    } finally {
+      setOpeningDocumentIds((current) => {
+        const next = new Set(current);
+        next.delete(item.itemId);
+        return next;
+      });
+    }
+  };
 
   if (!editDraft.ready) {
     return <p className="wb-markdown-collection__draft-loading" aria-busy="true">Restoring draft…</p>;
@@ -227,6 +257,7 @@ export function MarkdownItemCollection({
               const isEditing = edit?.itemId === item.itemId;
               const pending = pendingEdits[item.itemId];
               const deleting = pendingDeletes.has(item.itemId);
+              const openingDocument = openingDocumentIds.has(item.itemId);
               return (
                 <li key={item.itemId} className="wb-markdown-item">
                   {isEditing && edit !== null ? (
@@ -289,6 +320,9 @@ export function MarkdownItemCollection({
                       {deleteError?.itemId === item.itemId && (
                         <InlineAlert tone="danger">{deleteError.message}</InlineAlert>
                       )}
+                      {documentError?.itemId === item.itemId && (
+                        <InlineAlert tone="danger">{documentError.message}</InlineAlert>
+                      )}
                       <div className="wb-markdown-item__actions">
                         <Button
                           variant="ghost"
@@ -300,6 +334,15 @@ export function MarkdownItemCollection({
                         {item.threadId && onOpenThread && (
                           <Button variant="ghost" onClick={() => onOpenThread(item)}>
                             Open thread
+                          </Button>
+                        )}
+                        {item.document && onOpenDocument && (
+                          <Button
+                            variant="ghost"
+                            disabled={openingDocument}
+                            onClick={() => void openDocument(item)}
+                          >
+                            {openingDocument ? "Opening…" : "Open in Co-work"}
                           </Button>
                         )}
                         <Button

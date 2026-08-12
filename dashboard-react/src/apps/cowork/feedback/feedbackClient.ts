@@ -26,6 +26,7 @@ import {
   CoworkHttpError,
   normalizeCoworkError,
 } from "../providers/errors";
+import { coworkHumanAuthorityHeaders } from "../../../security/humanAuthority";
 
 /** The R9 span selector shape, exactly as the route reads it. */
 export interface CoworkFeedbackSpan {
@@ -135,12 +136,23 @@ export class HttpCoworkFeedbackTransport implements CoworkFeedbackTransport {
 
   async submit(request: CoworkFeedbackRequest): Promise<CoworkFeedbackResponse> {
     const url = `/api/truth/doc/${encodeURIComponent(request.documentId)}/feedback?store_id=${encodeURIComponent(request.storeId)}`;
+    const body = { span: request.span, text: request.text };
     let response: Response;
     try {
+      const authorityHeaders = await coworkHumanAuthorityHeaders(
+        {
+          operation: "feedback.capture",
+          storeId: request.storeId,
+          documentId: request.documentId,
+          body,
+        },
+        this.#fetch,
+      );
       response = await this.#fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ span: request.span, text: request.text }),
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", ...authorityHeaders },
+        body: JSON.stringify(body),
       });
     } catch {
       // A disconnected client cannot know whether the authored feedback became

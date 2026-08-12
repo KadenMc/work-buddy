@@ -52,8 +52,17 @@ def extract_running_notes(
         return _fail(f"Journal file not found: {journal_path}")
 
     try:
-        content = journal_path.read_text(encoding="utf-8")
-    except OSError as e:
+        if journal_path.parent.name.lower() == "journal":
+            from work_buddy.journal_capture.content_adapter import JournalContentAdapter
+
+            content = JournalContentAdapter(journal_path.parent.parent).read_day(
+                journal_path.stem
+            )
+        else:
+            # A fixture/export path outside the configured daily-note
+            # directory is not a production Journal authority target.
+            content = journal_path.read_text(encoding="utf-8")
+    except (OSError, RuntimeError) as e:
         return _fail(f"Could not read journal file: {e}")
 
     journal_date = journal_path.stem  # e.g. "2026-04-02"

@@ -284,8 +284,8 @@ def _read_note(vault_rel_path: str, abs_path: Path) -> str | None:
     # Direct fallback — used when the bridge app/module is unavailable, or for
     # a genuinely-absent file (404).
     try:
-        return abs_path.read_text(encoding="utf-8")
-    except OSError:
+        return abs_path.read_bytes().decode("utf-8")
+    except (OSError, UnicodeError):
         return None
 
 
@@ -296,6 +296,7 @@ def vault_write(
     *,
     write_mode: str = "replace",
     content_hint: str | None = None,
+    journal_owned_write: bool = False,
 ) -> bool:
     """Write a note, preferring Obsidian bridge, falling back to direct write.
 
@@ -367,6 +368,28 @@ def vault_write(
     # Normalize path separators — bridge expects forward slashes
     vault_rel_path = vault_rel_path.replace("\\", "/")
 
+    # A daily note is a mixed-ownership document.  Generic writers may update
+    # Sign-In, planner, briefing, and unknown sections, but may not mutate or
+    # delete an embedded Co-work-owned Journal projection.  Only the Journal
+    # compatibility adapter/projection worker can opt into that boundary.
+    if (
+        not journal_owned_write
+        and re.fullmatch(r"journal/\d{4}-\d{2}-\d{2}\.md", vault_rel_path)
+        and abs_path.is_file()
+    ):
+        current = _read_note(vault_rel_path, abs_path)
+        if current is None:
+            raise RuntimeError("journal_content_base_unavailable")
+        from work_buddy.journal_capture.content_adapter import (
+            assert_cowork_owned_sections_unchanged,
+        )
+
+        assert_cowork_owned_sections_unchanged(
+            current,
+            content,
+            day_id=Path(vault_rel_path).stem,
+        )
+
     try:
         from work_buddy.obsidian.bridge import (
             is_available,
@@ -430,7 +453,11 @@ def vault_write(
     try:
         log.info("Direct write: %s", abs_path)
         tmp = abs_path.with_suffix(".tmp")
-        tmp.write_text(content, encoding="utf-8")
+        # Preserve the caller's exact newline bytes.  ``Path.write_text`` uses
+        # platform newline translation on Windows; a read-modify-write caller
+        # that retained CRLF would otherwise manufacture CRCRLF and break
+        # stable marker boundaries.
+        tmp.write_bytes(content.encode("utf-8"))
         tmp.replace(abs_path)
         return True
     except OSError as exc:

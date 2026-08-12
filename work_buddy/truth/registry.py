@@ -15,6 +15,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+from work_buddy.backups.source_foundation_restore import (
+    require_source_foundation_writable,
+    source_foundation_read_only,
+)
 from work_buddy.truth.contracts import StorePaths
 from work_buddy.truth.export import StoreIdentityCollision
 from work_buddy.truth.registry_migrations import TRUTH_REGISTRY_MIGRATIONS
@@ -118,20 +122,43 @@ class TruthStoreRegistry:
 
             db_path = resolve("db/truth-registry")
         self.db_path = Path(db_path).expanduser().resolve()
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        if source_foundation_read_only():
+            if not self.db_path.is_file():
+                require_source_foundation_writable("truth_registry.initialize")
+        else:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._clock = clock
         conn = self._connect()
         conn.close()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.db_path), timeout=10)
+        read_only = source_foundation_read_only()
+        conn = sqlite3.connect(
+            (
+                f"file:{self.db_path.resolve()}?mode=ro"
+                if read_only
+                else str(self.db_path)
+            ),
+            timeout=10,
+            uri=read_only,
+        )
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        try:
-            TRUTH_REGISTRY_MIGRATIONS.run(conn)
-        except Exception:
-            conn.close()
-            raise
+        if read_only:
+            conn.execute("PRAGMA query_only=ON")
+            if int(conn.execute("PRAGMA user_version").fetchone()[0]) != (
+                TRUTH_REGISTRY_MIGRATIONS.target_version
+            ):
+                conn.close()
+                raise TruthRegistryError(
+                    "truth registry requires migration while restore is fenced"
+                )
+        else:
+            conn.execute("PRAGMA journal_mode=WAL")
+            try:
+                TRUTH_REGISTRY_MIGRATIONS.run(conn)
+            except Exception:
+                conn.close()
+                raise
         return conn
 
     @staticmethod
@@ -174,6 +201,7 @@ class TruthStoreRegistry:
             conn.close()
 
     def _set_unreachable(self, path: Path, error: str | None = None) -> None:
+        require_source_foundation_writable("truth_registry.mark_unreachable")
         path_key = _path_key(path)
         conn = self._connect()
         try:
@@ -194,6 +222,7 @@ class TruthStoreRegistry:
         reachable: bool,
         observed_at: str,
     ) -> RegisteredTruthStore:
+        require_source_foundation_writable("truth_registry.record_observation")
         path = _canonical_sidecar(path)
         path_key = _path_key(path)
         profile = store.profile
@@ -287,6 +316,7 @@ class TruthStoreRegistry:
         path_or_store: str | Path | TruthStore,
     ) -> RegisteredTruthStore:
         """Validate and register a store, refusing another live identity."""
+        require_source_foundation_writable("truth_registry.register")
         path = _canonical_sidecar(
             path_or_store.paths.sidecar
             if isinstance(path_or_store, TruthStore)
@@ -381,6 +411,8 @@ class TruthStoreRegistry:
 
     def list_stores(self, *, refresh: bool = True) -> tuple[RegisteredTruthStore, ...]:
         """List registered stores in stable path order."""
+        if source_foundation_read_only():
+            refresh = False
         if refresh:
             conn = self._connect()
             try:
@@ -434,11 +466,20 @@ class TruthStoreRegistry:
         if row is None:
             return None
         record = self._record(row)
+        if source_foundation_read_only():
+            refresh = False
         return self._refresh_path(record, raise_collision=True) if refresh else record
 
     def paths_for_store_id(self, store_id: str) -> tuple[Path, ...]:
         """Return the single reachable path for an identity, or no paths."""
         rows = self._rows_for_store_id(store_id)
+        if source_foundation_read_only():
+            reachable = [row.path for row in rows if row.reachable]
+            if len(reachable) > 1:
+                raise StoreIdentityCollision(
+                    f"store_id {store_id} has multiple reachable registry rows"
+                )
+            return tuple(reachable)
         observed: list[tuple[RegisteredTruthStore, TruthStore, str]] = []
         for row in rows:
             try:
@@ -481,6 +522,8 @@ class TruthStoreRegistry:
         refresh: bool = True,
     ) -> RegisteredTruthStore | None:
         """Return the live row for a store identity."""
+        if source_foundation_read_only():
+            refresh = False
         if refresh:
             paths = self.paths_for_store_id(store_id)
             if not paths:
@@ -506,6 +549,8 @@ class TruthStoreRegistry:
         avoids the unregister/register gap that could lose inventory or admit a
         duplicate identity when a canonical Folder is moved.
         """
+
+        require_source_foundation_writable("truth_registry.relocate")
 
         old_path = _canonical_sidecar(old_path_or_root)
         new_path = _canonical_sidecar(new_path_or_root)
@@ -612,6 +657,8 @@ class TruthStoreRegistry:
         or create WAL/SHM files inside the selected Folder.
         """
 
+        require_source_foundation_writable("truth_registry.register_projection")
+
         path = _canonical_sidecar(path_or_root)
         path_key = _path_key(path)
         now = self._clock()
@@ -686,10 +733,13 @@ class TruthStoreRegistry:
     def open_store(self, store_id: str) -> TruthStore:
         """Open and touch the single reachable canonical store."""
 
-        row = self.get_by_store_id(store_id, refresh=True)
+        read_only = source_foundation_read_only()
+        row = self.get_by_store_id(store_id, refresh=not read_only)
         if row is None:
             raise TruthRegistryError(f"truth store is not reachable: {store_id}")
         store = self._observe(row.path)
+        if read_only:
+            return store
         # Opening is the common restart/request seam. Recovery takes each
         # operation's normal path/document lock and re-reads state after it, so
         # a live sibling publisher is never relabelled as abandoned.
@@ -701,6 +751,7 @@ class TruthStoreRegistry:
 
     def unregister(self, path_or_root: str | Path) -> bool:
         """Remove one historical path from the machine registry."""
+        require_source_foundation_writable("truth_registry.unregister")
         path = _canonical_sidecar(path_or_root)
         path_key = _path_key(path)
         conn = self._connect()

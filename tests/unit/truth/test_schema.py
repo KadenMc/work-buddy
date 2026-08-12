@@ -220,6 +220,20 @@ EXPECTED_COLUMNS = {
         "created_by_kind",
         "created_by_ref",
     },
+    "evidence_source_resolution_records": {
+        "id", "evidence_id", "source_ref_json", "representation_id",
+        "content_sha256", "media_type", "byte_length", "selector_json",
+        "resolver_id", "resolver_version", "observation_id",
+        "redaction_epoch", "resolved_at", "usage_id",
+        "authorization_context_sha256", "canonical_sha256", "created_at",
+        "created_by_kind", "created_by_ref", "created_by_meta_json",
+    },
+    "truth_source_usage_events": {
+        "id", "resolution_record_id", "usage_id", "status", "purpose",
+        "consumer_ref", "redaction_epoch", "error_code", "canonical_sha256",
+        "created_at", "created_by_kind", "created_by_ref",
+        "created_by_meta_json",
+    },
     "claims": {
         "id",
         "proposition",
@@ -282,6 +296,36 @@ EXPECTED_COLUMNS = {
         "basis_kind",
         "basis_ref",
         "note",
+    },
+    "provenance_attribution_events": {
+        "id", "subject_kind", "subject_ref", "actor_ref_json", "role",
+        "basis", "assurance", "run_ref", "source_ref_json", "asserted_at",
+        "supersedes_id", "canonical_sha256", "created_at",
+    },
+    "candidate_decision_events": {
+        "id", "candidate_id", "candidate_sha256", "decision", "claim_id",
+        "actor_ref_json", "basis", "assurance", "authorization_ref",
+        "authorization_context_sha256", "run_ref", "source_refs_json",
+        "decided_at", "canonical_sha256", "created_at",
+    },
+    "truth_operation_results": {
+        "id", "operation_name", "idempotency_key", "request_sha256",
+        "result_json", "result_sha256", "actor_ref_json", "canonical_sha256",
+        "created_at",
+    },
+    "document_content_redactions": {
+        "id", "document_id", "replacement_document_version_id",
+        "source_usage_id", "source_ref_json", "source_redaction_event_id",
+        "content_class", "redaction_policy", "actor_ref_json",
+        "coverage_sha256", "canonical_sha256", "created_at",
+    },
+    "document_content_redaction_targets": {
+        "id", "redaction_id", "target_kind", "target_ref", "field_name",
+        "content_sha256", "disposition", "canonical_sha256", "created_at",
+    },
+    "document_content_redaction_status_events": {
+        "id", "redaction_id", "status", "detail_json", "canonical_sha256",
+        "created_at",
     },
     "gestures": {
         "id",
@@ -371,6 +415,7 @@ EXPECTED_COLUMNS = {
         "created_at",
         "created_by_kind",
         "created_by_ref",
+        "redacted_at",
     },
     "document_provenance_attestations": {
         "id",
@@ -560,6 +605,7 @@ EXPECTED_COLUMNS = {
         "context_boundary_json", "allowed_change_ranges_json",
         "egress_boundary_json", "canonical_sha256", "created_at",
         "created_by_kind", "created_by_ref", "created_by_meta_json",
+        "redacted_at",
     },
     "evaluation_plan_snapshots": {
         "id", "action_snapshot_id", "plan_json", "canonical_sha256",
@@ -632,6 +678,50 @@ EXPECTED_COLUMNS = {
         "canonical_sha256", "committed_at", "created_by_kind",
         "created_by_ref", "created_by_meta_json",
     },
+    "truth_hindsight_projection_outbox": {
+        "effect_id", "claim_id", "claim_generation", "policy_id",
+        "desired_state", "reason_code", "eligibility_sha256",
+        "authorization_ref", "purge_projection_source", "request_sha256",
+        "state", "attempt_count", "lease_owner", "lease_expires_at",
+        "next_attempt_at", "last_error_code", "created_at", "updated_at",
+    },
+    "truth_hindsight_projection_heads": {
+        "claim_id", "policy_id", "claim_generation", "desired_state",
+        "effect_id", "request_sha256", "updated_at",
+    },
+    "truth_hindsight_projection_attempts": {
+        "effect_id", "attempt_no", "worker_id", "state",
+        "dependency_usages_json", "destination_document_id",
+        "captured_source_ref", "captured_representation_id", "content_sha256",
+        "disclosure_run_id", "disclosure_entry_id",
+        "disclosure_manifest_sha256", "error_code", "started_at",
+        "completed_at",
+    },
+    "truth_hindsight_projection_receipts": {
+        "claim_id", "policy_id", "claim_generation", "receipt_state",
+        "destination_document_id", "projection_method", "lifecycle_status",
+        "applicability_scope_json", "valid_from", "valid_to",
+        "captured_source_ref", "captured_representation_id", "content_sha256",
+        "disclosure_run_id", "disclosure_entry_id",
+        "disclosure_manifest_sha256", "dependency_usages_json",
+        "last_effect_id", "observed_at",
+    },
+    "truth_hindsight_projection_dependencies": {
+        "claim_id", "policy_id", "claim_generation", "usage_id",
+        "source_ref", "representation_id", "redaction_epoch", "active",
+        "created_at", "acknowledged_at", "released_at",
+    },
+    "truth_hindsight_projection_source_cleanup": {
+        "cleanup_id", "effect_id", "source_ref", "authorization_ref",
+        "reason_code", "state", "created_at", "completed_at",
+    },
+    "truth_hindsight_projection_authorizations": {
+        "authorization_ref", "store_id", "purpose", "policy_id",
+        "recipient", "provider_id", "model_id",
+        "eligible_claim_kinds_json", "projection_method", "granted_by_ref",
+        "basis", "canonical_sha256", "granted_at", "expires_at",
+        "revoked_at",
+    },
 }
 
 
@@ -666,6 +756,20 @@ def test_schema_has_all_committed_tables_columns_indexes_and_triggers(
         "idx_claims_canonical_sha256",
         "idx_evidence_content_sha256",
         "idx_evidence_spans_evidence",
+        "idx_evidence_source_resolution_evidence",
+        "idx_evidence_source_resolution_source",
+        "idx_truth_source_usage_resolution",
+        "idx_truth_source_usage_id",
+        "idx_provenance_attribution_subject",
+        "idx_provenance_attribution_actor",
+        "idx_provenance_attribution_supersedes",
+        "idx_candidate_decision_candidate",
+        "idx_candidate_decision_claim",
+        "idx_truth_operation_created",
+        "idx_document_content_redaction_document",
+        "idx_document_content_redaction_target_receipt",
+        "idx_document_content_redaction_target_blob",
+        "idx_document_content_redaction_status",
         "idx_sweep_findings_sweep",
         "uq_documents_path",
         "idx_documents_ydoc_snapshot",
@@ -699,6 +803,8 @@ def test_schema_has_all_committed_tables_columns_indexes_and_triggers(
         "idx_cowork_coordination_parent",
         "idx_cowork_coordination_status_job",
         "idx_cowork_review_applications_document",
+        "idx_truth_hindsight_projection_ready",
+        "idx_truth_hindsight_projection_usage",
     } <= set(indexes)
     assert "WHERE status = 'confirmed'" in indexes["uq_claim_status_confirm_gesture"]
 
@@ -706,7 +812,7 @@ def test_schema_has_all_committed_tables_columns_indexes_and_triggers(
         row["name"]
         for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'")
     }
-    assert len(triggers) == 79
+    assert len(triggers) == 97
     verify_tables = {
         "criterion_definition_versions",
         "check_definition_versions",
@@ -726,12 +832,21 @@ def test_schema_has_all_committed_tables_columns_indexes_and_triggers(
         "cowork_coordination_status_events",
         "cowork_review_applications",
         "document_provenance_attestations",
+        "evidence_source_resolution_records",
+        "truth_source_usage_events",
+        "provenance_attribution_events",
+        "candidate_decision_events",
+        "truth_operation_results",
+        "document_content_redactions",
+        "document_content_redaction_targets",
+        "document_content_redaction_status_events",
     }
     assert {
         f"{table}_append_only_{operation}"
         for table in verify_tables
         for operation in ("update", "delete")
     } <= triggers
+    assert "trg_truth_hindsight_outbox_identity_immutable" in triggers
     assert not any(name.startswith("projections_") for name in triggers)
     assert not any(name.startswith("claims_current_") for name in triggers)
     assert truth_migrations.current_version(conn) == truth_migrations.SCHEMA_VERSION
@@ -753,7 +868,7 @@ def test_reopening_is_idempotent(tmp_path: Path):
         conn.execute(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger'"
         ).fetchone()[0]
-        == 79
+        == 97
     )
     conn.close()
 

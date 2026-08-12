@@ -420,8 +420,15 @@ def post_targeted_chat_message(
     content: str,
     context: Mapping[str, Any],
     message_id: str | None = None,
+    ingress: Mapping[str, Any] | None = None,
 ) -> ConversationMessage:
     """Append a targeted turn even when its bound agent must be restarted."""
+
+    from work_buddy.backups.source_foundation_restore import (
+        require_source_foundation_writable,
+    )
+
+    require_source_foundation_writable("cowork.chat.post_targeted_message")
 
     store_id = _required_text(context.get("store_id"), "context.store_id")
     document_id = _required_text(
@@ -490,6 +497,7 @@ def post_targeted_chat_message(
             content,
             message_id=message_id,
             context=durable_context,
+            ingress=ingress,
         )
         if message is None:
             raise CoworkChatTargetError(
@@ -497,6 +505,24 @@ def post_targeted_chat_message(
                 code="conversation_unavailable",
                 status=404,
             )
+        from work_buddy.cowork.conversation_source_dependencies import (
+            record_conversation_source_dependency,
+        )
+
+        frozen = action_snapshot_view(
+            store,
+            document_id=document.id,
+            action_snapshot_id=action.id,
+        )["frozen_markdown"]
+        record_conversation_source_dependency(
+            store_id=store.store_id,
+            document_id=document.id,
+            conversation_id=conversation_id,
+            message_id=message.message_id,
+            role="user",
+            content=message.content,
+            frozen_markdown=frozen,
+        )
         return message
 
 
@@ -506,6 +532,7 @@ def post_cothink_discussion_message(
     document_id: str,
     item_id: str,
     canonical_sha256: str,
+    ingress: Mapping[str, Any] | None = None,
 ) -> tuple[str, ConversationMessage]:
     """Route one exact non-evidential Co-think item into document Chat.
 
@@ -514,6 +541,12 @@ def post_cothink_discussion_message(
     the document agent must fetch that action and produce a receipt-bound reply
     just like any explicitly targeted Chat turn.
     """
+
+    from work_buddy.backups.source_foundation_restore import (
+        require_source_foundation_writable,
+    )
+
+    require_source_foundation_writable("cowork.chat.post_cothink_discussion")
 
     with document_lifecycle_lock(store_id, document_id):
         try:
@@ -578,6 +611,7 @@ def post_cothink_discussion_message(
             binding.conversation_id,
             f"Let’s discuss this Co-think perspective:\n\n{perspective}",
             context=durable_context,
+            ingress=ingress,
         )
         if message is None:
             raise CoworkChatTargetError(
@@ -585,6 +619,24 @@ def post_cothink_discussion_message(
                 code="conversation_unavailable",
                 status=404,
             )
+        from work_buddy.cowork.conversation_source_dependencies import (
+            record_conversation_source_dependency,
+        )
+
+        frozen = action_snapshot_view(
+            store,
+            document_id=document.id,
+            action_snapshot_id=action.id,
+        )["frozen_markdown"]
+        record_conversation_source_dependency(
+            store_id=store.store_id,
+            document_id=document.id,
+            conversation_id=binding.conversation_id,
+            message_id=message.message_id,
+            role="user",
+            content=message.content,
+            frozen_markdown=frozen,
+        )
         return binding.conversation_id, message
 
 

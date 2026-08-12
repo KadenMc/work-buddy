@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import hashlib
 
 from flask import Blueprint, Response, jsonify, request
 
 from work_buddy.cowork import bootstrap, provenance
-from work_buddy.truth.contracts import Actor, InvariantViolation
+from work_buddy.security.local_identity import LocalIdentityError
+from work_buddy.truth.contracts import InvariantViolation
 from work_buddy.truth.events import emit_truth_event
 from work_buddy.truth.identity import sha256_text
 
@@ -52,10 +54,21 @@ def _store():
         ) from exc
 
 
-def _actor() -> Actor:
-    from work_buddy.cowork.api import dashboard_user_ref
+def _human_actor(*, operation: str, store_id: str, document_id: str, body: dict):
+    from work_buddy.cowork.api import _require_human_action
 
-    return Actor("human", dashboard_user_ref(request.headers))
+    return _require_human_action(
+        operation=operation,
+        store_id=store_id,
+        document_id=document_id,
+        body=body,
+    )[1]
+
+
+def _identity_error(exc: LocalIdentityError):
+    from work_buddy.cowork.api import _local_identity_error
+
+    return _local_identity_error(exc)
 
 
 def _require_writable() -> None:
@@ -102,8 +115,28 @@ def api_bootstrap_prepare():
             if uploaded is None
             else uploaded.read(bootstrap.maximum_source_upload_bytes() + 1)
         )
+        store = _store()
+        authority_body = {
+            "metadata": metadata,
+            "source_sha256": (
+                None if source is None else hashlib.sha256(source).hexdigest()
+            ),
+            "source_byte_length": 0 if source is None else len(source),
+        }
+        document_ref = str(
+            metadata.get("document_id")
+            or f"bootstrap:{metadata.get('idempotency_key') or 'new'}"
+        )
         intent, created = bootstrap.prepare_bootstrap(
-            _store(), metadata=metadata, source=source, actor=_actor()
+            store,
+            metadata=metadata,
+            source=source,
+            actor=_human_actor(
+                operation="bootstrap.prepare",
+                store_id=store.store_id,
+                document_id=document_ref,
+                body=authority_body,
+            ),
         )
         payload = {
             "ok": True,
@@ -131,6 +164,8 @@ def api_bootstrap_prepare():
         return jsonify(payload), 201 if created else 200
     except bootstrap.BootstrapError as exc:
         return _error(exc)
+    except LocalIdentityError as exc:
+        return _identity_error(exc)
     except InvariantViolation as exc:
         return _error(bootstrap.BootstrapError("invalid_request", str(exc)))
 
@@ -138,8 +173,15 @@ def api_bootstrap_prepare():
 @bootstrap_blueprint.get("/api/truth/doc/bootstrap/<bootstrap_id>/source")
 def api_bootstrap_source(bootstrap_id: str):
     try:
+        store = _store()
+        actor = _human_actor(
+            operation="bootstrap.source_read",
+            store_id=store.store_id,
+            document_id=bootstrap_id,
+            body={"bootstrap_id": bootstrap_id},
+        )
         intent, payload = bootstrap.read_staged_source(
-            _store(), bootstrap_id=bootstrap_id, actor=_actor()
+            store, bootstrap_id=bootstrap_id, actor=actor
         )
         media_type = intent.source_media_type or "text/markdown"
         response = Response(payload, mimetype=media_type)
@@ -156,6 +198,8 @@ def api_bootstrap_source(bootstrap_id: str):
         return response
     except bootstrap.BootstrapError as exc:
         return _error(exc)
+    except LocalIdentityError as exc:
+        return _identity_error(exc)
 
 
 @bootstrap_blueprint.put("/api/truth/doc/bootstrap/<bootstrap_id>")
@@ -195,6 +239,19 @@ def api_bootstrap_commit(bootstrap_id: str):
                 status=415,
             )
         store = _store()
+        pending = bootstrap.get_intent(store, bootstrap_id)
+        authority_body = {
+            "bootstrap_id": bootstrap_id,
+            "metadata": metadata if (request.mimetype or "").startswith("multipart/form-data") else {
+                "source_sha256": source_sha256,
+                "snapshot_sha256": snapshot_sha256,
+                "ydoc_schema": ydoc_schema,
+            },
+            "snapshot_sha256": hashlib.sha256(snapshot).hexdigest(),
+            "projection_sha256": (
+                None if projection is None else hashlib.sha256(projection).hexdigest()
+            ),
+        }
         receipt = bootstrap.commit_bootstrap(
             store,
             bootstrap_id=bootstrap_id,
@@ -204,7 +261,12 @@ def api_bootstrap_commit(bootstrap_id: str):
             snapshot_sha256=snapshot_sha256,
             projection_sha256=projection_sha256,
             ydoc_schema=ydoc_schema,
-            actor=_actor(),
+            actor=_human_actor(
+                operation="bootstrap.commit",
+                store_id=store.store_id,
+                document_id=pending.document_id,
+                body=authority_body,
+            ),
         )
         attestation_id = receipt.get("authorship_attestation_id")
         if (
@@ -231,6 +293,8 @@ def api_bootstrap_commit(bootstrap_id: str):
         return jsonify(receipt)
     except bootstrap.BootstrapError as exc:
         return _error(exc)
+    except LocalIdentityError as exc:
+        return _identity_error(exc)
     except provenance.ProvenanceConflictError as exc:
         return (
             jsonify(
@@ -254,12 +318,22 @@ def api_bootstrap_commit(bootstrap_id: str):
 def api_bootstrap_cancel(bootstrap_id: str):
     try:
         _require_writable()
+        store = _store()
         cancelled = bootstrap.cancel_bootstrap(
-            _store(), bootstrap_id=bootstrap_id, actor=_actor()
+            store,
+            bootstrap_id=bootstrap_id,
+            actor=_human_actor(
+                operation="bootstrap.cancel",
+                store_id=store.store_id,
+                document_id=bootstrap_id,
+                body={"bootstrap_id": bootstrap_id},
+            ),
         )
         return jsonify({"ok": True, "cancelled": cancelled})
     except bootstrap.BootstrapError as exc:
         return _error(exc)
+    except LocalIdentityError as exc:
+        return _identity_error(exc)
 
 
 def register_bootstrap_routes(app):

@@ -495,6 +495,12 @@ def _normalized_query(query: str) -> str:
     return normalized
 
 
+def normalize_query(query: str) -> str:
+    """Return the exact bounded query text supplied to the search provider."""
+
+    return _normalized_query(query)
+
+
 def _bounded(value: object, maximum: int) -> str:
     return str(value or "").strip()[:maximum]
 
@@ -1658,6 +1664,7 @@ __all__ = [
     "fetch",
     "fetch_search_hit",
     "get_receipt",
+    "normalize_query",
     "receipts_for_run",
     "search",
     "search_web",

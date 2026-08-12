@@ -35,6 +35,8 @@ See ``architecture/backups`` for the full subsystem reference.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import shutil
 import sqlite3
 import tarfile
@@ -77,6 +79,11 @@ VITAL_DBS: dict[str, str] = {
     "entities": "db/entities",  # on-disk: entities.db
     "settings": "db/settings",  # on-disk: settings.db
     "truth_registry": "db/truth-registry",  # on-disk: truth_registry.db
+    "agent_execution": "db/agent-execution",
+    "cowork_conversation_source_dependencies": (
+        "db/cowork-conversation-source-dependencies"
+    ),
+    "task_note_migration": "db/task-note-migration",
 }
 
 
@@ -124,6 +131,11 @@ def run_backup(*, manual: bool = False) -> dict[str, Any]:
     logs. Best-effort: a single unreadable DB contributes a zero-byte
     backup file but doesn't break the whole snapshot.
     """
+    from work_buddy.backups.source_foundation_restore import (
+        require_source_foundation_writable,
+    )
+
+    require_source_foundation_writable("backup.snapshot")
     ts = utcnow_iso()
     snapshot_id = f"snap-{ts}{MANUAL_SUFFIX if manual else ''}"
     backups_root = data_dir("backups")
@@ -147,6 +159,7 @@ def run_backup(*, manual: bool = False) -> dict[str, Any]:
         for name, src in db_paths.items():
             dst = staging / src.name  # e.g. "task_metadata.db" for the "tasks" entry
             _hot_backup(src, dst)
+        _stage_local_identity_enrollment(staging)
 
         # 2. Build manifest by probing the LIVE DBs (not the
         #    staging copies) — they're identical in content but the
@@ -301,17 +314,39 @@ def _stage_truth_stores(staging: Path, registry) -> list[dict[str, Any]]:
         store_dir = staging / "truth_stores" / row.store_id
         profile_target = store_dir / "store.yaml"
         export_target = store_dir / "claims.jsonl"
+        causality_target = store_dir / "document-causality.json"
         try:
+            from work_buddy.document_kernel.causality import DocumentCausalityStore
+
             store = registry.open_store(row.store_id)
             store_dir.mkdir(parents=True, exist_ok=False)
             shutil.copy2(store.paths.config, profile_target)
             exported = export_store(store, destination=export_target)
+            live_causality = store.paths.sidecar / "document-causality.db"
+            if not live_causality.is_file():
+                raise RuntimeError("document causality store is missing")
+            causality_bundle = DocumentCausalityStore(
+                store.paths.sidecar
+            ).export_recovery_bundle(store_id=store.store_id)
+            causality_bytes = (
+                json.dumps(
+                    causality_bundle,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n"
+            ).encode("utf-8")
+            causality_target.write_bytes(causality_bytes)
             item.update(
                 {
                     "backup_status": "included",
                     "profile_member": profile_target.relative_to(staging).as_posix(),
                     "export_member": export_target.relative_to(staging).as_posix(),
                     "export_sha256": exported.sha256,
+                    "causality_member": causality_target.relative_to(staging).as_posix(),
+                    "causality_sha256": hashlib.sha256(causality_bytes).hexdigest(),
+                    "causality_payload_sha256": causality_bundle["payload_sha256"],
                 }
             )
         except Exception as exc:
@@ -347,6 +382,46 @@ def _hot_backup(src: Path, dst: Path) -> None:
     finally:
         dst_conn.close()
         src_conn.close()
+
+
+def _stage_local_identity_enrollment(staging: Path) -> Path | None:
+    """Stage stable non-secret enrollment IDs, never live browser authority."""
+
+    source = resolve("db/local-identity")
+    if not source.is_file():
+        return None
+    conn = sqlite3.connect(str(source))
+    try:
+        rows = conn.execute(
+            "SELECT key,value FROM local_identity_meta WHERE key IN "
+            "('schema_version','issuer_authority_id','tenant_scope_id','local_actor_id')"
+        ).fetchall()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    values = {str(key): str(value) for key, value in rows}
+    required = {
+        "schema_version",
+        "issuer_authority_id",
+        "tenant_scope_id",
+        "local_actor_id",
+    }
+    if set(values) != required:
+        return None
+    payload = {
+        "schema": "wb.local-identity-enrollment-export/v1",
+        **values,
+        "restores_live_sessions": False,
+        "trust_required_before_identity_reuse": True,
+    }
+    target = staging / "local_identity_enrollment.json"
+    target.write_text(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        + "\n",
+        encoding="utf-8",
+    )
+    return target
 
 
 def _make_tarball(staging: Path, tarball: Path) -> None:

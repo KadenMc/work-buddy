@@ -11,12 +11,14 @@ import type {
 } from "../contracts";
 import { buildEditorExtensions } from "../editor/extensions";
 import { HttpCoworkYdocTransport } from "../persistence/HttpCoworkYdocTransport";
+import { sha256Hex as sha256Bytes } from "../persistence/hashing";
 import type {
   CoworkPasteProvenanceRequest,
   CoworkProvenanceActorIdentity,
   CoworkProvenanceDetermination,
 } from "../provenance";
 import { CoworkHttpError, normalizeCoworkError } from "./errors";
+import { coworkHumanAuthorityHeaders } from "../../../security/humanAuthority";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -866,35 +868,48 @@ export class CoworkHttpClient {
     const form = new FormData();
     // Plain FormData fields land in Flask request.form. A JSON Blob is a multipart file
     // part (request.files), which made otherwise-valid reimport/sitting metadata disappear.
-    form.append(
-      "metadata",
-      JSON.stringify({
-        mode: metadata.mode,
-        path: metadata.path,
-        ...(metadata.title === undefined ? {} : { title: metadata.title }),
-        ...(metadata.initialSourceSha256 === undefined
-          ? {}
-          : { initial_source_sha256: metadata.initialSourceSha256 }),
-        expected_file_sha256: metadata.expectedFileSha256 ?? null,
-        ...(metadata.importerId === undefined
-          ? {}
-          : { importer_id: metadata.importerId }),
-        ...(metadata.sourceMediaType === undefined
-          ? {}
-          : { source_media_type: metadata.sourceMediaType }),
-        ...(metadata.authorshipAttestation === undefined
-          ? {}
-          : { authorship_attestation: metadata.authorshipAttestation }),
-        document_id: metadata.documentId ?? null,
-        idempotency_key: metadata.idempotencyKey,
-      }),
-    );
+    const wireMetadata = {
+      mode: metadata.mode,
+      path: metadata.path,
+      ...(metadata.title === undefined ? {} : { title: metadata.title }),
+      ...(metadata.initialSourceSha256 === undefined
+        ? {}
+        : { initial_source_sha256: metadata.initialSourceSha256 }),
+      expected_file_sha256: metadata.expectedFileSha256 ?? null,
+      ...(metadata.importerId === undefined
+        ? {}
+        : { importer_id: metadata.importerId }),
+      ...(metadata.sourceMediaType === undefined
+        ? {}
+        : { source_media_type: metadata.sourceMediaType }),
+      ...(metadata.authorshipAttestation === undefined
+        ? {}
+        : { authorship_attestation: metadata.authorshipAttestation }),
+      document_id: metadata.documentId ?? null,
+      idempotency_key: metadata.idempotencyKey,
+    };
+    form.append("metadata", JSON.stringify(wireMetadata));
     if (source !== undefined) {
       form.append("source", new Blob([source as BlobPart], { type: "application/octet-stream" }));
     }
+    const authorityHeaders = await coworkHumanAuthorityHeaders(
+      {
+        operation: "bootstrap.prepare",
+        storeId,
+        documentId:
+          metadata.documentId ??
+          `bootstrap:${metadata.idempotencyKey || "new"}`,
+        body: {
+          metadata: wireMetadata,
+          source_sha256: source === undefined ? null : await sha256Bytes(source),
+          source_byte_length: source?.byteLength ?? 0,
+        },
+      },
+      this.#fetch,
+    );
     const payload = await this.#json(
       `/api/truth/doc/bootstrap?store_id=${encodeURIComponent(storeId)}`,
-      { method: "POST", body: form },
+      { method: "POST", headers: authorityHeaders, body: form },
     );
     return {
       bootstrapId: text(payload.bootstrap_id),
@@ -915,9 +930,23 @@ export class CoworkHttpClient {
   }
 
   async readBootstrapSource(sourceUrl: string): Promise<Uint8Array> {
+    const parsed = new URL(sourceUrl, "http://localhost");
+    const storeId = parsed.searchParams.get("store_id") ?? "";
+    const match = parsed.pathname.match(/\/bootstrap\/([^/]+)\/source$/u);
+    const bootstrapId = match === null ? "" : decodeURIComponent(match[1] ?? "");
+    const authorityHeaders = await coworkHumanAuthorityHeaders(
+      {
+        operation: "bootstrap.source_read",
+        storeId,
+        documentId: bootstrapId,
+        body: { bootstrap_id: bootstrapId },
+      },
+      this.#fetch,
+    );
     const response = await this.#fetch(sourceUrl, {
       method: "GET",
       credentials: "same-origin",
+      headers: authorityHeaders,
     });
     if (!response.ok) {
       let payload: unknown = {};
@@ -940,15 +969,13 @@ export class CoworkHttpClient {
     projectionSha256: string,
   ): Promise<CoworkDocumentSummary> {
     const form = new FormData();
-    form.append(
-      "metadata",
-      JSON.stringify({
-        source_sha256: prepared.sourceSha256,
-        snapshot_sha256: snapshotSha256,
-        projection_sha256: projectionSha256,
-        ydoc_schema: prepared.ydocSchema,
-      }),
-    );
+    const wireMetadata = {
+      source_sha256: prepared.sourceSha256,
+      snapshot_sha256: snapshotSha256,
+      projection_sha256: projectionSha256,
+      ydoc_schema: prepared.ydocSchema,
+    };
+    form.append("metadata", JSON.stringify(wireMetadata));
     form.append(
       "snapshot",
       new Blob([snapshot as BlobPart], { type: "application/octet-stream" }),
@@ -957,10 +984,25 @@ export class CoworkHttpClient {
       "projection",
       new Blob([projection as BlobPart], { type: "text/markdown;charset=utf-8" }),
     );
+    const authorityHeaders = await coworkHumanAuthorityHeaders(
+      {
+        operation: "bootstrap.commit",
+        storeId,
+        documentId: prepared.documentId,
+        body: {
+          bootstrap_id: prepared.bootstrapId,
+          metadata: wireMetadata,
+          snapshot_sha256: await sha256Bytes(snapshot),
+          projection_sha256: await sha256Bytes(projection),
+        },
+      },
+      this.#fetch,
+    );
     const payload = await this.#json(
       `/api/truth/doc/bootstrap/${encodeURIComponent(prepared.bootstrapId)}?store_id=${encodeURIComponent(storeId)}`,
       {
         method: "PUT",
+        headers: authorityHeaders,
         body: form,
       },
     );
@@ -970,19 +1012,29 @@ export class CoworkHttpClient {
   async recordPasteProvenance(
     request: CoworkPasteProvenanceRequest,
   ): Promise<CoworkPasteProvenanceReceipt> {
+    const body = {
+      span: request.anchor,
+      attestation: request.attestation,
+      basis_kind: request.basisKind,
+      expected_structured_head_sha256:
+        request.expectedStructuredHeadSha256,
+      idempotency_key: request.idempotencyKey,
+    };
+    const authorityHeaders = await coworkHumanAuthorityHeaders(
+      {
+        operation: "provenance.attest",
+        storeId: request.storeId,
+        documentId: request.documentId,
+        body,
+      },
+      this.#fetch,
+    );
     const payload = await this.#json(
       `/api/truth/doc/${encodeURIComponent(request.documentId)}/authorship-attestations?store_id=${encodeURIComponent(request.storeId)}`,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          span: request.anchor,
-          attestation: request.attestation,
-          basis_kind: request.basisKind,
-          expected_structured_head_sha256:
-            request.expectedStructuredHeadSha256,
-          idempotency_key: request.idempotencyKey,
-        }),
+        headers: { "Content-Type": "application/json", ...authorityHeaders },
+        body: JSON.stringify(body),
       },
     );
     const attestationId = text(payload.attestation_id);
@@ -1010,9 +1062,18 @@ export class CoworkHttpClient {
   }
 
   async cancelBootstrap(storeId: string, bootstrapId: string): Promise<void> {
+    const authorityHeaders = await coworkHumanAuthorityHeaders(
+      {
+        operation: "bootstrap.cancel",
+        storeId,
+        documentId: bootstrapId,
+        body: { bootstrap_id: bootstrapId },
+      },
+      this.#fetch,
+    );
     await this.#json(
       `/api/truth/doc/bootstrap/${encodeURIComponent(bootstrapId)}?store_id=${encodeURIComponent(storeId)}`,
-      { method: "DELETE" },
+      { method: "DELETE", headers: authorityHeaders },
     );
   }
 
@@ -1074,12 +1135,22 @@ export class CoworkHttpClient {
     documentId: string,
     idempotencyKey: string,
   ): Promise<CoworkReimportPrepared> {
+    const body = { idempotency_key: idempotencyKey };
+    const authorityHeaders = await coworkHumanAuthorityHeaders(
+      {
+        operation: "reimport.prepare",
+        storeId,
+        documentId,
+        body,
+      },
+      this.#fetch,
+    );
     const payload = await this.#json(
       `/api/truth/doc/${encodeURIComponent(documentId)}/reimport?store_id=${encodeURIComponent(storeId)}`,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ idempotency_key: idempotencyKey }),
+        headers: { "Content-Type": "application/json", ...authorityHeaders },
+        body: JSON.stringify(body),
       },
     );
     return {
@@ -1105,9 +1176,22 @@ export class CoworkHttpClient {
     intentId: string,
   ): Promise<Uint8Array> {
     const url = `/api/truth/doc/${encodeURIComponent(documentId)}/reimport/${encodeURIComponent(intentId)}/source?store_id=${encodeURIComponent(storeId)}`;
+    const authorityHeaders = await coworkHumanAuthorityHeaders(
+      {
+        operation: "reimport.source_read",
+        storeId,
+        documentId,
+        body: { intent_id: intentId },
+      },
+      this.#fetch,
+    );
     let response: Response;
     try {
-      response = await this.#fetch(url, { method: "GET", credentials: "same-origin" });
+      response = await this.#fetch(url, {
+        method: "GET",
+        credentials: "same-origin",
+        headers: authorityHeaders,
+      });
     } catch (error) {
       throw new CoworkHttpError(normalizeCoworkError(error));
     }
@@ -1130,24 +1214,47 @@ export class CoworkHttpClient {
     snapshot: Uint8Array,
     snapshotSha256: string,
   ): Promise<CoworkReimportReceipt> {
+    const wireMetadata = { snapshot_sha256: snapshotSha256 };
     const form = new FormData();
-    form.append("metadata", JSON.stringify({ snapshot_sha256: snapshotSha256 }));
+    form.append("metadata", JSON.stringify(wireMetadata));
     form.append(
       "snapshot",
       new Blob([snapshot as BlobPart], { type: "application/octet-stream" }),
       "replacement.ydoc",
     );
+    const authorityHeaders = await coworkHumanAuthorityHeaders(
+      {
+        operation: "reimport.commit",
+        storeId,
+        documentId,
+        body: {
+          intent_id: prepared.intentId,
+          metadata: wireMetadata,
+          snapshot_sha256: await sha256Bytes(snapshot),
+        },
+      },
+      this.#fetch,
+    );
     const payload = await this.#json(
       `/api/truth/doc/${encodeURIComponent(documentId)}/reimport/${encodeURIComponent(prepared.intentId)}/commit?store_id=${encodeURIComponent(storeId)}`,
-      { method: "PUT", body: form },
+      { method: "PUT", headers: authorityHeaders, body: form },
     );
     return normalizeReimportReceipt(payload);
   }
 
   async cancelReimport(storeId: string, documentId: string, intentId: string): Promise<void> {
+    const authorityHeaders = await coworkHumanAuthorityHeaders(
+      {
+        operation: "reimport.cancel",
+        storeId,
+        documentId,
+        body: { intent_id: intentId },
+      },
+      this.#fetch,
+    );
     await this.#json(
       `/api/truth/doc/${encodeURIComponent(documentId)}/reimport/${encodeURIComponent(intentId)}?store_id=${encodeURIComponent(storeId)}`,
-      { method: "DELETE" },
+      { method: "DELETE", headers: authorityHeaders },
     );
   }
 
@@ -1156,12 +1263,22 @@ export class CoworkHttpClient {
     documentId: string,
     idempotencyKey: string,
   ): Promise<CoworkRetirementPrepared> {
+    const body = { idempotency_key: idempotencyKey };
+    const authorityHeaders = await coworkHumanAuthorityHeaders(
+      {
+        operation: "document.retire",
+        storeId,
+        documentId,
+        body,
+      },
+      this.#fetch,
+    );
     const payload = await this.#json(
       `/api/truth/doc/${encodeURIComponent(documentId)}/retire?store_id=${encodeURIComponent(storeId)}`,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ idempotency_key: idempotencyKey }),
+        headers: { "Content-Type": "application/json", ...authorityHeaders },
+        body: JSON.stringify(body),
       },
     );
     return {
@@ -1178,12 +1295,22 @@ export class CoworkHttpClient {
     documentId: string,
     intentId: string,
   ): Promise<CoworkRetirementReceipt> {
+    const body = { intent_id: intentId };
+    const authorityHeaders = await coworkHumanAuthorityHeaders(
+      {
+        operation: "document.retire",
+        storeId,
+        documentId,
+        body,
+      },
+      this.#fetch,
+    );
     const payload = await this.#json(
       `/api/truth/doc/${encodeURIComponent(documentId)}/retire?store_id=${encodeURIComponent(storeId)}`,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ intent_id: intentId }),
+        headers: { "Content-Type": "application/json", ...authorityHeaders },
+        body: JSON.stringify(body),
       },
     );
     return normalizeRetirementReceipt(payload);

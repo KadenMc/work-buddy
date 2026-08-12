@@ -166,11 +166,38 @@ messaging:
   ttl_days: 30
   summary_ttl_days: 7
 
+journal:
+  content_migration:
+    # Structured shadow/parity tooling may be enabled independently, but
+    # content authority cannot move to Co-work unless this explicit deployment
+    # gate is opened. There is no runtime API for toggling it.
+    enabled: false
+    cutover_enabled: false
+  smart_processing:
+    # Optional source-bound classification/annotation. Exact input is saved
+    # before inference. Enabling this may send the exact capture to the model
+    # bound to the selected frontier tier; Agent Execution records a
+    # content-free disclosure manifest before the handoff.
+    enabled: false
+    tier: "frontier_fast"
+
 # Hindsight personal memory server (optional — disable if not using)
 hindsight:
   base_url: "http://localhost:8888"
   bank_id: "my-memory"          # your personal memory bank identifier
   user_tag: "user:me"           # tag applied to all memory entries
+  truth_projection:
+    # Disabled until truth_hindsight_projection_authorization has minted an
+    # exact expiring grant whose store/policy/recipient/provider/model fields
+    # match this block. A nonempty string alone never authorizes egress.
+    enabled: false
+    policy_id: "confirmed_current_v1"
+    authorization_ref: null
+    recipient: null
+    provider_id: null
+    model_id: null
+    eligible_claim_kinds: null
+    projection_method: "hindsight_llm_retain_v1"
   bank_mission: >-
     Persistent personal memory for context-aware assistance.
     Prioritize: preferences, habits, constraints, recurring patterns,

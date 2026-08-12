@@ -1,7 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { CoworkCapturedActionSnapshot } from "../targets";
 import { HttpCoworkTruthAnalysisClient } from "./HttpCoworkTruthAnalysisClient";
+import { resetLocalIdentityForTests } from "../../../security/localIdentity";
 
 const jsonResponse = (value: unknown, status = 200): Response =>
   new Response(JSON.stringify(value), {
@@ -190,6 +191,8 @@ const capabilitiesPayload = {
 };
 
 describe("HttpCoworkTruthAnalysisClient", () => {
+  beforeEach(() => resetLocalIdentityForTests());
+
   it("loads server-attested provider cost eligibility fail-closed", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async () =>
       jsonResponse(capabilitiesPayload),
@@ -251,7 +254,48 @@ describe("HttpCoworkTruthAnalysisClient", () => {
   });
 
   it("starts one run with the exact frozen capture and shared execution IDs", async () => {
-    const fetchImpl = vi.fn<typeof fetch>(async () => jsonResponse(runPayload, 201));
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      const url = String(input);
+      if (url === "/api/local-identity/session/csrf") {
+        return jsonResponse({
+          ok: true,
+          authenticated: true,
+          csrf_token: "csrf-token",
+          principal: {
+            actor: {
+              schema: "wb.actor-ref/v1",
+              issuer_authority_id: "issuer-authority",
+              subject: "dashboard-user",
+              kind: "human",
+              tenant_scope_id: "tenant-scope",
+            },
+            origin: window.location.origin,
+            audience: "work-buddy-dashboard",
+            session_expires_at: 9_999_999_999,
+            rotation_due_at: 9_999_999_000,
+            assurance: "enrolled_local_session",
+          },
+        });
+      }
+      if (url === "/api/local-identity/gestures") {
+        const request = JSON.parse(String(init?.body)) as {
+          action: string;
+          subject: string;
+          context_sha256: string;
+        };
+        return jsonResponse({
+          ok: true,
+          gesture: {
+            token: "analysis-start-gesture",
+            action: request.action,
+            subject_sha256: "a".repeat(64),
+            context_sha256: request.context_sha256,
+            expires_at: 9_999_999_999,
+          },
+        });
+      }
+      return jsonResponse(runPayload, 201);
+    });
     const client = new HttpCoworkTruthAnalysisClient({
       storeId: "store-1",
       documentId: "doc-1",
@@ -270,12 +314,21 @@ describe("HttpCoworkTruthAnalysisClient", () => {
     });
 
     expect(result.analysisRunId).toBe("run-1");
-    expect(fetchImpl).toHaveBeenCalledOnce();
-    const [input, init] = fetchImpl.mock.calls[0];
+    const runCall = fetchImpl.mock.calls.find(([input]) =>
+      String(input).includes("/truth/analysis-runs?"),
+    );
+    expect(runCall).toBeDefined();
+    const [input, init] = runCall!;
     expect(String(input)).toBe(
       "/api/truth/doc/doc-1/truth/analysis-runs?store_id=store-1",
     );
     expect(init?.method).toBe("POST");
+    expect(init?.headers).toEqual(
+      expect.objectContaining({
+        "X-WB-CSRF": "csrf-token",
+        "X-WB-Gesture": "analysis-start-gesture",
+      }),
+    );
     expect(JSON.parse(String(init?.body))).toEqual({
       capture,
       execution: {
@@ -283,6 +336,45 @@ describe("HttpCoworkTruthAnalysisClient", () => {
         model_id: "sonnet",
       },
     });
+    const gestureCall = fetchImpl.mock.calls.find(
+      ([input]) => String(input) === "/api/local-identity/gestures",
+    );
+    expect(JSON.parse(String(gestureCall?.[1]?.body))).toEqual(
+      expect.objectContaining({
+        action: "cowork.truth.analysis_start",
+        subject: "cowork-truth-analysis-start:doc-1",
+      }),
+    );
+  });
+
+  it("fails closed before starting analysis when local identity is unavailable", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () =>
+      jsonResponse({
+        ok: false,
+        authenticated: false,
+        error: { code: "local_session_required", message: "No local session." },
+      }, 401),
+    );
+    const client = new HttpCoworkTruthAnalysisClient({
+      storeId: "store-1",
+      documentId: "doc-1",
+      fetchImpl,
+    });
+
+    await expect(client.start({
+      targetChoice: "current_selection",
+      capture,
+      execution: {
+        providerId: "claude-code",
+        modelId: "sonnet",
+        providerLabel: "Claude Code",
+        modelLabel: "Sonnet",
+      },
+    })).rejects.toThrow("No authenticated local session.");
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(String(fetchImpl.mock.calls[0][0])).toBe(
+      "/api/local-identity/session/csrf",
+    );
   });
 
   it("restores the current run and preserves server-reported coverage", async () => {
@@ -326,7 +418,48 @@ describe("HttpCoworkTruthAnalysisClient", () => {
   });
 
   it("sends distinct hash-bound save, connect, and dismiss decisions", async () => {
-    const fetchImpl = vi.fn<typeof fetch>(async (_input, init) => {
+    let gestureIndex = 0;
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      const url = String(input);
+      if (url === "/api/local-identity/session/csrf") {
+        return jsonResponse({
+          ok: true,
+          authenticated: true,
+          csrf_token: "csrf-token",
+          principal: {
+            actor: {
+              schema: "wb.actor-ref/v1",
+              issuer_authority_id: "issuer-authority",
+              subject: "dashboard-user",
+              kind: "human",
+              tenant_scope_id: "tenant-scope",
+            },
+            origin: window.location.origin,
+            audience: "work-buddy-dashboard",
+            session_expires_at: 9_999_999_999,
+            rotation_due_at: 9_999_999_000,
+            assurance: "enrolled_local_session",
+          },
+        });
+      }
+      if (url === "/api/local-identity/gestures") {
+        gestureIndex += 1;
+        const request = JSON.parse(String(init?.body)) as {
+          action: string;
+          subject: string;
+          context_sha256: string;
+        };
+        return jsonResponse({
+          ok: true,
+          gesture: {
+            token: `gesture-${gestureIndex}`,
+            action: request.action,
+            subject_sha256: "a".repeat(64),
+            context_sha256: request.context_sha256,
+            expires_at: 9_999_999_999,
+          },
+        });
+      }
       const body = JSON.parse(String(init?.body)) as { decision: string };
       return jsonResponse({
         ok: true,
@@ -375,9 +508,10 @@ describe("HttpCoworkTruthAnalysisClient", () => {
       expectedCanonicalSha256: "1".repeat(64),
     });
 
-    const bodies = fetchImpl.mock.calls.map(([, init]) =>
-      JSON.parse(String(init?.body)),
+    const decisionCalls = fetchImpl.mock.calls.filter(([input]) =>
+      String(input).includes("/candidates/"),
     );
+    const bodies = decisionCalls.map(([, init]) => JSON.parse(String(init?.body)));
     expect(bodies).toEqual([
       {
         decision: "save_as_proposed",
@@ -405,6 +539,52 @@ describe("HttpCoworkTruthAnalysisClient", () => {
         expected_canonical_sha256: "1".repeat(64),
       },
     ]);
+    expect(decisionCalls.map(([, init]) => init?.headers)).toEqual([
+      expect.objectContaining({ "X-WB-CSRF": "csrf-token", "X-WB-Gesture": "gesture-1" }),
+      expect.objectContaining({ "X-WB-CSRF": "csrf-token", "X-WB-Gesture": "gesture-2" }),
+      expect.objectContaining({ "X-WB-CSRF": "csrf-token", "X-WB-Gesture": "gesture-3" }),
+    ]);
+    const gestureBodies = fetchImpl.mock.calls
+      .filter(([input]) => String(input) === "/api/local-identity/gestures")
+      .map(([, init]) => JSON.parse(String(init?.body)));
+    expect(gestureBodies).toEqual([
+      expect.objectContaining({
+        action: "cowork.truth.candidate_decision",
+        subject: "cowork-truth-candidate-decision:run-1:candidate-1",
+      }),
+      expect.objectContaining({
+        action: "cowork.truth.candidate_decision",
+        subject: "cowork-truth-candidate-decision:run-1:candidate-1",
+      }),
+      expect.objectContaining({
+        action: "cowork.truth.candidate_decision",
+        subject: "cowork-truth-candidate-decision:run-1:candidate-1",
+      }),
+    ]);
+  });
+
+  it("fails closed before posting a decision when local identity is unavailable", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => jsonResponse({
+      ok: false,
+      authenticated: false,
+      error: { code: "local_session_required", message: "No local session." },
+    }, 401));
+    const client = new HttpCoworkTruthAnalysisClient({
+      storeId: "store-1",
+      documentId: "doc-1",
+      fetchImpl,
+    });
+
+    await expect(client.decideCandidate({
+      analysisRunId: "run-1",
+      candidateId: "candidate-1",
+      decision: "dismiss",
+      expectedCanonicalSha256: "1".repeat(64),
+    })).rejects.toThrow("No authenticated local session");
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(String(fetchImpl.mock.calls[0][0])).toBe(
+      "/api/local-identity/session/csrf",
+    );
   });
 
   it("rejects malformed candidates instead of making them actionable", async () => {

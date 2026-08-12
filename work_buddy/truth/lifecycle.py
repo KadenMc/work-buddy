@@ -29,6 +29,7 @@ from work_buddy.truth.identity import (
     sha256_text,
     utc_now,
 )
+from work_buddy.truth.evidence_relations import classify_claim_evidence_role
 from work_buddy.truth.store import (
     SUPERSESSION_REASONS,
     ClaimLinkRecord,
@@ -570,29 +571,50 @@ class TruthLifecycle:
         conn: sqlite3.Connection,
         claim_id: str,
     ) -> SupportAssessment:
+        claim = self.store._get_claim_locked(conn, claim_id)
+        if claim is None:
+            raise InvariantViolation(f"claim does not exist: {claim_id}")
+        policy = self.store.profile.support_policy_for(claim.claim_kind)
         rows = conn.execute(
-            "SELECT l.to_ref AS span_id, s.author_kind, s.redacted_at AS span_redacted, "
+            "SELECT l.to_ref AS span_id, l.link_type, l.role_json, "
+            "s.author_kind, s.redacted_at AS span_redacted, e.kind AS evidence_kind, "
             "e.trust_class, e.derived_from_store, e.redacted_at AS evidence_redacted "
             "FROM claim_links l "
             "LEFT JOIN link_retractions lr ON lr.link_id = l.id "
             "LEFT JOIN evidence_spans s ON s.id = l.to_ref "
             "LEFT JOIN evidence e ON e.id = s.evidence_id "
-            "WHERE l.from_claim_id = ? AND l.link_type = 'supports_span' "
+            "WHERE l.from_claim_id = ? "
+            "AND l.link_type IN ('supports_span', 'evidence_relation') "
             "AND l.to_kind = 'evidence_span' AND lr.link_id IS NULL "
             "ORDER BY l.to_ref",
             (claim_id,),
         ).fetchall()
-        support_ids = tuple(sorted({row["span_id"] for row in rows}))
+        positive_rows: list[sqlite3.Row] = []
         usable: list[sqlite3.Row] = []
         store_derived_rows: list[sqlite3.Row] = []
         for row in rows:
+            relation = classify_claim_evidence_role(
+                link_type=row["link_type"], role_json=row["role_json"]
+            )
+            if not relation.is_positive:
+                continue
+            positive_rows.append(row)
+            if relation.evidential_effect not in policy.allowed_effects:
+                continue
             if row["span_redacted"] is not None or row["evidence_redacted"] is not None:
                 continue
             if row["derived_from_store"] is not None:
                 store_derived_rows.append(row)
                 continue
+            if (
+                not policy.allow_human_assertion_as_source
+                and row["evidence_kind"] in {"chat", "utterance"}
+                and row["author_kind"] == "human"
+            ):
+                continue
             if row["trust_class"] is not None:
                 usable.append(row)
+        support_ids = tuple(sorted({row["span_id"] for row in positive_rows}))
         usable_ids = tuple(sorted({row["span_id"] for row in usable}))
         quarantined_only = bool(usable) and all(
             row["trust_class"] == "external_quarantined" for row in usable
@@ -602,7 +624,9 @@ class TruthLifecycle:
             for row in usable
         )
         store_derived_only = (
-            bool(rows) and not usable and len(store_derived_rows) == len(rows)
+            bool(positive_rows)
+            and not usable
+            and len(store_derived_rows) == len(positive_rows)
         )
         return SupportAssessment(
             support_span_ids=support_ids,
@@ -627,22 +651,40 @@ class TruthLifecycle:
         ledger sequence disambiguates equal-time history during integrity reads.
         """
 
-        row = conn.execute(
-            "SELECT 1 FROM claim_links l "
+        claim = self.store._get_claim_locked(conn, claim_id)
+        if claim is None:
+            return False
+        policy = self.store.profile.support_policy_for(claim.claim_kind)
+        rows = conn.execute(
+            "SELECT l.link_type, l.role_json, s.author_kind, e.kind AS evidence_kind "
+            "FROM claim_links l "
             "JOIN evidence_spans s ON s.id = l.to_ref "
             "JOIN evidence e ON e.id = s.evidence_id "
             "LEFT JOIN link_retractions lr ON lr.link_id = l.id "
-            "WHERE l.from_claim_id = ? AND l.link_type = 'supports_span' "
+            "WHERE l.from_claim_id = ? "
+            "AND l.link_type IN ('supports_span', 'evidence_relation') "
             "AND l.to_kind = 'evidence_span' AND lr.link_id IS NULL "
             "AND julianday(l.created_at) <= julianday(?) "
             "AND julianday(s.created_at) <= julianday(?) "
             "AND julianday(e.created_at) <= julianday(?) "
             "AND s.redacted_at IS NULL AND e.redacted_at IS NULL "
-            "AND e.derived_from_store IS NULL AND e.trust_class IS NOT NULL "
-            "LIMIT 1",
+            "AND e.derived_from_store IS NULL AND e.trust_class IS NOT NULL ",
             (claim_id, boundary_at, boundary_at, boundary_at),
-        ).fetchone()
-        return row is not None
+        ).fetchall()
+        for row in rows:
+            relation = classify_claim_evidence_role(
+                link_type=row["link_type"], role_json=row["role_json"]
+            )
+            if relation.evidential_effect not in policy.allowed_effects:
+                continue
+            if (
+                not policy.allow_human_assertion_as_source
+                and row["evidence_kind"] in {"chat", "utterance"}
+                and row["author_kind"] == "human"
+            ):
+                continue
+            return True
+        return False
 
     def assess_support(
         self,
@@ -691,6 +733,9 @@ class TruthLifecycle:
                     "needs_review may only be entered by a sweep or rule"
                 )
             if full.status == "needs_review":
+                self._enqueue_hindsight_projection_locked(
+                    conn, claim_id=claim_id, at=event_at
+                )
                 return TransitionResult(full, False, previous)
             if base.status in TERMINAL_STATUSES:
                 raise TransitionError("terminal claims cannot enter needs_review")
@@ -711,6 +756,9 @@ class TruthLifecycle:
                 note=note,
                 event_id=event_id,
                 at=event_at,
+            )
+            self._enqueue_hindsight_projection_locked(
+                conn, claim_id=claim_id, at=event_at
             )
             return TransitionResult(event, True, previous)
 
@@ -743,6 +791,9 @@ class TruthLifecycle:
         if base.status == status and not (
             full.status == "needs_review" and human_clear
         ):
+            self._enqueue_hindsight_projection_locked(
+                conn, claim_id=claim_id, at=event_at
+            )
             return TransitionResult(base, False, previous)
         overlay_clear = (
             base.status == status and full.status == "needs_review" and human_clear
@@ -781,7 +832,35 @@ class TruthLifecycle:
             event_id=event_id,
             at=event_at,
         )
+        self._enqueue_hindsight_projection_locked(
+            conn, claim_id=claim_id, at=event_at
+        )
         return TransitionResult(event, True, previous)
+
+    def _enqueue_hindsight_projection_locked(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        claim_id: str,
+        at: str,
+    ) -> None:
+        """Atomically record Hindsight desired state beside a lifecycle event.
+
+        The imported seam is deliberately narrow and lazy: Truth remains the
+        authority, while the derived projection owns its own eligibility
+        reconstruction and delivery machinery.
+        """
+
+        from work_buddy.hindsight_projection.truth_reader import (
+            enqueue_claim_projection_in_transaction,
+        )
+
+        enqueue_claim_projection_in_transaction(
+            self.store,
+            conn,
+            claim_id=claim_id,
+            at=at,
+        )
 
     def transition_claim(
         self,
@@ -866,6 +945,16 @@ class TruthLifecycle:
                 "weakest-link confirmation blocked by premises: " + ", ".join(detail)
             )
         support = self._assess_support_locked(conn, claim_id)
+        claim = self.store._get_claim_locked(conn, claim_id)
+        assert claim is not None
+        minimum = self.store.profile.support_policy_for(
+            claim.claim_kind
+        ).minimum_usable_supports
+        if len(support.usable_span_ids) < minimum:
+            raise TransitionError(
+                "confirmation requires at least "
+                f"{minimum} usable support receipt(s)"
+            )
         if support.support_span_ids and not support.usable_span_ids:
             raise TransitionError(
                 "confirmation has no usable non-store-derived support"

@@ -135,7 +135,9 @@ def _get_journal_entries(
     while current >= start_date:
         file_path = journal_path / f"{current.isoformat()}.md"
         if file_path.exists():
-            content = file_path.read_text(encoding="utf-8", errors="replace")
+            from work_buddy.journal_capture.content_adapter import JournalContentAdapter
+
+            content = JournalContentAdapter(vault_root).read_day(current.isoformat())
             sections = _extract_sections(content)
             if sections:
                 # Carry the weekday alongside the ISO date so downstream
@@ -220,7 +222,9 @@ def _get_journal_stats(vault_root: Path, journal_dir: str) -> dict[str, Any] | N
     if not journal_file.exists():
         return None
 
-    content = journal_file.read_text(encoding="utf-8", errors="replace")
+    from work_buddy.journal_capture.content_adapter import JournalContentAdapter
+
+    content = JournalContentAdapter(vault_root).read_day(today)
 
     stats: dict[str, Any] = {"date": today}
 
@@ -342,7 +346,9 @@ def _parse_wellness(journal_path: Path, days: int) -> list[dict[str, Any]]:
         row: dict[str, Any] = {"date": d.isoformat(), "sleep": None, "energy": None, "mood": None}
 
         if fpath.exists():
-            content = fpath.read_text(encoding="utf-8", errors="replace")
+            from work_buddy.journal_capture.content_adapter import JournalContentAdapter
+
+            content = JournalContentAdapter(journal_path.parent).read_day(d.isoformat())
             for m in _DAILYWORKQ_RE.finditer(content):
                 key = m.group(1)
                 row[key] = float(m.group(2))

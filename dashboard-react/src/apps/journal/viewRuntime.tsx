@@ -2,6 +2,7 @@ import { JournalViewChrome } from "./chrome/JournalViewChrome";
 import type { JournalViewModel } from "./contracts";
 import { InMemoryJournalProvider } from "./providers/InMemoryJournalProvider";
 import { LegacyFlaskViewAdapter } from "./providers/LegacyFlaskViewAdapter";
+import { HttpJournalProvider } from "./providers/HttpJournalProvider";
 import "./styles.css";
 import type { ViewSnapshot } from "../../dashboard/contributions/contracts";
 import type {
@@ -26,13 +27,19 @@ export function createRuntime(
         provider: new InMemoryJournalProvider(),
       },
       {
+        id: "live",
+        label: "Live Journal",
+        isDemo: false,
+        provider: new HttpJournalProvider(),
+      },
+      {
         id: "legacy",
         label: "Live data · partial legacy Today adapter",
         isDemo: false,
         provider: new LegacyFlaskViewAdapter(),
       },
     ],
-    { search: context.search, defaultId: "demo" },
+    { search: context.search, defaultId: "live" },
   );
 
   return {

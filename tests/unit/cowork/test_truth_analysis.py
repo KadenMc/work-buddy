@@ -13,6 +13,14 @@ from work_buddy.cowork import (
     truth_surface,
 )
 from work_buddy.cowork.proposal_applicability import CurrentProjection
+from work_buddy.security.actors import ActorRef
+from work_buddy.security.local_identity import (
+    HUMAN_AUTHORITY_ASSURANCE,
+    HUMAN_AUTHORITY_BASIS,
+    HumanAuthorityContext,
+    LocalPrincipal,
+)
+from work_buddy.sources import SourceStore
 from work_buddy.truth import documents, ydoc_store
 from work_buddy.truth.anchors import CompositeSelector
 from work_buddy.truth.contracts import Actor
@@ -32,11 +40,20 @@ def _isolated_analysis_runtime(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def analysis_env(seeded, monkeypatch):
+def analysis_env(seeded, monkeypatch, tmp_path):
     monkeypatch.setattr(
         truth_analysis,
         "TruthStoreRegistry",
         lambda: seeded["registry"],
+    )
+    source_store = SourceStore.create(
+        tmp_path / "truth-analysis-sources",
+        authority_id="truth-analysis-source-authority",
+    )
+    monkeypatch.setattr(
+        truth_analysis,
+        "_open_truth_source_store",
+        lambda: source_store,
     )
     current_projection = {"text": DOC_BODY}
 
@@ -70,6 +87,52 @@ def analysis_env(seeded, monkeypatch):
     )
     seeded["current_projection"] = current_projection
     return seeded
+
+
+def _commit(**kwargs):
+    """Exercise the production exact-gesture boundary in service tests."""
+
+    kwargs.pop("actor", None)
+    run = truth_analysis_runtime.get_run(kwargs["run_id"])
+    assert run is not None
+    actor = ActorRef(
+        issuer_authority_id="test-issuer-authority",
+        subject="dashboard-user",
+        kind="human",
+        tenant_scope_id="test-tenant-scope",
+    )
+    edits = kwargs.get("edits")
+    existing_claim_id = kwargs.get("existing_claim_id")
+    subject = truth_analysis.candidate_decision_subject(
+        kwargs["run_id"], kwargs["candidate_id"]
+    )
+    context_sha256 = truth_analysis.candidate_decision_context_sha256(
+        store_id=run.store_id,
+        document_id=run.document_id,
+        run_id=run.run_id,
+        candidate_id=kwargs["candidate_id"],
+        expected_canonical_sha256=kwargs["expected_canonical_sha256"],
+        decision=kwargs["decision"],
+        existing_claim_id=existing_claim_id,
+        edits=edits,
+    )
+    kwargs["authority_context"] = HumanAuthorityContext(
+        principal=LocalPrincipal(
+            actor=actor,
+            session_id="test-browser-session",
+            origin="http://127.0.0.1:5127",
+            audience="work-buddy-dashboard",
+            session_expires_at=9_999_999_999.0,
+            rotation_due_at=9_999_999_000.0,
+        ),
+        action=truth_analysis.CANDIDATE_DECISION_ACTION,
+        subject_sha256=sha256_text(subject),
+        context_sha256=context_sha256,
+        gesture_id=f"test-gesture-{kwargs['candidate_id']}",
+        assurance=HUMAN_AUTHORITY_ASSURANCE,
+        basis=HUMAN_AUTHORITY_BASIS,
+    )
+    return (truth_analysis.commit_candidate_decision)(**kwargs)
 
 
 def _selection() -> AgentExecutionSelection:
@@ -229,6 +292,57 @@ def _stage_one(analysis_env, proposition, *, evidence=None):
         ),
     )
     return run, staged["candidates"][0]
+
+
+def test_source_aware_submit_binds_every_candidate_to_complete_manifest(
+    analysis_env,
+    tmp_path,
+):
+    from work_buddy.agent_execution.disclosure import (
+        DisclosureGateway,
+        DisclosureManifestStore,
+    )
+    from work_buddy.cowork.truth_analysis_disclosure import (
+        TruthAnalysisDisclosureBoundary,
+    )
+    from work_buddy.security.local_identity import get_default_authority
+    from work_buddy.sources.disclosure import SourcesDisclosureService
+
+    run = _prepare(analysis_env)
+    sources_store = truth_analysis._open_truth_source_store()
+    sources = SourcesDisclosureService(
+        sources_store,
+        tenant_scope_id=get_default_authority().enrolled_actor().tenant_scope_id,
+    )
+    manifests = DisclosureManifestStore(tmp_path / "agent-execution.db")
+    boundary = TruthAnalysisDisclosureBoundary(
+        DisclosureGateway(manifests, sources),
+        sources,
+    )
+    context = truth_analysis.get_worker_context(
+        run_id=run.run_id,
+        agent_session_id=run.session_id,
+        disclosure_boundary=boundary,
+    )
+
+    receipt = truth_analysis.submit_worker_output(
+        run_id=run.run_id,
+        agent_session_id=run.session_id,
+        payload=_payload(
+            context,
+            [_candidate("AI assistance can reduce cognitive effort.")],
+        ),
+        disclosure_boundary=boundary,
+    )
+
+    stored = truth_analysis_runtime.get_run(run.run_id)
+    assert stored is not None and stored.output is not None
+    manifest = boundary.manifest_digest(run)
+    assert receipt["input_manifest_sha256"] == manifest.manifest_sha256
+    assert stored.output["input_manifest"] == manifest.to_dict()
+    assert stored.output["candidates"][0]["input_manifest_sha256"] == (
+        manifest.manifest_sha256
+    )
 
 
 def _existing_evidence(seeded):
@@ -525,7 +639,7 @@ def test_new_passage_waits_until_current_analysis_candidates_are_decided(
     assert blocked.value.details["analysis_run_id"] == first.run_id
     assert blocked.value.details["pending_candidates"] == 1
 
-    truth_analysis.commit_candidate_decision(
+    _commit(
         run_id=first.run_id,
         candidate_id=candidate["candidate_id"],
         expected_canonical_sha256=candidate["canonical_sha256"],
@@ -810,7 +924,7 @@ def test_frontend_shaped_decision_attaches_only_selected_support(analysis_env):
     )
 
     with pytest.raises(truth_analysis.TruthAnalysisError, match="cannot be attached"):
-        truth_analysis.commit_candidate_decision(
+        _commit(
             run_id=run.run_id,
             candidate_id=first["candidate_id"],
             expected_canonical_sha256=first["canonical_sha256"],
@@ -819,7 +933,7 @@ def test_frontend_shaped_decision_attaches_only_selected_support(analysis_env):
             edits={"evidence_candidate_ids": [contradicts["evidence_candidate_id"]]},
         )
     with pytest.raises(truth_analysis.TruthAnalysisError, match="unstaged evidence"):
-        truth_analysis.commit_candidate_decision(
+        _commit(
             run_id=run.run_id,
             candidate_id=second["candidate_id"],
             expected_canonical_sha256=second["canonical_sha256"],
@@ -828,7 +942,7 @@ def test_frontend_shaped_decision_attaches_only_selected_support(analysis_env):
             edits={"evidence_candidate_ids": ["0" * 32]},
         )
 
-    saved = truth_analysis.commit_candidate_decision(
+    saved = _commit(
         run_id=run.run_id,
         candidate_id=first["candidate_id"],
         expected_canonical_sha256=first["canonical_sha256"],
@@ -836,7 +950,7 @@ def test_frontend_shaped_decision_attaches_only_selected_support(analysis_env):
         actor=HUMAN,
         edits={"evidence_candidate_ids": [partial["evidence_candidate_id"]]},
     )
-    saved_without_evidence = truth_analysis.commit_candidate_decision(
+    saved_without_evidence = _commit(
         run_id=run.run_id,
         candidate_id=second["candidate_id"],
         expected_canonical_sha256=second["canonical_sha256"],
@@ -844,7 +958,7 @@ def test_frontend_shaped_decision_attaches_only_selected_support(analysis_env):
         actor=HUMAN,
         edits={"evidence_candidate_ids": []},
     )
-    saved_without_edits = truth_analysis.commit_candidate_decision(
+    saved_without_edits = _commit(
         run_id=run.run_id,
         candidate_id=third["candidate_id"],
         expected_canonical_sha256=third["canonical_sha256"],
@@ -861,12 +975,16 @@ def test_frontend_shaped_decision_attaches_only_selected_support(analysis_env):
     with analysis_env["store"]._read_connection() as conn:
         first_support = conn.execute(
             "SELECT COUNT(*) FROM claim_links WHERE from_claim_id = ? "
-            "AND link_type = 'supports_span'",
+            "AND link_type = 'evidence_relation' "
+            "AND json_extract(role_json, '$.evidential_effect') "
+            "IN ('supports', 'partially_supports')",
             (saved["claim_id"],),
         ).fetchone()[0]
         second_support = conn.execute(
             "SELECT COUNT(*) FROM claim_links WHERE from_claim_id = ? "
-            "AND link_type = 'supports_span'",
+            "AND link_type = 'evidence_relation' "
+            "AND json_extract(role_json, '$.evidential_effect') "
+            "IN ('supports', 'partially_supports')",
             (saved_without_evidence["claim_id"],),
         ).fetchone()[0]
     assert first_support == 1
@@ -919,7 +1037,7 @@ def test_exact_match_requires_explicit_connect_existing(analysis_env):
         truth_analysis.TruthAnalysisError,
         match="Connect this passage",
     ):
-        truth_analysis.commit_candidate_decision(
+        _commit(
             run_id=run.run_id,
             candidate_id=candidate["candidate_id"],
             expected_canonical_sha256=candidate["canonical_sha256"],
@@ -927,7 +1045,7 @@ def test_exact_match_requires_explicit_connect_existing(analysis_env):
             actor=HUMAN,
             edits={"evidence_candidate_ids": []},
         )
-    connected = truth_analysis.commit_candidate_decision(
+    connected = _commit(
         run_id=run.run_id,
         candidate_id=candidate["candidate_id"],
         expected_canonical_sha256=candidate["canonical_sha256"],
@@ -975,7 +1093,7 @@ def test_connect_existing_attaches_only_explicit_selected_support(analysis_env):
     candidate = staged["candidates"][0]
     evidence_id = candidate["evidence"][0]["evidence_candidate_id"]
 
-    connected = truth_analysis.commit_candidate_decision(
+    connected = _commit(
         run_id=run.run_id,
         candidate_id=candidate["candidate_id"],
         expected_canonical_sha256=candidate["canonical_sha256"],
@@ -995,7 +1113,9 @@ def test_connect_existing_attaches_only_explicit_selected_support(analysis_env):
     with analysis_env["store"]._read_connection() as conn:
         linked_span = conn.execute(
             "SELECT to_ref FROM claim_links WHERE from_claim_id = ? "
-            "AND link_type = 'supports_span'",
+            "AND link_type = 'evidence_relation' "
+            "AND json_extract(role_json, '$.evidential_effect') "
+            "IN ('supports', 'partially_supports')",
             (existing.id,),
         ).fetchone()[0]
     assert linked_span == span.id
@@ -1018,7 +1138,7 @@ def test_materially_edited_exact_match_can_be_saved_as_new_proposal(analysis_env
     )
     candidate = staged["candidates"][0]
 
-    saved = truth_analysis.commit_candidate_decision(
+    saved = _commit(
         run_id=run.run_id,
         candidate_id=candidate["candidate_id"],
         expected_canonical_sha256=candidate["canonical_sha256"],
@@ -1060,7 +1180,7 @@ def test_live_exact_claim_created_after_staging_rebases_to_connect(analysis_env)
         truth_analysis.TruthAnalysisError,
         match="Connect this passage",
     ):
-        truth_analysis.commit_candidate_decision(
+        _commit(
             run_id=run.run_id,
             candidate_id=candidate["candidate_id"],
             expected_canonical_sha256=candidate["canonical_sha256"],
@@ -1068,7 +1188,7 @@ def test_live_exact_claim_created_after_staging_rebases_to_connect(analysis_env)
             actor=HUMAN,
             edits={"evidence_candidate_ids": []},
         )
-    connected = truth_analysis.commit_candidate_decision(
+    connected = _commit(
         run_id=run.run_id,
         candidate_id=candidate["candidate_id"],
         expected_canonical_sha256=candidate["canonical_sha256"],
@@ -1096,7 +1216,7 @@ def test_duplicate_staged_claims_are_collapsed_before_human_review(analysis_env)
     assert len(staged["candidates"]) == 1
     assert "removed 1 duplicate staged candidate" in staged["limitations"][-1]
     candidate = staged["candidates"][0]
-    dismissed = truth_analysis.commit_candidate_decision(
+    dismissed = _commit(
         run_id=run.run_id,
         candidate_id=candidate["candidate_id"],
         expected_canonical_sha256=candidate["canonical_sha256"],
@@ -1128,12 +1248,19 @@ def test_candidate_commit_rolls_back_claim_expression_and_decision_on_support_fa
     evidence_id = candidate["evidence"][0]["evidence_candidate_id"]
     before = _counts(analysis_env["store"])
 
-    def _fail_support_write(_store, **_kwargs):
-        raise RuntimeError("simulated support write failure")
+    original_add_link = type(analysis_env["store"]).add_link
+    failed = False
+
+    def _fail_support_write(bound_store, **kwargs):
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise RuntimeError("simulated support write failure")
+        return original_add_link(bound_store, **kwargs)
 
     monkeypatch.setattr(type(analysis_env["store"]), "add_link", _fail_support_write)
     with pytest.raises(RuntimeError, match="simulated support write failure"):
-        truth_analysis.commit_candidate_decision(
+        _commit(
             run_id=run.run_id,
             candidate_id=candidate["candidate_id"],
             expected_canonical_sha256=candidate["canonical_sha256"],
@@ -1144,7 +1271,7 @@ def test_candidate_commit_rolls_back_claim_expression_and_decision_on_support_fa
 
     assert _counts(analysis_env["store"]) == before
     assert truth_analysis_runtime.candidate_decisions_for_run(run.run_id) == ()
-    retried = truth_analysis.commit_candidate_decision(
+    retried = _commit(
         run_id=run.run_id,
         candidate_id=candidate["candidate_id"],
         expected_canonical_sha256=candidate["canonical_sha256"],
@@ -1189,7 +1316,7 @@ def test_save_recovers_after_runtime_receipt_failure_without_duplicate_ledger_wr
         "edits": {"evidence_candidate_ids": []},
     }
     with pytest.raises(RuntimeError, match="runtime receipt failure"):
-        truth_analysis.commit_candidate_decision(**decision)
+        _commit(**decision)
 
     committed = _counts(analysis_env["store"])
     assert committed["claims"] == before["claims"] + 1
@@ -1205,7 +1332,7 @@ def test_save_recovers_after_runtime_receipt_failure_without_duplicate_ledger_wr
         truth_analysis.TruthAnalysisError,
         match="already has another decision",
     ):
-        truth_analysis.commit_candidate_decision(
+        _commit(
             **{
                 **decision,
                 "edits": {
@@ -1220,8 +1347,8 @@ def test_save_recovers_after_runtime_receipt_failure_without_duplicate_ledger_wr
     analysis_env["current_projection"]["text"] = (
         "An unrelated preface was added after the ledger commit.\n\n" + DOC_BODY
     )
-    recovered = truth_analysis.commit_candidate_decision(**decision)
-    replay = truth_analysis.commit_candidate_decision(**decision)
+    recovered = _commit(**decision)
+    replay = _commit(**decision)
 
     assert _counts(analysis_env["store"]) == committed
     assert recovered["result"]["claim_created"] is True
@@ -1278,7 +1405,7 @@ def test_connect_existing_recovers_after_runtime_receipt_failure(
         "edits": {"evidence_candidate_ids": []},
     }
     with pytest.raises(RuntimeError, match="runtime receipt failure"):
-        truth_analysis.commit_candidate_decision(**decision)
+        _commit(**decision)
 
     committed = _counts(analysis_env["store"])
     assert committed["claims"] == before["claims"]
@@ -1288,8 +1415,8 @@ def test_connect_existing_recovers_after_runtime_receipt_failure(
     analysis_env["current_projection"]["text"] = (
         "An unrelated preface was added after the ledger commit.\n\n" + DOC_BODY
     )
-    recovered = truth_analysis.commit_candidate_decision(**decision)
-    replay = truth_analysis.commit_candidate_decision(**decision)
+    recovered = _commit(**decision)
+    replay = _commit(**decision)
 
     assert _counts(analysis_env["store"]) == committed
     assert recovered["claim_id"] == existing.id
@@ -1309,7 +1436,7 @@ def test_unrelated_document_edit_reanchors_candidate_without_positional_guessing
         "An unrelated new preface.\n\n" + DOC_BODY
     )
 
-    saved = truth_analysis.commit_candidate_decision(
+    saved = _commit(
         run_id=run.run_id,
         candidate_id=candidate["candidate_id"],
         expected_canonical_sha256=candidate["canonical_sha256"],
@@ -1339,7 +1466,7 @@ def test_saved_claim_and_connection_expose_ai_preparation_and_human_addition(
         analysis_env,
         "AI prepared this candidate for an explicit human decision.",
     )
-    saved = truth_analysis.commit_candidate_decision(
+    saved = _commit(
         run_id=run.run_id,
         candidate_id=candidate["candidate_id"],
         expected_canonical_sha256=candidate["canonical_sha256"],
@@ -1364,24 +1491,49 @@ def test_saved_claim_and_connection_expose_ai_preparation_and_human_addition(
         "candidate_id": candidate["candidate_id"],
         "provider_id": "claude-code",
         "model_id": "sonnet",
+        "actor_ref": ActorRef(
+            issuer_authority_id="test-issuer-authority",
+            subject=run.session_id,
+            kind="agent_run",
+            tenant_scope_id="test-tenant-scope",
+        ).to_dict(),
+        "basis": "staged_candidate",
+        "assurance": "run_bound",
     }
+    expected_human = ActorRef(
+        issuer_authority_id="test-issuer-authority",
+        subject="dashboard-user",
+        kind="human",
+        tenant_scope_id="test-tenant-scope",
+    )
 
-    assert projected["created_by"] == {"kind": "human", "ref": HUMAN.ref}
+    assert projected["created_by"] == {
+        "kind": "agent_run",
+        "ref": run.session_id,
+    }
     assert projected["provenance"] == {
+        "classification": "attributed",
         "prepared_by": expected_preparer,
         "added_by": {
             "kind": "human",
-            "ref": HUMAN.ref,
-            "at": projected["created_at"],
+            "ref": "dashboard-user",
+            "at": projected["provenance"]["added_by"]["at"],
+            "actor_ref": expected_human.to_dict(),
+            "basis": HUMAN_AUTHORITY_BASIS,
+            "assurance": HUMAN_AUTHORITY_ASSURANCE,
         },
     }
     connection = projected["document_connections"][0]
     assert connection["provenance"] == {
+        "classification": "attributed",
         "prepared_by": expected_preparer,
         "added_by": {
             "kind": "human",
-            "ref": HUMAN.ref,
-            "at": connection["created_at"],
+            "ref": "dashboard-user",
+            "at": connection["provenance"]["added_by"]["at"],
+            "actor_ref": expected_human.to_dict(),
+            "basis": HUMAN_AUTHORITY_BASIS,
+            "assurance": HUMAN_AUTHORITY_ASSURANCE,
         },
     }
 
@@ -1408,7 +1560,7 @@ def test_changed_or_ambiguous_passage_fails_safe_reanchor(
         truth_surface.TruthSurfaceError,
         match="no longer uniquely present",
     ) as exc_info:
-        truth_analysis.commit_candidate_decision(
+        _commit(
             run_id=run.run_id,
             candidate_id=candidate["candidate_id"],
             expected_canonical_sha256=candidate["canonical_sha256"],
@@ -1421,7 +1573,7 @@ def test_changed_or_ambiguous_passage_fails_safe_reanchor(
     assert exc_info.value.retryable is True
     assert _counts(analysis_env["store"]) == before
     assert truth_analysis_runtime.candidate_decisions_for_run(run.run_id) == ()
-    dismissed = truth_analysis.commit_candidate_decision(
+    dismissed = _commit(
         run_id=run.run_id,
         candidate_id=candidate["candidate_id"],
         expected_canonical_sha256=candidate["canonical_sha256"],
@@ -1541,7 +1693,7 @@ def test_selected_web_fetch_becomes_quarantined_canonical_support(analysis_env):
         "attachable": True,
     }
 
-    saved = truth_analysis.commit_candidate_decision(
+    saved = _commit(
         run_id=run.run_id,
         candidate_id=candidate["candidate_id"],
         expected_canonical_sha256=candidate["canonical_sha256"],
@@ -1568,7 +1720,12 @@ def test_selected_web_fetch_becomes_quarantined_canonical_support(analysis_env):
     assert row["acquired_by_kind"] == "agent_run"
     assert row["acquired_by_ref"] == run.session_id
     assert row["link_actor_kind"] == "human"
-    assert row["link_actor_ref"] == HUMAN.ref
+    assert json.loads(row["link_actor_ref"]) == ActorRef(
+        issuer_authority_id="test-issuer-authority",
+        subject="dashboard-user",
+        kind="human",
+        tenant_scope_id="test-tenant-scope",
+    ).to_dict()
     assert analysis_env["store"].read_evidence_text(row["id"]) == source_text
 
 

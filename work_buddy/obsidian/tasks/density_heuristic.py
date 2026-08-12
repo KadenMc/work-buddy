@@ -178,10 +178,14 @@ def flag_all_sparse_tasks(
 
 
 def _default_note_reader(note_uuid: str) -> str | None:
-    """Read a task note's body via the bridge."""
+    """Read a task note's body through its authority adapter."""
     try:
         from work_buddy.obsidian import bridge
-        path = f"tasks/notes/{note_uuid}.md"
-        return bridge.read_file(path)
+        from work_buddy.task_notes import get_task_note_adapter
+
+        return get_task_note_adapter(bridge_client=bridge).read(
+            note_uuid,
+            filesystem_fallback=False,
+        )
     except Exception:
         return None
