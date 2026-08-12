@@ -30,6 +30,13 @@ from work_buddy.security.local_identity import (
 
 local_identity_blueprint = Blueprint("local_identity", __name__)
 
+_SESSION_RECOVERY_ABSENCE_CODES = frozenset(
+    {
+        "session_expired",
+        "session_unavailable",
+    }
+)
+
 
 def _authority() -> LocalIdentityAuthority:
     """Test seam and the sole default-authority lookup for this adapter."""
@@ -142,6 +149,20 @@ def _session_payload(
     return result
 
 
+def _unauthenticated_session_response() -> Response:
+    """Return the normal result when no recoverable browser session exists."""
+
+    response = jsonify(
+        {
+            "ok": True,
+            "authenticated": False,
+            "human_authority_available": False,
+        }
+    )
+    _clear_session_cookie(response, secure=request.is_secure)
+    return response
+
+
 @local_identity_blueprint.after_request
 def _never_cache_credentials(response: Response) -> Response:
     response.headers["Cache-Control"] = "no-store"
@@ -200,6 +221,8 @@ def refresh_session_csrf():
         )
         return jsonify(_session_payload(principal, csrf_token=csrf_token))
     except LocalIdentityError as exc:
+        if exc.code in _SESSION_RECOVERY_ABSENCE_CODES:
+            return _unauthenticated_session_response()
         return _error(exc)
 
 

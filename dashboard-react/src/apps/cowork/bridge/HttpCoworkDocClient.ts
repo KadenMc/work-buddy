@@ -20,6 +20,10 @@ import type {
   VerifyRunInspection,
 } from "../rail/contracts";
 import { coworkHumanAuthorityHeaders } from "../../../security/humanAuthority";
+import {
+  CoworkHttpError,
+  normalizeCoworkError,
+} from "../providers/errors";
 
 type JsonObject = Record<string, unknown>;
 
@@ -66,6 +70,11 @@ export interface CoworkDocClient {
   createVerifyCheck?(
     check: VerifyCheckInput,
   ): Promise<R2VerificationConfiguration>;
+  markProvenanceReviewed?(
+    attestationId: string,
+    expectedStructuredHeadSha256: string,
+    idempotencyKey: string,
+  ): Promise<void>;
 }
 
 export interface HttpCoworkDocClientOptions {
@@ -111,6 +120,50 @@ export class HttpCoworkDocClient implements CoworkDocClient {
       throw new Error(`doc read failed with status ${String(response.status)}`);
     }
     return (await response.json()) as R2DocPayload;
+  }
+
+  async markProvenanceReviewed(
+    attestationId: string,
+    expectedStructuredHeadSha256: string,
+    idempotencyKey: string,
+  ): Promise<void> {
+    const body = {
+      attestation_id: attestationId,
+      expected_structured_head_sha256: expectedStructuredHeadSha256,
+      idempotency_key: idempotencyKey,
+    };
+    const authorityHeaders = await this.#authority("provenance.review", body);
+    const response = await this.#fetch(
+      `/api/truth/doc/${encodeURIComponent(this.#documentId)}/authorship-attestations/${encodeURIComponent(attestationId)}/human-review?store_id=${encodeURIComponent(this.#storeId)}`,
+      {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", ...authorityHeaders },
+        body: JSON.stringify(body),
+      },
+    );
+    const payload = objectValue(await response.json().catch(() => ({})));
+    if (!response.ok) {
+      throw new CoworkHttpError(
+        normalizeCoworkError(
+          payload,
+          response.status,
+          "This passage could not be marked reviewed.",
+        ),
+      );
+    }
+    const receipt = objectValue(payload.attestation);
+    const scope = objectValue(receipt.scope);
+    const review = objectValue(receipt.human_review);
+    if (
+      payload.ok !== true ||
+      stringValue(receipt.attestation_id).length === 0 ||
+      stringValue(receipt.supersedes_id) !== attestationId ||
+      stringValue(scope.structured_head_sha256) !== expectedStructuredHeadSha256 ||
+      stringValue(review.status) !== "reviewed"
+    ) {
+      throw new Error("The provenance review returned an invalid receipt.");
+    }
   }
 
   async setVerifyCriterionEnabled(

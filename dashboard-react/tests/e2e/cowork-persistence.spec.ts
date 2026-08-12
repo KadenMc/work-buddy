@@ -69,6 +69,55 @@ test.describe("Co-work persistence across visits", () => {
     ).toContainText("Context bundle cache");
   });
 
+  test("keeps the side-panel tabs pinned while a long Chat transcript scrolls", async ({
+    page,
+  }) => {
+    await openCowork(page);
+    await page.getByRole("tab", { name: /Chat/u }).click();
+
+    const composer = page.getByRole("textbox", { name: "Message" });
+    const send = page.getByRole("button", { name: "Send" });
+    for (let index = 0; index < 10; index += 1) {
+      await composer.fill(
+        `Chat scroll containment ${index}: keep the side-panel tabs available while this transcript grows.`,
+      );
+      await send.click();
+    }
+
+    const metrics = await page.evaluate(() => {
+      const railWrapper = document.querySelector<HTMLElement>(
+        ".wb-cowork__rail-panel",
+      );
+      const tabs = document.querySelector<HTMLElement>(
+        ".wb-cowork-rail__tabs",
+      );
+      const transcript = document.querySelector<HTMLElement>(
+        ".wb-chat-list__scroll",
+      );
+      if (railWrapper === null || tabs === null || transcript === null) {
+        throw new Error("The Chat rail did not render its scroll boundaries.");
+      }
+      return {
+        railScrollTop: railWrapper.scrollTop,
+        railOverflowY: getComputedStyle(railWrapper).overflowY,
+        tabsHeight: tabs.getBoundingClientRect().height,
+        tabsVisible: tabs.getBoundingClientRect().bottom > 0,
+        transcriptClientHeight: transcript.clientHeight,
+        transcriptScrollHeight: transcript.scrollHeight,
+        transcriptScrollTop: transcript.scrollTop,
+      };
+    });
+
+    expect(metrics.railScrollTop).toBe(0);
+    expect(metrics.railOverflowY).toBe("clip");
+    expect(metrics.tabsHeight).toBeGreaterThan(40);
+    expect(metrics.tabsVisible).toBe(true);
+    expect(metrics.transcriptScrollHeight).toBeGreaterThan(
+      metrics.transcriptClientHeight,
+    );
+    expect(metrics.transcriptScrollTop).toBeGreaterThan(0);
+  });
+
   test("editor and Review positions survive leaving the workspace", async ({ page }) => {
     // A shorter viewport guarantees both the seeded document and its review list have a
     // meaningful scroll range. The positions are deliberately different so accidentally

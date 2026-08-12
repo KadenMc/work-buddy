@@ -6,8 +6,9 @@
  * refresh cannot snap the editor back to a formerly activated passage.
  *
  * Every current anchor renders `data-wb-anchor-kind` plus
- * `data-wb-anchor-id`; old suggestion marks retain their JSON `data-id` for
- * adapter compatibility.
+ * `data-wb-anchor-id`; atomized compatible provenance overlaps additionally
+ * carry every target in `data-wb-provenance-ids`. Old suggestion marks retain
+ * their JSON `data-id` for adapter compatibility.
  */
 
 import type { Editor } from "@tiptap/core";
@@ -104,6 +105,19 @@ export class DomReviewAnchorController implements ReviewAnchorController {
         "[data-wb-claim-ids]",
       )) {
         if (parseStringList(element.getAttribute("data-wb-claim-ids")).includes(id)) {
+          matches.add(element);
+        }
+      }
+    }
+    if (kind === "provenance") {
+      for (const element of root.querySelectorAll<HTMLElement>(
+        "[data-wb-provenance-ids]",
+      )) {
+        if (
+          parseStringList(
+            element.getAttribute("data-wb-provenance-ids"),
+          ).includes(id)
+        ) {
           matches.add(element);
         }
       }

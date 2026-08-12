@@ -3,12 +3,12 @@ name: Co-work Content Provenance
 kind: concept
 description: Frozen-target, append-only attestations that keep content source, authorship, human review, and the attester distinct.
 summary: >-
-  From file records source facts and an authorship and human-review
-  determination against the imported document version. Text-bearing pastes
-  record the same dimensions against an exact span: substantial or structured
-  text asks the user, while short simple text uses an explicit
-  automatic-attribution basis. These attestations report what a person says
-  about the content. They do not verify authorship, correctness, or claims.
+  Provenance is a first-class Co-work rail and view-only editor lens for source,
+  authorship, human-review, attester, and basis records. File import targets an
+  immutable document version; text-bearing paste targets an exact span. A
+  human review action appends a user-attested superseding record while
+  preserving source and authorship. Attestations report what a person says
+  about content; they do not verify authorship, correctness, or claims.
 tags:
 - cowork
 - provenance
@@ -69,6 +69,91 @@ ambiguous response can replay only the same immutable logical request.
 The append-only record carries a canonical digest and idempotency key.
 Corrections append a replacement that names the prior attestation through
 `supersedes_id`; they do not update or delete history.
+
+## Provenance surface
+
+The Co-work rail tabs are **Review | Provenance | Truth | Chat**:
+
+- **Review** owns document-change and evaluation decisions.
+- **Provenance** answers where current document text came from, who is said to
+  have written it, and what human review is recorded.
+- **Truth** owns claims, expressions, evidence, and their lifecycle. It can
+  still show the acquisition and decision provenance of those Truth records,
+  but it does not own document-authorship treatment in the editor.
+- **Chat** remains the conversational surface.
+
+The persistent editor lenses are `review`, `provenance`, `truth`, and
+`neutral`, respectively. A lens switch replaces view-only ProseMirror
+decorations; it never changes document content, Yjs state, Markdown, selection,
+scroll, or undo history. Temporary Chat, Working-on, and one-shot passage
+highlights remain independent.
+
+The Provenance lens uses independent visual channels. Authorship receives a
+subtle tint or pattern; human-review state receives a distinct underline.
+Source, attester, and basis remain first-class textual details rather than
+competing per-character colors. Red wavy treatment is reserved for unresolved,
+ambiguous, or conflicting targets, not ordinary AI authorship or an explicit
+not-reviewed state. Every meaning is repeated as text in the hover explanation
+and stable panel so color is never the only channel.
+
+Hover is explanatory and passive. The stable Provenance panel owns summary,
+filters, document-order items, frozen target and history details, and mutation
+controls. Missing data is visible as **No provenance recorded**, never inferred
+as human. Loading and failed refresh are separate from an empty record set.
+List-row activation opens detail and may apply compatible focus, but it does not
+scroll the editor. A uniquely resolved span has a separate **Show in document**
+action for one present-user reveal. The panel also exposes **Complete provenance
+history**, so old or malformed records without safe current geometry remain
+inspectable without receiving a guessed range.
+
+Provenance has a dedicated typed provider and panel projection. It can share the
+authoritative open-document snapshot source with other rails, but it does not
+enlarge Review's domain payload into a general provenance transport. Hover and
+the editor lens consume the same projection; hover never owns an action.
+
+For the current overlay, one unsuperseded record is the effective leaf of its
+lineage. A document-version attestation covers the current whole document only
+while its target structured head equals the current head; later text is not
+silently attributed. A span record at the current frozen head is current. After
+an unrelated document change, it can be reanchored for display only when its
+complete exact, prefix, and suffix quote selector resolves uniquely in the
+hydrated editor. Missing or duplicate matches are stale. A uniquely reanchored
+changed-head span is paintable and inspectable, but this first mutation slice
+does not let browser placement authorize a durable **Mark reviewed** assertion;
+review remains exact-head-only. Independently effective overlapping
+peer span records which disagree produce a conflict rather than last-write-wins.
+A current document-level attestation is fallback coverage, and a current exact
+span overrides it in its range; that specific-over-fallback precedence is not
+a peer conflict. Different attesters or bases do not create a conflict when
+source, authorship, and review agree. A stale document-level record is not
+fallback coverage. Conflicted coverage is recorded-but-disputed; unrecorded
+means there is no current safely resolved record for that text.
+
+An unsynchronized local-human edit invalidates the pulled provenance head at
+once. The overlay withholds document-wide fallback and treats exact spans as
+requiring re-anchor, so newly typed text cannot inherit stale authorship. A
+unique span may stay paintable for inspection; review stays unavailable until
+persistence settles and a matching fresh authoritative projection arrives.
+
+**Mark reviewed** is a constrained append-only action for one effective,
+exact-current-head AI- or mixed-authored document-version or span target. The
+server derives a superseding record
+which preserves the target, source, authorship, and contributors, changes human
+review to reviewed, and records the enrolled acting user as reviewer and
+attester. The new record has a `user_attestation` basis referencing its
+predecessor; the old record keeps its own automatic, proposal, migration, or
+legacy basis in history. The transition therefore remains “AI-authored,
+human-reviewed,” not “human-authored.” Reviewed is not approval, factual
+confirmation, or acceptance.
+
+The editor owns the review mutation barrier. It disables editing, retries and
+flushes pending Yjs persistence, verifies canonical state, and compacts to one
+durable structured head. While that lock remains held, the dedicated provider
+forces a fresh document pull and the panel rechecks the same effective leaf,
+head, eligibility, unique exact-span resolution, and incompatible peer overlap.
+Only then does it post the append-only transition and repull authoritative
+state. Any drift fails closed; the editor is re-enabled only if the mounted
+document is still writable.
 
 ## From file
 
@@ -190,20 +275,26 @@ failure can be retried without remounting the page.
 
 ## Person identity
 
-**Me** first obtains the current actor binding from the server and freezes its
-ref and identity status into the determination. The server revalidates that
-binding when the import or paste is recorded; if the acting identity changed,
-the frozen determination is rejected instead of being reassigned to the new
-actor. For queued pastes, the browser refetches the current actor, clears the
-stale frozen requests, rotates their idempotency keys, and changes every pending
-determination to unknown authorship with an explicit user-attestation basis.
-Nothing is resent until the user makes a fresh determination, including a short
-paste that was originally eligible for automatic attribution.
+**Me** first obtains the enrolled local principal binding from the server and
+freezes its actor ref and identity status into the determination. Dashboard
+mutations additionally require the revocable browser session and CSRF boundary
+plus a one-time gesture bound to the exact action, subject, and request context.
+The server derives the Truth actor from that authority; it does not accept a
+client-supplied human actor.
 
-The local actor ref is durable within the local system, but the dashboard has
-no authenticated multi-user boundary. It is stored as
-`identity_status=local_actor_ref` and must not be described as a verified
-account identity.
+The server revalidates the frozen binding when an import, paste, or review
+attestation is recorded. If the acting identity changed, the determination is
+rejected instead of being reassigned. For queued pastes, the browser refetches
+the current actor, clears stale frozen requests, rotates their idempotency keys,
+and changes every pending determination to unknown authorship with an explicit
+user-attestation basis. Nothing is resent until the user makes a fresh
+determination, including a short paste originally eligible for automatic
+attribution.
+
+The enrolled local actor ref is durable within this installation and stronger
+than an arbitrary request header, but it is not a verified remote multi-user
+account. It remains `identity_status=local_actor_ref`; product copy must not
+describe it as an authenticated external identity or `account_ref`.
 
 **Someone else** stores the typed display name with
 `identity_status=claimed_name`. It is useful attribution supplied by the

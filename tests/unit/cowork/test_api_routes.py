@@ -884,6 +884,188 @@ def test_paste_authorship_attestation_rejects_stale_structured_head(
         )
 
 
+def test_ai_provenance_human_review_is_target_bound_and_idempotent(
+    client,
+    seeded,
+):
+    document = seeded["document"]
+    head = ydoc_store.current_structured_head(
+        seeded["store"],
+        document_id=document.id,
+        snapshot_sha256=seeded["snapshot_sha256"],
+    )
+    original, span_id = provenance.record_span_attestation(
+        seeded["store"],
+        document_id=document.id,
+        exact=DOC_QUOTE,
+        attestation={
+            "schema": "cowork-authorship-attestation/v1",
+            "authorship": {"kind": "ai", "contributors": []},
+            "human_review": {"status": "not_reviewed", "reviewers": []},
+        },
+        actor=HUMAN,
+        idempotency_key="review-route-origin-0001",
+        expected_structured_head_sha256=head,
+    )
+    url = _url(
+        f"/api/truth/doc/{document.id}/authorship-attestations/"
+        f"{original.id}/human-review",
+        seeded["store_id"],
+    )
+    body = {
+        "attestation_id": original.id,
+        "expected_structured_head_sha256": head,
+        "idempotency_key": "review-route-command-0001",
+    }
+    reviewed = client.post(url, json=body)
+    replay = client.post(url, json=body)
+
+    assert reviewed.status_code == replay.status_code == 201
+    first = reviewed.get_json()["attestation"]
+    assert replay.get_json()["attestation"] == first
+    assert first["scope"]["document_span_id"] == span_id
+    assert first["authorship"] == {"kind": "ai", "contributors": []}
+    assert first["human_review"]["status"] == "reviewed"
+    assert first["human_review"]["reviewers"][0]["ref"] == HUMAN.ref
+    assert first["basis"] == {
+        "kind": "user_attestation",
+        "ref": original.id,
+    }
+    assert first["supersedes_id"] == original.id
+
+    opened = client.get(
+        _url(f"/api/truth/doc/{document.id}", seeded["store_id"])
+    )
+    view = opened.get_json()["provenance"]
+    assert view["schema"] == "cowork-provenance-view/v1"
+    assert view["summary"]["reviewed_count"] == 1
+    assert view["summary"]["ai_unreviewed_count"] == 0
+    assert view["spans"][0]["effective_attestation"] == first
+    assert len(view["spans"][0]["history"]) == 2
+
+
+@pytest.mark.parametrize("damage", ["missing", "malformed_selector"])
+def test_provenance_review_route_rejects_invalid_span_target_without_append(
+    client,
+    seeded,
+    monkeypatch,
+    damage,
+):
+    document = seeded["document"]
+    head = ydoc_store.current_structured_head(
+        seeded["store"],
+        document_id=document.id,
+        snapshot_sha256=seeded["snapshot_sha256"],
+    )
+    original, span_id = provenance.record_span_attestation(
+        seeded["store"],
+        document_id=document.id,
+        exact=DOC_QUOTE,
+        attestation={
+            "schema": "cowork-authorship-attestation/v1",
+            "authorship": {"kind": "ai", "contributors": []},
+            "human_review": {"status": "not_reviewed", "reviewers": []},
+        },
+        actor=HUMAN,
+        idempotency_key=f"review-route-damaged-{damage}-origin-0001",
+        expected_structured_head_sha256=head,
+    )
+    history_before = provenance.list_attestations(
+        seeded["store"],
+        document.id,
+    )
+    with seeded["store"].connect() as conn:
+        if damage == "missing":
+            conn.execute("PRAGMA foreign_keys = OFF")
+            conn.execute("DROP TRIGGER document_spans_append_only_delete")
+            conn.execute("DELETE FROM document_spans WHERE id = ?", (span_id,))
+        else:
+            conn.execute("DROP TRIGGER document_spans_append_only_update")
+            conn.execute(
+                "UPDATE document_spans SET selector_json = ? WHERE id = ?",
+                ("{not-json", span_id),
+            )
+
+    emitted = []
+    monkeypatch.setattr(
+        api,
+        "_emit",
+        lambda *args, **kwargs: emitted.append((args, kwargs)),
+    )
+    response = client.post(
+        _url(
+            f"/api/truth/doc/{document.id}/authorship-attestations/"
+            f"{original.id}/human-review",
+            seeded["store_id"],
+        ),
+        json={
+            "attestation_id": original.id,
+            "expected_structured_head_sha256": head,
+            "idempotency_key": f"review-route-damaged-{damage}-command-0001",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.get_json()["error"]["code"] == (
+        "provenance_review_target_mismatch"
+    )
+    assert (
+        provenance.list_attestations(seeded["store"], document.id)
+        == history_before
+    )
+    assert emitted == []
+
+
+def test_provenance_review_route_binds_path_target_into_exact_body(
+    client,
+    seeded,
+):
+    document = seeded["document"]
+    response = client.post(
+        _url(
+            f"/api/truth/doc/{document.id}/authorship-attestations/"
+            f"{'a' * 32}/human-review",
+            seeded["store_id"],
+        ),
+        json={
+            "attestation_id": "b" * 32,
+            "expected_structured_head_sha256": "0" * 64,
+            "idempotency_key": "review-target-mismatch-0001",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == (
+        "attestation_id must match the route target"
+    )
+
+
+def test_provenance_review_route_respects_dashboard_read_only_mode(
+    client,
+    seeded,
+    monkeypatch,
+):
+    monkeypatch.setattr(api, "_is_read_only", lambda: True)
+    response = client.post(
+        _url(
+            f"/api/truth/doc/{seeded['document'].id}/"
+            f"authorship-attestations/{'a' * 32}/human-review",
+            seeded["store_id"],
+        ),
+        json={
+            "attestation_id": "a" * 32,
+            "expected_structured_head_sha256": "0" * 64,
+            "idempotency_key": "review-read-only-0001",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.get_json() == {
+        "ok": False,
+        "error": "Dashboard is in read-only mode",
+    }
+
+
 @pytest.mark.parametrize(
     ("exact", "attestation", "message"),
     [

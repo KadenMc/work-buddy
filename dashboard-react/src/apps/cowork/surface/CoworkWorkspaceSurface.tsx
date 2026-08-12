@@ -74,6 +74,7 @@ import {
   CoworkRail,
   InMemoryReviewProvider,
   RailStore,
+  useRailState,
   createDemoChatProvider,
   isDirty,
   type CoworkRailChat,
@@ -96,6 +97,8 @@ import {
   type TruthPassageNavigationTarget,
   type TruthSelectionCapture,
 } from "../truth";
+import { ProvenanceHoverCard } from "../provenance";
+import type { ProvenanceEditorIntegration } from "../provenance";
 import {
   HttpCoworkVerifyClient,
   useCoworkVerifyExecution,
@@ -208,7 +211,12 @@ interface CoworkHealthView {
   readonly openProposalCount: number;
 }
 
-type CoworkWorkspacePane = "editor" | "review" | "truth" | "chat";
+type CoworkWorkspacePane =
+  | "editor"
+  | "review"
+  | "truth"
+  | "provenance"
+  | "chat";
 const NARROW_WORKSPACE_QUERY = "(max-width: 760px)";
 
 const useNarrowWorkspace = (): boolean => {
@@ -241,6 +249,7 @@ function CoworkPaneTabs({
   const panes: readonly CoworkWorkspacePane[] = [
     "editor",
     "review",
+    "provenance",
     "truth",
     "chat",
   ];
@@ -605,6 +614,9 @@ export function CoworkLiveWorkspace({
   const truthScrollRef = usePersistedScrollPosition({
     key: coworkScrollPositionStorageKey({ documentId, storeId }, "truth"),
   });
+  const provenanceScrollRef = usePersistedScrollPosition({
+    key: coworkScrollPositionStorageKey({ documentId, storeId }, "provenance"),
+  });
   const detachReviewScroll = useCallback(
     () => reviewScrollRef(null),
     [reviewScrollRef],
@@ -612,6 +624,10 @@ export function CoworkLiveWorkspace({
   const detachTruthScroll = useCallback(
     () => truthScrollRef(null),
     [truthScrollRef],
+  );
+  const detachProvenanceScroll = useCallback(
+    () => provenanceScrollRef(null),
+    [provenanceScrollRef],
   );
 
   // One document conversation linkage store per document. The submit path annotates a routing
@@ -638,6 +654,7 @@ export function CoworkLiveWorkspace({
         },
       ),
   );
+  const activeRailTab = useRailState(railStore, (state) => state.tab);
   const truthStore = useMemo(
     () =>
       createPersistedTruthStore(
@@ -836,6 +853,9 @@ export function CoworkLiveWorkspace({
       if (activePane === "truth" && pane !== "truth") {
         detachTruthScroll();
       }
+      if (activePane === "provenance" && pane !== "provenance") {
+        detachProvenanceScroll();
+      }
       setActivePane(pane);
       if (pane !== "editor") railStore.setTab(pane);
       if (pane === "chat") void prepareChat();
@@ -844,6 +864,7 @@ export function CoworkLiveWorkspace({
       activePane,
       detachReviewScroll,
       detachTruthScroll,
+      detachProvenanceScroll,
       prepareChat,
       railStore,
     ],
@@ -914,16 +935,46 @@ export function CoworkLiveWorkspace({
             if (railStore.getState().tab === "truth") {
               detachTruthScroll();
             }
+            if (railStore.getState().tab === "provenance") {
+              detachProvenanceScroll();
+            }
             railStore.setTab("chat");
           },
         }
       : {}),
   });
+  const provenanceEditor = useMemo<ProvenanceEditorIntegration>(
+    () => ({
+      resolveTarget: bridge.provenanceEditor.resolveTarget,
+      isLocallyDirty: bridge.provenanceEditor.isLocallyDirty,
+      hasText: bridge.provenanceEditor.hasText,
+      hasUncoveredText: bridge.provenanceEditor.hasUncoveredText,
+      focusTarget: bridge.provenanceEditor.focusTarget,
+      revealTarget: (id) => {
+        if (!narrowWorkspace) {
+          bridge.provenanceEditor.revealTarget(id);
+          return;
+        }
+        setActivePane("editor");
+        window.requestAnimationFrame(() => {
+          editorPaneTabRef.current?.focus();
+          bridge.provenanceEditor.revealTarget(id);
+        });
+      },
+    }),
+    [bridge.provenanceEditor, narrowWorkspace],
+  );
   useEffect(() => {
     const applyLens = (): void => {
       const tab = railStore.getState().tab;
       bridge.setEditorLens(
-        tab === "review" ? "review" : tab === "truth" ? "truth" : "neutral",
+        tab === "review"
+          ? "review"
+          : tab === "truth"
+            ? "truth"
+            : tab === "provenance"
+              ? "provenance"
+              : "neutral",
       );
     };
     applyLens();
@@ -1290,6 +1341,11 @@ export function CoworkLiveWorkspace({
           >
             {passageAnnouncement}
           </p>
+          <ProvenanceHoverCard
+            rootRef={bridge.editorRootRef}
+            active={activeRailTab === "provenance"}
+            editorReady={bridge.editorReady}
+          />
         </>
       }
       editor={<CoworkBridgeEditor {...bridge.editorProps} />}
@@ -1307,7 +1363,14 @@ export function CoworkLiveWorkspace({
             onReviewScrollWillDetach={detachReviewScroll}
             truthScrollRef={truthScrollRef}
             onTruthScrollWillDetach={detachTruthScroll}
+            provenanceScrollRef={provenanceScrollRef}
+            onProvenanceScrollWillDetach={detachProvenanceScroll}
             reviewProvider={bridge.reviewProvider}
+            provenance={{
+              provider: bridge.provenanceProvider,
+              editor: provenanceEditor,
+              mutationBarrier: bridge.provenanceMutationBarrier,
+            }}
             chat={chat}
             reviewAnchors={reviewAnchors}
             store={railStore}
@@ -1326,6 +1389,8 @@ export function CoworkLiveWorkspace({
               !narrowWorkspace || activePane === "review"
             }
             truthVisible={!narrowWorkspace || activePane === "truth"}
+            provenanceVisible={!narrowWorkspace || activePane === "provenance"}
+            readOnly={readOnly}
             showTabs={!narrowWorkspace}
             onChatSelected={() => void prepareChat()}
             onRecheckIntent={recheckIntent}

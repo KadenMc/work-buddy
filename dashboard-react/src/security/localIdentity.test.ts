@@ -6,6 +6,7 @@ import {
   initializeLocalIdentity,
   issueHumanGesture,
   localIdentityHeaders,
+  refreshLocalIdentity,
   resetLocalIdentityForTests,
 } from "./localIdentity";
 
@@ -73,6 +74,63 @@ describe("local identity bootstrap", () => {
     expect(currentLocalIdentity()).not.toHaveProperty("csrf_token");
     expect(localIdentityHeaders()).toEqual({ "X-WB-CSRF": "wbc_secret" });
     expect(replace).toHaveBeenCalledBefore(fetchImpl);
+  });
+
+  it("recovers when a trusted launcher focuses an already-open unauthenticated tab", async () => {
+    const location = {
+      hash: "",
+      origin: principal.origin,
+      pathname: "/app/cowork",
+      search: "?store_id=store-1&document_id=doc-1",
+    };
+    const replace = vi.fn((url: string) => {
+      location.hash = new URL(url, principal.origin).hash;
+    });
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/local-identity/session/csrf") {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            authenticated: false,
+            human_authority_available: false,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      expect(String(input)).toBe("/api/local-identity/bootstrap/redeem");
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          authenticated: true,
+          principal,
+          csrf_token: "wbc_reconnected",
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+
+    await expect(
+      initializeLocalIdentity({ fetchImpl, location, replaceState: replace }),
+    ).resolves.toEqual({
+      authenticated: false,
+      reason: "No authenticated local session.",
+    });
+
+    location.hash = "#wb-bootstrap=wbb_reconnect";
+    await expect(
+      refreshLocalIdentity({ fetchImpl, location, replaceState: replace }),
+    ).resolves.toEqual({ authenticated: true, principal });
+
+    expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual([
+      "/api/local-identity/session/csrf",
+      "/api/local-identity/bootstrap/redeem",
+    ]);
+    expect(replace).toHaveBeenCalledWith(
+      "/app/cowork?store_id=store-1&document_id=doc-1",
+    );
+    expect(localIdentityHeaders()).toEqual({
+      "X-WB-CSRF": "wbc_reconnected",
+    });
   });
 
   it("rotates an aging session once before issuing the bound gesture", async () => {

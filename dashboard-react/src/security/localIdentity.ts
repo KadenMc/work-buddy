@@ -54,6 +54,7 @@ type BrowserLocation = Pick<
 let state: LocalIdentityState = { authenticated: false };
 let csrfToken: string | null = null;
 let initializePromise: Promise<LocalIdentityState> | null = null;
+let refreshPromise: Promise<LocalIdentityState> | null = null;
 const listeners = new Set<(next: LocalIdentityState) => void>();
 
 function publish(next: LocalIdentityState): LocalIdentityState {
@@ -176,6 +177,36 @@ export function initializeLocalIdentity(
   return initializePromise;
 }
 
+/**
+ * Re-check the browser's local identity boundary.
+ *
+ * A trusted launcher may focus an already-open dashboard tab by adding a new
+ * one-time bootstrap to its URL fragment.  The original initialization has
+ * already settled in that case, so retry must deliberately consume the new
+ * fragment (or recover a cookie created by another trusted launch) instead of
+ * replaying the memoized unauthenticated result.
+ */
+export function refreshLocalIdentity(
+  options: InitializeLocalIdentityOptions = {},
+): Promise<LocalIdentityState> {
+  if (refreshPromise) return refreshPromise;
+  refreshPromise = (async () => {
+    if (initializePromise) await initializePromise;
+    initializePromise = null;
+    return initializeLocalIdentity(options);
+  })().finally(() => {
+    refreshPromise = null;
+  });
+  return refreshPromise;
+}
+
+export function hasLocalIdentityBootstrap(
+  location: Pick<Location, "hash"> = window.location,
+): boolean {
+  if (!location.hash.startsWith("#")) return false;
+  return new URLSearchParams(location.hash.slice(1)).has("wb-bootstrap");
+}
+
 export function currentLocalIdentity(): LocalIdentityState {
   return state;
 }
@@ -280,5 +311,6 @@ export function resetLocalIdentityForTests(): void {
   publish({ authenticated: false });
   csrfToken = null;
   initializePromise = null;
+  refreshPromise = null;
   listeners.clear();
 }

@@ -18,9 +18,12 @@ class TestOpenDashboard:
     def test_uses_extension_when_it_responds(self, monkeypatch):
         seen = {}
 
-        def fake_focus(url, target_hash="", timeout_seconds=15):
+        def fake_focus(
+            url, target_hash="", preserve_path=False, timeout_seconds=15
+        ):
             seen["url"] = url
             seen["hash"] = target_hash
+            seen["preserve_path"] = preserve_path
             return {"created": False, "focused": True}
 
         import work_buddy.collectors.chrome_collector as cc
@@ -35,6 +38,44 @@ class TestOpenDashboard:
         assert res == {"ok": True, "via": "extension", "result": {"created": False, "focused": True}}
         assert seen["url"] == "http://127.0.0.1:5127"
         assert seen["hash"] == "#tab=settings&st=activity"
+        assert seen["preserve_path"] is False
+
+    def test_app_launch_preserves_the_existing_react_route(self, monkeypatch):
+        seen = {}
+
+        monkeypatch.setattr(
+            "work_buddy.dashboard.local_identity_launch.bootstrap_fragment_for_dashboard",
+            lambda app_url, *, next_hash="": "#wb-bootstrap=wbb_test",
+        )
+
+        def fake_focus(
+            url, target_hash="", preserve_path=False, timeout_seconds=15
+        ):
+            seen.update(
+                url=url,
+                target_hash=target_hash,
+                preserve_path=preserve_path,
+                timeout_seconds=timeout_seconds,
+            )
+            return {"created": False, "focused": True}
+
+        monkeypatch.setattr(
+            "work_buddy.collectors.chrome_collector.focus_or_create_tab",
+            fake_focus,
+        )
+        monkeypatch.setattr(
+            "webbrowser.open", lambda *a, **k: pytest.fail("fallback used")
+        )
+
+        result = actions.open_dashboard(app=True)
+
+        assert result["identity_bootstrap"] is True
+        assert seen == {
+            "url": "http://127.0.0.1:5127/app/",
+            "target_hash": "#wb-bootstrap=wbb_test",
+            "preserve_path": True,
+            "timeout_seconds": 10,
+        }
 
     def test_falls_back_when_extension_times_out(self, monkeypatch):
         import work_buddy.collectors.chrome_collector as cc

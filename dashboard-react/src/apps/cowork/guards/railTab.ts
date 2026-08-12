@@ -24,7 +24,12 @@ export function railTabStorageKey(
 
 /** Whether a stored value is a real RailTab and safe to restore. */
 function isRailTab(value: string | null): value is RailTab {
-  return value === "review" || value === "truth" || value === "chat";
+  return (
+    value === "review" ||
+    value === "truth" ||
+    value === "provenance" ||
+    value === "chat"
+  );
 }
 
 /** Read a retained rail tab, or null when none is present or it is unrecognized. */

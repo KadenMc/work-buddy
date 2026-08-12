@@ -592,6 +592,14 @@ def api_doc_get(document_id: str):
             document.id,
             conn=conn,
         )
+        provenance_view = provenance.project_attestations(
+            store,
+            document.id,
+            current_structured_head_sha256=readiness_view[
+                "structured_head_sha256"
+            ],
+            conn=conn,
+        )
     span_by_id = {row["id"]: row for row in span_rows}
     observed_source_sha256 = _current_file_sha256(store, document)
     current_file_sha256 = (
@@ -656,6 +664,7 @@ def api_doc_get(document_id: str):
         ),
         "provenance_spans": _provenance_spans(span_rows),
         "authorship_attestations": authorship_attestations,
+        "provenance": provenance_view,
         "events_cursor": events[-1].id if events else "",
     }
     # Additive capability handshake. Older dashboard bundles ignore these
@@ -1982,6 +1991,131 @@ def api_doc_authorship_attestation(document_id: str):
                 "target_structured_head_sha256": (
                     record.target_structured_head_sha256
                 ),
+            }
+        ),
+        201,
+    )
+
+
+@cowork_blueprint.post(
+    "/api/truth/doc/<document_id>/authorship-attestations/"
+    "<attestation_id>/human-review"
+)
+def api_doc_provenance_human_review(
+    document_id: str,
+    attestation_id: str,
+):
+    """Append an exact human-review successor to one effective AI record."""
+
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    store, error = _resolve_store(request.args.get("store_id"))
+    if error:
+        return error
+    gate = _document_surface_or_403(store)
+    if gate:
+        return gate
+    document, doc_error = _resolve_document(store, document_id)
+    if doc_error:
+        return doc_error
+    if not document_surface_allowed(store, document):
+        return _fail(
+            "This document is not available in Co-work for this folder.",
+            403,
+        )
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return _fail("request body must be a JSON object", 400)
+    if set(body) != {
+        "attestation_id",
+        "expected_structured_head_sha256",
+        "idempotency_key",
+    }:
+        return _fail(
+            "human review requires exactly attestation_id, "
+            "expected_structured_head_sha256, and idempotency_key",
+            400,
+        )
+    if body.get("attestation_id") != attestation_id:
+        return _fail("attestation_id must match the route target", 400)
+    expected_head = body.get("expected_structured_head_sha256")
+    idempotency_key = body.get("idempotency_key")
+    if not isinstance(expected_head, str) or not expected_head:
+        return _fail("expected_structured_head_sha256 is required", 400)
+    if not isinstance(idempotency_key, str) or not idempotency_key:
+        return _fail("idempotency_key is required", 400)
+
+    try:
+        _authority_context, actor = _require_human_action(
+            operation="provenance.review",
+            store_id=store.store_id,
+            document_id=document.id,
+            body=body,
+        )
+    except LocalIdentityError as exc:
+        return _local_identity_error(exc)
+    try:
+        from work_buddy.consent import user_initiated
+
+        with user_initiated("dashboard.cowork.provenance_review"):
+            record = provenance.record_human_review(
+                store,
+                document_id=document.id,
+                attestation_id=attestation_id,
+                actor=actor,
+                idempotency_key=idempotency_key,
+                expected_structured_head_sha256=expected_head,
+            )
+    except provenance.ProvenanceReviewError as exc:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": {
+                        "code": exc.code,
+                        "message": str(exc),
+                        "details": exc.details,
+                        "retryable": exc.retryable,
+                    },
+                }
+            ),
+            exc.status,
+        )
+    except (provenance.ProvenanceConflictError, InvariantViolation) as exc:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": {
+                        "code": "provenance_review_state_conflict",
+                        "message": str(exc),
+                        "details": {},
+                        "retryable": False,
+                    },
+                }
+            ),
+            409,
+        )
+
+    _emit(
+        "truth.doc_provenance_reviewed",
+        store.store_id,
+        {
+            "document_id": document.id,
+            "attestation_id": record.id,
+            "supersedes_id": record.supersedes_id,
+            "target_structured_head_sha256": (
+                record.target_structured_head_sha256
+            ),
+        },
+        event_id=f"truth-doc-provenance-review-{record.id}",
+    )
+    return (
+        jsonify(
+            {
+                "ok": True,
+                "attestation": provenance.portable_attestation(record),
             }
         ),
         201,

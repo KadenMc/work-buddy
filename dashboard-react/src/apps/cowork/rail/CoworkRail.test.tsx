@@ -21,7 +21,10 @@ import {
   InMemoryReviewProvider,
 } from "./InMemoryReviewProvider";
 import type { ReviewRailProvider } from "./provider";
+import type { ProvenanceProvider } from "../provenance/view";
+import surfaceStyles from "../surface/styles.css?raw";
 import { createDemoChatProvider } from "./chatFixture";
+import railStyles from "./styles.css?raw";
 
 class MemoryStorage implements Storage {
   private map = new Map<string, string>();
@@ -124,6 +127,40 @@ const chatExecution = (
 });
 
 describe("CoworkRail", () => {
+  it("keeps the rail chrome fixed while panel-owned content scrolls", () => {
+    const railShell = railStyles.match(
+      /\.wb-cowork-rail\s*\{(?<body>[^}]*)\}/u,
+    )?.groups?.body;
+    const tabs = railStyles.match(
+      /\.wb-cowork-rail__tabs\s*\{(?<body>[^}]*)\}/u,
+    )?.groups?.body;
+    const tabpanel = railStyles.match(
+      /\.wb-cowork-rail__tabpanel\s*\{(?<body>[^}]*)\}/u,
+    )?.groups?.body;
+    const panelWrappers = [
+      ...surfaceStyles.matchAll(
+        /\.wb-cowork__rail-panel\s*\{(?<body>[^}]*)\}/gu,
+      ),
+    ];
+    const panelWrapper = panelWrappers[panelWrappers.length - 1]?.groups?.body;
+
+    expect(railShell).toContain("overflow: clip");
+    expect(tabs).toContain("flex: 0 0 auto");
+    expect(tabs).toContain("overflow-y: hidden");
+    expect(tabpanel).toContain("overflow: clip");
+    expect(panelWrapper).toContain("overflow: clip !important");
+  });
+
+  it("orders the first-class tabs Review, Provenance, Truth, Chat", () => {
+    renderRail();
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent?.trim())).toEqual([
+      "Review",
+      "Provenance",
+      "Truth",
+      "Chat",
+    ]);
+  });
+
   it("frames the Review and Chat tabs with Review active", async () => {
     renderRail();
     expect(screen.getByRole("tab", { name: "Review" })).toHaveAttribute(
@@ -179,6 +216,65 @@ describe("CoworkRail", () => {
         reviewScrollRef.mock.calls.some(([element]) => element === null),
       ).toBe(true),
     );
+  });
+
+  it("reattaches Provenance scroll persistence after switching away and back", async () => {
+    const storage = new MemoryStorage();
+    saveRailTab(storage, "demo-doc", "provenance");
+    const provenanceProvider: ProvenanceProvider = {
+      load: vi.fn().mockResolvedValue({
+        state: "unavailable",
+        reason: "No fixture provenance.",
+      }),
+      refresh: vi.fn().mockResolvedValue({
+        state: "unavailable",
+        reason: "No fixture provenance.",
+      }),
+      subscribe: () => () => undefined,
+      markReviewed: vi.fn(),
+    };
+    let current: HTMLElement | null = null;
+    let storedTop = 0;
+    const attachedTops: number[] = [];
+    const provenanceScrollRef = vi.fn((element: HTMLElement | null) => {
+      current = element;
+      if (element !== null) {
+        element.scrollTop = storedTop;
+        attachedTops.push(element.scrollTop);
+      }
+    });
+    const onProvenanceScrollWillDetach = vi.fn(() => {
+      storedTop = current?.scrollTop ?? storedTop;
+    });
+    render(
+      <CoworkRail
+        documentId="demo-doc"
+        reviewProvider={new InMemoryReviewProvider()}
+        chat={{ kind: "idle", draftStorageId: "document:demo-doc" }}
+        storage={storage}
+        provenance={{ provider: provenanceProvider }}
+        provenanceScrollRef={provenanceScrollRef}
+        onProvenanceScrollWillDetach={onProvenanceScrollWillDetach}
+      />,
+    );
+    await screen.findByText("No fixture provenance.");
+    expect(current).not.toBeNull();
+    (current as HTMLElement | null)!.scrollTop = 41;
+
+    await userEvent.click(screen.getByRole("tab", { name: "Review" }));
+    expect(onProvenanceScrollWillDetach).toHaveBeenCalledOnce();
+    await waitFor(() => expect(current).toBeNull());
+    await userEvent.click(screen.getByRole("tab", { name: "Provenance" }));
+    await waitFor(() => expect(current).not.toBeNull());
+    expect((current as HTMLElement | null)?.scrollTop).toBe(41);
+
+    (current as HTMLElement | null)!.scrollTop = 93;
+    await userEvent.click(screen.getByRole("tab", { name: /Chat/u }));
+    await waitFor(() => expect(current).toBeNull());
+    await userEvent.click(screen.getByRole("tab", { name: "Provenance" }));
+    await waitFor(() => expect(current).not.toBeNull());
+    expect((current as HTMLElement | null)?.scrollTop).toBe(93);
+    expect(attachedTops).toEqual([0, 41, 93]);
   });
 
   it("does not start an agent merely because the persisted Chat tab is restored", () => {

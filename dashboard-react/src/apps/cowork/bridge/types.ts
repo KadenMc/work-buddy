@@ -95,6 +95,9 @@ export interface R2ProvenanceSpan {
   readonly approval_gesture_id: string | null;
 }
 
+/** Rich provenance is parsed from unknown at the bridge boundary. */
+export type R2ProvenanceView = Readonly<Record<string, unknown>>;
+
 /** The R2 hashes block (section 1.3). */
 export interface R2Hashes {
   readonly ydoc_snapshot_sha256: string | null;
@@ -407,5 +410,7 @@ export interface R2DocPayload {
   readonly open_proposals: readonly R2Proposal[];
   readonly expressions: readonly R2Expression[];
   readonly provenance_spans: readonly R2ProvenanceSpan[];
+  /** Additive v1 projection. The mapper validates every field before use. */
+  readonly provenance?: R2ProvenanceView;
   readonly events_cursor: string;
 }

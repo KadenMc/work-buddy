@@ -462,8 +462,9 @@ async function applyMutation(params) {
       }
 
       case "focus_or_create_tab": {
-        const url = params.url || "";
+        const url = (params.url || "").replace(/\/+$/, "");
         const targetHash = params.target_hash || "";
+        const preservePath = params.preserve_path === true;
         if (!url) {
           results.status = "error";
           results.details = { error: "No url provided" };
@@ -477,7 +478,15 @@ async function applyMutation(params) {
             (a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0)
           );
           const tab = sorted[0];
-          const newUrl = targetHash ? url + "/" + targetHash : undefined;
+          // Trusted app launches deliver a one-time bootstrap in the fragment.
+          // Keep the selected document route/query intact so the already-open
+          // page receives a hashchange instead of being replaced by /app/.
+          const currentUrl = (tab.url || "").split("#", 1)[0];
+          const newUrl = targetHash
+            ? preservePath && currentUrl
+              ? currentUrl + targetHash
+              : url + "/" + targetHash
+            : undefined;
           await chrome.tabs.update(tab.id, { active: true, ...(newUrl ? { url: newUrl } : {}) });
           await chrome.windows.update(tab.windowId, { focused: true });
           results.details = { created: false, tab_id: tab.id, focused: true };
@@ -485,7 +494,9 @@ async function applyMutation(params) {
           // No existing tab — create one
           const fullUrl = targetHash ? url + "/" + targetHash : url;
           const newTab = await chrome.tabs.create({ url: fullUrl });
-          results.details = { created: true, tab_id: newTab.id, url: fullUrl };
+          // The fragment may contain a one-time bearer. Do not echo it through
+          // the native-messaging result file after Chrome has accepted it.
+          results.details = { created: true, tab_id: newTab.id };
         }
         break;
       }

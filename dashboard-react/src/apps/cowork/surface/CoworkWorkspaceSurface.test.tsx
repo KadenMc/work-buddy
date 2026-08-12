@@ -2663,6 +2663,7 @@ describe("CoworkWorkspaceWidget live mode", () => {
       status: "rejected" as const,
       message,
     }));
+    globalThis.fetch = liveFetch() as unknown as typeof fetch;
     renderWorkspace(
       {
         document: LIVE_DOCUMENT,
@@ -2793,7 +2794,7 @@ describe("CoworkWorkspaceWidget live mode", () => {
     expect(screen.queryByText(/This is the editor pane/)).toBeNull();
   }, 15_000);
 
-  it("uses mounted Editor, Review, Truth, and Chat peer panes with roving focus on narrow screens", async () => {
+  it("uses mounted Editor, Review, Provenance, Truth, and Chat peer panes with roving focus on narrow screens", async () => {
     vi.stubGlobal(
       "matchMedia",
       vi.fn((query: string) => ({
@@ -2813,11 +2814,13 @@ describe("CoworkWorkspaceWidget live mode", () => {
     const paneTabs = await screen.findByRole("tablist", { name: "Co-work panes" });
     const editorTab = within(paneTabs).getByRole("tab", { name: "Editor" });
     const reviewTab = within(paneTabs).getByRole("tab", { name: "Review" });
+    const provenanceTab = within(paneTabs).getByRole("tab", { name: "Provenance" });
     const truthTab = within(paneTabs).getByRole("tab", { name: "Truth" });
     const chatTab = within(paneTabs).getByRole("tab", { name: "Chat" });
     expect(editorTab).toHaveAttribute("aria-selected", "true");
     expect(editorTab).toHaveAttribute("tabindex", "0");
     expect(reviewTab).toHaveAttribute("tabindex", "-1");
+    expect(provenanceTab).toHaveAttribute("tabindex", "-1");
     expect(truthTab).toHaveAttribute("tabindex", "-1");
     expect(chatTab).toHaveAttribute("tabindex", "-1");
     expect(document.getElementById("wb-cowork-mobile-panel-editor")).toBeVisible();
@@ -2855,6 +2858,17 @@ describe("CoworkWorkspaceWidget live mode", () => {
     expect(screen.getByText("Decision: Accept")).toBeVisible();
 
     reviewTab.focus();
+    await user.keyboard("{ArrowRight}");
+    expect(provenanceTab).toHaveFocus();
+    expect(provenanceTab).toHaveAttribute("aria-selected", "true");
+    expect(provenanceTab).toHaveAttribute("tabindex", "0");
+    expect(reviewTab).toHaveAttribute("tabindex", "-1");
+    expect(document.getElementById("wb-cowork-rail-panel-provenance")).toBeVisible();
+    expect(document.getElementById("wb-cowork-rail-panel-review")).not.toBeVisible();
+    await waitFor(() =>
+      expect(screen.getByRole("region", { name: "Document provenance" })).toBeVisible(),
+    );
+
     await user.keyboard("{ArrowRight}");
     expect(truthTab).toHaveFocus();
     expect(truthTab).toHaveAttribute("aria-selected", "true");

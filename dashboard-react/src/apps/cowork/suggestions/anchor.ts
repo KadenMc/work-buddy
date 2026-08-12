@@ -146,11 +146,15 @@ const rangeFor = (
  * located uniquely. A single occurrence resolves directly. Multiple occurrences resolve
  * only when exactly one satisfies both the prefix and suffix context.
  */
-export const resolveQuoteAnchor = (
+export type QuoteAnchorResolution =
+  | { readonly state: "unique"; readonly from: number; readonly to: number }
+  | { readonly state: "missing" | "ambiguous" };
+
+export const resolveQuoteAnchorDetailed = (
   doc: Node,
   anchor: QuoteAnchor,
-): { from: number; to: number } | null => {
-  if (anchor.exact.length === 0) return null;
+): QuoteAnchorResolution => {
+  if (anchor.exact.length === 0) return { state: "missing" };
 
   const index = buildTextIndex(doc);
   let exact = anchor.exact;
@@ -163,9 +167,12 @@ export const resolveQuoteAnchor = (
     suffix = visibleMarkdownText(doc, anchor.suffix);
     occurrences = textOccurrences(index.flat, exact);
   }
-  if (occurrences.length === 0) return null;
+  if (occurrences.length === 0) return { state: "missing" };
   if (occurrences.length === 1) {
-    return rangeFor(index, occurrences[0].offset, occurrences[0].length);
+    return {
+      state: "unique",
+      ...rangeFor(index, occurrences[0].offset, occurrences[0].length),
+    };
   }
 
   const contextual = occurrences.filter(
@@ -174,7 +181,51 @@ export const resolveQuoteAnchor = (
       suffixMatches(index.flat, match.offset + match.length, suffix),
   );
   if (contextual.length === 1) {
-    return rangeFor(index, contextual[0].offset, contextual[0].length);
+    return {
+      state: "unique",
+      ...rangeFor(index, contextual[0].offset, contextual[0].length),
+    };
   }
-  return null;
+  return { state: "ambiguous" };
+};
+
+/**
+ * Provenance reanchoring is stricter than legacy proposal placement: every
+ * supplied exact/prefix/suffix component must still describe the adjacent
+ * visible text, even when the exact quote occurs only once.
+ */
+export const resolveProvenanceQuoteAnchorDetailed = (
+  doc: Node,
+  anchor: QuoteAnchor,
+): QuoteAnchorResolution => {
+  if (anchor.exact.length === 0) return { state: "missing" };
+  const index = buildTextIndex(doc);
+  let exact = anchor.exact;
+  let occurrences = textOccurrences(index.flat, exact);
+  if (occurrences.length === 0) {
+    exact = visibleMarkdownText(doc, anchor.exact);
+    occurrences = textOccurrences(index.flat, exact);
+  }
+  if (occurrences.length === 0) return { state: "missing" };
+  const prefix = visibleMarkdownText(doc, anchor.prefix);
+  const suffix = visibleMarkdownText(doc, anchor.suffix);
+  const contextual = occurrences.filter(
+    (match) =>
+      prefixMatches(index.flat, match.offset, prefix) &&
+      suffixMatches(index.flat, match.offset + match.length, suffix),
+  );
+  if (contextual.length === 0) return { state: "missing" };
+  if (contextual.length > 1) return { state: "ambiguous" };
+  return {
+    state: "unique",
+    ...rangeFor(index, contextual[0].offset, contextual[0].length),
+  };
+};
+
+export const resolveQuoteAnchor = (
+  doc: Node,
+  anchor: QuoteAnchor,
+): { from: number; to: number } | null => {
+  const result = resolveQuoteAnchorDetailed(doc, anchor);
+  return result.state === "unique" ? { from: result.from, to: result.to } : null;
 };

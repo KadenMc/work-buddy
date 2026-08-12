@@ -345,7 +345,9 @@ class TrayPanel(QWidget):
 
     def _open(self, target_hash: str) -> None:
         try:
-            actions.open_dashboard(target_hash)
+            # The tray is a trusted host launcher. Always use the React-app
+            # launch path so it mints the one-time local-identity bootstrap.
+            actions.open_dashboard(target_hash, app=True)
         except Exception:
             logger.exception("open dashboard failed")
         self.hide()

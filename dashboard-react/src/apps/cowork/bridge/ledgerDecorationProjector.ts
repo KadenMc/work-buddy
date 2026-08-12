@@ -7,6 +7,18 @@ import {
   type CoworkLedgerDecorationProjection,
 } from "../editor/ledgerDecorations";
 import type { ReviewRailData } from "../rail/contracts";
+import type {
+  ProvenanceAttestation,
+  ProvenanceData,
+  ProvenanceTarget,
+} from "../provenance/view/contracts";
+import {
+  provenanceAuthorshipFingerprint,
+  provenancePersonDetail,
+  provenanceReviewFingerprint,
+  provenanceSourceDetails,
+  provenanceSourceFingerprint,
+} from "../provenance/view/semantics";
 import { claimRefMatchesId } from "../rail/items";
 
 const EMPTY_LEDGER_PROJECTION: CoworkLedgerDecorationProjection = {
@@ -107,6 +119,62 @@ export const ledgerDecorationProjectionFromReview = (
   ),
 });
 
+const provenanceTargetId = (target: ProvenanceTarget): string =>
+  target.projectionId;
+
+const provenanceOverlayRecord = (
+  target: ProvenanceTarget,
+  record: ProvenanceAttestation,
+  isDocumentDefault: boolean,
+) => {
+  const personList = (
+    people: ProvenanceAttestation["authorship"]["contributors"],
+    empty: string,
+  ): string =>
+    people.map(provenancePersonDetail).join(", ") || empty;
+  const sourceDetail = provenanceSourceDetails(record).map(
+    (detail) => `${detail.label}: ${detail.value}`,
+  );
+  return ({
+  targetId:
+    provenanceTargetId(target),
+  recordId: record.attestationId,
+  quoteAnchor: target.span,
+  isDocumentDefault,
+  authorship: record.authorship.kind,
+  reviewStatus: record.humanReview.status,
+  currentness: target.target.currentness,
+  resolution: target.resolution,
+  source:
+    typeof record.source.kind === "string" ? record.source.kind : "unknown",
+  sourceDetail:
+    sourceDetail.length === 0
+      ? "No additional source detail"
+      : [...new Set(sourceDetail)].join(" · "),
+  contributors: personList(record.authorship.contributors, "No contributors recorded"),
+  reviewers: personList(record.humanReview.reviewers, "No reviewers recorded"),
+  attester: record.assertedBy.ref ?? record.assertedBy.kind,
+  basis: record.basis.kind,
+  historyCount: target.history.length,
+  effectiveCount: target.effectiveAttestations.length,
+  recordState: "recorded" as const,
+  authorshipFingerprint: provenanceAuthorshipFingerprint(record),
+  reviewFingerprint: provenanceReviewFingerprint(record),
+  sourceFingerprint: provenanceSourceFingerprint(record),
+  });
+};
+
+export const ledgerProvenanceProjection = (data: ProvenanceData) => {
+  const project = (target: ProvenanceTarget, isDocumentDefault: boolean) =>
+    target.effectiveAttestations.map((record) =>
+      provenanceOverlayRecord(target, record, isDocumentDefault),
+    );
+  return [
+    ...(data.documentDefault === null ? [] : project(data.documentDefault, true)),
+    ...data.spans.flatMap((target) => project(target, false)),
+  ];
+};
+
 /**
  * R2 may resolve before or after the editor mounts. This coordinator retains the
  * latest projection and dispatches it whenever both halves are present, without putting
@@ -115,6 +183,9 @@ export const ledgerDecorationProjectionFromReview = (
 export class LedgerDecorationProjector {
   #editor: Editor | null = null;
   #projection: CoworkLedgerDecorationProjection | null = null;
+  #provenanceOverlay: CoworkLedgerDecorationProjection["provenanceOverlay"] =
+    undefined;
+  #provenanceDirty = false;
   #lens: CoworkEditorLens = "review";
 
   attach(editor: Editor): void {
@@ -131,6 +202,22 @@ export class LedgerDecorationProjector {
     this.#flush();
   }
 
+  setProvenanceData(data: ProvenanceData | null): void {
+    this.#provenanceOverlay =
+      data === null ? undefined : ledgerProvenanceProjection(data);
+    this.#flush();
+  }
+
+  /**
+   * A local edit makes the last server head non-current immediately. Whole-document
+   * attribution is therefore withheld; exact spans may only reanchor for inspection.
+   */
+  setProvenanceDirty(dirty: boolean): void {
+    if (this.#provenanceDirty === dirty) return;
+    this.#provenanceDirty = dirty;
+    this.#flush();
+  }
+
   /** Retain the active rail lens across editor remounts and data refreshes. */
   setLens(lens: CoworkEditorLens): void {
     this.#lens = lens;
@@ -139,6 +226,8 @@ export class LedgerDecorationProjector {
 
   clear(): void {
     this.#projection = null;
+    this.#provenanceOverlay = undefined;
+    this.#provenanceDirty = false;
     if (this.#editor !== null) {
       projectCoworkLedgerDecorations(this.#editor, EMPTY_LEDGER_PROJECTION);
     }
@@ -146,7 +235,31 @@ export class LedgerDecorationProjector {
 
   #flush(): void {
     if (this.#editor === null || this.#projection === null) return;
-    projectCoworkLedgerDecorations(this.#editor, this.#projection);
+    const provenanceOverlay = this.#provenanceOverlay;
+    const projectedProvenance =
+      provenanceOverlay === undefined
+        ? undefined
+        : this.#provenanceDirty
+          ? provenanceOverlay.flatMap((target) =>
+              target.isDocumentDefault
+                ? []
+                : [
+                    {
+                      ...target,
+                      currentness:
+                        target.currentness === "current"
+                          ? "requires_reanchor" as const
+                          : target.currentness,
+                    },
+                  ],
+            )
+          : provenanceOverlay;
+    projectCoworkLedgerDecorations(this.#editor, {
+      ...this.#projection,
+      ...(projectedProvenance === undefined
+        ? {}
+        : { provenanceOverlay: projectedProvenance }),
+    });
     setCoworkEditorLens(this.#editor, this.#lens);
   }
 }
