@@ -18,12 +18,16 @@ from work_buddy.truth.export import (
     export_store,
     import_store,
 )
-from work_buddy.truth.identity import new_id, sha256_bytes, sha256_text
+from work_buddy.truth.identity import canonical_json, new_id, sha256_bytes, sha256_text
 from work_buddy.truth.migrations import REDACTED_SELECTOR_JSON
 from work_buddy.truth.proposals import proposal_canonical_sha256
+from work_buddy.truth.provenance import (
+    attestation_canonical_payload,
+    attestation_canonical_sha256,
+)
 from work_buddy.truth.queries import integrity_findings
 from work_buddy.truth.redact import policy_basis_ref
-from work_buddy.truth.store import TruthStore
+from work_buddy.truth.store import DocumentProvenanceAttestationRecord, TruthStore
 
 
 NOW = "2026-07-17T16:00:00.000+00:00"
@@ -220,7 +224,7 @@ def test_document_surface_round_trips_lossless_including_ydoc_blob(
 
     exported = export_store(source)
     objects = _objects(exported.path.read_bytes())
-    assert objects[0]["format_version"] == FORMAT_VERSION == 9
+    assert objects[0]["format_version"] == FORMAT_VERSION == 10
 
     record_types = {
         item["record_type"]
@@ -478,6 +482,63 @@ def _seeded_objects(tmp_path: Path) -> list[dict[str, Any]]:
     return _objects(export_store(source).path.read_bytes())
 
 
+def _append_valid_span_provenance(
+    store: TruthStore,
+) -> DocumentProvenanceAttestationRecord:
+    contributors = [
+        {
+            "kind": "human",
+            "ref": HUMAN.ref,
+            "identity_status": "local_actor_ref",
+        }
+    ]
+    source = {"kind": "paste", "format": "plain_text"}
+    target_head = sha256_text("frozen structured head")
+    canonical = attestation_canonical_sha256(
+        document_id=DOC_ID,
+        target_kind="document_span",
+        document_version_id=None,
+        document_span_id=SPAN_ID,
+        target_structured_head_sha256=target_head,
+        authorship_kind="human",
+        human_contributors=contributors,
+        review_status="not_applicable",
+        human_reviewers=[],
+        source_kind="paste",
+        source=source,
+        basis_kind="user_attestation",
+        basis_ref=None,
+        supersedes_id=None,
+        attested_by_kind=HUMAN.kind,
+        attested_by_ref=HUMAN.ref,
+        attested_by_meta=None,
+    )
+    record = DocumentProvenanceAttestationRecord(
+        id="aa" * 16,
+        document_id=DOC_ID,
+        target_kind="document_span",
+        document_version_id=None,
+        document_span_id=SPAN_ID,
+        target_structured_head_sha256=target_head,
+        authorship_kind="human",
+        human_contributors_json=canonical_json(contributors),
+        review_status="not_applicable",
+        human_reviewers_json="[]",
+        source_kind="paste",
+        source_json=canonical_json(source),
+        basis_kind="user_attestation",
+        basis_ref=None,
+        supersedes_id=None,
+        idempotency_key="portable-provenance-pair-0001",
+        canonical_sha256=canonical,
+        created_at=NOW,
+        attested_by_kind=HUMAN.kind,
+        attested_by_ref=HUMAN.ref,
+        attested_by_meta_json=None,
+    )
+    return store.append_document_provenance_attestation(record)
+
+
 def _canonical_line(value: dict[str, Any]) -> bytes:
     return (
         json.dumps(
@@ -504,6 +565,67 @@ def _repack(objects: list[dict[str, Any]]) -> bytes:
     footer["last_seq"] = data[-1]["seq"] if data else 0
     footer["stream_sha256"] = sha256_bytes(prefix)
     return prefix + _canonical_line(footer)
+
+
+@pytest.mark.parametrize(
+    ("source_kind", "basis_kind"),
+    [
+        ("direct_entry", "user_attestation"),
+        ("paste", "automatic_direct_entry_attribution"),
+    ],
+)
+def test_import_rejects_canonically_rehashed_invalid_provenance_pair(
+    tmp_path: Path,
+    source_kind: str,
+    basis_kind: str,
+) -> None:
+    source = _create_store(tmp_path / "source", store_id="ba" * 16)
+    _write_blob(source, SNAPSHOT_SHA, SNAPSHOT_BYTES)
+    _insert_document(source)
+    _append_valid_span_provenance(source)
+    objects = _objects(export_store(source).path.read_bytes())
+    item = next(
+        value
+        for value in objects
+        if value["record_type"] == "document_provenance_attestation"
+    )
+    row = item["record"]
+    original_canonical = row["canonical_sha256"]
+    payload = attestation_canonical_payload(
+        document_id=row["document_id"],
+        target_kind=row["target_kind"],
+        document_version_id=row["document_version_id"],
+        document_span_id=row["document_span_id"],
+        target_structured_head_sha256=row["target_structured_head_sha256"],
+        authorship_kind=row["authorship_kind"],
+        human_contributors=row["human_contributors_json"],
+        review_status=row["review_status"],
+        human_reviewers=row["human_reviewers_json"],
+        source_kind=row["source_kind"],
+        source=row["source_json"],
+        basis_kind=row["basis_kind"],
+        basis_ref=row["basis_ref"],
+        supersedes_id=row["supersedes_id"],
+        attested_by_kind=row["attested_by_kind"],
+        attested_by_ref=row["attested_by_ref"],
+        attested_by_meta=row["attested_by_meta_json"],
+    )
+
+    forged_source = json.loads(row["source_json"])
+    forged_source["kind"] = source_kind
+    row["source_kind"] = source_kind
+    row["source_json"] = canonical_json(forged_source)
+    row["basis_kind"] = basis_kind
+    payload["source"] = forged_source
+    payload["basis"]["kind"] = basis_kind
+    row["canonical_sha256"] = sha256_text(canonical_json(payload))
+    assert row["canonical_sha256"] != original_canonical
+
+    target = tmp_path / "target"
+    target.mkdir()
+    with pytest.raises(TruthImportError, match="allowed provenance pair"):
+        import_store(_repack(objects), target, registry=FakeRegistry())
+    assert list(target.iterdir()) == []
 
 
 def test_v3_stream_upcasts_proposal_structured_base_to_null(tmp_path: Path) -> None:

@@ -5,7 +5,8 @@ description: Frozen-target, append-only attestations that keep content source, a
 summary: >-
   Provenance is a first-class Co-work rail and view-only editor lens for source,
   authorship, human-review, attester, and basis records. File import targets an
-  immutable document version; text-bearing paste targets an exact span. A
+  immutable document version; local direct entry and text-bearing paste target
+  exact spans. A
   human review action appends a user-attested superseding record while
   preserving source and authorship. Attestations report what a person says
   about content; they do not verify authorship, correctness, or claims.
@@ -36,8 +37,8 @@ Co-work records four related facts without collapsing them:
 - **Human review** is reviewed, not reviewed, not applicable, or unknown.
   Reviewed content can name its human reviewers.
 - **Attester and basis** say who supplied the information and whether it came
-  from a user attestation, automatic short-text attribution, proposal
-  acceptance, migration, or legacy data.
+  from a user attestation, automatic short-text attribution, automatic
+  direct-entry attribution, proposal acceptance, migration, or legacy data.
 
 An authorship and human-review attestation is a report, not a verification
 result. Saying that a person reviewed AI-written text does not mean the text was
@@ -53,13 +54,13 @@ it:
 
 - **From file** targets the immutable document version created by the import and
   records that version's structured-head hash.
-- **Pasted text** creates an exact quote-anchored document span and binds the
-  attestation to that span and one expected structured-head digest. The client
-  first persists the inserted edit, then freezes that digest into the request;
-  the server records the attestation only if its locked current head still
-  matches.
+- **Pasted or locally typed text** creates an exact quote-anchored document span
+  and binds the attestation to that span and one expected structured-head
+  digest. The client first persists the inserted edit, then freezes that digest
+  into the request; the server records the attestation only if its locked
+  current head still matches.
 
-Before sending or replaying a paste request, the client requires the complete
+Before sending or replaying a span-provenance request, the client requires the complete
 `exact`, `prefix`, and `suffix` quote anchor to resolve to exactly one passage in
 the currently hydrated editor. An absent or ambiguous passage becomes a stale
 target instead of being silently attached elsewhere. The server also binds an
@@ -105,6 +106,15 @@ scroll the editor. A uniquely resolved span has a separate **Show in document**
 action for one present-user reveal. The panel also exposes **Complete provenance
 history**, so old or malformed records without safe current geometry remain
 inspectable without receiving a guessed range.
+
+The generic **Give feedback** selection bubble belongs to the other lenses and
+is suppressed in Provenance. A selected passage instead gets exactly one
+coverage-aware action: **Record provenance** when uncovered, **Review provenance**
+when it exactly matches one eligible AI/mixed span, **View provenance** for one
+healthy record, or **Inspect provenance** for stale, ambiguous, conflicting, or
+multiple coverage. Review provenance only opens the stable target detail; its
+guarded append remains in the panel. Recording pre-existing text uses an
+explicit determination and keeps its source labeled **Untracked / legacy**.
 
 Provenance has a dedicated typed provider and panel projection. It can share the
 authoritative open-document snapshot source with other rails, but it does not
@@ -154,6 +164,35 @@ head, eligibility, unique exact-span resolution, and incompatible peer overlap.
 Only then does it post the append-only transition and repull authoritative
 state. Any drift fails closed; the editor is re-enabled only if the mounted
 document is still writable.
+
+## Direct entry and manual repair
+
+Ordinary local typing is captured at the editor ingress rather than inferred
+later from an opaque Yjs update. Each evolving contiguous same-block burst is
+synchronously staged before asynchronous IndexedDB work, updated through
+backspace and correction, and closed at a quiescent persistence or interaction
+boundary. Paste/drop, undo/redo, remote/applied Yjs, seed/system work,
+formatting-only changes, and disjoint edits do not inherit the assertion. A
+fully deleted burst produces no provenance record.
+
+After the Yjs edit is durable, the client freezes one exact selector and
+structured head. The server records `source=direct_entry`, human authorship by
+the capture-time enrolled local actor, review `not_applicable`, and
+`basis=automatic_direct_entry_attribution`. The capture-time actor is never
+replaced by whichever identity happens to exist after a crash or reload. A
+changed or unavailable actor requires an explicit honest determination.
+
+The synchronous recovery journal retains the newest coalesced burst over an
+older unfrozen `capturing` row. It never overwrites a ready or frozen request.
+Closing the page leaves an unfinished capture recoverable rather than trying to
+resolve it after the editor has disappeared. Once frozen, retry is the same
+immutable logical request.
+
+Text that predates this path cannot be safely attributed retroactively. In the
+Provenance lens the user can select that text and choose **Record provenance**;
+the shared determination creates an exact span with `source=legacy` and
+`basis=user_attestation`. Product copy calls that source **Untracked / legacy**
+instead of pretending the selection proves how the text entered Co-work.
 
 ## From file
 
@@ -255,8 +294,8 @@ clipboard content; its record carries
 `basis=automatic_short_text_attribution` so downstream readers can distinguish
 it from an explicit user determination.
 
-The browser keeps pending paste records in a document-scoped IndexedDB FIFO
-outbox.
+The browser keeps pending paste and direct-entry records in a document-scoped
+IndexedDB FIFO outbox.
 Before the asynchronous outbox write, it synchronously stages the capture in a
 small local-storage recovery journal; hydration reconciles staged captures into
 the outbox and deduplicates them by idempotency key. Once a determination is
@@ -282,14 +321,14 @@ plus a one-time gesture bound to the exact action, subject, and request context.
 The server derives the Truth actor from that authority; it does not accept a
 client-supplied human actor.
 
-The server revalidates the frozen binding when an import, paste, or review
-attestation is recorded. If the acting identity changed, the determination is
-rejected instead of being reassigned. For queued pastes, the browser refetches
-the current actor, clears stale frozen requests, rotates their idempotency keys,
-and changes every pending determination to unknown authorship with an explicit
-user-attestation basis. Nothing is resent until the user makes a fresh
-determination, including a short paste originally eligible for automatic
-attribution.
+The server revalidates the frozen binding when an import, paste, direct-entry,
+manual-selection, or review attestation is recorded. If the acting identity
+changed, the determination is rejected instead of being reassigned. A queued
+paste can be reset to unknown authorship for a fresh explicit determination.
+A direct-entry capture instead retains its capture-time determination and is
+never rewritten to whichever actor happens to be current after a crash or
+reload. Nothing is resent under a changed actor without a fresh honest user
+decision.
 
 The enrolled local actor ref is durable within this installation and stronger
 than an arbitrary request header, but it is not a verified remote multi-user
@@ -306,14 +345,14 @@ same authorship, reviewer, attester, and frozen-target fields.
 
 ## Storage and portability
 
-Truth schema v8 stores these facts in the append-only
-`document_provenance_attestations` table. Truth export format v8 includes the
+Truth schema v10 stores these facts in the append-only
+`document_provenance_attestations` table. Truth export format v10 includes the
 records, validates their target links and canonical hashes on import, and
 preserves supersession history. It also includes exact retained import-source
 blobs when available while accepting that historical imports can carry only a
 source hash. Existing detached imports from before provenance attestations
 receive a deterministic migration-backfill attestation with unknown authorship,
 unknown human-review status, and a system attester; migration does not invent a
-human or AI author. The managed Markdown projection, browser paste outbox, and
+human or AI author. The managed Markdown projection, browser input-provenance outbox, and
 editor decorations remain supporting projections or delivery state; the
 append-only Truth record is the provenance authority after receipt.

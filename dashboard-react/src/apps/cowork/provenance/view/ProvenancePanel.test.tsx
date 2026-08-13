@@ -7,6 +7,7 @@ import type {
   ProvenanceEditorIntegration,
   ProvenanceMutationBarrier,
   ProvenanceProvider,
+  ProvenanceSelectionAction,
 } from "./contracts";
 import { ProvenancePanel } from "./ProvenancePanel";
 
@@ -238,6 +239,135 @@ describe("ProvenancePanel", () => {
     expect(screen.queryByText("No provenance records match this filter.")).toBeNull();
   });
 
+  it("gives a textful document with zero records one actionable empty state", async () => {
+    render(
+      <ProvenancePanel
+        provider={{
+          ...provider(),
+          load: vi.fn().mockResolvedValue({
+            state: "ready",
+            data: { ...data, spans: [], history: [], documentDefault: null },
+          }),
+        }}
+        active
+        editor={editor}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("heading", {
+        name: "No provenance has been recorded for this document",
+      }),
+    ).toBeVisible();
+    expect(screen.getByText(/Select existing text to record/u)).toBeVisible();
+    expect(screen.queryByText(/Some text has no current provenance/u)).toBeNull();
+    expect(screen.queryByText("No provenance records match this filter.")).toBeNull();
+  });
+
+  it("does not present a terminal empty state while recent typing is unsettled", async () => {
+    render(
+      <ProvenancePanel
+        provider={{
+          ...provider(),
+          load: vi.fn().mockResolvedValue({
+            state: "ready",
+            data: { ...data, spans: [], history: [], documentDefault: null },
+          }),
+        }}
+        active
+        editor={{ ...editor, isLocallyDirty: () => true }}
+      />,
+    );
+
+    expect(
+      await screen.findByText(/Local edits are not yet represented/u),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("heading", {
+        name: "No provenance has been recorded for this document",
+      }),
+    ).toBeNull();
+  });
+
+  it("does not leave a zero-record filtered view blank", async () => {
+    render(
+      <ProvenancePanel
+        provider={{
+          ...provider(),
+          load: vi.fn().mockResolvedValue({
+            state: "ready",
+            data: { ...data, spans: [], history: [], documentDefault: null },
+          }),
+        }}
+        active
+        editor={editor}
+      />,
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: "Issues" }));
+    expect(screen.getByText("No provenance records match this filter.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "All" })).toBeVisible();
+  });
+
+  it("opens stable target detail for a routed selection action", async () => {
+    const selectionAction: ProvenanceSelectionAction = {
+      requestId: 1,
+      intent: "review",
+      anchor: { exact: "AI passage", prefix: "", suffix: "" },
+      from: 5,
+      to: 15,
+      targetIds: ["document_span:span-1"],
+    };
+    render(
+      <ProvenancePanel
+        provider={provider()}
+        active
+        editor={editor}
+        mutationBarrier={{ runWithSynchronizedDocument: vi.fn() }}
+        selectionAction={selectionAction}
+      />,
+    );
+
+    expect(await screen.findByText("Actions")).toBeVisible();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /AI passage/u })).toHaveFocus(),
+    );
+    expect(screen.getByRole("button", { name: "Mark reviewed" })).toBeEnabled();
+  });
+
+  it("keeps Mark reviewed discoverable but disabled with a specific reason", async () => {
+    const stale = {
+      ...data.spans[0]!,
+      target: {
+        ...data.spans[0]!.target,
+        currentness: "requires_reanchor" as const,
+      },
+      reviewEligibility: "stale_target" as const,
+    };
+    render(
+      <ProvenancePanel
+        provider={{
+          ...provider(),
+          load: vi.fn().mockResolvedValue({
+            state: "ready",
+            data: { ...data, spans: [stale] },
+          }),
+        }}
+        active
+        editor={editor}
+        mutationBarrier={{ runWithSynchronizedDocument: vi.fn() }}
+      />,
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: /AI passage/u }));
+    const action = screen.getByRole("button", { name: "Mark reviewed" });
+    expect(action).toBeDisabled();
+    expect(
+      screen.getByText(/re-anchored for inspection/u),
+    ).toBeVisible();
+    expect(action).toHaveAttribute("aria-describedby");
+  });
+
   it("keeps global append-only history inspectable without a current head", async () => {
     render(
       <ProvenancePanel
@@ -353,6 +483,40 @@ describe("ProvenancePanel", () => {
     expect(screen.queryByText(/must_not_render/u)).toBeNull();
   });
 
+  it("labels manually repaired legacy source as untracked", async () => {
+    const untracked = {
+      ...attestation,
+      source: { kind: "legacy" },
+    };
+    render(
+      <ProvenancePanel
+        provider={{
+          ...provider(),
+          load: vi.fn().mockResolvedValue({
+            state: "ready",
+            data: {
+              ...data,
+              spans: [
+                {
+                  ...data.spans[0]!,
+                  effectiveAttestations: [untracked],
+                  effectiveAttestation: untracked,
+                  history: [untracked],
+                },
+              ],
+              history: [untracked],
+            },
+          }),
+        }}
+        active
+        editor={editor}
+      />,
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: /AI passage/u }));
+    expect(screen.getAllByText("Untracked / legacy").length).toBeGreaterThan(0);
+  });
+
   it("blocks review and explains incompatible overlapping provenance", async () => {
     const human = {
       ...attestation,
@@ -395,7 +559,9 @@ describe("ProvenancePanel", () => {
     expect(
       screen.getByText(/Overlapping provenance records disagree on authorship/u),
     ).toBeVisible();
-    expect(screen.queryByRole("button", { name: "Mark reviewed" })).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Mark reviewed" }),
+    ).toBeDisabled();
     await userEvent.click(screen.getByRole("button", { name: "Issues" }));
     expect(screen.getAllByText("Conflicts with overlapping passage")).toHaveLength(2);
   });

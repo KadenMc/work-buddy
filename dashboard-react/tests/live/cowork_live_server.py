@@ -40,6 +40,12 @@ from work_buddy.cowork import api as cowork_api  # noqa: E402
 from work_buddy.cowork import document_agent as document_agent  # noqa: E402
 from work_buddy.cowork.conversations import CONVERSATION_SOURCE  # noqa: E402
 from work_buddy.dashboard.service import app  # noqa: E402
+from work_buddy.security.local_identity import (  # noqa: E402
+    DEFAULT_AUDIENCE,
+    LocalIdentityError,
+    get_default_authority,
+    normalize_loopback_origin,
+)
 from work_buddy.truth import documents, proposals, ydoc_store  # noqa: E402
 from work_buddy.truth.anchors import CompositeSelector  # noqa: E402
 from work_buddy.truth.contracts import Actor  # noqa: E402
@@ -161,6 +167,45 @@ def _agent_state():
                 "conversation_ids": list(_agent_conversation_ids),
             }
         )
+
+
+@app.post("/api/_cowork-live/identity-bootstrap")
+def _identity_bootstrap():
+    """Mint one isolated, exact-Origin browser bootstrap for live UI coverage.
+
+    Production deliberately has no HTTP mint route. This nonce-gated route exists
+    only in the throwaway live-harness process, and its authority database is under
+    ``COWORK_LIVE_ROOT`` so teardown removes the token and resulting session.
+    """
+
+    if not _harness_control_allowed():
+        return jsonify({"ok": False, "error": "harness control denied"}), 403
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False, "error": "JSON object required"}), 400
+    requested_origin = str(payload.get("origin") or "")
+    observed_origin = str(request.headers.get("Origin") or "")
+    try:
+        normalized_requested = normalize_loopback_origin(requested_origin)
+        normalized_observed = normalize_loopback_origin(observed_origin)
+    except LocalIdentityError:
+        return jsonify({"ok": False, "error": "exact loopback origin required"}), 400
+    if normalized_requested != normalized_observed:
+        return jsonify({"ok": False, "error": "browser origin mismatch"}), 403
+    grant = get_default_authority().mint_bootstrap(
+        origin=normalized_observed,
+        audience=DEFAULT_AUDIENCE,
+    )
+    response = jsonify(
+        {
+            "ok": True,
+            "token": grant.token,
+            "origin": grant.origin,
+            "expires_at": grant.expires_at,
+        }
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.after_request

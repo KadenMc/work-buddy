@@ -35,7 +35,10 @@ import {
   type CoworkDriftState,
   type CoworkViewModel,
 } from "../contracts";
-import type { CoworkPasteProvenanceRecorder } from "../provenance";
+import type {
+  CoworkPasteProvenanceRecorder,
+  ProvenanceSelectionAction,
+} from "../provenance";
 import { CoworkHttpClient } from "../providers/CoworkHttpClient";
 import type { CoworkSyncStatus } from "../persistence/CoworkYdocPersistence";
 import type {
@@ -78,6 +81,7 @@ import {
   createDemoChatProvider,
   isDirty,
   type CoworkRailChat,
+  type RailTab,
   type ReviewAnchorController,
   type VerificationRecheckIntent,
 } from "../rail";
@@ -448,6 +452,14 @@ export const healthFromModel = (
   };
 };
 
+export const coworkProvenanceSelectionActionsActive = (
+  activeRailTab: RailTab,
+  narrowWorkspace: boolean,
+  activePane: CoworkWorkspacePane,
+): boolean =>
+  activeRailTab === "provenance" &&
+  (!narrowWorkspace || activePane === "editor");
+
 export const healthFromDocument = (
   document: CoworkDocumentSummary,
 ): CoworkHealthView => ({
@@ -655,6 +667,8 @@ export function CoworkLiveWorkspace({
       ),
   );
   const activeRailTab = useRailState(railStore, (state) => state.tab);
+  const [provenanceSelectionAction, setProvenanceSelectionAction] =
+    useState<ProvenanceSelectionAction | null>(null);
   const truthStore = useMemo(
     () =>
       createPersistedTruthStore(
@@ -877,6 +891,7 @@ export function CoworkLiveWorkspace({
     [narrowWorkspace, railStore],
   );
   useEffect(() => setActivePane("editor"), [documentId]);
+  useEffect(() => setProvenanceSelectionAction(null), [documentId, storeId]);
   useEffect(() => {
     setArmedVerifyRecheck(null);
   }, [documentId, storeId]);
@@ -943,6 +958,17 @@ export function CoworkLiveWorkspace({
         }
       : {}),
   });
+  const handleProvenanceSelectionAction = useCallback(
+    (
+      action: ProvenanceSelectionAction & {
+        readonly intent: "review" | "view" | "inspect";
+      },
+    ): void => {
+      setProvenanceSelectionAction(action);
+      selectPane("provenance");
+    },
+    [selectPane],
+  );
   const provenanceEditor = useMemo<ProvenanceEditorIntegration>(
     () => ({
       resolveTarget: bridge.provenanceEditor.resolveTarget,
@@ -1348,7 +1374,27 @@ export function CoworkLiveWorkspace({
           />
         </>
       }
-      editor={<CoworkBridgeEditor {...bridge.editorProps} />}
+      editor={
+        <CoworkBridgeEditor
+          {...bridge.editorProps}
+          activeLens={
+            activeRailTab === "review"
+              ? "review"
+              : activeRailTab === "truth"
+                ? "truth"
+                : activeRailTab === "provenance"
+                  ? "provenance"
+                  : "neutral"
+          }
+          provenanceProvider={bridge.provenanceProvider}
+          provenanceSelectionActionsActive={coworkProvenanceSelectionActionsActive(
+            activeRailTab,
+            narrowWorkspace,
+            activePane,
+          )}
+          onProvenanceSelectionAction={handleProvenanceSelectionAction}
+        />
+      }
       rail={
         <CoworkChatTargetingProvider
           storeId={storeId}
@@ -1370,6 +1416,7 @@ export function CoworkLiveWorkspace({
               provider: bridge.provenanceProvider,
               editor: provenanceEditor,
               mutationBarrier: bridge.provenanceMutationBarrier,
+              selectionAction: provenanceSelectionAction,
             }}
             chat={chat}
             reviewAnchors={reviewAnchors}

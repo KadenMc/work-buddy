@@ -7,6 +7,11 @@ export {
   type CoworkProvenanceFormProps,
 } from "./CoworkProvenanceForm";
 export {
+  CoworkProvenanceSelectionAffordance,
+  classifyCoworkProvenanceSelection,
+  type CoworkProvenanceSelectionAffordanceProps,
+} from "./CoworkProvenanceSelectionAffordance";
+export {
   COWORK_PROVENANCE_DETERMINATION_SCHEMA,
   coworkProvenanceDeterminationIssue,
   currentCoworkUser,
@@ -27,6 +32,7 @@ export {
   COWORK_PROVENANCE_EXACT_MAX_CHARS,
   COWORK_PROVENANCE_TARGET_CHANGED,
   coworkPastePassageExcerpt,
+  coworkDirectEntryCaptureFromTransaction,
   coworkPasteCaptureFromTransaction,
   coworkPasteTransactionExceedsProvenanceLimit,
   coworkPasteRangeFromTransaction,
@@ -34,6 +40,7 @@ export {
   isSubstantialCoworkPaste,
   resolveCoworkPasteAnchor,
   type CoworkPasteAnchorResolution,
+  type CoworkDirectEntryCapture,
   type CoworkPasteCapture,
   type CoworkPasteProvenanceRecorder,
   type CoworkPasteProvenanceRequest,

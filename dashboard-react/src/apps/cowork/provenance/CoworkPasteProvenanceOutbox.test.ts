@@ -62,9 +62,7 @@ class MemoryStorage implements Storage {
   }
 }
 
-const fakeIndexedDatabase = (
-  records: Map<string, unknown>,
-): IDBDatabase =>
+const fakeIndexedDatabase = (records: Map<string, unknown>): IDBDatabase =>
   ({
     transaction: () => {
       let aborted = false;
@@ -123,8 +121,7 @@ describe("DurableCoworkPasteProvenanceOutbox", () => {
   });
 
   it("rehydrates unresolved entries in capture order and isolates documents", async () => {
-    const backing =
-      new InMemoryCoworkPasteProvenanceOutboxBackingStore();
+    const backing = new InMemoryCoworkPasteProvenanceOutboxBackingStore();
     const first = new DurableCoworkPasteProvenanceOutbox(
       "store:document",
       backing,
@@ -150,9 +147,9 @@ describe("DurableCoworkPasteProvenanceOutbox", () => {
       "store:document",
       backing,
     );
-    expect((await reopened.list()).map((entry) => entry.idempotencyKey)).toEqual(
-      ["paste-1", "paste-2"],
-    );
+    expect(
+      (await reopened.list()).map((entry) => entry.idempotencyKey),
+    ).toEqual(["paste-1", "paste-2"]);
     expect(
       await new DurableCoworkPasteProvenanceOutbox(
         "store:other",
@@ -192,9 +189,113 @@ describe("DurableCoworkPasteProvenanceOutbox", () => {
     });
   });
 
+  it("recovers the latest staged shape of an open typing burst", async () => {
+    const key = "store:direct-recovery";
+    const backing = new InMemoryCoworkPasteProvenanceOutboxBackingStore();
+    const stage = new InMemoryCoworkPasteProvenanceIntentStage();
+    const first = new DurableCoworkPasteProvenanceOutbox(key, backing, stage);
+    await first.upsertCapture({
+      anchor: { exact: "T", prefix: "", suffix: " after" },
+      idempotencyKey: "typing-burst",
+      substantial: false,
+      capturedActor: actorIdentity,
+      sourceKind: "direct_entry",
+      basisKind: "automatic_direct_entry_attribution",
+      determination: humanDetermination(),
+      status: "capturing",
+    });
+
+    // Simulate a crash after the synchronous journal advanced to `Test` but
+    // before the older durable `T` row was updated.
+    stage.put(key, {
+      anchor: { exact: "Test", prefix: "", suffix: " after" },
+      idempotencyKey: "typing-burst",
+      substantial: false,
+      capturedActor: actorIdentity,
+      sourceKind: "direct_entry",
+      basisKind: "automatic_direct_entry_attribution",
+      determination: humanDetermination(),
+      status: "capturing",
+    });
+
+    const reopened = new DurableCoworkPasteProvenanceOutbox(
+      key,
+      backing,
+      stage,
+    );
+    expect((await reopened.list())[0]).toMatchObject({
+      id: 1,
+      status: "capturing",
+      anchor: { exact: "Test" },
+    });
+  });
+
+  it("never lets a stale open-stage row overwrite a ready frozen request", async () => {
+    const key = "store:frozen-stage";
+    const backing = new InMemoryCoworkPasteProvenanceOutboxBackingStore();
+    const stage = new InMemoryCoworkPasteProvenanceIntentStage();
+    const outbox = new DurableCoworkPasteProvenanceOutbox(key, backing, stage);
+    const open = await outbox.upsertCapture({
+      anchor: { exact: "T", prefix: "", suffix: " after" },
+      idempotencyKey: "typing-burst",
+      substantial: false,
+      capturedActor: actorIdentity,
+      sourceKind: "direct_entry",
+      basisKind: "automatic_direct_entry_attribution",
+      determination: humanDetermination(),
+      status: "capturing",
+    });
+    await outbox.markReady(
+      open.id,
+      open.determination,
+      "automatic_direct_entry_attribution",
+    );
+    await outbox.freezeRequest(open.id, {
+      storeId: "store",
+      documentId: "document",
+      expectedStructuredHeadSha256: "a".repeat(64),
+    });
+    stage.put(key, {
+      anchor: { exact: "Test", prefix: "", suffix: " after" },
+      idempotencyKey: "typing-burst",
+      substantial: false,
+      capturedActor: actorIdentity,
+      sourceKind: "direct_entry",
+      basisKind: "automatic_direct_entry_attribution",
+      determination: humanDetermination(),
+      status: "capturing",
+    });
+
+    const [recovered] = await new DurableCoworkPasteProvenanceOutbox(
+      key,
+      backing,
+      stage,
+    ).list();
+    expect(recovered).toMatchObject({
+      status: "ready",
+      anchor: { exact: "T" },
+      frozenRequest: {
+        expectedActorRef: actorIdentity.ref,
+        expectedActorIdentityStatus: actorIdentity.identity_status,
+      },
+    });
+    await expect(
+      outbox.updateDetermination(
+        open.id,
+        unknownCoworkProvenanceDetermination(),
+      ),
+    ).rejects.toThrow("frozen");
+    await expect(
+      outbox.markReady(
+        open.id,
+        unknownCoworkProvenanceDetermination(),
+        "automatic_direct_entry_attribution",
+      ),
+    ).rejects.toThrow("frozen");
+  });
+
   it("atomically requires fresh explicit determinations for every pending entry after an actor change", async () => {
-    const backing =
-      new InMemoryCoworkPasteProvenanceOutboxBackingStore();
+    const backing = new InMemoryCoworkPasteProvenanceOutboxBackingStore();
     const outbox = new DurableCoworkPasteProvenanceOutbox(
       "store:actor-change",
       backing,
@@ -220,16 +321,27 @@ describe("DurableCoworkPasteProvenanceOutbox", () => {
       determination: humanDetermination(),
       status: "ready",
     });
+    await outbox.upsertCapture({
+      anchor: { ...anchor, exact: "typed text" },
+      idempotencyKey: "old-direct-entry-key",
+      substantial: false,
+      capturedActor: actorIdentity,
+      sourceKind: "direct_entry",
+      basisKind: "automatic_direct_entry_attribution",
+      determination: humanDetermination(),
+      status: "capturing",
+    });
 
     const reset = await outbox.resetAfterActorChange(
       "new-actor-attempt",
       unknownCoworkProvenanceDetermination(),
     );
 
-    expect(reset).toHaveLength(2);
+    expect(reset).toHaveLength(3);
     expect(reset.map((entry) => entry.idempotencyKey)).toEqual([
       `new-actor-attempt:${String(first.id)}`,
       "new-actor-attempt:2",
+      "new-actor-attempt:3",
     ]);
     for (const entry of reset) {
       expect(entry).toMatchObject({
@@ -243,6 +355,11 @@ describe("DurableCoworkPasteProvenanceOutbox", () => {
       });
       expect(entry.frozenRequest).toBeUndefined();
     }
+    expect(reset[2]).toMatchObject({
+      sourceKind: "legacy",
+      basisKind: "user_attestation",
+      determination: { authorship: { kind: "unknown" } },
+    });
 
     const edited = await outbox.updateDetermination(
       first.id,
@@ -271,10 +388,8 @@ describe("DurableCoworkPasteProvenanceOutbox", () => {
 
   it("rejects an oversized exact span before touching either recovery journal", async () => {
     const key = "store:oversized";
-    const backing =
-      new InMemoryCoworkPasteProvenanceOutboxBackingStore();
-    const intentStage =
-      new InMemoryCoworkPasteProvenanceIntentStage();
+    const backing = new InMemoryCoworkPasteProvenanceOutboxBackingStore();
+    const intentStage = new InMemoryCoworkPasteProvenanceIntentStage();
     const outbox = new DurableCoworkPasteProvenanceOutbox(
       key,
       backing,
@@ -295,6 +410,37 @@ describe("DurableCoworkPasteProvenanceOutbox", () => {
       }),
     ).rejects.toBeInstanceOf(CoworkPasteProvenanceExactLimitError);
     expect(intentStage.list(key)).toEqual([]);
+    expect(await outbox.list()).toEqual([]);
+  });
+
+  it("rejects invisible capturing states for paste and legacy sources", async () => {
+    const outbox = new DurableCoworkPasteProvenanceOutbox(
+      "store:invalid-capturing",
+      new InMemoryCoworkPasteProvenanceOutboxBackingStore(),
+      new InMemoryCoworkPasteProvenanceIntentStage(),
+    );
+    await expect(
+      outbox.upsertCapture({
+        anchor,
+        idempotencyKey: "capturing-paste",
+        substantial: false,
+        sourceKind: "paste",
+        basisKind: "user_attestation",
+        determination: humanDetermination(),
+        status: "capturing",
+      }),
+    ).rejects.toThrow("automatic direct-entry");
+    await expect(
+      outbox.append({
+        anchor,
+        idempotencyKey: "capturing-legacy",
+        substantial: false,
+        sourceKind: "legacy",
+        basisKind: "user_attestation",
+        determination: humanDetermination(),
+        status: "capturing",
+      }),
+    ).rejects.toThrow("invalid source, basis, or state");
     expect(await outbox.list()).toEqual([]);
   });
 
@@ -368,8 +514,7 @@ describe("DurableCoworkPasteProvenanceOutbox", () => {
   });
 
   it("rehydrates a synchronously staged intent after the IndexedDB write fails", async () => {
-    const backing =
-      new InMemoryCoworkPasteProvenanceOutboxBackingStore();
+    const backing = new InMemoryCoworkPasteProvenanceOutboxBackingStore();
     const stage = new InMemoryCoworkPasteProvenanceIntentStage();
     let fail = true;
     const flaky: CoworkPasteProvenanceOutboxBackingStore = {
@@ -508,9 +653,7 @@ describe("DurableCoworkPasteProvenanceOutbox", () => {
     const quarantineKey = storage
       .keys()
       .find((candidate) =>
-        candidate.startsWith(
-          `${prefix}quarantine:${encodeURIComponent(key)}:`,
-        ),
+        candidate.startsWith(`${prefix}quarantine:${encodeURIComponent(key)}:`),
       );
     expect(quarantineKey).toBeDefined();
     expect(storage.getItem(quarantineKey!)).toBe(raw);
@@ -533,6 +676,7 @@ describe("DurableCoworkPasteProvenanceOutbox", () => {
       anchor,
       idempotencyKey: "valid-paste",
       substantial: false,
+      sourceKind: "paste",
       basisKind: "automatic_short_text_attribution",
       determination: humanDetermination(),
       capturedAt: "2026-07-30T12:00:00.000Z",
@@ -561,9 +705,7 @@ describe("DurableCoworkPasteProvenanceOutbox", () => {
     );
 
     expect(stage.list(key)).toEqual([valid]);
-    expect(JSON.parse(storage.getItem(`${prefix}${key}`)!)).toEqual([
-      valid,
-    ]);
+    expect(JSON.parse(storage.getItem(`${prefix}${key}`)!)).toEqual([valid]);
     expect(
       storage
         .keys()
@@ -590,6 +732,7 @@ describe("DurableCoworkPasteProvenanceOutbox", () => {
       anchor,
       idempotencyKey: "valid-indexeddb-paste",
       substantial: false,
+      sourceKind: "paste",
       basisKind: "automatic_short_text_attribution",
       determination: humanDetermination(),
       capturedAt: "2026-07-30T12:00:00.000Z",
@@ -603,14 +746,13 @@ describe("DurableCoworkPasteProvenanceOutbox", () => {
     };
     const records = new Map<string, unknown>([[key, malformed]]);
     const warnings: CoworkPasteProvenanceStorageWarning[] = [];
-    const backing =
-      new IndexedDbCoworkPasteProvenanceOutboxBackingStore(
-        "test-database",
-        {
-          openDatabase: async () => fakeIndexedDatabase(records),
-          onWarning: (warning) => warnings.push(warning),
-        },
-      );
+    const backing = new IndexedDbCoworkPasteProvenanceOutboxBackingStore(
+      "test-database",
+      {
+        openDatabase: async () => fakeIndexedDatabase(records),
+        onWarning: (warning) => warnings.push(warning),
+      },
+    );
 
     const recovered = await backing.read(key);
 
@@ -622,9 +764,7 @@ describe("DurableCoworkPasteProvenanceOutbox", () => {
     expect(records.get(key)).toEqual(recovered);
     expect(
       [...records.keys()].some((candidate) =>
-        candidate.startsWith(
-          `__quarantine__:${encodeURIComponent(key)}:`,
-        ),
+        candidate.startsWith(`__quarantine__:${encodeURIComponent(key)}:`),
       ),
     ).toBe(true);
     expect(warnings).toEqual([
@@ -642,20 +782,19 @@ describe("DurableCoworkPasteProvenanceOutbox", () => {
     const database = fakeIndexedDatabase(records);
     const warnings: CoworkPasteProvenanceStorageWarning[] = [];
     let attempts = 0;
-    const backing =
-      new IndexedDbCoworkPasteProvenanceOutboxBackingStore(
-        "test-retry-database",
-        {
-          openDatabase: async () => {
-            attempts += 1;
-            if (attempts === 1) {
-              throw new Error("temporary browser failure");
-            }
-            return database;
-          },
-          onWarning: (warning) => warnings.push(warning),
+    const backing = new IndexedDbCoworkPasteProvenanceOutboxBackingStore(
+      "test-retry-database",
+      {
+        openDatabase: async () => {
+          attempts += 1;
+          if (attempts === 1) {
+            throw new Error("temporary browser failure");
+          }
+          return database;
         },
-      );
+        onWarning: (warning) => warnings.push(warning),
+      },
+    );
 
     await expect(backing.read("store:retry")).rejects.toThrow(
       "temporary browser failure",

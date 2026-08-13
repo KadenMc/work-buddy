@@ -1,6 +1,7 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Editor } from "@tiptap/core";
+import type { CoworkEditorLens } from "../editor/ledgerDecorations";
 import { DOMParser as ProseMirrorDOMParser } from "@tiptap/pm/model";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
@@ -21,6 +22,7 @@ import {
   DurableCoworkPasteProvenanceOutbox,
   InMemoryCoworkPasteProvenanceIntentStage,
   InMemoryCoworkPasteProvenanceOutboxBackingStore,
+  resolveCoworkPasteAnchor,
   unknownCoworkProvenanceDetermination,
   type CoworkPasteProvenanceCapture,
   type CoworkPasteProvenanceIntentStage,
@@ -28,6 +30,8 @@ import {
   type CoworkPasteProvenanceRecorder,
   type CoworkPasteProvenanceRequest,
   type CoworkProvenanceActorIdentity,
+  type ProvenanceData,
+  type ProvenanceProvider,
 } from "../provenance";
 import { CoworkHttpError } from "../providers/errors";
 import {
@@ -41,6 +45,7 @@ interface MountedPasteEditor {
   readonly server: InMemoryCoworkYdocTransport;
   readonly events: string[];
   readonly unmount: () => void;
+  readonly setActiveLens: (lens: CoworkEditorLens) => void;
 }
 
 let nextDocument = 0;
@@ -74,24 +79,31 @@ const mountPasteEditor = async (
     readonly provenanceActor?: CoworkProvenanceActorIdentity;
     readonly resolveActorFromServer?: boolean;
     readonly onPushStart?: () => void;
+    readonly beforePush?: () => Promise<void>;
+    readonly activeLens?: CoworkEditorLens;
+    readonly provenanceProvider?: ProvenanceProvider;
+    readonly document?: Y.Doc;
+    readonly server?: InMemoryCoworkYdocTransport;
   } = {},
 ): Promise<MountedPasteEditor> => {
-  const initialized = await bootstrapCoworkYdoc(
-    new TextEncoder().encode("Before after"),
-  );
-  if (!initialized.ok) throw new Error(initialized.message);
-  const server = new InMemoryCoworkYdocTransport();
-  const empty = await server.pull({});
-  await server.push({
-    batch: initialized.snapshot,
-    baseSha256: empty.docSha256,
-    baseStructuredHeadSha256: empty.structuredHeadSha256,
-    baseYdocGeneration: empty.ydocGeneration,
-    compaction: {
-      snapshot: initialized.snapshot,
-      snapshotSha256: initialized.snapshotSha256,
-    },
-  });
+  const server = options.server ?? new InMemoryCoworkYdocTransport();
+  if (options.server === undefined) {
+    const initialized = await bootstrapCoworkYdoc(
+      new TextEncoder().encode("Before after"),
+    );
+    if (!initialized.ok) throw new Error(initialized.message);
+    const empty = await server.pull({});
+    await server.push({
+      batch: initialized.snapshot,
+      baseSha256: empty.docSha256,
+      baseStructuredHeadSha256: empty.structuredHeadSha256,
+      baseYdocGeneration: empty.ydocGeneration,
+      compaction: {
+        snapshot: initialized.snapshot,
+        snapshotSha256: initialized.snapshotSha256,
+      },
+    });
+  }
 
   const events: string[] = [];
   const transport: CoworkYdocTransport = {
@@ -99,26 +111,31 @@ const mountPasteEditor = async (
     push: async (request: CoworkYdocPushRequest) => {
       events.push("push");
       options.onPushStart?.();
+      await options.beforePush?.();
       return server.push(request);
     },
   };
   const editorRef: { current: Editor | null } = { current: null };
-  const document = new Y.Doc();
+  const document = options.document ?? new Y.Doc();
   nextDocument += 1;
-  const rendered = render(
+  const documentId =
+    options.documentId ??
+    `paste-provenance-${String(nextDocument)}-${String(Date.now())}`;
+  const view = (activeLens: CoworkEditorLens | undefined) => (
     <CoworkBridgeEditor
       document={document}
       transport={transport}
       seedMarkdown=""
-      documentId={
-        options.documentId ??
-        `paste-provenance-${String(nextDocument)}-${String(Date.now())}`
-      }
+      documentId={documentId}
       storeId="paste-provenance-store"
+      activeLens={activeLens}
+      provenanceProvider={options.provenanceProvider}
+      provenanceSelectionActionsActive
+      onProvenanceSelectionAction={() => undefined}
       provenanceActor={
         options.resolveActorFromServer
           ? undefined
-          : options.provenanceActor ?? ACTOR
+          : (options.provenanceActor ?? ACTOR)
       }
       pasteProvenanceOutbox={options.outbox}
       onRecordPasteProvenance={async (request) => {
@@ -128,8 +145,9 @@ const mountPasteEditor = async (
       onReady={({ editor }) => {
         editorRef.current = editor;
       }}
-    />,
+    />
   );
+  const rendered = render(view(options.activeLens));
   await screen.findByRole(
     "textbox",
     { name: "Document editor" },
@@ -142,25 +160,49 @@ const mountPasteEditor = async (
     server,
     events,
     unmount: rendered.unmount,
+    setActiveLens: (lens) => rendered.rerender(view(lens)),
+  };
+};
+
+const emptyProvenanceData = (): ProvenanceData => ({
+  schema: "cowork-provenance-view/v1",
+  currentStructuredHeadSha256: null,
+  documentDefault: null,
+  spans: [],
+  history: [],
+  summary: {
+    totalTargets: 0,
+    currentSpanCount: 0,
+    aiUnreviewedCount: 0,
+    reviewedCount: 0,
+    conflictedCount: 0,
+    staleCount: 0,
+    unrecorded: true,
+  },
+});
+
+const provenanceProvider = (): ProvenanceProvider => {
+  const data = emptyProvenanceData();
+  return {
+    load: vi.fn().mockResolvedValue({ state: "ready", data }),
+    refresh: vi.fn().mockResolvedValue({ state: "ready", data }),
+    subscribe: () => () => undefined,
+    markReviewed: vi.fn().mockResolvedValue(undefined),
   };
 };
 
 const dispatchSimplePaste = (editor: Editor): void => {
   act(() => {
     editor.view.dispatch(
-      editor.state.tr
-        .insertText("pasted ", 8)
-        .setMeta("uiEvent", "paste"),
+      editor.state.tr.insertText("pasted ", 8).setMeta("uiEvent", "paste"),
     );
   });
 };
 
-const dispatchSubstantialPaste = (
-  editor: Editor,
-  position = 8,
-): void => {
+const dispatchSubstantialPaste = (editor: Editor, position = 8): void => {
   const host = document.createElement("div");
-  host.innerHTML = "<p>First pasted paragraph.</p><p>Second pasted paragraph.</p>";
+  host.innerHTML =
+    "<p>First pasted paragraph.</p><p>Second pasted paragraph.</p>";
   const slice = ProseMirrorDOMParser.fromSchema(editor.schema).parseSlice(host);
   act(() => {
     editor.view.dispatch(
@@ -172,18 +214,386 @@ const dispatchSubstantialPaste = (
 };
 
 describe("CoworkBridgeEditor paste provenance", () => {
+  it("records ordinary typing when Provenance opens immediately", async () => {
+    const requests: CoworkPasteProvenanceRequest[] = [];
+    const provider = provenanceProvider();
+    const outbox = new DurableCoworkPasteProvenanceOutbox(
+      `direct-entry-${String(Date.now())}`,
+      new InMemoryCoworkPasteProvenanceOutboxBackingStore(),
+    );
+    const mounted = await mountPasteEditor(
+      async (request) => {
+        requests.push(request);
+      },
+      { outbox, activeLens: "neutral", provenanceProvider: provider },
+    );
+
+    act(() => mounted.editor.commands.insertContentAt(1, "Test"));
+    mounted.setActiveLens("provenance");
+
+    await waitFor(() => expect(requests).toHaveLength(1), {
+      timeout: 10_000,
+    });
+    expect(requests[0]).toMatchObject({
+      sourceKind: "direct_entry",
+      basisKind: "automatic_direct_entry_attribution",
+      expectedActorRef: ACTOR.ref,
+      expectedActorIdentityStatus: ACTOR.identity_status,
+      anchor: { exact: "Test", prefix: "", suffix: "Before after" },
+      attestation: {
+        authorship: {
+          kind: "human",
+          contributors: [{ ref: ACTOR.ref }],
+        },
+      },
+    });
+    expect(provider.refresh).toHaveBeenCalledOnce();
+    await waitFor(() => expect(outbox.list()).resolves.toEqual([]));
+    expect(screen.queryByText(/where did this text come from/i)).toBeNull();
+  }, 30_000);
+
+  it("keeps corrections inside one honest direct-entry span", async () => {
+    const requests: CoworkPasteProvenanceRequest[] = [];
+    const mounted = await mountPasteEditor(
+      async (request) => {
+        requests.push(request);
+      },
+      { activeLens: "neutral", provenanceProvider: provenanceProvider() },
+    );
+
+    act(() => {
+      mounted.editor.commands.setTextSelection(1);
+      mounted.editor.commands.insertContent("Test");
+      mounted.editor.commands.deleteRange({ from: 4, to: 5 });
+      mounted.editor.commands.insertContentAt(4, "ting");
+    });
+    mounted.setActiveLens("provenance");
+
+    await waitFor(() => expect(requests).toHaveLength(1), {
+      timeout: 10_000,
+    });
+    expect(requests[0]?.anchor.exact).toBe("Testing");
+  }, 30_000);
+
+  it("maps displaced nearby bursts to one final head before freezing them", async () => {
+    const requests: CoworkPasteProvenanceRequest[] = [];
+    const outbox = new DurableCoworkPasteProvenanceOutbox(
+      `displaced-direct-${String(Date.now())}`,
+      new InMemoryCoworkPasteProvenanceOutboxBackingStore(),
+    );
+    const mounted = await mountPasteEditor(
+      async (request) => {
+        requests.push(request);
+      },
+      {
+        outbox,
+        activeLens: "neutral",
+        provenanceProvider: provenanceProvider(),
+      },
+    );
+
+    act(() => {
+      mounted.editor.commands.insertContentAt(8, "A");
+      // Insert before the first burst. This changes both its absolute position
+      // and its bounded prefix, so retaining the pre-transaction selector
+      // would not resolve against the final compacted document.
+      mounted.editor.commands.insertContentAt(1, "B");
+    });
+    mounted.setActiveLens("provenance");
+
+    await waitFor(() => expect(requests).toHaveLength(2), {
+      timeout: 10_000,
+    });
+    expect(
+      new Set(requests.map((request) => request.expectedStructuredHeadSha256))
+        .size,
+    ).toBe(1);
+    expect(requests.map((request) => request.anchor.exact).sort()).toEqual([
+      "A",
+      "B",
+    ]);
+    for (const request of requests) {
+      const resolution = resolveCoworkPasteAnchor(
+        mounted.editor.state.doc,
+        request.anchor,
+      );
+      expect(resolution.kind).toBe("unique");
+      if (resolution.kind === "unique") {
+        expect(
+          mounted.editor.state.doc.textBetween(
+            resolution.from,
+            resolution.to,
+            "\n",
+          ),
+        ).toBe(request.anchor.exact);
+      }
+    }
+    await waitFor(() => expect(outbox.list()).resolves.toEqual([]));
+  }, 30_000);
+
+  it("keeps a closing burst mapped when another edit lands during compaction", async () => {
+    let blockPush = false;
+    let releasePush!: () => void;
+    let enteredBlockedPush!: () => void;
+    const pushGate = new Promise<void>((resolve) => {
+      releasePush = resolve;
+    });
+    const blockedPushEntered = new Promise<void>((resolve) => {
+      enteredBlockedPush = resolve;
+    });
+    const requests: CoworkPasteProvenanceRequest[] = [];
+    const outbox = new DurableCoworkPasteProvenanceOutbox(
+      `inflight-map-${String(Date.now())}`,
+      new InMemoryCoworkPasteProvenanceOutboxBackingStore(),
+    );
+    const mounted = await mountPasteEditor(
+      async (request) => {
+        requests.push(request);
+      },
+      {
+        outbox,
+        activeLens: "neutral",
+        provenanceProvider: provenanceProvider(),
+        beforePush: async () => {
+          if (!blockPush) return;
+          enteredBlockedPush();
+          await pushGate;
+        },
+      },
+    );
+
+    act(() => mounted.editor.commands.insertContentAt(8, "A"));
+    await waitFor(() => expect(mounted.events).toContain("push"));
+    await waitFor(async () => {
+      expect((await outbox.list())[0]).toMatchObject({
+        status: "capturing",
+        anchor: { exact: "A" },
+      });
+    });
+
+    blockPush = true;
+    mounted.setActiveLens("provenance");
+    await blockedPushEntered;
+    act(() => mounted.editor.commands.insertContentAt(1, "B"));
+    releasePush();
+
+    await waitFor(() => expect(requests).toHaveLength(2), {
+      timeout: 10_000,
+    });
+    const original = requests.find((request) => request.anchor.exact === "A");
+    expect(original).toBeDefined();
+    const resolution = resolveCoworkPasteAnchor(
+      mounted.editor.state.doc,
+      original!.anchor,
+    );
+    expect(resolution.kind).toBe("unique");
+    if (resolution.kind === "unique") {
+      expect(
+        mounted.editor.state.doc.textBetween(
+          resolution.from,
+          resolution.to,
+          "\n",
+        ),
+      ).toBe("A");
+    }
+    await waitFor(() => expect(outbox.list()).resolves.toEqual([]));
+  }, 30_000);
+
+  it("cancels provenance when the whole newly typed burst is deleted", async () => {
+    const recorder = vi.fn<CoworkPasteProvenanceRecorder>().mockResolvedValue();
+    const outbox = new DurableCoworkPasteProvenanceOutbox(
+      `deleted-burst-${String(Date.now())}`,
+      new InMemoryCoworkPasteProvenanceOutboxBackingStore(),
+    );
+    const mounted = await mountPasteEditor(recorder, {
+      outbox,
+      activeLens: "neutral",
+      provenanceProvider: provenanceProvider(),
+    });
+
+    act(() => {
+      mounted.editor.commands.insertContentAt(1, "Test");
+      mounted.editor.commands.deleteRange({ from: 1, to: 5 });
+    });
+    mounted.setActiveLens("provenance");
+
+    await waitFor(() => expect(outbox.list()).resolves.toEqual([]));
+    expect(recorder).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alert")).toBeNull();
+  }, 30_000);
+
+  it("leaves an open typed burst durable across unmount and records it on reopen", async () => {
+    const requests: CoworkPasteProvenanceRequest[] = [];
+    const outbox = new DurableCoworkPasteProvenanceOutbox(
+      `reopen-direct-${String(Date.now())}`,
+      new InMemoryCoworkPasteProvenanceOutboxBackingStore(),
+    );
+    const documentId = `reopen-direct-document-${String(Date.now())}`;
+    const first = await mountPasteEditor(
+      async (request) => {
+        requests.push(request);
+      },
+      { outbox, document: new Y.Doc(), documentId, activeLens: "neutral" },
+    );
+    act(() => first.editor.commands.insertContentAt(1, "Test"));
+    await waitFor(async () => {
+      expect((await outbox.list())[0]).toMatchObject({
+        status: "capturing",
+        anchor: { exact: "Test" },
+      });
+    });
+    first.unmount();
+    expect(requests).toEqual([]);
+
+    const reopened = await mountPasteEditor(
+      async (request) => {
+        requests.push(request);
+      },
+      {
+        outbox,
+        documentId,
+        server: first.server,
+        document: new Y.Doc(),
+        activeLens: "provenance",
+        provenanceProvider: provenanceProvider(),
+      },
+    );
+    await waitFor(() => expect(requests).toHaveLength(1), {
+      timeout: 10_000,
+    });
+    expect(requests[0]?.anchor.exact).toBe("Test");
+    reopened.unmount();
+  }, 30_000);
+
+  it("retires an ownerless legacy actor-change row after reload so selection can record again", async () => {
+    const requests: CoworkPasteProvenanceRequest[] = [];
+    const outbox = new DurableCoworkPasteProvenanceOutbox(
+      `ownerless-legacy-${String(Date.now())}`,
+      new InMemoryCoworkPasteProvenanceOutboxBackingStore(),
+    );
+    await outbox.append({
+      anchor: { exact: "Before", prefix: "", suffix: " after" },
+      idempotencyKey: "prior-manual-key",
+      substantial: false,
+      capturedActor: ACTOR,
+      sourceKind: "legacy",
+      basisKind: "user_attestation",
+      determination: unknownCoworkProvenanceDetermination(),
+      capturedAt: new Date().toISOString(),
+      passageExcerpt: "Before",
+      status: "ready",
+    });
+    await outbox.resetAfterActorChange(
+      "actor-recovery",
+      unknownCoworkProvenanceDetermination(),
+    );
+
+    const mounted = await mountPasteEditor(
+      async (request) => {
+        requests.push(request);
+      },
+      {
+        outbox,
+        activeLens: "provenance",
+        provenanceProvider: provenanceProvider(),
+      },
+    );
+    await waitFor(() => expect(outbox.list()).resolves.toEqual([]));
+
+    act(() => {
+      mounted.editor.commands.setTextSelection({ from: 1, to: 7 });
+    });
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Record provenance" }),
+    );
+    await userEvent.click(
+      within(
+        screen.getByRole("dialog", { name: "Record provenance" }),
+      ).getByRole("button", { name: "Record provenance" }),
+    );
+
+    await waitFor(() => expect(requests).toHaveLength(1), {
+      timeout: 10_000,
+    });
+    expect(requests[0]).toMatchObject({
+      sourceKind: "legacy",
+      basisKind: "user_attestation",
+      expectedActorRef: ACTOR.ref,
+      anchor: { exact: "Before" },
+    });
+    await waitFor(() => expect(outbox.list()).resolves.toEqual([]));
+  }, 30_000);
+
+  it("never silently changes a frozen manual determination on ambiguous retry", async () => {
+    const recorder = vi
+      .fn<CoworkPasteProvenanceRecorder>()
+      .mockRejectedValueOnce(
+        new CoworkHttpError({
+          code: "network_error",
+          message: "Connection interrupted after submission.",
+          retryable: true,
+        }),
+      )
+      .mockResolvedValueOnce();
+    const outbox = new DurableCoworkPasteProvenanceOutbox(
+      `frozen-manual-${String(Date.now())}`,
+      new InMemoryCoworkPasteProvenanceOutboxBackingStore(),
+    );
+    const mounted = await mountPasteEditor(recorder, {
+      outbox,
+      activeLens: "provenance",
+      provenanceProvider: provenanceProvider(),
+    });
+    const user = userEvent.setup();
+
+    act(() => {
+      mounted.editor.commands.setTextSelection({ from: 1, to: 7 });
+    });
+    await user.click(
+      await screen.findByRole("button", { name: "Record provenance" }),
+    );
+    const dialog = screen.getByRole("dialog", { name: "Record provenance" });
+    const confirm = within(dialog).getByRole("button", {
+      name: "Record provenance",
+    });
+    await user.click(confirm);
+    await waitFor(() => expect(recorder).toHaveBeenCalledOnce());
+    await screen.findByText("Connection interrupted after submission.");
+
+    await user.click(
+      within(dialog).getByRole("button", { name: /Authorship/i }),
+    );
+    await user.click(screen.getByRole("option", { name: /AI-written/i }));
+    await user.click(confirm);
+
+    expect(recorder).toHaveBeenCalledOnce();
+    expect(
+      await screen.findByText(/pending request is already frozen/i),
+    ).toBeVisible();
+    expect(recorder.mock.calls[0]?.[0].attestation.authorship.kind).toBe(
+      "human",
+    );
+
+    await user.click(
+      within(dialog).getByRole("button", { name: /Authorship/i }),
+    );
+    await user.click(screen.getByRole("option", { name: /Human-written/i }));
+    await user.click(confirm);
+    await waitFor(() => expect(recorder).toHaveBeenCalledTimes(2));
+    expect(recorder.mock.calls[1]?.[0]).toEqual(recorder.mock.calls[0]?.[0]);
+    await waitFor(() => expect(outbox.list()).resolves.toEqual([]));
+  }, 30_000);
+
   it("journals provenance before the paste can enter durable Yjs state", async () => {
     const order: string[] = [];
-    const intentStage =
-      new InMemoryCoworkPasteProvenanceIntentStage();
+    const intentStage = new InMemoryCoworkPasteProvenanceIntentStage();
     const observingStage: CoworkPasteProvenanceIntentStage = {
       list: (key) => intentStage.list(key),
       put: (key: string, capture: CoworkPasteProvenanceCapture) => {
         order.push("journal");
         intentStage.put(key, capture);
       },
-      remove: (key, idempotencyKey) =>
-        intentStage.remove(key, idempotencyKey),
+      remove: (key, idempotencyKey) => intentStage.remove(key, idempotencyKey),
     };
     const outbox = new DurableCoworkPasteProvenanceOutbox(
       `ordering-${String(Date.now())}`,
@@ -214,10 +624,7 @@ describe("CoworkBridgeEditor paste provenance", () => {
     act(() => {
       mounted.editor.view.dispatch(
         mounted.editor.state.tr
-          .insertText(
-            "x".repeat(COWORK_PROVENANCE_EXACT_MAX_CHARS + 1),
-            8,
-          )
+          .insertText("x".repeat(COWORK_PROVENANCE_EXACT_MAX_CHARS + 1), 8)
           .setMeta("uiEvent", "paste"),
       );
     });
@@ -248,9 +655,7 @@ describe("CoworkBridgeEditor paste provenance", () => {
         if (!removeDuringFirstPush || liveEditor === null) return;
         removeDuringFirstPush = false;
         act(() => {
-          liveEditor!.view.dispatch(
-            liveEditor!.state.tr.delete(8, 15),
-          );
+          liveEditor!.view.dispatch(liveEditor!.state.tr.delete(8, 15));
         });
       },
     });
@@ -281,7 +686,7 @@ describe("CoworkBridgeEditor paste provenance", () => {
     // Recording is asynchronous; the user's text is present immediately.
     expect(mounted.editor.getText()).toBe("Before pasted after");
     await waitFor(() => expect(requests).toHaveLength(1));
-    expect(mounted.events).toEqual(["push", "record"]);
+    expect(mounted.events).toEqual(["push", "push", "record"]);
     expect(requests[0]).toMatchObject({
       storeId: "paste-provenance-store",
       basisKind: "automatic_short_text_attribution",
@@ -450,8 +855,7 @@ describe("CoworkBridgeEditor paste provenance", () => {
 
   it("rehydrates an unresolved determination after editor hydration", async () => {
     const user = userEvent.setup();
-    const backing =
-      new InMemoryCoworkPasteProvenanceOutboxBackingStore();
+    const backing = new InMemoryCoworkPasteProvenanceOutboxBackingStore();
     const persisted = new DurableCoworkPasteProvenanceOutbox(
       "paste-provenance-store:reload-doc",
       backing,
@@ -521,19 +925,11 @@ describe("CoworkBridgeEditor paste provenance", () => {
   }, 20_000);
 
   it("keeps one document queue across actor switches", () => {
-    const firstKey = coworkPasteProvenanceOutboxKey(
-      "store",
-      "document",
-    );
-    const secondKey = coworkPasteProvenanceOutboxKey(
-      "store",
-      "document",
-    );
+    const firstKey = coworkPasteProvenanceOutboxKey("store", "document");
+    const secondKey = coworkPasteProvenanceOutboxKey("store", "document");
 
     expect(secondKey).toBe(firstKey);
-    expect(coworkPasteProvenanceOutboxKey("store", "other")).not.toBe(
-      firstKey,
-    );
+    expect(coworkPasteProvenanceOutboxKey("store", "other")).not.toBe(firstKey);
   });
 
   it("refetches a changed actor and requires explicit reconfirmation without retrying blindly", async () => {
@@ -598,8 +994,7 @@ describe("CoworkBridgeEditor paste provenance", () => {
       await waitFor(() =>
         expect(
           actorFetch.mock.calls.filter(
-            ([input]) =>
-              String(input) === "/api/truth/cowork/current-actor",
+            ([input]) => String(input) === "/api/truth/cowork/current-actor",
           ),
         ).toHaveLength(1),
       );
@@ -632,9 +1027,7 @@ describe("CoworkBridgeEditor paste provenance", () => {
       );
       await screen.findByRole("dialog");
       await user.click(screen.getByRole("button", { name: /Authorship/i }));
-      await user.click(
-        screen.getByRole("option", { name: /^Human-written/ }),
-      );
+      await user.click(screen.getByRole("option", { name: /^Human-written/ }));
       await user.click(
         screen.getByRole("button", { name: "Confirm attribution" }),
       );
@@ -749,9 +1142,7 @@ describe("CoworkBridgeEditor paste provenance", () => {
     );
     await waitFor(() => expect(outbox.list()).resolves.toEqual([]));
     await waitFor(() =>
-      expect(
-        screen.queryByText(/paste attribution is waiting/i),
-      ).toBeNull(),
+      expect(screen.queryByText(/paste attribution is waiting/i)).toBeNull(),
     );
   }, 20_000);
 
@@ -849,9 +1240,7 @@ describe("CoworkBridgeEditor paste provenance", () => {
       });
       await waitFor(() => expect(actorAttempts).toBe(1));
       expect(editorSurface).toHaveAttribute("aria-readonly", "false");
-      expect(
-        screen.queryByText(/Reconnect Work Buddy to edit/i),
-      ).toBeNull();
+      expect(screen.queryByText(/Reconnect Work Buddy to edit/i)).toBeNull();
 
       dispatchSimplePaste(mounted.editor);
       await waitFor(async () => {
@@ -876,9 +1265,7 @@ describe("CoworkBridgeEditor paste provenance", () => {
         }),
       ).toBeVisible();
       expect(editorSurface).toHaveAttribute("aria-readonly", "false");
-      expect(
-        screen.queryByText(/Reconnect Work Buddy to edit/i),
-      ).toBeNull();
+      expect(screen.queryByText(/Reconnect Work Buddy to edit/i)).toBeNull();
     } finally {
       mounted?.unmount();
       vi.unstubAllGlobals();

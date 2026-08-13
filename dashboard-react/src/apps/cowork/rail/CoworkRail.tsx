@@ -41,6 +41,7 @@ import {
   type ProvenanceEditorIntegration,
   type ProvenanceProvider,
   type ProvenanceMutationBarrier,
+  type ProvenanceSelectionAction,
 } from "../provenance/view";
 import type { VerificationRecheckIntent } from "./contracts";
 import type { ReviewAnchorController, ReviewRailProvider } from "./provider";
@@ -92,6 +93,7 @@ export interface CoworkRailProps {
     readonly provider: ProvenanceProvider;
     readonly editor?: ProvenanceEditorIntegration;
     readonly mutationBarrier?: ProvenanceMutationBarrier;
+    readonly selectionAction?: ProvenanceSelectionAction | null;
   };
   readonly chat: CoworkRailChat;
   /** Fired only for a present user click on the wide Chat tab. */
@@ -451,6 +453,7 @@ export function CoworkRail(props: CoworkRailProps) {
             }
             editor={props.provenance.editor}
             mutationBarrier={props.provenance.mutationBarrier}
+            selectionAction={props.provenance.selectionAction}
             readOnly={props.readOnly}
           />
         )}

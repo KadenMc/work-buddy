@@ -21,6 +21,7 @@ from work_buddy.truth.provenance import (
     PROVENANCE_BASIS_KINDS,
     PROVENANCE_REVIEW_STATUSES,
     PROVENANCE_SOURCE_KINDS,
+    PROVENANCE_SPAN_SOURCE_BASIS_PAIRS,
     attestation_canonical_sha256,
     normalize_source,
 )
@@ -41,6 +42,8 @@ INPUT_ATTESTATION_SCHEMA = "cowork-authorship-attestation/v1"
 CURRENT_USER_IDENTITY_STATUSES = frozenset(
     {"local_actor_ref", "account_ref"}
 )
+SPAN_SOURCE_BASIS_PAIRS = PROVENANCE_SPAN_SOURCE_BASIS_PAIRS
+AUTOMATIC_SHORT_TEXT_MAX_CHARS = 599
 
 
 class ProvenanceActorBindingError(InvariantViolation):
@@ -550,7 +553,12 @@ def record_span_attestation(
     expected_structured_head_sha256: str | None = None,
     at: str | None = None,
 ) -> tuple[DocumentProvenanceAttestationRecord, str]:
-    """Anchor one pasted range and attest its authorship and review state."""
+    """Anchor one exact range and attest its authorship and review state.
+
+    The source/basis pair is deliberately closed.  In particular, a caller
+    cannot describe selected legacy text as direct entry or use a generic user
+    attestation to manufacture the stronger direct-entry observation.
+    """
 
     if actor.kind != "human" or not actor.ref:
         raise InvariantViolation("provenance attestation requires a human actor")
@@ -559,6 +567,33 @@ def record_span_attestation(
     key = _idempotency_key(idempotency_key)
     document_ref = _valid_record_id(document_id, "document_id")
     source_value = source or {"kind": "paste", "format": "plain_text"}
+    normalized_source = _source(source_value)
+    source_basis = (normalized_source["kind"], basis_kind)
+    if source_basis not in SPAN_SOURCE_BASIS_PAIRS:
+        raise InvariantViolation(
+            "source.kind and basis_kind are not an allowed provenance pair"
+        )
+    if basis_kind in {
+        "automatic_short_text_attribution",
+        "automatic_direct_entry_attribution",
+    }:
+        current_actor = actor_binding(actor)
+        if (
+            normalized["authorship"]["kind"] != "human"
+            or normalized["authorship"]["contributors"] != [current_actor]
+            or normalized["human_review"]
+            != {"status": "not_applicable", "reviewers": []}
+        ):
+            raise InvariantViolation(
+                "automatic attribution requires text authored by the acting user"
+            )
+        if (
+            basis_kind == "automatic_short_text_attribution"
+            and len(exact) > AUTOMATIC_SHORT_TEXT_MAX_CHARS
+        ):
+            raise InvariantViolation(
+                "automatic short-text attribution exceeds the size limit"
+            )
     expected_head = (
         None
         if expected_structured_head_sha256 is None
@@ -628,7 +663,7 @@ def record_span_attestation(
                         conn,
                         document_id=document.id,
                         attestation=attestation,
-                        source=source_value,
+                        source=normalized_source,
                         actor=actor,
                         idempotency_key=key,
                         target_kind="document_span",
@@ -686,7 +721,7 @@ def record_span_attestation(
                     conn,
                     document_id=document.id,
                     attestation=attestation,
-                    source=source_value,
+                    source=normalized_source,
                     actor=actor,
                     idempotency_key=key,
                     target_kind="document_span",
@@ -1340,12 +1375,14 @@ def record_human_review(
 
 __all__ = [
     "ATTESTATION_SCHEMA",
+    "AUTOMATIC_SHORT_TEXT_MAX_CHARS",
     "AUTHORSHIP_KINDS",
     "CURRENT_USER_IDENTITY_STATUSES",
     "ProvenanceActorBindingError",
     "ProvenanceConflictError",
     "ProvenanceReviewError",
     "REVIEW_STATUSES",
+    "SPAN_SOURCE_BASIS_PAIRS",
     "actor_binding",
     "list_attestations",
     "normalize_attestation",

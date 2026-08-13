@@ -2,9 +2,11 @@
 
 **Parent contract:** [README.md](README.md)
 
-**Delivery status:** implemented as one end-to-end vertical slice, with backend
-and frontend checkpoints that remain independently testable. This plan records
-the as-built boundary; the follow-ons under **Deferred** have not shipped.
+**Delivery status:** implemented as an end-to-end provenance lens plus a
+follow-up direct-entry and selection-repair slice. Backend, durable input
+delivery, and frontend checkpoints remain independently testable. This plan
+records the as-built boundary; the follow-ons under **Deferred** have not
+shipped.
 
 ## Workstreams and sequence
 
@@ -18,6 +20,10 @@ the as-built boundary; the follow-ons under **Deferred** have not shipped.
   coverage without last-write-wins inference.
 - [x] Define **Mark reviewed** as an append-only constrained supersession.
 - [x] Reserve hover for explanation and stable detail for action.
+- [x] Give ordinary local typing a durable exact-span provenance path and give
+  uncovered historical text an honest explicit repair path.
+- [x] Replace generic feedback affordances in the Provenance lens with one
+  coverage-aware provenance selection action.
 - [x] Record accessibility, narrow-layout, focus, scroll, loading, error, and
   read-only behavior.
 
@@ -131,6 +137,33 @@ actually contains the reviewed successor.
 - Keep prior data during background refresh and distinguish first load, empty,
   failure, and read-only state.
 
+### 3a. Durable direct-entry and manual-selection writes
+
+- Generalize the existing paste recovery journal and IndexedDB delivery queue
+  into a content-input provenance outbox with explicit `paste`, `direct_entry`,
+  and `legacy` source kinds.
+- Capture local inserted-text transactions synchronously before their only
+  in-memory shape can be lost. Exclude paste/drop, applied remote Yjs,
+  undo/redo, seed/system work, formatting-only changes, deletions outside an
+  open burst, and disjoint edits which cannot be represented by one honest
+  quote anchor.
+- Coalesce only a contiguous same-textblock typing burst. Map its range through
+  backspace and correction, cancel it when fully deleted, and close it only at
+  a quiescent persistence or interaction boundary.
+- Keep the capture-time determination immutable. A later identity/session must
+  never take authorship for keystrokes made under a different or unavailable
+  actor; actor changes require an honest fresh determination.
+- Reconcile the newest synchronously staged capture over an older unfrozen
+  `capturing` row after a crash, but never overwrite a ready or frozen request.
+- Flush Yjs, freeze the exact head and selector, require a unique server-bound
+  span, and retain the immutable request through ambiguous transport.
+- Let explicit selection repair use `source=legacy` and
+  `basis=user_attestation`; never relabel pre-existing uncovered text as recent
+  direct entry.
+- Add Truth schema v10 support for
+  `automatic_direct_entry_attribution`, retaining all v9 records, lineage,
+  canonical digests, idempotency, triggers, and portable export behavior.
+
 ### 4. Editor lens and hover
 
 - Extend `CoworkEditorLens` to `neutral | review | provenance | truth`.
@@ -142,6 +175,10 @@ actually contains the reviewed successor.
 - Expose compact hover/focus metadata through a clamped, dismissible card.
 - Make hover passive and action-free. It points people to Provenance for stable
   details; it never performs navigation or mutation itself.
+- Suppress the generic **Give feedback** selection affordance whenever the
+  Provenance lens owns the editor. Show one coverage-aware action instead:
+  Record, Review provenance, View, or Inspect. Review provenance routes to stable detail
+  rather than mutating from a transient bubble.
 - Preserve temporary Chat/Working-on highlights and clear incompatible
   persistent focus on lens changes.
 - Verify no document transaction, selection rewrite, scroll, or undo entry is
@@ -161,6 +198,10 @@ actually contains the reviewed successor.
   effective, writable, exact-current-head AI/mixed document-version or span
   target not already reviewed.
   A uniquely reanchored changed-head span explains why it is inspect-only.
+- Keep Mark reviewed visible but disabled with a reason for AI/mixed targets
+  which are not currently eligible. Give zero-record text one useful empty
+  state that explains new typing is automatic and existing text can be selected
+  for an explicit determination.
 - On success, retain geometry while repulling; on failure, retain the previous
   projection and give a typed recovery path.
 - Ensure all four tabs and every action remain usable in narrow layout, at 200%
@@ -182,7 +223,7 @@ actually contains the reviewed successor.
 
 | Layer | Required cases |
 |---|---|
-| Provenance model | effective leaf; linear supersession; existing fork surfaced; source/authorship preserved; reviewer/attester independent |
+| Provenance model | effective leaf; linear supersession; existing fork surfaced; source/authorship preserved; reviewer/attester independent; strict source/basis pairing; schema v9→v10 lineage preservation |
 | Review route | success; idempotent replay; idempotency mismatch; wrong document/target; already superseded; stale head; retired/read-only; missing CSRF/session/gesture; actor change |
 | Read projection | document target at matching head; document target after head drift; span selector payload; append history; malformed/conflicting records preserved as issue |
 | Span resolution | unique exact/prefix/suffix; missing; ambiguous repeated quote; compatible overlap; incompatible overlap; Unicode and block boundaries |
@@ -192,7 +233,9 @@ actually contains the reviewed successor.
 | Panel | summary/filter/list/inline detail/target history/complete document history; passive row focus; explicit one-shot Show in document; unresolved no-scroll; expanding detail preserves list scroll; background refresh geometry; loading/error/empty/read-only |
 | Rail | four-tab roving focus; Home/End; persisted pane; independent pane scroll; narrow-width reachability; Chat remains neutral |
 | Action UI | editor persistence lock; forced fresh preflight; fresh-head/leaf/anchor/peer-conflict recheck; eligibility; pending dedupe; stable idempotency key across ambiguous refresh; successful authoritative repull; typed stale/actor/idempotency recovery; AI remains AI after review |
-| Regression | Review/Truth/Chat lenses; temporary highlights; proposal and claim navigation; paste provenance outbox; Yjs persistence; production build and type-check |
+| Direct entry | one `Test` burst; idle/lens/blur close; backspace/correction; full deletion; cursor/block split; paste/drop/history/remote/format exclusion; disjoint-range rejection; capture-time actor retention; missing identity; crash after staged update; unmount/reopen; frozen request replay |
+| Selection UX | uncovered Record; exact eligible Review provenance routing; healthy View; stale/multiple/conflict Inspect; no Give feedback; manual legacy determination; narrow editor-pane reachability |
+| Regression | Review/Truth/Chat lenses; temporary highlights; proposal and claim navigation; content-input provenance outbox; Yjs persistence; production build and type-check |
 | Accessibility | state names without color; forced-colors; visible focus; keyboard-only detail/action; touch path; 200% zoom; reduced motion |
 
 ## End-to-end acceptance scenarios
@@ -257,6 +300,23 @@ Given an editor with selection, scroll, and undo history, when the user cycles
 Review → Provenance → Truth → Chat and opens/closes hover details, then content,
 Y.Doc, selection, scroll, and undo history are unchanged; only decorations and
 compatible persistent focus differ.
+
+### Newly typed text is recorded
+
+Given a current enrolled local inputter and an editable document, when the user
+types `Test` as one contiguous burst and switches to Provenance, then the edit
+is first durable in Yjs, one exact `direct_entry` span is appended at the same
+head with human authorship and review not applicable, the provider refreshes,
+and the passage no longer appears as unrecorded. Backspace and correction update
+that same burst; deleting it completely leaves no attestation.
+
+### Existing uncovered text is repaired honestly
+
+Given text created before direct-entry capture existed, when the user selects
+it in Provenance, then the transient action says **Record provenance**, the
+shared determination form names the selected passage, and the resulting exact
+span keeps `source=legacy` / **Untracked**. The system never infers that the
+current user typed historical text.
 
 ## Delivery gates
 

@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -11,6 +12,7 @@ import type {
   ProvenanceAttestation, ProvenanceEditorIntegration, ProvenanceLoad,
   ProvenanceProvider, ProvenanceTarget,
   ProvenanceMutationBarrier,
+  ProvenanceSelectionAction,
 } from "./contracts";
 import {
   provenanceDisplayedAxesFingerprint,
@@ -31,10 +33,13 @@ export interface ProvenancePanelProps {
   readonly editor?: ProvenanceEditorIntegration;
   readonly readOnly?: boolean;
   readonly mutationBarrier?: ProvenanceMutationBarrier;
+  /** Opens stable detail for a provenance-aware editor selection action. */
+  readonly selectionAction?: ProvenanceSelectionAction | null;
 }
 
 const sourceLabel = (attestation: ProvenanceAttestation): string => {
   const kind = attestation.source.kind;
+  if (kind === "legacy") return "Untracked / legacy";
   return typeof kind === "string" ? kind.replace(/_/gu, " ") : "Unknown source";
 };
 
@@ -332,20 +337,49 @@ function ProvenanceContents({
   load,
   provider, editor, mutationBarrier,
   readOnly,
+  selectionAction,
 }: {
   readonly load: ProvenanceLoad;
   readonly provider: ProvenanceProvider;
   readonly editor?: ProvenanceEditorIntegration;
   readonly readOnly?: boolean;
   readonly mutationBarrier?: ProvenanceMutationBarrier;
+  readonly selectionAction?: ProvenanceSelectionAction | null;
 }) {
   const view = load.state === "ready" ? load.data : undefined;
   const [filter, setFilter] = useState<ProvenanceFilter>("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [pendingId, setPendingId] = useState<string | null>(null);
   const mutationLock = useRef(false);
+  const routedRowRef = useRef<HTMLButtonElement | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  useEffect(() => {
+    if (
+      selectionAction === null ||
+      selectionAction === undefined ||
+      selectionAction.intent === "record" ||
+      selectionAction.targetIds.length === 0
+    ) {
+      return;
+    }
+    setFilter("all");
+    setSelectedId(selectionAction.targetIds[0]!);
+  }, [selectionAction]);
+  useLayoutEffect(() => {
+    const target = selectionAction?.targetIds[0];
+    if (
+      target === undefined ||
+      selectionAction?.intent === "record" ||
+      selectedId !== target
+    ) {
+      return;
+    }
+    const row = routedRowRef.current;
+    if (row === null) return;
+    row.focus({ preventScroll: true });
+    row.scrollIntoView?.({ block: "nearest" });
+  }, [selectedId, selectionAction]);
   if (view === undefined) {
     return (
       <div className="wb-cowork-provenance-panel__unavailable" role="status">
@@ -397,6 +431,9 @@ function ProvenanceContents({
       ),
     ) ?? true);
   const selected = targets.find((item) => targetId(item.target) === selectedId)?.target ?? null;
+  const hasText = editor?.hasText() ?? true;
+  const noRecordedProvenance =
+    !locallyDirty && hasText && targets.length === 0 && view.history.length === 0;
   const markReviewed = async (target: ProvenanceTarget): Promise<void> => {
     if (mutationLock.current) return;
     const record = effective(target);
@@ -492,17 +529,28 @@ function ProvenanceContents({
       <p className="wb-cowork-provenance-panel__success" aria-live="polite">
         {success ?? ""}
       </p>
-      {unrecorded && filter === "all" ? (
+      {noRecordedProvenance && filter === "all" ? (
+        <article className="wb-cowork-provenance-panel__unrecorded">
+          <h3>No provenance has been recorded for this document</h3>
+          <p>
+            New typing is recorded automatically. Select existing text to
+            record who wrote it and whether it was reviewed; its earlier source
+            will remain untracked.
+          </p>
+        </article>
+      ) : unrecorded && filter === "all" ? (
         <article className="wb-cowork-provenance-panel__unrecorded">
           <h3>Some text has no current provenance record</h3>
           <p>Unrecorded text is shown with the unknown pattern. It is not assumed to be human-authored.</p>
         </article>
       ) : null}
-      {!unrecorded && targets.length === 0 ? (
+      {!hasText ? (
         <p className="wb-cowork-provenance-panel__empty">There is no text to map yet.</p>
       ) : null}
-      {visible.length === 0 && (editor?.hasText() ?? true) ? (
-        <p className="wb-cowork-provenance-panel__empty">No provenance records match this filter.</p>
+      {visible.length === 0 ? (
+        hasText && (!noRecordedProvenance || filter !== "all") ? (
+          <p className="wb-cowork-provenance-panel__empty">No provenance records match this filter.</p>
+        ) : null
       ) : (
         <ol className="wb-cowork-provenance-panel__list">
           {visible.map(({ target, anchorResolution, peerConflictIds }, index) => {
@@ -519,6 +567,11 @@ function ProvenanceContents({
               <li key={`${id}:${String(index)}`} data-state={peerConflictIds.length > 0 || target.resolution === "conflicted" || target.target.currentness !== "current" ? "issue" : "recorded"}>
                 <button
                   type="button"
+                  ref={
+                    selectionAction?.targetIds[0] === id
+                      ? routedRowRef
+                      : undefined
+                  }
                   className="wb-cowork-provenance-panel__item"
                   aria-expanded={active}
                   onClick={() => {
@@ -568,29 +621,66 @@ function ProvenanceContents({
                         Show in document
                       </button>
                     ) : null}
-                    {canReview(target, anchorResolution.state, peerConflictIds.length > 0, locallyDirty) && view.currentStructuredHeadSha256 !== null && readOnly !== true && mutationBarrier !== undefined ? (
-                      <button
-                        type="button"
-                        disabled={pendingId !== null}
-                        onClick={() => void markReviewed(target)}
-                      >
-                        {pendingId === record?.attestationId ? "Recording…" : "Mark reviewed"}
-                      </button>
-                    ) : (
-                      <p className="wb-cowork-provenance-panel__reason">
-                        {peerConflictIds.length > 0
+                    {record !== null &&
+                    (record.authorship.kind === "ai" ||
+                      record.authorship.kind === "mixed") ? (() => {
+                        const targetCanReview = canReview(
+                          target,
+                          anchorResolution.state,
+                          peerConflictIds.length > 0,
+                          locallyDirty,
+                        );
+                        const reviewEnabled =
+                          targetCanReview &&
+                          view.currentStructuredHeadSha256 !== null &&
+                          readOnly !== true &&
+                          mutationBarrier !== undefined &&
+                          pendingId === null;
+                        const reason = pendingId === record.attestationId
+                          ? "Human review is being recorded."
+                          : pendingId !== null
+                            ? "Finish recording the current review before starting another."
+                          : peerConflictIds.length > 0
                           ? "Overlapping provenance records disagree, so review cannot be recorded."
                           : locallyDirty
                             ? "Synchronize local edits and refresh provenance before recording review."
-                          : view.currentStructuredHeadSha256 === null && canReview(target, anchorResolution.state)
-                            ? "No current structured document head is available, so review cannot be recorded."
-                          : readOnly === true && canReview(target, anchorResolution.state)
-                          ? "This document is read-only, so review cannot be recorded."
-                          : mutationBarrier === undefined && canReview(target, anchorResolution.state)
-                            ? "The editor is not ready to record review safely."
-                          : reviewBlockedReason(target)}
-                      </p>
-                    )}
+                            : view.currentStructuredHeadSha256 === null && targetCanReview
+                              ? "No current structured document head is available, so review cannot be recorded."
+                              : readOnly === true && targetCanReview
+                                ? "This document is read-only, so review cannot be recorded."
+                                : mutationBarrier === undefined && targetCanReview
+                                  ? "The editor is not ready to record review safely."
+                                  : reviewBlockedReason(target);
+                        const reasonId = `wb-cowork-provenance-review-reason-${id}`;
+                        return (
+                          <div className="wb-cowork-provenance-panel__actions">
+                            <h4>Actions</h4>
+                            <button
+                              type="button"
+                              disabled={!reviewEnabled}
+                              aria-describedby={reviewEnabled ? undefined : reasonId}
+                              onClick={() => void markReviewed(target)}
+                            >
+                              {pendingId === record.attestationId
+                                ? "Recording…"
+                                : "Mark reviewed"}
+                            </button>
+                            {reviewEnabled ? (
+                              <p className="wb-cowork-provenance-panel__reason">
+                                Records that you reviewed this text. It does not
+                                change its authorship or assert that it is true.
+                              </p>
+                            ) : (
+                              <p
+                                id={reasonId}
+                                className="wb-cowork-provenance-panel__reason"
+                              >
+                                {reason}
+                              </p>
+                            )}
+                          </div>
+                        );
+                      })() : null}
                   </div>
                 ) : null}
               </li>
@@ -673,7 +763,7 @@ export function ProvenancePanel(props: ProvenancePanelProps) {
     if (error !== null && data === null) return <div className="wb-cowork-provenance-panel__unavailable" role="alert"><h2>Provenance could not load</h2><p>{error}</p><button type="button" onClick={() => setReload((value) => value + 1)}>Retry</button></div>;
     if (data === null) return <p className="wb-cowork-provenance-panel__empty" role="status">Loading provenance…</p>;
     if (data.state === "unavailable") return <div className="wb-cowork-provenance-panel__unavailable" role="status"><h2>Provenance view unavailable</h2><p>{data.reason}</p><button type="button" onClick={() => setReload((value) => value + 1)}>Retry</button></div>;
-    return <>{error === null ? null : <p className="wb-cowork-provenance-panel__error" role="alert">{error} <button type="button" onClick={() => setReload((value) => value + 1)}>Retry</button></p>}<ProvenanceContents load={data} provider={props.provider} editor={props.editor} readOnly={props.readOnly} mutationBarrier={props.mutationBarrier} /></>;
-  }, [data, error, props.editor, props.mutationBarrier, props.provider, props.readOnly]);
+    return <>{error === null ? null : <p className="wb-cowork-provenance-panel__error" role="alert">{error} <button type="button" onClick={() => setReload((value) => value + 1)}>Retry</button></p>}<ProvenanceContents load={data} provider={props.provider} editor={props.editor} readOnly={props.readOnly} mutationBarrier={props.mutationBarrier} selectionAction={props.selectionAction} /></>;
+  }, [data, error, props.editor, props.mutationBarrier, props.provider, props.readOnly, props.selectionAction]);
   return <section className="wb-cowork-provenance-panel" aria-label="Document provenance" ref={props.scrollContainerRef}>{content}</section>;
 }

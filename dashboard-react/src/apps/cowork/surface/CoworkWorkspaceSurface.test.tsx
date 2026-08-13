@@ -31,6 +31,7 @@ import CoworkWorkspaceWidget, {
   reimportReceiptMatchesDocument,
 } from "../widget/CoworkWorkspaceWidget";
 import {
+  coworkProvenanceSelectionActionsActive,
   coworkEditorHelp,
   coworkExecutionSwitchConfirmation,
   resolveFixtureMode,
@@ -67,6 +68,23 @@ const presentation: WidgetPresentationContext = {
 const noopEmit: ComponentProps<typeof CoworkWorkspaceWidget>["emit"] = async (
   intent,
 ) => ({ intent_id: intent.intent_id, status: "accepted" });
+
+describe("Provenance selection actions", () => {
+  it("stay available in the visible editor pane on narrow workspaces", () => {
+    expect(
+      coworkProvenanceSelectionActionsActive("provenance", true, "editor"),
+    ).toBe(true);
+    expect(
+      coworkProvenanceSelectionActionsActive("provenance", true, "provenance"),
+    ).toBe(false);
+    expect(
+      coworkProvenanceSelectionActionsActive("provenance", false, "provenance"),
+    ).toBe(true);
+    expect(coworkProvenanceSelectionActionsActive("chat", true, "editor")).toBe(
+      false,
+    );
+  });
+});
 
 const DEMO_DOCUMENT: CoworkDocumentSummary = {
   documentId: "demo-doc",

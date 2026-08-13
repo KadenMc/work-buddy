@@ -60,6 +60,10 @@ const expectedHarnessNonce = process.env.COWORK_LIVE_HARNESS_NONCE;
 if (expectedHarnessNonce === undefined) {
   throw new Error("COWORK_LIVE_HARNESS_NONCE is required");
 }
+const backendBaseURL = process.env.COWORK_LIVE_BACKEND_URL;
+if (backendBaseURL === undefined) {
+  throw new Error("COWORK_LIVE_BACKEND_URL is required");
+}
 
 const digest = (bytes: Uint8Array): string =>
   createHash("sha256").update(bytes).digest("hex");
@@ -103,6 +107,54 @@ const gotoCowork = async (page: Page, search = "?mode=launcher"): Promise<void> 
   await expect(page.getByRole("heading", { level: 1, name: "Co-work" })).toBeVisible({
     timeout: 60_000,
   });
+};
+
+const mintBrowserIdentityBootstrap = async (page: Page): Promise<string> => {
+  // The mint route exists only in the isolated live server. Calling it from the
+  // directly served throwaway browser page supplies the exact Origin that will
+  // redeem it. Human authority deliberately rejects Vite's proxy-marked requests.
+  await page.goto(`${backendBaseURL}/app/`, { waitUntil: "domcontentloaded" });
+  const result = await page.evaluate(async ({ nonce }) => {
+    const denied = await fetch("/api/_cowork-live/identity-bootstrap", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ origin: window.location.origin }),
+    });
+    const mismatched = await fetch("/api/_cowork-live/identity-bootstrap", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-WB-Cowork-Live-Control": nonce,
+      },
+      body: JSON.stringify({ origin: "http://127.0.0.1:1" }),
+    });
+    const allowed = await fetch("/api/_cowork-live/identity-bootstrap", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-WB-Cowork-Live-Control": nonce,
+      },
+      body: JSON.stringify({ origin: window.location.origin }),
+    });
+    return {
+      deniedStatus: denied.status,
+      mismatchedStatus: mismatched.status,
+      allowedStatus: allowed.status,
+      payload: (await allowed.json()) as {
+        ok?: boolean;
+        token?: string;
+        origin?: string;
+        error?: string;
+      },
+      origin: window.location.origin,
+    };
+  }, { nonce: expectedHarnessNonce });
+  expect(result.deniedStatus).toBe(403);
+  expect(result.mismatchedStatus).toBe(403);
+  expect(result.allowedStatus, JSON.stringify(result.payload)).toBe(200);
+  expect(result.payload).toMatchObject({ ok: true, origin: result.origin });
+  expect(result.payload.token).toMatch(/^wbb_/);
+  return result.payload.token!;
 };
 
 const chooseFolder = async (
@@ -1075,6 +1127,120 @@ test.describe.serial("Co-work live lifecycle", () => {
     await page.goBack({ waitUntil: "domcontentloaded" });
     await expect(await waitForEditor(page)).toHaveText("");
     expect(currentRouteIds(page).documentId).toBe(firstDocumentId);
+  });
+
+  test("AC-PROV: direct-entry provenance is durable and owns selection actions", async ({
+    page,
+    request,
+  }) => {
+    const bootstrap = await mintBrowserIdentityBootstrap(page);
+    // Same-origin GET does not normally carry Origin, but bootstrap source reads
+    // are human-authority actions. Mirror a trusted browser launch's exact
+    // loopback boundary across every request in this isolated page.
+    await page.setExtraHTTPHeaders({ Origin: new URL(backendBaseURL).origin });
+    await page.goto(
+      `${backendBaseURL}/app/cowork?store_id=${fixture.initialized.store_id}` +
+        `#wb-bootstrap=${encodeURIComponent(bootstrap)}`,
+      { waitUntil: "domcontentloaded" },
+    );
+    await expect(page.getByRole("heading", { level: 1, name: "Co-work" })).toBeVisible({
+      timeout: 60_000,
+    });
+    expect(new URL(page.url()).hash).not.toContain("wb-bootstrap");
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(async () =>
+            (await fetch("/api/truth/cowork/current-actor")).status,
+          ),
+        { timeout: 30_000 },
+      )
+      .toBe(200);
+
+    await page.getByRole("button", { name: "New", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "New document" })).toBeVisible();
+    await page.getByLabel("Title").fill("Provenance Working Note");
+    await page.getByRole("button", { name: "Create document" }).click();
+    const editor = await waitForEditor(page);
+    await expect(editor).toHaveAttribute("aria-readonly", "false");
+    await expect(editor).toHaveText("");
+    const { documentId } = currentRouteIds(page);
+
+    await editor.click();
+    await page.keyboard.type("Test", { delay: 20 });
+    await expect(editor).toHaveText("Test");
+    await page.keyboard.press("Shift+Home");
+    await expect
+      .poll(() => page.evaluate(() => window.getSelection()?.toString() ?? ""))
+      .toBe("Test");
+
+    // Entering Provenance finalizes the active typing burst. The stable rail owns
+    // inspection while the contextual editor action becomes provenance-specific.
+    await page.getByRole("tab", { name: "Provenance", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Give feedback", exact: true })).toHaveCount(0);
+
+    const projectionUrl =
+      `${backendBaseURL}/api/truth/doc/${documentId}` +
+      `?store_id=${fixture.initialized.store_id}`;
+    await expect
+      .poll(async () => {
+        const response = await request.get(projectionUrl);
+        if (!response.ok()) return [{ status: response.status() }];
+        const payload = (await response.json()) as {
+          provenance?: {
+            spans?: readonly {
+              span?: { exact?: string } | null;
+              target?: { currentness?: string };
+              effective_attestation?: {
+                source?: { kind?: string };
+                basis?: { kind?: string };
+                authorship?: {
+                  kind?: string;
+                  contributors?: readonly {
+                    kind?: string;
+                    identity_status?: string;
+                  }[];
+                };
+                human_review?: { status?: string };
+              } | null;
+            }[];
+          };
+        };
+        return (payload.provenance?.spans ?? [])
+          .filter((span) => span.target?.currentness === "current")
+          .map((span) => ({
+            exact: span.span?.exact,
+            source: span.effective_attestation?.source?.kind,
+            basis: span.effective_attestation?.basis?.kind,
+            authorship: span.effective_attestation?.authorship?.kind,
+            contributors:
+              span.effective_attestation?.authorship?.contributors?.map(
+                (contributor) => ({
+                  kind: contributor.kind,
+                  identity_status: contributor.identity_status,
+                }),
+              ),
+            review: span.effective_attestation?.human_review?.status,
+          }));
+      }, { timeout: 30_000 })
+      .toEqual([
+        {
+          exact: "Test",
+          source: "direct_entry",
+          basis: "automatic_direct_entry_attribution",
+          authorship: "human",
+          contributors: [
+            {
+              kind: "human",
+              identity_status: "local_actor_ref",
+            },
+          ],
+          review: "not_applicable",
+        },
+      ]);
+    await expect(
+      page.getByRole("button", { name: "View provenance", exact: true }),
+    ).toBeVisible({ timeout: 30_000 });
   });
 
   test("Close Folder returns to the Folder launcher and can reopen it without a native picker", async ({

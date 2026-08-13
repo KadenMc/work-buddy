@@ -22,7 +22,7 @@ from work_buddy.storage.migrations import (
 
 logger = get_logger(__name__)
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 # Redacted spans retain their immutable identity/hash but not their quote or
 # quote context.  Keep the selector valid JSON (and valid for the existing
@@ -2198,6 +2198,131 @@ def _m009_source_backed_truth_provenance(conn: sqlite3.Connection) -> None:
     install_truth_hindsight_projection_schema(conn)
 
 
+def _m010_direct_entry_provenance_basis(conn: sqlite3.Connection) -> None:
+    """Admit honest automatic attribution for text typed in Co-work.
+
+    SQLite cannot widen a CHECK constraint in place. Rebuild only the
+    append-only provenance table, preserving every row and its insertion
+    order; indexes and immutability triggers are then restored verbatim.
+    """
+
+    conn.execute(
+        """
+        CREATE TABLE document_provenance_attestations_v10 (
+            id                            TEXT PRIMARY KEY,
+            document_id                   TEXT NOT NULL REFERENCES documents(id),
+            target_kind                   TEXT NOT NULL CHECK(
+                target_kind IN ('document_version', 'document_span')
+            ),
+            document_version_id           TEXT REFERENCES document_versions(id),
+            document_span_id              TEXT REFERENCES document_spans(id),
+            target_structured_head_sha256 TEXT NOT NULL,
+            authorship_kind               TEXT NOT NULL CHECK(
+                authorship_kind IN ('human', 'ai', 'mixed', 'unknown')
+            ),
+            human_contributors_json       TEXT NOT NULL,
+            review_status                 TEXT NOT NULL CHECK(
+                review_status IN (
+                    'reviewed', 'not_reviewed', 'not_applicable', 'unknown'
+                )
+            ),
+            human_reviewers_json          TEXT NOT NULL,
+            source_kind                   TEXT NOT NULL CHECK(
+                source_kind IN (
+                    'file_import', 'paste', 'direct_entry',
+                    'proposal_acceptance', 'legacy'
+                )
+            ),
+            source_json                   TEXT NOT NULL,
+            basis_kind                    TEXT NOT NULL CHECK(
+                basis_kind IN (
+                    'user_attestation', 'automatic_short_text_attribution',
+                    'automatic_direct_entry_attribution',
+                    'proposal_acceptance', 'migration_backfill', 'legacy'
+                )
+            ),
+            basis_ref                     TEXT,
+            supersedes_id                 TEXT
+                REFERENCES document_provenance_attestations_v10(id),
+            idempotency_key               TEXT NOT NULL,
+            canonical_sha256              TEXT NOT NULL UNIQUE,
+            created_at                    TEXT NOT NULL,
+            attested_by_kind              TEXT NOT NULL,
+            attested_by_ref               TEXT,
+            attested_by_meta_json         TEXT,
+            CHECK (
+                (
+                    target_kind = 'document_version'
+                    AND document_version_id IS NOT NULL
+                    AND document_span_id IS NULL
+                )
+                OR
+                (
+                    target_kind = 'document_span'
+                    AND document_span_id IS NOT NULL
+                    AND document_version_id IS NULL
+                )
+            )
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO document_provenance_attestations_v10 (
+            id, document_id, target_kind, document_version_id,
+            document_span_id, target_structured_head_sha256, authorship_kind,
+            human_contributors_json, review_status, human_reviewers_json,
+            source_kind, source_json, basis_kind, basis_ref, supersedes_id,
+            idempotency_key, canonical_sha256, created_at, attested_by_kind,
+            attested_by_ref, attested_by_meta_json
+        )
+        SELECT
+            id, document_id, target_kind, document_version_id,
+            document_span_id, target_structured_head_sha256, authorship_kind,
+            human_contributors_json, review_status, human_reviewers_json,
+            source_kind, source_json, basis_kind, basis_ref, supersedes_id,
+            idempotency_key, canonical_sha256, created_at, attested_by_kind,
+            attested_by_ref, attested_by_meta_json
+        FROM document_provenance_attestations
+        ORDER BY rowid
+        """
+    )
+    conn.execute("DROP TABLE document_provenance_attestations")
+    conn.execute(
+        "ALTER TABLE document_provenance_attestations_v10 "
+        "RENAME TO document_provenance_attestations"
+    )
+    for statement in (
+        "CREATE INDEX idx_document_provenance_document "
+        "ON document_provenance_attestations(document_id, created_at, id)",
+        "CREATE INDEX idx_document_provenance_version "
+        "ON document_provenance_attestations(document_version_id)",
+        "CREATE INDEX idx_document_provenance_span "
+        "ON document_provenance_attestations(document_span_id)",
+        "CREATE INDEX idx_document_provenance_supersedes "
+        "ON document_provenance_attestations(supersedes_id)",
+        "CREATE UNIQUE INDEX uq_document_provenance_idempotency "
+        "ON document_provenance_attestations("
+        "document_id, attested_by_kind, ifnull(attested_by_ref, ''), "
+        "idempotency_key)",
+        """
+        CREATE TRIGGER document_provenance_attestations_append_only_update
+        BEFORE UPDATE ON document_provenance_attestations
+        BEGIN
+            SELECT RAISE(ABORT, 'append-only');
+        END
+        """,
+        """
+        CREATE TRIGGER document_provenance_attestations_append_only_delete
+        BEFORE DELETE ON document_provenance_attestations
+        BEGIN
+            SELECT RAISE(ABORT, 'append-only');
+        END
+        """,
+    ):
+        conn.execute(statement)
+
+
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     row = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
@@ -2318,6 +2443,11 @@ TRUTH_MIGRATIONS = _TruthMigrationRunner(
             9,
             "source-backed Truth receipts and outcome-aware provenance",
             _m009_source_backed_truth_provenance,
+        ),
+        Migration(
+            10,
+            "automatic direct-entry provenance attribution",
+            _m010_direct_entry_provenance_basis,
         ),
     ],
 )

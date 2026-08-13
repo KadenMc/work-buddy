@@ -820,6 +820,7 @@ def test_paste_authorship_attestation_targets_exact_structured_head(
         }
     ]
     assert listed[0]["basis"]["kind"] == "automatic_short_text_attribution"
+    assert listed[0]["source"] == {"kind": "paste", "format": "plain_text"}
 
     replay = client.post(
         url,
@@ -846,6 +847,286 @@ def test_paste_authorship_attestation_targets_exact_structured_head(
     assert opened.get_json()["authorship_attestations"] == listed
 
 
+def test_direct_entry_authorship_projects_from_the_exact_current_head(
+    client,
+    seeded,
+):
+    document = seeded["document"]
+    head = ydoc_store.current_structured_head(
+        seeded["store"],
+        document_id=document.id,
+        snapshot_sha256=seeded["snapshot_sha256"],
+    )
+    url = _url(
+        f"/api/truth/doc/{document.id}/authorship-attestations",
+        seeded["store_id"],
+    )
+    body = {
+        "span": {"exact": DOC_QUOTE, "prefix": "", "suffix": ""},
+        "attestation": {
+            "schema": "cowork-authorship-attestation/v1",
+            "authorship": {
+                "kind": "human",
+                "contributors": [
+                    {
+                        "kind": "current_user",
+                        "ref": "reviewer-kaden",
+                        "identity_status": "local_actor_ref",
+                    }
+                ],
+            },
+            "human_review": {"status": "not_applicable", "reviewers": []},
+        },
+        "source_kind": "direct_entry",
+        "basis_kind": "automatic_direct_entry_attribution",
+        "expected_actor_ref": "reviewer-kaden",
+        "expected_actor_identity_status": "local_actor_ref",
+        "expected_structured_head_sha256": head,
+        "idempotency_key": "direct-entry-route-0001",
+    }
+
+    recorded = client.post(url, json=body)
+    replay = client.post(url, json=body)
+
+    assert recorded.status_code == replay.status_code == 201
+    receipt = recorded.get_json()
+    assert replay.get_json() == receipt
+    listed = provenance.list_attestations(seeded["store"], document.id)
+    assert len(listed) == 1
+    assert listed[0]["source"] == {
+        "kind": "direct_entry",
+        "format": "plain_text",
+    }
+    assert listed[0]["basis"] == {
+        "kind": "automatic_direct_entry_attribution",
+        "ref": None,
+    }
+    assert listed[0]["authorship"]["contributors"] == [
+        {
+            "kind": "human",
+            "ref": "reviewer-kaden",
+            "identity_status": "local_actor_ref",
+        }
+    ]
+
+    opened = client.get(_url(f"/api/truth/doc/{document.id}", seeded["store_id"]))
+    assert opened.status_code == 200
+    view = opened.get_json()["provenance"]
+    assert view["current_structured_head_sha256"] == head
+    assert view["summary"]["current_span_count"] == 1
+    assert view["spans"][0]["effective_attestation"] == listed[0]
+
+
+def test_unrecorded_selection_can_be_explicitly_attested_as_legacy_reviewed(
+    client,
+    seeded,
+):
+    document = seeded["document"]
+    head = ydoc_store.current_structured_head(
+        seeded["store"],
+        document_id=document.id,
+        snapshot_sha256=seeded["snapshot_sha256"],
+    )
+    response = client.post(
+        _url(
+            f"/api/truth/doc/{document.id}/authorship-attestations",
+            seeded["store_id"],
+        ),
+        json={
+            "span": {"exact": DOC_QUOTE, "prefix": "", "suffix": ""},
+            "attestation": {
+                "schema": "cowork-authorship-attestation/v1",
+                "authorship": {"kind": "ai", "contributors": []},
+                "human_review": {
+                    "status": "reviewed",
+                    "reviewers": [
+                        {
+                            "kind": "current_user",
+                            "ref": "reviewer-kaden",
+                            "identity_status": "local_actor_ref",
+                        }
+                    ],
+                },
+            },
+            "source_kind": "legacy",
+            "basis_kind": "user_attestation",
+            "expected_actor_ref": "reviewer-kaden",
+            "expected_actor_identity_status": "local_actor_ref",
+            "expected_structured_head_sha256": head,
+            "idempotency_key": "legacy-selection-review-0001",
+        },
+    )
+
+    assert response.status_code == 201
+    projected = client.get(
+        _url(f"/api/truth/doc/{document.id}", seeded["store_id"])
+    ).get_json()["provenance"]
+    effective = projected["spans"][0]["effective_attestation"]
+    assert effective["source"]["kind"] == "legacy"
+    assert effective["basis"]["kind"] == "user_attestation"
+    assert effective["authorship"]["kind"] == "ai"
+    assert effective["human_review"]["status"] == "reviewed"
+    assert effective["human_review"]["reviewers"][0]["ref"] == "reviewer-kaden"
+
+
+def test_legacy_attestation_replay_rejects_a_changed_acting_identity(
+    client,
+    seeded,
+):
+    document = seeded["document"]
+    head = ydoc_store.current_structured_head(
+        seeded["store"],
+        document_id=document.id,
+        snapshot_sha256=seeded["snapshot_sha256"],
+    )
+    response = client.post(
+        _url(
+            f"/api/truth/doc/{document.id}/authorship-attestations",
+            seeded["store_id"],
+        ),
+        json={
+            "span": {"exact": DOC_QUOTE, "prefix": "", "suffix": ""},
+            "attestation": {
+                "schema": "cowork-authorship-attestation/v1",
+                "authorship": {"kind": "ai", "contributors": []},
+                "human_review": {"status": "not_reviewed", "reviewers": []},
+            },
+            "source_kind": "legacy",
+            "basis_kind": "user_attestation",
+            "expected_actor_ref": "different-capture-time-actor",
+            "expected_actor_identity_status": "local_actor_ref",
+            "expected_structured_head_sha256": head,
+            "idempotency_key": "legacy-selection-actor-change-0001",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.get_json()["error"]["code"] == "provenance_actor_changed"
+    assert provenance.list_attestations(seeded["store"], document.id) == []
+
+
+@pytest.mark.parametrize("source_kind", ["direct_entry", "legacy"])
+def test_new_span_sources_require_a_capture_time_actor_binding(
+    client,
+    seeded,
+    source_kind,
+):
+    document = seeded["document"]
+    response = client.post(
+        _url(
+            f"/api/truth/doc/{document.id}/authorship-attestations",
+            seeded["store_id"],
+        ),
+        json={
+            "span": {"exact": DOC_QUOTE, "prefix": "", "suffix": ""},
+            "attestation": {
+                "schema": "cowork-authorship-attestation/v1",
+                "authorship": {"kind": "human", "contributors": []},
+                "human_review": {"status": "not_applicable", "reviewers": []},
+            },
+            "source_kind": source_kind,
+            "basis_kind": (
+                "automatic_direct_entry_attribution"
+                if source_kind == "direct_entry"
+                else "user_attestation"
+            ),
+            "expected_structured_head_sha256": "0" * 64,
+            "idempotency_key": f"missing-capture-actor-{source_kind}-0001",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == (
+        "expected_actor_ref and expected_actor_identity_status are required"
+    )
+    assert provenance.list_attestations(seeded["store"], document.id) == []
+
+
+@pytest.mark.parametrize(
+    ("source_kind", "basis_kind"),
+    [
+        ("direct_entry", "user_attestation"),
+        ("direct_entry", "automatic_short_text_attribution"),
+        ("paste", "automatic_direct_entry_attribution"),
+        ("legacy", "automatic_direct_entry_attribution"),
+        ("legacy", "automatic_short_text_attribution"),
+    ],
+)
+def test_span_authorship_route_rejects_invented_source_basis_pairs(
+    client,
+    seeded,
+    source_kind,
+    basis_kind,
+):
+    document = seeded["document"]
+    response = client.post(
+        _url(
+            f"/api/truth/doc/{document.id}/authorship-attestations",
+            seeded["store_id"],
+        ),
+        json={
+            "span": {"exact": DOC_QUOTE, "prefix": "", "suffix": ""},
+            "attestation": {
+                "schema": "cowork-authorship-attestation/v1",
+                "authorship": {"kind": "unknown", "contributors": []},
+                "human_review": {"status": "not_applicable", "reviewers": []},
+            },
+            "source_kind": source_kind,
+            "basis_kind": basis_kind,
+            "expected_structured_head_sha256": "0" * 64,
+            "idempotency_key": "invalid-source-basis-pair-0001",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == (
+        "source_kind and basis_kind are not an allowed pair"
+    )
+    assert provenance.list_attestations(seeded["store"], document.id) == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected_error"),
+    [
+        ("source_kind", "not-a-source", "source_kind is invalid"),
+        ("basis_kind", ["user_attestation"], "basis_kind is invalid"),
+    ],
+)
+def test_span_authorship_route_rejects_explicit_invalid_source_metadata(
+    client,
+    seeded,
+    field,
+    value,
+    expected_error,
+):
+    document = seeded["document"]
+    body = {
+        "span": {"exact": DOC_QUOTE, "prefix": "", "suffix": ""},
+        "attestation": {
+            "schema": "cowork-authorship-attestation/v1",
+            "authorship": {"kind": "unknown", "contributors": []},
+            "human_review": {"status": "not_applicable", "reviewers": []},
+        },
+        "source_kind": "paste",
+        "basis_kind": "user_attestation",
+        "expected_structured_head_sha256": "0" * 64,
+        "idempotency_key": "invalid-source-metadata-0001",
+    }
+    body[field] = value
+
+    response = client.post(
+        _url(
+            f"/api/truth/doc/{document.id}/authorship-attestations",
+            seeded["store_id"],
+        ),
+        json=body,
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error"] == expected_error
+    assert provenance.list_attestations(seeded["store"], document.id) == []
+
+
 def test_paste_authorship_attestation_rejects_stale_structured_head(
     client,
     seeded,
@@ -866,6 +1147,7 @@ def test_paste_authorship_attestation_rejects_stale_structured_head(
                     "reviewers": [],
                 },
             },
+            "source_kind": "paste",
             "expected_structured_head_sha256": "0" * 64,
             "idempotency_key": "paste-route-stale-0001",
         },
@@ -1136,6 +1418,7 @@ def test_automatic_paste_attribution_is_server_constrained(
         json={
             "span": {"exact": exact, "prefix": "", "suffix": ""},
             "attestation": attestation,
+            "source_kind": "paste",
             "basis_kind": "automatic_short_text_attribution",
             "expected_structured_head_sha256": head,
             "idempotency_key": "automatic-paste-guard-0001",

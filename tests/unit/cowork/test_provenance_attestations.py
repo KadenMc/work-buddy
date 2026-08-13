@@ -9,9 +9,9 @@ from pathlib import Path
 import pytest
 
 from work_buddy.cowork import bootstrap, provenance
-from work_buddy.truth import documents, ydoc_store
+from work_buddy.truth import documents, export as truth_export, ydoc_store
 from work_buddy.truth.contracts import Actor, InvariantViolation
-from work_buddy.truth.export import export_store, import_store
+from work_buddy.truth.export import FORMAT_VERSION, export_store, import_store
 from work_buddy.truth.identity import sha256_bytes
 from work_buddy.truth.queries import integrity_findings
 
@@ -505,6 +505,48 @@ def test_paste_idempotency_key_is_bound_to_the_exact_selector(store_ctx):
         )
 
 
+@pytest.mark.parametrize(
+    ("source_kind", "basis_kind"),
+    [
+        ("direct_entry", "user_attestation"),
+        ("direct_entry", "automatic_short_text_attribution"),
+        ("paste", "automatic_direct_entry_attribution"),
+        ("legacy", "automatic_direct_entry_attribution"),
+    ],
+)
+def test_span_attestation_rejects_unsupported_source_basis_pairs(
+    store_ctx,
+    source_kind,
+    basis_kind,
+):
+    store = store_ctx["store"]
+    document, version, _intent, _source = _import_ready(store_ctx)
+    history_before = store.list_document_provenance_attestations(document.id)
+    with pytest.raises(InvariantViolation, match="allowed provenance pair"):
+        provenance.record_span_attestation(
+            store,
+            document_id=document.id,
+            exact="durable provenance",
+            prefix="A ",
+            suffix=" target.",
+            attestation=_attestation(authorship="human", review="not_applicable"),
+            actor=HUMAN,
+            idempotency_key=f"invalid-source-basis-{source_kind}-{basis_kind}",
+            source={"kind": source_kind, "format": "plain_text"},
+            basis_kind=basis_kind,
+            expected_structured_head_sha256=version.structured_head_sha256,
+        )
+    assert store.list_document_provenance_attestations(document.id) == history_before
+    with store.connect() as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM document_spans WHERE document_id = ?",
+                (document.id,),
+            ).fetchone()[0]
+            == 0
+        )
+
+
 @pytest.mark.parametrize("authorship", ["ai", "mixed"])
 def test_human_review_supersedes_effective_ai_without_rewriting_source(
     store_ctx,
@@ -524,7 +566,7 @@ def test_human_review_supersedes_effective_ai_without_rewriting_source(
         ),
         actor=HUMAN,
         idempotency_key=f"review-origin-{authorship}-0001",
-        basis_kind="automatic_short_text_attribution",
+        basis_kind="user_attestation",
         expected_structured_head_sha256=version.structured_head_sha256,
     )
 
@@ -559,7 +601,7 @@ def test_human_review_supersedes_effective_ai_without_rewriting_source(
             "ref": HUMAN.ref,
         }
     ]
-    assert original.basis_kind == "automatic_short_text_attribution"
+    assert original.basis_kind == "user_attestation"
     assert reviewed.basis_kind == "user_attestation"
     assert reviewed.basis_ref == original.id
     assert reviewed.supersedes_id == original.id
@@ -572,13 +614,73 @@ def test_human_review_supersedes_effective_ai_without_rewriting_source(
     target = projection["spans"][0]
     assert target["resolution"] == "resolved"
     assert target["effective_attestation"]["attestation_id"] == reviewed.id
-    assert target["history"][0]["basis"]["kind"] == (
-        "automatic_short_text_attribution"
-    )
+    assert target["history"][0]["basis"]["kind"] == "user_attestation"
     assert target["history"][1]["basis"] == {
         "kind": "user_attestation",
         "ref": original.id,
     }
+
+
+def test_human_review_of_proposal_acceptance_round_trips(
+    store_ctx,
+    tmp_path: Path,
+):
+    store = store_ctx["store"]
+    document, initial_version, _intent, _source = _import_ready(store_ctx)
+    _document, version, _event = documents.commit_document_version(
+        store,
+        document_id=document.id,
+        kind="materialized",
+        projection_sha256=initial_version.projection_sha256,
+        ydoc_snapshot_sha256=initial_version.ydoc_snapshot_sha256,
+        structured_head_sha256=initial_version.structured_head_sha256,
+        actor=HUMAN,
+    )
+    proposal_id = "bb" * 16
+    original = provenance.record_document_attestation(
+        store,
+        document_id=document.id,
+        document_version_id=version.id,
+        attestation=_attestation(authorship="ai", review="not_reviewed"),
+        source={"kind": "proposal_acceptance", "proposal_id": proposal_id},
+        actor=HUMAN,
+        idempotency_key="proposal-acceptance-origin-0001",
+        basis_kind="proposal_acceptance",
+        basis_ref=proposal_id,
+    )
+
+    reviewed = provenance.record_human_review(
+        store,
+        document_id=document.id,
+        attestation_id=original.id,
+        actor=HUMAN,
+        idempotency_key="proposal-acceptance-review-0001",
+        expected_structured_head_sha256=version.structured_head_sha256,
+    )
+
+    assert original.source_kind == "proposal_acceptance"
+    assert original.basis_kind == "proposal_acceptance"
+    assert reviewed.source_kind == "proposal_acceptance"
+    assert reviewed.basis_kind == "user_attestation"
+    assert reviewed.basis_ref == original.id
+    assert reviewed.supersedes_id == original.id
+
+    exported = export_store(store)
+    target = tmp_path / "proposal-review-restored"
+    target.mkdir()
+    restored = import_store(
+        exported.path,
+        target,
+        registry=_EmptyRegistry(),
+    ).store
+    restored_rows = restored.list_document_provenance_attestations(document.id)
+    assert restored_rows == store.list_document_provenance_attestations(document.id)
+    assert any(
+        row.id == reviewed.id
+        and row.source_kind == "proposal_acceptance"
+        and row.basis_kind == "user_attestation"
+        for row in restored_rows
+    )
 
 
 def test_human_review_rejects_non_ai_stale_and_already_superseded_targets(
@@ -1093,24 +1195,62 @@ def test_effective_projection_mixed_target_heads_are_order_independent(
 def test_provenance_round_trips_and_integrity_detects_canonical_tampering(
     store_ctx,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     store = store_ctx["store"]
-    document, _version, _intent, _source = _import_ready(
+    document, version, _intent, _source = _import_ready(
         store_ctx,
         attestation=_attestation(authorship="ai", review="not_reviewed"),
     )
+    direct, _span_id = provenance.record_span_attestation(
+        store,
+        document_id=document.id,
+        exact="durable provenance",
+        prefix="A ",
+        suffix=" target.",
+        attestation=_attestation(authorship="human", review="not_applicable"),
+        actor=HUMAN,
+        idempotency_key="direct-entry-round-trip-0001",
+        source={"kind": "direct_entry", "format": "plain_text"},
+        basis_kind="automatic_direct_entry_attribution",
+        expected_structured_head_sha256=version.structured_head_sha256,
+    )
+    assert direct.source_kind == "direct_entry"
+    assert direct.basis_kind == "automatic_direct_entry_attribution"
     assert [finding for finding in integrity_findings(store) if finding.severity == "error"] == []
 
     exported = export_store(store)
+    header = json.loads(exported.path.read_text(encoding="utf-8").splitlines()[0])
+    assert header["format_version"] == FORMAT_VERSION == 10
+    v9_target = tmp_path / "v9-reader"
+    v9_target.mkdir()
+    with monkeypatch.context() as v9_reader:
+        v9_reader.setattr(truth_export, "FORMAT_VERSION", 9)
+        with pytest.raises(
+            truth_export.TruthImportError,
+            match="newer than supported v9",
+        ):
+            import_store(
+                exported.path,
+                v9_target,
+                registry=_EmptyRegistry(),
+            )
     target = tmp_path / "restored"
     target.mkdir()
-    restored = import_store(
+    imported = import_store(
         exported.path,
         target,
         registry=_EmptyRegistry(),
-    ).store
+    )
+    assert imported.source_format_version == 10
+    restored = imported.store
     restored_rows = restored.list_document_provenance_attestations(document.id)
     assert restored_rows == store.list_document_provenance_attestations(document.id)
+    assert any(
+        row.source_kind == "direct_entry"
+        and row.basis_kind == "automatic_direct_entry_attribution"
+        for row in restored_rows
+    )
     assert [finding for finding in integrity_findings(restored) if finding.severity == "error"] == []
 
     with restored.connect() as conn:

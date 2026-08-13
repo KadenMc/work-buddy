@@ -1,10 +1,12 @@
 import { Editor } from "@tiptap/core";
 import { DOMParser as ProseMirrorDOMParser, Slice } from "@tiptap/pm/model";
 import { describe, expect, it } from "vitest";
+import { ySyncPluginKey } from "@tiptap/y-tiptap";
 
 import { buildSchemaExtensions } from "../editor/extensions";
 import {
   COWORK_PROVENANCE_EXACT_MAX_CHARS,
+  coworkDirectEntryCaptureFromTransaction,
   coworkPastePassageExcerpt,
   coworkPasteCaptureFromTransaction,
   coworkPasteRangeFromTransaction,
@@ -143,5 +145,64 @@ describe("paste provenance classification", () => {
         "😀".repeat(COWORK_PROVENANCE_EXACT_MAX_CHARS),
       ),
     ).toBe(true);
+  });
+});
+
+describe("direct-entry provenance capture", () => {
+  it("captures the exact text inserted by a local typing transaction", () => {
+    const editor = new Editor({
+      extensions: buildSchemaExtensions(),
+      content: "<p>After</p>",
+    });
+    const transaction = editor.state.tr.insertText("Test", 1);
+    expect(coworkDirectEntryCaptureFromTransaction(transaction)).toEqual({
+      range: { from: 1, to: 5 },
+      anchor: { exact: "Test", prefix: "", suffix: "After" },
+    });
+    editor.destroy();
+  });
+
+  it("keeps paste, deletion, formatting, history, and applied Yjs work out", () => {
+    const editor = new Editor({
+      extensions: buildSchemaExtensions(),
+      content: "<p>Before</p>",
+    });
+    expect(
+      coworkDirectEntryCaptureFromTransaction(
+        editor.state.tr.insertText("paste", 1).setMeta("uiEvent", "paste"),
+      ),
+    ).toBeNull();
+    expect(
+      coworkDirectEntryCaptureFromTransaction(editor.state.tr.delete(1, 2)),
+    ).toBeNull();
+    expect(
+      coworkDirectEntryCaptureFromTransaction(
+        editor.state.tr.addMark(1, 3, editor.schema.marks.bold!.create()),
+      ),
+    ).toBeNull();
+    expect(
+      coworkDirectEntryCaptureFromTransaction(
+        editor.state.tr.insertText("undo", 1).setMeta("history$", {}),
+      ),
+    ).toBeNull();
+    expect(
+      coworkDirectEntryCaptureFromTransaction(
+        editor.state.tr
+          .insertText("remote", 1)
+          .setMeta(ySyncPluginKey, { isChangeOrigin: true }),
+      ),
+    ).toBeNull();
+    editor.destroy();
+  });
+
+  it("never attributes untouched text between disjoint inserted ranges", () => {
+    const editor = new Editor({
+      extensions: buildSchemaExtensions(),
+      content: "<p>alpha omega</p>",
+    });
+    const transaction = editor.state.tr.insertText("X", 2).insertText("Y", 10);
+
+    expect(coworkDirectEntryCaptureFromTransaction(transaction)).toBeNull();
+    editor.destroy();
   });
 });

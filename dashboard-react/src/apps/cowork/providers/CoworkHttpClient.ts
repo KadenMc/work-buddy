@@ -1015,6 +1015,15 @@ export class CoworkHttpClient {
     const body = {
       span: request.anchor,
       attestation: request.attestation,
+      ...(request.expectedActorRef === undefined
+        ? {}
+        : { expected_actor_ref: request.expectedActorRef }),
+      ...(request.expectedActorIdentityStatus === undefined
+        ? {}
+        : {
+            expected_actor_identity_status: request.expectedActorIdentityStatus,
+          }),
+      source_kind: request.sourceKind,
       basis_kind: request.basisKind,
       expected_structured_head_sha256:
         request.expectedStructuredHeadSha256,
@@ -1049,8 +1058,7 @@ export class CoworkHttpClient {
     ) {
       throw new CoworkHttpError({
         code: "invalid_provenance_response",
-        message:
-          "Co-work could not confirm where the pasted text was recorded.",
+        message: "Co-work could not confirm where the passage was recorded.",
         retryable: true,
       });
     }
