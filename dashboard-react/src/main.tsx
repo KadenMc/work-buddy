@@ -16,15 +16,30 @@ import { DashboardTemporalContextProvider } from "./dashboard/temporal/Dashboard
 import { DensityProvider } from "./theme/DensityProvider";
 import { ThemeProvider } from "./theme/ThemeProvider";
 import { TypographyScaleProvider } from "./theme/TypographyScaleProvider";
-import { initializeLocalIdentity } from "./security/localIdentity";
+import {
+  currentLocalIdentity,
+  hasLocalIdentityBootstrap,
+  initializeLocalIdentity,
+  refreshLocalIdentity,
+} from "./security/localIdentity";
 import "./theme.css";
 
 const widgetDraftRepository = createBrowserWidgetDraftRepository();
 
 // Consume a launcher-delivered bootstrap before a feature can issue a
-// human-authority mutation. Providers remain explicitly read-only if this
-// local boundary is unavailable; startup itself is never blocked.
+// human-authority mutation. Ordinary local editing does not depend on this
+// stronger boundary; focus recovery lets another trusted app tab restore it.
 void initializeLocalIdentity();
+window.addEventListener("hashchange", () => {
+  if (hasLocalIdentityBootstrap()) void refreshLocalIdentity();
+});
+const recoverFocusedLocalIdentity = (): void => {
+  if (!currentLocalIdentity().authenticated) void refreshLocalIdentity();
+};
+window.addEventListener("focus", recoverFocusedLocalIdentity);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") recoverFocusedLocalIdentity();
+});
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

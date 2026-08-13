@@ -42,6 +42,7 @@ import type {
   CoworkMaterializeReceipt,
   CoworkMaterializeRequest,
 } from "../materialization/contracts";
+import type { ProvenanceMutationBarrier } from "../provenance/view/contracts";
 import type { FeedbackCapture } from "../chat";
 import {
   CoworkFeedbackAffordance,
@@ -84,6 +85,11 @@ import {
   type CoworkProvenanceActorIdentity,
   type CoworkProvenanceDetermination,
 } from "../provenance";
+import {
+  initializeLocalIdentity,
+  refreshLocalIdentity,
+  subscribeLocalIdentity,
+} from "../../../security/localIdentity";
 
 /** What the host reports up once the canonical editor is mounted. */
 export interface CoworkEditorReadyContext {
@@ -141,6 +147,19 @@ export interface CoworkBridgeEditorProps {
   ) => void;
   readonly onMaterialized?: (receipt: CoworkMaterializeReceipt) => void;
   readonly onSittingWorkspace?: (workspace: CoworkSittingWorkspace | null) => void;
+  readonly onProvenanceMutationBarrier?: (
+    barrier: ProvenanceMutationBarrier | null,
+  ) => void;
+  /** Exact local-human edit signal; foreign hydration must not invalidate attribution. */
+  readonly onLocalProvenanceEdit?: () => void;
+  /**
+   * A normal persistence cycle durably flushed and compacted one unchanged
+   * editor generation. The consumer still verifies this head against a fresh
+   * provenance projection before treating attribution as current.
+   */
+  readonly onProvenancePersistenceSettled?: (
+    structuredHeadSha256: string,
+  ) => void;
   /** Narrow editor-owned exact-action capture seam lifted to the keyed live session. */
   readonly onActionSnapshotController?: (
     controller: CoworkActionSnapshotController | null,
@@ -476,7 +495,6 @@ function MountedBridgeEditor({
         pasteRecorderRef.current === undefined ||
         documentId === undefined ||
         storeId === undefined ||
-        resolvedProvenanceActor === undefined ||
         resolvedPasteProvenanceOutbox === undefined
       ) {
         return;
@@ -504,12 +522,15 @@ function MountedBridgeEditor({
                 persistence.docSha256,
             }),
       };
-      if (capture.substantial) {
+      if (capture.substantial || resolvedProvenanceActor === undefined) {
         const pendingCapture: CoworkPasteProvenanceCapture = {
           ...captureRequest,
-          substantial: true,
+          substantial: capture.substantial,
           basisKind: "user_attestation",
           determination: unknownCoworkProvenanceDetermination(),
+          ...(resolvedProvenanceActor === undefined
+            ? { requiresExplicitDetermination: true }
+            : {}),
           status: "awaiting_determination",
         };
         void resolvedPasteProvenanceOutbox
@@ -1017,13 +1038,12 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
   const [hydration, setHydration] = useState<{ readonly wasEmpty: boolean }>();
   const [hydrationError, setHydrationError] = useState<string>();
   const [attempt, setAttempt] = useState(0);
-  const provenanceEditingBlocked =
-    provenanceEnabled && provenanceActorState !== "ready";
-  const effectiveReadOnly =
-    (props.readOnly ?? false) || provenanceEditingBlocked;
+  const effectiveReadOnly = props.readOnly ?? false;
   const persistenceReadOnly = effectiveReadOnly || hydration === undefined;
   const editorRef = useRef<Editor | null>(null);
   const editGeneration = useRef(0);
+  const lastProvenanceSettlementGeneration = useRef(0);
+  const provenanceSettlementInFlight = useRef<Promise<void> | null>(null);
   const expectedFileSha256 = useRef(props.currentFileSha256 ?? null);
   const saveInFlight = useRef<Promise<void> | null>(null);
   const retryAttempt = useRef<{
@@ -1133,9 +1153,7 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
       if (effectiveReadOnly || props.canMaterialize === false) {
         publishMaterializationState({
           kind: "read_only",
-          reason: provenanceEditingBlocked
-            ? "Editing is paused until Co-work can bind provenance to the current identity."
-            : "This document cannot publish Markdown from this session.",
+          reason: "This document cannot publish Markdown from this session.",
         });
         return;
       }
@@ -1179,7 +1197,6 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
       effectiveReadOnly,
       props.canMaterialize,
       props.document,
-      provenanceEditingBlocked,
       publishMaterializationState,
     ],
   );
@@ -1328,6 +1345,49 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
     }
   }, [persistence]);
 
+  const settleProvenancePersistence = useCallback((): void => {
+    if (
+      props.onProvenancePersistenceSettled === undefined ||
+      provenanceSettlementInFlight.current !== null ||
+      editGeneration.current <= lastProvenanceSettlementGeneration.current ||
+      persistence.status !== "clean"
+    ) {
+      return;
+    }
+    const generation = editGeneration.current;
+    let retryForNewerGeneration = false;
+    const run = (async () => {
+      try {
+        await persistence.flush();
+        const editor = editorRef.current;
+        if (editor === null) return;
+        assertCanonicalCoworkEditorState(editor);
+        const receipt = await persistence.compact();
+        if (generation !== editGeneration.current) {
+          retryForNewerGeneration = true;
+          return;
+        }
+        lastProvenanceSettlementGeneration.current = generation;
+        props.onProvenancePersistenceSettled?.(
+          receipt.structuredHeadSha256,
+        );
+      } catch {
+        // Persistence publishes the actionable failure. Provenance remains
+        // dirty until a later successful settlement and fresh R2 projection.
+      } finally {
+        provenanceSettlementInFlight.current = null;
+        if (
+          retryForNewerGeneration &&
+          persistence.status === "clean" &&
+          editGeneration.current > lastProvenanceSettlementGeneration.current
+        ) {
+          queueMicrotask(settleProvenancePersistence);
+        }
+      }
+    })();
+    provenanceSettlementInFlight.current = run;
+  }, [persistence, props.onProvenancePersistenceSettled]);
+
   const settleForLifecycle = useCallback(async (): Promise<void> => {
     const currentEditor = editorRef.current;
     if (currentEditor === null) {
@@ -1437,6 +1497,9 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
         }
         const editor = editorRef.current;
         if (editor !== null) assertCanonicalCoworkEditorState(editor);
+        props.onProvenancePersistenceSettled?.(
+          response.structured_head_sha256,
+        );
         props.onSittingServerRefreshed?.();
       },
     }),
@@ -1444,15 +1507,51 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
       persistence,
       props.document,
       props.getProposalCatalog,
+      props.onProvenancePersistenceSettled,
       props.onSittingServerRefreshed,
       publishMaterializationState,
     ],
   );
 
+  const provenanceMutationBarrier = useMemo<ProvenanceMutationBarrier>(
+    () => ({
+      runWithSynchronizedDocument: async (operation) => {
+        const liveEditor = editorRef.current;
+        if (liveEditor === null) {
+          throw new Error("The document is still loading. Try again in a moment.");
+        }
+        const wasEditable = liveEditor.isEditable;
+        liveEditor.setEditable(false);
+        try {
+          if (persistence.lastError !== null || persistence.pendingBatchCount > 0) {
+            await persistence.retry();
+          }
+          await persistence.flush();
+          assertCanonicalCoworkEditorState(liveEditor);
+          const receipt = await persistence.compact();
+          return await operation({
+            structuredHeadSha256: receipt.structuredHeadSha256,
+          });
+        } finally {
+          if (wasEditable && !readOnlyRef.current && !liveEditor.isDestroyed) {
+            liveEditor.setEditable(true);
+          }
+        }
+      },
+    }),
+    [persistence],
+  );
+
+  useEffect(() => {
+    props.onProvenanceMutationBarrier?.(provenanceMutationBarrier);
+    return () => props.onProvenanceMutationBarrier?.(null);
+  }, [props.onProvenanceMutationBarrier, provenanceMutationBarrier]);
+
   useEffect(() => {
     const onUpdate = (_update: Uint8Array, origin: unknown): void => {
       if (!isLocalHumanOrigin(origin)) return;
       editGeneration.current += 1;
+      props.onLocalProvenanceEdit?.();
       retryAttempt.current = null;
       const fileSha256 = expectedFileSha256.current;
       if (fileSha256 !== null) {
@@ -1461,7 +1560,7 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
     };
     props.document.on("update", onUpdate);
     return () => props.document.off("update", onUpdate);
-  }, [props.document, publishMaterializationState]);
+  }, [props.document, props.onLocalProvenanceEdit, publishMaterializationState]);
 
   useEffect(() => {
     props.onMaterializationController?.(materializationController);
@@ -1500,6 +1599,14 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
     if (props.onSyncStatus === undefined) return;
     return persistence.subscribeStatus(props.onSyncStatus);
   }, [persistence, props.onSyncStatus]);
+
+  useEffect(
+    () =>
+      persistence.subscribeStatus((status) => {
+        if (status === "clean") settleProvenancePersistence();
+      }),
+    [persistence, settleProvenancePersistence],
+  );
 
   useEffect(() => {
     if (hydration === undefined || editorRef.current === null) return;
@@ -1559,7 +1666,19 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
     }
     setResolvedProvenanceActor(undefined);
     setProvenanceActorState("loading");
-    void provenanceClient.currentActor().then(
+    const resolveActor = async (): Promise<CoworkProvenanceActorIdentity> => {
+      const identity = provenanceActorAttempt > 0
+        ? await refreshLocalIdentity()
+        : await initializeLocalIdentity();
+      if (!identity.authenticated) {
+        throw new Error(
+          identity.reason ??
+            "This browser does not have an authenticated local Work Buddy session.",
+        );
+      }
+      return provenanceClient.currentActor();
+    };
+    void resolveActor().then(
       (actor) => {
         if (!active) return;
         setResolvedProvenanceActor(actor);
@@ -1582,6 +1701,16 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
   ]);
 
   useEffect(
+    () =>
+      subscribeLocalIdentity((identity) => {
+        if (identity.authenticated && provenanceActorState === "error") {
+          requestProvenanceActorRefresh();
+        }
+      }),
+    [provenanceActorState, requestProvenanceActorRefresh],
+  );
+
+  useEffect(
     () => () => {
       // In-app navigation awaits the explicit registry barrier. A direct host unmount has
       // no cancellable continuation, so dispose remains a best-effort fallback and must not
@@ -1593,21 +1722,6 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
 
   return (
     <section className="wb-cowork-editor" aria-label="Editor">
-      {hydration !== undefined && provenanceActorState === "error" ? (
-        <InlineAlert tone="danger" role="alert">
-          <strong>Editing is paused.</strong>
-          <span>
-            Co-work couldn’t bind paste attribution to the current identity.
-            You can still read the document.
-          </span>
-          <Button
-            size="small"
-            onClick={requestProvenanceActorRefresh}
-          >
-            Retry identity
-          </Button>
-        </InlineAlert>
-      ) : null}
       {hydrationError !== undefined ? (
         <InlineAlert tone="danger" role="alert" className="wb-cowork-editor__hydration-error">
           <strong>Document couldn’t be opened.</strong>

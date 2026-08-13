@@ -2,8 +2,13 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Editor } from "@tiptap/core";
 import { DOMParser as ProseMirrorDOMParser } from "@tiptap/pm/model";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
+
+import {
+  refreshLocalIdentity,
+  resetLocalIdentityForTests,
+} from "../../../security/localIdentity";
 
 import { bootstrapCoworkYdoc } from "../documents/bootstrapCoworkYdoc";
 import { InMemoryCoworkYdocTransport } from "../persistence/InMemoryCoworkYdocTransport";
@@ -44,6 +49,22 @@ const ACTOR = {
   ref: "dashboard-user",
   identity_status: "local_actor_ref",
 } as const;
+const LOCAL_PRINCIPAL = {
+  actor: {
+    schema: "wb.actor-ref/v1" as const,
+    issuer_authority_id: "wia_test",
+    subject: "wactor_test",
+    kind: "human" as const,
+    tenant_scope_id: "wts_test",
+  },
+  origin: window.location.origin,
+  audience: "work-buddy-dashboard",
+  session_expires_at: 99,
+  rotation_due_at: 50,
+  assurance: "enrolled_local_session" as const,
+};
+
+beforeEach(() => resetLocalIdentityForTests());
 
 const mountPasteEditor = async (
   recorder: CoworkPasteProvenanceRecorder,
@@ -538,6 +559,17 @@ describe("CoworkBridgeEditor paste provenance", () => {
       )
       .mockResolvedValueOnce();
     const actorFetch = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/local-identity/session/csrf") {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            authenticated: true,
+            principal: LOCAL_PRINCIPAL,
+            csrf_token: "wbc_actor_change",
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      }
       expect(String(input)).toBe("/api/truth/cowork/current-actor");
       return new Response(
         JSON.stringify({
@@ -563,7 +595,14 @@ describe("CoworkBridgeEditor paste provenance", () => {
           "The active identity changed before this attribution was saved. Confirm it again for the current person.",
         ),
       ).toBeVisible();
-      await waitFor(() => expect(actorFetch).toHaveBeenCalledOnce());
+      await waitFor(() =>
+        expect(
+          actorFetch.mock.calls.filter(
+            ([input]) =>
+              String(input) === "/api/truth/cowork/current-actor",
+          ),
+        ).toHaveLength(1),
+      );
       await new Promise((resolve) => window.setTimeout(resolve, 50));
       expect(recorder).toHaveBeenCalledOnce();
       expect(mounted.editor.getText()).toBe("Before pasted after");
@@ -750,13 +789,27 @@ describe("CoworkBridgeEditor paste provenance", () => {
     );
   }, 20_000);
 
-  it("hydrates read-only when actor lookup fails and recovers on direct retry", async () => {
-    const user = userEvent.setup();
+  it("keeps editing available and durably defers paste attribution when actor lookup fails", async () => {
     const recorder = vi.fn<CoworkPasteProvenanceRecorder>().mockResolvedValue();
+    const outbox = new DurableCoworkPasteProvenanceOutbox(
+      `missing-actor-${String(Date.now())}`,
+      new InMemoryCoworkPasteProvenanceOutboxBackingStore(),
+    );
     let actorAttempts = 0;
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input) === "/api/local-identity/session/csrf") {
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              authenticated: true,
+              principal: LOCAL_PRINCIPAL,
+              csrf_token: "wbc_test",
+            }),
+            { headers: { "Content-Type": "application/json" } },
+          );
+        }
         expect(String(input)).toBe("/api/truth/cowork/current-actor");
         actorAttempts += 1;
         if (actorAttempts === 1) {
@@ -789,24 +842,126 @@ describe("CoworkBridgeEditor paste provenance", () => {
     try {
       mounted = await mountPasteEditor(recorder, {
         resolveActorFromServer: true,
+        outbox,
       });
       const editorSurface = screen.getByRole("textbox", {
         name: "Document editor",
       });
-      expect(await screen.findByText("Editing is paused.")).toBeVisible();
-      expect(editorSurface).toHaveAttribute("aria-readonly", "true");
-
-      await user.click(
-        screen.getByRole("button", { name: "Retry identity" }),
-      );
-      await waitFor(() =>
-        expect(editorSurface).toHaveAttribute("aria-readonly", "false"),
-      );
-      expect(screen.queryByText("Editing is paused.")).toBeNull();
+      await waitFor(() => expect(actorAttempts).toBe(1));
+      expect(editorSurface).toHaveAttribute("aria-readonly", "false");
+      expect(
+        screen.queryByText(/Reconnect Work Buddy to edit/i),
+      ).toBeNull();
 
       dispatchSimplePaste(mounted.editor);
-      await waitFor(() => expect(recorder).toHaveBeenCalledOnce());
-      expect(actorAttempts).toBe(2);
+      await waitFor(async () => {
+        const entries = await outbox.list();
+        expect(entries).toHaveLength(1);
+        expect(entries[0]).toMatchObject({
+          substantial: false,
+          status: "awaiting_determination",
+          requiresExplicitDetermination: true,
+          determination: unknownCoworkProvenanceDetermination(),
+        });
+      });
+      expect(recorder).not.toHaveBeenCalled();
+
+      await act(async () => {
+        await refreshLocalIdentity();
+      });
+      await waitFor(() => expect(actorAttempts).toBe(2));
+      expect(
+        await screen.findByRole("dialog", {
+          name: "Where did this text come from?",
+        }),
+      ).toBeVisible();
+      expect(editorSurface).toHaveAttribute("aria-readonly", "false");
+      expect(
+        screen.queryByText(/Reconnect Work Buddy to edit/i),
+      ).toBeNull();
+    } finally {
+      mounted?.unmount();
+      vi.unstubAllGlobals();
+    }
+  }, 20_000);
+
+  it("keeps editing available while a launcher identity is absent and reconnects silently", async () => {
+    const recorder = vi.fn<CoworkPasteProvenanceRecorder>().mockResolvedValue();
+    const outbox = new DurableCoworkPasteProvenanceOutbox(
+      `missing-session-${String(Date.now())}`,
+      new InMemoryCoworkPasteProvenanceOutboxBackingStore(),
+    );
+    let sessionAttempts = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/local-identity/session/csrf") {
+          sessionAttempts += 1;
+          if (sessionAttempts === 1) {
+            return new Response(
+              JSON.stringify({
+                ok: true,
+                authenticated: false,
+                human_authority_available: false,
+              }),
+              { headers: { "Content-Type": "application/json" } },
+            );
+          }
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              authenticated: true,
+              principal: LOCAL_PRINCIPAL,
+              csrf_token: "wbc_reconnected",
+            }),
+            { headers: { "Content-Type": "application/json" } },
+          );
+        }
+        expect(url).toBe("/api/truth/cowork/current-actor");
+        return new Response(
+          JSON.stringify({
+            kind: "human",
+            ref: ACTOR.ref,
+            identity_status: ACTOR.identity_status,
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      }),
+    );
+
+    let mounted: MountedPasteEditor | undefined;
+    try {
+      mounted = await mountPasteEditor(recorder, {
+        resolveActorFromServer: true,
+        outbox,
+      });
+      const editorSurface = screen.getByRole("textbox", {
+        name: "Document editor",
+      });
+      await waitFor(() => expect(sessionAttempts).toBe(1));
+      expect(editorSurface).toHaveAttribute("aria-readonly", "false");
+      expect(screen.queryByRole("alert")).toBeNull();
+
+      dispatchSimplePaste(mounted.editor);
+      await waitFor(async () =>
+        expect((await outbox.list())[0]).toMatchObject({
+          status: "awaiting_determination",
+          requiresExplicitDetermination: true,
+        }),
+      );
+
+      await act(async () => {
+        await refreshLocalIdentity();
+      });
+      expect(
+        await screen.findByRole("dialog", {
+          name: "Where did this text come from?",
+        }),
+      ).toBeVisible();
+      expect(editorSurface).toHaveAttribute("aria-readonly", "false");
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(sessionAttempts).toBeGreaterThanOrEqual(2);
     } finally {
       mounted?.unmount();
       vi.unstubAllGlobals();

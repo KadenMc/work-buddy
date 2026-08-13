@@ -201,19 +201,27 @@ const renderTruthRail = ({ help = false }: { readonly help?: boolean } = {}) => 
 };
 
 describe("CoworkRail Truth integration", () => {
-  it("presents Review, Truth, and Chat as one roving desktop tablist", async () => {
+  it("presents Review, Provenance, Truth, and Chat as one roving desktop tablist", async () => {
     const user = userEvent.setup();
     renderTruthRail();
 
     const review = screen.getByRole("tab", { name: "Review" });
+    const provenance = screen.getByRole("tab", { name: "Provenance" });
     const truth = screen.getByRole("tab", { name: "Truth" });
     const chat = screen.getByRole("tab", { name: /Chat/ });
     expect(review).toHaveAttribute("aria-selected", "true");
     expect(review).toHaveAttribute("tabindex", "0");
+    expect(provenance).toHaveAttribute("tabindex", "-1");
     expect(truth).toHaveAttribute("tabindex", "-1");
     expect(chat).toHaveAttribute("tabindex", "-1");
 
     review.focus();
+    await user.keyboard("{ArrowRight}");
+    expect(provenance).toHaveFocus();
+    expect(provenance).toHaveAttribute("aria-selected", "true");
+    expect(provenance).toHaveAttribute("tabindex", "0");
+    expect(review).toHaveAttribute("tabindex", "-1");
+
     await user.keyboard("{ArrowRight}");
     expect(truth).toHaveFocus();
     expect(truth).toHaveAttribute("aria-selected", "true");
@@ -225,10 +233,10 @@ describe("CoworkRail Truth integration", () => {
     expect(chat).toHaveAttribute("aria-selected", "true");
   });
 
-  it("uses the existing Review, Truth, and Chat tabs as hover-help targets", () => {
+  it("uses the existing Review, Provenance, Truth, and Chat tabs as hover-help targets", () => {
     renderTruthRail({ help: true });
 
-    for (const name of ["Review", "Truth", /Chat/]) {
+    for (const name of ["Review", "Provenance", "Truth", /Chat/]) {
       expect(screen.getByRole("tab", { name })).toHaveAttribute(
         "data-help-target",
         "true",

@@ -1,8 +1,8 @@
 ---
 name: Co-work Truth surface
 kind: system
-description: First-class Co-work rail surface for observing and managing the claims, expressions, provenance, and lifecycle beneath a document or Folder.
-summary: Truth is the AI-assisted domain workspace for discovering, grounding, deciding, and maintaining claims, expressions, evidence, provenance, and lifecycle beneath a document or Folder. Analyze passage prepares atomic claims and may perform bounded guarded web research; manual claim and connection authoring are secondary. Truth owns full domain review, Review cross-lists attention, Chat remains a peer interaction surface but does not yet start or steer Truth analysis, and Verify remains criteria evaluation.
+description: First-class Co-work rail surface for observing and managing the claims, expressions, evidence, decision provenance, and lifecycle beneath a document or Folder.
+summary: Truth is the AI-assisted domain workspace for discovering, grounding, deciding, and maintaining claims, expressions, evidence, decision provenance, and lifecycle beneath a document or Folder. Document source, authorship, and human-review attestations have their own Provenance rail and editor lens. Analyze passage prepares atomic claims and may perform bounded guarded web research; Review cross-lists attention, Chat remains a peer interaction surface, and Verify remains criteria evaluation.
 entry_points:
 - work_buddy.truth.queries
 - work_buddy.truth.expressions
@@ -39,7 +39,15 @@ dev_notes: |-
   base_status separate from the needs_review overlay. SSE is only an
   invalidation nudge followed by an authoritative repull.
 
-  A Truth lens is a ProseMirror decoration state, never document state. Lens
+  Provenance likewise owns a dedicated typed provider and panel projection. It
+  may share the authoritative open-document snapshot source, but Review and
+  Truth do not become general provenance transports. Its Mark reviewed path
+  remains behind the editor persistence barrier and a forced-fresh exact-head
+  preflight.
+
+  A Truth lens is a ProseMirror decoration state, never document state. It owns
+  expression anchors; the peer Provenance lens owns document source,
+  authorship, and human-review treatments. Lens
   changes must not write a transaction that alters the document, Y.Doc,
   Markdown, editor selection, scroll position, or undo history. A user passage
   activation is a one-shot reveal command and is never persisted or replayed.
@@ -78,10 +86,13 @@ dev_notes: |-
 # Co-work Truth surface
 
 Truth is a first-class user surface within Co-work. The rail tabs are
-**Review | Truth | Chat**:
+**Review | Provenance | Truth | Chat**:
 
 - **Review** answers “What needs my decision?” and remains the inbox for edit
   proposals, flags, evaluation results, and cross-listed claim attention.
+- **Provenance** answers “Where did these words come from, who is said to have
+  written them, and what human review is recorded?” It owns document-level and
+  exact-span source/authorship/review attestations.
 - **Truth** answers “What does this work rest on?” and owns both observation
   and the complete domain review for claim, expression, and evidence work.
 - **Chat** remains the general conversational interaction surface. Starting,
@@ -199,15 +210,33 @@ builds and maintains the claim-expression-evidence record.
 The editor lens is explicit view state:
 
 - `review` projects proposals, flags, and evaluation-result anchors;
-- `truth` projects expression and provenance anchors; and
+- `provenance` projects document source, authorship, human-review, and
+  target-health treatments;
+- `truth` projects expression anchors; and
 - `neutral` projects neither persistent ledger overlay.
 
-Review selects the review lens, Truth selects the truth lens, and Chat selects
-neutral. Temporary Working on and Chat passage highlights remain independent.
-A lens switch replaces decorations only and clears incompatible focus; it never
-changes content, selection, scroll, or persisted document state. Clicking a
-claim or one of its expressions issues one present-user navigation command.
-Refresh may restore emphasis but never replay that reveal.
+Review selects the review lens, Provenance selects the provenance lens, Truth
+selects the truth lens, and Chat selects neutral. Temporary Working on and Chat
+passage highlights remain independent. A lens switch replaces decorations only
+and clears incompatible focus; it never changes content, selection, scroll, or
+persisted document state. Clicking a claim or one of its expressions issues one
+present-user navigation command. Refresh may restore emphasis but never replay
+that reveal.
+
+Truth still explains provenance attached to Truth-domain records: who prepared
+or decided a candidate, how evidence was acquired, and what source occurrence a
+receipt retains. That does not make Truth the home for document-authorship and
+human-review attestations. Their exact coverage, supersession history, hover
+explanation, and **Mark reviewed** action belong to Provenance. The accepted
+boundary and overlay contract live at
+`.data/designs/co-work/provenance-surface/README.md`.
+
+The Provenance list is deliberately non-navigating by default: selecting a row
+opens stable detail and may focus compatible decoration, while **Show in
+document** is the explicit one-shot reveal. Hover is passive and action-free.
+A changed-head span that reanchors uniquely remains inspectable but cannot be
+used for **Mark reviewed**; review requires an editor persistence barrier, a
+forced authoritative refresh, and one exact current head.
 
 ## Modification authority and limits
 
@@ -321,8 +350,9 @@ dependency state first identify affected work; semantic re-evaluation remains
 an explicit bounded action.
 
 Distinguish no document connections, an empty Folder ledger, and no filter
-matches. The rail tablist uses roving keyboard focus with Arrow keys and
-Home/End. Claim cards retain semantic keyboard activation, nested controls do
+matches. The four-item rail tablist uses roving keyboard focus with Arrow keys
+and Home/End and keeps every tab reachable at narrow widths. Claim cards retain
+semantic keyboard activation, nested controls do
 not also select the card, and status meaning never depends on color alone.
 
 The accepted architecture and full acceptance contract live at

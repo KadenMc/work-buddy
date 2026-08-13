@@ -1,7 +1,10 @@
 import type { Editor } from "@tiptap/core";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { resolveQuoteAnchor } from "../anchor";
+import {
+  resolveProvenanceQuoteAnchorDetailed,
+  resolveQuoteAnchor,
+} from "../anchor";
 import { makeSuggestionEditor } from "./support";
 
 let editor: Editor | undefined;
@@ -9,6 +12,37 @@ let editor: Editor | undefined;
 afterEach(() => {
   editor?.destroy();
   editor = undefined;
+});
+
+describe("resolveProvenanceQuoteAnchorDetailed", () => {
+  it("rejects a unique exact quote when its supplied context changed", () => {
+    editor = makeSuggestionEditor({ content: "<p>New context unique passage here.</p>" });
+    expect(
+      resolveProvenanceQuoteAnchorDetailed(editor.state.doc, {
+        exact: "unique passage",
+        prefix: "Old context ",
+        suffix: " here.",
+      }),
+    ).toEqual({ state: "missing" });
+  });
+
+  it("filters repeated exact matches through both context sides", () => {
+    editor = makeSuggestionEditor({
+      content: "<p>Alpha target one. Beta target two.</p>",
+    });
+    const resolution = resolveProvenanceQuoteAnchorDetailed(editor.state.doc, {
+      exact: "target",
+      prefix: "Beta ",
+      suffix: " two.",
+    });
+    expect(resolution.state).toBe("unique");
+    if (resolution.state === "unique") {
+      expect(textOf(editor, resolution)).toBe("target");
+      expect(editor.state.doc.textBetween(resolution.to, resolution.to + 5)).toBe(
+        " two.",
+      );
+    }
+  });
 });
 
 const textOf = (ed: Editor, range: { from: number; to: number }): string =>

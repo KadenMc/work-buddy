@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   CoworkLedgerDecorations,
   projectCoworkLedgerDecorations,
+  setCoworkEditorLens,
 } from "../editor/ledgerDecorations";
 import { DomReviewAnchorController } from "./DomReviewAnchorController";
 
@@ -138,6 +139,75 @@ describe("DomReviewAnchorController", () => {
       editor.view.dom.querySelector('[data-wb-anchor-id="flag-1"]'),
     ).toHaveClass("wb-cowork-anchor--active");
 
+    controller.detachEditor();
+    editor.destroy();
+  });
+
+  it("reveals and visibly focuses a secondary compatible provenance target", () => {
+    const editor = new Editor({
+      element: document.createElement("div"),
+      content: "<p>Shared passage.</p>",
+      extensions: [
+        StarterKit.configure({ undoRedo: false }),
+        CoworkLedgerDecorations,
+      ],
+    });
+    const base = {
+      quoteAnchor: {
+        exact: "Shared passage",
+        prefix: "",
+        suffix: ".",
+      },
+      isDocumentDefault: false,
+      authorship: "ai" as const,
+      reviewStatus: "not_reviewed" as const,
+      currentness: "current" as const,
+      resolution: "resolved" as const,
+      source: "paste",
+      sourceDetail: "Provider: clipboard",
+      contributors: "No contributors recorded",
+      reviewers: "No reviewers recorded",
+      attester: "user-1",
+      basis: "user_attestation",
+      historyCount: 1,
+      effectiveCount: 1,
+      recordState: "recorded" as const,
+      authorshipFingerprint: "ai",
+      reviewFingerprint: "not_reviewed",
+      sourceFingerprint: "paste",
+    };
+    projectCoworkLedgerDecorations(editor, {
+      edits: [],
+      flags: [],
+      expressions: [],
+      claims: [],
+      provenance: [],
+      provenanceOverlay: [
+        { ...base, targetId: "primary", recordId: "record-primary" },
+        { ...base, targetId: "secondary", recordId: "record-secondary" },
+      ],
+    });
+    setCoworkEditorLens(editor, "provenance");
+    const mark = editor.view.dom.querySelector<HTMLElement>(
+      "[data-wb-provenance-ids]",
+    );
+    expect(mark).not.toBeNull();
+    const scrollIntoView = vi.fn();
+    if (mark !== null) mark.scrollIntoView = scrollIntoView;
+    const controller = new DomReviewAnchorController({
+      getEditorRoot: () => editor.view.dom,
+      getEditor: () => editor,
+    });
+    controller.attachEditor(editor);
+
+    controller.revealAnchor("secondary", "provenance", { flash: true });
+
+    expect(scrollIntoView).toHaveBeenCalledOnce();
+    const focused = editor.view.dom.querySelector<HTMLElement>(
+      "[data-wb-provenance-ids]",
+    );
+    expect(focused).toHaveClass("wb-cowork-anchor--active");
+    expect(focused).toHaveClass("wb-cowork-anchor--flash");
     controller.detachEditor();
     editor.destroy();
   });

@@ -129,6 +129,8 @@ export interface ProvenanceSpan {
   readonly approvalGestureId: string | null;
 }
 
+/** Authorship and review are deliberately separate provenance dimensions. */
+
 /** Claim lifecycle status shown on a claim-review card (kernel claim states). */
 export type ClaimStatus =
   | "proposed"

@@ -1,8 +1,10 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { Editor } from "@tiptap/core";
 import { ySyncPluginKey } from "@tiptap/y-tiptap";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
+
+import { resetLocalIdentityForTests } from "../../../security/localIdentity";
 
 import { bootstrapCoworkYdoc } from "../documents/bootstrapCoworkYdoc";
 import { HttpCoworkMaterializationClient } from "../materialization/HttpCoworkMaterializationClient";
@@ -20,6 +22,7 @@ import { resolveQuoteAnchor } from "../suggestions/anchor";
 import { buildEditorExtensions } from "../editor/extensions";
 import { serializeCoworkEditorMarkdown } from "../editor/serializeCoworkMarkdown";
 import { projectCoworkLedgerDecorations } from "../editor/ledgerDecorations";
+import { authenticatedHumanAuthorityFetch } from "../testSupport/authenticatedHumanAuthorityFetch";
 import {
   assertCanonicalCoworkEditorState,
   CoworkBridgeEditor,
@@ -27,6 +30,8 @@ import {
 import type { CoworkSittingWorkspace } from "./sittingWorkspace";
 
 describe("CoworkBridgeEditor explicit Markdown Save", () => {
+  beforeEach(() => resetLocalIdentityForTests());
+
   it("refuses to compact a legacy tracked-suggestion projection", async () => {
     const initialized = await bootstrapCoworkYdoc(
       new TextEncoder().encode("The quick brown fox"),
@@ -299,7 +304,10 @@ describe("CoworkBridgeEditor explicit Markdown Save", () => {
     });
 
     const requests: Record<string, unknown>[] = [];
-    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const fetchImpl = authenticatedHumanAuthorityFetch(async (
+      _input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
       requests.push(body);
       if (requests.length === 1) {
@@ -471,7 +479,10 @@ describe("CoworkBridgeEditor explicit Markdown Save", () => {
     });
     const initialServerHead = (await server.pull({})).structuredHeadSha256;
     const saveRequests: Record<string, unknown>[] = [];
-    const saveFetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const saveFetch = authenticatedHumanAuthorityFetch(async (
+      _input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
       saveRequests.push(body);
       return new Response(

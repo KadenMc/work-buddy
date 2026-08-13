@@ -54,3 +54,4 @@ export {
   type CoworkPasteProvenanceOutboxEntry,
   type CoworkPasteProvenanceStatus,
 } from "./CoworkPasteProvenanceOutbox";
+export * from "./view";

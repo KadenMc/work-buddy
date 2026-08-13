@@ -1,8 +1,16 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+
+import { resetLocalIdentityForTests } from "../../../security/localIdentity";
+import {
+  applicationRequest,
+  authenticatedHumanAuthorityFetch,
+} from "../testSupport/authenticatedHumanAuthorityFetch";
 
 import { HttpCoworkDocClient } from "./HttpCoworkDocClient";
 
 describe("HttpCoworkDocClient Verify setup", () => {
+  beforeEach(() => resetLocalIdentityForTests());
+
   it("sends the exact effective activation as a compare-and-set precondition", async () => {
     const configuration = {
       schema: "work-buddy.cowork-verify-configuration/v1",
@@ -18,7 +26,7 @@ describe("HttpCoworkDocClient Verify setup", () => {
       },
       criteria: [],
     };
-    const fetchImpl = vi.fn<typeof fetch>(async () =>
+    const fetchImpl = authenticatedHumanAuthorityFetch(async () =>
       new Response(JSON.stringify({ ok: true, configuration }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -38,11 +46,15 @@ describe("HttpCoworkDocClient Verify setup", () => {
       ),
     ).resolves.toEqual(configuration);
 
-    const [url, init] = fetchImpl.mock.calls[0];
+    const [url, init] = applicationRequest(fetchImpl) ?? [];
     expect(url).toBe(
       "/api/truth/doc/doc-1/verify/criteria/terminology_exact_match?store_id=store-1",
     );
     expect(init?.method).toBe("PATCH");
+    expect(init?.headers).toMatchObject({
+      "X-WB-CSRF": "test-csrf-token",
+      "X-WB-Gesture": "test-gesture-1",
+    });
     expect(JSON.parse(String(init?.body))).toEqual({
       enabled: false,
       expected_activation_id: "activation-1",
@@ -50,7 +62,7 @@ describe("HttpCoworkDocClient Verify setup", () => {
   });
 
   it("keeps a Co-think lifecycle action bound to the exact item hash", async () => {
-    const fetchImpl = vi.fn<typeof fetch>(async () =>
+    const fetchImpl = authenticatedHumanAuthorityFetch(async () =>
       new Response(JSON.stringify({ ok: true }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -64,7 +76,7 @@ describe("HttpCoworkDocClient Verify setup", () => {
 
     await client.actOnCothink("item-1", "park", "item-sha");
 
-    const [url, init] = fetchImpl.mock.calls[0];
+    const [url, init] = applicationRequest(fetchImpl) ?? [];
     expect(url).toBe(
       "/api/truth/doc/doc-1/cothink/items/item-1/actions?store_id=store-1",
     );
@@ -75,7 +87,7 @@ describe("HttpCoworkDocClient Verify setup", () => {
   });
 
   it("routes Discuss with the exact Co-think item hash into Chat", async () => {
-    const fetchImpl = vi.fn<typeof fetch>(async () =>
+    const fetchImpl = authenticatedHumanAuthorityFetch(async () =>
       new Response(
         JSON.stringify({
           ok: true,
@@ -100,7 +112,7 @@ describe("HttpCoworkDocClient Verify setup", () => {
       conversationId: "conversation-1",
       messageId: "message-1",
     });
-    const [url, init] = fetchImpl.mock.calls[0];
+    const [url, init] = applicationRequest(fetchImpl) ?? [];
     expect(url).toBe(
       "/api/truth/doc/doc-1/cothink/items/item-1/actions?store_id=store-1",
     );
@@ -111,7 +123,7 @@ describe("HttpCoworkDocClient Verify setup", () => {
   });
 
   it("maps only the typed safe Verify inspection projection", async () => {
-    const fetchImpl = vi.fn<typeof fetch>(async () =>
+    const fetchImpl = authenticatedHumanAuthorityFetch(async () =>
       new Response(
         JSON.stringify({
           ok: true,
@@ -257,7 +269,7 @@ describe("HttpCoworkDocClient Verify setup", () => {
       },
       criteria: [],
     };
-    const fetchImpl = vi.fn<typeof fetch>(async () =>
+    const fetchImpl = authenticatedHumanAuthorityFetch(async () =>
       new Response(JSON.stringify({ ok: true, configuration }), {
         status: 201,
         headers: { "Content-Type": "application/json" },
@@ -276,7 +288,7 @@ describe("HttpCoworkDocClient Verify setup", () => {
       limitations: ["Negation can be necessary."],
     });
 
-    const [url, init] = fetchImpl.mock.calls[0] ?? [];
+    const [url, init] = applicationRequest(fetchImpl) ?? [];
     expect(url).toBe(
       "/api/truth/doc/doc-1/verify/criteria/drafts?store_id=store-1",
     );
@@ -303,7 +315,7 @@ describe("HttpCoworkDocClient Verify setup", () => {
       },
       criteria: [],
     };
-    const fetchImpl = vi.fn<typeof fetch>(async () =>
+    const fetchImpl = authenticatedHumanAuthorityFetch(async () =>
       new Response(JSON.stringify({ ok: true, configuration }), {
         status: 201,
         headers: { "Content-Type": "application/json" },
@@ -324,7 +336,7 @@ describe("HttpCoworkDocClient Verify setup", () => {
       }),
     ).resolves.toEqual(configuration);
 
-    const [url, init] = fetchImpl.mock.calls[0] ?? [];
+    const [url, init] = applicationRequest(fetchImpl) ?? [];
     expect(url).toBe(
       "/api/truth/doc/doc-1/verify/checks?store_id=store-1",
     );

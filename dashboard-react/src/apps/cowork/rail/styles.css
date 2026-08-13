@@ -11,6 +11,7 @@
   flex-direction: column;
   block-size: 100%;
   min-block-size: 0;
+  overflow: clip;
   background: var(--wb-color-surface-workspace);
   color: var(--wb-color-text-primary);
   font-family: var(--wb-font-sans);
@@ -207,13 +208,19 @@
  */
 .wb-cowork-rail__tabs {
   display: flex;
+  flex: 0 0 auto;
   gap: var(--wb-space-2);
   padding: var(--wb-space-3) var(--wb-space-4) 0;
   border-block-end: 1px solid var(--wb-color-border-subtle);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
 }
 
 .wb-cowork-rail__tab {
   position: relative;
+  flex: none;
+  white-space: nowrap;
   display: inline-flex;
   align-items: center;
   min-block-size: var(--wb-target-size);
@@ -227,6 +234,185 @@
   cursor: pointer;
   transition: color var(--wb-motion-duration-fast) var(--wb-motion-easing-standard),
     box-shadow var(--wb-motion-duration-fast) var(--wb-motion-easing-standard);
+}
+
+/* ---------- provenance panel ---------- */
+.wb-cowork-provenance-panel {
+  display: grid;
+  align-content: start;
+  gap: var(--wb-space-4);
+  min-block-size: 0;
+  block-size: 100%;
+  overflow: auto;
+  padding: var(--wb-space-4);
+}
+
+.wb-cowork-provenance-panel :is(h2, h3, h4, p, dl, ol) {
+  margin-block: 0;
+}
+
+.wb-cowork-provenance-panel__reason,
+.wb-cowork-provenance-panel__empty {
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-sm);
+}
+
+.wb-cowork-provenance-panel__summary,
+.wb-cowork-provenance-panel__facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--wb-space-2);
+}
+
+.wb-cowork-provenance-panel__summary > div,
+.wb-cowork-provenance-panel__facts > div {
+  min-inline-size: 0;
+  padding: var(--wb-space-2);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-surface-inset);
+}
+
+.wb-cowork-provenance-panel :is(dt, dd) {
+  overflow-wrap: anywhere;
+}
+
+.wb-cowork-provenance-panel dt {
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-xs);
+}
+
+.wb-cowork-provenance-panel dd {
+  margin: 0;
+  font-weight: var(--wb-font-weight-medium);
+}
+
+.wb-cowork-provenance-panel__filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--wb-space-2);
+}
+
+.wb-cowork-provenance-panel button {
+  min-block-size: var(--wb-target-size);
+  padding: var(--wb-space-1) var(--wb-space-3);
+  border: 1px solid var(--wb-color-border-strong);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-surface-raised);
+  color: var(--wb-color-text-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.wb-cowork-provenance-panel button[aria-pressed="true"] {
+  border-color: var(--wb-color-accent);
+  box-shadow: inset 0 -2px 0 var(--wb-color-accent);
+}
+
+.wb-cowork-provenance-panel button:focus-visible {
+  outline: none;
+  box-shadow: var(--wb-shadow-focus);
+}
+
+.wb-cowork-provenance-panel button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.wb-cowork-provenance-panel__list,
+.wb-cowork-provenance-panel__history ol {
+  display: grid;
+  gap: var(--wb-space-3);
+  padding: 0;
+  list-style: none;
+}
+
+.wb-cowork-provenance-panel__list > li,
+.wb-cowork-provenance-panel__unrecorded,
+.wb-cowork-provenance-panel__unavailable {
+  border: 1px solid var(--wb-color-border-subtle);
+  border-inline-start: 3px solid var(--wb-color-accent);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-surface-raised);
+}
+
+.wb-cowork-provenance-panel__list > li[data-state="issue"] {
+  border-inline-start-color: var(--wb-color-status-danger);
+  border-inline-start-style: double;
+}
+
+.wb-cowork-provenance-panel__item {
+  display: grid;
+  inline-size: 100%;
+  gap: var(--wb-space-1);
+  border: 0 !important;
+  text-align: start;
+}
+
+.wb-cowork-provenance-panel__quote {
+  overflow: hidden;
+  font-weight: var(--wb-font-weight-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-cowork-provenance-panel__status {
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-xs);
+  text-transform: capitalize;
+}
+
+.wb-cowork-provenance-panel__detail,
+.wb-cowork-provenance-panel__conflict {
+  display: grid;
+  gap: var(--wb-space-3);
+  padding: 0 var(--wb-space-3) var(--wb-space-3);
+}
+
+.wb-cowork-provenance-panel__history {
+  padding: var(--wb-space-2);
+  border-block-start: 1px solid var(--wb-color-border-subtle);
+}
+
+.wb-cowork-provenance-panel__history summary {
+  cursor: pointer;
+  font-weight: var(--wb-font-weight-medium);
+}
+
+.wb-cowork-provenance-panel__history li,
+.wb-cowork-provenance-panel__conflict article {
+  padding: var(--wb-space-2);
+  border: 1px solid var(--wb-color-border-subtle);
+  border-radius: var(--wb-radius-control);
+}
+
+.wb-cowork-provenance-panel__unrecorded,
+.wb-cowork-provenance-panel__unavailable {
+  display: grid;
+  gap: var(--wb-space-2);
+  padding: var(--wb-space-3);
+  border-inline-start-style: dashed;
+}
+
+.wb-cowork-provenance-panel__error {
+  color: var(--wb-color-status-danger);
+  font-weight: var(--wb-font-weight-medium);
+}
+
+@media (max-width: 28rem) {
+  .wb-cowork-provenance-panel__summary,
+  .wb-cowork-provenance-panel__facts {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (forced-colors: active) {
+  .wb-cowork-provenance-panel__list > li,
+  .wb-cowork-provenance-panel__unrecorded {
+    border-inline-start-color: CanvasText;
+  }
+  .wb-cowork-provenance-panel__list > li[data-state="issue"] {
+    border-inline-start-color: Mark;
+  }
 }
 
 .wb-cowork-rail__tab:hover {
@@ -259,6 +445,7 @@
   flex: 1 1 auto;
   min-block-size: 0;
   display: flex;
+  overflow: clip;
 }
 
 .wb-cowork-rail__tabpanel[hidden] {

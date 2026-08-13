@@ -1,5 +1,5 @@
 /**
- * The Review | Truth | Chat rail. This is the mount seam the view frame wires
+ * The Review | Provenance | Truth | Chat rail. This is the mount seam the view frame wires
  * in place of the rail placeholder: it owns all three tabs and their panels.
  * Every ready Chat path
  * uses the shared ConversationChat surface through a thin Co-work adapter.
@@ -36,6 +36,12 @@ import {
   type TruthStore as CoworkTruthStore,
 } from "../truth";
 import { ReviewPanel } from "./ReviewPanel";
+import {
+  ProvenancePanel,
+  type ProvenanceEditorIntegration,
+  type ProvenanceProvider,
+  type ProvenanceMutationBarrier,
+} from "../provenance/view";
 import type { VerificationRecheckIntent } from "./contracts";
 import type { ReviewAnchorController, ReviewRailProvider } from "./provider";
 import { RailStore, type RailTab } from "./store";
@@ -63,7 +69,13 @@ const TRUTH_TAB_HELP: HelpContent = {
     "Inspect claims, where the document expresses them, their evidence, provenance, and lifecycle. Truth also hosts contextual claim management.",
 };
 
-const RAIL_TABS: readonly RailTab[] = ["review", "truth", "chat"];
+const PROVENANCE_TAB_HELP: HelpContent = {
+  summary: "See how the text is attributed and whether human review is recorded.",
+  details:
+    "The editor overlay keeps authorship, source, and human review separate. These records do not say whether the text is true.",
+};
+
+const RAIL_TABS: readonly RailTab[] = ["review", "provenance", "truth", "chat"];
 
 export interface CoworkRailProps {
   readonly documentId: string;
@@ -76,6 +88,11 @@ export interface CoworkRailProps {
     readonly readOnly?: boolean;
   };
   readonly reviewProvider: ReviewRailProvider;
+  readonly provenance?: {
+    readonly provider: ProvenanceProvider;
+    readonly editor?: ProvenanceEditorIntegration;
+    readonly mutationBarrier?: ProvenanceMutationBarrier;
+  };
   readonly chat: CoworkRailChat;
   /** Fired only for a present user click on the wide Chat tab. */
   readonly onChatSelected?: () => void;
@@ -88,12 +105,16 @@ export interface CoworkRailProps {
   readonly onReviewScrollWillDetach?: () => void;
   readonly truthScrollRef?: RefCallback<HTMLElement>;
   readonly onTruthScrollWillDetach?: () => void;
+  readonly provenanceScrollRef?: RefCallback<HTMLElement>;
+  readonly onProvenanceScrollWillDetach?: () => void;
   readonly reviewAnchors?: ReviewAnchorController;
   readonly shortcutBindings?: CoworkShortcutBindings;
   readonly initialTab?: RailTab;
   /** Whether the containing workspace currently exposes the Review pane. */
   readonly reviewVisible?: boolean;
   readonly truthVisible?: boolean;
+  readonly provenanceVisible?: boolean;
+  readonly readOnly?: boolean;
   /** Narrow workspace peer tabs own Review / Truth / Chat selection when false. */
   readonly showTabs?: boolean;
   /** Optional document linkage for passage accessories and routing notices. */
@@ -200,7 +221,10 @@ export function CoworkRail(props: CoworkRailProps) {
   });
   const tab = useRailState(store, (state) => state.tab);
   const tabRefs = useRef<Partial<Record<RailTab, HTMLButtonElement | null>>>({});
+  const tabsRef = useRef<HTMLDivElement | null>(null);
   const reviewActive = tab === "review" && props.reviewVisible !== false;
+  const provenanceActive =
+    tab === "provenance" && props.provenanceVisible !== false;
   const [messages, setMessages] = useState<readonly ChatMessage[]>([]);
   const conversationId =
     props.chat.kind === "ready" ? props.chat.conversationId : null;
@@ -225,7 +249,23 @@ export function CoworkRail(props: CoworkRailProps) {
     if (tab === "truth" && next !== "truth") {
       props.onTruthScrollWillDetach?.();
     }
+    if (tab === "provenance" && next !== "provenance") {
+      props.onProvenanceScrollWillDetach?.();
+    }
     store.setTab(next);
+  };
+
+  const revealRailTabs = (): void => {
+    window.requestAnimationFrame(() => {
+      const tabs = tabsRef.current;
+      if (tabs === null) return;
+      const rail = tabs.closest<HTMLElement>(".wb-cowork-rail");
+      if (rail === null) return;
+      const bounds = rail.getBoundingClientRect();
+      if (bounds.top < 0 || bounds.bottom > window.innerHeight) {
+        tabs.scrollIntoView?.({ block: "start", inline: "nearest" });
+      }
+    });
   };
 
   const navigateTabs = (
@@ -247,18 +287,23 @@ export function CoworkRail(props: CoworkRailProps) {
     event.preventDefault();
     const next = RAIL_TABS[nextIndex];
     selectRailTab(next);
-    if (next === "chat") props.onChatSelected?.();
+    if (next === "chat") {
+      revealRailTabs();
+      props.onChatSelected?.();
+    }
     tabRefs.current[next]?.focus();
   };
 
   const continueCothinkInChat = async (): Promise<void> => {
     selectRailTab("chat");
+    revealRailTabs();
     props.onChatSelected?.();
   };
 
   return (
     <div className="wb-cowork-rail">
       {props.showTabs !== false ? <div
+        ref={tabsRef}
         className="wb-cowork-rail__tabs"
         role="tablist"
         aria-label="Co-work side panels"
@@ -279,6 +324,24 @@ export function CoworkRail(props: CoworkRailProps) {
             onKeyDown={(event) => navigateTabs(event, "review")}
           >
             Review
+          </button>
+        </HelpTarget>
+        <HelpTarget content={PROVENANCE_TAB_HELP} placement="bottom">
+          <button
+            type="button"
+            ref={(element) => {
+              tabRefs.current.provenance = element;
+            }}
+            role="tab"
+            id="wb-cowork-rail-tab-provenance"
+            className="wb-cowork-rail__tab"
+            aria-selected={tab === "provenance"}
+            tabIndex={tab === "provenance" ? 0 : -1}
+            aria-controls="wb-cowork-rail-panel-provenance"
+            onClick={() => selectRailTab("provenance")}
+            onKeyDown={(event) => navigateTabs(event, "provenance")}
+          >
+            Provenance
           </button>
         </HelpTarget>
         <HelpTarget content={TRUTH_TAB_HELP} placement="bottom">
@@ -313,6 +376,7 @@ export function CoworkRail(props: CoworkRailProps) {
             aria-controls="wb-cowork-rail-panel-chat"
             onClick={() => {
               selectRailTab("chat");
+              revealRailTabs();
               props.onChatSelected?.();
             }}
             onKeyDown={(event) => navigateTabs(event, "chat")}
@@ -366,6 +430,34 @@ export function CoworkRail(props: CoworkRailProps) {
 
       <div
         role="tabpanel"
+        id="wb-cowork-rail-panel-provenance"
+        aria-labelledby={
+          props.showTabs === false
+            ? "wb-cowork-mobile-tab-provenance"
+            : "wb-cowork-rail-tab-provenance"
+        }
+        className="wb-cowork-rail__tabpanel"
+        hidden={tab !== "provenance"}
+      >
+        {props.provenance === undefined ? (
+          <p className="wb-cowork-rail__empty">Provenance is unavailable for this document.</p>
+        ) : (
+          <ProvenancePanel
+            key={`${props.storeId ?? "unscoped"}:${props.documentId}`}
+            provider={props.provenance.provider}
+            active={provenanceActive}
+            scrollContainerRef={
+              provenanceActive ? props.provenanceScrollRef : undefined
+            }
+            editor={props.provenance.editor}
+            mutationBarrier={props.provenance.mutationBarrier}
+            readOnly={props.readOnly}
+          />
+        )}
+      </div>
+
+      <div
+        role="tabpanel"
         id="wb-cowork-rail-panel-truth"
         aria-labelledby={
           props.showTabs === false
@@ -415,6 +507,7 @@ export function CoworkRail(props: CoworkRailProps) {
         }
         className="wb-cowork-rail__tabpanel"
         hidden={tab !== "chat"}
+        onFocusCapture={revealRailTabs}
       >
         {props.chat.kind !== "ready" ? (
           <CoworkConversationGate

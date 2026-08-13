@@ -9,6 +9,7 @@
   display: flex;
   flex-direction: column;
   block-size: 100%;
+  max-block-size: 100dvh;
   min-block-size: 0;
   container-type: inline-size;
   background: var(--wb-color-surface-canvas);
@@ -780,6 +781,8 @@
 .wb-cowork__body {
   flex: 1 1 auto;
   min-block-size: 0;
+  /* Keep the resizable group clipped without making it another vertical scroll owner. */
+  overflow: clip !important;
 }
 
 /*
@@ -792,6 +795,15 @@
   min-inline-size: 0;
   min-block-size: 0;
   block-size: 100%;
+}
+
+/*
+ * Panel writes overflow:auto as an inline style on this inner wrapper. The rail owns its
+ * scroll boundaries below (Review/Truth/Provenance bodies and the Chat transcript), so letting
+ * this wrapper scroll creates a second scrollbar that can move the tab strip out of view.
+ */
+.wb-cowork__rail-panel {
+  overflow: clip !important;
 }
 
 .wb-cowork__editor-shell {
@@ -820,6 +832,7 @@
   min-block-size: 0;
   display: flex;
   flex-direction: column;
+  overflow: clip;
   background: var(--wb-color-surface-raised);
 }
 
@@ -891,8 +904,8 @@
 }
 
 /*
- * A narrow Co-work surface is one workspace with three peer panes, not a squeezed editor
- * beside a rail. All three remain mounted so editor selection, sitting decisions, and chat
+ * A narrow Co-work surface is one workspace with peer panes, not a squeezed editor
+ * beside a rail. All remain mounted so editor selection, sitting decisions, and chat
  * drafts survive switching; the inactive panel is hidden and inert through the markup.
  */
 @media (max-width: 760px) {
@@ -903,10 +916,12 @@
     padding: var(--wb-space-2);
     border-block-end: 1px solid var(--wb-color-border-subtle);
     background: var(--wb-color-surface-raised);
+    overflow-x: auto;
+    scrollbar-width: thin;
   }
 
   .wb-cowork__pane-tab {
-    flex: 1 1 0;
+    flex: 0 0 auto;
     padding: var(--wb-space-2) var(--wb-space-3);
     border: 1px solid transparent;
     border-radius: var(--wb-radius-control);
@@ -914,6 +929,7 @@
     color: var(--wb-color-text-secondary);
     font: inherit;
     cursor: pointer;
+    white-space: nowrap;
   }
 
   .wb-cowork__pane-tab[aria-selected="true"] {
@@ -1150,6 +1166,113 @@
   color: var(--wb-color-accent);
 }
 
+/* Provenance lens: background/border conveys authorship; underline conveys review. */
+.wb-cowork-provenance-mark {
+  border-radius: var(--wb-radius-sm);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.wb-cowork-provenance--human {
+  background: color-mix(in srgb, var(--wb-color-status-success) 9%, transparent);
+  border-inline-start: 2px solid var(--wb-color-status-success);
+}
+
+.wb-cowork-provenance--ai {
+  background: color-mix(in srgb, var(--wb-color-accent) 15%, transparent);
+  border-inline-start: 2px dotted var(--wb-color-accent);
+}
+
+.wb-cowork-provenance--mixed {
+  background: color-mix(in srgb, var(--wb-color-data-4) 13%, transparent);
+  border-inline-start: 3px double var(--wb-color-data-4);
+}
+
+.wb-cowork-provenance--unknown {
+  background: repeating-linear-gradient(
+    135deg,
+    transparent 0 4px,
+    color-mix(in srgb, var(--wb-color-text-secondary) 9%, transparent) 4px 7px
+  );
+  border-inline-start: 2px dashed var(--wb-color-text-secondary);
+}
+
+.wb-cowork-provenance--unrecorded {
+  background: repeating-linear-gradient(
+    45deg,
+    transparent 0 3px,
+    color-mix(in srgb, var(--wb-color-text-secondary) 13%, transparent) 3px 5px
+  );
+  border-inline-start-style: dashed;
+}
+
+.wb-cowork-provenance--review-reviewed {
+  text-decoration: underline solid var(--wb-color-status-success) 2px;
+  text-underline-offset: 3px;
+}
+
+.wb-cowork-provenance--review-not-reviewed:is(.wb-cowork-provenance--ai, .wb-cowork-provenance--mixed) {
+  text-decoration: underline dashed var(--wb-color-status-warning) 1.5px;
+  text-underline-offset: 3px;
+}
+
+.wb-cowork-provenance--review-unknown:is(.wb-cowork-provenance--ai, .wb-cowork-provenance--mixed) {
+  text-decoration: underline dotted var(--wb-color-text-secondary) 1.5px;
+  text-underline-offset: 3px;
+}
+
+.wb-cowork-provenance--conflict {
+  background: color-mix(in srgb, var(--wb-color-status-danger) 12%, transparent);
+  border-inline-start: 3px double var(--wb-color-status-danger);
+  text-decoration: underline wavy var(--wb-color-status-danger) 2px;
+  text-underline-offset: 3px;
+}
+
+.wb-cowork-provenance-hover {
+  position: fixed;
+  z-index: 1000;
+  display: grid;
+  inline-size: min(18rem, calc(100vw - 2rem));
+  gap: var(--wb-space-2);
+  padding: var(--wb-space-3);
+  border: 1px solid var(--wb-color-border-strong);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-surface-overlay, var(--wb-color-surface-raised));
+  box-shadow: var(--wb-shadow-lg);
+  color: var(--wb-color-text-primary);
+  font-family: var(--wb-font-sans);
+  pointer-events: none;
+}
+
+.wb-cowork-provenance-hover :is(p, dl) {
+  margin: 0;
+}
+
+.wb-cowork-provenance-hover dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--wb-space-1) var(--wb-space-2);
+  font-size: var(--wb-font-size-xs);
+}
+
+.wb-cowork-provenance-hover dl > div {
+  display: contents;
+}
+
+.wb-cowork-provenance-hover dt {
+  color: var(--wb-color-text-secondary);
+}
+
+.wb-cowork-provenance-hover dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.wb-cowork-provenance-hover p {
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-xs);
+}
+
 /*
  * Review focus is persistent until selection moves or clears. Chat passage
  * highlighting is transient and never becomes the editor's active text selection.
@@ -1192,6 +1315,12 @@
   }
   .wb-cowork-provenance-tint {
     border-inline-start: 2px solid CanvasText;
+  }
+  .wb-cowork-provenance-mark {
+    border-inline-start-color: CanvasText;
+  }
+  .wb-cowork-provenance--conflict {
+    text-decoration: underline wavy Mark;
   }
   .wb-cowork-expression-mark,
   .wb-cowork-claim-anchor {

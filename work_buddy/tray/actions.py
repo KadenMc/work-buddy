@@ -50,11 +50,9 @@ def open_dashboard(target_hash: str = "", *, app: bool = False) -> dict:
     absent or times out: a plain ``webbrowser.open``. Never raises; returns a
     small dict describing what happened.
 
-    NOTE: a ``target_hash`` navigates an existing tab, which could discard
-    unsaved work in the dashboard. Safe today because the current dashboard has
-    little unsaved state and the plain "Open dashboard" button passes no hash
-    (activate-only); treating unsaved input as first-class is a React-dashboard
-    concern.
+    App launches preserve an existing React route and query while delivering
+    only the one-time bootstrap fragment. Legacy dashboard deep-links retain
+    their existing navigation behavior.
     """
     from work_buddy.cli.commands import dashboard_app_url, dashboard_local_url
 
@@ -79,7 +77,12 @@ def open_dashboard(target_hash: str = "", *, app: bool = False) -> dict:
     try:
         from work_buddy.collectors.chrome_collector import focus_or_create_tab
 
-        res = focus_or_create_tab(base, target_hash=launch_hash, timeout_seconds=10)
+        res = focus_or_create_tab(
+            base,
+            target_hash=launch_hash,
+            preserve_path=app,
+            timeout_seconds=10,
+        )
         if res is not None:
             result = {
                 "ok": True,

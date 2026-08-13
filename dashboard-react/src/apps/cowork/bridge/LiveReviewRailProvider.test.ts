@@ -195,6 +195,9 @@ describe("LiveReviewRailProvider", () => {
     expect(proposals.mock.calls[0]?.[0]).toEqual([
       expect.objectContaining({ proposal_id: "newer" }),
     ]);
+    await expect(provider.loadPayload()).resolves.toMatchObject({
+      open_proposals: [expect.objectContaining({ proposal_id: "newer" })],
+    });
   });
 
   it("does not publish an older pull that resolves before the newer pull", async () => {

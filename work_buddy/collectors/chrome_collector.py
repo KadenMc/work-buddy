@@ -379,22 +379,32 @@ def move_tabs(
 def focus_or_create_tab(
     url: str,
     target_hash: str = "",
+    preserve_path: bool = False,
     timeout_seconds: int = 15,
 ) -> dict | None:
     """Focus an existing Chrome tab matching *url*, or create a new one.
 
     If an existing tab is found, it's activated and its window is focused.
     If *target_hash* is set, the tab is navigated to ``url/target_hash``.
+    When *preserve_path* is true, an existing tab keeps its current path and
+    query and receives only the new fragment.  This is used for trusted app
+    bootstrap delivery so an open document is not replaced by the app root.
     If no matching tab exists, a new tab is created.
 
     Args:
         url: Base URL to match (e.g. "http://127.0.0.1:5127").
         target_hash: Optional hash fragment (e.g. "#view/req_abc123").
+        preserve_path: Keep an existing matching tab's path and query.
         timeout_seconds: How long to wait for the extension.
 
     Returns:
         Result dict with created/focused status, or None if no response.
     """
+    match_url = url.rstrip("/") or url
     return _request_mutation(
-        "focus_or_create_tab", timeout_seconds, url=url, target_hash=target_hash,
+        "focus_or_create_tab",
+        timeout_seconds,
+        url=match_url,
+        target_hash=target_hash,
+        preserve_path=preserve_path,
     )

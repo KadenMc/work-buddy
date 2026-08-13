@@ -3,7 +3,10 @@ import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { Plugin, PluginKey, type Transaction } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 
-import { resolveQuoteAnchor } from "../suggestions/anchor";
+import {
+  resolveProvenanceQuoteAnchorDetailed,
+  resolveQuoteAnchor,
+} from "../suggestions/anchor";
 import type { QuoteAnchor } from "../suggestions/types";
 
 /**
@@ -24,7 +27,7 @@ export type CoworkEditorAnchorKind =
  * view-only decorations; it never changes the ProseMirror document, Y.Doc, or
  * the independent temporary passage highlight used by Chat and Working on.
  */
-export type CoworkEditorLens = "neutral" | "review" | "truth";
+export type CoworkEditorLens = "neutral" | "review" | "truth" | "provenance";
 
 export interface CoworkFlagDecoration {
   readonly proposalId: string;
@@ -63,6 +66,29 @@ export interface CoworkProvenanceDecoration {
   readonly approvalGestureId: string | null;
 }
 
+export interface CoworkProvenanceOverlayDecoration {
+  readonly targetId: string;
+  readonly recordId: string;
+  readonly quoteAnchor: QuoteAnchor | null;
+  readonly isDocumentDefault: boolean;
+  readonly authorship: "human" | "ai" | "mixed" | "unknown";
+  readonly reviewStatus: "reviewed" | "not_reviewed" | "not_applicable" | "unknown";
+  readonly currentness: "current" | "stale" | "requires_reanchor" | "unavailable";
+  readonly resolution: "resolved" | "conflicted";
+  readonly source: string;
+  readonly sourceDetail: string;
+  readonly contributors: string;
+  readonly reviewers: string;
+  readonly attester: string;
+  readonly basis: string;
+  readonly historyCount: number;
+  readonly effectiveCount: number;
+  readonly recordState: "recorded" | "unrecorded";
+  readonly authorshipFingerprint: string;
+  readonly reviewFingerprint: string;
+  readonly sourceFingerprint: string;
+}
+
 export interface CoworkEvaluationDecoration {
   readonly resultId: string;
   readonly quoteAnchor: QuoteAnchor;
@@ -84,6 +110,8 @@ export interface CoworkLedgerDecorationProjection {
   readonly expressions: readonly CoworkExpressionDecoration[];
   readonly claims: readonly CoworkClaimDecoration[];
   readonly provenance: readonly CoworkProvenanceDecoration[];
+  /** Rich, independent provenance lens projection. */
+  readonly provenanceOverlay?: readonly CoworkProvenanceOverlayDecoration[];
   /** Additive Verify projection; absent inputs are treated as no results. */
   readonly evaluations?: readonly CoworkEvaluationDecoration[];
 }
@@ -241,6 +269,196 @@ const atomSuggestion = (
     : null;
 };
 
+interface ResolvedProvenanceOverlay {
+  readonly target: CoworkProvenanceOverlayDecoration;
+  readonly from: number;
+  readonly to: number;
+}
+
+const provenanceAxes = (target: CoworkProvenanceOverlayDecoration): string =>
+  JSON.stringify([
+    target.authorshipFingerprint,
+    target.reviewFingerprint,
+    target.sourceFingerprint,
+  ]);
+
+const provenanceClass = (
+  targets: readonly CoworkProvenanceOverlayDecoration[],
+  conflicted: boolean,
+): string => {
+  if (conflicted) return "wb-cowork-provenance--conflict";
+  const target = targets[0];
+  const classes = [
+    "wb-cowork-provenance-mark",
+    `wb-cowork-provenance--${target.authorship}`,
+    `wb-cowork-provenance--review-${target.reviewStatus.replace(/_/gu, "-")}`,
+    `wb-cowork-provenance--${target.recordState}`,
+  ];
+  return classes.join(" ");
+};
+
+/**
+ * Atomize the document's text ranges for the Provenance lens. Explicit spans
+ * override the current document default; uncovered text is visibly unrecorded.
+ * Incompatible explicit overlaps become one conflict segment instead of a
+ * last-write-wins decoration.
+ */
+const provenanceOverlayDecorations = (
+  doc: ProseMirrorNode,
+  projection: CoworkLedgerDecorationProjection,
+  focused: CoworkFocusedAnchor | null,
+  flashFocused: boolean,
+): Decoration[] => {
+  if (projection.provenanceOverlay === undefined) return [];
+  const overlays = projection.provenanceOverlay;
+  const documentDefaults = overlays.filter(
+    (item) => item.isDocumentDefault && item.currentness === "current",
+  );
+  const resolved: ResolvedProvenanceOverlay[] = overlays.flatMap((target) => {
+    if (
+      target.isDocumentDefault ||
+      target.quoteAnchor === null ||
+      target.currentness === "stale" ||
+      target.currentness === "unavailable"
+    ) {
+      return [];
+    }
+    const resolution = resolveProvenanceQuoteAnchorDetailed(
+      doc,
+      target.quoteAnchor,
+    );
+    return resolution.state !== "unique"
+      ? []
+      : [{ target, from: resolution.from, to: resolution.to }];
+  });
+  const result: Decoration[] = [];
+  doc.descendants((node, pos) => {
+    if (!node.isText || node.nodeSize === 0) return true;
+    const nodeFrom = pos;
+    const nodeTo = pos + node.nodeSize;
+    const boundaries = new Set<number>([nodeFrom, nodeTo]);
+    for (const item of resolved) {
+      if (item.to <= nodeFrom || item.from >= nodeTo) continue;
+      boundaries.add(Math.max(nodeFrom, item.from));
+      boundaries.add(Math.min(nodeTo, item.to));
+    }
+    const ordered = [...boundaries].sort((a, b) => a - b);
+    for (let index = 0; index < ordered.length - 1; index += 1) {
+      const from = ordered[index];
+      const to = ordered[index + 1];
+      const covering = resolved.filter(
+        (item) => item.from < to && item.to > from,
+      );
+      let targets: readonly CoworkProvenanceOverlayDecoration[];
+      if (covering.length > 0) {
+        targets = covering.map((item) => item.target);
+      } else if (documentDefaults.length > 0) {
+        targets = documentDefaults;
+      } else {
+        targets = [
+          {
+            targetId: `unrecorded:${String(from)}`,
+            recordId: `unrecorded:${String(from)}`,
+            quoteAnchor: null,
+            isDocumentDefault: true,
+            authorship: "unknown",
+            reviewStatus: "unknown",
+            currentness: "current",
+            resolution: "resolved",
+            source: "unrecorded",
+            sourceDetail: "No source recorded",
+            contributors: "No contributors recorded",
+            reviewers: "No reviewers recorded",
+            attester: "none",
+            basis: "none",
+            historyCount: 0,
+            effectiveCount: 0,
+            recordState: "unrecorded",
+            authorshipFingerprint: "unrecorded",
+            reviewFingerprint: "unrecorded",
+            sourceFingerprint: "unrecorded",
+          },
+        ];
+      }
+      const incompatible = new Set(targets.map(provenanceAxes)).size > 1;
+      const conflicted =
+        incompatible || targets.some((item) => item.resolution === "conflicted");
+      const ids = targets.map((item) => item.targetId);
+      const recordIds = targets.map((item) => item.recordId);
+      const primary =
+        focused?.kind === "provenance"
+          ? targets.find((item) => item.targetId === focused.id) ?? targets[0]
+          : targets[0];
+      const attester =
+        new Set(targets.map((item) => item.attester)).size > 1
+          ? "multiple"
+          : primary.attester;
+      const basis =
+        new Set(targets.map((item) => item.basis)).size > 1
+          ? "multiple"
+          : primary.basis;
+      const sourceDetail =
+        new Set(targets.map((item) => item.sourceDetail)).size > 1
+          ? "multiple sources"
+          : primary.sourceDetail;
+      const contributors =
+        new Set(targets.map((item) => item.contributors)).size > 1
+          ? "multiple contributor records"
+          : primary.contributors;
+      const reviewers =
+        new Set(targets.map((item) => item.reviewers)).size > 1
+          ? "multiple reviewer records"
+          : primary.reviewers;
+      const metadata = {
+          "data-wb-decoration": "provenance-overlay",
+          "data-wb-provenance-id": primary.targetId,
+          "data-wb-provenance-ids": JSON.stringify(ids),
+          "data-wb-provenance-record-ids": JSON.stringify(recordIds),
+          "data-wb-authorship": conflicted ? "conflict" : primary.authorship,
+          "data-wb-human-review": conflicted ? "conflict" : primary.reviewStatus,
+          "data-wb-source": conflicted ? "conflict" : primary.source,
+          "data-wb-source-detail": conflicted ? "multiple sources" : sourceDetail,
+          "data-wb-contributors": conflicted ? "multiple contributor records" : contributors,
+          "data-wb-reviewers": conflicted ? "multiple reviewer records" : reviewers,
+          "data-wb-attester": conflicted ? "multiple" : attester,
+          "data-wb-basis": conflicted ? "multiple" : basis,
+          "data-wb-history-count": String(
+            targets.reduce((count, item) => count + item.historyCount, 0),
+          ),
+          "data-wb-provenance-conflict": String(conflicted),
+          "data-wb-provenance-record-state": primary.recordState,
+          "data-wb-provenance-currentness":
+            new Set(targets.map((item) => item.currentness)).size > 1
+              ? "multiple target states"
+              : primary.currentness,
+      };
+      const attributes =
+        primary.recordState === "unrecorded"
+          ? {
+              class: `wb-cowork-ledger-decoration ${provenanceClass(targets, conflicted)}`,
+              ...metadata,
+            }
+          : anchorAttributes(
+              "provenance",
+              primary.targetId,
+              provenanceClass(targets, conflicted),
+              focused,
+              flashFocused,
+              metadata,
+            );
+      const decoration = inlineDecoration(
+        from,
+        to,
+        attributes,
+        `provenance-overlay:${ids.join(":")}:${String(from)}`,
+      );
+      if (decoration !== null) result.push(decoration);
+    }
+    return true;
+  });
+  return result;
+};
+
 function buildDecorations(
   doc: ProseMirrorNode,
   projection: CoworkLedgerDecorationProjection,
@@ -255,6 +473,16 @@ function buildDecorations(
     const claims = claimsByExpression.get(claim.expressionId) ?? [];
     claims.push(claim);
     claimsByExpression.set(claim.expressionId, claims);
+  }
+  if (lens === "provenance") {
+    decorations.push(
+      ...provenanceOverlayDecorations(
+        doc,
+        projection,
+        focused,
+        flashFocused,
+      ),
+    );
   }
 
   /*
@@ -499,45 +727,6 @@ function buildDecorations(
   // multiple claims, and exact-overlap ProseMirror decorations merge attributes, so a
   // JSON string array truthfully preserves every claim identity on the one prose range.
 
-  // Only confirmed AI provenance receives the confirmed-provenance treatment.
-  // Human text is the unadorned baseline and proposed AI text is represented by
-  // tracked-change/flag decorations.
-  for (const span of lens === "truth" ? projection.provenance : []) {
-    if (span.trustState !== "ai_confirmed") continue;
-    const range = rangeForQuote(doc, span.quote, span.quoteAnchor);
-    if (range === null) continue;
-    const attributes: Record<string, string> = {
-      "data-wb-decoration": "provenance",
-      "data-wb-trust": "ai-confirmed",
-      "data-wb-span-id": span.spanId,
-    };
-    if (span.producer !== null) attributes["data-producer"] = span.producer;
-    if (span.approvalGestureId !== null) {
-      attributes["data-approval-gesture-id"] = span.approvalGestureId;
-    }
-    const provenanceAttributes = anchorAttributes(
-      "provenance",
-      span.spanId,
-      "wb-cowork-provenance-tint",
-      focused,
-      flashFocused,
-      attributes,
-    );
-    // Provenance can cover exactly the same range as an expression. It has no rail
-    // geometry contract, so keep its identity in a dedicated attribute instead of
-    // overwriting the expression's generalized anchor identity during DOM merging.
-    delete provenanceAttributes["data-wb-anchor-kind"];
-    delete provenanceAttributes["data-wb-anchor-id"];
-    provenanceAttributes["data-wb-provenance-id"] = span.spanId;
-    const decoration = inlineDecoration(
-      range.from,
-      range.to,
-      provenanceAttributes,
-      `provenance:${span.spanId}`,
-    );
-    if (decoration !== null) decorations.push(decoration);
-  }
-
   if (
     highlight !== null &&
     highlight.from >= 0 &&
@@ -621,15 +810,26 @@ export function coworkLedgerDecorationsPlugin(): Plugin<CoworkLedgerDecorationSt
         if (meta === undefined && !transaction.docChanged) return value;
 
         /*
-         * A keystroke already supplies a precise ProseMirror mapping. Mapping the
-         * existing DecorationSet keeps every annotation attached to its passage
-         * without re-indexing the full document once per annotation. Fresh quote
-         * resolution is reserved for an R2 projection/focus/highlight change.
+         * Review and Truth annotations can follow ProseMirror's precise mapping.
+         * Provenance is different: exact selectors are the safety boundary, so a
+         * document edit must resolve them again and must drop missing/ambiguous
+         * spans instead of carrying a stale painted range forward.
          */
         if (meta === undefined) {
+          const highlight = mappedHighlight(transaction, value.highlight);
+          if (value.lens === "provenance") {
+            return createPluginState(
+              transaction.doc,
+              value.projection,
+              value.lens,
+              value.focused,
+              value.flashFocused,
+              highlight,
+            );
+          }
           return {
             ...value,
-            highlight: mappedHighlight(transaction, value.highlight),
+            highlight,
             decorations: value.decorations.map(
               transaction.mapping,
               transaction.doc,
@@ -653,9 +853,8 @@ export function coworkLedgerDecorationsPlugin(): Plugin<CoworkLedgerDecorationSt
               (focused.kind === "proposal" ||
                 focused.kind === "evaluation_result")) ||
             (lens === "truth" &&
-              (focused.kind === "claim" ||
-                focused.kind === "expression" ||
-                focused.kind === "provenance"));
+              (focused.kind === "claim" || focused.kind === "expression")) ||
+            (lens === "provenance" && focused.kind === "provenance");
           if (!visible) {
             focused = null;
             flashFocused = false;

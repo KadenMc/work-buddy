@@ -4,6 +4,11 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { CoworkLedgerDecorations } from "../editor/ledgerDecorations";
 import type { ReviewRailData } from "../rail/contracts";
+import type {
+  ProvenanceAttestation,
+  ProvenanceData,
+  ProvenanceTarget,
+} from "../provenance/view/contracts";
 import {
   LedgerDecorationProjector,
   ledgerDecorationProjectionFromReview,
@@ -130,6 +135,77 @@ const data: ReviewRailData = {
   ],
 };
 
+const provenanceRecord = (
+  id: string,
+  kind: "document_version" | "document_span",
+  spanId: string | null,
+): ProvenanceAttestation => ({
+  attestationId: id,
+  at: "2026-08-12T12:00:00Z",
+  assertedBy: { kind: "human", ref: "user-1", meta: null },
+  scope: {
+    kind,
+    documentVersionId: kind === "document_version" ? "version-1" : null,
+    documentSpanId: spanId,
+    structuredHeadSha256: "a".repeat(64),
+  },
+  authorship: { kind: "ai", contributors: [] },
+  humanReview: { status: "not_reviewed", reviewers: [] },
+  source: { kind: "paste" },
+  basis: { kind: "user_attestation", ref: null },
+  supersedesId: null,
+  canonicalSha256: "b".repeat(64),
+});
+
+const provenanceTarget = (
+  id: string,
+  record: ProvenanceAttestation,
+  span: ProvenanceTarget["span"],
+): ProvenanceTarget => ({
+  projectionId: id,
+  target: {
+    kind: record.scope.kind,
+    documentVersionId: record.scope.documentVersionId,
+    documentSpanId: record.scope.documentSpanId,
+    structuredHeadSha256: record.scope.structuredHeadSha256,
+    currentness: "current",
+  },
+  span,
+  effectiveAttestations: [record],
+  effectiveAttestation: record,
+  resolution: "resolved",
+  reviewEligibility: "eligible",
+  issue: null,
+  history: [record],
+});
+
+const provenanceData = (): ProvenanceData => {
+  const defaultRecord = provenanceRecord("default-record", "document_version", null);
+  const spanRecord = provenanceRecord("span-record", "document_span", "span-1");
+  return {
+    schema: "cowork-provenance-view/v1",
+    currentStructuredHeadSha256: "a".repeat(64),
+    documentDefault: provenanceTarget("default-target", defaultRecord, null),
+    spans: [
+      provenanceTarget("span-target", spanRecord, {
+        exact: "AI passage",
+        prefix: "",
+        suffix: " and",
+      }),
+    ],
+    history: [defaultRecord, spanRecord],
+    summary: {
+      totalTargets: 2,
+      currentSpanCount: 1,
+      aiUnreviewedCount: 2,
+      reviewedCount: 0,
+      conflictedCount: 0,
+      staleCount: 0,
+      unrecorded: false,
+    },
+  };
+};
+
 let editor: Editor | null = null;
 
 afterEach(() => {
@@ -218,12 +294,64 @@ describe("ledgerDecorationProjectionFromReview", () => {
     ).toHaveClass(
       "wb-cowork-expression-mark",
       "wb-cowork-claim-anchor",
-      "wb-cowork-provenance-tint",
     );
 
     projector.clear();
     expect(
       editor.view.dom.querySelector(".wb-cowork-ledger-decoration"),
     ).toBeNull();
+  });
+
+  it("suppresses whole-document attribution and re-resolves exact spans while locally dirty", () => {
+    const projector = new LedgerDecorationProjector();
+    projector.setData({ ...data, provenanceSpans: [] });
+    projector.setProvenanceData(provenanceData());
+    editor = new Editor({
+      element: document.createElement("div"),
+      content: "<p>AI passage and default words.</p>",
+      extensions: [
+        StarterKit.configure({ undoRedo: false }),
+        CoworkLedgerDecorations,
+      ],
+    });
+    projector.attach(editor);
+    projector.setLens("provenance");
+    expect(
+      editor.view.dom.querySelectorAll(
+        '[data-wb-provenance-id="default-target"]',
+      ).length,
+    ).toBeGreaterThan(0);
+
+    projector.setProvenanceDirty(true);
+    expect(
+      editor.view.dom.querySelector(
+        '[data-wb-provenance-id="default-target"]',
+      ),
+    ).toBeNull();
+    expect(
+      editor.view.dom.querySelector(
+        '[data-wb-provenance-id="span-target"]',
+      ),
+    ).toHaveAttribute("data-wb-provenance-currentness", "requires_reanchor");
+
+    editor.commands.setContent("<p>The passage was replaced.</p>");
+    expect(
+      editor.view.dom.querySelector(
+        '[data-wb-provenance-id="span-target"]',
+      ),
+    ).toBeNull();
+    expect(
+      editor.view.dom.querySelector(
+        '[data-wb-provenance-record-state="unrecorded"]',
+      ),
+    ).not.toBeNull();
+
+    projector.setProvenanceDirty(false);
+    projector.setProvenanceData(provenanceData());
+    expect(
+      editor.view.dom.querySelector(
+        '[data-wb-provenance-id="default-target"]',
+      ),
+    ).not.toBeNull();
   });
 });

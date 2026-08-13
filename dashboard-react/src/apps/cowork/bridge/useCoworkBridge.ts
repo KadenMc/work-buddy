@@ -15,7 +15,14 @@
  * defaults to the same-origin HTTP realizations for the live surface.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type RefObject,
+} from "react";
 import type { Editor } from "@tiptap/core";
 import * as Y from "yjs";
 
@@ -62,6 +69,12 @@ import type { CoworkSittingWorkspace } from "./sittingWorkspace";
 import type { CoworkActionSnapshotController } from "../targets";
 import type { CoworkPasteProvenanceRecorder } from "../provenance";
 import type { CoworkEditorLens } from "../editor/ledgerDecorations";
+import { LiveProvenanceProvider } from "../provenance/view/LiveProvenanceProvider";
+import type { ProvenanceProvider } from "../provenance/view/contracts";
+import type { ProvenanceEditorIntegration } from "../provenance/view/contracts";
+import type { ProvenanceMutationBarrier } from "../provenance/view/contracts";
+import type { ProvenanceLoad } from "../provenance/view/contracts";
+import { resolveProvenanceQuoteAnchorDetailed } from "../suggestions/anchor";
 
 /** Registered documents are initialized by bootstrap; live hydration never fabricates text. */
 export const DEFAULT_BRIDGE_SEED_MARKDOWN = "";
@@ -139,12 +152,24 @@ export interface CoworkBridgeEditorMountProps {
   readonly onActionSnapshotController?: (
     controller: CoworkActionSnapshotController | null,
   ) => void;
+  /** Editor-owned critical section used by append-only provenance review gestures. */
+  readonly onProvenanceMutationBarrier?: (
+    barrier: ProvenanceMutationBarrier | null,
+  ) => void;
+  readonly onLocalProvenanceEdit?: () => void;
+  readonly onProvenancePersistenceSettled?: (
+    structuredHeadSha256: string,
+  ) => void;
   readonly getProposalCatalog: () => readonly ProposalInput[];
   readonly onSittingServerRefreshed?: () => void;
 }
 
 export interface CoworkBridge {
   readonly reviewProvider: LiveReviewRailProvider;
+  readonly provenanceProvider: ProvenanceProvider;
+  readonly provenanceEditor: ProvenanceEditorIntegration;
+  readonly provenanceMutationBarrier: ProvenanceMutationBarrier | undefined;
+  readonly editorRootRef: RefObject<HTMLElement | null>;
   readonly reviewAnchors: ReviewAnchorController;
   readonly editorProps: CoworkBridgeEditorMountProps;
   /** Latest live health, or null before the first pull resolves. */
@@ -205,7 +230,11 @@ export const useCoworkBridge = (
 
   const editorRef = useRef<Editor | null>(null);
   const editorDomRef = useRef<HTMLElement | null>(null);
+  const provenanceUpdateListenerRef = useRef<(() => void) | null>(null);
+  const settledProvenanceHeadRef = useRef<string | null>(null);
+  const provenanceDirtyRef = useRef(false);
   const [editorReady, setEditorReady] = useState(false);
+  const [provenanceRevision, setProvenanceRevision] = useState(0);
   const sittingWorkspaceRef = useRef<CoworkSittingWorkspace | null>(null);
   const proposalCatalogRef = useRef<readonly ProposalInput[]>([]);
   const [health, setHealth] = useState<CoworkLiveHealth | null>(null);
@@ -219,6 +248,8 @@ export const useCoworkBridge = (
     useState<readonly VerificationRecheckIntent[]>([]);
   const [actionSnapshotController, setActionSnapshotController] =
     useState<CoworkActionSnapshotController | null>(null);
+  const [provenanceMutationBarrier, setProvenanceMutationBarrier] =
+    useState<ProvenanceMutationBarrier | null>(null);
 
   // Kept in a ref so the review provider stays stable per (documentId, storeId) while always
   // routing a delivery through the surface's latest callback.
@@ -257,6 +288,14 @@ export const useCoworkBridge = (
       onSittingCommitted: (requests) =>
         onSittingCommittedRef.current?.(requests),
     });
+    const provenanceProvider = new LiveProvenanceProvider(
+      {
+        loadPayload: () => reviewProvider.loadPayload(),
+        refreshPayload: () => reviewProvider.refreshPayload(),
+        subscribe: (listener) => reviewProvider.subscribePayload(listener),
+      },
+      resolvedDocClient,
+    );
 
     const reviewAnchors = new DomReviewAnchorController({
       getEditorRoot: () => editorDomRef.current,
@@ -268,6 +307,7 @@ export const useCoworkBridge = (
       ledgerProjector,
       passageHighlighter,
       reviewProvider,
+      provenanceProvider,
       reviewAnchors,
       ydocTransport: resolvedYdocTransport,
     };
@@ -308,6 +348,55 @@ export const useCoworkBridge = (
     };
   }, [core]);
 
+  const applyProvenanceLoad = useCallback(
+    (result: ProvenanceLoad, allowSettlement: boolean): void => {
+      core.ledgerProjector.setProvenanceData(
+        result.state === "ready" ? result.data : null,
+      );
+      if (
+        allowSettlement &&
+        result.state === "ready" &&
+        settledProvenanceHeadRef.current !== null &&
+        result.data.currentStructuredHeadSha256 ===
+          settledProvenanceHeadRef.current
+      ) {
+        core.ledgerProjector.setProvenanceDirty(false);
+        provenanceDirtyRef.current = false;
+        setProvenanceRevision((value) => value + 1);
+        settledProvenanceHeadRef.current = null;
+      }
+    },
+    [core],
+  );
+
+  useEffect(() => {
+    let active = true;
+    let subscribing = true;
+    const refresh = (allowSettlement: boolean): void => {
+      void core.provenanceProvider
+        .load()
+        .then((result) => {
+          if (!active) return;
+          applyProvenanceLoad(result, allowSettlement);
+        })
+        .catch(() => {
+          if (!active) return;
+          // Transport failures have no authoritative projection to paint.
+          core.ledgerProjector.setProvenanceData(null);
+        });
+    };
+    const unsubscribe = core.provenanceProvider.subscribe(() => {
+      refresh(!subscribing);
+    });
+    subscribing = false;
+    refresh(false);
+    return () => {
+      active = false;
+      unsubscribe();
+      core.ledgerProjector.setProvenanceData(null);
+    };
+  }, [applyProvenanceLoad, core]);
+
   useEffect(
     () => () => {
       core.ledgerProjector.detach();
@@ -330,8 +419,19 @@ export const useCoworkBridge = (
         core.ledgerProjector.attach(editor);
         core.reviewAnchors.attachEditor(editor);
         setEditorReady(true);
+        const onEditorUpdate = (): void => {
+          setProvenanceRevision((value) => value + 1);
+        };
+        editor.on("update", onEditorUpdate);
+        provenanceUpdateListenerRef.current = onEditorUpdate;
       },
       onTeardown: () => {
+        const editor = editorRef.current;
+        const onEditorUpdate = provenanceUpdateListenerRef.current;
+        if (editor !== null && onEditorUpdate !== null) {
+          editor.off("update", onEditorUpdate);
+        }
+        provenanceUpdateListenerRef.current = null;
         core.passageHighlighter.clear();
         core.reviewAnchors.detachEditor();
         setEditorReady(false);
@@ -361,6 +461,25 @@ export const useCoworkBridge = (
         sittingWorkspaceRef.current = workspace;
       },
       onActionSnapshotController: setActionSnapshotController,
+      onProvenanceMutationBarrier: setProvenanceMutationBarrier,
+      onLocalProvenanceEdit: () => {
+        settledProvenanceHeadRef.current = null;
+        provenanceDirtyRef.current = true;
+        core.ledgerProjector.setProvenanceDirty(true);
+      },
+      onProvenancePersistenceSettled: (structuredHeadSha256) => {
+        if (!provenanceDirtyRef.current) return;
+        settledProvenanceHeadRef.current = structuredHeadSha256;
+        void core.provenanceProvider
+          .refresh()
+          .then((result) => {
+            applyProvenanceLoad(result, true);
+          })
+          .catch(() => {
+            // Keep both the dirty flag and pending head until a later
+            // authoritative projection proves that persistence settled.
+          });
+      },
       getProposalCatalog: () => proposalCatalogRef.current,
       onSittingServerRefreshed: () => {
         core.ledgerProjector.clear();
@@ -368,6 +487,7 @@ export const useCoworkBridge = (
     }),
     [
       core,
+      applyProvenanceLoad,
       seedMarkdown,
       documentId,
       storeId,
@@ -415,9 +535,104 @@ export const useCoworkBridge = (
     () => (lens: CoworkEditorLens): void => core.ledgerProjector.setLens(lens),
     [core],
   );
+  const provenanceEditor = useMemo<ProvenanceEditorIntegration>(
+    () => ({
+      resolveTarget: (anchor) => {
+        const editor = editorRef.current;
+        if (editor === null) {
+          return {
+            state: "missing",
+            documentOrder: null,
+            documentEnd: null,
+          };
+        }
+        const result = resolveProvenanceQuoteAnchorDetailed(
+          editor.state.doc,
+          anchor,
+        );
+        return result.state === "unique"
+          ? {
+              state: "unique",
+              documentOrder: result.from,
+              documentEnd: result.to,
+            }
+          : {
+              state: result.state,
+              documentOrder: null,
+              documentEnd: null,
+            };
+      },
+      isLocallyDirty: () => provenanceDirtyRef.current,
+      hasText: () => (editorRef.current?.state.doc.textContent.length ?? 0) > 0,
+      hasUncoveredText: (anchors) => {
+        const editor = editorRef.current;
+        if (editor === null) return true;
+        const ranges = anchors
+          .flatMap((anchor) => {
+            const result = resolveProvenanceQuoteAnchorDetailed(
+              editor.state.doc,
+              anchor,
+            );
+            return result.state === "unique"
+              ? [{ from: result.from, to: result.to }]
+              : [];
+          })
+          .sort((left, right) => left.from - right.from || left.to - right.to)
+          .reduce<Array<{ from: number; to: number }>>((merged, range) => {
+            const previous = merged[merged.length - 1];
+            if (previous === undefined || range.from > previous.to) {
+              merged.push({ ...range });
+            } else {
+              previous.to = Math.max(previous.to, range.to);
+            }
+            return merged;
+          }, []);
+        let uncovered = false;
+        editor.state.doc.descendants((node, pos) => {
+          if (!node.isText || node.nodeSize === 0) return true;
+          if (!ranges.some((range) => range.from <= pos && range.to >= pos + node.nodeSize)) {
+            uncovered = true;
+            return false;
+          }
+          return true;
+        });
+        return uncovered;
+      },
+      focusTarget: (id) => core.reviewAnchors.focusAnchor(id, "provenance"),
+      revealTarget: (id) =>
+        core.reviewAnchors.revealAnchor(id, "provenance", { flash: true }),
+    }),
+    [core, provenanceRevision],
+  );
+
+  const synchronizedProvenanceMutationBarrier = useMemo<
+    ProvenanceMutationBarrier | undefined
+  >(
+    () =>
+      provenanceMutationBarrier === null
+        ? undefined
+        : {
+            runWithSynchronizedDocument: (operation) =>
+              provenanceMutationBarrier.runWithSynchronizedDocument(
+                async (snapshot) => {
+                  settledProvenanceHeadRef.current =
+                    snapshot.structuredHeadSha256;
+                  const result = await operation(snapshot);
+                  const fresh = await core.provenanceProvider.refresh();
+                  applyProvenanceLoad(fresh, true);
+                  return result;
+                },
+              ),
+          },
+    [applyProvenanceLoad, core.provenanceProvider, provenanceMutationBarrier],
+  );
 
   return {
     reviewProvider: core.reviewProvider,
+    provenanceProvider: core.provenanceProvider,
+    provenanceEditor,
+    provenanceMutationBarrier: synchronizedProvenanceMutationBarrier,
+    editorRootRef: editorDomRef,
     reviewAnchors: core.reviewAnchors,
     editorProps,
     health,

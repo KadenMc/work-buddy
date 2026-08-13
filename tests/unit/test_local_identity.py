@@ -496,6 +496,134 @@ def test_dashboard_routes_ignore_caller_actor_fields_and_set_strict_cookie(
     )
 
 
+@pytest.mark.parametrize("session_state", ["missing", "unavailable", "expired"])
+def test_csrf_recovery_treats_absent_session_as_normal_unauthenticated_state(
+    authority: tuple[LocalIdentityAuthority, Clock],
+    monkeypatch: pytest.MonkeyPatch,
+    session_state: str,
+) -> None:
+    service, clock = authority
+    monkeypatch.setattr(local_identity_api, "_authority", lambda: service)
+    app = Flask(f"local-identity-csrf-{session_state}")
+    local_identity_api.register_routes(app)
+    client = app.test_client()
+
+    if session_state == "unavailable":
+        client.set_cookie(
+            SESSION_COOKIE_NAME,
+            "wbs_" + "x" * 43,
+            domain="127.0.0.1",
+        )
+    elif session_state == "expired":
+        session = _session(service)
+        client.set_cookie(
+            SESSION_COOKIE_NAME,
+            session.cookie_token,
+            domain="127.0.0.1",
+        )
+        clock.advance(_policy().session_idle_ttl_seconds + 1)
+
+    response = client.post(
+        "/api/local-identity/session/csrf",
+        headers={
+            "Origin": "http://127.0.0.1:5127",
+            "Host": "127.0.0.1:5127",
+        },
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+
+    assert response.status_code == 200
+    assert response.json == {
+        "ok": True,
+        "authenticated": False,
+        "human_authority_available": False,
+    }
+    assert response.headers["Cache-Control"] == "no-store"
+    assert response.headers["Set-Cookie"].startswith(f"{SESSION_COOKIE_NAME}=;")
+
+
+@pytest.mark.parametrize(
+    ("headers", "remote_addr", "code"),
+    [
+        (
+            {"Origin": "http://127.0.0.1:5127", "Host": "127.0.0.1:5127"},
+            "100.64.0.8",
+            "loopback_required",
+        ),
+        (
+            {"Host": "127.0.0.1:5127"},
+            "127.0.0.1",
+            "origin_required",
+        ),
+        (
+            {"Origin": "http://localhost:5127", "Host": "127.0.0.1:5127"},
+            "127.0.0.1",
+            "origin_mismatch",
+        ),
+        (
+            {
+                "Origin": "http://127.0.0.1:5127",
+                "Host": "127.0.0.1:5127",
+                "X-Forwarded-For": "127.0.0.1",
+            },
+            "127.0.0.1",
+            "direct_loopback_required",
+        ),
+    ],
+)
+def test_csrf_recovery_preserves_transport_security_failures(
+    authority: tuple[LocalIdentityAuthority, Clock],
+    monkeypatch: pytest.MonkeyPatch,
+    headers: dict[str, str],
+    remote_addr: str,
+    code: str,
+) -> None:
+    service, _ = authority
+    monkeypatch.setattr(local_identity_api, "_authority", lambda: service)
+    app = Flask(f"local-identity-csrf-security-{code}")
+    local_identity_api.register_routes(app)
+    client = app.test_client()
+    session = _session(service)
+    client.set_cookie(
+        SESSION_COOKIE_NAME,
+        session.cookie_token,
+        domain="127.0.0.1",
+    )
+
+    response = client.post(
+        "/api/local-identity/session/csrf",
+        headers=headers,
+        environ_base={"REMOTE_ADDR": remote_addr},
+    )
+
+    assert response.status_code == 403
+    assert response.json["error"]["code"] == code
+
+
+def test_csrf_recovery_preserves_malformed_credential_failure(
+    authority: tuple[LocalIdentityAuthority, Clock],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _ = authority
+    monkeypatch.setattr(local_identity_api, "_authority", lambda: service)
+    app = Flask("local-identity-csrf-invalid-credential")
+    local_identity_api.register_routes(app)
+    client = app.test_client()
+    client.set_cookie(SESSION_COOKIE_NAME, "not-a-session", domain="127.0.0.1")
+
+    response = client.post(
+        "/api/local-identity/session/csrf",
+        headers={
+            "Origin": "http://127.0.0.1:5127",
+            "Host": "127.0.0.1:5127",
+        },
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+
+    assert response.status_code == 401
+    assert response.json["error"]["code"] == "invalid_credential"
+
+
 def test_dashboard_human_authority_helper_fails_closed_remotely(
     authority: tuple[LocalIdentityAuthority, Clock],
     monkeypatch: pytest.MonkeyPatch,

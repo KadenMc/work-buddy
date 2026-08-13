@@ -66,11 +66,13 @@ export class LiveReviewRailProvider implements ReviewRailProvider {
   readonly #invalidationListeners = new Set<ReviewInvalidationListener>();
   readonly #proposalsListeners = new Set<ProposalsListener>();
   readonly #dataListeners = new Set<ReviewDataListener>();
+  readonly #payloadListeners = new Set<() => void>();
   #lastProposals: readonly ProposalInput[] | null = null;
   #lastData: ReviewRailData | null = null;
   #pendingKey: { readonly fingerprint: string; readonly key: string } | null = null;
   #loadSequence = 0;
   #latestLoad: Promise<ReviewRailData> | null = null;
+  #lastPayload: Awaited<ReturnType<CoworkDocClient["fetchDoc"]>> | null = null;
 
   constructor(options: LiveReviewRailProviderOptions) {
     this.#options = options;
@@ -97,8 +99,10 @@ export class LiveReviewRailProvider implements ReviewRailProvider {
 
     this.#lastProposals = mapped.proposalInputs;
     this.#lastData = mapped.railData;
+    this.#lastPayload = payload;
     for (const listener of this.#proposalsListeners) listener(mapped.proposalInputs);
     for (const listener of this.#dataListeners) listener(mapped.railData);
+    for (const listener of this.#payloadListeners) listener();
     return mapped.railData;
   }
 
@@ -280,5 +284,26 @@ export class LiveReviewRailProvider implements ReviewRailProvider {
     return () => {
       this.#dataListeners.delete(listener);
     };
+  }
+
+  /** Shared raw R2 snapshot for independent bounded-context projections. */
+  async loadPayload(): Promise<Awaited<ReturnType<CoworkDocClient["fetchDoc"]>>> {
+    if (this.#lastPayload !== null) return this.#lastPayload;
+    if (this.#latestLoad !== null) await this.#latestLoad;
+    else await this.load();
+    if (this.#lastPayload === null) throw new Error("The document snapshot could not be loaded.");
+    return this.#lastPayload;
+  }
+
+  async refreshPayload(): Promise<Awaited<ReturnType<CoworkDocClient["fetchDoc"]>>> {
+    await this.load();
+    if (this.#lastPayload === null) throw new Error("The document snapshot could not be loaded.");
+    return this.#lastPayload;
+  }
+
+  subscribePayload(listener: () => void): ReviewUnsubscribe {
+    this.#payloadListeners.add(listener);
+    if (this.#lastPayload !== null) listener();
+    return () => this.#payloadListeners.delete(listener);
   }
 }

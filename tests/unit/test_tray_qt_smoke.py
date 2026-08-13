@@ -84,6 +84,22 @@ class TestPanelConstructs:
         panel._cancel_confirm()
         assert panel._confirm_for is None
 
+    def test_open_uses_the_trusted_react_app_launch(self, qapp, monkeypatch):
+        from work_buddy.tray import qt as tray_qt
+
+        panel = self._panel(qapp)
+        opened = []
+        monkeypatch.setattr(
+            tray_qt.actions,
+            "open_dashboard",
+            lambda target_hash, *, app=False: opened.append((target_hash, app)),
+        )
+        monkeypatch.setattr(panel, "hide", lambda: None)
+
+        panel._open("#tab=settings&st=activity")
+
+        assert opened == [("#tab=settings&st=activity", True)]
+
     @staticmethod
     def _button_texts(layout):
         from PySide6.QtWidgets import QPushButton

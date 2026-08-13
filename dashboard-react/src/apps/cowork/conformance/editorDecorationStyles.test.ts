@@ -17,6 +17,13 @@ describe("Co-work editor decoration style contract", () => {
     expect(surfaceStyles).toContain("text-decoration-style: dashed");
     expect(surfaceStyles).toContain(".wb-cowork-provenance-tint::after");
     expect(surfaceStyles).toContain('content: "\\00a0\\2713"');
+    expect(surfaceStyles).toContain(".wb-cowork-provenance--ai");
+    expect(surfaceStyles).toContain(".wb-cowork-provenance--unrecorded");
+    expect(surfaceStyles).toContain(".wb-cowork-provenance--review-not-reviewed");
+    expect(surfaceStyles).toContain("underline dashed");
+    expect(surfaceStyles).toContain(".wb-cowork-provenance--review-unknown");
+    expect(surfaceStyles).toContain("underline dotted");
+    expect(surfaceStyles).toContain(".wb-cowork-provenance--conflict");
   });
 
   it("keeps focus/highlight visible for reduced-motion and forced-colors users", () => {

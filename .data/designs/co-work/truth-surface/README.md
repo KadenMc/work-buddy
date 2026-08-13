@@ -1,17 +1,26 @@
 # Co-work Truth surface
 
-**Status:** Accepted design and implementation contract, amended 2026-08-09
-for the AI-assisted interaction model.
+**Status:** Accepted design and implementation contract for the peer
+Provenance boundary and AI-assisted interaction model.
 
 ## Decision
 
-Co-work has three first-class rail surfaces:
+Co-work has four first-class rail surfaces:
 
 1. **Review** is the modification inbox for proposals, flags, evaluation results,
    and claims that require a decision.
-2. **Truth** is the place to observe and manage the claim ledger beneath the
+2. **Provenance** is the place to inspect document source, authorship,
+   human-review, attester, and basis records and to make constrained
+   append-only review attestations.
+3. **Truth** is the place to observe and manage the claim ledger beneath the
    work.
-3. **Chat** is the conversational interaction surface.
+4. **Chat** is the conversational interaction surface.
+
+The peer Provenance contract supersedes this document wherever older text
+placed document-authorship treatments inside Truth. See
+`../provenance-surface/README.md`. Truth still owns and explains provenance of
+Truth-domain records such as candidate preparation, evidence acquisition, and
+human claim decisions.
 
 Truth is intentionally both an observability surface and a modification
 surface. It is not a renamed Review queue. A person can inspect what the
@@ -33,7 +42,8 @@ and database rows remain implementation language rather than routine UI copy.
 
 | Term | Meaning in Co-work |
 |---|---|
-| **Truth** | The first-class rail surface for observing and managing claims, their document expressions, provenance, and lifecycle. |
+| **Provenance** | The first-class rail surface for document source, authorship, human review, attester/basis, target health, and append-only review history. |
+| **Truth** | The first-class rail surface for observing and managing claims, their document expressions, evidence, decision/acquisition provenance, and lifecycle. |
 | **Claim** | A proposition recorded in the append-only Truth ledger. A claim is not automatically a fact. |
 | **Fact** | A filter result, not a claim kind: a claim currently held as authoritative. It has confirmed base status, is current-valid, is not redacted or voided, and has no active needs-review overlay. |
 | **Expression** | A document passage where a claim is said, with a role such as quote, paraphrase, summary, or instantiation. |
@@ -93,7 +103,9 @@ evaluating an exact fetched source passage.
 
 ## Information architecture
 
-The rail tabs are **Review | Truth | Chat** on desktop and narrow layouts.
+The rail tabs are **Review | Provenance | Truth | Chat** on desktop and narrow
+layouts. The tablist keeps all four tabs keyboard- and scroll-reachable rather
+than clipping one at narrow widths.
 Truth has two independently meaningful dimensions:
 
 - Location: **This document** by default, or **Folder**.
@@ -171,13 +183,15 @@ unbounded fixed block above that body that compresses the proposal workspace.
 The editor has an explicit view-only lens state:
 
 - `review`: tracked proposals, flags, and evaluation-result anchors;
-- `truth`: expression anchors and provenance treatments; or
+- `provenance`: document source, authorship, human-review, and target-health
+  treatments;
+- `truth`: expression anchors; or
 - `neutral`: neither persistent ledger overlay.
 
 The active rail surface controls the default lens: Review selects `review`,
-Truth selects `truth`, and Chat selects `neutral`. Temporary passage highlights
-from Chat, Working on, or an explicit navigation command are independent of the
-lens.
+Provenance selects `provenance`, Truth selects `truth`, and Chat selects
+`neutral`. Temporary passage highlights from Chat, Working on, or an explicit
+navigation command are independent of the lens.
 
 Changing lens is a display operation only. It must not:
 
@@ -199,6 +213,12 @@ terminal states, and carries `base_status` separately from `needs_review`.
 Document mode joins that projection to expressions for the current document.
 Folder mode reads the whole selected ledger. SSE remains an invalidation signal;
 the client repulls authoritative state.
+
+Provenance follows the same ownership rule with its own typed provider and
+panel projection. It may share the authoritative open-document snapshot source,
+but neither Truth nor Review becomes a generic provenance transport. Its editor
+persistence barrier and forced-fresh review preflight are specified by the peer
+Provenance contract.
 
 All modifications use canonical Truth and Co-work operations. The UI does not
 write status rows, expressions, or receipts directly. Human decisions remain

@@ -283,12 +283,9 @@ describe("CoworkLedgerDecorations", () => {
     expect(claim).toHaveAttribute("data-wb-claim-ids", '["same-id"]');
     expect(claim).toHaveClass("wb-cowork-claim-anchor");
 
-    const provenance = current.view.dom.querySelector<HTMLElement>(
-      '[data-wb-decoration="provenance"]',
-    );
-    expect(provenance).toHaveClass("wb-cowork-provenance-tint");
-    expect(provenance).toHaveAttribute("data-wb-trust", "ai-confirmed");
-    expect(provenance).toHaveAttribute("data-approval-gesture-id", "gesture-1");
+    expect(
+      current.view.dom.querySelector('[data-wb-decoration="provenance"]'),
+    ).toBeNull();
     expect(
       current.view.dom.querySelector('[data-wb-anchor-id="span-human"]'),
     ).toBeNull();
@@ -297,6 +294,142 @@ describe("CoworkLedgerDecorations", () => {
     // editable document or its serialized Markdown/HTML projection.
     expect(current.getJSON()).toEqual(beforeJson);
     expect(current.getHTML()).toBe(beforeHtml);
+  });
+
+  it("projects independent provenance axes, unrecorded gaps, and overlap conflicts", () => {
+    const current = mountEditor("<p>AI passage and uncovered words.</p>");
+    const before = current.getJSON();
+    const base = {
+      quoteAnchor: { exact: "AI passage", prefix: "", suffix: " and" },
+      isDocumentDefault: false,
+      currentness: "current" as const,
+      source: "paste",
+      sourceDetail: "Format: plain text",
+      contributors: "No contributors recorded",
+      reviewers: "No reviewers recorded",
+      attester: "user-1",
+      basis: "user_attestation",
+      historyCount: 1,
+      effectiveCount: 1,
+      recordState: "recorded" as const,
+    };
+    projectCoworkLedgerDecorations(current, {
+      edits: [], flags: [], expressions: [], claims: [], provenance: [],
+      provenanceOverlay: [
+        {
+          ...base,
+          targetId: "target-a",
+          recordId: "record-a",
+          authorship: "ai",
+          reviewStatus: "not_reviewed",
+          resolution: "resolved",
+          authorshipFingerprint: "ai:alice",
+          reviewFingerprint: "not-reviewed",
+          sourceFingerprint: "paste:first",
+        },
+        {
+          ...base,
+          targetId: "target-b",
+          recordId: "record-b",
+          authorship: "ai",
+          reviewStatus: "not_reviewed",
+          resolution: "resolved",
+          authorshipFingerprint: "ai:bob",
+          reviewFingerprint: "not-reviewed",
+          sourceFingerprint: "paste:first",
+        },
+      ],
+    });
+    setCoworkEditorLens(current, "provenance");
+
+    const conflict = current.view.dom.querySelector<HTMLElement>(
+      '[data-wb-provenance-conflict="true"]',
+    );
+    expect(conflict).toHaveClass("wb-cowork-provenance--conflict");
+    expect(conflict).toHaveAttribute(
+      "data-wb-provenance-ids",
+      '["target-a","target-b"]',
+    );
+    const gap = current.view.dom.querySelector<HTMLElement>(
+      '[data-wb-provenance-record-state="unrecorded"]',
+    );
+    expect(gap).toHaveClass("wb-cowork-provenance--unrecorded");
+    expect(gap).not.toHaveAttribute("data-wb-anchor-kind");
+    expect(current.getJSON()).toEqual(before);
+  });
+
+  it("keeps compatible overlap target health explicit and rejects changed selector context", () => {
+    const current = mountEditor("<p>New context Shared passage and tail.</p>");
+    const base = {
+      quoteAnchor: {
+        exact: "Shared passage",
+        prefix: "New context ",
+        suffix: " and tail.",
+      },
+      isDocumentDefault: false,
+      authorship: "ai" as const,
+      reviewStatus: "not_reviewed" as const,
+      resolution: "resolved" as const,
+      source: "generation",
+      sourceDetail: "Model: test-model",
+      contributors: "No contributors recorded",
+      reviewers: "No reviewers recorded",
+      attester: "user-1",
+      basis: "system_observation",
+      historyCount: 1,
+      effectiveCount: 1,
+      recordState: "recorded" as const,
+      authorshipFingerprint: "ai",
+      reviewFingerprint: "not_reviewed",
+      sourceFingerprint: "generation:test-model",
+    };
+    projectCoworkLedgerDecorations(current, {
+      edits: [],
+      flags: [],
+      expressions: [],
+      claims: [],
+      provenance: [],
+      provenanceOverlay: [
+        {
+          ...base,
+          targetId: "current-target",
+          recordId: "current-record",
+          currentness: "current",
+        },
+        {
+          ...base,
+          targetId: "reanchored-target",
+          recordId: "reanchored-record",
+          currentness: "requires_reanchor",
+        },
+        {
+          ...base,
+          targetId: "wrong-context-target",
+          recordId: "wrong-context-record",
+          currentness: "requires_reanchor",
+          quoteAnchor: {
+            exact: "Shared passage",
+            prefix: "Old context ",
+            suffix: " and tail.",
+          },
+        },
+      ],
+    });
+    setCoworkEditorLens(current, "provenance");
+
+    const shared = current.view.dom.querySelector<HTMLElement>(
+      '[data-wb-provenance-ids*="current-target"]',
+    );
+    expect(shared).toHaveAttribute(
+      "data-wb-provenance-currentness",
+      "multiple target states",
+    );
+    expect(shared).toHaveAttribute("data-wb-provenance-conflict", "false");
+    expect(
+      current.view.dom.querySelector(
+        '[data-wb-provenance-ids*="wrong-context-target"]',
+      ),
+    ).toBeNull();
   });
 
   it("persists kind-qualified Truth focus without leaking Review marks", () => {
