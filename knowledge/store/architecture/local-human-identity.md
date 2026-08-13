@@ -44,8 +44,11 @@ dashboard is ready, the host mints a fresh one-use bootstrap and asks the
 browser integration to update an existing app tab in place while preserving
 its current route and query. Request/response nonces ensure that an unrelated
 tab export cannot be mistaken for a successful identity handoff. If no
-existing tab can be confirmed, recovery uses a fresh grant for the normal
-trusted browser-launch path rather than replaying a possibly consumed grant.
+existing tab can be confirmed, including when a pre-update extension worker
+does not support that mutation, recovery uses a fresh grant for the normal
+trusted browser-launch path rather than replaying a possibly consumed grant or
+calling the older navigation mutation. This leaves any open Co-work document
+route intact while the new same-origin session becomes available to it.
 
 An open tab consumes a newly delivered bootstrap on hash change. On window
 focus or return to visible state it always recovers the exact-Origin cookie

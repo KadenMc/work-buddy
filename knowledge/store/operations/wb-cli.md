@@ -73,11 +73,14 @@ app and has the trusted host mint a fresh one-use dashboard bootstrap. The
 browser extension first updates an existing app tab without activating it and
 preserves that tab's document route and query; a correlated response prevents
 unrelated shared Chrome output from being reported as success. If no handoff
-is confirmed, Work Buddy uses a fresh grant with the normal browser launch so
-it never silently leaves the tab with a stale identity session or replays a
-possibly consumed credential. Sidecar lifecycle success remains separate from
-this best-effort browser handoff: CLI writes an explicit reconnect warning and
-tray results include `identity_reconnect` when recovery cannot be confirmed.
+is confirmed—including when an already-running older extension worker does not
+support the path-preserving mutation—Work Buddy uses a fresh grant with the
+normal browser launch. It never falls back through the older navigation
+mutation, which could replace a live Co-work document route with the app root,
+and it never replays a possibly consumed credential. Sidecar lifecycle success
+remains separate from this best-effort browser handoff: CLI writes an explicit
+reconnect warning and tray results include `identity_reconnect` when recovery
+cannot be confirmed.
 
 ## When to use
 

@@ -101,7 +101,8 @@ def reconnect_dashboard_identity(*, wait_until_ready: bool = True) -> dict:
     asks the registered extension to update an existing app tab in place. If
     no tab exists or the extension cannot prove the handoff, the normal OS
     browser launch opens one; the operation never silently assumes provenance
-    is available.
+    is available or asks an older extension worker to navigate an existing
+    document tab.
     """
 
     from work_buddy.cli.commands import dashboard_app_url, _wait_for_dashboard_app
@@ -117,33 +118,13 @@ def reconnect_dashboard_identity(*, wait_until_ready: bool = True) -> dict:
     if mint_error is not None:
         return {"ok": False, "reconnected": False, "detail": mint_error}
     try:
-        from work_buddy.collectors.chrome_collector import (
-            focus_existing_tab,
-            focus_or_create_tab,
-        )
+        from work_buddy.collectors.chrome_collector import focus_existing_tab
 
         response = focus_existing_tab(
             base,
             target_hash=launch_hash,
             timeout_seconds=10,
         )
-        if not _dashboard_handoff_happened(response):
-            # An already-installed unpacked extension may still be running the
-            # pre-update service worker, which reports the new mutation as
-            # unknown.  Fall back to the older, already-shipped operation. It
-            # now receives preserve_path end-to-end, so an existing document
-            # route/query survives; if no tab exists it creates the normal app
-            # window, which is preferable to silently leaving the user able to
-            # edit without provenance.
-            launch_hash, mint_error = _mint_dashboard_bootstrap(base)
-            if mint_error is not None:
-                return {"ok": False, "reconnected": False, "detail": mint_error}
-            response = focus_or_create_tab(
-                base,
-                target_hash=launch_hash,
-                preserve_path=True,
-                timeout_seconds=10,
-            )
     except Exception as exc:
         logger.warning("Dashboard identity handoff failed: %s", exc)
         response = None
@@ -197,14 +178,16 @@ def reconnect_dashboard_identity(*, wait_until_ready: bool = True) -> dict:
 def open_dashboard(target_hash: str = "", *, app: bool = False) -> dict:
     """Focus an existing dashboard tab/window (or create one), smartly.
 
-    Primary path: the Chrome extension's ``focus_or_create_tab`` (reuse the
-    live tab, deep-link via ``target_hash``). Fallback when the extension is
-    absent or times out: a plain ``webbrowser.open``. Never raises; returns a
-    small dict describing what happened.
+    Primary path: the Chrome extension focuses a matching live tab and applies
+    ``target_hash``. Fallback when the extension is absent, outdated, reports
+    no matching app tab, or times out: a plain ``webbrowser.open``. Never
+    raises; returns a small dict describing what happened.
 
-    App launches preserve an existing React route and query while delivering
-    only the one-time bootstrap fragment. Legacy dashboard deep-links retain
-    their existing navigation behavior.
+    App launches use only the path-preserving ``focus_existing_tab`` mutation.
+    They never fall back to the older extension mutation, because pre-update
+    service workers ignore ``preserve_path`` and can replace a Co-work document
+    route with the app root. Legacy dashboard deep-links retain their existing
+    navigation behavior.
     """
     from work_buddy.cli.commands import dashboard_app_url, dashboard_local_url
 
@@ -224,28 +207,43 @@ def open_dashboard(target_hash: str = "", *, app: bool = False) -> dict:
             }
         identity_bootstrap = True
     try:
-        from work_buddy.collectors.chrome_collector import focus_or_create_tab
+        if app:
+            from work_buddy.collectors.chrome_collector import focus_existing_tab
 
-        res = focus_or_create_tab(
-            base,
-            target_hash=launch_hash,
-            preserve_path=app,
-            timeout_seconds=10,
-        )
+            res = focus_existing_tab(
+                base,
+                target_hash=launch_hash,
+                timeout_seconds=10,
+            )
+        else:
+            from work_buddy.collectors.chrome_collector import focus_or_create_tab
+
+            res = focus_or_create_tab(
+                base,
+                target_hash=launch_hash,
+                preserve_path=False,
+                timeout_seconds=10,
+            )
         if _successful_extension_mutation(res):
-            result = {
-                "ok": True,
-                "via": "extension",
-                "result": res,
-            }
-            if app:
-                result["identity_bootstrap"] = identity_bootstrap
-            return result
+            if app and not _dashboard_handoff_happened(res):
+                logger.info(
+                    "No existing app tab accepted the identity handoff; "
+                    "falling back to webbrowser"
+                )
+            else:
+                result = {
+                    "ok": True,
+                    "via": "extension",
+                    "result": res,
+                }
+                if app:
+                    result["identity_bootstrap"] = identity_bootstrap
+                return result
         logger.info(
-            "focus_or_create_tab was not confirmed; falling back to webbrowser"
+            "Dashboard extension handoff was not confirmed; falling back to webbrowser"
         )
     except Exception as exc:
-        logger.warning("focus_or_create_tab failed (%s); falling back", exc)
+        logger.warning("Dashboard extension handoff failed (%s); falling back", exc)
 
     import webbrowser
 

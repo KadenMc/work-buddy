@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from unittest.mock import Mock
-
 import pytest
 
 from work_buddy.tray import actions
@@ -60,13 +58,10 @@ class TestOpenDashboard:
             lambda app_url, *, next_hash="": "#wb-bootstrap=wbb_test",
         )
 
-        def fake_focus(
-            url, target_hash="", preserve_path=False, timeout_seconds=15
-        ):
+        def fake_focus(url, target_hash="", timeout_seconds=15):
             seen.update(
                 url=url,
                 target_hash=target_hash,
-                preserve_path=preserve_path,
                 timeout_seconds=timeout_seconds,
             )
             return {
@@ -75,7 +70,7 @@ class TestOpenDashboard:
             }
 
         monkeypatch.setattr(
-            "work_buddy.collectors.chrome_collector.focus_or_create_tab",
+            "work_buddy.collectors.chrome_collector.focus_existing_tab",
             fake_focus,
         )
         monkeypatch.setattr(
@@ -88,7 +83,6 @@ class TestOpenDashboard:
         assert seen == {
             "url": "http://127.0.0.1:5127/app/",
             "target_hash": "#wb-bootstrap=wbb_test",
-            "preserve_path": True,
             "timeout_seconds": 10,
         }
 
@@ -101,7 +95,7 @@ class TestOpenDashboard:
             lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("broken")),
         )
         monkeypatch.setattr(
-            "work_buddy.collectors.chrome_collector.focus_or_create_tab",
+            "work_buddy.collectors.chrome_collector.focus_existing_tab",
             lambda *args, **kwargs: pytest.fail("extension launch must not run"),
         )
         monkeypatch.setattr(
@@ -124,7 +118,7 @@ class TestOpenDashboard:
             lambda app_url, *, next_hash="": "#wb-bootstrap=wbb_test",
         )
         monkeypatch.setattr(
-            "work_buddy.collectors.chrome_collector.focus_or_create_tab",
+            "work_buddy.collectors.chrome_collector.focus_existing_tab",
             lambda *args, **kwargs: {"status": "error", "details": {}},
         )
         opened = {}
@@ -272,10 +266,6 @@ class TestIdentityReconnect:
             "work_buddy.collectors.chrome_collector.focus_existing_tab",
             lambda *args, **kwargs: {},
         )
-        monkeypatch.setattr(
-            "work_buddy.collectors.chrome_collector.focus_or_create_tab",
-            lambda *args, **kwargs: {},
-        )
         monkeypatch.setattr("webbrowser.open", lambda _url: False)
 
         result = actions.reconnect_dashboard_identity()
@@ -307,10 +297,6 @@ class TestIdentityReconnect:
             "work_buddy.collectors.chrome_collector.focus_existing_tab",
             lambda *args, **kwargs: None,
         )
-        monkeypatch.setattr(
-            "work_buddy.collectors.chrome_collector.focus_or_create_tab",
-            lambda *args, **kwargs: None,
-        )
         opened = {}
         monkeypatch.setattr(
             "webbrowser.open",
@@ -324,9 +310,8 @@ class TestIdentityReconnect:
         assert minted == [
             "#wb-bootstrap=wbb_1",
             "#wb-bootstrap=wbb_2",
-            "#wb-bootstrap=wbb_3",
         ]
-        assert opened["url"].endswith("/app/#wb-bootstrap=wbb_3")
+        assert opened["url"].endswith("/app/#wb-bootstrap=wbb_2")
 
     def test_confirmed_missing_tab_continues_to_create_a_trusted_session(
         self,
@@ -347,22 +332,23 @@ class TestIdentityReconnect:
                 "details": {"found": False, "created": False, "focused": False},
             },
         )
-        fallback = Mock(
-            return_value={
-                "status": "ok",
-                "details": {"created": True, "focused": False},
-            }
-        )
         monkeypatch.setattr(
             "work_buddy.collectors.chrome_collector.focus_or_create_tab",
-            fallback,
+            lambda *args, **kwargs: pytest.fail(
+                "an older worker must not navigate an existing document tab"
+            ),
+        )
+        opened = {}
+        monkeypatch.setattr(
+            "webbrowser.open",
+            lambda url: opened.setdefault("url", url),
         )
 
         result = actions.reconnect_dashboard_identity()
 
         assert result["ok"] is True
         assert result["reconnected"] is True
-        fallback.assert_called_once()
+        assert opened["url"].endswith("/app/#wb-bootstrap=wbb_test")
 
     def test_falls_back_when_focus_existing_tab_is_unsupported(self, monkeypatch):
         monkeypatch.setattr(
@@ -380,37 +366,20 @@ class TestIdentityReconnect:
                 "details": {"error": "Unknown mutation: focus_existing_tab"},
             },
         )
-        seen = {}
-
-        def prior_worker_focus(
-            url,
-            target_hash="",
-            preserve_path=False,
-            timeout_seconds=15,
-        ):
-            seen.update(
-                url=url,
-                target_hash=target_hash,
-                preserve_path=preserve_path,
-                timeout_seconds=timeout_seconds,
-            )
-            return {
-                "status": "ok",
-                "details": {"created": False, "focused": True},
-            }
-
         monkeypatch.setattr(
             "work_buddy.collectors.chrome_collector.focus_or_create_tab",
-            prior_worker_focus,
+            lambda *args, **kwargs: pytest.fail(
+                "an unsupported worker must not receive the bootstrap fallback"
+            ),
+        )
+        opened = {}
+        monkeypatch.setattr(
+            "webbrowser.open",
+            lambda url: opened.setdefault("url", url),
         )
 
         result = actions.reconnect_dashboard_identity()
 
         assert result["ok"] is True
         assert result["reconnected"] is True
-        assert seen == {
-            "url": "http://127.0.0.1:5127/app/",
-            "target_hash": "#wb-bootstrap=wbb_test",
-            "preserve_path": True,
-            "timeout_seconds": 10,
-        }
+        assert opened["url"].endswith("/app/#wb-bootstrap=wbb_test")

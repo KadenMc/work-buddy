@@ -7,6 +7,7 @@ sidecar plumbing mocked (no real process spawn or kill).
 
 from __future__ import annotations
 
+import inspect
 import json
 import time
 from unittest.mock import Mock
@@ -155,6 +156,16 @@ def test_launch_does_not_open_a_dead_dashboard(capsys, monkeypatch):
     monkeypatch.setattr(commands, "_wait_for_dashboard_app", lambda url: False)
     assert dispatch.main(["launch"]) == 1
     assert "did not become ready" in capsys.readouterr().err
+
+
+def test_dashboard_startup_timeout_covers_slow_managed_imports():
+    assert commands.DASHBOARD_STARTUP_TIMEOUT_SECONDS == 120.0
+    assert (
+        inspect.signature(commands._wait_for_dashboard_app)
+        .parameters["timeout_seconds"]
+        .default
+        == commands.DASHBOARD_STARTUP_TIMEOUT_SECONDS
+    )
 
 
 def test_launch_operation_returns_open_failure(monkeypatch):

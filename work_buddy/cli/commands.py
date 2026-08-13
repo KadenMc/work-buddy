@@ -689,7 +689,14 @@ def dashboard_app_url(*, local: bool = False) -> str:
     return f"{base.rstrip('/')}/app/"
 
 
-def _wait_for_dashboard_app(url: str, *, timeout_seconds: float = 30.0) -> bool:
+DASHBOARD_STARTUP_TIMEOUT_SECONDS = 120.0
+
+
+def _wait_for_dashboard_app(
+    url: str,
+    *,
+    timeout_seconds: float = DASHBOARD_STARTUP_TIMEOUT_SECONDS,
+) -> bool:
     """Wait until the React dashboard document is actually ready to open."""
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
@@ -747,7 +754,7 @@ def launch_dashboard_app() -> dict:
         return {
             "ok": False,
             "detail": (
-                "Dashboard app did not become ready within 30 seconds. "
+                "Dashboard app did not become ready within 120 seconds. "
                 "Run 'wbuddy status' and try again."
             ),
         }
