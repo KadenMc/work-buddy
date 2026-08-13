@@ -298,6 +298,7 @@ async function checkAndExport(trigger = "unknown") {
     );
     const result = await sendToHost({
       action: "export",
+      request_id: checkResult.request_id || null,
       request_action: "mutate",
       captured_at: new Date().toISOString(),
       mutation_result: mutationResult,
@@ -317,6 +318,7 @@ async function checkAndExport(trigger = "unknown") {
     const contents = await getTabContents(tabIds, maxChars);
     const result = await sendToHost({
       action: "export",
+      request_id: checkResult.request_id || null,
       request_action: "get_content",
       captured_at: new Date().toISOString(),
       tab_contents: contents,
@@ -334,6 +336,7 @@ async function checkAndExport(trigger = "unknown") {
       until: checkResult.until || null,
     });
     snapshot.action = "export";
+    snapshot.request_id = checkResult.request_id || null;
     const exportResult = await sendToHost(snapshot);
     if (exportResult && exportResult.status === "ok") {
       console.log(
@@ -498,6 +501,39 @@ async function applyMutation(params) {
           // the native-messaging result file after Chrome has accepted it.
           results.details = { created: true, tab_id: newTab.id };
         }
+        break;
+      }
+
+      case "focus_existing_tab": {
+        const url = (params.url || "").replace(/\/+$/, "");
+        const targetHash = params.target_hash || "";
+        if (!url) {
+          results.status = "error";
+          results.details = { error: "No url provided" };
+          break;
+        }
+        const matchingTabs = await chrome.tabs.query({ url: url + "/*" });
+        if (matchingTabs.length === 0) {
+          results.details = { created: false, found: false, focused: false };
+          break;
+        }
+        const sorted = matchingTabs.sort(
+          (a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0)
+        );
+        const tab = sorted[0];
+        const currentUrl = (tab.url || "").split("#", 1)[0];
+        if (!currentUrl) {
+          results.status = "error";
+          results.details = { error: "The matching tab has no navigable URL" };
+          break;
+        }
+        await chrome.tabs.update(tab.id, { url: currentUrl + targetHash });
+        results.details = {
+          created: false,
+          found: true,
+          focused: false,
+          tab_id: tab.id,
+        };
         break;
       }
 

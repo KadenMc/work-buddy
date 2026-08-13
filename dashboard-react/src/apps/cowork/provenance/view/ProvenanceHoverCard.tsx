@@ -29,6 +29,15 @@ interface HoverState {
 
 const label = (value: string): string => value.replace(/_/gu, " ");
 
+const expandedSelectionTouches = (root: HTMLElement): boolean => {
+  const selection = document.getSelection();
+  if (selection === null || selection.isCollapsed) return false;
+  return (
+    (selection.anchorNode !== null && root.contains(selection.anchorNode)) ||
+    (selection.focusNode !== null && root.contains(selection.focusNode))
+  );
+};
+
 /** Passive explanation for provenance-decorated text; all actions stay in the panel. */
 export function ProvenanceHoverCard({
   rootRef,
@@ -49,6 +58,13 @@ export function ProvenanceHoverCard({
       return undefined;
     }
     const showElement = (target: Element | null): void => {
+      // A deliberate text selection owns the contextual UI. Mouse-dragging a
+      // decorated passage first fires pointerover, so without this guard the
+      // passive card remains above and completely covers the selection action.
+      if (expandedSelectionTouches(root)) {
+        setHover(null);
+        return;
+      }
       const element = target?.closest<HTMLElement>(
         "[data-wb-decoration='provenance-overlay']",
       ) ?? null;
@@ -81,6 +97,10 @@ export function ProvenanceHoverCard({
       showElement(event.target instanceof Element ? event.target : null);
     };
     const showSelection = (): void => {
+      if (expandedSelectionTouches(root)) {
+        setHover(null);
+        return;
+      }
       if (!root.contains(document.activeElement)) return;
       const anchorNode = document.getSelection()?.anchorNode ?? null;
       const element =

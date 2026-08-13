@@ -68,6 +68,53 @@ def test_unknown_command_is_usage_error():
     assert dispatch.main(["bogus"]) == 2
 
 
+def test_start_recovers_identity_for_an_existing_dashboard_tab(
+    capsys,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        lifecycle,
+        "start_sidecar",
+        lambda **kwargs: {
+            "started": True,
+            "already_running": False,
+            "pid": 42,
+            "detail": "started",
+        },
+    )
+    monkeypatch.setattr(commands, "_ensure_tray", lambda: None)
+    monkeypatch.setattr(commands, "_print_dashboard_url", lambda prefix="": None)
+    recovered = Mock()
+    monkeypatch.setattr(commands, "_reconnect_open_dashboard_identity", recovered)
+
+    assert dispatch.main(["start"]) == 0
+
+    recovered.assert_called_once_with()
+    assert "Sidecar started" in capsys.readouterr().out
+
+
+def test_restart_recovers_identity_after_dashboard_returns(capsys, monkeypatch):
+    monkeypatch.setattr(
+        lifecycle,
+        "stop_sidecar",
+        lambda: {"was_running": True, "stopped": True, "detail": "stopped"},
+    )
+    monkeypatch.setattr(
+        lifecycle,
+        "start_sidecar",
+        lambda: {"started": True, "pid": 84, "detail": "started"},
+    )
+    monkeypatch.setattr(commands.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(commands, "_ensure_tray", lambda: None)
+    recovered = Mock()
+    monkeypatch.setattr(commands, "_reconnect_open_dashboard_identity", recovered)
+
+    assert dispatch.main(["restart"]) == 0
+
+    recovered.assert_called_once_with()
+    assert "Sidecar restarted" in capsys.readouterr().out
+
+
 def test_launch_starts_waits_and_opens_react_app(capsys, monkeypatch):
     monkeypatch.setattr(
         lifecycle,

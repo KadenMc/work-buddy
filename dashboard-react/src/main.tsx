@@ -17,7 +17,6 @@ import { DensityProvider } from "./theme/DensityProvider";
 import { ThemeProvider } from "./theme/ThemeProvider";
 import { TypographyScaleProvider } from "./theme/TypographyScaleProvider";
 import {
-  currentLocalIdentity,
   hasLocalIdentityBootstrap,
   initializeLocalIdentity,
   refreshLocalIdentity,
@@ -34,7 +33,11 @@ window.addEventListener("hashchange", () => {
   if (hasLocalIdentityBootstrap()) void refreshLocalIdentity();
 });
 const recoverFocusedLocalIdentity = (): void => {
-  if (!currentLocalIdentity().authenticated) void refreshLocalIdentity();
+  // The cookie can be renewed by a trusted launcher in another tab while
+  // this tab still holds an authenticated-but-stale CSRF token in memory.
+  // Always re-check the exact-Origin, cookie-bound session on foreground;
+  // refreshLocalIdentity coalesces focus + visibility events.
+  void refreshLocalIdentity();
 };
 window.addEventListener("focus", recoverFocusedLocalIdentity);
 document.addEventListener("visibilitychange", () => {

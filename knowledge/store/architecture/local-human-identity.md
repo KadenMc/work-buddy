@@ -38,6 +38,24 @@ request logs or referrers. The browser removes the fragment synchronously and
 redeems it for an opaque HttpOnly Strict session cookie plus an in-memory CSRF
 token.
 
+Deliberate CLI and tray start/restart operations also use that trusted host
+boundary to recover dashboard tabs that survived a sidecar restart. After the
+dashboard is ready, the host mints a fresh one-use bootstrap and asks the
+browser integration to update an existing app tab in place while preserving
+its current route and query. Request/response nonces ensure that an unrelated
+tab export cannot be mistaken for a successful identity handoff. If no
+existing tab can be confirmed, recovery uses a fresh grant for the normal
+trusted browser-launch path rather than replaying a possibly consumed grant.
+
+An open tab consumes a newly delivered bootstrap on hash change. On window
+focus or return to visible state it always recovers the exact-Origin cookie
+session and refreshes the in-memory CSRF token, including when the tab still
+looks authenticated with a stale token. A protected gesture that receives
+401/403 performs the same recovery once before retrying, then publishes an
+unauthenticated state if authority is still absent. These recovery paths do not
+mint authority in HTTP, extend the server's hard session or gesture TTLs, or
+weaken the direct-loopback, Origin, audience, CSRF, and exact-action checks.
+
 Before a protected click, the browser requests a gesture for the exact action,
 subject, and canonical context digest. The domain mutation sends that one-use
 gesture and CSRF token; the backend consumes it and constructs the

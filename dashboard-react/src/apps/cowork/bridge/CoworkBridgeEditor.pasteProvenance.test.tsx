@@ -27,6 +27,7 @@ import {
   type CoworkPasteProvenanceCapture,
   type CoworkPasteProvenanceIntentStage,
   type CoworkPasteProvenanceOutbox,
+  type CoworkPasteProvenanceOutboxBackingStore,
   type CoworkPasteProvenanceRecorder,
   type CoworkPasteProvenanceRequest,
   type CoworkProvenanceActorIdentity,
@@ -252,6 +253,310 @@ describe("CoworkBridgeEditor paste provenance", () => {
     expect(screen.queryByText(/where did this text come from/i)).toBeNull();
   }, 30_000);
 
+  it("keeps actorless typing durable and records it explicitly after identity recovery", async () => {
+    const requests: CoworkPasteProvenanceRequest[] = [];
+    const outbox = new DurableCoworkPasteProvenanceOutbox(
+      `actorless-direct-${String(Date.now())}`,
+      new InMemoryCoworkPasteProvenanceOutboxBackingStore(),
+    );
+    const documentId = `actorless-direct-document-${String(Date.now())}`;
+    let sessionAttempts = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/truth/cowork/current-actor") {
+          return new Response(JSON.stringify(ACTOR), {
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        expect(url).toBe("/api/local-identity/session/csrf");
+        sessionAttempts += 1;
+        if (sessionAttempts > 1) {
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              authenticated: true,
+              principal: LOCAL_PRINCIPAL,
+              csrf_token: "wbc_recovered_direct_entry",
+            }),
+            { headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            authenticated: false,
+            human_authority_available: false,
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      }),
+    );
+
+    let mounted: MountedPasteEditor | undefined;
+    try {
+      mounted = await mountPasteEditor(
+        async (request) => {
+          requests.push(request);
+        },
+        {
+          outbox,
+          documentId,
+          resolveActorFromServer: true,
+          activeLens: "neutral",
+          provenanceProvider: provenanceProvider(),
+        },
+      );
+      await waitFor(() => expect(sessionAttempts).toBe(1));
+
+      act(() => mounted!.editor.commands.insertContentAt(1, "Test"));
+      mounted.setActiveLens("provenance");
+
+      await waitFor(async () => {
+        expect((await outbox.list())[0]).toMatchObject({
+          anchor: { exact: "Test", prefix: "", suffix: "Before after" },
+          sourceKind: "direct_entry",
+          basisKind: "automatic_direct_entry_attribution",
+          status: "capturing",
+        });
+      });
+      expect(requests).toEqual([]);
+      await act(async () => {
+        await refreshLocalIdentity();
+      });
+      await waitFor(() => expect(sessionAttempts).toBeGreaterThanOrEqual(2));
+      await waitFor(async () => {
+        expect((await outbox.list())[0]).toMatchObject({
+          anchor: { exact: "Test", prefix: "", suffix: "Before after" },
+          sourceKind: "legacy",
+          basisKind: "user_attestation",
+          status: "awaiting_determination",
+          requiresExplicitDetermination: true,
+          failure: { code: "provenance_actor_unavailable_at_capture" },
+        });
+      });
+      act(() => {
+        mounted!.editor.commands.setTextSelection({ from: 1, to: 5 });
+      });
+      const user = userEvent.setup();
+      await user.click(
+        await screen.findByRole("button", { name: "Record provenance" }),
+      );
+      await user.click(
+        within(
+          screen.getByRole("dialog", { name: "Record provenance" }),
+        ).getByRole("button", { name: "Record provenance" }),
+      );
+
+      await waitFor(() => expect(requests).toHaveLength(1), {
+        timeout: 10_000,
+      });
+      expect(requests[0]).toMatchObject({
+        sourceKind: "legacy",
+        basisKind: "user_attestation",
+        expectedActorRef: ACTOR.ref,
+        expectedActorIdentityStatus: ACTOR.identity_status,
+        anchor: { exact: "Test" },
+      });
+      await waitFor(() => expect(outbox.list()).resolves.toEqual([]));
+    } finally {
+      mounted?.unmount();
+      vi.unstubAllGlobals();
+    }
+  }, 30_000);
+
+  it("does not resurrect actorless automatic work when recovered typing races demotion", async () => {
+    const requests: CoworkPasteProvenanceRequest[] = [];
+    const memoryBacking = new InMemoryCoworkPasteProvenanceOutboxBackingStore();
+    const intentStage = new InMemoryCoworkPasteProvenanceIntentStage();
+    const outboxKey = `actorless-demotion-race-${String(Date.now())}`;
+    let releaseDemotion!: () => void;
+    let enteredDemotion!: () => void;
+    const demotionGate = new Promise<void>((resolve) => {
+      releaseDemotion = resolve;
+    });
+    const demotionEntered = new Promise<void>((resolve) => {
+      enteredDemotion = resolve;
+    });
+    let demotionPaused = false;
+    const blockingBacking: CoworkPasteProvenanceOutboxBackingStore = {
+      durable: false,
+      read: (key) => memoryBacking.read(key),
+      async mutate(key, mutation) {
+        let demoted = false;
+        const result = await memoryBacking.mutate(key, (current) => {
+          const next = mutation(current);
+          demoted =
+            !demotionPaused &&
+            current.entries.some(
+              (entry) =>
+                entry.sourceKind === "direct_entry" &&
+                entry.status === "capturing" &&
+                next.record.entries.some(
+                  (candidate) =>
+                    candidate.id === entry.id &&
+                    candidate.sourceKind === "legacy" &&
+                    candidate.status === "awaiting_determination",
+                ),
+            );
+          return next;
+        });
+        if (demoted) {
+          // Pause after the demotion replacement has passed its guards and
+          // committed, but before the outbox operation settles. A subsequent
+          // transaction can synchronously journal and enqueue an upsert now.
+          demotionPaused = true;
+          enteredDemotion();
+          await demotionGate;
+        }
+        return result;
+      },
+    };
+    const durableOutbox = new DurableCoworkPasteProvenanceOutbox(
+      outboxKey,
+      blockingBacking,
+      intentStage,
+    );
+    let sessionAttempts = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/truth/cowork/current-actor") {
+          return new Response(JSON.stringify(ACTOR), {
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        expect(url).toBe("/api/local-identity/session/csrf");
+        sessionAttempts += 1;
+        return new Response(
+          JSON.stringify(
+            sessionAttempts === 1
+              ? {
+                  ok: true,
+                  authenticated: false,
+                  human_authority_available: false,
+                }
+              : {
+                  ok: true,
+                  authenticated: true,
+                  principal: LOCAL_PRINCIPAL,
+                  csrf_token: "wbc_actorless_demotion_race",
+                },
+          ),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      }),
+    );
+
+    let mounted: MountedPasteEditor | undefined;
+    let reopened: MountedPasteEditor | undefined;
+    try {
+      mounted = await mountPasteEditor(
+        async (request) => {
+          requests.push(request);
+        },
+        {
+          outbox: durableOutbox,
+          resolveActorFromServer: true,
+          activeLens: "neutral",
+          provenanceProvider: provenanceProvider(),
+        },
+      );
+      await waitFor(() => expect(sessionAttempts).toBe(1));
+      act(() => mounted!.editor.commands.insertContentAt(8, "A"));
+      await waitFor(async () => {
+        expect((await durableOutbox.list())[0]).toMatchObject({
+          anchor: { exact: "A" },
+          sourceKind: "direct_entry",
+          status: "capturing",
+        });
+      });
+
+      await act(async () => {
+        await refreshLocalIdentity();
+      });
+      await demotionEntered;
+
+      // The first burst has passed the actor-mismatch pre-check and is now
+      // yielding inside durable demotion. This disjoint edit is actor-bound
+      // and maps the older burst once more before staging its own key.
+      act(() => mounted!.editor.commands.insertContentAt(1, "B"));
+      releaseDemotion();
+
+      await waitFor(() => expect(requests).toHaveLength(1), {
+        timeout: 10_000,
+      });
+      expect(requests[0]).toMatchObject({
+        sourceKind: "direct_entry",
+        basisKind: "automatic_direct_entry_attribution",
+        expectedActorRef: ACTOR.ref,
+        anchor: { exact: "B" },
+      });
+      let pending = await durableOutbox.list();
+      expect(pending).toHaveLength(1);
+      expect(pending[0]).toMatchObject({
+        anchor: { exact: "A" },
+        sourceKind: "legacy",
+        basisKind: "user_attestation",
+        status: "awaiting_determination",
+        requiresExplicitDetermination: true,
+      });
+      expect(
+        pending.filter(
+          (entry) =>
+            entry.sourceKind === "direct_entry" || entry.status === "capturing",
+        ),
+      ).toEqual([]);
+      const legacyId = pending[0]!.id;
+      const server = mounted.server;
+      mounted.unmount();
+      mounted = undefined;
+
+      const reopenedOutbox = new DurableCoworkPasteProvenanceOutbox(
+        outboxKey,
+        memoryBacking,
+        intentStage,
+      );
+      reopened = await mountPasteEditor(
+        async (request) => {
+          requests.push(request);
+        },
+        {
+          outbox: reopenedOutbox,
+          server,
+          document: new Y.Doc(),
+          activeLens: "provenance",
+          provenanceProvider: provenanceProvider(),
+        },
+      );
+      await waitFor(async () => {
+        pending = await reopenedOutbox.list();
+        expect(pending).toHaveLength(1);
+        expect(pending[0]).toMatchObject({
+          id: legacyId,
+          anchor: { exact: "A" },
+          sourceKind: "legacy",
+          status: "awaiting_determination",
+        });
+        expect(
+          pending.filter(
+            (entry) =>
+              entry.sourceKind === "direct_entry" ||
+              entry.status === "capturing",
+          ),
+        ).toEqual([]);
+      });
+      expect(requests).toHaveLength(1);
+    } finally {
+      releaseDemotion();
+      reopened?.unmount();
+      mounted?.unmount();
+      vi.unstubAllGlobals();
+    }
+  }, 30_000);
+
   it("keeps corrections inside one honest direct-entry span", async () => {
     const requests: CoworkPasteProvenanceRequest[] = [];
     const mounted = await mountPasteEditor(
@@ -465,7 +770,7 @@ describe("CoworkBridgeEditor paste provenance", () => {
     reopened.unmount();
   }, 30_000);
 
-  it("retires an ownerless legacy actor-change row after reload so selection can record again", async () => {
+  it("reassociates an ownerless legacy actor-change row after reload", async () => {
     const requests: CoworkPasteProvenanceRequest[] = [];
     const outbox = new DurableCoworkPasteProvenanceOutbox(
       `ownerless-legacy-${String(Date.now())}`,
@@ -498,7 +803,14 @@ describe("CoworkBridgeEditor paste provenance", () => {
         provenanceProvider: provenanceProvider(),
       },
     );
-    await waitFor(() => expect(outbox.list()).resolves.toEqual([]));
+    await waitFor(async () => {
+      expect((await outbox.list())[0]).toMatchObject({
+        sourceKind: "legacy",
+        basisKind: "user_attestation",
+        status: "awaiting_determination",
+        requiresExplicitDetermination: true,
+      });
+    });
 
     act(() => {
       mounted.editor.commands.setTextSelection({ from: 1, to: 7 });
@@ -1349,6 +1661,92 @@ describe("CoworkBridgeEditor paste provenance", () => {
       expect(editorSurface).toHaveAttribute("aria-readonly", "false");
       expect(screen.queryByRole("alert")).toBeNull();
       expect(sessionAttempts).toBeGreaterThanOrEqual(2);
+    } finally {
+      mounted?.unmount();
+      vi.unstubAllGlobals();
+    }
+  }, 20_000);
+
+  it("clears an expired actor and re-resolves it after trusted session recovery", async () => {
+    const recorder = vi.fn<CoworkPasteProvenanceRecorder>().mockResolvedValue();
+    const recoveredActor = {
+      kind: "human",
+      ref: "recovered-dashboard-user",
+      identity_status: "local_actor_ref",
+    } as const;
+    let sessionAttempts = 0;
+    let actorAttempts = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/local-identity/session/csrf") {
+          sessionAttempts += 1;
+          if (sessionAttempts === 2) {
+            return new Response(
+              JSON.stringify({
+                ok: true,
+                authenticated: false,
+                human_authority_available: false,
+              }),
+              { headers: { "Content-Type": "application/json" } },
+            );
+          }
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              authenticated: true,
+              principal: {
+                ...LOCAL_PRINCIPAL,
+                session_expires_at: 199,
+              },
+              csrf_token:
+                sessionAttempts === 1 ? "wbc_initial" : "wbc_recovered",
+            }),
+            { headers: { "Content-Type": "application/json" } },
+          );
+        }
+        expect(url).toBe("/api/truth/cowork/current-actor");
+        actorAttempts += 1;
+        return new Response(
+          JSON.stringify(actorAttempts === 1 ? ACTOR : recoveredActor),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      }),
+    );
+
+    let mounted: MountedPasteEditor | undefined;
+    try {
+      mounted = await mountPasteEditor(recorder, {
+        resolveActorFromServer: true,
+        activeLens: "provenance",
+        provenanceProvider: provenanceProvider(),
+      });
+      await waitFor(() => expect(actorAttempts).toBe(1));
+      act(() => {
+        mounted!.editor.commands.setTextSelection({ from: 1, to: 7 });
+      });
+      expect(
+        await screen.findByRole("button", { name: "Record provenance" }),
+      ).toBeVisible();
+
+      await act(async () => {
+        await refreshLocalIdentity();
+      });
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("button", { name: "Record provenance" }),
+        ).toBeNull(),
+      );
+
+      await act(async () => {
+        await refreshLocalIdentity();
+      });
+      await waitFor(() => expect(actorAttempts).toBe(2));
+      expect(
+        await screen.findByRole("button", { name: "Record provenance" }),
+      ).toBeVisible();
+      expect(sessionAttempts).toBeGreaterThanOrEqual(4);
     } finally {
       mounted?.unmount();
       vi.unstubAllGlobals();

@@ -284,10 +284,42 @@ export async function issueHumanGesture(
   input: { action: string; subject: string; contextSha256: string },
   fetchImpl: typeof fetch = window.fetch.bind(window),
 ): Promise<HumanGesture> {
-  let { response, payload } = await requestHumanGesture(input, fetchImpl);
-  if (response.status === 409 && payload.error?.code === "session_rotation_required") {
-    await rotateLocalIdentitySession(fetchImpl);
+  let response: Response;
+  let payload: Awaited<ReturnType<typeof requestHumanGesture>>["payload"];
+  let recoveredSession = false;
+  let rotatedSession = false;
+  while (true) {
     ({ response, payload } = await requestHumanGesture(input, fetchImpl));
+    if (
+      (response.status === 401 || response.status === 403) &&
+      !recoveredSession
+    ) {
+      // A trusted launcher can replace the cookie while an already-open tab
+      // still holds the prior CSRF token in memory. Recover that exact-Origin
+      // session once and retry the gesture; an absent/expired cookie publishes
+      // unauthenticated state instead of leaving a stale principal cached.
+      recoveredSession = true;
+      const recovered = await refreshLocalIdentity({ fetchImpl });
+      if (recovered.authenticated) continue;
+    }
+    if (
+      response.status === 409 &&
+      payload.error?.code === "session_rotation_required" &&
+      !rotatedSession
+    ) {
+      rotatedSession = true;
+      await rotateLocalIdentitySession(fetchImpl);
+      continue;
+    }
+    break;
+  }
+  if (response.status === 401 || response.status === 403) {
+    csrfToken = null;
+    publish({
+      authenticated: false,
+      reason:
+        payload.error?.message || "No authenticated local session.",
+    });
   }
   if (!response.ok || !payload.ok || !payload.gesture) {
     throw responseError(

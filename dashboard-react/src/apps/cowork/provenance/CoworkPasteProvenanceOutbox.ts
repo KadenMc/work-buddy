@@ -107,6 +107,17 @@ export interface CoworkPasteProvenanceOutbox {
     id: number,
     capture: CoworkPasteProvenanceCapture,
   ): Promise<CoworkPasteProvenanceOutboxEntry>;
+  /**
+   * Preserve an automatic typing capture that cannot be bound to its
+   * capture-time actor. It becomes an explicit legacy determination instead
+   * of disappearing or being attributed to whichever actor arrives later.
+   */
+  deferDirectEntry(
+    id: number,
+    idempotencyKey: string,
+    determination: CoworkProvenanceDetermination,
+    failure: CoworkPasteProvenanceFailure,
+  ): Promise<CoworkPasteProvenanceOutboxEntry>;
   updateDetermination(
     id: number,
     determination: CoworkProvenanceDetermination,
@@ -1387,6 +1398,49 @@ export class DurableCoworkPasteProvenanceOutbox implements CoworkPasteProvenance
     });
   }
 
+  deferDirectEntry(
+    id: number,
+    idempotencyKey: string,
+    determination: CoworkProvenanceDetermination,
+    failure: CoworkPasteProvenanceFailure,
+  ): Promise<CoworkPasteProvenanceOutboxEntry> {
+    if (idempotencyKey.length === 0 || idempotencyKey.length > 200) {
+      return Promise.reject(
+        new Error("Deferred provenance requires a bounded idempotency key."),
+      );
+    }
+    let priorIdempotencyKey = idempotencyKey;
+    return this.#replace(id, (entry) => {
+      priorIdempotencyKey = entry.idempotencyKey;
+      if (
+        entry.sourceKind !== "direct_entry" ||
+        entry.status !== "capturing" ||
+        entry.frozenRequest !== undefined
+      ) {
+        throw new Error(
+          "Only an unfrozen direct-entry capture can require a determination.",
+        );
+      }
+      return {
+        ...entry,
+        idempotencyKey,
+        capturedActor: undefined,
+        sourceKind: "legacy",
+        basisKind: "user_attestation",
+        determination,
+        status: "awaiting_determination",
+        requiresExplicitDetermination: true,
+        frozenRequest: undefined,
+        failure,
+      };
+    }).then((entry) => {
+      // The direct-entry intent is no longer allowed to recover as automatic.
+      // Volatile backing stores receive the replacement intent below.
+      this.#intentStage.remove(this.#key, priorIdempotencyKey);
+      return this.#refreshVolatileIntent(entry, priorIdempotencyKey);
+    });
+  }
+
   updateDetermination(
     id: number,
     determination: CoworkProvenanceDetermination,
@@ -1520,6 +1574,7 @@ export class DurableCoworkPasteProvenanceOutbox implements CoworkPasteProvenance
           sourceKind:
             entry.sourceKind === "direct_entry" ? "legacy" : entry.sourceKind,
           basisKind: "user_attestation",
+          capturedActor: undefined,
           determination,
           status: "awaiting_determination",
           requiresExplicitDetermination: true,
@@ -1540,12 +1595,12 @@ export class DurableCoworkPasteProvenanceOutbox implements CoworkPasteProvenance
         },
       };
     }).then(({ entries, priorIdempotencyKeys }) =>
-      entries.map((entry, index) =>
-        this.#refreshVolatileIntent(
-          entry,
-          priorIdempotencyKeys[index] ?? entry.idempotencyKey,
-        ),
-      ),
+      entries.map((entry, index) => {
+        const priorIdempotencyKey =
+          priorIdempotencyKeys[index] ?? entry.idempotencyKey;
+        this.#intentStage.remove(this.#key, priorIdempotencyKey);
+        return this.#refreshVolatileIntent(entry, priorIdempotencyKey);
+      }),
     );
   }
 

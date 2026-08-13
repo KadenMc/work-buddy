@@ -18,7 +18,7 @@ const principal = {
     kind: "human" as const,
     tenant_scope_id: "wts_test",
   },
-  origin: "http://127.0.0.1:5127",
+  origin: window.location.origin,
   audience: "work-buddy-dashboard",
   session_expires_at: 99,
   rotation_due_at: 50,
@@ -131,6 +131,227 @@ describe("local identity bootstrap", () => {
     expect(localIdentityHeaders()).toEqual({
       "X-WB-CSRF": "wbc_reconnected",
     });
+  });
+
+  it("refreshes cached authenticated state and coalesces foreground recovery", async () => {
+    let releaseRefresh!: () => void;
+    const refreshGate = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const fetchImpl = vi.fn(
+      async (input: RequestInfo | URL, _init?: RequestInit) => {
+        const url = String(input);
+        if (url === "/api/local-identity/bootstrap/redeem") {
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              authenticated: true,
+              principal,
+              csrf_token: "wbc_initial",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        expect(url).toBe("/api/local-identity/session/csrf");
+        await refreshGate;
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            authenticated: true,
+            principal: { ...principal, session_expires_at: 199 },
+            csrf_token: "wbc_replaced_cookie",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      },
+    );
+    const location = {
+      hash: "#wb-bootstrap=wbb_secret",
+      origin: principal.origin,
+      pathname: "/app/cowork",
+      search: "?document_id=doc-1",
+    };
+    await initializeLocalIdentity({
+      fetchImpl,
+      location,
+      replaceState: vi.fn(() => {
+        location.hash = "";
+      }),
+    });
+
+    const first = refreshLocalIdentity({ fetchImpl, location });
+    const second = refreshLocalIdentity({ fetchImpl, location });
+    releaseRefresh();
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      expect.objectContaining({ authenticated: true }),
+      expect.objectContaining({ authenticated: true }),
+    ]);
+    expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual([
+      "/api/local-identity/bootstrap/redeem",
+      "/api/local-identity/session/csrf",
+    ]);
+    expect(localIdentityHeaders()).toEqual({
+      "X-WB-CSRF": "wbc_replaced_cookie",
+    });
+  });
+
+  it("refreshes stale CSRF after a trusted cookie replacement and retries once", async () => {
+    const gesture = {
+      token: "wbg_recovered",
+      action: "sources.capture",
+      subject_sha256: "a".repeat(64),
+      context_sha256: "b".repeat(64),
+      expires_at: 90,
+    };
+    let gestureAttempts = 0;
+    const fetchImpl = vi.fn(
+      async (input: RequestInfo | URL, _init?: RequestInit) => {
+        const url = String(input);
+        if (url === "/api/local-identity/bootstrap/redeem") {
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              authenticated: true,
+              principal,
+              csrf_token: "wbc_stale",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (url === "/api/local-identity/session/csrf") {
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              authenticated: true,
+              principal: { ...principal, session_expires_at: 199 },
+              csrf_token: "wbc_current",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        expect(url).toBe("/api/local-identity/gestures");
+        gestureAttempts += 1;
+        if (gestureAttempts === 1) {
+          return new Response(
+            JSON.stringify({
+              ok: false,
+              error: { code: "csrf_mismatch", message: "CSRF is stale." },
+            }),
+            { status: 403, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return new Response(
+          JSON.stringify({ ok: true, gesture }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        );
+      },
+    );
+    await initializeLocalIdentity({
+      fetchImpl,
+      location: {
+        hash: "#wb-bootstrap=wbb_secret",
+        origin: principal.origin,
+        pathname: "/app/",
+        search: "",
+      },
+      replaceState: vi.fn(),
+    });
+
+    await expect(
+      issueHumanGesture(
+        {
+          action: "sources.capture",
+          subject: "journal:quick-capture",
+          contextSha256: "b".repeat(64),
+        },
+        fetchImpl,
+      ),
+    ).resolves.toEqual(gesture);
+
+    expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual([
+      "/api/local-identity/bootstrap/redeem",
+      "/api/local-identity/gestures",
+      "/api/local-identity/session/csrf",
+      "/api/local-identity/gestures",
+    ]);
+    const retryHeaders = fetchImpl.mock.calls[3]?.[1]?.headers as Record<
+      string,
+      string
+    >;
+    expect(retryHeaders["X-WB-CSRF"]).toBe("wbc_current");
+  });
+
+  it("publishes unauthenticated state after absolute session expiry", async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/local-identity/bootstrap/redeem") {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            authenticated: true,
+            principal,
+            csrf_token: "wbc_expiring",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url === "/api/local-identity/session/csrf") {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            authenticated: false,
+            human_authority_available: false,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      expect(url).toBe("/api/local-identity/gestures");
+      return new Response(
+        JSON.stringify({
+          ok: false,
+          error: { code: "session_expired", message: "Session expired." },
+        }),
+        { status: 401, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    await initializeLocalIdentity({
+      fetchImpl,
+      location: {
+        hash: "#wb-bootstrap=wbb_secret",
+        origin: principal.origin,
+        pathname: "/app/",
+        search: "",
+      },
+      replaceState: vi.fn(),
+    });
+
+    await expect(
+      issueHumanGesture(
+        {
+          action: "sources.capture",
+          subject: "journal:quick-capture",
+          contextSha256: "b".repeat(64),
+        },
+        fetchImpl,
+      ),
+    ).rejects.toThrow("Session expired.");
+
+    expect(currentLocalIdentity()).toEqual({
+      authenticated: false,
+      reason: "Session expired.",
+    });
+    expect(() => localIdentityHeaders()).toThrow(
+      "An authenticated local session is required.",
+    );
+    expect(
+      fetchImpl.mock.calls.filter(
+        ([url]) => String(url) === "/api/local-identity/gestures",
+      ),
+    ).toHaveLength(1);
   });
 
   it("rotates an aging session once before issuing the bound gesture", async () => {

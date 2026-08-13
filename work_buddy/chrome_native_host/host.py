@@ -82,9 +82,23 @@ def handle_check() -> None:
     if requested:
         params = _read_request_params()
         # Pass through all known request parameters to the extension
-        for key in ("since", "until", "request_action", "tab_ids", "max_chars",
-                    "mutation", "title", "color", "group_id", "window_id", "index",
-                    "url", "target_hash"):
+        for key in (
+            "request_id",
+            "since",
+            "until",
+            "request_action",
+            "tab_ids",
+            "max_chars",
+            "mutation",
+            "title",
+            "color",
+            "group_id",
+            "window_id",
+            "index",
+            "url",
+            "target_hash",
+            "preserve_path",
+        ):
             if params.get(key) is not None:
                 response[key] = params[key]
 
@@ -152,9 +166,19 @@ def handle_export(message: dict) -> None:
     )
     temp_file.replace(OUTPUT_FILE)
 
-    # Clean up request file
+    # Clean up only the request that produced this response.  A stale native
+    # host reply must never erase a newer browser-launch request that happens
+    # to share the same filesystem rendezvous.
     if REQUEST_FILE.exists():
-        REQUEST_FILE.unlink()
+        current = _read_request_params()
+        current_id = current.get("request_id")
+        response_id = message.get("request_id")
+        if (current_id is None and response_id is None) or (
+            isinstance(current_id, str)
+            and isinstance(response_id, str)
+            and current_id == response_id
+        ):
+            REQUEST_FILE.unlink()
 
     write_message({
         "status": "ok",

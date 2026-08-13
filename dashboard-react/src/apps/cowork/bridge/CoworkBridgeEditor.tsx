@@ -334,7 +334,14 @@ function MountedBridgeEditor({
     readonly CoworkPasteProvenanceCapture[]
   >([]);
   const inputProvenancePending =
-    pasteEntries.some((entry) => entry.sourceKind !== "paste") ||
+    pasteEntries.some(
+      (entry) =>
+        entry.sourceKind === "direct_entry" ||
+        (entry.sourceKind === "legacy" &&
+          entry.status !== "awaiting_determination" &&
+          entry.status !== "stale_target" &&
+          entry.status !== "terminal_failure"),
+    ) ||
     volatilePasteCaptures.some(
       (capture) =>
         capture.sourceKind !== undefined && capture.sourceKind !== "paste",
@@ -492,50 +499,22 @@ function MountedBridgeEditor({
           const apiError = asCoworkApiError(error);
           try {
             if (apiError.code === COWORK_PROVENANCE_ACTOR_CHANGED) {
-              const directEntryIds = (
-                await resolvedPasteProvenanceOutbox.list()
-              )
-                .filter((entry) => entry.sourceKind === "direct_entry")
-                .map((entry) => entry.id);
               const recoveryPrefix = pasteIdempotencyKey();
               await resolvedPasteProvenanceOutbox.resetAfterActorChange(
                 recoveryPrefix,
                 unknownCoworkProvenanceDetermination(),
               );
-              // Automatic direct-entry observation cannot be rebound to a new
-              // actor. Retire it so it neither lies nor blocks Provenance;
-              // the unchanged passage remains honestly uncovered and can be
-              // explicitly recorded as legacy. Paste/manual rows retain their
-              // explicit reconfirmation path.
-              for (const directEntryId of directEntryIds) {
-                await resolvedPasteProvenanceOutbox.remove(directEntryId);
-              }
-              const ownedManualIds = new Set(
-                manualRecordEntryRef.current.values(),
-              );
-              for (const entry of await resolvedPasteProvenanceOutbox.list()) {
-                if (
-                  entry.sourceKind === "legacy" &&
-                  entry.status === "awaiting_determination" &&
-                  !ownedManualIds.has(entry.id)
-                ) {
-                  // A rehydrated/manual request has no dialog that can
-                  // reconfirm it after an actor switch. Retire the rejected
-                  // request so it cannot invisibly block a fresh selection.
-                  await resolvedPasteProvenanceOutbox.remove(entry.id);
-                }
-              }
               setVolatilePasteCaptures((current) =>
                 current
-                  // An automatic capture cannot be rebound to the new actor,
-                  // and unlike paste it has no determination UI. Leave its
-                  // text uncovered instead of manufacturing hidden legacy
-                  // work that gates the Provenance surface forever.
-                  .filter((capture) => capture.sourceKind !== "direct_entry")
                   .map((capture, index) => ({
                     ...capture,
                     idempotencyKey: `${recoveryPrefix}:volatile:${String(index)}`,
+                    sourceKind:
+                      capture.sourceKind === "direct_entry"
+                        ? "legacy"
+                        : capture.sourceKind,
                     basisKind: "user_attestation",
+                    capturedActor: undefined,
                     determination: unknownCoworkProvenanceDetermination(),
                     requiresExplicitDetermination: true,
                     status: "awaiting_determination",
@@ -775,20 +754,56 @@ function MountedBridgeEditor({
         );
         if (entry === undefined) continue;
 
-        if (
-          burst.capturedActor === undefined ||
-          resolvedProvenanceActor === undefined ||
-          burst.capturedActor.ref !== resolvedProvenanceActor.ref ||
-          burst.capturedActor.identity_status !==
-            resolvedProvenanceActor.identity_status
-        ) {
-          // Automatic attribution cannot honestly survive a missing/changed
-          // actor. Retire the hidden automatic row; existing text can be
-          // recorded explicitly as legacy from Provenance.
+        if (resolvedProvenanceActor === undefined) {
+          // Identity may recover from a trusted launcher without changing the
+          // editor. Preserve both actor-bound and actorless observations until
+          // that boundary can decide whether automatic attribution is honest.
+          continue;
+        }
+        const captureActorUnavailable = burst.capturedActor === undefined;
+        const captureActorChanged =
+          burst.capturedActor !== undefined &&
+          (burst.capturedActor.ref !== resolvedProvenanceActor.ref ||
+            burst.capturedActor.identity_status !==
+              resolvedProvenanceActor.identity_status);
+        if (captureActorUnavailable || captureActorChanged) {
+          // Never let an unavailable/changed actor make the observation
+          // disappear, and never let a later actor inherit it. Preserve the
+          // exact selector as an explicit legacy determination the user can
+          // resolve after a legitimate identity session is available.
           if (entry.status === "capturing") {
-            await resolvedPasteProvenanceOutbox.cancelCapture(entry.id);
-          } else {
-            await resolvedPasteProvenanceOutbox.remove(entry.id);
+            const deferred = await resolvedPasteProvenanceOutbox.deferDirectEntry(
+              entry.id,
+              // This automatic request has never been frozen or submitted, so
+              // preserving its key is both safe and important: a transaction
+              // that mapped the burst while demotion was queued may already
+              // have journalled one last capture under this key. Rotating it
+              // here would let that queued upsert append an orphan automatic
+              // row after the legacy replacement commits.
+              burst.idempotencyKey,
+              unknownCoworkProvenanceDetermination(),
+              {
+                code: captureActorUnavailable
+                  ? "provenance_actor_unavailable_at_capture"
+                  : COWORK_PROVENANCE_ACTOR_CHANGED,
+                message: captureActorUnavailable
+                  ? "No enrolled local actor was available when this text was entered."
+                  : "The acting identity changed before this attribution was saved.",
+                kind: "terminal",
+              },
+            );
+            if (
+              generation !== provenanceEditGenerationRef.current ||
+              deferred.idempotencyKey !== burst.idempotencyKey
+            ) {
+              // A disjoint edit can arrive while durable demotion yields. Keep
+              // the burst refs intact and run the full close loop again so the
+              // newly actor-bound burst is frozen and delivered at its current
+              // structured head. The same-key replacement makes the queued
+              // stale upsert reject instead of resurrecting automatic work.
+              retryForChangedGeneration = true;
+              return;
+            }
           }
           directEntryClosingBurstsRef.current.delete(burst.idempotencyKey);
           if (
@@ -1423,20 +1438,6 @@ function MountedBridgeEditor({
         // gets substituted for the author observed before the restart.
         for (const entry of entries) {
           if (
-            entry.sourceKind === "legacy" &&
-            (entry.status === "awaiting_determination" ||
-              entry.status === "stale_target" ||
-              entry.status === "terminal_failure") &&
-            ![...manualRecordEntryRef.current.values()].includes(entry.id)
-          ) {
-            // Selection dialogs are intentionally in-memory. After a reload
-            // no owner exists to reconfirm a rejected manual request, so do
-            // not leave it as an invisible permanent pending gate. The user
-            // can select the still-uncovered text and record a fresh request.
-            await resolvedPasteProvenanceOutbox.remove(entry.id);
-            continue;
-          }
-          if (
             entry.status === "capturing" &&
             entry.sourceKind === "direct_entry"
           ) {
@@ -1456,6 +1457,22 @@ function MountedBridgeEditor({
                 : { capturedActor: entry.capturedActor }),
             };
             if (active) await finalizeDirectEntryBurstRef.current();
+            if (active && resolvedProvenanceActor !== undefined) {
+              // Actor recovery can race the actorless finalizer already in
+              // flight. Re-check the durable row after that promise settles;
+              // the ref now points at the callback bound to the recovered
+              // actor, so one follow-up closes rather than stranding it.
+              const stillCapturing = (
+                await resolvedPasteProvenanceOutbox.list()
+              ).some(
+                (candidate) =>
+                  candidate.id === entry.id &&
+                  candidate.status === "capturing",
+              );
+              if (stillCapturing) {
+                await finalizeDirectEntryBurstRef.current();
+              }
+            }
             continue;
           }
           if (
@@ -1595,6 +1612,22 @@ function MountedBridgeEditor({
       if (existingId !== undefined && entry === undefined) {
         manualRecordEntryRef.current.delete(manualKey);
       }
+      if (entry === undefined) {
+        // Selection-dialog ownership is intentionally in-memory, while an
+        // actorless typing capture is durable. Reassociate the same exact
+        // selector after a reload/session recovery so explicit confirmation
+        // completes that row instead of appending an overlapping duplicate.
+        entry = entries.find(
+          (candidate) =>
+            candidate.sourceKind === "legacy" &&
+            candidate.status === "awaiting_determination" &&
+            candidate.frozenRequest === undefined &&
+            JSON.stringify(candidate.anchor) === manualKey,
+        );
+        if (entry !== undefined) {
+          manualRecordEntryRef.current.set(manualKey, entry.id);
+        }
+      }
 
       if (
         entry?.sourceKind === "legacy" &&
@@ -1608,7 +1641,14 @@ function MountedBridgeEditor({
       }
 
       if (entry === undefined) {
-        if (entries.some((candidate) => candidate.sourceKind !== "paste")) {
+        if (
+          entries.some(
+            (candidate) =>
+              candidate.sourceKind === "direct_entry" ||
+              (candidate.sourceKind === "legacy" &&
+                candidate.status !== "awaiting_determination"),
+          )
+        ) {
           throw new Error(
             "Recording recent typing. Try again when provenance finishes refreshing.",
           );
@@ -2629,11 +2669,27 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
   useEffect(
     () =>
       subscribeLocalIdentity((identity) => {
-        if (identity.authenticated && provenanceActorState === "error") {
+        if (!provenanceEnabled) return;
+        if (!identity.authenticated) {
+          // A session can expire or be replaced while the editor remains
+          // mounted. Never keep presenting its cached actor as current; direct
+          // entry remains durable and actorless until trusted recovery.
+          setResolvedProvenanceActor(undefined);
+          setProvenanceActorState("error");
+          return;
+        }
+        if (provenanceActorState !== "loading") {
+          // Authenticated publications can represent a newly delivered cookie
+          // (and potentially a different enrolled actor), so re-read the
+          // canonical actor even when the prior actor looked healthy.
           requestProvenanceActorRefresh();
         }
       }),
-    [provenanceActorState, requestProvenanceActorRefresh],
+    [
+      provenanceActorState,
+      provenanceEnabled,
+      requestProvenanceActorRefresh,
+    ],
   );
 
   useEffect(

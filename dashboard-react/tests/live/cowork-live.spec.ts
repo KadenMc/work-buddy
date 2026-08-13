@@ -1169,10 +1169,6 @@ test.describe.serial("Co-work live lifecycle", () => {
     await editor.click();
     await page.keyboard.type("Test", { delay: 20 });
     await expect(editor).toHaveText("Test");
-    await page.keyboard.press("Shift+Home");
-    await expect
-      .poll(() => page.evaluate(() => window.getSelection()?.toString() ?? ""))
-      .toBe("Test");
 
     // Entering Provenance finalizes the active typing burst. The stable rail owns
     // inspection while the contextual editor action becomes provenance-specific.
@@ -1238,9 +1234,37 @@ test.describe.serial("Co-work live lifecycle", () => {
           review: "not_applicable",
         },
       ]);
-    await expect(
-      page.getByRole("button", { name: "View provenance", exact: true }),
-    ).toBeVisible({ timeout: 30_000 });
+    const decoratedPassage = editor.locator(
+      "[data-wb-decoration='provenance-overlay']",
+      { hasText: "Test" },
+    );
+    await expect(decoratedPassage).toBeVisible({ timeout: 30_000 });
+
+    // Select after the Provenance lens and its overlay are already active. This
+    // is the normal inspection gesture and exercises the selection-action and
+    // passive-hover lifecycles together.
+    const passageBox = await decoratedPassage.boundingBox();
+    expect(passageBox).not.toBeNull();
+    await page.mouse.move(
+      passageBox!.x + passageBox!.width - 1,
+      passageBox!.y + passageBox!.height / 2,
+    );
+    await page.mouse.down();
+    await page.mouse.move(
+      passageBox!.x + 1,
+      passageBox!.y + passageBox!.height / 2,
+      { steps: 8 },
+    );
+    await page.mouse.up();
+    await expect
+      .poll(() => page.evaluate(() => window.getSelection()?.toString() ?? ""))
+      .toBe("Test");
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
+    const provenanceAction = page.getByRole("button", {
+      name: "View provenance",
+      exact: true,
+    });
+    await expect(provenanceAction).toBeVisible({ timeout: 5_000 });
   });
 
   test("Close Folder returns to the Folder launcher and can reopen it without a native picker", async ({

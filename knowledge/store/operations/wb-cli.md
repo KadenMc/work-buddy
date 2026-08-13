@@ -48,9 +48,9 @@ Installed as a console script (`wbuddy`) via pyproject, also runnable as `python
 
 ## Verbs
 
-- `wbuddy start [--foreground]` -- start the sidecar. Detached by default (no console window), `--foreground` runs it in the current terminal. Idempotent for a healthy sidecar: an already-running (or still-booting) sidecar is reported, not duplicated, while a wedged one is taken over.
+- `wbuddy start [--foreground]` -- start the sidecar. Detached by default (no console window), `--foreground` runs it in the current terminal. Idempotent for a healthy sidecar: an already-running (or still-booting) sidecar is reported, not duplicated, while a wedged one is taken over. A successful detached start then attempts the trusted dashboard-identity recovery described below.
 - `wbuddy stop` -- stop the running sidecar and its child services.
-- `wbuddy restart` -- stop then start.
+- `wbuddy restart` -- stop then start, then attempt trusted dashboard-identity recovery after the app is ready.
 - `wbuddy status [--json]` -- sidecar liveness, uptime, and per-service health, read from the sidecar state file. Distinguishes booting from wedged; exits non-zero when not running or wedged. Also reports the daemon's dispatch loop: a phase busy past ~2 minutes prints as busy with the running job's name (scheduled work is queued behind it, supervision unaffected), otherwise the time since the last completed dispatch cycle.
 - `wbuddy doctor [<component>] [--json]` -- render the setup wizard's status, or one component's diagnosis: bootstrap, requirements, health.
 - `wbuddy setup` -- run bootstrap checks, print the gateway MCP config, and point to the selected harness's generated `wb-setup` command or skill for interactive feature selection.
@@ -67,6 +67,17 @@ Installed as a console script (`wbuddy`) via pyproject, also runnable as `python
 - `wbuddy autostart {enable,disable,status}` -- manage login auto-start of the detached sidecar (Windows Task Scheduler `WB-Sidecar`, Linux systemd `--user` unit, macOS launchd agent), via `work_buddy/autostart/`.
 - `wbuddy tray {enable,disable,status,run}` -- manage the system-tray icon (needs the `tray` extra). `enable` sets `tray.enabled`, registers the `WB-Tray` login item, and starts the tray; `disable` reverses all three; `status` reports enabled/registered/running; `run` is the foreground login-item entry point. The tray is a separate process and login item, NOT a sidecar-supervised service -- see services/tray.
 - `wbuddy truth {capture,propose,query,confirm,migrate} [--store ...] [--json]` -- discover or select a canonical scoped local Truth Store at `.wbuddy/cowork` and use the frozen consumer surface directly. `capture` records immutable evidence and an optional quote span, `propose` writes a profile-valid claim, `query` exposes current/as-of/review/conflict views, and `confirm` requires a local-human interactive TTY or an existing human gesture. `migrate` upgrades the schema of one selected store or every registered store. Detected agent sessions cannot mint an interactive human gesture.
+
+For detached CLI and tray start/restart, identity recovery waits for the React
+app and has the trusted host mint a fresh one-use dashboard bootstrap. The
+browser extension first updates an existing app tab without activating it and
+preserves that tab's document route and query; a correlated response prevents
+unrelated shared Chrome output from being reported as success. If no handoff
+is confirmed, Work Buddy uses a fresh grant with the normal browser launch so
+it never silently leaves the tab with a stale identity session or replays a
+possibly consumed credential. Sidecar lifecycle success remains separate from
+this best-effort browser handoff: CLI writes an explicit reconnect warning and
+tray results include `identity_reconnect` when recovery cannot be confirmed.
 
 ## When to use
 

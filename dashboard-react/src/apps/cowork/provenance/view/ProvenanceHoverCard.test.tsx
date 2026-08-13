@@ -61,4 +61,37 @@ describe("ProvenanceHoverCard", () => {
     expect(screen.getByRole("tooltip")).toHaveTextContent("mixed authorship");
     root.remove();
   });
+
+  it("yields to an expanded editor selection and cannot reopen over its action", () => {
+    const root = document.createElement("div");
+    root.tabIndex = 0;
+    const passage = document.createElement("span");
+    passage.dataset.wbDecoration = "provenance-overlay";
+    passage.dataset.wbAuthorship = "human";
+    passage.textContent = "Selected passage";
+    root.append(passage);
+    document.body.append(root);
+    const ref = createRef<HTMLElement>();
+    ref.current = root;
+    render(<ProvenanceHoverCard rootRef={ref} active editorReady />);
+
+    fireEvent.pointerOver(passage);
+    expect(screen.getByRole("tooltip")).toHaveTextContent("human authorship");
+
+    const range = document.createRange();
+    range.selectNodeContents(passage);
+    const selection = document.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    fireEvent(document, new Event("selectionchange"));
+
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    fireEvent.pointerOver(passage);
+    expect(screen.queryByRole("tooltip")).toBeNull();
+
+    selection?.removeAllRanges();
+    fireEvent.pointerOver(passage);
+    expect(screen.getByRole("tooltip")).toHaveTextContent("human authorship");
+    root.remove();
+  });
 });

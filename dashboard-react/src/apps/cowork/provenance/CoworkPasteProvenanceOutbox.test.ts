@@ -230,6 +230,62 @@ describe("DurableCoworkPasteProvenanceOutbox", () => {
     });
   });
 
+  it("preserves actorless typing as an explicit legacy determination across reopen", async () => {
+    const key = "store:actorless-direct";
+    const backing = new InMemoryCoworkPasteProvenanceOutboxBackingStore();
+    const stage = new InMemoryCoworkPasteProvenanceIntentStage();
+    const outbox = new DurableCoworkPasteProvenanceOutbox(
+      key,
+      backing,
+      stage,
+    );
+    const open = await outbox.upsertCapture({
+      anchor: { exact: "Test", prefix: "", suffix: " after" },
+      idempotencyKey: "actorless-direct-key",
+      substantial: false,
+      sourceKind: "direct_entry",
+      basisKind: "automatic_direct_entry_attribution",
+      determination: unknownCoworkProvenanceDetermination(),
+      status: "capturing",
+    });
+
+    await outbox.deferDirectEntry(
+      open.id,
+      "explicit-recovery-key",
+      unknownCoworkProvenanceDetermination(),
+      {
+        code: "provenance_actor_unavailable_at_capture",
+        message: "No actor was available at capture.",
+        kind: "terminal",
+      },
+    );
+
+    expect(stage.list(key)).toEqual([
+      expect.objectContaining({
+        idempotencyKey: "explicit-recovery-key",
+        sourceKind: "legacy",
+        status: "awaiting_determination",
+      }),
+    ]);
+    const [recovered] = await new DurableCoworkPasteProvenanceOutbox(
+      key,
+      backing,
+      stage,
+    ).list();
+    expect(recovered).toMatchObject({
+      id: open.id,
+      idempotencyKey: "explicit-recovery-key",
+      anchor: { exact: "Test" },
+      sourceKind: "legacy",
+      basisKind: "user_attestation",
+      status: "awaiting_determination",
+      requiresExplicitDetermination: true,
+      determination: { authorship: { kind: "unknown" } },
+      failure: { code: "provenance_actor_unavailable_at_capture" },
+    });
+    expect(recovered?.capturedActor).toBeUndefined();
+  });
+
   it("never lets a stale open-stage row overwrite a ready frozen request", async () => {
     const key = "store:frozen-stage";
     const backing = new InMemoryCoworkPasteProvenanceOutboxBackingStore();

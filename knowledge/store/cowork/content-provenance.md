@@ -97,7 +97,10 @@ ambiguous, or conflicting targets, not ordinary AI authorship or an explicit
 not-reviewed state. Every meaning is repeated as text in the hover explanation
 and stable panel so color is never the only channel.
 
-Hover is explanatory and passive. The stable Provenance panel owns summary,
+Hover is explanatory and passive. While the editor has an expanded text
+selection, the passive hover card is dismissed and suppressed so it cannot
+cover the passage's coverage-aware selection action; collapsing the selection
+restores ordinary hover behavior. The stable Provenance panel owns summary,
 filters, document-order items, frozen target and history details, and mutation
 controls. Missing data is visible as **No provenance recorded**, never inferred
 as human. Loading and failed refresh are separate from an empty record set.
@@ -181,6 +184,18 @@ the capture-time enrolled local actor, review `not_applicable`, and
 `basis=automatic_direct_entry_attribution`. The capture-time actor is never
 replaced by whichever identity happens to exist after a crash or reload. A
 changed or unavailable actor requires an explicit honest determination.
+
+Typing observed without a capture-time actor, or whose actor changes before
+the automatic request can be frozen, is not discarded. Its exact selector
+stays durable in the document outbox as `source=legacy`,
+`basis=user_attestation`, and `status=awaiting_determination`, with no actor
+attached. After a trusted identity session is available, selecting that same
+passage reuses the pending row and asks for an explicit attribution; it never
+creates an overlapping automatic claim. A later actor is never retroactively
+claimed as the author. Conversely, when a capture already has an immutable
+actor and only the current browser session is temporarily unavailable, the
+actor-bound capture remains pending for trusted session recovery rather than
+being downgraded or dropped.
 
 The synchronous recovery journal retains the newest coalesced burst over an
 older unfrozen `capturing` row. It never overwrites a ready or frozen request.

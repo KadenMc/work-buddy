@@ -63,6 +63,7 @@ def cmd_start(args) -> int:
         print(f"Sidecar started (pid={res['pid']}).")
     _print_dashboard_url(prefix="Dashboard: ")
     _ensure_tray()
+    _reconnect_open_dashboard_identity()
     return EXIT_OK
 
 
@@ -89,6 +90,7 @@ def cmd_restart(args) -> int:
     if start["started"]:
         print(f"Sidecar restarted (pid={start['pid']}).")
         _ensure_tray()
+        _reconnect_open_dashboard_identity()
         return EXIT_OK
     _err(start["detail"])
     return EXIT_FAIL
@@ -108,6 +110,25 @@ def _ensure_tray() -> None:
             print(f"Tray: {res.get('detail')}")
     except Exception:
         pass
+
+
+def _reconnect_open_dashboard_identity() -> None:
+    """Best-effort, truthful recovery for a tab surviving start/restart.
+
+    The lifecycle command itself remains successful when no extension is
+    installed, but it must not imply that the browser's stronger identity
+    boundary was restored when the trusted handoff was not acknowledged.
+    """
+
+    try:
+        from work_buddy.tray.actions import reconnect_dashboard_identity
+
+        result = reconnect_dashboard_identity()
+    except Exception as exc:
+        _err(f"Dashboard identity reconnect failed: {exc}")
+        return
+    if not result.get("ok"):
+        _err(f"Dashboard identity reconnect: {result.get('detail', 'failed')}")
 
 
 def cmd_status(args) -> int:
