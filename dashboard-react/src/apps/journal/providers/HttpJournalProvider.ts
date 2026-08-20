@@ -462,7 +462,7 @@ export class HttpJournalProvider implements ViewProvider {
   #last: HttpJournalViewSnapshot | undefined;
 
   constructor(options: HttpJournalProviderOptions = {}) {
-    this.#fetch = options.fetchImpl ?? fetch;
+    this.#fetch = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
     this.#legacy = options.legacyProvider ?? new LegacyFlaskViewAdapter({ fetchImpl: this.#fetch });
     this.#clock = options.clock ?? (() => new Date().toISOString());
     this.#navigate = options.navigate ?? ((href) => window.location.assign(href));

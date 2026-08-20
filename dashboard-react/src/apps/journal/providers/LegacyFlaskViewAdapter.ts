@@ -662,7 +662,7 @@ export class LegacyFlaskViewAdapter implements ViewProvider {
   #lastSnapshot: LegacyJournalViewSnapshot | undefined;
 
   constructor(options: LegacyFlaskViewAdapterOptions = {}) {
-    this.#fetch = options.fetchImpl ?? fetch;
+    this.#fetch = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
     this.#timezoneOverride = options.timezone;
     this.#clock = options.clock ?? (() => new Date().toISOString());
   }

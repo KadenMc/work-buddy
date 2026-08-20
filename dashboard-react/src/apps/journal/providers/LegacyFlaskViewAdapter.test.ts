@@ -72,6 +72,30 @@ function modelOrThrow(model: LegacyJournalViewModel | null): LegacyJournalViewMo
 }
 
 describe("LegacyFlaskViewAdapter", () => {
+  it("binds the browser fetch receiver when no client is injected", async () => {
+    const browserFetch = vi.fn(async function (
+      this: typeof globalThis,
+      input: RequestInfo | URL,
+    ): Promise<Response> {
+      if (this !== globalThis) throw new TypeError("Illegal invocation");
+      expect(String(input)).toBe(LEGACY_TODAY_ENDPOINT);
+      return jsonResponse(READY_PAYLOAD);
+    });
+    vi.stubGlobal("fetch", browserFetch);
+
+    try {
+      const provider = new LegacyFlaskViewAdapter();
+      const snapshot = await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, {
+        reason: "mount",
+      });
+
+      expect(snapshot.status).toBe("read-only");
+      expect(browserFetch.mock.contexts).toEqual([globalThis]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("uses the Work Buddy timezone carried by the live payload", async () => {
     const fetchImpl = vi.fn(async () => jsonResponse(READY_PAYLOAD));
     const provider = new LegacyFlaskViewAdapter({ fetchImpl });

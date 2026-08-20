@@ -538,7 +538,7 @@ def _m002_recoverable_exports(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "UPDATE source_store_info SET schema_version = ? WHERE singleton = 1",
-        (2,),
+        (SCHEMA_VERSION,),
     )
 
 
