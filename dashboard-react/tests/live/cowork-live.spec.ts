@@ -1133,6 +1133,14 @@ test.describe.serial("Co-work live lifecycle", () => {
     page,
     request,
   }) => {
+    const existingParagraph =
+      "An existing paragraph makes the direct-entry selector cross a block boundary.";
+    const directEntry = "The party's rocking, yes";
+    const sourceRelativePath = "provenance-existing-paragraph.md";
+    const sourcePath = path.join(fixture.initialized.path, sourceRelativePath);
+    const sourceBytes = Buffer.from(`${existingParagraph}\n`, "utf-8");
+    await writeFile(sourcePath, sourceBytes);
+
     const bootstrap = await mintBrowserIdentityBootstrap(page);
     // Same-origin GET does not normally carry Origin, but bootstrap source reads
     // are human-authority actions. Mirror a trusted browser launch's exact
@@ -1157,18 +1165,98 @@ test.describe.serial("Co-work live lifecycle", () => {
       )
       .toBe(200);
 
-    await page.getByRole("button", { name: "New", exact: true }).click();
-    await expect(page.getByRole("heading", { name: "New document" })).toBeVisible();
-    await page.getByLabel("Title").fill("Provenance Working Note");
-    await page.getByRole("button", { name: "Create document" }).click();
+    await page.route(
+      "**/api/truth/cowork/files/choose-import",
+      async (route) => {
+        expect(route.request().headers()["x-work-buddy-intent"]).toBe(
+          "cowork-import-picker",
+        );
+        expect(route.request().postDataJSON()).toEqual({
+          store_id: fixture.initialized.store_id,
+        });
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            ok: true,
+            cancelled: false,
+            path: sourceRelativePath,
+            importer_id: "markdown/v1",
+            media_type: "text/markdown",
+            source_sha256: digest(sourceBytes),
+            importer: {
+              importer_id: "markdown/v1",
+              display_name: "Markdown",
+              source_format: "markdown",
+              media_type: "text/markdown",
+              suffixes: [".md", ".markdown"],
+              max_source_bytes: 16 * 1024 * 1024,
+            },
+          }),
+        });
+      },
+      { times: 1 },
+    );
+    await page.getByRole("button", { name: "From file", exact: true }).click();
+    await page.getByRole("button", { name: "Import", exact: true }).click();
     const editor = await waitForEditor(page);
     await expect(editor).toHaveAttribute("aria-readonly", "false");
-    await expect(editor).toHaveText("");
+    await expect(editor.locator("p")).toHaveCount(1);
+    await expect(editor.locator("p").first()).toHaveText(existingParagraph);
     const { documentId } = currentRouteIds(page);
 
+    const attestationResponses: number[] = [];
+    const attestationRequestFailures: string[] = [];
+    const attestationConsoleErrors: string[] = [];
+    page.on("response", (response) => {
+      const parsed = new URL(response.url());
+      if (
+        parsed.pathname ===
+          `/api/truth/doc/${documentId}/authorship-attestations` &&
+        response.request().method() === "POST"
+      ) {
+        attestationResponses.push(response.status());
+      }
+    });
+    page.on("requestfailed", (failed) => {
+      const parsed = new URL(failed.url());
+      if (
+        parsed.pathname ===
+          `/api/truth/doc/${documentId}/authorship-attestations`
+      ) {
+        attestationRequestFailures.push(
+          failed.failure()?.errorText ?? "unknown request failure",
+        );
+      }
+    });
+    page.on("console", (message) => {
+      if (
+        message.type() === "error" &&
+        message.text().includes("authorship-attestations")
+      ) {
+        attestationConsoleErrors.push(message.text());
+      }
+    });
+
     await editor.click();
-    await page.keyboard.type("Test", { delay: 20 });
-    await expect(editor).toHaveText("Test");
+    await page.keyboard.press(
+      process.platform === "darwin" ? "Meta+ArrowUp" : "Control+Home",
+    );
+    await page.keyboard.press("Enter");
+    await expect(editor.locator("p")).toHaveCount(2);
+    await expect(editor.locator("p").first()).toHaveText("");
+    await expect(editor.locator("p").nth(1)).toHaveText(existingParagraph);
+    await page.keyboard.press(
+      process.platform === "darwin" ? "Meta+ArrowUp" : "Control+Home",
+    );
+
+    // Create the block boundary before the direct-entry burst, then type the
+    // sentence through normal keyboard input. This gives the attestation a
+    // quote-anchor suffix beginning with `\n` without folding Enter into a
+    // second provenance capture.
+    await page.keyboard.type(directEntry, { delay: 20 });
+    await expect(editor.locator("p").first()).toHaveText(directEntry);
+    await expect(editor.locator("p").nth(1)).toHaveText(existingParagraph);
 
     // Entering Provenance finalizes the active typing burst. The stable rail owns
     // inspection while the contextual editor action becomes provenance-specific.
@@ -1185,7 +1273,7 @@ test.describe.serial("Co-work live lifecycle", () => {
         const payload = (await response.json()) as {
           provenance?: {
             spans?: readonly {
-              span?: { exact?: string } | null;
+              span?: { exact?: string; suffix?: string } | null;
               target?: { currentness?: string };
               effective_attestation?: {
                 source?: { kind?: string };
@@ -1206,6 +1294,8 @@ test.describe.serial("Co-work live lifecycle", () => {
           .filter((span) => span.target?.currentness === "current")
           .map((span) => ({
             exact: span.span?.exact,
+            suffixStartsWithBlockBoundary:
+              span.span?.suffix?.startsWith("\n") ?? false,
             source: span.effective_attestation?.source?.kind,
             basis: span.effective_attestation?.basis?.kind,
             authorship: span.effective_attestation?.authorship?.kind,
@@ -1221,7 +1311,8 @@ test.describe.serial("Co-work live lifecycle", () => {
       }, { timeout: 30_000 })
       .toEqual([
         {
-          exact: "Test",
+          exact: directEntry,
+          suffixStartsWithBlockBoundary: true,
           source: "direct_entry",
           basis: "automatic_direct_entry_attribution",
           authorship: "human",
@@ -1236,7 +1327,7 @@ test.describe.serial("Co-work live lifecycle", () => {
       ]);
     const decoratedPassage = editor.locator(
       "[data-wb-decoration='provenance-overlay']",
-      { hasText: "Test" },
+      { hasText: directEntry },
     );
     await expect(decoratedPassage).toBeVisible({ timeout: 30_000 });
 
@@ -1258,13 +1349,16 @@ test.describe.serial("Co-work live lifecycle", () => {
     await page.mouse.up();
     await expect
       .poll(() => page.evaluate(() => window.getSelection()?.toString() ?? ""))
-      .toBe("Test");
+      .toBe(directEntry);
     await expect(page.getByRole("tooltip")).toHaveCount(0);
     const provenanceAction = page.getByRole("button", {
       name: "View provenance",
       exact: true,
     });
     await expect(provenanceAction).toBeVisible({ timeout: 5_000 });
+    expect(attestationResponses).toEqual([201]);
+    expect(attestationRequestFailures).toEqual([]);
+    expect(attestationConsoleErrors).toEqual([]);
   });
 
   test("Close Folder returns to the Folder launcher and can reopen it without a native picker", async ({

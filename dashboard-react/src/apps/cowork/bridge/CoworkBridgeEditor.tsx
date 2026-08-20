@@ -346,6 +346,18 @@ function MountedBridgeEditor({
       (capture) =>
         capture.sourceKind !== undefined && capture.sourceKind !== "paste",
     );
+  const directEntryFailurePending = pasteEntries.some(
+    (entry) =>
+      entry.sourceKind === "direct_entry" &&
+      (entry.status === "retryable_failure" ||
+        entry.status === "stale_target" ||
+        entry.status === "terminal_failure"),
+  );
+  const visibleOutboxError =
+    outboxError ??
+    (directEntryFailurePending
+      ? "Co-work couldn’t record provenance for recent typing. Your capture is safe; retry provenance storage."
+      : null);
   onReadyRef.current = onReady;
   onTeardownRef.current = onTeardown;
   pasteRecorderRef.current = onRecordPasteProvenance;
@@ -521,15 +533,6 @@ function MountedBridgeEditor({
                   })),
               );
               onProvenanceActorChanged?.();
-            } else if (
-              stored?.sourceKind === "direct_entry" &&
-              (apiError.code === COWORK_PROVENANCE_TARGET_CHANGED ||
-                !apiError.retryable)
-            ) {
-              // A superseded automatic observation has no honest manual
-              // determination to ask for. Leave the text uncovered instead
-              // of creating an invisible permanent failure row.
-              await resolvedPasteProvenanceOutbox.remove(entryId);
             } else if (stored !== undefined) {
               await resolvedPasteProvenanceOutbox.markFailure(entryId, {
                 code: apiError.code,
@@ -537,13 +540,14 @@ function MountedBridgeEditor({
                 kind:
                   apiError.code === COWORK_PROVENANCE_TARGET_CHANGED
                     ? "stale_target"
-                    : apiError.retryable
+                    : stored.sourceKind === "direct_entry" ||
+                        apiError.retryable
                       ? "retryable"
                       : "terminal",
               });
               if (stored.sourceKind !== "paste") {
                 setOutboxError(
-                  "Co-work couldn’t record provenance for edited text. Retry when the connection is available.",
+                  "Co-work couldn’t record provenance for recent typing. Your capture is safe; retry provenance storage.",
                 );
               }
             }
@@ -925,8 +929,10 @@ function MountedBridgeEditor({
         for (const queued of directEntryClosingBurstsRef.current.values()) {
           const mapped: DirectEntryBurst = {
             ...queued,
-            from: transaction.mapping.map(queued.from, -1),
-            to: transaction.mapping.map(queued.to, 1),
+            // This burst is already sealed. Insertions exactly at either
+            // boundary belong to the new gesture, never to both gestures.
+            from: transaction.mapping.map(queued.from, 1),
+            to: transaction.mapping.map(queued.to, -1),
           };
           if (mapped.to <= mapped.from) {
             directEntryClosingBurstsRef.current.delete(queued.idempotencyKey);
@@ -989,8 +995,8 @@ function MountedBridgeEditor({
         const prior = directEntryBurstRef.current;
         if (prior === null) return;
         if (transaction.docChanged) {
-          const mappedFrom = transaction.mapping.map(prior.from, -1);
-          const mappedTo = transaction.mapping.map(prior.to, 1);
+          const continuingMappedFrom = transaction.mapping.map(prior.from, -1);
+          const continuingMappedTo = transaction.mapping.map(prior.to, 1);
           const previous = transactionEditor.state.selection;
           const touchesBurst =
             previous.from <= prior.to && previous.to >= prior.from;
@@ -999,7 +1005,7 @@ function MountedBridgeEditor({
             transaction.getMeta("uiEvent") !== "paste" &&
             transaction.getMeta("uiEvent") !== "drop"
           ) {
-            if (mappedTo <= mappedFrom) {
+            if (continuingMappedTo <= continuingMappedFrom) {
               directEntryBurstRef.current = null;
               void resolvedPasteProvenanceOutbox
                 .list()
@@ -1019,8 +1025,8 @@ function MountedBridgeEditor({
             }
             const nextBurst: DirectEntryBurst = {
               ...prior,
-              from: mappedFrom,
-              to: mappedTo,
+              from: continuingMappedFrom,
+              to: continuingMappedTo,
             };
             const nextCapture = directCaptureForBurst(
               nextBurst,
@@ -1039,7 +1045,9 @@ function MountedBridgeEditor({
           // the closing burst's positions and quote aligned with it before a
           // second, disjoint burst can be staged and before compaction freezes
           // both rows against that same head.
-          if (mappedTo <= mappedFrom) {
+          const sealedMappedFrom = transaction.mapping.map(prior.from, 1);
+          const sealedMappedTo = transaction.mapping.map(prior.to, -1);
+          if (sealedMappedTo <= sealedMappedFrom) {
             directEntryBurstRef.current = null;
             void resolvedPasteProvenanceOutbox
               .list()
@@ -1059,8 +1067,8 @@ function MountedBridgeEditor({
           }
           const mappedBurst: DirectEntryBurst = {
             ...prior,
-            from: mappedFrom,
-            to: mappedTo,
+            from: sealedMappedFrom,
+            to: sealedMappedTo,
           };
           const mappedCapture = directCaptureForBurst(
             mappedBurst,
@@ -1104,12 +1112,22 @@ function MountedBridgeEditor({
 
       const now = Date.now();
       const prior = directEntryBurstRef.current;
-      const mappedPrior =
+      const mappedPriorForExtension =
         prior === null
           ? null
           : {
               from: transaction.mapping.map(prior.from, -1),
               to: transaction.mapping.map(prior.to, 1),
+            };
+      const mappedPriorForSeal =
+        prior === null
+          ? null
+          : {
+              // Keep a displaced burst disjoint from text inserted exactly at
+              // its boundaries. A valid same-actor continuation still merges
+              // the outward mapping with `capture` below.
+              from: transaction.mapping.map(prior.from, 1),
+              to: transaction.mapping.map(prior.to, -1),
             };
       const previousSelection = transactionEditor.state.selection;
       const selectionContinuesBurst =
@@ -1120,17 +1138,17 @@ function MountedBridgeEditor({
         prior.capturedActor?.identity_status ===
           resolvedProvenanceActor?.identity_status;
       const touchesPrior =
-        mappedPrior !== null &&
-        capture.range.from <= mappedPrior.to &&
-        capture.range.to >= mappedPrior.from;
+        mappedPriorForExtension !== null &&
+        capture.range.from <= mappedPriorForExtension.to &&
+        capture.range.to >= mappedPriorForExtension.from;
       const mergedFrom =
-        mappedPrior === null
+        mappedPriorForExtension === null
           ? capture.range.from
-          : Math.min(mappedPrior.from, capture.range.from);
+          : Math.min(mappedPriorForExtension.from, capture.range.from);
       const mergedTo =
-        mappedPrior === null
+        mappedPriorForExtension === null
           ? capture.range.to
-          : Math.max(mappedPrior.to, capture.range.to);
+          : Math.max(mappedPriorForExtension.to, capture.range.to);
       const safeTo = Math.max(mergedFrom, mergedTo - 1);
       const sameTextblock = (() => {
         try {
@@ -1149,8 +1167,8 @@ function MountedBridgeEditor({
       if (prior !== null && !canExtend) {
         const displacedBurst: DirectEntryBurst = {
           ...prior,
-          from: mappedPrior!.from,
-          to: mappedPrior!.to,
+          from: mappedPriorForSeal!.from,
+          to: mappedPriorForSeal!.to,
         };
         const displacedCapture = directCaptureForBurst(
           displacedBurst,
@@ -1576,6 +1594,22 @@ function MountedBridgeEditor({
     }
     setOutboxError(null);
     for (const entry of entries) {
+      if (
+        entry.sourceKind === "direct_entry" &&
+        (entry.status === "stale_target" ||
+          entry.status === "terminal_failure")
+      ) {
+        // The server explicitly rejected the frozen target, so this visible
+        // user retry starts a new attempt: resolve the captured quote against
+        // the current document, compact a fresh head, and freeze a new key.
+        await resolvedPasteProvenanceOutbox.retarget(
+          entry.id,
+          pasteIdempotencyKey(),
+          entry.determination,
+        );
+        await attemptPasteProvenance(entry.id);
+        continue;
+      }
       if (entry.status === "ready" || entry.status === "retryable_failure") {
         await attemptPasteProvenance(entry.id);
       }
@@ -1757,9 +1791,9 @@ function MountedBridgeEditor({
           </Button>
         </InlineAlert>
       ) : null}
-      {outboxError !== null ? (
+      {visibleOutboxError !== null ? (
         <InlineAlert tone="danger" role="alert">
-          <span>{outboxError}</span>
+          <span>{visibleOutboxError}</span>
           <Button
             size="small"
             onClick={() =>
@@ -1968,6 +2002,13 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
   const [hydrationError, setHydrationError] = useState<string>();
   const [attempt, setAttempt] = useState(0);
   const effectiveReadOnly = props.readOnly ?? false;
+  // A writable frame cannot precede the capture-time actor lookup. Otherwise
+  // normal typing can begin actorless and be split when that initial lookup
+  // resolves. A genuine lookup failure still restores actorless editing so
+  // the durable/manual recovery contract remains available.
+  const editorReadOnly =
+    effectiveReadOnly ||
+    (provenanceEnabled && provenanceActorState === "loading");
   const persistenceReadOnly = effectiveReadOnly || hydration === undefined;
   const editorRef = useRef<Editor | null>(null);
   const editGeneration = useRef(0);
@@ -1985,8 +2026,8 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
   const [materializationState, setMaterializationState] =
     useState<CoworkMaterializationState>({ kind: "checking" });
   const materializationStateRef = useRef(materializationState);
-  const readOnlyRef = useRef(effectiveReadOnly);
-  readOnlyRef.current = effectiveReadOnly;
+  const readOnlyRef = useRef(editorReadOnly);
+  readOnlyRef.current = editorReadOnly;
 
   const actionSnapshotController = useMemo(
     () =>
@@ -2722,7 +2763,7 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
       ) : hydration !== undefined ? (
         <MountedBridgeEditor
           {...props}
-          readOnly={effectiveReadOnly}
+          readOnly={editorReadOnly}
           onReady={(context) => {
             editorRef.current = context.editor;
             actionSnapshotController?.attach(context.editor);

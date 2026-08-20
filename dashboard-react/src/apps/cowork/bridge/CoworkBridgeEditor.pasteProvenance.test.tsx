@@ -47,6 +47,9 @@ interface MountedPasteEditor {
   readonly events: string[];
   readonly unmount: () => void;
   readonly setActiveLens: (lens: CoworkEditorLens) => void;
+  readonly setProvenanceActor: (
+    actor: CoworkProvenanceActorIdentity | undefined,
+  ) => void;
 }
 
 let nextDocument = 0;
@@ -122,22 +125,22 @@ const mountPasteEditor = async (
   const documentId =
     options.documentId ??
     `paste-provenance-${String(nextDocument)}-${String(Date.now())}`;
-  const view = (activeLens: CoworkEditorLens | undefined) => (
+  let renderedLens = options.activeLens;
+  let renderedActor = options.resolveActorFromServer
+    ? undefined
+    : (options.provenanceActor ?? ACTOR);
+  const view = () => (
     <CoworkBridgeEditor
       document={document}
       transport={transport}
       seedMarkdown=""
       documentId={documentId}
       storeId="paste-provenance-store"
-      activeLens={activeLens}
+      activeLens={renderedLens}
       provenanceProvider={options.provenanceProvider}
       provenanceSelectionActionsActive
       onProvenanceSelectionAction={() => undefined}
-      provenanceActor={
-        options.resolveActorFromServer
-          ? undefined
-          : (options.provenanceActor ?? ACTOR)
-      }
+      provenanceActor={renderedActor}
       pasteProvenanceOutbox={options.outbox}
       onRecordPasteProvenance={async (request) => {
         events.push("record");
@@ -148,7 +151,7 @@ const mountPasteEditor = async (
       }}
     />
   );
-  const rendered = render(view(options.activeLens));
+  const rendered = render(view());
   await screen.findByRole(
     "textbox",
     { name: "Document editor" },
@@ -161,7 +164,14 @@ const mountPasteEditor = async (
     server,
     events,
     unmount: rendered.unmount,
-    setActiveLens: (lens) => rendered.rerender(view(lens)),
+    setActiveLens: (lens) => {
+      renderedLens = lens;
+      rendered.rerender(view());
+    },
+    setProvenanceActor: (actor) => {
+      renderedActor = actor;
+      rendered.rerender(view());
+    },
   };
 };
 
@@ -251,6 +261,260 @@ describe("CoworkBridgeEditor paste provenance", () => {
     expect(provider.refresh).toHaveBeenCalledOnce();
     await waitFor(() => expect(outbox.list()).resolves.toEqual([]));
     expect(screen.queryByText(/where did this text come from/i)).toBeNull();
+  }, 30_000);
+
+  it("waits for the capture actor, then keeps top-block typing whole across a persistence settlement", async () => {
+    const user = userEvent.setup({ delay: 5 });
+    const outbox = new DurableCoworkPasteProvenanceOutbox(
+      `direct-entry-actor-loading-${String(Date.now())}`,
+      new InMemoryCoworkPasteProvenanceOutboxBackingStore(),
+    );
+    const requests: CoworkPasteProvenanceRequest[] = [];
+    let actorRequests = 0;
+    let releaseActor!: () => void;
+    const actorGate = new Promise<void>((resolve) => {
+      releaseActor = resolve;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/local-identity/session/csrf") {
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              authenticated: true,
+              principal: LOCAL_PRINCIPAL,
+              csrf_token: "wbc_delayed_direct_entry_actor",
+            }),
+            { headers: { "Content-Type": "application/json" } },
+          );
+        }
+        expect(url).toBe("/api/truth/cowork/current-actor");
+        actorRequests += 1;
+        await actorGate;
+        return new Response(JSON.stringify(ACTOR), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }),
+    );
+
+    let mounted: MountedPasteEditor | undefined;
+    try {
+      mounted = await mountPasteEditor(
+        async (request) => {
+          requests.push(request);
+        },
+        {
+          outbox,
+          resolveActorFromServer: true,
+          activeLens: "neutral",
+          provenanceProvider: provenanceProvider(),
+        },
+      );
+      await waitFor(() => expect(actorRequests).toBe(1));
+
+      // Build the live shape from the reported regression: one empty top
+      // paragraph followed by existing text. A structural split introduces no
+      // authored text and therefore no provenance capture of its own.
+      act(() => {
+        mounted!.editor.commands.setTextSelection(1);
+        mounted!.editor.commands.splitBlock();
+      });
+      expect(mounted.editor.state.doc.childCount).toBe(2);
+
+      const editorSurface = screen.getByRole("textbox", {
+        name: "Document editor",
+      });
+      expect(editorSurface).toHaveAttribute("aria-readonly", "true");
+      expect(editorSurface).toHaveAttribute("contenteditable", "false");
+      releaseActor();
+      await waitFor(() => {
+        expect(editorSurface).toHaveAttribute("aria-readonly", "false");
+        expect(editorSurface).toHaveAttribute("contenteditable", "true");
+      });
+      await waitFor(() => expect(mounted!.events).toContain("push"), {
+        timeout: 5_000,
+      });
+      const pushesBeforeTyping = mounted.events.filter(
+        (event) => event === "push",
+      ).length;
+
+      mounted.editor.view.setProps({
+        handleScrollToSelection: () => true,
+      });
+      act(() => {
+        mounted!.editor.commands.setTextSelection(1);
+      });
+      editorSurface.focus();
+      await user.type(editorSurface, "The party's r", {
+        skipClick: true,
+      });
+      // Cross a real idle persistence push while focus and selection stay in
+      // the same text block. Network settlement must not split an authorship
+      // burst.
+      await waitFor(
+        () =>
+          expect(
+            mounted!.events.filter((event) => event === "push").length,
+          ).toBeGreaterThan(pushesBeforeTyping),
+        { timeout: 5_000 },
+      );
+      await user.type(editorSurface, "ocking, yes", {
+        skipClick: true,
+      });
+      mounted.setActiveLens("provenance");
+
+      await waitFor(() => expect(requests).toHaveLength(1), {
+        timeout: 10_000,
+      });
+      expect(requests[0]).toMatchObject({
+        sourceKind: "direct_entry",
+        basisKind: "automatic_direct_entry_attribution",
+        expectedActorRef: ACTOR.ref,
+        expectedActorIdentityStatus: ACTOR.identity_status,
+        anchor: {
+          exact: "The party's rocking, yes",
+          prefix: "",
+          suffix: "\nBefore after",
+        },
+      });
+      expect(await outbox.list()).toEqual([]);
+    } finally {
+      releaseActor();
+      mounted?.unmount();
+      vi.unstubAllGlobals();
+    }
+  }, 30_000);
+
+  it("retains a direct-entry request after a non-target 409 and retries the exact frozen request", async () => {
+    const user = userEvent.setup();
+    const outbox = new DurableCoworkPasteProvenanceOutbox(
+      `direct-entry-binding-mismatch-${String(Date.now())}`,
+      new InMemoryCoworkPasteProvenanceOutboxBackingStore(),
+    );
+    const recorder = vi
+      .fn<CoworkPasteProvenanceRecorder>()
+      .mockRejectedValueOnce(
+        new CoworkHttpError({
+          code: "gesture_binding_mismatch",
+          message: "The gesture did not bind to this request.",
+          retryable: false,
+          status: 409,
+        }),
+      )
+      .mockResolvedValueOnce();
+    const mounted = await mountPasteEditor(recorder, {
+      outbox,
+      activeLens: "neutral",
+      provenanceProvider: provenanceProvider(),
+    });
+
+    act(() => mounted.editor.commands.insertContentAt(1, "Test"));
+    mounted.setActiveLens("provenance");
+
+    await waitFor(() => expect(recorder).toHaveBeenCalledOnce(), {
+      timeout: 10_000,
+    });
+    const firstRequest = recorder.mock.calls[0]![0];
+    await waitFor(async () => {
+      const entries = await outbox.list();
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({
+        sourceKind: "direct_entry",
+        status: "retryable_failure",
+        failure: {
+          code: "gesture_binding_mismatch",
+          kind: "retryable",
+        },
+      });
+      expect(entries[0]?.frozenRequest).toEqual(firstRequest);
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Co-work couldn’t record provenance for recent typing. Your capture is safe; retry provenance storage.",
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Retry provenance storage" }),
+    );
+
+    await waitFor(() => expect(recorder).toHaveBeenCalledTimes(2), {
+      timeout: 10_000,
+    });
+    expect(recorder.mock.calls[1]![0]).toEqual(firstRequest);
+    await waitFor(() => expect(outbox.list()).resolves.toEqual([]));
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  }, 30_000);
+
+  it("retains a direct-entry target conflict until an explicit retry re-resolves it", async () => {
+    const user = userEvent.setup();
+    const outbox = new DurableCoworkPasteProvenanceOutbox(
+      `direct-entry-target-changed-${String(Date.now())}`,
+      new InMemoryCoworkPasteProvenanceOutboxBackingStore(),
+    );
+    const recorder = vi
+      .fn<CoworkPasteProvenanceRecorder>()
+      .mockRejectedValueOnce(
+        new CoworkHttpError({
+          code: "provenance_target_changed",
+          message: "The document target changed.",
+          retryable: true,
+          status: 409,
+        }),
+      )
+      .mockResolvedValueOnce();
+    const mounted = await mountPasteEditor(recorder, {
+      outbox,
+      activeLens: "neutral",
+      provenanceProvider: provenanceProvider(),
+    });
+
+    act(() => mounted.editor.commands.insertContentAt(1, "Test"));
+    mounted.setActiveLens("provenance");
+
+    await waitFor(() => expect(recorder).toHaveBeenCalledOnce(), {
+      timeout: 10_000,
+    });
+    const rejectedRequest = recorder.mock.calls[0]![0];
+    await waitFor(async () => {
+      const entries = await outbox.list();
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({
+        sourceKind: "direct_entry",
+        status: "stale_target",
+        failure: {
+          code: "provenance_target_changed",
+          kind: "stale_target",
+        },
+      });
+      expect(entries[0]?.frozenRequest).toEqual(rejectedRequest);
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Co-work couldn’t record provenance for recent typing. Your capture is safe; retry provenance storage.",
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "Retry provenance storage" }),
+    );
+
+    await waitFor(() => expect(recorder).toHaveBeenCalledTimes(2), {
+      timeout: 10_000,
+    });
+    const retriedRequest = recorder.mock.calls[1]![0];
+    expect(retriedRequest.idempotencyKey).not.toBe(
+      rejectedRequest.idempotencyKey,
+    );
+    expect(retriedRequest).toMatchObject({
+      sourceKind: rejectedRequest.sourceKind,
+      basisKind: rejectedRequest.basisKind,
+      expectedActorRef: rejectedRequest.expectedActorRef,
+      expectedActorIdentityStatus:
+        rejectedRequest.expectedActorIdentityStatus,
+      anchor: rejectedRequest.anchor,
+      attestation: rejectedRequest.attestation,
+    });
+    await waitFor(() => expect(outbox.list()).resolves.toEqual([]));
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
   }, 30_000);
 
   it("keeps actorless typing durable and records it explicitly after identity recovery", async () => {
@@ -554,6 +818,97 @@ describe("CoworkBridgeEditor paste provenance", () => {
       reopened?.unmount();
       mounted?.unmount();
       vi.unstubAllGlobals();
+    }
+  }, 30_000);
+
+  it("keeps adjacent direct-entry bursts disjoint when the capture actor changes", async () => {
+    const nextActor = {
+      kind: "human",
+      ref: "next-dashboard-user",
+      identity_status: "local_actor_ref",
+    } as const;
+    const memoryBacking = new InMemoryCoworkPasteProvenanceOutboxBackingStore();
+    let blockNextMutation = false;
+    let releaseActorRecovery!: () => void;
+    let actorRecoveryEntered!: () => void;
+    const actorRecoveryGate = new Promise<void>((resolve) => {
+      releaseActorRecovery = resolve;
+    });
+    const enteredActorRecovery = new Promise<void>((resolve) => {
+      actorRecoveryEntered = resolve;
+    });
+    const gatedBacking: CoworkPasteProvenanceOutboxBackingStore = {
+      durable: false,
+      read: (key) => memoryBacking.read(key),
+      async mutate(key, mutation) {
+        if (blockNextMutation) {
+          blockNextMutation = false;
+          actorRecoveryEntered();
+          await actorRecoveryGate;
+        }
+        return memoryBacking.mutate(key, mutation);
+      },
+    };
+    const outbox = new DurableCoworkPasteProvenanceOutbox(
+      `adjacent-actor-transition-${String(Date.now())}`,
+      gatedBacking,
+    );
+    const requests: CoworkPasteProvenanceRequest[] = [];
+    const mounted = await mountPasteEditor(
+      async (request) => {
+        requests.push(request);
+      },
+      {
+        outbox,
+        provenanceActor: ACTOR,
+        activeLens: "neutral",
+        provenanceProvider: provenanceProvider(),
+      },
+    );
+
+    try {
+      act(() => mounted.editor.commands.insertContentAt(1, "A"));
+      await waitFor(async () =>
+        expect((await outbox.list())[0]).toMatchObject({
+          sourceKind: "direct_entry",
+          capturedActor: ACTOR,
+          anchor: { exact: "A" },
+          status: "capturing",
+        }),
+      );
+
+      // Hold the new-actor recovery read before it can demote the old burst.
+      // The adjacent transaction now deterministically exercises the mapping
+      // boundary between two capture-time actors.
+      blockNextMutation = true;
+      mounted.setProvenanceActor(nextActor);
+      await enteredActorRecovery;
+      act(() => mounted.editor.commands.insertContentAt(2, "B"));
+      releaseActorRecovery();
+      mounted.setActiveLens("provenance");
+
+      await waitFor(() => expect(requests).toHaveLength(1), {
+        timeout: 10_000,
+      });
+      expect(requests[0]).toMatchObject({
+        sourceKind: "direct_entry",
+        expectedActorRef: nextActor.ref,
+        expectedActorIdentityStatus: nextActor.identity_status,
+        anchor: { exact: "B" },
+      });
+      await waitFor(async () => {
+        const pending = await outbox.list();
+        expect(pending).toHaveLength(1);
+        expect(pending[0]).toMatchObject({
+          sourceKind: "legacy",
+          anchor: { exact: "A" },
+          status: "awaiting_determination",
+          requiresExplicitDetermination: true,
+        });
+      });
+    } finally {
+      releaseActorRecovery();
+      mounted.unmount();
     }
   }, 30_000);
 
@@ -1499,6 +1854,10 @@ describe("CoworkBridgeEditor paste provenance", () => {
       new InMemoryCoworkPasteProvenanceOutboxBackingStore(),
     );
     let actorAttempts = 0;
+    let releaseRecoveredActor!: () => void;
+    const recoveredActorGate = new Promise<void>((resolve) => {
+      releaseRecoveredActor = resolve;
+    });
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL) => {
@@ -1530,6 +1889,7 @@ describe("CoworkBridgeEditor paste provenance", () => {
             },
           );
         }
+        await recoveredActorGate;
         return new Response(
           JSON.stringify({
             kind: "human",
@@ -1571,6 +1931,9 @@ describe("CoworkBridgeEditor paste provenance", () => {
         await refreshLocalIdentity();
       });
       await waitFor(() => expect(actorAttempts).toBe(2));
+      expect(editorSurface).toHaveAttribute("aria-readonly", "true");
+      expect(editorSurface).toHaveAttribute("contenteditable", "false");
+      releaseRecoveredActor();
       expect(
         await screen.findByRole("dialog", {
           name: "Where did this text come from?",
@@ -1579,6 +1942,7 @@ describe("CoworkBridgeEditor paste provenance", () => {
       expect(editorSurface).toHaveAttribute("aria-readonly", "false");
       expect(screen.queryByText(/Reconnect Work Buddy to edit/i)).toBeNull();
     } finally {
+      releaseRecoveredActor();
       mounted?.unmount();
       vi.unstubAllGlobals();
     }

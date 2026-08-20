@@ -70,7 +70,7 @@ from work_buddy.truth.anchors import CompositeSelector
 from work_buddy.truth.contracts import Actor, InvariantViolation
 from work_buddy.truth.events import emit_truth_event
 from work_buddy.truth.expressions import ensure_document_span
-from work_buddy.truth.identity import canonical_json, parse_truth_uri, sha256_text
+from work_buddy.truth.identity import parse_truth_uri, sha256_text
 from work_buddy.truth.registry import TruthStoreRegistry
 from work_buddy.truth.store import DocumentRecord, TruthStore
 
@@ -122,14 +122,22 @@ def cowork_mutation_context_sha256(
 ) -> str:
     """Canonical exact-body digest shared by Co-work gesture-gated routes."""
 
+    # Do not use Truth's semantic ``canonical_json`` here: it deliberately
+    # collapses whitespace inside strings. Human authority binds the bytes of
+    # the request values, including the newlines in quote-anchor context, and
+    # mirrors canonicalHumanAuthorityJson in the browser.
     return sha256_text(
-        canonical_json(
+        json.dumps(
             {
                 "body": {} if body is None else dict(body),
                 "document_id": document_id,
                 "operation": operation,
                 "store_id": store_id,
-            }
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
         )
     )
 
