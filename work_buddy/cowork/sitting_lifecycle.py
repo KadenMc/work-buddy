@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
-from work_buddy.cowork import materialization, sittings
+from work_buddy.cowork import materialization, provenance, sittings
 from work_buddy.cowork.lifecycle_state import inspect_lifecycle_state
 from work_buddy.cowork.policy import document_surface_allowed
 from work_buddy.cowork.proposal_applicability import (
@@ -544,6 +544,61 @@ def commit_sitting(
             results, events = _commit_decisions(
                 store, document, actor, current_intent, conn, at=str(projection_receipt["materialized_at"])
             )
+            result_by_proposal = {
+                str(result.get("proposal_id")): result for result in results
+            }
+            for entry in current_intent.admitted:
+                item = entry["item"]
+                if item.get("verb") != "confirm":
+                    continue
+                proposal_id = str(item["proposal_id"])
+                result = result_by_proposal.get(proposal_id)
+                if result is None or result.get("result") != "applied":
+                    continue
+                accepted = proposals.get_proposal(
+                    store,
+                    proposal_id,
+                    conn=conn,
+                )
+                try:
+                    attestations = (
+                        provenance.record_proposal_acceptance_attestations_locked(
+                            store,
+                            conn,
+                            proposal=accepted,
+                            gesture_id=str(result["gesture_id"]),
+                            actor=actor,
+                            target_structured_head_sha256=str(
+                                projection_receipt["structured_head_sha256"]
+                            ),
+                            rendered_projection=rendered_markdown,
+                            at=str(projection_receipt["materialized_at"]),
+                        )
+                    )
+                except provenance.ProposalAcceptanceProvenanceError as exc:
+                    raise SittingError(
+                        "proposal_provenance_unsafe",
+                        str(exc),
+                        status=409,
+                    ) from exc
+                result["provenance_attestation_ids"] = [
+                    attestation.id for attestation in attestations
+                ]
+                events.extend(
+                    (
+                        "truth.doc_provenance_attested",
+                        {
+                            "document_id": document.id,
+                            "attestation_id": attestation.id,
+                            "document_span_id": attestation.document_span_id,
+                            "target_structured_head_sha256": (
+                                attestation.target_structured_head_sha256
+                            ),
+                            "basis_kind": attestation.basis_kind,
+                        },
+                    )
+                    for attestation in attestations
+                )
             record_review_application(
                 store,
                 application_id=current_intent.id,

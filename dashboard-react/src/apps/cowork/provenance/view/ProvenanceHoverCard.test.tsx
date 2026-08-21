@@ -12,7 +12,8 @@ describe("ProvenanceHoverCard", () => {
     passage.dataset.wbAuthorship = "ai";
     passage.dataset.wbHumanReview = "not_reviewed";
     passage.dataset.wbSource = "paste";
-    passage.dataset.wbSourceDetail = "plain text · source identity not verified";
+    passage.dataset.wbSourceDetail =
+      "plain text · source identity not verified";
     passage.dataset.wbContributors = "model:gpt-5 · asserted identity";
     passage.dataset.wbReviewers = "user-1 · enrolled local identity";
     passage.dataset.wbAttester = "user-1";
@@ -27,7 +28,9 @@ describe("ProvenanceHoverCard", () => {
 
     fireEvent.pointerOver(passage);
     expect(screen.getByRole("tooltip")).toHaveTextContent("ai authorship");
-    expect(screen.getByRole("tooltip")).toHaveTextContent("multiple target states");
+    expect(screen.getByRole("tooltip")).toHaveTextContent(
+      "multiple target states",
+    );
     expect(screen.getByRole("tooltip")).toHaveTextContent(
       "model:gpt-5 · asserted identity",
     );
@@ -99,6 +102,55 @@ describe("ProvenanceHoverCard", () => {
       expect(screen.getByRole("tooltip")).toHaveTextContent("human authorship");
       expect(screen.getByRole("tooltip")).toHaveTextContent(
         "direct entry · plain text",
+      );
+    });
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: originalElementFromPoint,
+    });
+    root.remove();
+  });
+
+  it("describes pending delivery without asserting authorship, then settles in place", async () => {
+    const root = document.createElement("div");
+    const pending = document.createElement("span");
+    pending.dataset.wbDecoration = "provenance-overlay";
+    pending.dataset.wbAuthorship = "unknown";
+    pending.dataset.wbHumanReview = "unknown";
+    pending.dataset.wbSource = "direct_entry";
+    pending.dataset.wbProvenanceRecordState = "pending";
+    root.append(pending);
+    document.body.append(root);
+    const ref = createRef<HTMLElement>();
+    ref.current = root;
+    render(<ProvenanceHoverCard rootRef={ref} active editorReady />);
+
+    fireEvent.pointerOver(pending, { clientX: 24, clientY: 24 });
+    const tooltip = screen.getByRole("tooltip");
+    expect(tooltip).toHaveTextContent("Recording provenance…");
+    expect(tooltip).toHaveTextContent(/after the server confirms the record/u);
+    expect(tooltip).not.toHaveTextContent("unknown authorship");
+    expect(tooltip.querySelector("dl")).toBeNull();
+
+    const recorded = document.createElement("span");
+    recorded.dataset.wbDecoration = "provenance-overlay";
+    recorded.dataset.wbAuthorship = "human";
+    recorded.dataset.wbHumanReview = "not_applicable";
+    recorded.dataset.wbSource = "direct_entry";
+    recorded.dataset.wbSourceDetail = "Input: keyboard";
+    recorded.dataset.wbProvenanceRecordState = "recorded";
+    recorded.dataset.wbProvenanceCurrentness = "current";
+    const originalElementFromPoint = document.elementFromPoint;
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: () => recorded,
+    });
+    pending.replaceWith(recorded);
+
+    await waitFor(() => {
+      expect(screen.getByRole("tooltip")).toHaveTextContent("human authorship");
+      expect(screen.getByRole("tooltip")).not.toHaveTextContent(
+        "Recording provenance…",
       );
     });
     Object.defineProperty(document, "elementFromPoint", {

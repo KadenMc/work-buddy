@@ -1,7 +1,10 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Editor } from "@tiptap/core";
-import type { CoworkEditorLens } from "../editor/ledgerDecorations";
+import {
+  setCoworkEditorLens,
+  type CoworkEditorLens,
+} from "../editor/ledgerDecorations";
 import { DOMParser as ProseMirrorDOMParser } from "@tiptap/pm/model";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
@@ -28,8 +31,10 @@ import {
   type CoworkPasteProvenanceIntentStage,
   type CoworkPasteProvenanceOutbox,
   type CoworkPasteProvenanceOutboxBackingStore,
-  type CoworkPasteProvenanceRecorder,
+  type CoworkPasteProvenanceReceipt,
+  type CoworkPasteProvenanceRecorder as DurableCoworkPasteProvenanceRecorder,
   type CoworkPasteProvenanceRequest,
+  type ProvenanceAttestation,
   type CoworkProvenanceActorIdentity,
   type ProvenanceData,
   type ProvenanceProvider,
@@ -39,6 +44,10 @@ import {
   CoworkBridgeEditor,
   coworkPasteProvenanceOutboxKey,
 } from "./CoworkBridgeEditor";
+
+type CoworkPasteProvenanceRecorder = (
+  request: CoworkPasteProvenanceRequest,
+) => Promise<CoworkPasteProvenanceReceipt | void>;
 
 interface MountedPasteEditor {
   readonly editor: Editor;
@@ -73,6 +82,39 @@ const LOCAL_PRINCIPAL = {
   assurance: "enrolled_local_session" as const,
 };
 
+const projectedReceipts = new WeakMap<
+  ProvenanceProvider,
+  Map<string, CoworkPasteProvenanceReceipt>
+>();
+
+const testProvenanceReceipt = (
+  request: CoworkPasteProvenanceRequest,
+): CoworkPasteProvenanceReceipt => ({
+  attestationId: `attestation-${request.idempotencyKey}`,
+  documentSpanId: `span-${request.idempotencyKey}`,
+  targetStructuredHeadSha256: request.expectedStructuredHeadSha256,
+});
+
+const attestationForReceipt = (
+  receipt: CoworkPasteProvenanceReceipt,
+): ProvenanceAttestation => ({
+  attestationId: receipt.attestationId,
+  at: "2026-08-21T12:00:00.000Z",
+  assertedBy: { kind: "human", ref: ACTOR.ref, meta: null },
+  scope: {
+    kind: "document_span",
+    documentVersionId: null,
+    documentSpanId: receipt.documentSpanId,
+    structuredHeadSha256: receipt.targetStructuredHeadSha256,
+  },
+  authorship: { kind: "human", contributors: [] },
+  humanReview: { status: "not_applicable", reviewers: [] },
+  source: { kind: "direct_entry" },
+  basis: { kind: "automatic_direct_entry_attribution", ref: null },
+  supersedesId: null,
+  canonicalSha256: "a".repeat(64),
+});
+
 beforeEach(() => resetLocalIdentityForTests());
 
 const mountPasteEditor = async (
@@ -86,6 +128,7 @@ const mountPasteEditor = async (
     readonly beforePush?: () => Promise<void>;
     readonly activeLens?: CoworkEditorLens;
     readonly provenanceProvider?: ProvenanceProvider;
+    readonly onInputProvenancePendingChange?: (pending: boolean) => void;
     readonly document?: Y.Doc;
     readonly server?: InMemoryCoworkYdocTransport;
   } = {},
@@ -129,6 +172,15 @@ const mountPasteEditor = async (
   let renderedActor = options.resolveActorFromServer
     ? undefined
     : (options.provenanceActor ?? ACTOR);
+  const durableRecorder: DurableCoworkPasteProvenanceRecorder = async (
+    request,
+  ) => {
+    const receipt = (await recorder(request)) ?? testProvenanceReceipt(request);
+    projectedReceipts
+      .get(options.provenanceProvider as ProvenanceProvider)
+      ?.set(receipt.attestationId, receipt);
+    return receipt;
+  };
   const view = () => (
     <CoworkBridgeEditor
       document={document}
@@ -140,11 +192,12 @@ const mountPasteEditor = async (
       provenanceProvider={options.provenanceProvider}
       provenanceSelectionActionsActive
       onProvenanceSelectionAction={() => undefined}
+      onInputProvenancePendingChange={options.onInputProvenancePendingChange}
       provenanceActor={renderedActor}
       pasteProvenanceOutbox={options.outbox}
       onRecordPasteProvenance={async (request) => {
         events.push("record");
-        await recorder(request);
+        return durableRecorder(request);
       }}
       onReady={({ editor }) => {
         editorRef.current = editor;
@@ -194,12 +247,21 @@ const emptyProvenanceData = (): ProvenanceData => ({
 
 const provenanceProvider = (): ProvenanceProvider => {
   const data = emptyProvenanceData();
-  return {
+  const receipts = new Map<string, CoworkPasteProvenanceReceipt>();
+  const provider: ProvenanceProvider = {
     load: vi.fn().mockResolvedValue({ state: "ready", data }),
-    refresh: vi.fn().mockResolvedValue({ state: "ready", data }),
+    refresh: vi.fn().mockImplementation(async () => ({
+      state: "ready" as const,
+      data: {
+        ...data,
+        history: [...receipts.values()].map(attestationForReceipt),
+      },
+    })),
     subscribe: () => () => undefined,
     markReviewed: vi.fn().mockResolvedValue(undefined),
   };
+  projectedReceipts.set(provider, receipts);
+  return provider;
 };
 
 const dispatchSimplePaste = (editor: Editor): void => {
@@ -261,6 +323,228 @@ describe("CoworkBridgeEditor paste provenance", () => {
     expect(provider.refresh).toHaveBeenCalledOnce();
     await waitFor(() => expect(outbox.list()).resolves.toEqual([]));
     expect(screen.queryByText(/where did this text come from/i)).toBeNull();
+  }, 30_000);
+
+  it("marks only delayed direct-entry text as pending until its receipt settles", async () => {
+    let releaseRecorder!: () => void;
+    let recorderEntered!: () => void;
+    const recorderGate = new Promise<void>((resolve) => {
+      releaseRecorder = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      recorderEntered = resolve;
+    });
+    const pendingChanges: boolean[] = [];
+    const outbox = new DurableCoworkPasteProvenanceOutbox(
+      `pending-direct-entry-${String(Date.now())}`,
+      new InMemoryCoworkPasteProvenanceOutboxBackingStore(),
+    );
+    const mounted = await mountPasteEditor(
+      async () => {
+        recorderEntered();
+        await recorderGate;
+      },
+      {
+        outbox,
+        activeLens: "neutral",
+        provenanceProvider: provenanceProvider(),
+        onInputProvenancePendingChange: (pending) =>
+          pendingChanges.push(pending),
+      },
+    );
+
+    try {
+      act(() => mounted.editor.commands.insertContentAt(1, "Pending text"));
+      expect(pendingChanges[pendingChanges.length - 1]).toBe(true);
+      act(() => {
+        setCoworkEditorLens(mounted.editor, "provenance");
+      });
+      await act(async () => Promise.resolve());
+      const pending = mounted.editor.view.dom.querySelector<HTMLElement>(
+        '[data-wb-provenance-record-state="pending"]',
+      );
+      expect(pending).not.toBeNull();
+      expect(pending).toHaveTextContent("Pending text");
+      expect(pending).toHaveClass("wb-cowork-provenance--pending");
+      expect(
+        mounted.editor.view.dom.querySelector(
+          '[data-wb-provenance-record-state="pending"]',
+        )?.textContent,
+      ).not.toContain("Before after");
+      mounted.setActiveLens("provenance");
+      await entered;
+      await waitFor(() => expect(pendingChanges).toContain(true));
+
+      releaseRecorder();
+      await waitFor(() => expect(outbox.list()).resolves.toEqual([]));
+      await waitFor(() => {
+        expect(
+          mounted.editor.view.dom.querySelector(
+            '[data-wb-provenance-record-state="pending"]',
+          ),
+        ).toBeNull();
+        expect(pendingChanges[pendingChanges.length - 1]).toBe(false);
+      });
+    } finally {
+      releaseRecorder();
+      mounted.unmount();
+    }
+  }, 30_000);
+
+  it("keeps the frozen capture pending until the refreshed projection matches the complete receipt", async () => {
+    const data = emptyProvenanceData();
+    const requests: CoworkPasteProvenanceRequest[] = [];
+    let receipt: CoworkPasteProvenanceReceipt | undefined;
+    let projectionState: "missing" | "misbound" | "exact" = "missing";
+    const provider: ProvenanceProvider = {
+      load: vi.fn().mockResolvedValue({ state: "ready", data }),
+      refresh: vi.fn().mockImplementation(async () => {
+        const projected =
+          receipt === undefined || projectionState === "missing"
+            ? []
+            : [
+                attestationForReceipt(
+                  projectionState === "exact"
+                    ? receipt
+                    : {
+                        ...receipt,
+                        documentSpanId: `wrong-${receipt.documentSpanId}`,
+                        targetStructuredHeadSha256: "f".repeat(64),
+                      },
+                ),
+              ];
+        return {
+          state: "ready" as const,
+          data: { ...data, history: projected },
+        };
+      }),
+      subscribe: () => () => undefined,
+      markReviewed: vi.fn().mockResolvedValue(undefined),
+    };
+    const outbox = new DurableCoworkPasteProvenanceOutbox(
+      `pending-receipt-${String(Date.now())}`,
+      new InMemoryCoworkPasteProvenanceOutboxBackingStore(),
+    );
+    const mounted = await mountPasteEditor(
+      async (request) => {
+        requests.push(request);
+        receipt ??= testProvenanceReceipt(request);
+        return receipt;
+      },
+      { outbox, activeLens: "neutral", provenanceProvider: provider },
+    );
+
+    try {
+      act(() => mounted.editor.commands.insertContentAt(1, "Pending receipt"));
+      act(() => {
+        setCoworkEditorLens(mounted.editor, "provenance");
+      });
+      mounted.setActiveLens("provenance");
+
+      await screen.findByRole("button", { name: "Retry provenance storage" });
+      expect(requests).toHaveLength(1);
+      await expect(outbox.list()).resolves.toEqual([
+        expect.objectContaining({
+          status: "retryable_failure",
+          frozenRequest: expect.objectContaining({
+            idempotencyKey: requests[0].idempotencyKey,
+          }),
+        }),
+      ]);
+      expect(
+        mounted.editor.view.dom.querySelector(
+          '[data-wb-provenance-record-state="pending"]',
+        ),
+      ).toHaveTextContent("Pending receipt");
+
+      projectionState = "misbound";
+      await userEvent.click(
+        screen.getByRole("button", { name: "Retry provenance storage" }),
+      );
+      await waitFor(() => expect(requests).toHaveLength(2));
+      await expect(outbox.list()).resolves.toEqual([
+        expect.objectContaining({ status: "retryable_failure" }),
+      ]);
+
+      projectionState = "exact";
+      await userEvent.click(
+        screen.getByRole("button", { name: "Retry provenance storage" }),
+      );
+      await waitFor(() => expect(requests).toHaveLength(3));
+      expect(requests[1]).toEqual(requests[0]);
+      expect(requests[2]).toEqual(requests[0]);
+      await waitFor(() => expect(outbox.list()).resolves.toEqual([]));
+      await waitFor(() =>
+        expect(
+          mounted.editor.view.dom.querySelector(
+            '[data-wb-provenance-record-state="pending"]',
+          ),
+        ).toBeNull(),
+      );
+    } finally {
+      mounted.unmount();
+    }
+  }, 30_000);
+
+  it("retains pending provenance when the authoritative refresh fails", async () => {
+    const data = emptyProvenanceData();
+    let receipt: CoworkPasteProvenanceReceipt | undefined;
+    let refreshFails = true;
+    const provider: ProvenanceProvider = {
+      load: vi.fn().mockResolvedValue({ state: "ready", data }),
+      refresh: vi.fn().mockImplementation(async () => {
+        if (refreshFails) throw new Error("projection unavailable");
+        return {
+          state: "ready" as const,
+          data: {
+            ...data,
+            history:
+              receipt === undefined ? [] : [attestationForReceipt(receipt)],
+          },
+        };
+      }),
+      subscribe: () => () => undefined,
+      markReviewed: vi.fn().mockResolvedValue(undefined),
+    };
+    const outbox = new DurableCoworkPasteProvenanceOutbox(
+      `pending-refresh-${String(Date.now())}`,
+      new InMemoryCoworkPasteProvenanceOutboxBackingStore(),
+    );
+    const mounted = await mountPasteEditor(
+      async (request) => {
+        receipt ??= testProvenanceReceipt(request);
+        return receipt;
+      },
+      { outbox, activeLens: "neutral", provenanceProvider: provider },
+    );
+
+    try {
+      act(() => mounted.editor.commands.insertContentAt(1, "Refresh pending"));
+      act(() => {
+        setCoworkEditorLens(mounted.editor, "provenance");
+      });
+      mounted.setActiveLens("provenance");
+      await screen.findByRole("button", { name: "Retry provenance storage" });
+      await expect(outbox.list()).resolves.toEqual([
+        expect.objectContaining({
+          status: "retryable_failure",
+          frozenRequest: expect.any(Object),
+        }),
+      ]);
+      expect(
+        mounted.editor.view.dom.querySelector(
+          '[data-wb-provenance-record-state="pending"]',
+        ),
+      ).toHaveTextContent("Refresh pending");
+
+      refreshFails = false;
+      await userEvent.click(
+        screen.getByRole("button", { name: "Retry provenance storage" }),
+      );
+      await waitFor(() => expect(outbox.list()).resolves.toEqual([]));
+    } finally {
+      mounted.unmount();
+    }
   }, 30_000);
 
   it("waits for the capture actor, then keeps top-block typing whole across a persistence settlement", async () => {
@@ -508,8 +792,7 @@ describe("CoworkBridgeEditor paste provenance", () => {
       sourceKind: rejectedRequest.sourceKind,
       basisKind: rejectedRequest.basisKind,
       expectedActorRef: rejectedRequest.expectedActorRef,
-      expectedActorIdentityStatus:
-        rejectedRequest.expectedActorIdentityStatus,
+      expectedActorIdentityStatus: rejectedRequest.expectedActorIdentityStatus,
       anchor: rejectedRequest.anchor,
       attestation: rejectedRequest.attestation,
     });

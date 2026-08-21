@@ -27,7 +27,11 @@ import { importCoworkMarkdown } from "../editor/markdownImport";
 import type { ProposalInput } from "../suggestions/types";
 import type { CoworkApiError, CoworkDriftState } from "../contracts";
 import { isLocalHumanOrigin } from "../editor/applyOrigin";
-import type { CoworkEditorLens } from "../editor/ledgerDecorations";
+import {
+  setCoworkPendingProvenance,
+  type CoworkEditorLens,
+  type CoworkPendingProvenanceDecoration,
+} from "../editor/ledgerDecorations";
 import { serializeCoworkEditorMarkdown } from "../editor/serializeCoworkMarkdown";
 import { sha256Hex } from "../persistence/hashing";
 import { asCoworkApiError } from "../providers/errors";
@@ -333,6 +337,21 @@ function MountedBridgeEditor({
   const [volatilePasteCaptures, setVolatilePasteCaptures] = useState<
     readonly CoworkPasteProvenanceCapture[]
   >([]);
+  const pendingDirectEntryDecorations = useMemo(() => {
+    const pending = new Map<string, CoworkPendingProvenanceDecoration>();
+    for (const capture of [...pasteEntries, ...volatilePasteCaptures]) {
+      if (capture.sourceKind !== "direct_entry") continue;
+      pending.set(capture.idempotencyKey, {
+        captureId: capture.idempotencyKey,
+        quoteAnchor: capture.anchor,
+      });
+    }
+    return [...pending.values()];
+  }, [pasteEntries, volatilePasteCaptures]);
+  const pendingDirectEntryDecorationsRef = useRef(
+    pendingDirectEntryDecorations,
+  );
+  pendingDirectEntryDecorationsRef.current = pendingDirectEntryDecorations;
   const inputProvenancePending =
     pasteEntries.some(
       (entry) =>
@@ -502,10 +521,26 @@ function MountedBridgeEditor({
 
           // A resolved recorder call is the confirmed server receipt boundary.
           // Until then the complete frozen request remains replayable.
-          await recorder(request);
+          const receipt = await recorder(request);
           // Keep the immutable request until the authoritative view includes
           // the receipt. Manual Record must not close into an empty/stale lens.
-          await provenanceProvider?.refresh();
+          if (provenanceProvider !== undefined) {
+            const refreshed = await provenanceProvider.refresh();
+            if (
+              refreshed.state !== "ready" ||
+              !refreshed.data.history.some(
+                (record) =>
+                  record.attestationId === receipt.attestationId &&
+                  record.scope.documentSpanId === receipt.documentSpanId &&
+                  record.scope.structuredHeadSha256 ===
+                    receipt.targetStructuredHeadSha256,
+              )
+            ) {
+              throw new Error(
+                "Co-work saved the provenance record but could not confirm it in the current view yet.",
+              );
+            }
+          }
           await resolvedPasteProvenanceOutbox.remove(entryId);
         } catch (error) {
           const apiError = asCoworkApiError(error);
@@ -517,20 +552,19 @@ function MountedBridgeEditor({
                 unknownCoworkProvenanceDetermination(),
               );
               setVolatilePasteCaptures((current) =>
-                current
-                  .map((capture, index) => ({
-                    ...capture,
-                    idempotencyKey: `${recoveryPrefix}:volatile:${String(index)}`,
-                    sourceKind:
-                      capture.sourceKind === "direct_entry"
-                        ? "legacy"
-                        : capture.sourceKind,
-                    basisKind: "user_attestation",
-                    capturedActor: undefined,
-                    determination: unknownCoworkProvenanceDetermination(),
-                    requiresExplicitDetermination: true,
-                    status: "awaiting_determination",
-                  })),
+                current.map((capture, index) => ({
+                  ...capture,
+                  idempotencyKey: `${recoveryPrefix}:volatile:${String(index)}`,
+                  sourceKind:
+                    capture.sourceKind === "direct_entry"
+                      ? "legacy"
+                      : capture.sourceKind,
+                  basisKind: "user_attestation",
+                  capturedActor: undefined,
+                  determination: unknownCoworkProvenanceDetermination(),
+                  requiresExplicitDetermination: true,
+                  status: "awaiting_determination",
+                })),
               );
               onProvenanceActorChanged?.();
             } else if (stored !== undefined) {
@@ -540,8 +574,7 @@ function MountedBridgeEditor({
                 kind:
                   apiError.code === COWORK_PROVENANCE_TARGET_CHANGED
                     ? "stale_target"
-                    : stored.sourceKind === "direct_entry" ||
-                        apiError.retryable
+                    : stored.sourceKind === "direct_entry" || apiError.retryable
                       ? "retryable"
                       : "terminal",
               });
@@ -776,26 +809,27 @@ function MountedBridgeEditor({
           // exact selector as an explicit legacy determination the user can
           // resolve after a legitimate identity session is available.
           if (entry.status === "capturing") {
-            const deferred = await resolvedPasteProvenanceOutbox.deferDirectEntry(
-              entry.id,
-              // This automatic request has never been frozen or submitted, so
-              // preserving its key is both safe and important: a transaction
-              // that mapped the burst while demotion was queued may already
-              // have journalled one last capture under this key. Rotating it
-              // here would let that queued upsert append an orphan automatic
-              // row after the legacy replacement commits.
-              burst.idempotencyKey,
-              unknownCoworkProvenanceDetermination(),
-              {
-                code: captureActorUnavailable
-                  ? "provenance_actor_unavailable_at_capture"
-                  : COWORK_PROVENANCE_ACTOR_CHANGED,
-                message: captureActorUnavailable
-                  ? "No enrolled local actor was available when this text was entered."
-                  : "The acting identity changed before this attribution was saved.",
-                kind: "terminal",
-              },
-            );
+            const deferred =
+              await resolvedPasteProvenanceOutbox.deferDirectEntry(
+                entry.id,
+                // This automatic request has never been frozen or submitted, so
+                // preserving its key is both safe and important: a transaction
+                // that mapped the burst while demotion was queued may already
+                // have journalled one last capture under this key. Rotating it
+                // here would let that queued upsert append an orphan automatic
+                // row after the legacy replacement commits.
+                burst.idempotencyKey,
+                unknownCoworkProvenanceDetermination(),
+                {
+                  code: captureActorUnavailable
+                    ? "provenance_actor_unavailable_at_capture"
+                    : COWORK_PROVENANCE_ACTOR_CHANGED,
+                  message: captureActorUnavailable
+                    ? "No enrolled local actor was available when this text was entered."
+                    : "The acting identity changed before this attribution was saved.",
+                  kind: "terminal",
+                },
+              );
             if (
               generation !== provenanceEditGenerationRef.current ||
               deferred.idempotencyKey !== burst.idempotencyKey
@@ -1293,8 +1327,51 @@ function MountedBridgeEditor({
       }
       stageDirectEntryProvenanceBeforeTransaction(context);
       stagePasteProvenanceBeforeTransaction(context);
+      if (context.transaction.docChanged) {
+        const pending = new Map(
+          pendingDirectEntryDecorationsRef.current.map((item) => [
+            item.captureId,
+            item,
+          ]),
+        );
+        const stageBurst = (burst: DirectEntryBurst): void => {
+          const capture = directCaptureForBurst(burst, context.transaction.doc);
+          if (capture === null) {
+            pending.delete(burst.idempotencyKey);
+            return;
+          }
+          pending.set(burst.idempotencyKey, {
+            captureId: burst.idempotencyKey,
+            quoteAnchor: capture.anchor,
+          });
+        };
+        for (const burst of directEntryClosingBurstsRef.current.values()) {
+          stageBurst(burst);
+        }
+        if (directEntryBurstRef.current !== null) {
+          stageBurst(directEntryBurstRef.current);
+        }
+        const staged = [...pending.values()];
+        // `beforeTransaction` fires after ProseMirror has derived the next
+        // state, so changing this transaction's metadata is too late. A
+        // microtask dispatch lands before the browser can paint the edited
+        // frame and avoids a re-entrant EditorView transaction.
+        queueMicrotask(() => {
+          if (
+            pasteEditorRef.current === context.editor &&
+            !context.editor.isDestroyed
+          ) {
+            setCoworkPendingProvenance(context.editor, staged);
+          }
+        });
+        if (staged.length > 0) {
+          onInputProvenancePendingChange?.(true);
+        }
+      }
     },
     [
+      directCaptureForBurst,
+      onInputProvenancePendingChange,
       stageDirectEntryProvenanceBeforeTransaction,
       stagePasteProvenanceBeforeTransaction,
     ],
@@ -1329,6 +1406,11 @@ function MountedBridgeEditor({
       editor.off("beforeTransaction", stageProvenanceBeforeTransaction);
     };
   }, [editor, stageProvenanceBeforeTransaction]);
+
+  useEffect(() => {
+    if (editor === null) return;
+    setCoworkPendingProvenance(editor, pendingDirectEntryDecorations);
+  }, [editor, pendingDirectEntryDecorations]);
 
   const dismissedPasteEntries = pasteEntries.filter(
     (entry) => entry.sourceKind === "paste" && dismissedPasteIds.has(entry.id),
@@ -1484,8 +1566,7 @@ function MountedBridgeEditor({
                 await resolvedPasteProvenanceOutbox.list()
               ).some(
                 (candidate) =>
-                  candidate.id === entry.id &&
-                  candidate.status === "capturing",
+                  candidate.id === entry.id && candidate.status === "capturing",
               );
               if (stillCapturing) {
                 await finalizeDirectEntryBurstRef.current();
@@ -1596,8 +1677,7 @@ function MountedBridgeEditor({
     for (const entry of entries) {
       if (
         entry.sourceKind === "direct_entry" &&
-        (entry.status === "stale_target" ||
-          entry.status === "terminal_failure")
+        (entry.status === "stale_target" || entry.status === "terminal_failure")
       ) {
         // The server explicitly rejected the frozen target, so this visible
         // user retry starts a new attempt: resolve the captured quote against
@@ -2726,11 +2806,7 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
           requestProvenanceActorRefresh();
         }
       }),
-    [
-      provenanceActorState,
-      provenanceEnabled,
-      requestProvenanceActorRefresh,
-    ],
+    [provenanceActorState, provenanceEnabled, requestProvenanceActorRefresh],
   );
 
   useEffect(

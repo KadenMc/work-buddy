@@ -6,10 +6,12 @@ summary: >-
   Provenance is a first-class Co-work rail and view-only editor lens for source,
   authorship, human-review, attester, and basis records. File import targets an
   immutable document version; local direct entry and text-bearing paste target
-  exact spans. A
-  human review action appends a user-attested superseding record while
-  preserving source and authorship. Attestations report what a person says
-  about content; they do not verify authorship, correctness, or claims.
+  exact spans, with direct entry shown as pending delivery before its receipt.
+  Accepted agent proposals transactionally attribute only replacement text to
+  the producing run. A human review action appends a user-attested superseding
+  record while preserving source and authorship. Attestations report what a
+  person says about content; they do not verify authorship, correctness, or
+  claims.
 tags:
 - cowork
 - provenance
@@ -103,7 +105,10 @@ cover the passage's coverage-aware selection action; collapsing the selection
 restores ordinary hover behavior. The stable Provenance panel owns summary,
 filters, document-order items, frozen target and history details, and mutation
 controls. Missing data is visible as **No provenance recorded**, never inferred
-as human. Loading and failed refresh are separate from an empty record set.
+as human. Browser-local direct entry awaiting a ledger receipt is instead
+visible as **Recording provenance…** over only the pending passage; it is neither
+loading nor evidence of an unrecorded passage. Loading and failed refresh are
+separate from an empty record set.
 List-row activation opens detail and may apply compatible focus, but it does not
 scroll the editor. A uniquely resolved span has a separate **Show in document**
 action for one present-user reveal. The panel also exposes **Complete provenance
@@ -168,6 +173,35 @@ Only then does it post the append-only transition and repull authoritative
 state. Any drift fails closed; the editor is re-enabled only if the mounted
 document is still writable.
 
+## Accepted agent proposals
+
+When the user confirms an agent-run edit proposal and the sitting applies it,
+Co-work records provenance for the text contributed by that proposal in the
+same locked database transaction as the document materialization and sitting
+commit. The resulting exact-span attestation records AI authorship and
+`human_review=not_reviewed`; accepting an edit is a document-change decision,
+not a claim that the user reviewed the resulting prose. A later **Mark
+reviewed** action remains a separate append-only transition.
+
+The record uses `source=proposal_acceptance` and
+`basis=proposal_acceptance`. Its source detail binds the immutable proposal and
+canonical digest, the accepted replacement digest, the consumed human
+acceptance gesture, and the validated producing agent-run reference and
+producer metadata. The human actor who confirmed the proposal is the attester,
+while the producing run remains the attributed authoring activity. These roles
+are intentionally not collapsed.
+
+The target covers only text mechanically attributable to the accepted
+replacement. A replacement which does not preserve the original quote produces
+one exact AI-authored span. For insertion-style proposals whose replacement
+contains the original quote exactly once, Co-work excludes that preserved text
+and records the non-whitespace text inserted before and/or after it as separate
+exact spans. Deletions create no text span. If the original is repeated, the
+derived selector is invalid, or any inserted segment does not resolve uniquely
+in the exact committed projection, the entire sitting fails closed. The
+document change, acceptance gesture, proposal status, and provenance rows
+therefore cannot commit independently.
+
 ## Direct entry and manual repair
 
 Ordinary local typing is captured at the editor ingress rather than inferred
@@ -184,6 +218,20 @@ the capture-time enrolled local actor, review `not_applicable`, and
 `basis=automatic_direct_entry_attribution`. The capture-time actor is never
 replaced by whichever identity happens to exist after a crash or reload. A
 changed or unavailable actor requires an explicit honest determination.
+
+Between synchronous capture and the authoritative server receipt, the
+Provenance lens projects the uniquely resolved exact local capture range as
+**Recording provenance…**. This pending decoration is delivery state only. It
+does not provisionally assert authorship, review, contributor, reviewer, or
+attester facts, even when the capture already carries a frozen actor binding.
+The stable panel exposes the same pending state and does not announce that the
+passage has no provenance. As soon as authoritative recorded coverage is
+present, that ledger projection wins for the overlapping range even if local
+outbox cleanup has not completed; removing the pending row later cannot make a
+server receipt disappear. The client retains the frozen outbox row and pending
+treatment until a fresh history entry matches the server receipt's attestation
+ID, document-span ID, and structured head. A missing, stale, misbound, or failed
+refresh therefore remains visibly pending and safely retryable.
 
 Typing observed without a capture-time actor, or whose actor changes before
 the automatic request can be frozen, is not discarded. Its exact selector

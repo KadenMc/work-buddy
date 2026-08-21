@@ -649,6 +649,16 @@ def _mint_expressions_locked(
         proposal.created_by_kind == "agent_run"
         and bool(str(proposal.created_by_ref or "").strip())
     )
+    # An insertion proposal often carries the untouched quote inside its
+    # replacement (for example, ``new preface + original``). The expression
+    # may legitimately cover that complete passage, but the complete passage
+    # is not wholly AI-authored. The Co-work proposal-acceptance provenance
+    # path records only the mechanically derived inserted segments.
+    preserves_original = bool(
+        proposal.quote_exact
+        and proposal.replacement is not None
+        and proposal.quote_exact in proposal.replacement
+    )
     span = _ensure_document_span_locked(
         store,
         conn,
@@ -656,8 +666,16 @@ def _mint_expressions_locked(
         selector=accepted_selector,
         quote_exact=proposal.replacement,
         actor=actor,
-        author_kind="agent_run" if authored_by_agent else "unknown",
-        author_ref=proposal.created_by_ref if authored_by_agent else None,
+        author_kind=(
+            "agent_run"
+            if authored_by_agent and not preserves_original
+            else "unknown"
+        ),
+        author_ref=(
+            proposal.created_by_ref
+            if authored_by_agent and not preserves_original
+            else None
+        ),
         at=at,
         # An accepted edit needs its own durable authorship/acceptance row even
         # if an identical quote was previously anchored for another purpose.

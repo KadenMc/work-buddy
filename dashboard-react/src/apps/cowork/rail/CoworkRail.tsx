@@ -5,7 +5,13 @@
  * uses the shared ConversationChat surface through a thin Co-work adapter.
  */
 
-import { useEffect, useRef, useState, type KeyboardEvent, type RefCallback } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type RefCallback,
+} from "react";
 
 import { HelpTarget, type HelpContent } from "../../../dashboard/help";
 import {
@@ -71,7 +77,8 @@ const TRUTH_TAB_HELP: HelpContent = {
 };
 
 const PROVENANCE_TAB_HELP: HelpContent = {
-  summary: "See how the text is attributed and whether human review is recorded.",
+  summary:
+    "See how the text is attributed and whether human review is recorded.",
   details:
     "The editor overlay keeps authorship, source, and human review separate. These records do not say whether the text is true.",
 };
@@ -94,6 +101,7 @@ export interface CoworkRailProps {
     readonly editor?: ProvenanceEditorIntegration;
     readonly mutationBarrier?: ProvenanceMutationBarrier;
     readonly selectionAction?: ProvenanceSelectionAction | null;
+    readonly inputProvenancePending?: boolean;
   };
   readonly chat: CoworkRailChat;
   /** Fired only for a present user click on the wide Chat tab. */
@@ -171,9 +179,7 @@ function CoworkConversationGate({
         label="Chat about this document"
         kind="loading"
         title={chat.kind === "loading" ? "Loading chat…" : "Starting chat…"}
-        detail={
-          chat.kind === "loading" ? "Checking for messages." : undefined
-        }
+        detail={chat.kind === "loading" ? "Checking for messages." : undefined}
         execution={execution}
         executionDisabled
       />
@@ -222,7 +228,9 @@ export function CoworkRail(props: CoworkRailProps) {
     );
   });
   const tab = useRailState(store, (state) => state.tab);
-  const tabRefs = useRef<Partial<Record<RailTab, HTMLButtonElement | null>>>({});
+  const tabRefs = useRef<Partial<Record<RailTab, HTMLButtonElement | null>>>(
+    {},
+  );
   const tabsRef = useRef<HTMLDivElement | null>(null);
   const reviewActive = tab === "review" && props.reviewVisible !== false;
   const provenanceActive =
@@ -240,9 +248,7 @@ export function CoworkRail(props: CoworkRailProps) {
   const unread =
     tab !== "chat" &&
     messages.length > seenCount &&
-    messages
-      .slice(seenCount)
-      .some((message) => message.author === "assistant");
+    messages.slice(seenCount).some((message) => message.author === "assistant");
 
   const selectRailTab = (next: RailTab): void => {
     if (tab === "review" && next !== "review") {
@@ -304,94 +310,96 @@ export function CoworkRail(props: CoworkRailProps) {
 
   return (
     <div className="wb-cowork-rail">
-      {props.showTabs !== false ? <div
-        ref={tabsRef}
-        className="wb-cowork-rail__tabs"
-        role="tablist"
-        aria-label="Co-work side panels"
-      >
-        <HelpTarget content={REVIEW_TAB_HELP} placement="bottom start">
-          <button
-            type="button"
-            ref={(element) => {
-              tabRefs.current.review = element;
-            }}
-            role="tab"
-            id="wb-cowork-rail-tab-review"
-            className="wb-cowork-rail__tab"
-            aria-selected={tab === "review"}
-            tabIndex={tab === "review" ? 0 : -1}
-            aria-controls="wb-cowork-rail-panel-review"
-            onClick={() => selectRailTab("review")}
-            onKeyDown={(event) => navigateTabs(event, "review")}
-          >
-            Review
-          </button>
-        </HelpTarget>
-        <HelpTarget content={PROVENANCE_TAB_HELP} placement="bottom">
-          <button
-            type="button"
-            ref={(element) => {
-              tabRefs.current.provenance = element;
-            }}
-            role="tab"
-            id="wb-cowork-rail-tab-provenance"
-            className="wb-cowork-rail__tab"
-            aria-selected={tab === "provenance"}
-            tabIndex={tab === "provenance" ? 0 : -1}
-            aria-controls="wb-cowork-rail-panel-provenance"
-            onClick={() => selectRailTab("provenance")}
-            onKeyDown={(event) => navigateTabs(event, "provenance")}
-          >
-            Provenance
-          </button>
-        </HelpTarget>
-        <HelpTarget content={TRUTH_TAB_HELP} placement="bottom">
-          <button
-            type="button"
-            ref={(element) => {
-              tabRefs.current.truth = element;
-            }}
-            role="tab"
-            id="wb-cowork-rail-tab-truth"
-            className="wb-cowork-rail__tab"
-            aria-selected={tab === "truth"}
-            tabIndex={tab === "truth" ? 0 : -1}
-            aria-controls="wb-cowork-rail-panel-truth"
-            onClick={() => selectRailTab("truth")}
-            onKeyDown={(event) => navigateTabs(event, "truth")}
-          >
-            Truth
-          </button>
-        </HelpTarget>
-        <HelpTarget content={CHAT_TAB_HELP} placement="bottom">
-          <button
-            type="button"
-            ref={(element) => {
-              tabRefs.current.chat = element;
-            }}
-            role="tab"
-            id="wb-cowork-rail-tab-chat"
-            className="wb-cowork-rail__tab"
-            aria-selected={tab === "chat"}
-            tabIndex={tab === "chat" ? 0 : -1}
-            aria-controls="wb-cowork-rail-panel-chat"
-            onClick={() => {
-              selectRailTab("chat");
-              revealRailTabs();
-              props.onChatSelected?.();
-            }}
-            onKeyDown={(event) => navigateTabs(event, "chat")}
-          >
-            Chat
-            {unread ? (
-              <span className="wb-cowork-rail__unread">
-                <span className="wb-visually-hidden">unread reply</span>
-              </span>
-            ) : null}
-          </button>
-        </HelpTarget>
-      </div> : null}
+      {props.showTabs !== false ? (
+        <div
+          ref={tabsRef}
+          className="wb-cowork-rail__tabs"
+          role="tablist"
+          aria-label="Co-work side panels"
+        >
+          <HelpTarget content={REVIEW_TAB_HELP} placement="bottom start">
+            <button
+              type="button"
+              ref={(element) => {
+                tabRefs.current.review = element;
+              }}
+              role="tab"
+              id="wb-cowork-rail-tab-review"
+              className="wb-cowork-rail__tab"
+              aria-selected={tab === "review"}
+              tabIndex={tab === "review" ? 0 : -1}
+              aria-controls="wb-cowork-rail-panel-review"
+              onClick={() => selectRailTab("review")}
+              onKeyDown={(event) => navigateTabs(event, "review")}
+            >
+              Review
+            </button>
+          </HelpTarget>
+          <HelpTarget content={PROVENANCE_TAB_HELP} placement="bottom">
+            <button
+              type="button"
+              ref={(element) => {
+                tabRefs.current.provenance = element;
+              }}
+              role="tab"
+              id="wb-cowork-rail-tab-provenance"
+              className="wb-cowork-rail__tab"
+              aria-selected={tab === "provenance"}
+              tabIndex={tab === "provenance" ? 0 : -1}
+              aria-controls="wb-cowork-rail-panel-provenance"
+              onClick={() => selectRailTab("provenance")}
+              onKeyDown={(event) => navigateTabs(event, "provenance")}
+            >
+              Provenance
+            </button>
+          </HelpTarget>
+          <HelpTarget content={TRUTH_TAB_HELP} placement="bottom">
+            <button
+              type="button"
+              ref={(element) => {
+                tabRefs.current.truth = element;
+              }}
+              role="tab"
+              id="wb-cowork-rail-tab-truth"
+              className="wb-cowork-rail__tab"
+              aria-selected={tab === "truth"}
+              tabIndex={tab === "truth" ? 0 : -1}
+              aria-controls="wb-cowork-rail-panel-truth"
+              onClick={() => selectRailTab("truth")}
+              onKeyDown={(event) => navigateTabs(event, "truth")}
+            >
+              Truth
+            </button>
+          </HelpTarget>
+          <HelpTarget content={CHAT_TAB_HELP} placement="bottom">
+            <button
+              type="button"
+              ref={(element) => {
+                tabRefs.current.chat = element;
+              }}
+              role="tab"
+              id="wb-cowork-rail-tab-chat"
+              className="wb-cowork-rail__tab"
+              aria-selected={tab === "chat"}
+              tabIndex={tab === "chat" ? 0 : -1}
+              aria-controls="wb-cowork-rail-panel-chat"
+              onClick={() => {
+                selectRailTab("chat");
+                revealRailTabs();
+                props.onChatSelected?.();
+              }}
+              onKeyDown={(event) => navigateTabs(event, "chat")}
+            >
+              Chat
+              {unread ? (
+                <span className="wb-cowork-rail__unread">
+                  <span className="wb-visually-hidden">unread reply</span>
+                </span>
+              ) : null}
+            </button>
+          </HelpTarget>
+        </div>
+      ) : null}
 
       <div
         role="tabpanel"
@@ -442,7 +450,9 @@ export function CoworkRail(props: CoworkRailProps) {
         hidden={tab !== "provenance"}
       >
         {props.provenance === undefined ? (
-          <p className="wb-cowork-rail__empty">Provenance is unavailable for this document.</p>
+          <p className="wb-cowork-rail__empty">
+            Provenance is unavailable for this document.
+          </p>
         ) : (
           <ProvenancePanel
             key={`${props.storeId ?? "unscoped"}:${props.documentId}`}
@@ -454,6 +464,7 @@ export function CoworkRail(props: CoworkRailProps) {
             editor={props.provenance.editor}
             mutationBarrier={props.provenance.mutationBarrier}
             selectionAction={props.provenance.selectionAction}
+            inputProvenancePending={props.provenance.inputProvenancePending}
             readOnly={props.readOnly}
           />
         )}

@@ -58,7 +58,8 @@ export function ProvenanceHoverCard({
       return undefined;
     }
     let hoveredDecoration: HTMLElement | null = null;
-    let pointerPosition: { readonly x: number; readonly y: number } | null = null;
+    let pointerPosition: { readonly x: number; readonly y: number } | null =
+      null;
     const showElement = (target: Element | null): void => {
       // A deliberate text selection owns the contextual UI. Mouse-dragging a
       // decorated passage first fires pointerover, so without this guard the
@@ -68,9 +69,10 @@ export function ProvenanceHoverCard({
         setHover(null);
         return;
       }
-      const element = target?.closest<HTMLElement>(
-        "[data-wb-decoration='provenance-overlay']",
-      ) ?? null;
+      const element =
+        target?.closest<HTMLElement>(
+          "[data-wb-decoration='provenance-overlay']",
+        ) ?? null;
       if (element === null || !root.contains(element)) {
         hoveredDecoration = null;
         setHover(null);
@@ -87,8 +89,10 @@ export function ProvenanceHoverCard({
         authorship: element.dataset.wbAuthorship ?? "unknown",
         review: element.dataset.wbHumanReview ?? "unknown",
         source: element.dataset.wbSource ?? "unknown",
-        sourceDetail: element.dataset.wbSourceDetail ?? "No additional source detail",
-        contributors: element.dataset.wbContributors ?? "No contributors recorded",
+        sourceDetail:
+          element.dataset.wbSourceDetail ?? "No additional source detail",
+        contributors:
+          element.dataset.wbContributors ?? "No contributors recorded",
         reviewers: element.dataset.wbReviewers ?? "No reviewers recorded",
         attester: element.dataset.wbAttester ?? "not recorded",
         basis: element.dataset.wbBasis ?? "not recorded",
@@ -119,11 +123,18 @@ export function ProvenanceHoverCard({
       if (!root.contains(document.activeElement)) return;
       const anchorNode = document.getSelection()?.anchorNode ?? null;
       const element =
-        anchorNode instanceof Element ? anchorNode : anchorNode?.parentElement ?? null;
+        anchorNode instanceof Element
+          ? anchorNode
+          : (anchorNode?.parentElement ?? null);
       showElement(element);
     };
     const hide = (event: Event): void => {
-      if (event instanceof FocusEvent && event.relatedTarget instanceof Node && root.contains(event.relatedTarget)) return;
+      if (
+        event instanceof FocusEvent &&
+        event.relatedTarget instanceof Node &&
+        root.contains(event.relatedTarget)
+      )
+        return;
       hoveredDecoration = null;
       pointerPosition = null;
       setHover(null);
@@ -135,7 +146,8 @@ export function ProvenanceHoverCard({
         return;
       }
       const pointed =
-        pointerPosition === null || typeof document.elementFromPoint !== "function"
+        pointerPosition === null ||
+        typeof document.elementFromPoint !== "function"
           ? null
           : document.elementFromPoint(pointerPosition.x, pointerPosition.y);
       showElement(pointed);
@@ -198,7 +210,10 @@ export function ProvenanceHoverCard({
       gutter,
       below + height <= window.innerHeight - gutter
         ? below
-        : Math.min(hover.anchorTop - height - gutter, window.innerHeight - height - gutter),
+        : Math.min(
+            hover.anchorTop - height - gutter,
+            window.innerHeight - height - gutter,
+          ),
     );
     if (left !== hover.left || top !== hover.top) {
       setHover((current) =>
@@ -207,6 +222,7 @@ export function ProvenanceHoverCard({
     }
   }, [hover]);
   if (!active || hover === null) return null;
+  const pending = hover.recordState === "pending";
   return createPortal(
     <aside
       className="wb-cowork-provenance-hover"
@@ -214,18 +230,62 @@ export function ProvenanceHoverCard({
       ref={cardRef}
       style={{ left: hover.left, top: hover.top }}
     >
-      <strong>{hover.conflicted ? "Conflicting provenance" : hover.recordState === "unrecorded" ? "No provenance recorded" : `${label(hover.authorship)} authorship`}</strong>
-      <dl>
-        <div><dt>Human review</dt><dd>{label(hover.review)}</dd></div>
-        <div><dt>Contributors</dt><dd>{hover.contributors}</dd></div>
-        <div><dt>Reviewers</dt><dd>{hover.reviewers}</dd></div>
-        <div><dt>Source</dt><dd>{label(hover.source)} · {hover.sourceDetail}</dd></div>
-        <div><dt>Attested by</dt><dd>{hover.attester}</dd></div>
-        <div><dt>Basis</dt><dd>{label(hover.basis)}</dd></div>
-        <div><dt>Target</dt><dd>{label(hover.currentness)}</dd></div>
-        <div><dt>History</dt><dd>{hover.historyCount} records</dd></div>
-      </dl>
-      <p>Open Provenance for details and actions.</p>
+      <strong>
+        {hover.conflicted
+          ? "Conflicting provenance"
+          : pending
+            ? "Recording provenance…"
+            : hover.recordState === "unrecorded"
+              ? "No provenance recorded"
+              : `${label(hover.authorship)} authorship`}
+      </strong>
+      {pending ? (
+        <p>
+          This recent typing is captured in the editor while its provenance
+          record is saved. Authorship and review appear after the server
+          confirms the record.
+        </p>
+      ) : (
+        <>
+          <dl>
+            <div>
+              <dt>Human review</dt>
+              <dd>{label(hover.review)}</dd>
+            </div>
+            <div>
+              <dt>Contributors</dt>
+              <dd>{hover.contributors}</dd>
+            </div>
+            <div>
+              <dt>Reviewers</dt>
+              <dd>{hover.reviewers}</dd>
+            </div>
+            <div>
+              <dt>Source</dt>
+              <dd>
+                {label(hover.source)} · {hover.sourceDetail}
+              </dd>
+            </div>
+            <div>
+              <dt>Attested by</dt>
+              <dd>{hover.attester}</dd>
+            </div>
+            <div>
+              <dt>Basis</dt>
+              <dd>{label(hover.basis)}</dd>
+            </div>
+            <div>
+              <dt>Target</dt>
+              <dd>{label(hover.currentness)}</dd>
+            </div>
+            <div>
+              <dt>History</dt>
+              <dd>{hover.historyCount} records</dd>
+            </div>
+          </dl>
+          <p>Open Provenance for details and actions.</p>
+        </>
+      )}
     </aside>,
     document.body,
   );

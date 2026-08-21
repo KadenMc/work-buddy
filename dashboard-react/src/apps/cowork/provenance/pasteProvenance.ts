@@ -63,9 +63,16 @@ export interface CoworkPasteProvenanceRequest {
   readonly idempotencyKey: string;
 }
 
+/** Immutable server receipt for one persisted provenance attestation. */
+export interface CoworkPasteProvenanceReceipt {
+  readonly attestationId: string;
+  readonly documentSpanId: string;
+  readonly targetStructuredHeadSha256: string;
+}
+
 export type CoworkPasteProvenanceRecorder = (
   request: CoworkPasteProvenanceRequest,
-) => Promise<void>;
+) => Promise<CoworkPasteProvenanceReceipt>;
 
 export type CoworkPasteAnchorResolution =
   | {

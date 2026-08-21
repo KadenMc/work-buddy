@@ -11,6 +11,7 @@ import {
   projectCoworkLedgerDecorations,
   readCoworkLedgerDecorationState,
   setCoworkEditorLens,
+  setCoworkPendingProvenance,
 } from "./ledgerDecorations";
 
 const CONTENT =
@@ -51,7 +52,11 @@ describe("CoworkLedgerDecorations", () => {
       flags: [
         {
           proposalId: "lens-flag",
-          quoteAnchor: { exact: "flagged phrase", prefix: "A ", suffix: ". An" },
+          quoteAnchor: {
+            exact: "flagged phrase",
+            prefix: "A ",
+            suffix: ". An",
+          },
         },
       ],
       expressions: [
@@ -67,12 +72,20 @@ describe("CoworkLedgerDecorations", () => {
       provenance: [],
     });
 
-    expect(current.view.dom.querySelector('[data-wb-decoration="flag"]')).not.toBeNull();
+    expect(
+      current.view.dom.querySelector('[data-wb-decoration="flag"]'),
+    ).not.toBeNull();
     setCoworkEditorLens(current, "truth");
-    expect(current.view.dom.querySelector('[data-wb-decoration="flag"]')).toBeNull();
-    expect(current.view.dom.querySelector('[data-wb-decoration="expression"]')).not.toBeNull();
+    expect(
+      current.view.dom.querySelector('[data-wb-decoration="flag"]'),
+    ).toBeNull();
+    expect(
+      current.view.dom.querySelector('[data-wb-decoration="expression"]'),
+    ).not.toBeNull();
     setCoworkEditorLens(current, "neutral");
-    expect(current.view.dom.querySelector(".wb-cowork-ledger-decoration")).toBeNull();
+    expect(
+      current.view.dom.querySelector(".wb-cowork-ledger-decoration"),
+    ).toBeNull();
     expect(current.getJSON()).toEqual(beforeJson);
     expect(current.state.selection.toJSON()).toEqual(beforeSelection);
   });
@@ -115,7 +128,9 @@ describe("CoworkLedgerDecorations", () => {
 
     expect(updateCount).toBe(0);
     expect(Y.encodeStateVector(collaborativeDocument)).toEqual(stateBefore);
-    expect(Y.encodeStateAsUpdate(collaborativeDocument)).toEqual(snapshotBefore);
+    expect(Y.encodeStateAsUpdate(collaborativeDocument)).toEqual(
+      snapshotBefore,
+    );
     expect(editor.view.dom).toHaveTextContent(
       "Canonical passageProposed passage.",
     );
@@ -126,9 +141,7 @@ describe("CoworkLedgerDecorations", () => {
   });
 
   it("renders edit proposals as view-only strike and replacement decorations", () => {
-    const current = mountEditor(
-      "<p>Keep this. Remove this. Change this.</p>",
-    );
+    const current = mountEditor("<p>Keep this. Remove this. Change this.</p>");
     const beforeJson = current.getJSON();
     const beforeHtml = current.getHTML();
 
@@ -172,9 +185,7 @@ describe("CoworkLedgerDecorations", () => {
     });
 
     expect(
-      current.view.dom.querySelector(
-        '[data-wb-anchor-id="delete-1"]',
-      ),
+      current.view.dom.querySelector('[data-wb-anchor-id="delete-1"]'),
     ).toHaveClass("wb-cowork-suggestion--deletion");
     expect(
       current.view.dom.querySelector(
@@ -182,9 +193,11 @@ describe("CoworkLedgerDecorations", () => {
       ),
     ).toHaveTextContent("Revise this");
     expect(
-      [...current.view.dom.querySelectorAll<HTMLElement>(
-        '[data-wb-anchor-id="insert-1"][data-wb-decoration="edit-proposal-replacement"]',
-      )].map((element) => element.textContent),
+      [
+        ...current.view.dom.querySelectorAll<HTMLElement>(
+          '[data-wb-anchor-id="insert-1"][data-wb-decoration="edit-proposal-replacement"]',
+        ),
+      ].map((element) => element.textContent),
     ).toEqual(["Please ", " now"]);
 
     focusCoworkLedgerAnchor(current, {
@@ -278,7 +291,7 @@ describe("CoworkLedgerDecorations", () => {
     expect(expression).toHaveAttribute("data-wb-expression-id", "expression-1");
 
     const claim = current.view.dom.querySelector<HTMLElement>(
-      '[data-wb-claim-ids]',
+      "[data-wb-claim-ids]",
     );
     expect(claim).toHaveAttribute("data-wb-claim-ids", '["same-id"]');
     expect(claim).toHaveClass("wb-cowork-claim-anchor");
@@ -314,7 +327,11 @@ describe("CoworkLedgerDecorations", () => {
       recordState: "recorded" as const,
     };
     projectCoworkLedgerDecorations(current, {
-      edits: [], flags: [], expressions: [], claims: [], provenance: [],
+      edits: [],
+      flags: [],
+      expressions: [],
+      claims: [],
+      provenance: [],
       provenanceOverlay: [
         {
           ...base,
@@ -356,6 +373,80 @@ describe("CoworkLedgerDecorations", () => {
     expect(gap).toHaveClass("wb-cowork-provenance--unrecorded");
     expect(gap).not.toHaveAttribute("data-wb-anchor-kind");
     expect(current.getJSON()).toEqual(before);
+  });
+
+  it("projects pending delivery on its exact range and lets a recorded server span win", () => {
+    const current = mountEditor("<p>Before Pending text after.</p>");
+    const anchor = {
+      exact: "Pending text",
+      prefix: "Before ",
+      suffix: " after.",
+    };
+    projectCoworkLedgerDecorations(current, {
+      edits: [],
+      flags: [],
+      expressions: [],
+      claims: [],
+      provenance: [],
+      provenanceOverlay: [],
+    });
+    setCoworkPendingProvenance(current, [
+      { captureId: "capture-1", quoteAnchor: anchor },
+    ]);
+    setCoworkEditorLens(current, "provenance");
+
+    const pending = current.view.dom.querySelector<HTMLElement>(
+      '[data-wb-provenance-record-state="pending"]',
+    );
+    expect(pending).toHaveTextContent("Pending text");
+    expect(pending).toHaveClass("wb-cowork-provenance--pending");
+    expect(pending).not.toHaveClass("wb-cowork-provenance--unknown");
+    expect(pending).not.toHaveAttribute("data-wb-anchor-kind");
+    expect(pending?.textContent).not.toContain("Before");
+    expect(pending?.textContent).not.toContain("after");
+
+    projectCoworkLedgerDecorations(current, {
+      edits: [],
+      flags: [],
+      expressions: [],
+      claims: [],
+      provenance: [],
+      provenanceOverlay: [
+        {
+          targetId: "recorded-target",
+          recordId: "recorded-attestation",
+          quoteAnchor: anchor,
+          isDocumentDefault: false,
+          authorship: "human",
+          reviewStatus: "not_applicable",
+          currentness: "current",
+          resolution: "resolved",
+          source: "direct_entry",
+          sourceDetail: "Input: keyboard",
+          contributors: "user-1",
+          reviewers: "No reviewers recorded",
+          attester: "user-1",
+          basis: "automatic_direct_entry_attribution",
+          historyCount: 1,
+          effectiveCount: 1,
+          recordState: "recorded",
+          authorshipFingerprint: "human:user-1",
+          reviewFingerprint: "not_applicable",
+          sourceFingerprint: "direct_entry",
+        },
+      ],
+    });
+
+    const recorded = current.view.dom.querySelector<HTMLElement>(
+      '[data-wb-provenance-record-state="recorded"]',
+    );
+    expect(recorded).toHaveTextContent("Pending text");
+    expect(recorded).toHaveAttribute("data-wb-authorship", "human");
+    expect(
+      current.view.dom.querySelector(
+        '[data-wb-provenance-record-state="pending"]',
+      ),
+    ).toBeNull();
   });
 
   it("keeps compatible overlap target health explicit and rejects changed selector context", () => {
@@ -467,16 +558,11 @@ describe("CoworkLedgerDecorations", () => {
     });
     setCoworkEditorLens(current, "truth");
 
-    focusCoworkLedgerAnchor(
-      current,
-      { id: "same-id", kind: "claim" },
-      true,
+    focusCoworkLedgerAnchor(current, { id: "same-id", kind: "claim" }, true);
+    expect(current.view.dom.querySelector("[data-wb-claim-ids]")).toHaveClass(
+      "wb-cowork-anchor--active",
+      "wb-cowork-anchor--flash",
     );
-    expect(
-      current.view.dom.querySelector(
-        "[data-wb-claim-ids]",
-      ),
-    ).toHaveClass("wb-cowork-anchor--active", "wb-cowork-anchor--flash");
     expect(
       current.view.dom.querySelector(
         '[data-wb-anchor-kind="proposal"][data-wb-anchor-id="same-id"]',

@@ -12,6 +12,7 @@ from work_buddy.cowork import (
     bootstrap,
     conversations,
     materialization,
+    provenance,
     reimport,
     retirement,
     sitting_lifecycle,
@@ -174,6 +175,31 @@ def test_sitting_prepare_is_pure_and_commit_is_atomic_and_idempotent(store_ctx):
     assert refreshed.ydoc_snapshot_sha256 == sha256_bytes(new_snapshot)
     assert refreshed.content_sha256 == sha256_bytes(rendered)
     assert (store_ctx["root"] / document.path).read_bytes() == rendered
+    initial_attestations = store.list_document_provenance_attestations(
+        document.id
+    )
+    assert len(initial_attestations) == 1
+    assert receipt["results"][0]["provenance_attestation_ids"] == [
+        initial_attestations[0].id
+    ]
+    pure_replacement = initial_attestations[0]
+    assert pure_replacement.authorship_kind == "ai"
+    assert pure_replacement.review_status == "not_reviewed"
+    with store._read_connection() as conn:
+        pure_replacement_span = store._get_document_span_locked(
+            conn,
+            pure_replacement.document_span_id,
+        )
+    assert pure_replacement_span is not None
+    assert pure_replacement_span.quote_exact == "Replacement sentence."
+    projected = provenance.project_attestations(
+        store,
+        document.id,
+        current_structured_head_sha256=receipt["structured_head_sha256"],
+    )
+    assert projected["spans"][0]["span"]["exact"] == (
+        "Replacement sentence."
+    )
 
     repeated, events = sitting_lifecycle.commit_sitting(
         store,
@@ -188,6 +214,358 @@ def test_sitting_prepare_is_pure_and_commit_is_atomic_and_idempotent(store_ctx):
     assert canonical_json(repeated) == canonical_json(receipt)
     assert events == receipt["post_commit_events"]
     assert _gesture_count(store) == 1
+    assert (
+        store.list_document_provenance_attestations(document.id)
+        == initial_attestations
+    )
+
+
+def test_confirmed_agent_insertion_records_only_new_text_in_provenance_get(
+    store_ctx,
+    client,
+):
+    store = store_ctx["store"]
+    document, _source, _old_snapshot = _ready(
+        store_ctx,
+        path="docs/proposal-provenance.md",
+        key="proposal-provenance-ready-0001",
+    )
+    old_head = ydoc_store.current_structured_head(
+        store,
+        document_id=document.id,
+        snapshot_sha256=document.ydoc_snapshot_sha256,
+    )
+    claim = store.propose_claim(
+        proposition="The inserted sentence demonstrates AI provenance.",
+        claim_kind="fact",
+        actor=AGENT,
+    ).claim
+    ai_text = "This sentence was generated to demonstrate AI provenance."
+    replacement = f"{ai_text}\n\nOriginal sentence."
+    proposal = proposals.propose_edit(
+        store,
+        document_id=document.id,
+        base_content_sha256=document.content_sha256,
+        base_structured_head_sha256=old_head,
+        selector=CompositeSelector(exact="Original sentence."),
+        quote_exact="Original sentence.",
+        replacement=replacement,
+        rationale="Demonstrate accepted AI-authored provenance.",
+        tldr="Insert an AI provenance demonstration.",
+        claim_refs=[{"claim": claim.id, "role": "instantiation"}],
+        actor=AGENT,
+    )
+    intent, created = sitting_lifecycle.prepare_sitting(
+        store,
+        document_id=document.id,
+        actor=HUMAN,
+        items=[
+            {
+                "proposal_id": proposal.id,
+                "verb": "confirm",
+                "canonical_sha256": proposal.canonical_sha256,
+            }
+        ],
+        expected_file_sha256=document.content_sha256,
+        expected_structured_head_sha256=old_head,
+        idempotency_key="proposal-provenance-sitting-0001",
+    )
+    assert created is True
+
+    rendered = f"# Lifecycle\n\n{replacement}\n".encode()
+    new_snapshot = b"YDOC:" + rendered
+    receipt, events = sitting_lifecycle.commit_sitting(
+        store,
+        document_id=document.id,
+        intent_id=intent.id,
+        actor=HUMAN,
+        snapshot=new_snapshot,
+        snapshot_sha256=sha256_bytes(new_snapshot),
+        rendered_markdown=rendered.decode(),
+        rendered_sha256=sha256_bytes(rendered),
+    )
+
+    result = receipt["results"][0]
+    assert result["result"] == "applied"
+    assert len(result["provenance_attestation_ids"]) == 1
+    assert any(
+        event["event_type"] == "truth.doc_provenance_attested"
+        for event in events
+    )
+    rows = store.list_document_provenance_attestations(document.id)
+    assert len(rows) == 1
+    attestation = rows[0]
+    assert attestation.id == result["provenance_attestation_ids"][0]
+    assert attestation.target_structured_head_sha256 == receipt[
+        "structured_head_sha256"
+    ]
+    assert attestation.authorship_kind == "ai"
+    assert attestation.review_status == "not_reviewed"
+    assert json.loads(attestation.human_reviewers_json) == []
+    assert attestation.source_kind == "proposal_acceptance"
+    assert attestation.basis_kind == "proposal_acceptance"
+    assert attestation.basis_ref == result["gesture_id"]
+    source = json.loads(attestation.source_json)
+    assert source["proposal_id"] == proposal.id
+    assert source["acceptance_gesture_id"] == result["gesture_id"]
+    assert source["producer"] == {
+        "kind": "agent_run",
+        "ref": AGENT.ref,
+        "model": "test-model",
+        "harness": "pytest",
+        "surface": "cowork",
+        "session_id": "session-1",
+    }
+
+    with store._read_connection() as conn:
+        exact_span = store._get_document_span_locked(
+            conn,
+            attestation.document_span_id,
+        )
+        expression_spans = conn.execute(
+            "SELECT s.quote_exact, s.author_kind, s.author_ref "
+            "FROM expressions e JOIN document_spans s "
+            "ON s.id = e.document_span_id"
+        ).fetchall()
+    assert exact_span is not None
+    assert exact_span.quote_exact == ai_text
+    assert exact_span.author_kind == "agent_run"
+    assert exact_span.author_ref == AGENT.ref
+    # The expression may cover the complete accepted passage, but the
+    # preserved original is never exposed as wholly AI-authored provenance.
+    assert [dict(row) for row in expression_spans] == [
+        {
+            "quote_exact": replacement,
+            "author_kind": "unknown",
+            "author_ref": None,
+        }
+    ]
+
+    response = client.get(
+        f"/api/truth/doc/{document.id}?store_id={store.store_id}"
+    )
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["provenance"]["summary"]["ai_unreviewed_count"] == 1
+    assert len(payload["provenance"]["spans"]) == 1
+    target = payload["provenance"]["spans"][0]
+    assert target["target"]["currentness"] == "current"
+    assert target["span"]["exact"] == ai_text
+    assert target["effective_attestation"]["attestation_id"] == attestation.id
+    assert target["effective_attestation"]["authorship"] == {
+        "kind": "ai",
+        "contributors": [],
+    }
+    assert target["effective_attestation"]["human_review"] == {
+        "status": "not_reviewed",
+        "reviewers": [],
+    }
+    legacy_quotes = {
+        entry["quote"] for entry in payload["provenance_spans"]
+    }
+    assert legacy_quotes == {ai_text}
+
+
+def test_confirmed_sandwich_insertion_records_two_ai_only_segments(store_ctx):
+    store = store_ctx["store"]
+    document, _source, _old_snapshot = _ready(
+        store_ctx,
+        path="docs/sandwich-proposal-provenance.md",
+        key="sandwich-proposal-provenance-ready-0001",
+    )
+    old_head = ydoc_store.current_structured_head(
+        store,
+        document_id=document.id,
+        snapshot_sha256=document.ydoc_snapshot_sha256,
+    )
+    prefix = "AI-authored preface."
+    suffix = "AI-authored follow-up."
+    replacement = f"{prefix}\n\nOriginal sentence.\n\n{suffix}"
+    proposal = _proposal(
+        store,
+        document,
+        old_head,
+        replacement=replacement,
+    )
+    intent, _created = sitting_lifecycle.prepare_sitting(
+        store,
+        document_id=document.id,
+        actor=HUMAN,
+        items=[
+            {
+                "proposal_id": proposal.id,
+                "verb": "confirm",
+                "canonical_sha256": proposal.canonical_sha256,
+            }
+        ],
+        expected_file_sha256=document.content_sha256,
+        expected_structured_head_sha256=old_head,
+        idempotency_key="sandwich-proposal-provenance-sitting-0001",
+    )
+    rendered = f"# Lifecycle\n\n{replacement}\n".encode()
+    new_snapshot = b"YDOC:" + rendered
+    receipt, _events = sitting_lifecycle.commit_sitting(
+        store,
+        document_id=document.id,
+        intent_id=intent.id,
+        actor=HUMAN,
+        snapshot=new_snapshot,
+        snapshot_sha256=sha256_bytes(new_snapshot),
+        rendered_markdown=rendered.decode(),
+        rendered_sha256=sha256_bytes(rendered),
+    )
+
+    result = receipt["results"][0]
+    rows = store.list_document_provenance_attestations(document.id)
+    assert result["provenance_attestation_ids"] == [row.id for row in rows]
+    assert len(rows) == 2
+    assert {
+        row.target_structured_head_sha256 for row in rows
+    } == {receipt["structured_head_sha256"]}
+    assert {row.basis_ref for row in rows} == {result["gesture_id"]}
+    assert [
+        json.loads(row.source_json)["segment_index"] for row in rows
+    ] == [0, 1]
+    assert {
+        json.loads(row.source_json)["segment_count"] for row in rows
+    } == {2}
+    with store._read_connection() as conn:
+        exacts = [
+            store._get_document_span_locked(conn, row.document_span_id).quote_exact
+            for row in rows
+        ]
+    assert exacts == [prefix, suffix]
+    assert "Original sentence." not in exacts
+
+    projected = provenance.project_attestations(
+        store,
+        document.id,
+        current_structured_head_sha256=receipt["structured_head_sha256"],
+    )
+    projected_segments = sorted(
+        projected["spans"],
+        key=lambda target: target["effective_attestation"]["source"][
+            "segment_index"
+        ],
+    )
+    assert [target["span"]["exact"] for target in projected_segments] == [
+        prefix,
+        suffix,
+    ]
+
+
+def test_edit_confirm_human_amendment_does_not_claim_ai_authorship(store_ctx):
+    store = store_ctx["store"]
+    document, _source, _old_snapshot = _ready(
+        store_ctx,
+        path="docs/amended-proposal-provenance.md",
+        key="amended-proposal-provenance-ready-0001",
+    )
+    old_head = ydoc_store.current_structured_head(
+        store,
+        document_id=document.id,
+        snapshot_sha256=document.ydoc_snapshot_sha256,
+    )
+    proposal = _proposal(store, document, old_head)
+    human_amendment = "The human supplied this final sentence."
+    intent, _created = sitting_lifecycle.prepare_sitting(
+        store,
+        document_id=document.id,
+        actor=HUMAN,
+        items=[
+            {
+                "proposal_id": proposal.id,
+                "verb": "edit_confirm",
+                "canonical_sha256": proposal.canonical_sha256,
+                "amend_content": human_amendment,
+            }
+        ],
+        expected_file_sha256=document.content_sha256,
+        expected_structured_head_sha256=old_head,
+        idempotency_key="amended-proposal-provenance-sitting-0001",
+    )
+    rendered = f"# Lifecycle\n\n{human_amendment}\n".encode()
+    new_snapshot = b"YDOC:" + rendered
+    receipt, _events = sitting_lifecycle.commit_sitting(
+        store,
+        document_id=document.id,
+        intent_id=intent.id,
+        actor=HUMAN,
+        snapshot=new_snapshot,
+        snapshot_sha256=sha256_bytes(new_snapshot),
+        rendered_markdown=rendered.decode(),
+        rendered_sha256=sha256_bytes(rendered),
+    )
+
+    result = receipt["results"][0]
+    assert result["result"] == "applied"
+    assert "provenance_attestation_ids" not in result
+    assert store.list_document_provenance_attestations(document.id) == ()
+
+
+def test_ambiguous_preserved_quote_rolls_back_acceptance_and_provenance(
+    store_ctx,
+):
+    store = store_ctx["store"]
+    document, source, old_snapshot = _ready(
+        store_ctx,
+        path="docs/ambiguous-proposal-provenance.md",
+        key="ambiguous-proposal-provenance-ready-0001",
+    )
+    old_head = ydoc_store.current_structured_head(
+        store,
+        document_id=document.id,
+        snapshot_sha256=document.ydoc_snapshot_sha256,
+    )
+    replacement = (
+        "AI preface. Original sentence. AI bridge. Original sentence."
+    )
+    proposal = _proposal(
+        store,
+        document,
+        old_head,
+        replacement=replacement,
+    )
+    intent, _created = sitting_lifecycle.prepare_sitting(
+        store,
+        document_id=document.id,
+        actor=HUMAN,
+        items=[
+            {
+                "proposal_id": proposal.id,
+                "verb": "confirm",
+                "canonical_sha256": proposal.canonical_sha256,
+            }
+        ],
+        expected_file_sha256=document.content_sha256,
+        expected_structured_head_sha256=old_head,
+        idempotency_key="ambiguous-proposal-provenance-sitting-0001",
+    )
+    rendered = f"# Lifecycle\n\n{replacement}\n".encode()
+    new_snapshot = b"YDOC:" + rendered
+
+    with pytest.raises(
+        sitting_lifecycle.SittingError,
+        match="cannot be identified without guessing",
+    ) as failure:
+        sitting_lifecycle.commit_sitting(
+            store,
+            document_id=document.id,
+            intent_id=intent.id,
+            actor=HUMAN,
+            snapshot=new_snapshot,
+            snapshot_sha256=sha256_bytes(new_snapshot),
+            rendered_markdown=rendered.decode(),
+            rendered_sha256=sha256_bytes(rendered),
+        )
+
+    assert failure.value.code == "proposal_provenance_unsafe"
+    assert proposals.latest_proposal_status(store, proposal.id).status == "open"
+    assert _gesture_count(store) == 0
+    assert store.list_document_provenance_attestations(document.id) == ()
+    refreshed = documents.get_document(store, document.id)
+    assert refreshed.ydoc_snapshot_sha256 == sha256_bytes(old_snapshot)
+    assert (store_ctx["root"] / document.path).read_bytes() == source
 
 
 def test_detached_sitting_replaces_exact_durable_update_tail(store_ctx):

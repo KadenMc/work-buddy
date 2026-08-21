@@ -42,6 +42,7 @@ export {
   type CoworkPasteAnchorResolution,
   type CoworkDirectEntryCapture,
   type CoworkPasteCapture,
+  type CoworkPasteProvenanceReceipt,
   type CoworkPasteProvenanceRecorder,
   type CoworkPasteProvenanceRequest,
   type CoworkPasteRange,

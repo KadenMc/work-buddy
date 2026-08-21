@@ -2,9 +2,10 @@
 
 **Parent contract:** [README.md](README.md)
 
-**Delivery status:** implemented as an end-to-end provenance lens plus a
-follow-up direct-entry and selection-repair slice. Backend, durable input
-delivery, and frontend checkpoints remain independently testable. This plan
+**Delivery status:** implemented as an end-to-end provenance lens plus
+direct-entry capture, pending-delivery presentation, selection repair, and
+accepted-agent-proposal attribution. Backend, durable input delivery, sitting
+integration, and frontend checkpoints remain independently testable. This plan
 records the as-built boundary; the follow-ons under **Deferred** have not
 shipped.
 
@@ -26,6 +27,11 @@ shipped.
   coverage-aware provenance selection action.
 - [x] Record accessibility, narrow-layout, focus, scroll, loading, error, and
   read-only behavior.
+- [x] Present an exact local direct-entry capture as **Recording provenance…**
+  without inventing authorship or review while the ledger receipt is pending.
+- [x] Integrate accepted agent proposals into the detailed provenance ledger
+  transactionally, without treating acceptance as human review or relabeling
+  preserved original text.
 
 ### 1. Authoritative backend projection
 
@@ -112,6 +118,38 @@ append or an idempotent replay returns the portable superseding attestation;
 the client does not clear the retry key until a forced authoritative refresh
 actually contains the reviewed successor.
 
+### 2a. Accepted agent-proposal attribution
+
+Integrate accepted edit proposals into the same detailed span ledger rather
+than relying on the proposal row or an expression span as an implicit
+authorship claim. For each applied `confirm` decision on an agent-run proposal,
+the sitting commit callback:
+
+1. verifies the consumed human gesture matches the immutable proposal and its
+   applied status;
+2. validates the proposal's producing agent-run reference and producer
+   metadata;
+3. derives only text introduced by the accepted replacement: the whole
+   replacement when it does not preserve the original quote, or the
+   non-whitespace segments surrounding one uniquely preserved original quote;
+4. proves each derived exact selector resolves uniquely in the committed
+   rendered projection;
+5. appends one exact-span attestation per attributable segment with
+   `authorship=ai`, `human_review=not_reviewed`, and
+   `source`/`basis=proposal_acceptance`;
+6. binds source detail to the proposal and replacement digests, consumed
+   acceptance gesture, producing run, and segment index/count; and
+7. returns the attestation IDs in the sitting receipt and emits normal
+   provenance invalidation events.
+
+The accepting human is the attester but is not recorded as a reviewer merely
+for accepting the edit. Deletions add no text span. A repeated preserved quote,
+invalid anchor or producer metadata, mismatched gesture/status, or ambiguous
+committed selector raises `proposal_provenance_unsafe`. Because this work runs
+inside the materialization commit callback, that failure rolls back the
+document materialization, proposal status, gesture consumption, sitting
+receipt, and every provenance row together.
+
 ### 3. Frontend contracts and projection
 
 - Extend the typed document payload to retain rich attestations/effective
@@ -128,6 +166,13 @@ actually contains the reviewed successor.
   head matches the current head.
 - Compute uncovered text-node ranges as `unrecorded`; never infer human
   authorship from the absence of a span.
+- Project uniquely resolved browser-local direct-entry captures as a distinct
+  `pending` delivery state over their exact ranges. Do not attach provisional
+  authorship/review semantics, and let authoritative server coverage win any
+  overlap before local outbox cleanup finishes.
+- Retain the exact frozen request and pending treatment until a fresh history
+  entry matches the receipt's attestation ID, document-span ID, and structured
+  head. Missing, stale, misbound, or failed refreshes remain retryable.
 - Apply explicit spans over current document-level fallback; combine compatible
   peer-span overlap and project incompatible peer-span overlap as conflict.
 - Treat an unsynchronized local-human edit as immediate head invalidation:
@@ -157,6 +202,9 @@ actually contains the reviewed successor.
   `capturing` row after a crash, but never overwrite a ready or frozen request.
 - Flush Yjs, freeze the exact head and selector, require a unique server-bound
   span, and retain the immutable request through ambiguous transport.
+- Feed current `direct_entry` captures from both the durable outbox and
+  mounted-page volatile recovery state into the editor's local pending
+  projection; update the open burst before the edited frame paints.
 - Let explicit selection repair use `source=legacy` and
   `basis=user_attestation`; never relabel pre-existing uncovered text as recent
   direct entry.
@@ -172,9 +220,15 @@ actually contains the reviewed successor.
   ownership.
 - Apply independent authorship and review classes/data attributes plus issue
   treatment. Decorations are view-only and excluded from serialized content.
+- Give pending delivery its own informational treatment and
+  `recordState=pending`, without applying unknown-authorship or unknown-review
+  styling. Only a uniquely resolved exact local capture is paintable.
 - Expose compact hover/focus metadata through a clamped, dismissible card.
 - Make hover passive and action-free. It points people to Provenance for stable
   details; it never performs navigation or mutation itself.
+- For pending delivery, replace the normal facts grid with **Recording
+  provenance…** and a statement that authorship and review await the server
+  receipt; do not expose placeholder facts as assertions.
 - Suppress the generic **Give feedback** selection affordance whenever the
   Provenance lens owns the editor. Show one coverage-aware action instead:
   Record, Review provenance, View, or Inspect. Review provenance routes to stable detail
@@ -202,6 +256,10 @@ actually contains the reviewed successor.
   which are not currently eligible. Give zero-record text one useful empty
   state that explains new typing is automatic and existing text can be selected
   for an explicit determination.
+- While any local direct-entry capture is pending, show a polite
+  **Recording provenance for recent typing…** status, report unrecorded summary
+  state as **Updating…**, and suppress definitive zero/unrecorded copy for that
+  pending interval.
 - On success, retain geometry while repulling; on failure, retain the previous
   projection and give a typed recovery path.
 - Ensure all four tabs and every action remain usable in narrow layout, at 200%
@@ -224,16 +282,17 @@ actually contains the reviewed successor.
 | Layer | Required cases |
 |---|---|
 | Provenance model | effective leaf; linear supersession; existing fork surfaced; source/authorship preserved; reviewer/attester independent; strict source/basis pairing; schema v9→v10 lineage preservation |
+| Proposal acceptance | agent-run producer validation; AI/not-reviewed semantics; acceptance distinct from review; proposal/replacement/gesture/run linkage; exact replacement; insertion before/after preserved original; whitespace trimming; deletion; repeated original; ambiguous selector; transaction rollback; idempotent segments |
 | Review route | success; idempotent replay; idempotency mismatch; wrong document/target; already superseded; stale head; retired/read-only; missing CSRF/session/gesture; actor change |
 | Read projection | document target at matching head; document target after head drift; span selector payload; append history; malformed/conflicting records preserved as issue |
 | Span resolution | unique exact/prefix/suffix; missing; ambiguous repeated quote; compatible overlap; incompatible overlap; Unicode and block boundaries |
 | Coverage | all text covered; partially covered complement; entirely unrecorded; empty document; version baseline plus span refinement; stale version never covers new text; local edit immediately withholds old fallback |
-| Decoration | lens exclusivity; authorship classes; independent review classes; issue override; non-color attributes; no serialization/undo/selection/scroll mutation |
-| Hover | pointer and editor caret/focus open; Escape/departure/lens/doc change close; viewport clamp; complete labels; no actions |
-| Panel | summary/filter/list/inline detail/target history/complete document history; passive row focus; explicit one-shot Show in document; unresolved no-scroll; expanding detail preserves list scroll; background refresh geometry; loading/error/empty/read-only |
+| Decoration | lens exclusivity; authorship classes; independent review classes; exact pending range; pending carries no authorship/review classes; authoritative span wins pending overlap; issue override; non-color attributes; no serialization/undo/selection/scroll mutation |
+| Hover | pointer and editor caret/focus open; Escape/departure/lens/doc change close; viewport clamp; complete labels; pending-delivery copy without placeholder assertions; authoritative replacement in place; no actions |
+| Panel | summary/filter/list/inline detail/target history/complete document history; pending banner and Updating summary; pending suppresses definitive unrecorded copy; passive row focus; explicit one-shot Show in document; unresolved no-scroll; expanding detail preserves list scroll; background refresh geometry; loading/error/empty/read-only |
 | Rail | four-tab roving focus; Home/End; persisted pane; independent pane scroll; narrow-width reachability; Chat remains neutral |
 | Action UI | editor persistence lock; forced fresh preflight; fresh-head/leaf/anchor/peer-conflict recheck; eligibility; pending dedupe; stable idempotency key across ambiguous refresh; successful authoritative repull; typed stale/actor/idempotency recovery; AI remains AI after review |
-| Direct entry | one `Test` burst; idle/lens/blur close; backspace/correction; full deletion; cursor/block split; paste/drop/history/remote/format exclusion; disjoint-range rejection; capture-time actor retention; missing identity; crash after staged update; unmount/reopen; frozen request replay |
+| Direct entry | one `Test` burst; idle/lens/blur close; backspace/correction; full deletion; cursor/block split; paste/drop/history/remote/format exclusion; disjoint-range rejection; capture-time actor retention; missing identity; crash after staged update; unmount/reopen; frozen request replay; delayed recorder remains pending until receipt |
 | Selection UX | uncovered Record; exact eligible Review provenance routing; healthy View; stale/multiple/conflict Inspect; no Give feedback; manual legacy determination; narrow editor-pane reachability |
 | Regression | Review/Truth/Chat lenses; temporary highlights; proposal and claim navigation; content-input provenance outbox; Yjs persistence; production build and type-check |
 | Accessibility | state names without color; forced-colors; visible focus; keyboard-only detail/action; touch path; 200% zoom; reduced motion |
@@ -309,6 +368,26 @@ is first durable in Yjs, one exact `direct_entry` span is appended at the same
 head with human authorship and review not applicable, the provider refreshes,
 and the passage no longer appears as unrecorded. Backspace and correction update
 that same burst; deleting it completely leaves no attestation.
+
+### Pending delivery is not unrecorded
+
+Given a delayed direct-entry recorder, when the user types a uniquely anchored
+passage and opens Provenance before the server receipt, then only that exact
+passage shows **Recording provenance…**, hover and panel make no provisional
+authorship or review assertion, and definitive unrecorded copy is suppressed.
+When the authoritative span arrives it replaces pending treatment in place,
+even if local outbox cleanup is still finishing.
+
+### Accepted agent edit records its own text
+
+Given an agent-run proposal whose replacement inserts a generated sentence
+before one preserved original quote, when the enrolled user confirms the exact
+proposal and the sitting commits, then the inserted sentence receives an exact
+AI-authored, not-reviewed attestation with
+`source`/`basis=proposal_acceptance`, the producing run and consumed human
+gesture remain linked, and the preserved quote keeps its prior provenance.
+If the attributable segment cannot be derived and resolved without guessing,
+the sitting and document change do not commit.
 
 ### Existing uncovered text is repaired honestly
 
