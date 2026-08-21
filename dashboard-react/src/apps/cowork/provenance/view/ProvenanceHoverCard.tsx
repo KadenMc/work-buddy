@@ -57,11 +57,14 @@ export function ProvenanceHoverCard({
       setHover(null);
       return undefined;
     }
+    let hoveredDecoration: HTMLElement | null = null;
+    let pointerPosition: { readonly x: number; readonly y: number } | null = null;
     const showElement = (target: Element | null): void => {
       // A deliberate text selection owns the contextual UI. Mouse-dragging a
       // decorated passage first fires pointerover, so without this guard the
       // passive card remains above and completely covers the selection action.
       if (expandedSelectionTouches(root)) {
+        hoveredDecoration = null;
         setHover(null);
         return;
       }
@@ -69,9 +72,11 @@ export function ProvenanceHoverCard({
         "[data-wb-decoration='provenance-overlay']",
       ) ?? null;
       if (element === null || !root.contains(element)) {
+        hoveredDecoration = null;
         setHover(null);
         return;
       }
+      hoveredDecoration = element;
       const rect = element.getBoundingClientRect();
       setHover({
         left: Math.max(8, rect.left),
@@ -94,7 +99,17 @@ export function ProvenanceHoverCard({
       });
     };
     const show = (event: Event): void => {
+      if ("clientX" in event && "clientY" in event) {
+        const x = Number(event.clientX);
+        const y = Number(event.clientY);
+        if (Number.isFinite(x) && Number.isFinite(y)) {
+          pointerPosition = { x, y };
+        }
+      }
       showElement(event.target instanceof Element ? event.target : null);
+    };
+    const trackPointer = (event: PointerEvent): void => {
+      pointerPosition = { x: event.clientX, y: event.clientY };
     };
     const showSelection = (): void => {
       if (expandedSelectionTouches(root)) {
@@ -109,9 +124,45 @@ export function ProvenanceHoverCard({
     };
     const hide = (event: Event): void => {
       if (event instanceof FocusEvent && event.relatedTarget instanceof Node && root.contains(event.relatedTarget)) return;
+      hoveredDecoration = null;
+      pointerPosition = null;
       setHover(null);
     };
+    const refreshHoveredDecoration = (): void => {
+      if (hoveredDecoration === null) return;
+      if (hoveredDecoration.isConnected && root.contains(hoveredDecoration)) {
+        showElement(hoveredDecoration);
+        return;
+      }
+      const pointed =
+        pointerPosition === null || typeof document.elementFromPoint !== "function"
+          ? null
+          : document.elementFromPoint(pointerPosition.x, pointerPosition.y);
+      showElement(pointed);
+    };
+    const observer = new MutationObserver(refreshHoveredDecoration);
+    observer.observe(root, {
+      attributes: true,
+      childList: true,
+      subtree: true,
+      attributeFilter: [
+        "data-wb-decoration",
+        "data-wb-authorship",
+        "data-wb-human-review",
+        "data-wb-source",
+        "data-wb-source-detail",
+        "data-wb-contributors",
+        "data-wb-reviewers",
+        "data-wb-attester",
+        "data-wb-basis",
+        "data-wb-history-count",
+        "data-wb-provenance-conflict",
+        "data-wb-provenance-record-state",
+        "data-wb-provenance-currentness",
+      ],
+    });
     root.addEventListener("pointerover", show);
+    root.addEventListener("pointermove", trackPointer);
     root.addEventListener("focusin", show);
     root.addEventListener("pointerleave", hide);
     root.addEventListener("focusout", hide);
@@ -121,7 +172,9 @@ export function ProvenanceHoverCard({
     document.addEventListener("keydown", escape);
     document.addEventListener("selectionchange", showSelection);
     return () => {
+      observer.disconnect();
       root.removeEventListener("pointerover", show);
+      root.removeEventListener("pointermove", trackPointer);
       root.removeEventListener("focusin", show);
       root.removeEventListener("pointerleave", hide);
       root.removeEventListener("focusout", hide);

@@ -1,5 +1,5 @@
 import { createRef } from "react";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { ProvenanceHoverCard } from "./ProvenanceHoverCard";
@@ -59,6 +59,52 @@ describe("ProvenanceHoverCard", () => {
     fireEvent.pointerOver(passage);
 
     expect(screen.getByRole("tooltip")).toHaveTextContent("mixed authorship");
+    root.remove();
+  });
+
+  it("refreshes an open card when an asynchronous projection replaces the hovered decoration", async () => {
+    const root = document.createElement("div");
+    const unrecorded = document.createElement("span");
+    unrecorded.dataset.wbDecoration = "provenance-overlay";
+    unrecorded.dataset.wbAuthorship = "unknown";
+    unrecorded.dataset.wbSource = "unrecorded";
+    unrecorded.dataset.wbProvenanceRecordState = "unrecorded";
+    root.append(unrecorded);
+    document.body.append(root);
+    const ref = createRef<HTMLElement>();
+    ref.current = root;
+    render(<ProvenanceHoverCard rootRef={ref} active editorReady />);
+
+    fireEvent.pointerOver(unrecorded, { clientX: 20, clientY: 20 });
+    expect(screen.getByRole("tooltip")).toHaveTextContent(
+      "No provenance recorded",
+    );
+
+    const recorded = document.createElement("span");
+    recorded.dataset.wbDecoration = "provenance-overlay";
+    recorded.dataset.wbAuthorship = "human";
+    recorded.dataset.wbHumanReview = "not_applicable";
+    recorded.dataset.wbSource = "direct_entry";
+    recorded.dataset.wbSourceDetail = "plain text";
+    recorded.dataset.wbProvenanceRecordState = "recorded";
+    recorded.dataset.wbProvenanceCurrentness = "current";
+    const originalElementFromPoint = document.elementFromPoint;
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: () => recorded,
+    });
+    unrecorded.replaceWith(recorded);
+
+    await waitFor(() => {
+      expect(screen.getByRole("tooltip")).toHaveTextContent("human authorship");
+      expect(screen.getByRole("tooltip")).toHaveTextContent(
+        "direct entry · plain text",
+      );
+    });
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: originalElementFromPoint,
+    });
     root.remove();
   });
 
