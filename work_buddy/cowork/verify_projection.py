@@ -47,11 +47,20 @@ _DISPOSITION_VIEW = {
 def _current_head(store: TruthStore, document: DocumentRecord) -> str | None:
     if document.ydoc_snapshot_sha256 is None:
         return None
-    return ydoc_store.current_structured_head(
-        store,
-        document_id=document.id,
-        snapshot_sha256=document.ydoc_snapshot_sha256,
-    )
+    try:
+        return ydoc_store.current_structured_head(
+            store,
+            document_id=document.id,
+            snapshot_sha256=document.ydoc_snapshot_sha256,
+        )
+    except ydoc_store.CompactionRecoveryRequired:
+        # A client compaction publishes a short-lived recovery marker before
+        # advancing the durable snapshot pointer and rotating the update log.
+        # Readiness projects that boundary as ``recovery_required``.  Verify is
+        # an additive read projection, so it must preserve the typed document
+        # response and conservatively mark recorded results non-current rather
+        # than turn the whole R2 read into a transient 500.
+        return None
 
 
 def _quote_anchor(evidence: object) -> dict[str, str] | None:

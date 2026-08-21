@@ -1412,8 +1412,19 @@ function MountedBridgeEditor({
     setCoworkPendingProvenance(editor, pendingDirectEntryDecorations);
   }, [editor, pendingDirectEntryDecorations]);
 
-  const dismissedPasteEntries = pasteEntries.filter(
-    (entry) => entry.sourceKind === "paste" && dismissedPasteIds.has(entry.id),
+  const manualRecordEntryIds = new Set(manualRecordEntryRef.current.values());
+  const isDirectEntryRecovery = (
+    entry: CoworkPasteProvenanceOutboxEntry,
+  ): boolean =>
+    entry.sourceKind === "legacy" &&
+    entry.status === "awaiting_determination" &&
+    entry.requiresExplicitDetermination === true &&
+    entry.failure?.code === "provenance_actor_unavailable_at_capture" &&
+    !manualRecordEntryIds.has(entry.id);
+  const dismissedDeterminationEntries = pasteEntries.filter(
+    (entry) =>
+      dismissedPasteIds.has(entry.id) &&
+      (entry.sourceKind === "paste" || isDirectEntryRecovery(entry)),
   );
   const visiblePasteEntry =
     pasteEntries.find(
@@ -1422,7 +1433,14 @@ function MountedBridgeEditor({
         entry.sourceKind === "paste" &&
         entry.status !== "capturing" &&
         (entry.substantial || entry.status !== "ready"),
-    ) ?? null;
+    ) ??
+    pasteEntries.find(
+      (entry) =>
+        !dismissedPasteIds.has(entry.id) && isDirectEntryRecovery(entry),
+    ) ??
+    null;
+  const visibleDirectEntryRecovery =
+    visiblePasteEntry !== null && isDirectEntryRecovery(visiblePasteEntry);
   const visiblePasteActorChanged =
     visiblePasteEntry?.failure?.code === COWORK_PROVENANCE_ACTOR_CHANGED;
   const visiblePasteRequiresExplicitDetermination =
@@ -1886,21 +1904,22 @@ function MountedBridgeEditor({
           </Button>
         </InlineAlert>
       ) : null}
-      {dismissedPasteEntries.length > 0 && visiblePasteEntry === null ? (
+      {dismissedDeterminationEntries.length > 0 &&
+      visiblePasteEntry === null ? (
         <InlineAlert tone="info" role="status">
           <span>
-            {String(dismissedPasteEntries.length)} paste{" "}
-            {dismissedPasteEntries.length === 1
-              ? "attribution is"
-              : "attributions are"}{" "}
-            waiting.
+            {String(dismissedDeterminationEntries.length)} pending{" "}
+            {dismissedDeterminationEntries.length === 1
+              ? "attribution needs"
+              : "attributions need"}{" "}
+            your decision.
           </span>
           <Button
             size="small"
             onClick={() =>
               setDismissedPasteIds((current) => {
                 const next = new Set(current);
-                const first = dismissedPasteEntries[0]?.id;
+                const first = dismissedDeterminationEntries[0]?.id;
                 if (first !== undefined) next.delete(first);
                 return next;
               })
@@ -1944,7 +1963,15 @@ function MountedBridgeEditor({
           key={`${String(visiblePasteEntry.id)}:${resolvedProvenanceActor.identity_status}:${resolvedProvenanceActor.ref}`}
           value={visiblePasteEntry.determination}
           currentUserIdentity={resolvedProvenanceActor}
+          title={
+            visibleDirectEntryRecovery
+              ? "Recent typing needs attribution"
+              : undefined
+          }
           passageExcerpt={visiblePasteEntry.passageExcerpt}
+          passageLabel={
+            visibleDirectEntryRecovery ? "Recent passage" : undefined
+          }
           busy={busyPasteIds.has(visiblePasteEntry.id)}
           formDisabled={
             visiblePasteEntry.frozenRequest !== undefined &&
@@ -1963,12 +1990,16 @@ function MountedBridgeEditor({
                     : null
           }
           description={
-            pasteEntries.length > 1
+            visibleDirectEntryRecovery
+              ? "Choose who created this passage and, if AI contributed, whether a person reviewed it."
+              : pasteEntries.length > 1
               ? `Record its authorship and review status. ${String(pasteEntries.length - 1)} more pasted ${pasteEntries.length === 2 ? "passage is" : "passages are"} waiting.`
               : undefined
           }
           confirmLabel={
-            visiblePasteActorChanged
+            visibleDirectEntryRecovery
+              ? "Confirm attribution"
+              : visiblePasteActorChanged
               ? "Confirm attribution"
               : visiblePasteEntry.status === "stale_target"
                 ? "Save against current version"
@@ -1979,6 +2010,7 @@ function MountedBridgeEditor({
                     : undefined
           }
           cancelLabel={
+            visibleDirectEntryRecovery ||
             visiblePasteRequiresExplicitDetermination ||
             visiblePasteEntry.status === "stale_target" ||
             visiblePasteEntry.status === "terminal_failure"
@@ -1991,6 +2023,7 @@ function MountedBridgeEditor({
           onConfirm={(value) => settlePasteEntry(visiblePasteEntry, value)}
           onClose={() => {
             if (
+              visibleDirectEntryRecovery ||
               visiblePasteRequiresExplicitDetermination ||
               visiblePasteEntry.status === "stale_target" ||
               visiblePasteEntry.status === "terminal_failure"

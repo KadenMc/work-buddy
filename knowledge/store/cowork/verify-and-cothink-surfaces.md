@@ -105,6 +105,14 @@ authoritative read into:
 Configuration and item mutations invalidate the provider. Truth SSE events are
 also invalidation nudges; they never replace the authoritative repull.
 
+During the short-lived marker boundary of a client compaction, this read stays
+available rather than turning the entire document projection into a transient
+server error. It reports `initialization_state=recovery_required`,
+`disabled_reason=compaction_recovery_required`, and no current structured head;
+Verify is disabled until recovery completes. Durable run, result, and Co-think
+history remains readable, but every frozen item is conservatively projected as
+not current until the authoritative head can be read again.
+
 The run-detail HTTP read adds the content-minimized coordination lifecycle,
 request bindings, candidate-proof lineage, and consequence references used by
 inspection. It never returns raw worker output or private candidate prose.

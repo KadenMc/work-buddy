@@ -1453,7 +1453,12 @@ export class DurableCoworkPasteProvenanceOutbox implements CoworkPasteProvenance
         ...entry,
         determination,
         failure:
-          entry.failure?.code === COWORK_PROVENANCE_ACTOR_CHANGED
+          entry.failure?.code === COWORK_PROVENANCE_ACTOR_CHANGED ||
+          (entry.sourceKind === "legacy" &&
+            entry.status === "awaiting_determination" &&
+            entry.requiresExplicitDetermination === true &&
+            entry.failure?.code ===
+              "provenance_actor_unavailable_at_capture")
             ? entry.failure
             : undefined,
       };

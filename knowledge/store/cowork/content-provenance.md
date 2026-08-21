@@ -6,7 +6,8 @@ summary: >-
   Provenance is a first-class Co-work rail and view-only editor lens for source,
   authorship, human-review, attester, and basis records. File import targets an
   immutable document version; local direct entry and text-bearing paste target
-  exact spans, with direct entry shown as pending delivery before its receipt.
+  exact spans, with direct entry shown as pending delivery before its receipt
+  and actorless captures retained for explicit attribution after recovery.
   Accepted agent proposals transactionally attribute only replacement text to
   the producing run. A human review action appends a user-attested superseding
   record while preserving source and authorship. Attestations report what a
@@ -237,13 +238,18 @@ Typing observed without a capture-time actor, or whose actor changes before
 the automatic request can be frozen, is not discarded. Its exact selector
 stays durable in the document outbox as `source=legacy`,
 `basis=user_attestation`, and `status=awaiting_determination`, with no actor
-attached. After a trusted identity session is available, selecting that same
-passage reuses the pending row and asks for an explicit attribution; it never
-creates an overlapping automatic claim. A later actor is never retroactively
-claimed as the author. Conversely, when a capture already has an immutable
-actor and only the current browser session is temporarily unavailable, the
-actor-bound capture remains pending for trusted session recovery rather than
-being downgraded or dropped.
+attached. After a trusted identity session is available, Co-work surfaces
+**Recent typing needs attribution** and requires the user to choose authorship
+and review explicitly. **Keep for later** closes the prompt without deleting or
+duplicating the durable row, and **Review pending attribution** reopens it.
+Reloading must rediscover the same recovery row even after an in-progress form
+edit. Selecting that same exact passage through the manual action also reuses
+the row rather than creating an overlapping claim. A later actor is never
+retroactively claimed as the author merely because identity recovered; that
+actor supplies the explicit attestation. Conversely, when a capture already
+has an immutable actor and only the current browser session is temporarily
+unavailable, the actor-bound capture remains pending for trusted session
+recovery rather than being downgraded or dropped.
 
 The synchronous recovery journal retains the newest coalesced burst over an
 older unfrozen `capturing` row. It never overwrites a ready or frozen request.

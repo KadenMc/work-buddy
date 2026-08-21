@@ -241,6 +241,48 @@ def test_get_returns_open_proposals_and_hashes(client, seeded, make_proposal):
     assert entry["kind"] == "edit"
 
 
+def test_get_projects_compaction_boundary_as_typed_recovery_state(
+    client,
+    seeded,
+):
+    store = seeded["store"]
+    document = seeded["document"]
+    current_head = ydoc_store.current_structured_head(
+        store,
+        document_id=document.id,
+        snapshot_sha256=document.ydoc_snapshot_sha256,
+    )
+    replacement_snapshot = b"YDOC-COMPACTION-IN-FLIGHT"
+    with ydoc_store.document_lock(store, document.id):
+        replacement = ydoc_store.prepare_snapshot_replacement_locked(
+            store,
+            document_id=document.id,
+            snapshot=replacement_snapshot,
+            expected_new_snapshot_sha256=sha256_bytes(replacement_snapshot),
+            expected_current_snapshot_sha256=document.ydoc_snapshot_sha256,
+            expected_current_structured_head_sha256=current_head,
+        )
+
+    try:
+        response = client.get(
+            _url(f"/api/truth/doc/{document.id}", store.store_id)
+        )
+    finally:
+        with ydoc_store.document_lock(store, document.id):
+            ydoc_store.abort_snapshot_replacement_locked(
+                store,
+                document_id=document.id,
+                expected_snapshot_sha256=replacement.snapshot_sha256,
+            )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["initialization_state"] == "recovery_required"
+    assert payload["disabled_reason"] == "compaction_recovery_required"
+    assert payload["structured_head_sha256"] is None
+    assert payload["capabilities"]["cowork_verify"]["enabled"] is False
+
+
 def test_get_uses_live_structured_head_not_materialized_baseline_for_applicability(
     client, seeded
 ):
@@ -755,6 +797,24 @@ def test_current_actor_exposes_the_binding_provenance_clients_must_freeze(
         "ref": "reviewer-kaden",
         "identity_status": "local_actor_ref",
     }
+
+
+def test_current_actor_read_allows_a_valid_rotation_due_session(
+    client,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[dict[str, object]] = []
+
+    def authenticate(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(actor=SimpleNamespace(canonical_id=HUMAN.ref))
+
+    monkeypatch.setattr(api, "authenticate_request_session", authenticate)
+
+    response = client.get("/api/truth/cowork/current-actor")
+
+    assert response.status_code == 200
+    assert calls == [{"allow_rotation_due": True}]
 
 
 def test_paste_authorship_attestation_targets_exact_structured_head(

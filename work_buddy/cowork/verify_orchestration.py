@@ -4540,18 +4540,26 @@ def run_status_projection(
         raise VerifyOrchestrationError(
             "run projection document binding is invalid"
         )
-    current_head = (
-        None
-        if document.ydoc_snapshot_sha256 is None
-        else __import__(
+    current_head = None
+    if document.ydoc_snapshot_sha256 is not None:
+        ydoc_module = __import__(
             "work_buddy.truth.ydoc_store",
-            fromlist=["current_structured_head"],
-        ).current_structured_head(
-            store,
-            document_id=document_id,
-            snapshot_sha256=document.ydoc_snapshot_sha256,
+            fromlist=[
+                "CompactionRecoveryRequired",
+                "current_structured_head",
+            ],
         )
-    )
+        try:
+            current_head = ydoc_module.current_structured_head(
+                store,
+                document_id=document_id,
+                snapshot_sha256=document.ydoc_snapshot_sha256,
+            )
+        except ydoc_module.CompactionRecoveryRequired:
+            # Readiness owns the typed recovery state. Run history remains
+            # readable at this short-lived compaction boundary, but no frozen
+            # run may be presented as current until the head is available.
+            current_head = None
     summaries: list[dict[str, Any]] = []
     for run in verify_store.list_records(store, EvaluationRun, conn=conn):
         action = verify_store.get_record(

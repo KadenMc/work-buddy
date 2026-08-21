@@ -172,7 +172,11 @@ def _local_identity_error(exc: LocalIdentityError):
 def api_cowork_current_actor():
     """Expose the immutable identity binding used by provenance ``Me`` values."""
     try:
-        principal = authenticate_request_session()
+        # This is an informational read, not a protected human action.  Keep
+        # the actor binding available when a valid session has reached its
+        # rotation boundary; the subsequent gesture-gated mutation still
+        # requires and performs rotation before it can proceed.
+        principal = authenticate_request_session(allow_rotation_due=True)
     except LocalIdentityError as exc:
         return _local_identity_error(exc)
     return jsonify(

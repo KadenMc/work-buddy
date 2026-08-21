@@ -801,7 +801,9 @@ describe("CoworkBridgeEditor paste provenance", () => {
   }, 30_000);
 
   it("keeps actorless typing durable and records it explicitly after identity recovery", async () => {
+    const user = userEvent.setup();
     const requests: CoworkPasteProvenanceRequest[] = [];
+    const pendingChanges: boolean[] = [];
     const outbox = new DurableCoworkPasteProvenanceOutbox(
       `actorless-direct-${String(Date.now())}`,
       new InMemoryCoworkPasteProvenanceOutboxBackingStore(),
@@ -853,6 +855,8 @@ describe("CoworkBridgeEditor paste provenance", () => {
           resolveActorFromServer: true,
           activeLens: "neutral",
           provenanceProvider: provenanceProvider(),
+          onInputProvenancePendingChange: (pending) =>
+            pendingChanges.push(pending),
         },
       );
       await waitFor(() => expect(sessionAttempts).toBe(1));
@@ -860,14 +864,18 @@ describe("CoworkBridgeEditor paste provenance", () => {
       act(() => mounted!.editor.commands.insertContentAt(1, "Test"));
       mounted.setActiveLens("provenance");
 
+      let pendingKey = "";
       await waitFor(async () => {
-        expect((await outbox.list())[0]).toMatchObject({
+        const pending = (await outbox.list())[0];
+        expect(pending).toMatchObject({
           anchor: { exact: "Test", prefix: "", suffix: "Before after" },
           sourceKind: "direct_entry",
           basisKind: "automatic_direct_entry_attribution",
           status: "capturing",
         });
+        pendingKey = pending!.idempotencyKey;
       });
+      expect(pendingChanges[pendingChanges.length - 1]).toBe(true);
       expect(requests).toEqual([]);
       await act(async () => {
         await refreshLocalIdentity();
@@ -883,17 +891,20 @@ describe("CoworkBridgeEditor paste provenance", () => {
           failure: { code: "provenance_actor_unavailable_at_capture" },
         });
       });
-      act(() => {
-        mounted!.editor.commands.setTextSelection({ from: 1, to: 5 });
+      await screen.findByRole("dialog", {
+        name: "Recent typing needs attribution",
       });
-      const user = userEvent.setup();
-      await user.click(
-        await screen.findByRole("button", { name: "Record provenance" }),
+      expect(screen.getByLabelText("Recent passage")).toHaveTextContent(
+        "Test",
       );
+      expect(pendingChanges[pendingChanges.length - 1]).toBe(false);
+      expect(requests).toEqual([]);
+      expect(await outbox.list()).toHaveLength(1);
+
+      await user.click(screen.getByRole("button", { name: /Authorship/i }));
+      await user.click(screen.getByRole("option", { name: /^Human-written/ }));
       await user.click(
-        within(
-          screen.getByRole("dialog", { name: "Record provenance" }),
-        ).getByRole("button", { name: "Record provenance" }),
+        screen.getByRole("button", { name: "Confirm attribution" }),
       );
 
       await waitFor(() => expect(requests).toHaveLength(1), {
@@ -906,10 +917,227 @@ describe("CoworkBridgeEditor paste provenance", () => {
         expectedActorIdentityStatus: ACTOR.identity_status,
         anchor: { exact: "Test" },
       });
+      expect(requests[0]!.idempotencyKey).toBe(pendingKey);
       await waitFor(() => expect(outbox.list()).resolves.toEqual([]));
     } finally {
       mounted?.unmount();
       vi.unstubAllGlobals();
+    }
+  }, 30_000);
+
+  it("keeps dismissed actorless typing recoverable without creating another outbox row", async () => {
+    const user = userEvent.setup();
+    const recorder = vi.fn<CoworkPasteProvenanceRecorder>().mockResolvedValue();
+    const outbox = new DurableCoworkPasteProvenanceOutbox(
+      `actorless-direct-dismiss-${String(Date.now())}`,
+      new InMemoryCoworkPasteProvenanceOutboxBackingStore(),
+    );
+    let sessionAttempts = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === "/api/truth/cowork/current-actor") {
+          return new Response(JSON.stringify(ACTOR), {
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        expect(url).toBe("/api/local-identity/session/csrf");
+        sessionAttempts += 1;
+        return new Response(
+          JSON.stringify(
+            sessionAttempts === 1
+              ? {
+                  ok: true,
+                  authenticated: false,
+                  human_authority_available: false,
+                }
+              : {
+                  ok: true,
+                  authenticated: true,
+                  principal: LOCAL_PRINCIPAL,
+                  csrf_token: "wbc_recovered_dismissed_direct_entry",
+                },
+          ),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      }),
+    );
+
+    let mounted: MountedPasteEditor | undefined;
+    try {
+      mounted = await mountPasteEditor(recorder, {
+        outbox,
+        resolveActorFromServer: true,
+        activeLens: "neutral",
+        provenanceProvider: provenanceProvider(),
+      });
+      await waitFor(() => expect(sessionAttempts).toBe(1));
+      act(() => mounted!.editor.commands.insertContentAt(1, "Recover me"));
+      mounted.setActiveLens("provenance");
+      await waitFor(async () =>
+        expect((await outbox.list())[0]).toMatchObject({
+          sourceKind: "direct_entry",
+          status: "capturing",
+        }),
+      );
+      const initial = (await outbox.list())[0]!;
+
+      await act(async () => {
+        await refreshLocalIdentity();
+      });
+      await screen.findByRole("dialog", {
+        name: "Recent typing needs attribution",
+      });
+      await user.click(screen.getByRole("button", { name: "Keep for later" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+      const deferred = await outbox.list();
+      expect(deferred).toHaveLength(1);
+      expect(deferred[0]).toMatchObject({
+        id: initial.id,
+        idempotencyKey: initial.idempotencyKey,
+        sourceKind: "legacy",
+        status: "awaiting_determination",
+      });
+      expect(recorder).not.toHaveBeenCalled();
+
+      await user.click(
+        screen.getByRole("button", { name: "Review pending attribution" }),
+      );
+      await screen.findByRole("dialog", {
+        name: "Recent typing needs attribution",
+      });
+      expect(await outbox.list()).toHaveLength(1);
+      expect(recorder).not.toHaveBeenCalled();
+    } finally {
+      mounted?.unmount();
+      vi.unstubAllGlobals();
+    }
+  }, 30_000);
+
+  it("reconstructs actorless typing recovery from the durable row after a fresh mount", async () => {
+    const user = userEvent.setup();
+    const backing = new InMemoryCoworkPasteProvenanceOutboxBackingStore();
+    const outboxKey = `actorless-direct-reload-${String(Date.now())}`;
+    const beforeReload = new DurableCoworkPasteProvenanceOutbox(
+      outboxKey,
+      backing,
+    );
+    const capturing = await beforeReload.upsertCapture({
+      anchor: { exact: "Before", prefix: "", suffix: " after" },
+      idempotencyKey: "actorless-direct-reload-key",
+      substantial: false,
+      sourceKind: "direct_entry",
+      basisKind: "automatic_direct_entry_attribution",
+      determination: unknownCoworkProvenanceDetermination(),
+      capturedAt: "2026-08-21T12:00:00.000Z",
+      passageExcerpt: "Before",
+      status: "capturing",
+    });
+    const deferred = await beforeReload.deferDirectEntry(
+      capturing.id,
+      capturing.idempotencyKey,
+      unknownCoworkProvenanceDetermination(),
+      {
+        code: "provenance_actor_unavailable_at_capture",
+        message: "No enrolled local actor was available when this text was entered.",
+        kind: "terminal",
+      },
+    );
+
+    // Ctrl+R constructs both the component and the outbox adapter again. Only
+    // the persisted row/failure marker crosses this seam.
+    const afterReload = new DurableCoworkPasteProvenanceOutbox(
+      outboxKey,
+      backing,
+    );
+    const recorder = vi.fn<CoworkPasteProvenanceRecorder>().mockResolvedValue();
+    let mounted: MountedPasteEditor | undefined = await mountPasteEditor(
+      recorder,
+      {
+        outbox: afterReload,
+        activeLens: "provenance",
+        provenanceProvider: provenanceProvider(),
+      },
+    );
+    let remounted: MountedPasteEditor | undefined;
+
+    try {
+      await screen.findByRole("dialog", {
+        name: "Recent typing needs attribution",
+      });
+      expect(screen.getByLabelText("Recent passage")).toHaveTextContent(
+        "Before",
+      );
+      const recovered = await afterReload.list();
+      expect(recovered).toHaveLength(1);
+      expect(recovered[0]).toMatchObject({
+        id: deferred.id,
+        idempotencyKey: deferred.idempotencyKey,
+        sourceKind: "legacy",
+        status: "awaiting_determination",
+      });
+      expect(recorder).not.toHaveBeenCalled();
+
+      // The controlled form persists as the user chooses. Reload in this
+      // intermediate state, before Confirm, to prove the direct-entry lineage
+      // marker survives independently of component-local refs.
+      await user.click(screen.getByRole("button", { name: /Authorship/i }));
+      await user.click(screen.getByRole("option", { name: /^Human-written/ }));
+      await waitFor(async () =>
+        expect((await afterReload.list())[0]).toMatchObject({
+          id: deferred.id,
+          idempotencyKey: deferred.idempotencyKey,
+          determination: { authorship: { kind: "human" } },
+          failure: { code: "provenance_actor_unavailable_at_capture" },
+        }),
+      );
+
+      const server = mounted.server;
+      mounted.unmount();
+      mounted.document.destroy();
+      mounted = undefined;
+      const afterFormReload = new DurableCoworkPasteProvenanceOutbox(
+        outboxKey,
+        backing,
+      );
+      remounted = await mountPasteEditor(recorder, {
+        outbox: afterFormReload,
+        server,
+        document: new Y.Doc(),
+        activeLens: "provenance",
+        provenanceProvider: provenanceProvider(),
+      });
+
+      await screen.findByRole("dialog", {
+        name: "Recent typing needs attribution",
+      });
+      expect(
+        screen.getByRole("button", { name: /Authorship/i }),
+      ).toHaveTextContent("Human-written");
+      expect(await afterFormReload.list()).toHaveLength(1);
+      await user.click(
+        screen.getByRole("button", { name: "Confirm attribution" }),
+      );
+
+      await waitFor(() => expect(recorder).toHaveBeenCalledOnce(), {
+        timeout: 10_000,
+      });
+      expect(recorder.mock.calls[0]?.[0]).toMatchObject({
+        idempotencyKey: deferred.idempotencyKey,
+        sourceKind: "legacy",
+        basisKind: "user_attestation",
+        expectedActorRef: ACTOR.ref,
+        anchor: deferred.anchor,
+      });
+      await waitFor(() => expect(afterFormReload.list()).resolves.toEqual([]));
+      expect(recorder).toHaveBeenCalledOnce();
+    } finally {
+      remounted?.unmount();
+      remounted?.document.destroy();
+      mounted?.unmount();
+      mounted?.document.destroy();
     }
   }, 30_000);
 

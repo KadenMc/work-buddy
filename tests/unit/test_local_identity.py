@@ -237,6 +237,28 @@ def test_csrf_rotation_revocation_and_expiry(
     assert revoked.value.code == "session_unavailable"
 
 
+def test_rotation_due_session_remains_valid_only_when_a_read_allows_it(
+    authority: tuple[LocalIdentityAuthority, Clock],
+) -> None:
+    service, clock = authority
+    session = _session(service)
+    clock.advance(_policy().session_rotation_seconds + 1)
+
+    principal = service.authenticate_session(
+        cookie_token=session.cookie_token,
+        boundary=_boundary(),
+        allow_rotation_due=True,
+    )
+
+    assert principal.actor == service.enrolled_actor()
+    with pytest.raises(LocalIdentityError) as protected:
+        service.authenticate_session(
+            cookie_token=session.cookie_token,
+            boundary=_boundary(),
+        )
+    assert protected.value.code == "session_rotation_required"
+
+
 def test_session_and_gesture_expiry_are_enforced(
     authority: tuple[LocalIdentityAuthority, Clock],
 ) -> None:

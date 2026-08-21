@@ -267,11 +267,12 @@ describe("DurableCoworkPasteProvenanceOutbox", () => {
         status: "awaiting_determination",
       }),
     ]);
-    const [recovered] = await new DurableCoworkPasteProvenanceOutbox(
+    const reopened = new DurableCoworkPasteProvenanceOutbox(
       key,
       backing,
       stage,
-    ).list();
+    );
+    const [recovered] = await reopened.list();
     expect(recovered).toMatchObject({
       id: open.id,
       idempotencyKey: "explicit-recovery-key",
@@ -284,6 +285,39 @@ describe("DurableCoworkPasteProvenanceOutbox", () => {
       failure: { code: "provenance_actor_unavailable_at_capture" },
     });
     expect(recovered?.capturedActor).toBeUndefined();
+
+    const edited = await reopened.updateDetermination(
+      open.id,
+      humanDetermination(),
+    );
+    expect(edited).toMatchObject({
+      status: "awaiting_determination",
+      requiresExplicitDetermination: true,
+      determination: { authorship: { kind: "human" } },
+      failure: { code: "provenance_actor_unavailable_at_capture" },
+    });
+    expect(
+      (
+        await new DurableCoworkPasteProvenanceOutbox(
+          key,
+          backing,
+          stage,
+        ).list()
+      )[0],
+    ).toMatchObject({
+      status: "awaiting_determination",
+      determination: { authorship: { kind: "human" } },
+      failure: { code: "provenance_actor_unavailable_at_capture" },
+    });
+
+    const readied = await reopened.markReady(
+      open.id,
+      humanDetermination(),
+      "user_attestation",
+      actorIdentity,
+    );
+    expect(readied.requiresExplicitDetermination).toBeUndefined();
+    expect(readied.failure).toBeUndefined();
   });
 
   it("never lets a stale open-stage row overwrite a ready frozen request", async () => {

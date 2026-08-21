@@ -59,6 +59,14 @@ unauthenticated state if authority is still absent. These recovery paths do not
 mint authority in HTTP, extend the server's hard session or gesture TTLs, or
 weaken the direct-loopback, Origin, audience, CSRF, and exact-action checks.
 
+An informational actor-binding read may continue to identify the enrolled
+actor when an otherwise valid session has reached its rotation boundary. That
+read neither rotates the session nor authorizes a mutation. The next protected
+gesture request still receives the typed rotation requirement, rotates through
+the CSRF-protected session endpoint, and retries before the exact bound write
+can proceed. Expired, revoked, wrong-Origin, or otherwise invalid sessions
+remain unavailable to both reads and writes.
+
 Before a protected click, the browser requests a gesture for the exact action,
 subject, and canonical context digest. The domain mutation sends that one-use
 gesture and CSRF token; the backend consumes it and constructs the
