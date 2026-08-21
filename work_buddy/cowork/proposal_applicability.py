@@ -156,6 +156,31 @@ def load_current_projection(
     )
 
 
+def _supplemental_application_context(
+    proposal: Any,
+    current_projection: CurrentProjection | None,
+) -> tuple[int | None, int | None, str | None]:
+    """Resolve a position when available without changing same-state gating."""
+
+    if current_projection is None:
+        return None, None, None
+    try:
+        resolved = reanchor(
+            current_projection.text,
+            CompositeSelector.from_json(proposal.selector_json),
+        )
+    except AnchorError:
+        # A matching structured head or materialized baseline remains the
+        # authoritative applicability proof.  Resolution is supplemental
+        # context for exact post-apply provenance, not a new gate.
+        return None, None, current_projection.projection_sha256
+    return (
+        resolved.start,
+        resolved.end,
+        current_projection.projection_sha256,
+    )
+
+
 def assess_proposal_applicability(
     proposal: Any,
     document: DocumentRecord,
@@ -178,15 +203,27 @@ def assess_proposal_applicability(
         and structured_head_sha256 is not None
         and proposal_head == structured_head_sha256
     ):
+        resolved_start, resolved_end, current_projection_sha256 = (
+            _supplemental_application_context(proposal, current_projection)
+        )
         return ProposalApplicability(
             status="applicable",
             reason="same_structured_head",
+            resolved_start=resolved_start,
+            resolved_end=resolved_end,
+            current_projection_sha256=current_projection_sha256,
             current_structured_head_sha256=structured_head_sha256,
         )
     if proposal_head is None and proposal.base_content_sha256 == document.content_sha256:
+        resolved_start, resolved_end, current_projection_sha256 = (
+            _supplemental_application_context(proposal, current_projection)
+        )
         return ProposalApplicability(
             status="applicable",
             reason="same_materialized_baseline",
+            resolved_start=resolved_start,
+            resolved_end=resolved_end,
+            current_projection_sha256=current_projection_sha256,
             current_structured_head_sha256=structured_head_sha256,
         )
     if current_projection is None:

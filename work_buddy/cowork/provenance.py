@@ -777,6 +777,8 @@ def _proposal_projection_candidates(rendered_projection: str) -> tuple[str, ...]
 
 def _proposal_acceptance_segment_selectors(
     proposal: ProposalRecord,
+    *,
+    post_apply_start: int | None = None,
 ) -> tuple[CompositeSelector, ...]:
     """Return only the text the proposing agent added or replaced.
 
@@ -788,6 +790,14 @@ def _proposal_acceptance_segment_selectors(
     so the operation fails closed instead of guessing.
     """
 
+    if post_apply_start is not None and (
+        isinstance(post_apply_start, bool)
+        or not isinstance(post_apply_start, int)
+        or post_apply_start < 0
+    ):
+        raise ProposalAcceptanceProvenanceError(
+            "The accepted proposal has an invalid application position."
+        )
     if proposal.replacement in {None, ""}:
         return ()
     if proposal.quote_exact is None:
@@ -847,6 +857,16 @@ def _proposal_acceptance_segment_selectors(
                 exact=exact,
                 prefix=prefix,
                 suffix=suffix,
+                start=(
+                    None
+                    if post_apply_start is None
+                    else post_apply_start + start
+                ),
+                end=(
+                    None
+                    if post_apply_start is None
+                    else post_apply_start + end
+                ),
             )
         )
     return tuple(selectors)
@@ -861,6 +881,7 @@ def record_proposal_acceptance_attestations_locked(
     actor: Actor,
     target_structured_head_sha256: str,
     rendered_projection: str,
+    post_apply_start: int | None = None,
     at: str | None = None,
 ) -> tuple[DocumentProvenanceAttestationRecord, ...]:
     """Atomically attribute a confirmed agent proposal on its resulting head.
@@ -940,7 +961,10 @@ def record_proposal_acceptance_attestations_locked(
     except InvariantViolation as exc:
         raise ProposalAcceptanceProvenanceError(str(exc)) from exc
 
-    selectors = _proposal_acceptance_segment_selectors(proposal)
+    selectors = _proposal_acceptance_segment_selectors(
+        proposal,
+        post_apply_start=post_apply_start,
+    )
     # Prove every derived selector against the exact projection that produced
     # target_head before appending any rows. This makes a multi-segment
     # insertion all-or-nothing even for callers that catch this typed error.
@@ -951,19 +975,32 @@ def record_proposal_acceptance_attestations_locked(
             rendered_projection
         ):
             try:
-                resolved = reanchor(projection_candidate, selector)
-                break
+                candidate = reanchor(projection_candidate, selector)
             except Exception as exc:  # noqa: BLE001 - try visible Markdown
                 last_error = exc
+                continue
+            if candidate.exact != selector.exact:
+                last_error = ProposalAcceptanceProvenanceError(
+                    "The accepted AI-authored span changed before provenance "
+                    "was recorded."
+                )
+                continue
+            if selector.has_position and (
+                candidate.start != selector.start
+                or candidate.end != selector.end
+            ):
+                last_error = ProposalAcceptanceProvenanceError(
+                    "The accepted AI-authored span is not at its committed "
+                    "application position."
+                )
+                continue
+            resolved = candidate
+            break
         if resolved is None:
             raise ProposalAcceptanceProvenanceError(
                 "The accepted AI-authored span could not be resolved uniquely "
                 "in the committed document."
             ) from last_error
-        if resolved.exact != selector.exact:
-            raise ProposalAcceptanceProvenanceError(
-                "The accepted AI-authored span changed before provenance was recorded."
-            )
 
     normalized_attestation = {
         "authorship": {"kind": "ai", "contributors": []},

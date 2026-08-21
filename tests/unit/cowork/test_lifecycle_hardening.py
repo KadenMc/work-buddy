@@ -220,6 +220,162 @@ def test_sitting_prepare_is_pure_and_commit_is_atomic_and_idempotent(store_ctx):
     )
 
 
+def test_confirmed_duplicate_replacement_uses_frozen_application_position(
+    store_ctx,
+):
+    store = store_ctx["store"]
+    source = b"# Lifecycle\n\nTarget phrase.\n\nShared replacement.\n"
+    document, _source, _old_snapshot = _ready(
+        store_ctx,
+        source=source,
+        path="docs/duplicate-proposal-provenance.md",
+        key="duplicate-proposal-provenance-ready-0001",
+    )
+    old_head = ydoc_store.current_structured_head(
+        store,
+        document_id=document.id,
+        snapshot_sha256=document.ydoc_snapshot_sha256,
+    )
+    original = "Target phrase."
+    replacement = "Shared replacement."
+    start = source.decode().index(original)
+    proposal = proposals.propose_edit(
+        store,
+        document_id=document.id,
+        base_content_sha256=document.content_sha256,
+        base_structured_head_sha256=old_head,
+        selector=CompositeSelector(
+            exact=original,
+            start=start,
+            end=start + len(original),
+        ),
+        quote_exact=original,
+        replacement=replacement,
+        rationale="Exercise position-bound proposal provenance.",
+        tldr="Use the repeated wording.",
+        actor=AGENT,
+    )
+    intent, _created = sitting_lifecycle.prepare_sitting(
+        store,
+        document_id=document.id,
+        actor=HUMAN,
+        items=[
+            {
+                "proposal_id": proposal.id,
+                "verb": "confirm",
+                "canonical_sha256": proposal.canonical_sha256,
+            }
+        ],
+        expected_file_sha256=document.content_sha256,
+        expected_structured_head_sha256=old_head,
+        idempotency_key="duplicate-proposal-provenance-sitting-0001",
+    )
+    rendered = source.decode().replace(original, replacement, 1).encode()
+    new_snapshot = b"YDOC:" + rendered
+    receipt, _events = sitting_lifecycle.commit_sitting(
+        store,
+        document_id=document.id,
+        intent_id=intent.id,
+        actor=HUMAN,
+        snapshot=new_snapshot,
+        snapshot_sha256=sha256_bytes(new_snapshot),
+        rendered_markdown=rendered.decode(),
+        rendered_sha256=sha256_bytes(rendered),
+    )
+
+    assert receipt["results"][0]["result"] == "applied"
+    rows = store.list_document_provenance_attestations(document.id)
+    assert len(rows) == 1
+    with store._read_connection() as conn:
+        span = store._get_document_span_locked(
+            conn,
+            rows[0].document_span_id,
+        )
+    assert span is not None
+    selector = CompositeSelector.from_json(span.selector_json)
+    assert selector.exact == replacement
+    assert (selector.start, selector.end) == (
+        start,
+        start + len(replacement),
+    )
+    assert rendered.decode().find(replacement) == start
+    assert rendered.decode().rfind(replacement) > start
+
+
+def test_confirmed_duplicate_replacement_at_wrong_position_rolls_back(
+    store_ctx,
+):
+    store = store_ctx["store"]
+    source = b"# Lifecycle\n\nTarget phrase.\n\nShared replacement.\n"
+    document, _source, old_snapshot = _ready(
+        store_ctx,
+        source=source,
+        path="docs/misplaced-proposal-provenance.md",
+        key="misplaced-proposal-provenance-ready-0001",
+    )
+    old_head = ydoc_store.current_structured_head(
+        store,
+        document_id=document.id,
+        snapshot_sha256=document.ydoc_snapshot_sha256,
+    )
+    original = "Target phrase."
+    replacement = "Shared replacement."
+    start = source.decode().index(original)
+    proposal = proposals.propose_edit(
+        store,
+        document_id=document.id,
+        base_content_sha256=document.content_sha256,
+        base_structured_head_sha256=old_head,
+        selector=CompositeSelector(
+            exact=original,
+            start=start,
+            end=start + len(original),
+        ),
+        quote_exact=original,
+        replacement=replacement,
+        rationale="Exercise position-bound proposal provenance.",
+        tldr="Use the repeated wording.",
+        actor=AGENT,
+    )
+    intent, _created = sitting_lifecycle.prepare_sitting(
+        store,
+        document_id=document.id,
+        actor=HUMAN,
+        items=[
+            {
+                "proposal_id": proposal.id,
+                "verb": "confirm",
+                "canonical_sha256": proposal.canonical_sha256,
+            }
+        ],
+        expected_file_sha256=document.content_sha256,
+        expected_structured_head_sha256=old_head,
+        idempotency_key="misplaced-proposal-provenance-sitting-0001",
+    )
+    # The replacement exists, but only at the pre-existing second occurrence;
+    # accepting this payload must never attribute that unrelated text to AI.
+    malicious_snapshot = b"YDOC:MISPLACED:" + source
+    with pytest.raises(sitting_lifecycle.SittingError) as failure:
+        sitting_lifecycle.commit_sitting(
+            store,
+            document_id=document.id,
+            intent_id=intent.id,
+            actor=HUMAN,
+            snapshot=malicious_snapshot,
+            snapshot_sha256=sha256_bytes(malicious_snapshot),
+            rendered_markdown=source.decode(),
+            rendered_sha256=sha256_bytes(source),
+        )
+
+    assert failure.value.code == "proposal_provenance_unsafe"
+    assert proposals.latest_proposal_status(store, proposal.id).status == "open"
+    assert _gesture_count(store) == 0
+    assert store.list_document_provenance_attestations(document.id) == ()
+    refreshed = documents.get_document(store, document.id)
+    assert refreshed.ydoc_snapshot_sha256 == sha256_bytes(old_snapshot)
+    assert (store_ctx["root"] / document.path).read_bytes() == source
+
+
 def test_confirmed_agent_insertion_records_only_new_text_in_provenance_get(
     store_ctx,
     client,
