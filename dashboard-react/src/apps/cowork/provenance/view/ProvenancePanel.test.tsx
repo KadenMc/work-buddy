@@ -245,12 +245,10 @@ describe("ProvenancePanel", () => {
       <ProvenancePanel
         provider={{
           ...provider(),
-          load: vi
-            .fn()
-            .mockResolvedValue({
-              state: "ready",
-              data: { ...data, spans: [], history: [] },
-            }),
+          load: vi.fn().mockResolvedValue({
+            state: "ready",
+            data: { ...data, spans: [], history: [] },
+          }),
         }}
         active
         editor={{ ...editor, hasText: () => false }}
@@ -286,6 +284,9 @@ describe("ProvenancePanel", () => {
     ).toBeNull();
     expect(
       screen.queryByText("No provenance has been recorded for this document"),
+    ).toBeNull();
+    expect(
+      screen.queryByText("No provenance records match this filter."),
     ).toBeNull();
   });
 

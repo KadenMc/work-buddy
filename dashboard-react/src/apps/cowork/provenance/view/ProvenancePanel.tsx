@@ -678,7 +678,9 @@ function ProvenanceContents({
         </p>
       ) : null}
       {visible.length === 0 ? (
-        hasText && (!noRecordedProvenance || filter !== "all") ? (
+        !inputProvenancePending &&
+        hasText &&
+        (!noRecordedProvenance || filter !== "all") ? (
           <p className="wb-cowork-provenance-panel__empty">
             No provenance records match this filter.
           </p>
