@@ -11,6 +11,7 @@ Two request modes:
 
 import json
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,19 @@ from work_buddy.paths import resolve
 
 _REQUEST_FILE = resolve("cache/chrome-request")
 _TABS_FILE = resolve("cache/chrome-tabs")
+
+
+def _remove_request_if_owned(request_id: str) -> None:
+    """Remove only the still-current request written by this caller."""
+
+    if not _REQUEST_FILE.exists():
+        return
+    try:
+        pending = json.loads(_REQUEST_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return
+    if pending.get("request_id") == request_id:
+        _REQUEST_FILE.unlink(missing_ok=True)
 
 
 def request_tabs(
@@ -38,8 +52,12 @@ def request_tabs(
     """
     old_mtime = _TABS_FILE.stat().st_mtime if _TABS_FILE.exists() else 0
 
-    # Write request file as JSON with optional time range
-    request_data = {"requested_at": datetime.now(timezone.utc).isoformat()}
+    # Write request file as JSON with optional time range.
+    request_id = uuid.uuid4().hex
+    request_data = {
+        "request_id": request_id,
+        "requested_at": datetime.now(timezone.utc).isoformat(),
+    }
     if since:
         request_data["since"] = since
     if until:
@@ -58,14 +76,22 @@ def request_tabs(
                 try:
                     with open(_TABS_FILE, encoding="utf-8") as f:
                         data = json.load(f)
+                    response_id = data.get("request_id")
+                    # Pre-1.3 extension workers did not echo request IDs. Reads
+                    # remain backwards compatible; when an ID is present it
+                    # must match so a newer correlated response cannot cross
+                    # requests.
+                    if response_id is not None and response_id != request_id:
+                        old_mtime = new_mtime
+                        continue
                     _TABS_FILE.unlink(missing_ok=True)
                     return data
                 except (json.JSONDecodeError, OSError):
-                    return None
+                    old_mtime = new_mtime
+                    continue
         time.sleep(0.5)
 
-    if _REQUEST_FILE.exists():
-        _REQUEST_FILE.unlink()
+    _remove_request_if_owned(request_id)
     return None
 
 
@@ -86,7 +112,9 @@ def request_content(
     """
     old_mtime = _TABS_FILE.stat().st_mtime if _TABS_FILE.exists() else 0
 
+    request_id = uuid.uuid4().hex
     request_data = {
+        "request_id": request_id,
         "requested_at": datetime.now(timezone.utc).isoformat(),
         "request_action": "get_content",
         "tab_ids": tab_ids,
@@ -106,14 +134,18 @@ def request_content(
                 try:
                     with open(_TABS_FILE, encoding="utf-8") as f:
                         data = json.load(f)
+                    response_id = data.get("request_id")
+                    if response_id is not None and response_id != request_id:
+                        old_mtime = new_mtime
+                        continue
                     _TABS_FILE.unlink(missing_ok=True)
                     return data.get("tab_contents", [])
                 except (json.JSONDecodeError, OSError):
-                    return None
+                    old_mtime = new_mtime
+                    continue
         time.sleep(0.5)
 
-    if _REQUEST_FILE.exists():
-        _REQUEST_FILE.unlink()
+    _remove_request_if_owned(request_id)
     return None
 
 
@@ -286,8 +318,10 @@ def _request_mutation(
         Mutation result dict, or None if Chrome doesn't respond.
     """
     old_mtime = _TABS_FILE.stat().st_mtime if _TABS_FILE.exists() else 0
+    request_id = uuid.uuid4().hex
 
     request_data = {
+        "request_id": request_id,
         "requested_at": datetime.now(timezone.utc).isoformat(),
         "request_action": "mutate",
         "mutation": mutation,
@@ -304,17 +338,32 @@ def _request_mutation(
         if _TABS_FILE.exists():
             new_mtime = _TABS_FILE.stat().st_mtime
             if new_mtime > old_mtime:
+                old_mtime = new_mtime
                 try:
                     with open(_TABS_FILE, encoding="utf-8") as f:
                         data = json.load(f)
+                    # The snapshot file is shared with periodic/on-demand tab
+                    # exports.  Only a response carrying our nonce proves that
+                    # this launch mutation was actually handled; accepting an
+                    # unrelated write here can strand a one-use identity grant
+                    # while the caller falsely reports a successful reconnect.
+                    response_id = data.get("request_id")
+                    identity_handoff = mutation in {
+                        "focus_existing_tab",
+                        "focus_or_create_tab",
+                    }
+                    if response_id != request_id and (
+                        identity_handoff or response_id is not None
+                    ):
+                        continue
                     _TABS_FILE.unlink(missing_ok=True)
-                    return data.get("mutation_result", {})
+                    result = data.get("mutation_result")
+                    return result if isinstance(result, dict) else None
                 except (json.JSONDecodeError, OSError):
-                    return None
+                    continue
         time.sleep(0.5)
 
-    if _REQUEST_FILE.exists():
-        _REQUEST_FILE.unlink()
+    _remove_request_if_owned(request_id)
     return None
 
 
@@ -407,4 +456,27 @@ def focus_or_create_tab(
         url=match_url,
         target_hash=target_hash,
         preserve_path=preserve_path,
+    )
+
+
+def focus_existing_tab(
+    url: str,
+    target_hash: str = "",
+    timeout_seconds: int = 15,
+) -> dict | None:
+    """Deliver a fragment to an existing dashboard tab without opening one.
+
+    This is the quiet trusted-host recovery path used by deliberate sidecar
+    start/restart operations.  The extension preserves the tab's path/query,
+    does not activate it, and reports ``found=false`` when no matching app tab
+    exists.  A new mutation name makes older extensions fail closed instead of
+    accidentally creating a browser tab while interpreting newer options.
+    """
+
+    match_url = url.rstrip("/") or url
+    return _request_mutation(
+        "focus_existing_tab",
+        timeout_seconds,
+        url=match_url,
+        target_hash=target_hash,
     )

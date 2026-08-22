@@ -156,6 +156,34 @@ function principal() {
 afterEach(() => resetLocalIdentityForTests());
 
 describe("HttpJournalProvider", () => {
+  it("binds the browser fetch receiver when no client is injected", async () => {
+    const browserFetch = vi.fn(async function (
+      this: typeof globalThis,
+      input: RequestInfo | URL,
+    ): Promise<Response> {
+      if (this !== globalThis) throw new TypeError("Illegal invocation");
+      const url = String(input);
+      if (url === "/api/local-identity/session/csrf") {
+        return json({ ok: true, authenticated: true, principal: principal(), csrf_token: "csrf" });
+      }
+      if (url === LEGACY_TODAY_ENDPOINT) return json(legacy);
+      if (url === JOURNAL_VIEW_ENDPOINT) return json(native);
+      throw new Error(`Unexpected ${url}`);
+    });
+    vi.stubGlobal("fetch", browserFetch);
+
+    try {
+      const provider = new HttpJournalProvider();
+      const snapshot = await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, { reason: "mount" });
+
+      expect(snapshot.status).toBe("ready");
+      expect(browserFetch.mock.contexts.length).toBeGreaterThan(0);
+      expect(browserFetch.mock.contexts.every((context) => context === globalThis)).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("composes live capture and Running Notes with the authoritative Today timeline", async () => {
     const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);

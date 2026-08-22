@@ -2,7 +2,7 @@
 name: Co-work
 kind: concept
 description: The human-and-agent surface for living documents, with durable editing, source-safe file import, explicit file writes, content provenance, proposal review, and first-class Truth observability and management.
-summary: A user opens an ordinary folder, Co-work inspects it without mutation, and a one-time confirmation discloses the .wbuddy support data before setup. An invariant toolbar owns New, From file, folder selection, document selection, and explicit folder closing. From file uses a format-neutral importer boundary with Markdown support today; it creates a managed Co-work document without rewriting the source artifact. Co-work keeps structured editing state durable through an offline-capable outbox, records frozen-target authorship and human-review attestations for imported and pasted text, binds each document to one durable conversation with exact feedback anchors, and routes agent contributions through human-reviewed proposals.
+summary: A user opens an ordinary folder, Co-work inspects it without mutation, and a one-time confirmation discloses the .wbuddy support data before setup. An invariant toolbar owns New, From file, folder selection, document selection, and explicit folder closing. From file uses a format-neutral importer boundary with Markdown support today; it creates a managed Co-work document without rewriting the source artifact. Co-work keeps structured editing state durable through an offline-capable outbox, records frozen-target authorship and human-review attestations for imported, pasted, directly entered, and accepted-proposal text, binds each document to one durable conversation with exact feedback anchors, and routes agent contributions through human-reviewed proposals.
 tags:
 - cowork
 - documents
@@ -324,6 +324,14 @@ structured head, and retries it unchanged until receipt. Yjs and the provenance
 record are not one atomic transaction; the journal makes the cross-store gap
 recoverable. A changed, absent, or ambiguous target remains visible for explicit
 recovery rather than being attached elsewhere.
+
+Local direct entry uses the same recovery stores but records only a contiguous
+typing burst observed at editor ingress. Until the authoritative receipt is
+visible, the exact passage says **Recording provenance…** rather than claiming
+authorship or reporting an empty ledger. If no actor was available at capture,
+the row becomes an explicit legacy/user-attested determination and automatically
+surfaces after identity recovery; deferring or reloading retains that one row.
+A later actor is never silently substituted as the capture-time author.
 
 The attestation says what the acting person reports about the content. It does
 not prove authorship, verify a claim, certify correctness, or approve the text.

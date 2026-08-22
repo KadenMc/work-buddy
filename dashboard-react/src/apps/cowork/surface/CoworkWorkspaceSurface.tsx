@@ -35,7 +35,10 @@ import {
   type CoworkDriftState,
   type CoworkViewModel,
 } from "../contracts";
-import type { CoworkPasteProvenanceRecorder } from "../provenance";
+import type {
+  CoworkPasteProvenanceRecorder,
+  ProvenanceSelectionAction,
+} from "../provenance";
 import { CoworkHttpClient } from "../providers/CoworkHttpClient";
 import type { CoworkSyncStatus } from "../persistence/CoworkYdocPersistence";
 import type {
@@ -43,10 +46,7 @@ import type {
   CoworkMaterializationState,
   CoworkMaterializeReceipt,
 } from "../materialization/contracts";
-import {
-  CoworkBridgeEditor,
-  useCoworkBridge,
-} from "../bridge";
+import { CoworkBridgeEditor, useCoworkBridge } from "../bridge";
 import {
   CoworkChatAnnotations,
   CoworkChatTargetingProvider,
@@ -78,6 +78,7 @@ import {
   createDemoChatProvider,
   isDirty,
   type CoworkRailChat,
+  type RailTab,
   type ReviewAnchorController,
   type VerificationRecheckIntent,
 } from "../rail";
@@ -99,10 +100,7 @@ import {
 } from "../truth";
 import { ProvenanceHoverCard } from "../provenance";
 import type { ProvenanceEditorIntegration } from "../provenance";
-import {
-  HttpCoworkVerifyClient,
-  useCoworkVerifyExecution,
-} from "../verify";
+import { HttpCoworkVerifyClient, useCoworkVerifyExecution } from "../verify";
 import {
   EDITOR_DEFAULT_SIZE,
   EDITOR_MIN_SIZE,
@@ -212,11 +210,7 @@ interface CoworkHealthView {
 }
 
 type CoworkWorkspacePane =
-  | "editor"
-  | "review"
-  | "truth"
-  | "provenance"
-  | "chat";
+  "editor" | "review" | "truth" | "provenance" | "chat";
 const NARROW_WORKSPACE_QUERY = "(max-width: 760px)";
 
 const useNarrowWorkspace = (): boolean => {
@@ -261,7 +255,11 @@ function CoworkPaneTabs({
     refs.current[normalized]?.focus();
   };
   return (
-    <div className="wb-cowork__pane-tabs" role="tablist" aria-label="Co-work panes">
+    <div
+      className="wb-cowork__pane-tabs"
+      role="tablist"
+      aria-label="Co-work panes"
+    >
       {panes.map((pane, index) => (
         <button
           key={pane}
@@ -448,6 +446,14 @@ export const healthFromModel = (
   };
 };
 
+export const coworkProvenanceSelectionActionsActive = (
+  activeRailTab: RailTab,
+  narrowWorkspace: boolean,
+  activePane: CoworkWorkspacePane,
+): boolean =>
+  activeRailTab === "provenance" &&
+  (!narrowWorkspace || activePane === "editor");
+
 export const healthFromDocument = (
   document: CoworkDocumentSummary,
 ): CoworkHealthView => ({
@@ -491,7 +497,10 @@ export function CoworkDemoWorkspace({
       health={healthFromModel(model)}
       editorScrollRef={editorScrollRef}
       editor={
-        <CoworkEditorPane documentId={documentId} seedMarkdown={DEMO_DOCUMENT_MARKDOWN} />
+        <CoworkEditorPane
+          documentId={documentId}
+          seedMarkdown={DEMO_DOCUMENT_MARKDOWN}
+        />
       }
       rail={
         <CoworkRail
@@ -529,7 +538,9 @@ export function CoworkScratchWorkspace({
   onLocalEdit,
 }: {
   readonly scratchId: string;
-  readonly onPromotionHandle?: (handle: CoworkScratchPromotionHandle | null) => void;
+  readonly onPromotionHandle?: (
+    handle: CoworkScratchPromotionHandle | null,
+  ) => void;
   readonly onSyncStatus?: (status: CoworkSyncStatus) => void;
   readonly onLocalEdit?: () => void;
 }) {
@@ -655,13 +666,11 @@ export function CoworkLiveWorkspace({
       ),
   );
   const activeRailTab = useRailState(railStore, (state) => state.tab);
+  const [provenanceSelectionAction, setProvenanceSelectionAction] =
+    useState<ProvenanceSelectionAction | null>(null);
+  const [inputProvenancePending, setInputProvenancePending] = useState(false);
   const truthStore = useMemo(
-    () =>
-      createPersistedTruthStore(
-        window.localStorage,
-        storeId,
-        documentId,
-      ),
+    () => createPersistedTruthStore(window.localStorage, storeId, documentId),
     [documentId, storeId],
   );
   const conversation = useDocumentConversationBinding({
@@ -674,37 +683,32 @@ export function CoworkLiveWorkspace({
   }, [annotations, conversation.feedback]);
   const adoptExecutionRef = useRef(conversation.adoptExecution);
   adoptExecutionRef.current = conversation.adoptExecution;
-  const executionProvider = useMemo(
-    () => {
-      const providerWorkspaceIdentity = workspaceIdentity;
-      return createHttpChatExecutionProfileProvider({
-        targetId: workspaceIdentity,
-        loadUrl: coworkConversationEndpoint(documentId, storeId),
-        selectUrl: coworkConversationExecutionEndpoint(documentId, storeId),
-        authorizeSelect: (body) =>
-          coworkHumanAuthorityHeaders({
-            operation: "chat.execution_select",
-            storeId,
-            documentId,
-            body,
-          }),
-        onEnvelope: (envelope) => {
-          if (
-            workspaceIdentityRef.current !== providerWorkspaceIdentity
-          ) {
-            return;
-          }
-          adoptExecutionRef.current(
-            documentId,
-            storeId,
-            envelope.execution,
-            envelope.agent,
-          );
-        },
-      });
-    },
-    [documentId, storeId, workspaceIdentity],
-  );
+  const executionProvider = useMemo(() => {
+    const providerWorkspaceIdentity = workspaceIdentity;
+    return createHttpChatExecutionProfileProvider({
+      targetId: workspaceIdentity,
+      loadUrl: coworkConversationEndpoint(documentId, storeId),
+      selectUrl: coworkConversationExecutionEndpoint(documentId, storeId),
+      authorizeSelect: (body) =>
+        coworkHumanAuthorityHeaders({
+          operation: "chat.execution_select",
+          storeId,
+          documentId,
+          body,
+        }),
+      onEnvelope: (envelope) => {
+        if (workspaceIdentityRef.current !== providerWorkspaceIdentity) {
+          return;
+        }
+        adoptExecutionRef.current(
+          documentId,
+          storeId,
+          envelope.execution,
+          envelope.agent,
+        );
+      },
+    });
+  }, [documentId, storeId, workspaceIdentity]);
   useEffect(() => {
     if (conversation.execution !== undefined) {
       executionProvider.replaceSnapshot(conversation.execution);
@@ -719,10 +723,7 @@ export function CoworkLiveWorkspace({
     return {
       ...chatExecution,
       confirmSelection: (candidate: ChatExecutionSelectionCandidate) =>
-        coworkExecutionSwitchConfirmation(
-          conversation.agent.status,
-          candidate,
-        ),
+        coworkExecutionSwitchConfirmation(conversation.agent.status, candidate),
     };
   }, [chatExecution, conversation.agent.status]);
   const verifyExecution = useCoworkVerifyExecution(
@@ -762,10 +763,7 @@ export function CoworkLiveWorkspace({
   }, [conversation.ensure]);
   const automaticPreparationKeyRef = useRef<string | null>(null);
   const prepareChat = useCallback(async (): Promise<void> => {
-    if (
-      conversation.phase !== "idle" &&
-      conversation.phase !== "error"
-    ) {
+    if (conversation.phase !== "idle" && conversation.phase !== "error") {
       return;
     }
     // A present-user Chat selection authorizes a fresh bounded preparation
@@ -776,8 +774,7 @@ export function CoworkLiveWorkspace({
   useEffect(() => {
     if (railStore.getState().tab !== "chat" || conversation.ensuring) return;
     const needsPreparation =
-      conversation.phase === "idle" ||
-      conversation.phase === "error";
+      conversation.phase === "idle" || conversation.phase === "error";
     if (!needsPreparation) return;
     const attemptKey = [
       workspaceIdentity,
@@ -822,8 +819,7 @@ export function CoworkLiveWorkspace({
       return {
         kind: "error",
         draftStorageId: chatDraftStorageId,
-        error:
-          conversation.error ?? "Chat could not be loaded.",
+        error: conversation.error ?? "Chat could not be loaded.",
       };
     }
     return {
@@ -877,6 +873,7 @@ export function CoworkLiveWorkspace({
     [narrowWorkspace, railStore],
   );
   useEffect(() => setActivePane("editor"), [documentId]);
+  useEffect(() => setProvenanceSelectionAction(null), [documentId, storeId]);
   useEffect(() => {
     setArmedVerifyRecheck(null);
   }, [documentId, storeId]);
@@ -884,7 +881,7 @@ export function CoworkLiveWorkspace({
   const provenanceClient = useMemo(() => new CoworkHttpClient(), []);
   const defaultPasteProvenanceRecorder =
     useCallback<CoworkPasteProvenanceRecorder>(
-      (request) => provenanceClient.recordPasteProvenance(request).then(() => undefined),
+      (request) => provenanceClient.recordPasteProvenance(request),
       [provenanceClient],
     );
 
@@ -943,6 +940,17 @@ export function CoworkLiveWorkspace({
         }
       : {}),
   });
+  const handleProvenanceSelectionAction = useCallback(
+    (
+      action: ProvenanceSelectionAction & {
+        readonly intent: "review" | "view" | "inspect";
+      },
+    ): void => {
+      setProvenanceSelectionAction(action);
+      selectPane("provenance");
+    },
+    [selectPane],
+  );
   const provenanceEditor = useMemo<ProvenanceEditorIntegration>(
     () => ({
       resolveTarget: bridge.provenanceEditor.resolveTarget,
@@ -1069,14 +1077,18 @@ export function CoworkLiveWorkspace({
       captureAnalysisTarget: async (target) => {
         const controller = bridge.actionSnapshotController;
         if (controller === null) {
-          throw new Error("The editor is still preparing. Try again in a moment.");
+          throw new Error(
+            "The editor is still preparing. Try again in a moment.",
+          );
         }
         return controller.capture(target);
       },
       captureSelection: async (): Promise<TruthSelectionCapture> => {
         const controller = bridge.actionSnapshotController;
         if (controller === null) {
-          throw new Error("The editor is still preparing. Try again in a moment.");
+          throw new Error(
+            "The editor is still preparing. Try again in a moment.",
+          );
         }
         const capture = await controller.capture("current_selection");
         if (capture.target.selector.kind !== "text_quote") {
@@ -1108,7 +1120,9 @@ export function CoworkLiveWorkspace({
           connection.documentId !== documentId
         ) {
           if (onOpenTruthPassage === undefined) {
-            setPassageAnnouncement("That connected document could not be opened here.");
+            setPassageAnnouncement(
+              "That connected document could not be opened here.",
+            );
             return;
           }
           onOpenTruthPassage(connection);
@@ -1199,11 +1213,7 @@ export function CoworkLiveWorkspace({
       });
       bridge.reviewProvider.invalidate();
     };
-  }, [
-    bridge.reviewProvider,
-    onRunVerify,
-    verifyClient,
-  ]);
+  }, [bridge.reviewProvider, onRunVerify, verifyClient]);
   const resolvedAffirmRecheckTarget =
     useMemo<CoworkAffirmVerifyRecheckTargetHandler>(() => {
       if (onAffirmRecheckTarget !== undefined) {
@@ -1302,9 +1312,7 @@ export function CoworkLiveWorkspace({
       editorHelp={coworkEditorHelp(document)}
       showHealth={showHealth}
       editorTopBar={
-        <CoworkDocumentActionBar
-          controller={bridge.actionSnapshotController}
-        />
+        <CoworkDocumentActionBar controller={bridge.actionSnapshotController} />
       }
       workspaceBottomDock={
         <CoworkDocumentActionDock
@@ -1334,11 +1342,7 @@ export function CoworkLiveWorkspace({
               editorTabRef={editorPaneTabRef}
             />
           ) : null}
-          <p
-            className="wb-visually-hidden"
-            role="status"
-            aria-live="polite"
-          >
+          <p className="wb-visually-hidden" role="status" aria-live="polite">
             {passageAnnouncement}
           </p>
           <ProvenanceHoverCard
@@ -1348,7 +1352,28 @@ export function CoworkLiveWorkspace({
           />
         </>
       }
-      editor={<CoworkBridgeEditor {...bridge.editorProps} />}
+      editor={
+        <CoworkBridgeEditor
+          {...bridge.editorProps}
+          activeLens={
+            activeRailTab === "review"
+              ? "review"
+              : activeRailTab === "truth"
+                ? "truth"
+                : activeRailTab === "provenance"
+                  ? "provenance"
+                  : "neutral"
+          }
+          provenanceProvider={bridge.provenanceProvider}
+          provenanceSelectionActionsActive={coworkProvenanceSelectionActionsActive(
+            activeRailTab,
+            narrowWorkspace,
+            activePane,
+          )}
+          onProvenanceSelectionAction={handleProvenanceSelectionAction}
+          onInputProvenancePendingChange={setInputProvenancePending}
+        />
+      }
       rail={
         <CoworkChatTargetingProvider
           storeId={storeId}
@@ -1370,6 +1395,8 @@ export function CoworkLiveWorkspace({
               provider: bridge.provenanceProvider,
               editor: provenanceEditor,
               mutationBarrier: bridge.provenanceMutationBarrier,
+              selectionAction: provenanceSelectionAction,
+              inputProvenancePending,
             }}
             chat={chat}
             reviewAnchors={reviewAnchors}
@@ -1385,9 +1412,7 @@ export function CoworkLiveWorkspace({
             chatAnnotations={annotations}
             chatExecution={presentedChatExecution}
             onScrollToChatAnchor={scrollToChatAnchor}
-            reviewVisible={
-              !narrowWorkspace || activePane === "review"
-            }
+            reviewVisible={!narrowWorkspace || activePane === "review"}
             truthVisible={!narrowWorkspace || activePane === "truth"}
             provenanceVisible={!narrowWorkspace || activePane === "provenance"}
             readOnly={readOnly}
@@ -1421,6 +1446,7 @@ export function resolveFixtureMode(
 ): CoworkFixtureMode {
   if (import.meta.env.DEV && override === "demo") return "demo";
   const wantLive = override === "live" || quality !== "demo";
-  if (wantLive && documentId !== undefined && storeId !== undefined) return "live";
+  if (wantLive && documentId !== undefined && storeId !== undefined)
+    return "live";
   return "empty";
 }

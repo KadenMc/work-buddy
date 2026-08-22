@@ -1,7 +1,8 @@
 # Co-work Provenance surface
 
-**Status:** Accepted design and implementation contract for the first
-end-to-end Provenance lens. The as-built boundary is recorded in
+**Status:** Accepted design and implementation contract for the end-to-end
+Provenance lens, direct-entry delivery state, and accepted-agent-proposal
+attribution. The as-built boundary is recorded in
 [implementation-plan.md](implementation-plan.md); anything listed under
 **Deferred** is not part of this delivery.
 
@@ -32,7 +33,7 @@ fragile mutation surface.
 
 ## User jobs
 
-The first slice supports four practical jobs:
+The surface supports six practical jobs:
 
 1. **Scan** the document for AI, human, mixed, unknown, unrecorded, or stale
    provenance.
@@ -43,6 +44,12 @@ The first slice supports four practical jobs:
    or source.
 4. **Repair awareness** by identifying unrecorded, unresolved, ambiguous, or
    conflicting coverage rather than silently presenting it as human-authored.
+5. **Capture new writing** by recording a local typing burst as an exact
+   `direct_entry` span attributed to the enrolled inputter once the edit and
+   its frozen structured head are durable, while showing the exact capture as
+   **Recording provenance…** until the authoritative receipt arrives.
+6. **Repair older uncovered text** through an explicit selection-based
+   determination whose source stays honestly labeled **Untracked / legacy**.
 
 Provenance does not answer whether the prose is correct, whether a claim is a
 fact, whether an edit should be accepted, or whether a named person really
@@ -62,7 +69,8 @@ One provenance attestation keeps these facts separate:
   `unknown`, with reviewers when recorded.
 - **Attester and basis** identify who made the assertion and why it was
   recorded, for example user attestation, automatic short-text attribution,
-  proposal acceptance, migration, or legacy data.
+  automatic direct-entry attribution, proposal acceptance, migration, or
+  legacy data.
 
 These dimensions must not be collapsed into a single trust badge. In
 particular:
@@ -110,6 +118,26 @@ closed and requires a refresh or a fresh user decision. Independently effective
 overlapping attestations that disagree are a **conflict**, not an invitation to
 use last-write-wins.
 
+### Accepted agent proposal provenance
+
+A confirmed agent-run edit proposal creates an authorship record as part of the
+same locked sitting commit which materializes the accepted document. Its
+authorship is `ai`, its initial human-review state is `not_reviewed`, and both
+its source and basis are `proposal_acceptance`. The source detail binds the
+proposal and accepted-replacement digests, the consumed human confirmation
+gesture, and the validated producing agent-run reference and producer metadata.
+The human confirmer is the attester; confirmation does not become a reviewer
+record and does not imply factual approval.
+
+The exact target includes only replacement text which can be attributed
+mechanically. A true replacement records the replacement passage. An insertion
+whose replacement preserves the original quote exactly once records only the
+non-whitespace segments before and/or after that quote, never the preserved
+original. A deletion records no text span. Repeated preserved text, an invalid
+anchor, or a segment which cannot be resolved uniquely in the committed
+projection aborts the whole sitting, including document materialization,
+proposal status, gesture consumption, and provenance.
+
 ## Exact coverage semantics
 
 The overlay is a projection over the current editor, not a mutation of its
@@ -142,6 +170,29 @@ requiring re-anchor. A span that still resolves uniquely may remain painted for
 inspection; text outside uniquely resolved recorded spans is unrecorded. This
 prevents newly typed text from inheriting an older document-wide attribution.
 
+For ordinary local typing, that invalidation is followed by a durable
+direct-entry capture. The editor synchronously stages each evolving burst before
+the transaction can be lost, coalesces only one contiguous same-block burst,
+and updates the staged exact selector for backspace and correction. It closes
+the burst at a quiescent persistence boundary, cursor or block discontinuity,
+paste/drop, history action, blur, lens change, save, or teardown. After Yjs
+persistence settles, the browser freezes one exact current-head request and the
+server appends a human-authored, review-not-applicable span with
+`basis=automatic_direct_entry_attribution`. Remote/applied Yjs changes,
+format-only changes, seed operations, and arbitrary disjoint transactions do
+not inherit that assertion.
+
+Before that authoritative record arrives, a uniquely resolved browser-local
+capture is a third delivery state: **pending**, not recorded and not
+unrecorded. The overlay marks only its exact current range and the stable panel
+announces that recent typing is being recorded. Pending carries no provisional
+authorship, review, contributor, reviewer, or attester assertion. A matching
+authoritative span takes precedence immediately, even during the brief interval
+before the browser removes the delivered outbox entry. The browser removes that
+entry only after a fresh history row matches the receipt's attestation ID,
+document-span ID, and structured head; stale, misbound, or failed refreshes keep
+the exact frozen request pending for retry.
+
 Document-version and exact-span targets are different scopes. A current exact
 span overrides a current document-wide determination in its range; this
 specific-over-fallback precedence is not a conflict. A stale document-level
@@ -163,6 +214,7 @@ hover card and panel:
 | Mixed authorship | split or patterned wash | Mixed authorship |
 | Unknown authorship | neutral dotted/patterned treatment | Authorship unknown |
 | Unrecorded coverage | neutral hatch/dotted treatment | No provenance recorded |
+| Pending direct-entry delivery | subtle informational dotted outline, without authorship or review treatment | Recording provenance… |
 | Human reviewed | solid review underline or review mark | Human reviewed |
 | Explicitly not reviewed | amber dashed underline | Not human-reviewed |
 | Review unknown | gray dotted underline | Review unknown |
@@ -190,8 +242,14 @@ containing:
 - human-review status and reviewers;
 - source kind and retained source reference when permitted;
 - attester and basis;
-- exact/current, unrecorded, stale, ambiguous, or conflict state; and
+- exact/current, pending delivery, unrecorded, stale, ambiguous, or conflict
+  state; and
 - a plain-language direction to open Provenance for stable details and actions.
+
+A pending-delivery hover is intentionally smaller: it says **Recording
+provenance…** and explains that authorship and review will appear after the
+server confirms the record. It does not render placeholder provenance facts as
+if the ledger had asserted them.
 
 The hover card is explanatory. It does not contain **Mark reviewed**, correction,
 delete, or any other mutation. It does not steal editor selection, move either
@@ -199,6 +257,16 @@ pane, or persist its open state. It closes on Escape, pointer departure, focus
 departure, lens change, or document change. Keyboard users can reach the same
 information through the document-order panel list even when editor decoration
 spans themselves are not convenient tab stops.
+
+While Provenance owns the editor lens, the generic **Give feedback** affordance
+is absent. A deliberate text selection instead gets one provenance-specific
+entry point: **Record provenance** for uncovered text, **Review provenance** for one
+exact eligible AI/mixed span, **View provenance** for one healthy recorded
+target, or **Inspect provenance** for multiple, stale, ambiguous, or conflicting
+coverage. The floating action never performs a review mutation: it opens the
+stable panel, where the target, consequences, and guarded action remain visible.
+Recording uncovered text opens the shared determination form and stores the
+source as untracked legacy content rather than claiming it was just typed.
 
 ## Stable panel
 
@@ -227,8 +295,9 @@ must not replay after refresh. An unresolved or ambiguous row opens details
 without scrolling to a guessed location. Expanding or closing inline detail
 does not replace the independently persisted list position.
 
-The **Mark reviewed** action appears only in stable detail when all of these are
-true:
+For an AI- or mixed-authored target, stable detail always shows the **Mark
+reviewed** action. It is enabled only when all of these are true, and otherwise
+stays visible with the exact reason it is unavailable:
 
 - the record is effective and targets either the current whole-document
   version or a uniquely resolved span in the current document;
@@ -260,8 +329,13 @@ writable. Any drift fails closed and asks for a fresh inspection and gesture.
 - Background refresh retains prior data and geometry until an authoritative
   replacement arrives.
 - A failed load offers **Retry** and is never rendered as an empty document.
-- A document with text and no current coverage says **No provenance is recorded
-  for this document** and the lens shows unrecorded coverage.
+- Browser-local recent typing awaiting its receipt says **Recording provenance
+  for recent typing…**; it suppresses definitive empty/unrecorded copy for that
+  pending passage and changes the summary to **Updating…**.
+- A document with text and no current coverage says **No provenance has been
+  recorded for this document. New typing is recorded automatically; select
+  existing text to record it.** The lens shows unrecorded coverage and makes
+  clear that the earlier source remains untracked.
 - A genuinely empty document says **This document has no text to map yet**.
 - Read-only mode preserves scanning, hover, detail, and history while mutation
   controls explain why they are unavailable.
@@ -291,7 +365,7 @@ effects.
 
 ## Architecture
 
-The implementation has four boundaries:
+The implementation has six boundaries:
 
 1. **Truth provenance authority** retains append-only attestations and
    supersession history.
@@ -303,7 +377,15 @@ The implementation has four boundaries:
    refresh after action. It may share the open-document snapshot source with
    neighboring surfaces, but it does not enlarge `ReviewRailData` into a
    general provenance transport.
-4. **ProseMirror decoration plugin and Provenance rail** render the view-only
+4. **Durable browser input provenance outbox** stages local typing and paste
+   captures before asynchronous IndexedDB work, freezes each request only after
+   Yjs persistence, and reconciles crash/reload delivery without changing the
+   capture-time actor.
+5. **Sitting commit integration** appends accepted-agent-proposal provenance in
+   the same transaction as materialization, the acceptance gesture and status,
+   and the sitting receipt. It binds the producing run and paints only exact
+   text contributed by the replacement; unsafe derivation aborts the sitting.
+6. **ProseMirror decoration plugin and Provenance rail** render the view-only
    lens, re-anchor exact spans, compute uncovered text, explain hover, and own
    stable details/actions.
 
@@ -343,14 +425,30 @@ The slice is complete only when all of these are demonstrable:
 11. A local edit immediately removes stale document-wide fallback; review
     stays unavailable until the editor persistence barrier and a forced fresh
     preflight agree on one exact current head and effective leaf.
+12. Typing `Test` as one ordinary local burst creates one current exact
+    `direct_entry` span for `Test` after persistence, including through ordinary
+    backspace/correction and crash recovery; it never attributes intervening,
+    remote, pasted, or pre-existing text.
+13. Provenance selections never show **Give feedback**. They offer Record,
+    Review, View, or Inspect according to exact current coverage, with
+    durable mutation confined to the stable panel or determination form.
+14. During delayed direct-entry delivery, only the exact pending passage says
+    **Recording provenance…**, no provisional authorship or review is shown,
+    and authoritative recorded coverage replaces pending state in place.
+15. Confirming an agent-run proposal transactionally records the replacement's
+    attributable text as AI-authored, not reviewed, with
+    `source`/`basis=proposal_acceptance`, producing-run linkage, and the consumed
+    acceptance gesture. Preserved original text is not relabeled AI-authored,
+    and an unsafe or ambiguous derived span aborts the sitting.
 
 ## Deferred
 
 The following are explicitly outside this delivery:
 
 - verified remote or multi-user identity and `account_ref` enrollment;
-- character-level collaborative authorship inferred from arbitrary Yjs
-  updates;
+- character-level collaborative authorship inferred from remote, applied,
+  programmatic, or otherwise arbitrary Yjs updates (local editor direct-entry
+  transactions are captured explicitly at ingress);
 - automatic propagation of version-wide attribution through later edits
   without a proven changeset map;
 - durable review of a changed-head client-reanchored span; it requires a

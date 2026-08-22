@@ -8,6 +8,7 @@ import sqlite3
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -17,7 +18,11 @@ from work_buddy.agent_execution.models import (
     AgentSpawnOutcome,
     AgentSpawnRequest,
 )
-from work_buddy.cowork import verify_orchestration, verify_runtime
+from work_buddy.cowork import (
+    verify_orchestration,
+    verify_projection,
+    verify_runtime,
+)
 from work_buddy.cowork.execution_identity import CoworkVerifyRole
 from work_buddy.cowork.verify import (
     ActionSnapshot,
@@ -144,6 +149,81 @@ def _ready_document(
         at=NOW,
     )
     return document, projection, snapshot
+
+
+def test_verify_result_is_non_current_while_compaction_recovery_is_pending(
+    store_ctx: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+):
+    document, _projection, _snapshot = _ready_document(store_ctx)
+    store = store_ctx["store"]
+
+    def compaction_in_flight(*_args, **_kwargs):
+        raise ydoc_store.CompactionRecoveryRequired("compaction in flight")
+
+    result = SimpleNamespace(
+        id="result-in-flight",
+        evaluation_run_id="run-in-flight",
+        check_execution_id="execution-in-flight",
+        criterion_definition_version_id="criterion-in-flight",
+        result_kind="finding",
+        message="A recorded result.",
+        payload_json="{}",
+        canonical_sha256="1" * 64,
+        created_at=NOW,
+    )
+    records = {
+        EvaluationResult: result,
+        CheckExecution: SimpleNamespace(
+            check_definition_version_id="check-in-flight"
+        ),
+        CriterionDefinitionVersion: SimpleNamespace(
+            title="Clarity",
+            description="The document is clear.",
+        ),
+        CheckDefinitionVersion: SimpleNamespace(
+            title="Clarity check",
+            mechanism="deterministic",
+            limitations_json="[]",
+        ),
+        ActionSnapshot: SimpleNamespace(
+            target_kind="document",
+            structured_head_sha256="2" * 64,
+        ),
+    }
+
+    monkeypatch.setattr(
+        ydoc_store,
+        "current_structured_head",
+        compaction_in_flight,
+    )
+    monkeypatch.setattr(
+        verify_projection,
+        "surfaced_results",
+        lambda *_args, **_kwargs: (
+            {
+                "id": result.id,
+                "action_snapshot_id": "action-in-flight",
+                "evidence_selector": {"exact": "A recorded result."},
+                "disposition": {"decision": "surface"},
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        verify_projection.verify_store,
+        "get_record",
+        lambda _store, record_type, _record_id, **_kwargs: records[record_type],
+    )
+    monkeypatch.setattr(
+        verify_projection.verify_store,
+        "list_records",
+        lambda *_args, **_kwargs: (),
+    )
+
+    projected = result_projection(store, document)
+
+    assert len(projected) == 1
+    assert projected[0]["current_version"] is False
 
 
 def _capture(

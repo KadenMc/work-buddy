@@ -484,7 +484,11 @@
   display: grid;
   place-items: center;
   padding: var(--wb-space-4);
-  background: color-mix(in srgb, var(--wb-color-surface-canvas) 35%, transparent);
+  background: color-mix(
+    in srgb,
+    var(--wb-color-surface-canvas) 35%,
+    transparent
+  );
   backdrop-filter: blur(3px);
 }
 
@@ -862,8 +866,10 @@
   transform: translateX(-50%);
   inline-size: 1px;
   background: var(--wb-color-border-default);
-  transition: inline-size var(--wb-motion-duration-fast) var(--wb-motion-easing-standard),
-    background-color var(--wb-motion-duration-fast) var(--wb-motion-easing-standard);
+  transition:
+    inline-size var(--wb-motion-duration-fast) var(--wb-motion-easing-standard),
+    background-color var(--wb-motion-duration-fast)
+      var(--wb-motion-easing-standard);
 }
 
 .wb-cowork__rail-separator:hover::before,
@@ -949,7 +955,8 @@
    * className on an inner content element. Target the actual panel boundary and override
    * the library's inline display/flex sizing so exactly one peer pane occupies the viewport.
    */
-  .wb-cowork__body[data-narrow="true"] > [data-panel][data-pane-active="false"] {
+  .wb-cowork__body[data-narrow="true"]
+    > [data-panel][data-pane-active="false"] {
     display: none !important;
   }
 
@@ -1174,7 +1181,11 @@
 }
 
 .wb-cowork-provenance--human {
-  background: color-mix(in srgb, var(--wb-color-status-success) 9%, transparent);
+  background: color-mix(
+    in srgb,
+    var(--wb-color-status-success) 9%,
+    transparent
+  );
   border-inline-start: 2px solid var(--wb-color-status-success);
 }
 
@@ -1206,23 +1217,45 @@
   border-inline-start-style: dashed;
 }
 
+/*
+ * Browser-local delivery state only. It intentionally avoids every authorship
+ * and review treatment until the server ledger returns an authoritative span.
+ */
+.wb-cowork-provenance--pending {
+  background: color-mix(in srgb, var(--wb-color-status-info) 9%, transparent);
+  border-inline-start: 2px dotted var(--wb-color-status-info);
+  outline: 1px dotted
+    color-mix(in srgb, var(--wb-color-status-info) 45%, transparent);
+  outline-offset: 1px;
+}
+
 .wb-cowork-provenance--review-reviewed {
   text-decoration: underline solid var(--wb-color-status-success) 2px;
   text-underline-offset: 3px;
 }
 
-.wb-cowork-provenance--review-not-reviewed:is(.wb-cowork-provenance--ai, .wb-cowork-provenance--mixed) {
+.wb-cowork-provenance--review-not-reviewed:is(
+  .wb-cowork-provenance--ai,
+  .wb-cowork-provenance--mixed
+) {
   text-decoration: underline dashed var(--wb-color-status-warning) 1.5px;
   text-underline-offset: 3px;
 }
 
-.wb-cowork-provenance--review-unknown:is(.wb-cowork-provenance--ai, .wb-cowork-provenance--mixed) {
+.wb-cowork-provenance--review-unknown:is(
+  .wb-cowork-provenance--ai,
+  .wb-cowork-provenance--mixed
+) {
   text-decoration: underline dotted var(--wb-color-text-secondary) 1.5px;
   text-underline-offset: 3px;
 }
 
 .wb-cowork-provenance--conflict {
-  background: color-mix(in srgb, var(--wb-color-status-danger) 12%, transparent);
+  background: color-mix(
+    in srgb,
+    var(--wb-color-status-danger) 12%,
+    transparent
+  );
   border-inline-start: 3px double var(--wb-color-status-danger);
   text-decoration: underline wavy var(--wb-color-status-danger) 2px;
   text-underline-offset: 3px;

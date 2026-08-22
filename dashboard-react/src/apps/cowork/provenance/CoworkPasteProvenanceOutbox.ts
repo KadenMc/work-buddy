@@ -2,6 +2,7 @@ import type { RangeQuoteAnchor } from "../feedback/feedbackAnchor";
 import {
   COWORK_PROVENANCE_DETERMINATION_SCHEMA,
   coworkProvenanceDeterminationIssue,
+  type CoworkProvenanceActorIdentity,
   type CoworkProvenanceDetermination,
   type CoworkProvenancePerson,
 } from "./contracts";
@@ -16,6 +17,8 @@ const DATABASE_NAME = "work-buddy-cowork-paste-provenance";
 const STORE_NAME = "paste-provenance-outbox";
 
 export type CoworkPasteProvenanceStatus =
+  | "capturing"
+  | "cancelled"
   | "awaiting_determination"
   | "ready"
   | "retryable_failure"
@@ -47,6 +50,9 @@ export interface CoworkPasteProvenanceOutboxEntry {
   readonly anchor: RangeQuoteAnchor;
   readonly idempotencyKey: string;
   readonly substantial: boolean;
+  /** Actor session in force when the input gesture began. */
+  readonly capturedActor?: CoworkProvenanceActorIdentity;
+  readonly sourceKind: CoworkPasteProvenanceRequest["sourceKind"];
   readonly basisKind: CoworkPasteProvenanceRequest["basisKind"];
   readonly determination: CoworkProvenanceDetermination;
   readonly capturedAt: string;
@@ -64,6 +70,9 @@ export interface CoworkPasteProvenanceCapture {
   readonly anchor: RangeQuoteAnchor;
   readonly idempotencyKey: string;
   readonly substantial: boolean;
+  readonly capturedActor?: CoworkProvenanceActorIdentity;
+  /** Omitted only by persisted v1/v2 paste records and older adapters. */
+  readonly sourceKind?: CoworkPasteProvenanceRequest["sourceKind"];
   readonly basisKind: CoworkPasteProvenanceRequest["basisKind"];
   readonly determination: CoworkProvenanceDetermination;
   readonly capturedAt?: string;
@@ -72,7 +81,7 @@ export interface CoworkPasteProvenanceCapture {
   readonly requiresExplicitDetermination?: boolean;
   readonly status: Extract<
     CoworkPasteProvenanceStatus,
-    "awaiting_determination" | "ready"
+    "capturing" | "awaiting_determination" | "ready"
   >;
 }
 
@@ -80,6 +89,34 @@ export interface CoworkPasteProvenanceOutbox {
   list(): Promise<readonly CoworkPasteProvenanceOutboxEntry[]>;
   append(
     capture: CoworkPasteProvenanceCapture,
+  ): Promise<CoworkPasteProvenanceOutboxEntry>;
+  /**
+   * Synchronously stage, then durably insert/update one still-open typing
+   * burst. The shared idempotency key is the burst identity.
+   */
+  upsertCapture(
+    capture: CoworkPasteProvenanceCapture,
+  ): Promise<CoworkPasteProvenanceOutboxEntry>;
+  /** Retire an open burst whose entire inserted range was deleted. */
+  cancelCapture(id: number): Promise<void>;
+  /**
+   * Reopen a direct-entry request frozen locally but not yet handed to the
+   * recorder because another keystroke advanced its target generation.
+   */
+  reopenCapture(
+    id: number,
+    capture: CoworkPasteProvenanceCapture,
+  ): Promise<CoworkPasteProvenanceOutboxEntry>;
+  /**
+   * Preserve an automatic typing capture that cannot be bound to its
+   * capture-time actor. It becomes an explicit legacy determination instead
+   * of disappearing or being attributed to whichever actor arrives later.
+   */
+  deferDirectEntry(
+    id: number,
+    idempotencyKey: string,
+    determination: CoworkProvenanceDetermination,
+    failure: CoworkPasteProvenanceFailure,
   ): Promise<CoworkPasteProvenanceOutboxEntry>;
   updateDetermination(
     id: number,
@@ -89,6 +126,7 @@ export interface CoworkPasteProvenanceOutbox {
     id: number,
     determination: CoworkProvenanceDetermination,
     basisKind: CoworkPasteProvenanceRequest["basisKind"],
+    capturedActor?: CoworkProvenanceActorIdentity,
   ): Promise<CoworkPasteProvenanceOutboxEntry>;
   freezeRequest(
     id: number,
@@ -150,9 +188,7 @@ interface NormalizedValue<Value> {
   readonly droppedEntries: number;
 }
 
-const storageWarning = (
-  warning: CoworkPasteProvenanceStorageWarning,
-): void => {
+const storageWarning = (warning: CoworkPasteProvenanceStorageWarning): void => {
   console.warn(`[Co-work paste provenance] ${warning.message}`, warning);
 };
 
@@ -191,6 +227,26 @@ const normalizedPerson = (value: unknown): CoworkProvenancePerson | null => {
     return { kind: "named_person", display_name: value.display_name };
   }
   return null;
+};
+
+const normalizedActor = (
+  value: unknown,
+): CoworkProvenanceActorIdentity | null => {
+  if (
+    !isObject(value) ||
+    value.kind !== "human" ||
+    typeof value.ref !== "string" ||
+    value.ref.trim().length === 0 ||
+    (value.identity_status !== "local_actor_ref" &&
+      value.identity_status !== "account_ref")
+  ) {
+    return null;
+  }
+  return {
+    kind: "human",
+    ref: value.ref,
+    identity_status: value.identity_status,
+  };
 };
 
 const normalizedDetermination = (
@@ -269,11 +325,25 @@ const normalizedAnchor = (value: unknown): RangeQuoteAnchor | null => {
   };
 };
 
-const PASTE_BASIS_KINDS = new Set([
+const PROVENANCE_BASIS_KINDS = new Set([
   "automatic_short_text_attribution",
+  "automatic_direct_entry_attribution",
   "user_attestation",
 ]);
+const PROVENANCE_SOURCE_KINDS = new Set(["paste", "direct_entry", "legacy"]);
+const provenanceSourceBasisAllowed = (
+  sourceKind: CoworkPasteProvenanceRequest["sourceKind"],
+  basisKind: CoworkPasteProvenanceRequest["basisKind"],
+): boolean =>
+  (sourceKind === "paste" &&
+    (basisKind === "automatic_short_text_attribution" ||
+      basisKind === "user_attestation")) ||
+  (sourceKind === "direct_entry" &&
+    basisKind === "automatic_direct_entry_attribution") ||
+  (sourceKind === "legacy" && basisKind === "user_attestation");
 const PASTE_STATUSES = new Set<CoworkPasteProvenanceStatus>([
+  "capturing",
+  "cancelled",
   "awaiting_determination",
   "ready",
   "retryable_failure",
@@ -294,24 +364,43 @@ const normalizedCapture = (
     typeof value.idempotencyKey !== "string" ||
     value.idempotencyKey.length === 0 ||
     typeof value.substantial !== "boolean" ||
+    (value.sourceKind !== undefined &&
+      (typeof value.sourceKind !== "string" ||
+        !PROVENANCE_SOURCE_KINDS.has(value.sourceKind))) ||
     typeof value.basisKind !== "string" ||
-    !PASTE_BASIS_KINDS.has(value.basisKind) ||
+    !PROVENANCE_BASIS_KINDS.has(value.basisKind) ||
     typeof value.status !== "string" ||
     !PASTE_STATUSES.has(value.status as CoworkPasteProvenanceStatus)
   ) {
     return null;
   }
+  const capturedActor =
+    value.capturedActor === undefined
+      ? undefined
+      : normalizedActor(value.capturedActor);
+  if (value.capturedActor !== undefined && capturedActor === null) return null;
+  const sourceKind = (value.sourceKind ??
+    "paste") as CoworkPasteProvenanceRequest["sourceKind"];
+  const basisKind =
+    value.basisKind as CoworkPasteProvenanceRequest["basisKind"];
+  if (
+    !provenanceSourceBasisAllowed(sourceKind, basisKind) ||
+    (value.status === "capturing" &&
+      (sourceKind !== "direct_entry" ||
+        basisKind !== "automatic_direct_entry_attribution")) ||
+    (!persisted && value.status === "cancelled")
+  ) {
+    return null;
+  }
   if (
     !persisted &&
+    value.status !== "capturing" &&
     value.status !== "awaiting_determination" &&
     value.status !== "ready"
   ) {
     return null;
   }
-  if (
-    value.capturedAt !== undefined &&
-    typeof value.capturedAt !== "string"
-  ) {
+  if (value.capturedAt !== undefined && typeof value.capturedAt !== "string") {
     return null;
   }
   if (
@@ -337,8 +426,12 @@ const normalizedCapture = (
     anchor,
     idempotencyKey: value.idempotencyKey,
     substantial: value.substantial,
-    basisKind: value.basisKind as CoworkPasteProvenanceRequest["basisKind"],
+    // v1/v2 records predate the explicit source discriminator and were all
+    // paste captures. Preserve them without inventing a new source.
+    sourceKind,
+    basisKind,
     determination,
+    ...(capturedActor == null ? {} : { capturedActor }),
     ...(typeof value.capturedAt === "string"
       ? { capturedAt: value.capturedAt }
       : persisted
@@ -389,22 +482,59 @@ const normalizedCapture = (
       typeof value.frozenRequest.idempotencyKey !== "string" ||
       value.frozenRequest.idempotencyKey !== value.idempotencyKey ||
       typeof value.frozenRequest.basisKind !== "string" ||
-      !PASTE_BASIS_KINDS.has(value.frozenRequest.basisKind)
+      !PROVENANCE_BASIS_KINDS.has(value.frozenRequest.basisKind) ||
+      (value.frozenRequest.sourceKind !== undefined &&
+        (typeof value.frozenRequest.sourceKind !== "string" ||
+          !PROVENANCE_SOURCE_KINDS.has(value.frozenRequest.sourceKind))) ||
+      (value.frozenRequest.expectedActorRef !== undefined &&
+        typeof value.frozenRequest.expectedActorRef !== "string") ||
+      (value.frozenRequest.expectedActorIdentityStatus !== undefined &&
+        value.frozenRequest.expectedActorIdentityStatus !== "local_actor_ref" &&
+        value.frozenRequest.expectedActorIdentityStatus !== "account_ref")
     ) {
       return null;
     }
     frozenRequest = {
       storeId: value.frozenRequest.storeId,
       documentId: value.frozenRequest.documentId,
-      basisKind:
-        value.frozenRequest
-          .basisKind as CoworkPasteProvenanceRequest["basisKind"],
+      ...(typeof value.frozenRequest.expectedActorRef === "string"
+        ? { expectedActorRef: value.frozenRequest.expectedActorRef }
+        : {}),
+      ...(value.frozenRequest.expectedActorIdentityStatus ===
+        "local_actor_ref" ||
+      value.frozenRequest.expectedActorIdentityStatus === "account_ref"
+        ? {
+            expectedActorIdentityStatus:
+              value.frozenRequest.expectedActorIdentityStatus,
+          }
+        : {}),
+      sourceKind: (value.frozenRequest.sourceKind ??
+        "paste") as CoworkPasteProvenanceRequest["sourceKind"],
+      basisKind: value.frozenRequest
+        .basisKind as CoworkPasteProvenanceRequest["basisKind"],
       expectedStructuredHeadSha256:
         value.frozenRequest.expectedStructuredHeadSha256,
       anchor: frozenAnchor,
       attestation: frozenAttestation,
       idempotencyKey: value.frozenRequest.idempotencyKey,
     };
+    if (
+      value.status === "capturing" ||
+      value.status === "cancelled" ||
+      frozenRequest.sourceKind !== sourceKind ||
+      frozenRequest.basisKind !== basisKind ||
+      !portableEqual(frozenRequest.anchor, anchor) ||
+      !portableEqual(frozenRequest.attestation, determination) ||
+      (frozenRequest.sourceKind !== "paste" &&
+        (frozenRequest.expectedActorRef === undefined ||
+          frozenRequest.expectedActorIdentityStatus === undefined)) ||
+      (capturedActor != null &&
+        (frozenRequest.expectedActorRef !== capturedActor.ref ||
+          frozenRequest.expectedActorIdentityStatus !==
+            capturedActor.identity_status))
+    ) {
+      return null;
+    }
   }
 
   let failure: CoworkPasteProvenanceFailure | undefined;
@@ -461,9 +591,7 @@ const portableEqual = (
       Array.isArray(left) &&
       Array.isArray(right) &&
       left.length === right.length &&
-      left.every((value, index) =>
-        portableEqual(value, right[index], seen),
-      )
+      left.every((value, index) => portableEqual(value, right[index], seen))
     );
   }
   const leftRecord = left as Record<string, unknown>;
@@ -495,10 +623,7 @@ const normalizeIntentCaptures = (
   let droppedEntries = 0;
   for (const candidate of value) {
     const normalized = normalizedCapture(candidate, { persisted: false });
-    if (
-      normalized === null ||
-      seen.has(normalized.idempotencyKey)
-    ) {
+    if (normalized === null || seen.has(normalized.idempotencyKey)) {
       droppedEntries += 1;
       continue;
     }
@@ -507,8 +632,7 @@ const normalizeIntentCaptures = (
   }
   return {
     value: captures,
-    repaired:
-      droppedEntries > 0 || !portableEqual(value, captures),
+    repaired: droppedEntries > 0 || !portableEqual(value, captures),
     droppedEntries,
   };
 };
@@ -523,7 +647,11 @@ const normalizePersistedOutbox = (
   const seenIds = new Set<number>();
   const seenKeys = new Set<string>();
   let droppedEntries =
-    isObject(value) && Array.isArray(value.entries) ? 0 : value === undefined ? 0 : 1;
+    isObject(value) && Array.isArray(value.entries)
+      ? 0
+      : value === undefined
+        ? 0
+        : 1;
   for (const candidate of rawEntries) {
     const normalized = normalizedCapture(candidate, { persisted: true });
     if (
@@ -570,9 +698,10 @@ export interface CoworkPasteProvenanceOutboxBackingStore {
   read(key: string): Promise<PersistedOutbox | undefined>;
   mutate<Value>(
     key: string,
-    mutation: (
-      current: PersistedOutbox,
-    ) => { readonly record: PersistedOutbox; readonly result: Value },
+    mutation: (current: PersistedOutbox) => {
+      readonly record: PersistedOutbox;
+      readonly result: Value;
+    },
   ): Promise<Value>;
 }
 
@@ -606,9 +735,7 @@ const emptyRecord = (key: string): PersistedOutbox => ({
   entries: [],
 });
 
-export class InMemoryCoworkPasteProvenanceOutboxBackingStore
-  implements CoworkPasteProvenanceOutboxBackingStore
-{
+export class InMemoryCoworkPasteProvenanceOutboxBackingStore implements CoworkPasteProvenanceOutboxBackingStore {
   readonly durable = false;
   readonly #records = new Map<string, PersistedOutbox>();
   #chain: Promise<unknown> = Promise.resolve();
@@ -621,9 +748,10 @@ export class InMemoryCoworkPasteProvenanceOutboxBackingStore
 
   mutate<Value>(
     key: string,
-    mutation: (
-      current: PersistedOutbox,
-    ) => { readonly record: PersistedOutbox; readonly result: Value },
+    mutation: (current: PersistedOutbox) => {
+      readonly record: PersistedOutbox;
+      readonly result: Value;
+    },
   ): Promise<Value> {
     const run = this.#chain.then(() => {
       const current = cloneRecord(this.#records.get(key) ?? emptyRecord(key));
@@ -644,9 +772,7 @@ export class InMemoryCoworkPasteProvenanceOutboxBackingStore
   }
 }
 
-export class InMemoryCoworkPasteProvenanceIntentStage
-  implements CoworkPasteProvenanceIntentStage
-{
+export class InMemoryCoworkPasteProvenanceIntentStage implements CoworkPasteProvenanceIntentStage {
   readonly #records = new Map<
     string,
     readonly CoworkPasteProvenanceCapture[]
@@ -659,8 +785,7 @@ export class InMemoryCoworkPasteProvenanceIntentStage
   put(key: string, capture: CoworkPasteProvenanceCapture): void {
     const current = this.list(key);
     const found = current.some(
-      (candidate) =>
-        candidate.idempotencyKey === capture.idempotencyKey,
+      (candidate) => candidate.idempotencyKey === capture.idempotencyKey,
     );
     this.#records.set(
       key,
@@ -684,9 +809,7 @@ export class InMemoryCoworkPasteProvenanceIntentStage
   }
 }
 
-export class WebStorageCoworkPasteProvenanceIntentStage
-  implements CoworkPasteProvenanceIntentStage
-{
+export class WebStorageCoworkPasteProvenanceIntentStage implements CoworkPasteProvenanceIntentStage {
   readonly #storage: Storage;
   readonly #prefix: string;
   readonly #onWarning: CoworkPasteProvenanceStorageWarningSink;
@@ -758,8 +881,7 @@ export class WebStorageCoworkPasteProvenanceIntentStage
   put(key: string, capture: CoworkPasteProvenanceCapture): void {
     const current = this.list(key);
     const found = current.some(
-      (candidate) =>
-        candidate.idempotencyKey === capture.idempotencyKey,
+      (candidate) => candidate.idempotencyKey === capture.idempotencyKey,
     );
     this.#write(
       key,
@@ -782,10 +904,7 @@ export class WebStorageCoworkPasteProvenanceIntentStage
     );
   }
 
-  #write(
-    key: string,
-    captures: readonly CoworkPasteProvenanceCapture[],
-  ): void {
+  #write(key: string, captures: readonly CoworkPasteProvenanceCapture[]): void {
     const storageKey = `${this.#prefix}${key}`;
     if (captures.length === 0) {
       this.#storage.removeItem(storageKey);
@@ -880,15 +999,11 @@ const quarantinedOutboxRecord = (
 });
 
 export interface IndexedDbCoworkPasteProvenanceOutboxBackingStoreOptions {
-  readonly openDatabase?: (
-    databaseName: string,
-  ) => Promise<IDBDatabase>;
+  readonly openDatabase?: (databaseName: string) => Promise<IDBDatabase>;
   readonly onWarning?: CoworkPasteProvenanceStorageWarningSink;
 }
 
-export class IndexedDbCoworkPasteProvenanceOutboxBackingStore
-  implements CoworkPasteProvenanceOutboxBackingStore
-{
+export class IndexedDbCoworkPasteProvenanceOutboxBackingStore implements CoworkPasteProvenanceOutboxBackingStore {
   readonly durable = true;
   readonly #databaseName: string;
   readonly #openDatabase: (databaseName: string) => Promise<IDBDatabase>;
@@ -909,9 +1024,7 @@ export class IndexedDbCoworkPasteProvenanceOutboxBackingStore
     const transaction = database.transaction(STORE_NAME, "readwrite");
     const done = transactionDone(transaction);
     const store = transaction.objectStore(STORE_NAME);
-    let warning:
-      | CoworkPasteProvenanceStorageWarning
-      | undefined;
+    let warning: CoworkPasteProvenanceStorageWarning | undefined;
     try {
       const stored = (await requestResult(store.get(key))) as unknown;
       if (stored === undefined) {
@@ -954,17 +1067,16 @@ export class IndexedDbCoworkPasteProvenanceOutboxBackingStore
 
   async mutate<Value>(
     key: string,
-    mutation: (
-      current: PersistedOutbox,
-    ) => { readonly record: PersistedOutbox; readonly result: Value },
+    mutation: (current: PersistedOutbox) => {
+      readonly record: PersistedOutbox;
+      readonly result: Value;
+    },
   ): Promise<Value> {
     const database = await this.#open();
     const transaction = database.transaction(STORE_NAME, "readwrite");
     const done = transactionDone(transaction);
     const store = transaction.objectStore(STORE_NAME);
-    let warning:
-      | CoworkPasteProvenanceStorageWarning
-      | undefined;
+    let warning: CoworkPasteProvenanceStorageWarning | undefined;
     try {
       const stored = (await requestResult(store.get(key))) as unknown;
       const normalized = normalizePersistedOutbox(stored, key);
@@ -979,9 +1091,7 @@ export class IndexedDbCoworkPasteProvenanceOutboxBackingStore
           droppedEntries: normalized.droppedEntries,
         };
       }
-      const { record, result } = mutation(
-        cloneRecord(normalized.value),
-      );
+      const { record, result } = mutation(cloneRecord(normalized.value));
       if (record.key !== key) {
         transaction.abort();
         await done.catch(() => undefined);
@@ -1045,14 +1155,10 @@ export class IndexedDbCoworkPasteProvenanceOutboxBackingStore
   }
 }
 
-const fallbackBacking =
-  new InMemoryCoworkPasteProvenanceOutboxBackingStore();
-const fallbackIntentStage =
-  new InMemoryCoworkPasteProvenanceIntentStage();
+const fallbackBacking = new InMemoryCoworkPasteProvenanceOutboxBackingStore();
+const fallbackIntentStage = new InMemoryCoworkPasteProvenanceIntentStage();
 
-export class DurableCoworkPasteProvenanceOutbox
-  implements CoworkPasteProvenanceOutbox
-{
+export class DurableCoworkPasteProvenanceOutbox implements CoworkPasteProvenanceOutbox {
   readonly #key: string;
   readonly #backing: CoworkPasteProvenanceOutboxBackingStore;
   readonly #intentStage: CoworkPasteProvenanceIntentStage;
@@ -1060,14 +1166,14 @@ export class DurableCoworkPasteProvenanceOutbox
 
   constructor(
     key: string,
-    backing: CoworkPasteProvenanceOutboxBackingStore =
-      typeof indexedDB === "undefined"
-        ? fallbackBacking
-        : new IndexedDbCoworkPasteProvenanceOutboxBackingStore(),
-    intentStage: CoworkPasteProvenanceIntentStage =
-      typeof localStorage === "undefined"
-        ? fallbackIntentStage
-        : new WebStorageCoworkPasteProvenanceIntentStage(),
+    backing: CoworkPasteProvenanceOutboxBackingStore = typeof indexedDB ===
+    "undefined"
+      ? fallbackBacking
+      : new IndexedDbCoworkPasteProvenanceOutboxBackingStore(),
+    intentStage: CoworkPasteProvenanceIntentStage = typeof localStorage ===
+    "undefined"
+      ? fallbackIntentStage
+      : new WebStorageCoworkPasteProvenanceIntentStage(),
   ) {
     this.#key = key;
     this.#backing = backing;
@@ -1077,9 +1183,15 @@ export class DurableCoworkPasteProvenanceOutbox
   list(): Promise<readonly CoworkPasteProvenanceOutboxEntry[]> {
     return this.#enqueue(async () => {
       await this.#reconcileStagedIntents();
-      const record =
-        (await this.#backing.read(this.#key)) ?? emptyRecord(this.#key);
-      return record.entries.map(cloneEntry);
+      return this.#backing.mutate(this.#key, (current) => {
+        const entries = current.entries.filter(
+          (entry) => entry.status !== "cancelled",
+        );
+        return {
+          record: { ...current, entries },
+          result: entries.map(cloneEntry),
+        };
+      });
     });
   }
 
@@ -1091,11 +1203,25 @@ export class DurableCoworkPasteProvenanceOutbox
     }
     const normalized: CoworkPasteProvenanceCapture = {
       ...capture,
+      sourceKind: capture.sourceKind ?? "paste",
       capturedAt: capture.capturedAt ?? new Date().toISOString(),
       passageExcerpt:
         capture.passageExcerpt ??
         coworkPastePassageExcerpt(capture.anchor.exact),
     };
+    if (
+      normalized.status === "capturing" ||
+      !provenanceSourceBasisAllowed(
+        normalized.sourceKind ?? "paste",
+        normalized.basisKind,
+      )
+    ) {
+      return Promise.reject(
+        new Error(
+          "This provenance capture has an invalid source, basis, or state.",
+        ),
+      );
+    }
     try {
       // This synchronous journal is the smallest honest cross-store barrier:
       // Yjs and IndexedDB cannot participate in one atomic browser transaction.
@@ -1105,8 +1231,7 @@ export class DurableCoworkPasteProvenanceOutbox
     }
     return this.#update((current) => {
       const existing = current.entries.find(
-        (entry) =>
-          entry.idempotencyKey === normalized.idempotencyKey,
+        (entry) => entry.idempotencyKey === normalized.idempotencyKey,
       );
       if (existing !== undefined) {
         return { record: current, result: cloneEntry(existing) };
@@ -1114,6 +1239,7 @@ export class DurableCoworkPasteProvenanceOutbox
       const entry: CoworkPasteProvenanceOutboxEntry = {
         id: current.nextId,
         ...normalized,
+        sourceKind: normalized.sourceKind ?? "paste",
         capturedAt: normalized.capturedAt!,
         passageExcerpt: normalized.passageExcerpt!,
       };
@@ -1137,33 +1263,239 @@ export class DurableCoworkPasteProvenanceOutbox
     });
   }
 
+  upsertCapture(
+    capture: CoworkPasteProvenanceCapture,
+  ): Promise<CoworkPasteProvenanceOutboxEntry> {
+    if (!coworkProvenanceExactWithinLimit(capture.anchor.exact)) {
+      return Promise.reject(new CoworkPasteProvenanceExactLimitError());
+    }
+    if (
+      capture.status !== "capturing" ||
+      capture.sourceKind !== "direct_entry" ||
+      capture.basisKind !== "automatic_direct_entry_attribution"
+    ) {
+      return Promise.reject(
+        new Error("Only an automatic direct-entry burst can be kept open."),
+      );
+    }
+    const normalized: CoworkPasteProvenanceCapture = {
+      ...capture,
+      sourceKind: "direct_entry",
+      capturedAt: capture.capturedAt ?? new Date().toISOString(),
+      passageExcerpt:
+        capture.passageExcerpt ??
+        coworkPastePassageExcerpt(capture.anchor.exact),
+    };
+    try {
+      // This overwrite is synchronous. A crash can lose neither the first
+      // character nor the latest shape of a still-open typing burst merely
+      // because IndexedDB has not run yet.
+      this.#intentStage.put(this.#key, normalized);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    return this.#update((current) => {
+      const existing = current.entries.find(
+        (entry) => entry.idempotencyKey === normalized.idempotencyKey,
+      );
+      if (existing !== undefined) {
+        if (
+          existing.status !== "capturing" ||
+          existing.frozenRequest !== undefined
+        ) {
+          throw new Error("A frozen provenance capture cannot be extended.");
+        }
+        const next: CoworkPasteProvenanceOutboxEntry = {
+          id: existing.id,
+          ...normalized,
+          sourceKind: normalized.sourceKind ?? "paste",
+          capturedAt: normalized.capturedAt!,
+          passageExcerpt: normalized.passageExcerpt!,
+        };
+        return {
+          record: {
+            ...current,
+            entries: current.entries.map((entry) =>
+              entry.id === existing.id ? next : entry,
+            ),
+          },
+          result: cloneEntry(next),
+        };
+      }
+      const entry: CoworkPasteProvenanceOutboxEntry = {
+        id: current.nextId,
+        ...normalized,
+        sourceKind: normalized.sourceKind ?? "paste",
+        capturedAt: normalized.capturedAt!,
+        passageExcerpt: normalized.passageExcerpt!,
+      };
+      return {
+        record: {
+          ...current,
+          nextId: current.nextId + 1,
+          entries: [...current.entries, entry],
+        },
+        result: cloneEntry(entry),
+      };
+    });
+  }
+
+  cancelCapture(id: number): Promise<void> {
+    return this.#replace(id, (entry) => {
+      if (entry.status !== "capturing" || entry.frozenRequest !== undefined) {
+        throw new Error("Only an open provenance capture can be cancelled.");
+      }
+      return { ...entry, status: "cancelled" };
+    }).then((entry) => {
+      // The persisted tombstone wins if the page stops before physical cleanup.
+      this.#intentStage.remove(this.#key, entry.idempotencyKey);
+      return this.#update((current) => ({
+        record: {
+          ...current,
+          entries: current.entries.filter((candidate) => candidate.id !== id),
+        },
+        result: undefined,
+      }));
+    });
+  }
+
+  reopenCapture(
+    id: number,
+    capture: CoworkPasteProvenanceCapture,
+  ): Promise<CoworkPasteProvenanceOutboxEntry> {
+    if (
+      capture.status !== "capturing" ||
+      capture.sourceKind !== "direct_entry" ||
+      capture.basisKind !== "automatic_direct_entry_attribution"
+    ) {
+      return Promise.reject(
+        new Error("Only an automatic direct-entry request can be reopened."),
+      );
+    }
+    try {
+      this.#intentStage.put(this.#key, capture);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    return this.#replace(id, (entry) => {
+      if (
+        entry.sourceKind !== "direct_entry" ||
+        entry.idempotencyKey !== capture.idempotencyKey
+      ) {
+        throw new Error(
+          "Only the same unsent direct-entry request can be reopened.",
+        );
+      }
+      return {
+        id: entry.id,
+        ...capture,
+        sourceKind: "direct_entry",
+        capturedAt: capture.capturedAt ?? entry.capturedAt,
+        passageExcerpt:
+          capture.passageExcerpt ??
+          coworkPastePassageExcerpt(capture.anchor.exact),
+      };
+    });
+  }
+
+  deferDirectEntry(
+    id: number,
+    idempotencyKey: string,
+    determination: CoworkProvenanceDetermination,
+    failure: CoworkPasteProvenanceFailure,
+  ): Promise<CoworkPasteProvenanceOutboxEntry> {
+    if (idempotencyKey.length === 0 || idempotencyKey.length > 200) {
+      return Promise.reject(
+        new Error("Deferred provenance requires a bounded idempotency key."),
+      );
+    }
+    let priorIdempotencyKey = idempotencyKey;
+    return this.#replace(id, (entry) => {
+      priorIdempotencyKey = entry.idempotencyKey;
+      if (
+        entry.sourceKind !== "direct_entry" ||
+        entry.status !== "capturing" ||
+        entry.frozenRequest !== undefined
+      ) {
+        throw new Error(
+          "Only an unfrozen direct-entry capture can require a determination.",
+        );
+      }
+      return {
+        ...entry,
+        idempotencyKey,
+        capturedActor: undefined,
+        sourceKind: "legacy",
+        basisKind: "user_attestation",
+        determination,
+        status: "awaiting_determination",
+        requiresExplicitDetermination: true,
+        frozenRequest: undefined,
+        failure,
+      };
+    }).then((entry) => {
+      // The direct-entry intent is no longer allowed to recover as automatic.
+      // Volatile backing stores receive the replacement intent below.
+      this.#intentStage.remove(this.#key, priorIdempotencyKey);
+      return this.#refreshVolatileIntent(entry, priorIdempotencyKey);
+    });
+  }
+
   updateDetermination(
     id: number,
     determination: CoworkProvenanceDetermination,
   ): Promise<CoworkPasteProvenanceOutboxEntry> {
-    return this.#replace(id, (entry) => ({
-      ...entry,
-      determination,
-      failure:
-        entry.failure?.code === COWORK_PROVENANCE_ACTOR_CHANGED
-          ? entry.failure
-          : undefined,
-    })).then((entry) => this.#refreshVolatileIntent(entry, entry.idempotencyKey));
+    return this.#replace(id, (entry) => {
+      if (entry.frozenRequest !== undefined) {
+        throw new Error("A frozen provenance request cannot be edited.");
+      }
+      return {
+        ...entry,
+        determination,
+        failure:
+          entry.failure?.code === COWORK_PROVENANCE_ACTOR_CHANGED ||
+          (entry.sourceKind === "legacy" &&
+            entry.status === "awaiting_determination" &&
+            entry.requiresExplicitDetermination === true &&
+            entry.failure?.code ===
+              "provenance_actor_unavailable_at_capture")
+            ? entry.failure
+            : undefined,
+      };
+    }).then((entry) =>
+      this.#refreshVolatileIntent(entry, entry.idempotencyKey),
+    );
   }
 
   markReady(
     id: number,
     determination: CoworkProvenanceDetermination,
     basisKind: CoworkPasteProvenanceRequest["basisKind"],
+    capturedActor?: CoworkProvenanceActorIdentity,
   ): Promise<CoworkPasteProvenanceOutboxEntry> {
-    return this.#replace(id, (entry) => ({
-      ...entry,
-      determination,
-      basisKind,
-      status: "ready",
-      requiresExplicitDetermination: undefined,
-      failure: undefined,
-    })).then((entry) => this.#refreshVolatileIntent(entry, entry.idempotencyKey));
+    return this.#replace(id, (entry) => {
+      if (entry.frozenRequest !== undefined) {
+        throw new Error("A frozen provenance request is already ready.");
+      }
+      if (!provenanceSourceBasisAllowed(entry.sourceKind, basisKind)) {
+        throw new Error("The provenance source and basis are incompatible.");
+      }
+      return {
+        ...entry,
+        determination,
+        basisKind,
+        ...(capturedActor === undefined ? {} : { capturedActor }),
+        status: "ready",
+        requiresExplicitDetermination: undefined,
+        failure: undefined,
+      };
+    }).then((entry) => {
+      if (this.#backing.durable) {
+        this.#intentStage.remove(this.#key, entry.idempotencyKey);
+        return entry;
+      }
+      return this.#refreshVolatileIntent(entry, entry.idempotencyKey);
+    });
   }
 
   freezeRequest(
@@ -1176,14 +1508,26 @@ export class DurableCoworkPasteProvenanceOutbox
   ): Promise<CoworkPasteProvenanceOutboxEntry> {
     return this.#replace(id, (entry) => {
       if (entry.frozenRequest !== undefined) return entry;
+      if (entry.sourceKind !== "paste" && entry.capturedActor === undefined) {
+        throw new Error(
+          "A direct or manual provenance request has no capture-time actor binding.",
+        );
+      }
       return {
         ...entry,
         frozenRequest: {
           storeId: target.storeId,
           documentId: target.documentId,
+          ...(entry.capturedActor === undefined
+            ? {}
+            : {
+                expectedActorRef: entry.capturedActor.ref,
+                expectedActorIdentityStatus:
+                  entry.capturedActor.identity_status,
+              }),
+          sourceKind: entry.sourceKind,
           basisKind: entry.basisKind,
-          expectedStructuredHeadSha256:
-            target.expectedStructuredHeadSha256,
+          expectedStructuredHeadSha256: target.expectedStructuredHeadSha256,
           anchor: entry.anchor,
           attestation: entry.determination,
           idempotencyKey: entry.idempotencyKey,
@@ -1228,7 +1572,14 @@ export class DurableCoworkPasteProvenanceOutbox
         (entry): CoworkPasteProvenanceOutboxEntry => ({
           ...entry,
           idempotencyKey: `${idempotencyKeyPrefix}:${String(entry.id)}`,
+          // A stale automatic direct-entry assertion must not be resent as
+          // though it were still machine-observed under the new actor. It is
+          // now an explicit, legacy/manual determination. Paste keeps its
+          // actual input source while likewise requiring a fresh attestation.
+          sourceKind:
+            entry.sourceKind === "direct_entry" ? "legacy" : entry.sourceKind,
           basisKind: "user_attestation",
+          capturedActor: undefined,
           determination,
           status: "awaiting_determination",
           requiresExplicitDetermination: true,
@@ -1249,12 +1600,12 @@ export class DurableCoworkPasteProvenanceOutbox
         },
       };
     }).then(({ entries, priorIdempotencyKeys }) =>
-      entries.map((entry, index) =>
-        this.#refreshVolatileIntent(
-          entry,
-          priorIdempotencyKeys[index] ?? entry.idempotencyKey,
-        ),
-      ),
+      entries.map((entry, index) => {
+        const priorIdempotencyKey =
+          priorIdempotencyKeys[index] ?? entry.idempotencyKey;
+        this.#intentStage.remove(this.#key, priorIdempotencyKey);
+        return this.#refreshVolatileIntent(entry, priorIdempotencyKey);
+      }),
     );
   }
 
@@ -1282,9 +1633,7 @@ export class DurableCoworkPasteProvenanceOutbox
         frozenRequest: undefined,
         failure: undefined,
       };
-    }).then((entry) =>
-      this.#refreshVolatileIntent(entry, priorIdempotencyKey),
-    );
+    }).then((entry) => this.#refreshVolatileIntent(entry, priorIdempotencyKey));
   }
 
   remove(id: number): Promise<void> {
@@ -1330,9 +1679,10 @@ export class DurableCoworkPasteProvenanceOutbox
   }
 
   #update<Value>(
-    mutation: (
-      current: PersistedOutbox,
-    ) => { readonly record: PersistedOutbox; readonly result: Value },
+    mutation: (current: PersistedOutbox) => {
+      readonly record: PersistedOutbox;
+      readonly result: Value;
+    },
   ): Promise<Value> {
     return this.#enqueue(() => this.#backing.mutate(this.#key, mutation));
   }
@@ -1343,8 +1693,7 @@ export class DurableCoworkPasteProvenanceOutbox
   ): CoworkPasteProvenanceOutboxEntry {
     if (
       this.#backing.durable ||
-      (entry.status !== "awaiting_determination" &&
-        entry.status !== "ready")
+      (entry.status !== "awaiting_determination" && entry.status !== "ready")
     ) {
       return entry;
     }
@@ -1352,8 +1701,12 @@ export class DurableCoworkPasteProvenanceOutbox
       anchor: entry.anchor,
       idempotencyKey: entry.idempotencyKey,
       substantial: entry.substantial,
+      sourceKind: entry.sourceKind,
       basisKind: entry.basisKind,
       determination: entry.determination,
+      ...(entry.capturedActor === undefined
+        ? {}
+        : { capturedActor: entry.capturedActor }),
       capturedAt: entry.capturedAt,
       passageExcerpt: entry.passageExcerpt,
       ...(entry.capturedBaseStructuredHeadSha256 === undefined
@@ -1381,15 +1734,41 @@ export class DurableCoworkPasteProvenanceOutbox
     for (const capture of staged) {
       await this.#backing.mutate(this.#key, (current) => {
         const existing = current.entries.find(
-          (entry) =>
-            entry.idempotencyKey === capture.idempotencyKey,
+          (entry) => entry.idempotencyKey === capture.idempotencyKey,
         );
         if (existing !== undefined) {
+          if (
+            capture.status === "capturing" &&
+            existing.status === "capturing" &&
+            existing.frozenRequest === undefined
+          ) {
+            const replacement: CoworkPasteProvenanceOutboxEntry = {
+              id: existing.id,
+              ...capture,
+              sourceKind: capture.sourceKind ?? "paste",
+              capturedAt: capture.capturedAt ?? existing.capturedAt,
+              passageExcerpt:
+                capture.passageExcerpt ??
+                coworkPastePassageExcerpt(capture.anchor.exact),
+            };
+            return {
+              record: {
+                ...current,
+                entries: current.entries.map((entry) =>
+                  entry.id === existing.id ? replacement : entry,
+                ),
+              },
+              result: undefined,
+            };
+          }
+          // A ready or frozen row is an immutable retry contract. A stale
+          // synchronous journal from before that close may never reopen it.
           return { record: current, result: undefined };
         }
         const entry: CoworkPasteProvenanceOutboxEntry = {
           id: current.nextId,
           ...capture,
+          sourceKind: capture.sourceKind ?? "paste",
           capturedAt: capture.capturedAt ?? new Date(0).toISOString(),
           passageExcerpt:
             capture.passageExcerpt ??

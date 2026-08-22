@@ -18,6 +18,12 @@ from work_buddy.sources import (
     resolve_source,
 )
 from work_buddy.sources.errors import InvalidSourceRequest, SourceSchemaTooNew
+from work_buddy.sources.migrations import (
+    SOURCES_MIGRATIONS,
+    _m001_sources_schema,
+    _m002_recoverable_exports,
+)
+from work_buddy.storage.migrations import Migration, MigrationRunner
 
 
 def _capture(store: SourceStore, tenant_id: str, content: str | bytes = "alpha"):
@@ -38,6 +44,36 @@ def test_store_identity_persists_and_future_schema_fails_closed(tmp_path: Path) 
     conn.close()
     with pytest.raises(SourceSchemaTooNew):
         SourceStore.open(root)
+
+
+def test_recoverable_export_migration_hash_remains_frozen_during_v3_upgrade(
+    tmp_path: Path,
+) -> None:
+    conn = sqlite3.connect(tmp_path / "sources-v2.db")
+    v2_runner = MigrationRunner(
+        "sources",
+        [
+            Migration(1, "retained source foundation", _m001_sources_schema),
+            Migration(2, "recoverable issued-copy exports", _m002_recoverable_exports),
+        ],
+    )
+    v2_runner.run(conn)
+
+    frozen_hash = "0621fdb22cc3dddc78a8fee3b24ba70e9ba93d7827f5df78928f6158fa32e3f6"
+    assert conn.execute(
+        "SELECT code_hash FROM _migration_history WHERE version = 2"
+    ).fetchone()[0] == frozen_hash
+
+    SOURCES_MIGRATIONS.run(conn)
+
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert conn.execute(
+        "SELECT code_hash FROM _migration_history WHERE version = 2"
+    ).fetchone()[0] == frozen_hash
+    assert conn.execute(
+        "SELECT COUNT(*) FROM _migration_history WHERE version = 3"
+    ).fetchone()[0] == 1
+    conn.close()
 
 
 def test_exact_inline_and_blob_representations_are_immutable(

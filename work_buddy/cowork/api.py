@@ -70,7 +70,7 @@ from work_buddy.truth.anchors import CompositeSelector
 from work_buddy.truth.contracts import Actor, InvariantViolation
 from work_buddy.truth.events import emit_truth_event
 from work_buddy.truth.expressions import ensure_document_span
-from work_buddy.truth.identity import canonical_json, parse_truth_uri, sha256_text
+from work_buddy.truth.identity import parse_truth_uri, sha256_text
 from work_buddy.truth.registry import TruthStoreRegistry
 from work_buddy.truth.store import DocumentRecord, TruthStore
 
@@ -82,7 +82,6 @@ cowork_blueprint = Blueprint("cowork", __name__)
 # dashboard surface must NOT reuse it: a real dashboard user threads through
 # instead (I17). Kept here only to document the boundary it must not cross.
 _MCP_HUMAN_REF = "work-buddy-user"
-_AUTOMATIC_PASTE_MAX_CHARS = 599
 _PROVENANCE_EXACT_MAX_CHARS = 1_000_000
 _PROVENANCE_CONTEXT_MAX_CHARS = 2_048
 
@@ -123,14 +122,22 @@ def cowork_mutation_context_sha256(
 ) -> str:
     """Canonical exact-body digest shared by Co-work gesture-gated routes."""
 
+    # Do not use Truth's semantic ``canonical_json`` here: it deliberately
+    # collapses whitespace inside strings. Human authority binds the bytes of
+    # the request values, including the newlines in quote-anchor context, and
+    # mirrors canonicalHumanAuthorityJson in the browser.
     return sha256_text(
-        canonical_json(
+        json.dumps(
             {
                 "body": {} if body is None else dict(body),
                 "document_id": document_id,
                 "operation": operation,
                 "store_id": store_id,
-            }
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
         )
     )
 
@@ -165,7 +172,11 @@ def _local_identity_error(exc: LocalIdentityError):
 def api_cowork_current_actor():
     """Expose the immutable identity binding used by provenance ``Me`` values."""
     try:
-        principal = authenticate_request_session()
+        # This is an informational read, not a protected human action.  Keep
+        # the actor binding available when a valid session has reached its
+        # rotation boundary; the subsequent gesture-gated mutation still
+        # requires and performs rotation before it can proceed.
+        principal = authenticate_request_session(allow_rotation_due=True)
     except LocalIdentityError as exc:
         return _local_identity_error(exc)
     return jsonify(
@@ -1821,6 +1832,11 @@ def api_doc_authorship_attestation(document_id: str):
     expected_head = body.get("expected_structured_head_sha256")
     idempotency_key = body.get("idempotency_key")
     basis_kind = body.get("basis_kind", "user_attestation")
+    # Compatibility: this endpoint was paste-only before source_kind existed.
+    # Older/cached clients therefore mean paste when the field is omitted.
+    source_kind = body.get("source_kind", "paste")
+    expected_actor_ref = body.get("expected_actor_ref")
+    expected_actor_identity_status = body.get("expected_actor_identity_status")
     if not isinstance(span, dict):
         return _fail("span must be an object", 400)
     exact = span.get("exact")
@@ -1843,11 +1859,30 @@ def api_doc_authorship_attestation(document_id: str):
         return _fail("expected_structured_head_sha256 is required", 400)
     if not isinstance(idempotency_key, str) or not idempotency_key:
         return _fail("idempotency_key is required", 400)
-    if basis_kind not in {
-        "automatic_short_text_attribution",
-        "user_attestation",
+    if not isinstance(source_kind, str) or source_kind not in {
+        "paste",
+        "direct_entry",
+        "legacy",
     }:
+        return _fail("source_kind is invalid", 400)
+    if not isinstance(basis_kind, str):
         return _fail("basis_kind is invalid", 400)
+    if (source_kind, basis_kind) not in provenance.SPAN_SOURCE_BASIS_PAIRS:
+        return _fail("source_kind and basis_kind are not an allowed pair", 400)
+    expects_actor = (
+        source_kind in {"direct_entry", "legacy"}
+        or expected_actor_ref is not None
+        or expected_actor_identity_status is not None
+    )
+    if expects_actor and (
+        not isinstance(expected_actor_ref, str)
+        or not expected_actor_ref
+        or expected_actor_identity_status not in {"local_actor_ref", "account_ref"}
+    ):
+        return _fail(
+            "expected_actor_ref and expected_actor_identity_status are required",
+            400,
+        )
 
     try:
         _authority_context, actor = _require_human_action(
@@ -1859,18 +1894,34 @@ def api_doc_authorship_attestation(document_id: str):
     except LocalIdentityError as exc:
         return _local_identity_error(exc)
     try:
+        if expects_actor:
+            acting_binding = provenance.actor_binding(actor)
+            if (
+                acting_binding["ref"] != expected_actor_ref
+                or acting_binding["identity_status"]
+                != expected_actor_identity_status
+            ):
+                raise provenance.ProvenanceActorBindingError(
+                    "The acting identity changed after provenance was captured."
+                )
         normalized_attestation = provenance.normalize_attestation(
             attestation,
             actor=actor,
         )
-        if basis_kind == "automatic_short_text_attribution":
+        if basis_kind in {
+            "automatic_short_text_attribution",
+            "automatic_direct_entry_attribution",
+        }:
             expected_contributor = {
                 "kind": "human",
                 "ref": actor.ref,
             }
             contributors = normalized_attestation["authorship"]["contributors"]
             if (
-                len(exact) > _AUTOMATIC_PASTE_MAX_CHARS
+                (
+                    basis_kind == "automatic_short_text_attribution"
+                    and len(exact) > provenance.AUTOMATIC_SHORT_TEXT_MAX_CHARS
+                )
                 or normalized_attestation["authorship"]["kind"] != "human"
                 or len(contributors) != 1
                 or contributors[0].get("kind") != expected_contributor["kind"]
@@ -1879,11 +1930,14 @@ def api_doc_authorship_attestation(document_id: str):
                 != "not_applicable"
                 or normalized_attestation["human_review"]["reviewers"]
             ):
-                return _fail(
+                message = (
                     "automatic short-text attribution is only available for "
-                    "short text authored by the acting user",
-                    400,
+                    "short text authored by the acting user"
+                    if basis_kind == "automatic_short_text_attribution"
+                    else "automatic direct-entry attribution is only available "
+                    "for text authored by the acting user"
                 )
+                return _fail(message, 400)
         from work_buddy.consent import user_initiated
 
         with user_initiated("dashboard.cowork.provenance_attestation"):
@@ -1896,7 +1950,7 @@ def api_doc_authorship_attestation(document_id: str):
                 attestation=attestation,
                 actor=actor,
                 idempotency_key=idempotency_key,
-                source={"kind": "paste", "format": "plain_text"},
+                source={"kind": source_kind, "format": "plain_text"},
                 basis_kind=basis_kind,
                 expected_structured_head_sha256=expected_head,
             )

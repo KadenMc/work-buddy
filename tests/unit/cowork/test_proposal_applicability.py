@@ -47,6 +47,36 @@ def test_matching_structured_head_wins_over_materialized_baseline(seeded):
     assert result.reason == "same_structured_head"
 
 
+def test_matching_structured_head_carries_resolved_application_position(seeded):
+    document = seeded["document"]
+    text = "First repeated phrase. Later, repeated phrase."
+    start = text.index("repeated phrase")
+    proposal = SimpleNamespace(
+        base_content_sha256="a" * 64,
+        base_structured_head_sha256="b" * 64,
+        selector_json=CompositeSelector(
+            exact="repeated phrase",
+            start=start,
+            end=start + len("repeated phrase"),
+        ).to_json(),
+    )
+
+    result = assess_proposal_applicability(
+        proposal,
+        document,
+        structured_head_sha256="b" * 64,
+        current_projection=_projection(text),
+    )
+
+    assert result.status == "applicable"
+    assert result.reason == "same_structured_head"
+    assert (result.resolved_start, result.resolved_end) == (
+        start,
+        start + len("repeated phrase"),
+    )
+    assert result.current_projection_sha256 == "c" * 64
+
+
 def test_unrelated_document_change_reanchors_the_original_target(seeded):
     document = seeded["document"]
     proposal = _proposal(

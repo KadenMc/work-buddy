@@ -19,6 +19,7 @@ export interface CoworkProvenanceDeterminationDialogProps {
   readonly title?: string;
   readonly description?: string;
   readonly passageExcerpt?: string;
+  readonly passageLabel?: string;
   readonly confirmLabel?: string;
   readonly cancelLabel?: string;
   readonly busy?: boolean;
@@ -40,6 +41,7 @@ export function CoworkProvenanceDeterminationDialog({
   title = "Where did this text come from?",
   description = "Record its authorship and, for AI-written text, whether a person reviewed it.",
   passageExcerpt,
+  passageLabel = "Pasted passage",
   confirmLabel = "Save",
   cancelLabel = "Decide later",
   busy = false,
@@ -78,7 +80,7 @@ export function CoworkProvenanceDeterminationDialog({
           {passageExcerpt !== undefined && passageExcerpt.length > 0 ? (
             <blockquote
               className="wb-cowork-provenance-dialog__excerpt"
-              aria-label="Pasted passage"
+              aria-label={passageLabel}
             >
               {passageExcerpt}
             </blockquote>

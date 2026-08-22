@@ -35,9 +35,31 @@ PROVENANCE_BASIS_KINDS = frozenset(
     {
         "user_attestation",
         "automatic_short_text_attribution",
+        "automatic_direct_entry_attribution",
         "proposal_acceptance",
         "migration_backfill",
         "legacy",
+    }
+)
+PROVENANCE_SOURCE_BASIS_PAIRS = frozenset(
+    {
+        ("file_import", "user_attestation"),
+        ("file_import", "migration_backfill"),
+        ("paste", "user_attestation"),
+        ("paste", "automatic_short_text_attribution"),
+        ("direct_entry", "automatic_direct_entry_attribution"),
+        ("proposal_acceptance", "proposal_acceptance"),
+        ("proposal_acceptance", "user_attestation"),
+        ("legacy", "user_attestation"),
+        ("legacy", "legacy"),
+    }
+)
+PROVENANCE_SPAN_SOURCE_BASIS_PAIRS = frozenset(
+    {
+        ("paste", "automatic_short_text_attribution"),
+        ("paste", "user_attestation"),
+        ("direct_entry", "automatic_direct_entry_attribution"),
+        ("legacy", "user_attestation"),
     }
 )
 PERSON_IDENTITY_STATUSES = frozenset(
@@ -296,6 +318,10 @@ def validate_attestation_components(
         raise InvariantViolation(
             f"basis_kind must be one of {sorted(PROVENANCE_BASIS_KINDS)}"
         )
+    if (source_kind, basis_kind) not in PROVENANCE_SOURCE_BASIS_PAIRS:
+        raise InvariantViolation(
+            "source_kind and basis_kind are not an allowed provenance pair"
+        )
     _optional_text(basis_ref, "basis_ref", maximum=2_048)
 
     if attested_by_kind not in VALID_ACTOR_KINDS:
@@ -413,7 +439,9 @@ __all__ = [
     "PROVENANCE_AUTHORSHIP_KINDS",
     "PROVENANCE_BASIS_KINDS",
     "PROVENANCE_REVIEW_STATUSES",
+    "PROVENANCE_SOURCE_BASIS_PAIRS",
     "PROVENANCE_SOURCE_KINDS",
+    "PROVENANCE_SPAN_SOURCE_BASIS_PAIRS",
     "PROVENANCE_TARGET_KINDS",
     "attestation_canonical_payload",
     "attestation_canonical_sha256",

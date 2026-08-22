@@ -59,7 +59,7 @@ from work_buddy.truth.store import TruthStore
 
 
 FORMAT_NAME = "work-buddy.truth-ledger"
-FORMAT_VERSION = 9
+FORMAT_VERSION = 10
 OLDEST_FORMAT_VERSION = 1
 _IMPORT_STAGING_PREFIX = ".wbuddy-cowork-import-"
 

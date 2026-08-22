@@ -113,3 +113,20 @@ export interface ProvenanceMutationBarrier {
     }) => Promise<Result>,
   ): Promise<Result>;
 }
+
+/**
+ * A provenance-aware interpretation of one explicit editor selection.
+ *
+ * The floating affordance emits an intent rather than performing a mutation:
+ * stable Provenance detail owns review confirmation, while `record` is handed
+ * to the editor's durable provenance capture path. `requestId` distinguishes
+ * repeated clicks on the same still-selected passage.
+ */
+export interface ProvenanceSelectionAction {
+  readonly requestId: number;
+  readonly intent: "record" | "review" | "view" | "inspect";
+  readonly anchor: QuoteAnchor;
+  readonly from: number;
+  readonly to: number;
+  readonly targetIds: readonly string[];
+}

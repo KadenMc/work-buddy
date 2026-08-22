@@ -1,13 +1,16 @@
 import { getChangedRanges } from "@tiptap/core";
 import type { Node, Slice } from "@tiptap/pm/model";
 import type { Transaction } from "@tiptap/pm/state";
+import { ReplaceAroundStep, ReplaceStep } from "@tiptap/pm/transform";
 
+import { isAppliedTransaction } from "../editor/applyOrigin";
 import {
   quoteAnchorFromRange,
   type RangeQuoteAnchor,
 } from "../feedback/feedbackAnchor";
 import { buildTextIndex } from "../suggestions/anchor";
 import type { CoworkProvenanceDetermination } from "./contracts";
+import type { CoworkProvenanceIdentityStatus } from "./contracts";
 
 /** Authoritative conflict code returned by the provenance-attestation route. */
 export const COWORK_PROVENANCE_TARGET_CHANGED =
@@ -32,6 +35,12 @@ export interface CoworkPasteCapture {
   readonly substantial: boolean;
 }
 
+/** One text-bearing local direct-entry transaction, before burst coalescing. */
+export interface CoworkDirectEntryCapture {
+  readonly range: CoworkPasteRange;
+  readonly anchor: RangeQuoteAnchor;
+}
+
 /**
  * Narrow boundary between the editor-owned paste transaction and whichever
  * same-origin API adapter persists its span attestation.
@@ -39,8 +48,14 @@ export interface CoworkPasteCapture {
 export interface CoworkPasteProvenanceRequest {
   readonly storeId: string;
   readonly documentId: string;
+  /** Immutable capture-time actor precondition for delayed/replayed writes. */
+  readonly expectedActorRef?: string;
+  readonly expectedActorIdentityStatus?: CoworkProvenanceIdentityStatus;
+  /** How this exact passage entered Co-work. */
+  readonly sourceKind: "paste" | "direct_entry" | "legacy";
   readonly basisKind:
     | "automatic_short_text_attribution"
+    | "automatic_direct_entry_attribution"
     | "user_attestation";
   readonly expectedStructuredHeadSha256: string;
   readonly anchor: RangeQuoteAnchor;
@@ -48,9 +63,16 @@ export interface CoworkPasteProvenanceRequest {
   readonly idempotencyKey: string;
 }
 
+/** Immutable server receipt for one persisted provenance attestation. */
+export interface CoworkPasteProvenanceReceipt {
+  readonly attestationId: string;
+  readonly documentSpanId: string;
+  readonly targetStructuredHeadSha256: string;
+}
+
 export type CoworkPasteProvenanceRecorder = (
   request: CoworkPasteProvenanceRequest,
-) => Promise<void>;
+) => Promise<CoworkPasteProvenanceReceipt>;
 
 export type CoworkPasteAnchorResolution =
   | {
@@ -107,18 +129,15 @@ export const resolveCoworkPasteAnchor = (
     return (
       index.flat.slice(offset - anchor.prefix.length, offset) ===
         anchor.prefix &&
-      index.flat.slice(
-        afterOffset,
-        afterOffset + anchor.suffix.length,
-      ) === anchor.suffix
+      index.flat.slice(afterOffset, afterOffset + anchor.suffix.length) ===
+        anchor.suffix
     );
   });
   if (contextual.length === 0) return { kind: "absent" };
   if (contextual.length > 1) return { kind: "ambiguous" };
   const offset = contextual[0];
   const from = index.charPositions[offset];
-  const to =
-    index.charPositions[offset + anchor.exact.length - 1] + 1;
+  const to = index.charPositions[offset + anchor.exact.length - 1] + 1;
   return { kind: "unique", from, to };
 };
 
@@ -156,7 +175,9 @@ export const isSubstantialCoworkPaste = (
     }
     return undefined;
   });
-  return complex || Array.from(plainText).length >= SUBSTANTIAL_SINGLE_BLOCK_CHARS;
+  return (
+    complex || Array.from(plainText).length >= SUBSTANTIAL_SINGLE_BLOCK_CHARS
+  );
 };
 
 /**
@@ -203,6 +224,56 @@ export const coworkPasteCaptureFromTransaction = (
   };
 };
 
+const insertsText = (transaction: Transaction): boolean =>
+  transaction.steps.some((step) => {
+    if (
+      !(step instanceof ReplaceStep) &&
+      !(step instanceof ReplaceAroundStep)
+    ) {
+      return false;
+    }
+    return (
+      step.slice.content.textBetween(0, step.slice.content.size, "\n", "\n")
+        .length > 0
+    );
+  });
+
+/**
+ * Capture text inserted by one genuine local direct-entry transaction.
+ *
+ * Paste/drop have their own source semantics, applied Yjs transactions are
+ * remote/system/undo work, and mark-only or deletion-only transactions did
+ * not introduce authored text. Seed/system callers keep this helper fenced
+ * until the mounted editor is ready for human input.
+ */
+export const coworkDirectEntryCaptureFromTransaction = (
+  transaction: Transaction,
+  document: Node = transaction.doc,
+): CoworkDirectEntryCapture | null => {
+  if (
+    !transaction.docChanged ||
+    transaction.getMeta("uiEvent") === "paste" ||
+    transaction.getMeta("uiEvent") === "drop" ||
+    transaction.getMeta("history$") !== undefined ||
+    isAppliedTransaction(transaction) ||
+    !insertsText(transaction)
+  ) {
+    return null;
+  }
+  const ranges = getChangedRanges(transaction)
+    .map((item) => item.newRange)
+    .filter((range) => range.to > range.from);
+  // Never manufacture provenance over untouched text between independent
+  // insertions (multi-cursor, structural normalization, or a compound command).
+  // The mounted capture path deliberately records only one contiguous gesture.
+  if (ranges.length !== 1) return null;
+  const range = ranges[0]!;
+  const anchor = quoteAnchorFromRange(document, range.from, range.to);
+  return anchor === null || !coworkProvenanceExactWithinLimit(anchor.exact)
+    ? null
+    : { range, anchor };
+};
+
 /** True when a paste transaction would create an API-invalid exact selector. */
 export const coworkPasteTransactionExceedsProvenanceLimit = (
   transaction: Transaction,
@@ -213,7 +284,6 @@ export const coworkPasteTransactionExceedsProvenanceLimit = (
     transaction.doc,
   );
   return (
-    capture !== null &&
-    !coworkProvenanceExactWithinLimit(capture.anchor.exact)
+    capture !== null && !coworkProvenanceExactWithinLimit(capture.anchor.exact)
   );
 };

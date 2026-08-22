@@ -8,6 +8,7 @@ the windowless tray). The Qt layer runs these on a worker thread.
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
 
 from work_buddy.logging_config import get_logger
 
@@ -22,7 +23,8 @@ ACTIVITY_HASH = "#tab=settings&st=activity"
 def start_sidecar() -> dict:
     from work_buddy.cli import lifecycle
 
-    return lifecycle.start_sidecar()
+    result = lifecycle.start_sidecar()
+    return _with_identity_reconnect(result)
 
 
 def stop_sidecar() -> dict:
@@ -39,20 +41,153 @@ def restart_sidecar() -> dict:
     if stop["was_running"] and not stop["stopped"]:
         return stop
     time.sleep(0.5)
-    return lifecycle.start_sidecar()
+    return _with_identity_reconnect(lifecycle.start_sidecar())
+
+
+def _with_identity_reconnect(result: dict) -> dict:
+    """Attach the truthful reconnect outcome after a deliberate tray start."""
+
+    if not result.get("started"):
+        return result
+    recovered = reconnect_dashboard_identity()
+    combined = dict(result)
+    combined["identity_reconnect"] = recovered
+    if not recovered.get("ok"):
+        logger.warning("Dashboard identity reconnect failed: %s", recovered["detail"])
+    return combined
+
+
+def _mint_dashboard_bootstrap(
+    base: str,
+    *,
+    next_hash: str = "",
+) -> tuple[str, str | None]:
+    try:
+        from work_buddy.dashboard.local_identity_launch import (
+            bootstrap_fragment_for_dashboard,
+        )
+
+        return bootstrap_fragment_for_dashboard(base, next_hash=next_hash), None
+    except Exception as exc:
+        logger.warning("Could not mint dashboard identity bootstrap: %s", exc)
+        return "", (
+            "Could not create a trusted local dashboard session. "
+            "No unauthenticated dashboard launch was attempted."
+        )
+
+
+def _successful_extension_mutation(value: object) -> bool:
+    if not isinstance(value, Mapping) or value.get("status") != "ok":
+        return False
+    details = value.get("details")
+    return isinstance(details, Mapping) and not details.get("error")
+
+
+def _dashboard_handoff_happened(value: object) -> bool:
+    if not _successful_extension_mutation(value):
+        return False
+    details = value["details"]
+    return (
+        details.get("found") is True
+        or details.get("created") is True
+        or details.get("focused") is True
+    )
+
+
+def reconnect_dashboard_identity(*, wait_until_ready: bool = True) -> dict:
+    """Deliver a trusted bootstrap to a running or newly opened React tab.
+
+    The trusted host process, never HTTP, mints each one-use grant. It first
+    asks the registered extension to update an existing app tab in place. If
+    no tab exists or the extension cannot prove the handoff, the normal OS
+    browser launch opens one; the operation never silently assumes provenance
+    is available or asks an older extension worker to navigate an existing
+    document tab.
+    """
+
+    from work_buddy.cli.commands import dashboard_app_url, _wait_for_dashboard_app
+
+    base = dashboard_app_url(local=True)
+    if wait_until_ready and not _wait_for_dashboard_app(base):
+        return {
+            "ok": False,
+            "reconnected": False,
+            "detail": "Dashboard did not become ready for identity reconnect.",
+        }
+    launch_hash, mint_error = _mint_dashboard_bootstrap(base)
+    if mint_error is not None:
+        return {"ok": False, "reconnected": False, "detail": mint_error}
+    try:
+        from work_buddy.collectors.chrome_collector import focus_existing_tab
+
+        response = focus_existing_tab(
+            base,
+            target_hash=launch_hash,
+            timeout_seconds=10,
+        )
+    except Exception as exc:
+        logger.warning("Dashboard identity handoff failed: %s", exc)
+        response = None
+    if not _dashboard_handoff_happened(response):
+        # The extension may be absent, or an unpacked pre-update worker may
+        # have performed the handoff without the new response nonce. Mint a
+        # fresh one-use grant (the previous one may already be consumed) and
+        # use the same OS browser launch boundary as `wbuddy launch`.
+        launch_hash, mint_error = _mint_dashboard_bootstrap(base)
+        if mint_error is not None:
+            return {"ok": False, "reconnected": False, "detail": mint_error}
+        import webbrowser
+
+        try:
+            opened = webbrowser.open(base + launch_hash)
+        except Exception as exc:
+            logger.warning("Trusted dashboard reconnect launch failed: %s", exc)
+            opened = False
+        if opened is False:
+            return {
+                "ok": False,
+                "reconnected": False,
+                "detail": (
+                    "Neither the browser extension nor the OS browser accepted "
+                    "the trusted identity handoff."
+                ),
+            }
+        return {
+            "ok": True,
+            "reconnected": True,
+            "detail": "Opened a trusted dashboard session.",
+        }
+    details = response["details"]
+    found = details.get("found") is True or (
+        details.get("created") is False and details.get("focused") is True
+    )
+    created = details.get("created") is True
+    return {
+        "ok": True,
+        "reconnected": found or created,
+        "detail": (
+            "Reconnected the open dashboard tab."
+            if found
+            else "Opened a trusted dashboard session."
+            if created
+            else "No open dashboard tab needed reconnecting."
+        ),
+    }
 
 
 def open_dashboard(target_hash: str = "", *, app: bool = False) -> dict:
     """Focus an existing dashboard tab/window (or create one), smartly.
 
-    Primary path: the Chrome extension's ``focus_or_create_tab`` (reuse the
-    live tab, deep-link via ``target_hash``). Fallback when the extension is
-    absent or times out: a plain ``webbrowser.open``. Never raises; returns a
-    small dict describing what happened.
+    Primary path: the Chrome extension focuses a matching live tab and applies
+    ``target_hash``. Fallback when the extension is absent, outdated, reports
+    no matching app tab, or times out: a plain ``webbrowser.open``. Never
+    raises; returns a small dict describing what happened.
 
-    App launches preserve an existing React route and query while delivering
-    only the one-time bootstrap fragment. Legacy dashboard deep-links retain
-    their existing navigation behavior.
+    App launches use only the path-preserving ``focus_existing_tab`` mutation.
+    They never fall back to the older extension mutation, because pre-update
+    service workers ignore ``preserve_path`` and can replace a Co-work document
+    route with the app root. Legacy dashboard deep-links retain their existing
+    navigation behavior.
     """
     from work_buddy.cli.commands import dashboard_app_url, dashboard_local_url
 
@@ -60,46 +195,84 @@ def open_dashboard(target_hash: str = "", *, app: bool = False) -> dict:
     identity_bootstrap = False
     launch_hash = target_hash
     if app:
-        try:
-            from work_buddy.dashboard.local_identity_launch import (
-                bootstrap_fragment_for_dashboard,
-            )
-
-            launch_hash = bootstrap_fragment_for_dashboard(
-                base,
-                next_hash=target_hash,
-            )
-            identity_bootstrap = True
-        except Exception as exc:
-            # Keep the pre-existing observability UI reachable during migration.
-            # New human-authority writes still fail closed without a session.
-            logger.warning("Could not mint dashboard identity bootstrap: %s", exc)
-    try:
-        from work_buddy.collectors.chrome_collector import focus_or_create_tab
-
-        res = focus_or_create_tab(
+        launch_hash, mint_error = _mint_dashboard_bootstrap(
             base,
-            target_hash=launch_hash,
-            preserve_path=app,
-            timeout_seconds=10,
+            next_hash=target_hash,
         )
-        if res is not None:
-            result = {
-                "ok": True,
-                "via": "extension",
-                "result": res,
+        if mint_error is not None:
+            return {
+                "ok": False,
+                "identity_bootstrap": False,
+                "detail": mint_error,
             }
-            if app:
-                result["identity_bootstrap"] = identity_bootstrap
-            return result
-        logger.info("focus_or_create_tab timed out; falling back to webbrowser")
+        identity_bootstrap = True
+    try:
+        if app:
+            from work_buddy.collectors.chrome_collector import focus_existing_tab
+
+            res = focus_existing_tab(
+                base,
+                target_hash=launch_hash,
+                timeout_seconds=10,
+            )
+        else:
+            from work_buddy.collectors.chrome_collector import focus_or_create_tab
+
+            res = focus_or_create_tab(
+                base,
+                target_hash=launch_hash,
+                preserve_path=False,
+                timeout_seconds=10,
+            )
+        if _successful_extension_mutation(res):
+            if app and not _dashboard_handoff_happened(res):
+                logger.info(
+                    "No existing app tab accepted the identity handoff; "
+                    "falling back to webbrowser"
+                )
+            else:
+                result = {
+                    "ok": True,
+                    "via": "extension",
+                    "result": res,
+                }
+                if app:
+                    result["identity_bootstrap"] = identity_bootstrap
+                return result
+        logger.info(
+            "Dashboard extension handoff was not confirmed; falling back to webbrowser"
+        )
     except Exception as exc:
-        logger.warning("focus_or_create_tab failed (%s); falling back", exc)
+        logger.warning("Dashboard extension handoff failed (%s); falling back", exc)
 
     import webbrowser
 
+    if app and identity_bootstrap:
+        # The extension can consume a one-use grant even when its response is
+        # lost or comes from a pre-correlation worker. Never replay that grant
+        # through the OS-browser fallback.
+        launch_hash, mint_error = _mint_dashboard_bootstrap(
+            base,
+            next_hash=target_hash,
+        )
+        if mint_error is not None:
+            return {
+                "ok": False,
+                "identity_bootstrap": False,
+                "detail": mint_error,
+            }
     url = base + launch_hash if launch_hash else base
-    webbrowser.open(url)
+    try:
+        opened = webbrowser.open(url)
+    except Exception as exc:
+        logger.warning("webbrowser dashboard launch failed: %s", exc)
+        opened = False
+    if opened is False:
+        return {
+            "ok": False,
+            "identity_bootstrap": identity_bootstrap,
+            "detail": "The browser did not accept the trusted dashboard launch.",
+        }
     # Do not return/log the bearer-bearing launch URL.  The fragment is removed
     # by React before redemption, but it is still a short-lived credential.
     result = {

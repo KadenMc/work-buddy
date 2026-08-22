@@ -60,6 +60,10 @@ const expectedHarnessNonce = process.env.COWORK_LIVE_HARNESS_NONCE;
 if (expectedHarnessNonce === undefined) {
   throw new Error("COWORK_LIVE_HARNESS_NONCE is required");
 }
+const backendBaseURL = process.env.COWORK_LIVE_BACKEND_URL;
+if (backendBaseURL === undefined) {
+  throw new Error("COWORK_LIVE_BACKEND_URL is required");
+}
 
 const digest = (bytes: Uint8Array): string =>
   createHash("sha256").update(bytes).digest("hex");
@@ -103,6 +107,54 @@ const gotoCowork = async (page: Page, search = "?mode=launcher"): Promise<void> 
   await expect(page.getByRole("heading", { level: 1, name: "Co-work" })).toBeVisible({
     timeout: 60_000,
   });
+};
+
+const mintBrowserIdentityBootstrap = async (page: Page): Promise<string> => {
+  // The mint route exists only in the isolated live server. Calling it from the
+  // directly served throwaway browser page supplies the exact Origin that will
+  // redeem it. Human authority deliberately rejects Vite's proxy-marked requests.
+  await page.goto(`${backendBaseURL}/app/`, { waitUntil: "domcontentloaded" });
+  const result = await page.evaluate(async ({ nonce }) => {
+    const denied = await fetch("/api/_cowork-live/identity-bootstrap", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ origin: window.location.origin }),
+    });
+    const mismatched = await fetch("/api/_cowork-live/identity-bootstrap", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-WB-Cowork-Live-Control": nonce,
+      },
+      body: JSON.stringify({ origin: "http://127.0.0.1:1" }),
+    });
+    const allowed = await fetch("/api/_cowork-live/identity-bootstrap", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-WB-Cowork-Live-Control": nonce,
+      },
+      body: JSON.stringify({ origin: window.location.origin }),
+    });
+    return {
+      deniedStatus: denied.status,
+      mismatchedStatus: mismatched.status,
+      allowedStatus: allowed.status,
+      payload: (await allowed.json()) as {
+        ok?: boolean;
+        token?: string;
+        origin?: string;
+        error?: string;
+      },
+      origin: window.location.origin,
+    };
+  }, { nonce: expectedHarnessNonce });
+  expect(result.deniedStatus).toBe(403);
+  expect(result.mismatchedStatus).toBe(403);
+  expect(result.allowedStatus, JSON.stringify(result.payload)).toBe(200);
+  expect(result.payload).toMatchObject({ ok: true, origin: result.origin });
+  expect(result.payload.token).toMatch(/^wbb_/);
+  return result.payload.token!;
 };
 
 const chooseFolder = async (
@@ -1075,6 +1127,238 @@ test.describe.serial("Co-work live lifecycle", () => {
     await page.goBack({ waitUntil: "domcontentloaded" });
     await expect(await waitForEditor(page)).toHaveText("");
     expect(currentRouteIds(page).documentId).toBe(firstDocumentId);
+  });
+
+  test("AC-PROV: direct-entry provenance is durable and owns selection actions", async ({
+    page,
+    request,
+  }) => {
+    const existingParagraph =
+      "An existing paragraph makes the direct-entry selector cross a block boundary.";
+    const directEntry = "The party's rocking, yes";
+    const sourceRelativePath = "provenance-existing-paragraph.md";
+    const sourcePath = path.join(fixture.initialized.path, sourceRelativePath);
+    const sourceBytes = Buffer.from(`${existingParagraph}\n`, "utf-8");
+    await writeFile(sourcePath, sourceBytes);
+
+    const bootstrap = await mintBrowserIdentityBootstrap(page);
+    // Same-origin GET does not normally carry Origin, but bootstrap source reads
+    // are human-authority actions. Mirror a trusted browser launch's exact
+    // loopback boundary across every request in this isolated page.
+    await page.setExtraHTTPHeaders({ Origin: new URL(backendBaseURL).origin });
+    await page.goto(
+      `${backendBaseURL}/app/cowork?store_id=${fixture.initialized.store_id}` +
+        `#wb-bootstrap=${encodeURIComponent(bootstrap)}`,
+      { waitUntil: "domcontentloaded" },
+    );
+    await expect(page.getByRole("heading", { level: 1, name: "Co-work" })).toBeVisible({
+      timeout: 60_000,
+    });
+    expect(new URL(page.url()).hash).not.toContain("wb-bootstrap");
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(async () =>
+            (await fetch("/api/truth/cowork/current-actor")).status,
+          ),
+        { timeout: 30_000 },
+      )
+      .toBe(200);
+
+    await page.route(
+      "**/api/truth/cowork/files/choose-import",
+      async (route) => {
+        expect(route.request().headers()["x-work-buddy-intent"]).toBe(
+          "cowork-import-picker",
+        );
+        expect(route.request().postDataJSON()).toEqual({
+          store_id: fixture.initialized.store_id,
+        });
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            ok: true,
+            cancelled: false,
+            path: sourceRelativePath,
+            importer_id: "markdown/v1",
+            media_type: "text/markdown",
+            source_sha256: digest(sourceBytes),
+            importer: {
+              importer_id: "markdown/v1",
+              display_name: "Markdown",
+              source_format: "markdown",
+              media_type: "text/markdown",
+              suffixes: [".md", ".markdown"],
+              max_source_bytes: 16 * 1024 * 1024,
+            },
+          }),
+        });
+      },
+      { times: 1 },
+    );
+    await page.getByRole("button", { name: "From file", exact: true }).click();
+    await page.getByRole("button", { name: "Import", exact: true }).click();
+    const editor = await waitForEditor(page);
+    await expect(editor).toHaveAttribute("aria-readonly", "false");
+    await expect(editor.locator("p")).toHaveCount(1);
+    await expect(editor.locator("p").first()).toHaveText(existingParagraph);
+    const { documentId } = currentRouteIds(page);
+
+    const attestationResponses: number[] = [];
+    const attestationRequestFailures: string[] = [];
+    const attestationConsoleErrors: string[] = [];
+    page.on("response", (response) => {
+      const parsed = new URL(response.url());
+      if (
+        parsed.pathname ===
+          `/api/truth/doc/${documentId}/authorship-attestations` &&
+        response.request().method() === "POST"
+      ) {
+        attestationResponses.push(response.status());
+      }
+    });
+    page.on("requestfailed", (failed) => {
+      const parsed = new URL(failed.url());
+      if (
+        parsed.pathname ===
+          `/api/truth/doc/${documentId}/authorship-attestations`
+      ) {
+        attestationRequestFailures.push(
+          failed.failure()?.errorText ?? "unknown request failure",
+        );
+      }
+    });
+    page.on("console", (message) => {
+      if (
+        message.type() === "error" &&
+        message.text().includes("authorship-attestations")
+      ) {
+        attestationConsoleErrors.push(message.text());
+      }
+    });
+
+    await editor.click();
+    await page.keyboard.press(
+      process.platform === "darwin" ? "Meta+ArrowUp" : "Control+Home",
+    );
+    await page.keyboard.press("Enter");
+    await expect(editor.locator("p")).toHaveCount(2);
+    await expect(editor.locator("p").first()).toHaveText("");
+    await expect(editor.locator("p").nth(1)).toHaveText(existingParagraph);
+    await page.keyboard.press(
+      process.platform === "darwin" ? "Meta+ArrowUp" : "Control+Home",
+    );
+
+    // Create the block boundary before the direct-entry burst, then type the
+    // sentence through normal keyboard input. This gives the attestation a
+    // quote-anchor suffix beginning with `\n` without folding Enter into a
+    // second provenance capture.
+    await page.keyboard.type(directEntry, { delay: 20 });
+    await expect(editor.locator("p").first()).toHaveText(directEntry);
+    await expect(editor.locator("p").nth(1)).toHaveText(existingParagraph);
+
+    // Entering Provenance finalizes the active typing burst. The stable rail owns
+    // inspection while the contextual editor action becomes provenance-specific.
+    await page.getByRole("tab", { name: "Provenance", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Give feedback", exact: true })).toHaveCount(0);
+
+    const projectionUrl =
+      `${backendBaseURL}/api/truth/doc/${documentId}` +
+      `?store_id=${fixture.initialized.store_id}`;
+    await expect
+      .poll(async () => {
+        const response = await request.get(projectionUrl);
+        if (!response.ok()) return [{ status: response.status() }];
+        const payload = (await response.json()) as {
+          provenance?: {
+            spans?: readonly {
+              span?: { exact?: string; suffix?: string } | null;
+              target?: { currentness?: string };
+              effective_attestation?: {
+                source?: { kind?: string };
+                basis?: { kind?: string };
+                authorship?: {
+                  kind?: string;
+                  contributors?: readonly {
+                    kind?: string;
+                    identity_status?: string;
+                  }[];
+                };
+                human_review?: { status?: string };
+              } | null;
+            }[];
+          };
+        };
+        return (payload.provenance?.spans ?? [])
+          .filter((span) => span.target?.currentness === "current")
+          .map((span) => ({
+            exact: span.span?.exact,
+            suffixStartsWithBlockBoundary:
+              span.span?.suffix?.startsWith("\n") ?? false,
+            source: span.effective_attestation?.source?.kind,
+            basis: span.effective_attestation?.basis?.kind,
+            authorship: span.effective_attestation?.authorship?.kind,
+            contributors:
+              span.effective_attestation?.authorship?.contributors?.map(
+                (contributor) => ({
+                  kind: contributor.kind,
+                  identity_status: contributor.identity_status,
+                }),
+              ),
+            review: span.effective_attestation?.human_review?.status,
+          }));
+      }, { timeout: 30_000 })
+      .toEqual([
+        {
+          exact: directEntry,
+          suffixStartsWithBlockBoundary: true,
+          source: "direct_entry",
+          basis: "automatic_direct_entry_attribution",
+          authorship: "human",
+          contributors: [
+            {
+              kind: "human",
+              identity_status: "local_actor_ref",
+            },
+          ],
+          review: "not_applicable",
+        },
+      ]);
+    const decoratedPassage = editor.locator(
+      "[data-wb-decoration='provenance-overlay']",
+      { hasText: directEntry },
+    );
+    await expect(decoratedPassage).toBeVisible({ timeout: 30_000 });
+
+    // Select after the Provenance lens and its overlay are already active. This
+    // is the normal inspection gesture and exercises the selection-action and
+    // passive-hover lifecycles together.
+    const passageBox = await decoratedPassage.boundingBox();
+    expect(passageBox).not.toBeNull();
+    await page.mouse.move(
+      passageBox!.x + passageBox!.width - 1,
+      passageBox!.y + passageBox!.height / 2,
+    );
+    await page.mouse.down();
+    await page.mouse.move(
+      passageBox!.x + 1,
+      passageBox!.y + passageBox!.height / 2,
+      { steps: 8 },
+    );
+    await page.mouse.up();
+    await expect
+      .poll(() => page.evaluate(() => window.getSelection()?.toString() ?? ""))
+      .toBe(directEntry);
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
+    const provenanceAction = page.getByRole("button", {
+      name: "View provenance",
+      exact: true,
+    });
+    await expect(provenanceAction).toBeVisible({ timeout: 5_000 });
+    expect(attestationResponses).toEqual([201]);
+    expect(attestationRequestFailures).toEqual([]);
+    expect(attestationConsoleErrors).toEqual([]);
   });
 
   test("Close Folder returns to the Folder launcher and can reopen it without a native picker", async ({

@@ -11,8 +11,12 @@ from typing import Any
 from work_buddy.cowork.lifecycle_lock import document_lifecycle_lock
 from work_buddy.cowork.policy import document_surface_allowed
 from work_buddy.truth import documents, ydoc_store
-from work_buddy.truth.anchors import CompositeSelector, serialize_selector
-from work_buddy.truth.contracts import Actor, InvariantViolation
+from work_buddy.truth.anchors import CompositeSelector, reanchor, serialize_selector
+from work_buddy.truth.contracts import (
+    Actor,
+    InvariantViolation,
+    validate_agent_producer_meta,
+)
 from work_buddy.truth.expressions import _ensure_document_span_locked
 from work_buddy.truth.identity import canonical_json, sha256_text
 from work_buddy.truth.provenance import (
@@ -21,11 +25,13 @@ from work_buddy.truth.provenance import (
     PROVENANCE_BASIS_KINDS,
     PROVENANCE_REVIEW_STATUSES,
     PROVENANCE_SOURCE_KINDS,
+    PROVENANCE_SPAN_SOURCE_BASIS_PAIRS,
     attestation_canonical_sha256,
     normalize_source,
 )
 from work_buddy.truth.store import (
     DocumentProvenanceAttestationRecord,
+    ProposalRecord,
     TruthStore,
     _timestamp,
     _valid_digest,
@@ -41,6 +47,8 @@ INPUT_ATTESTATION_SCHEMA = "cowork-authorship-attestation/v1"
 CURRENT_USER_IDENTITY_STATUSES = frozenset(
     {"local_actor_ref", "account_ref"}
 )
+SPAN_SOURCE_BASIS_PAIRS = PROVENANCE_SPAN_SOURCE_BASIS_PAIRS
+AUTOMATIC_SHORT_TEXT_MAX_CHARS = 599
 
 
 class ProvenanceActorBindingError(InvariantViolation):
@@ -74,6 +82,15 @@ class ProvenanceConflictError(InvariantViolation):
         self.details = {
             "existing_attestation_id": existing_attestation_id,
         }
+
+
+class ProposalAcceptanceProvenanceError(InvariantViolation):
+    """An accepted edit cannot be attributed without guessing.
+
+    This error is deliberately narrower than a generic malformed attestation.
+    The two-phase sitting path turns it into a transaction-wide conflict so an
+    accepted AI edit and its provenance can never commit independently.
+    """
 
 
 class ProvenanceReviewError(InvariantViolation):
@@ -550,7 +567,12 @@ def record_span_attestation(
     expected_structured_head_sha256: str | None = None,
     at: str | None = None,
 ) -> tuple[DocumentProvenanceAttestationRecord, str]:
-    """Anchor one pasted range and attest its authorship and review state."""
+    """Anchor one exact range and attest its authorship and review state.
+
+    The source/basis pair is deliberately closed.  In particular, a caller
+    cannot describe selected legacy text as direct entry or use a generic user
+    attestation to manufacture the stronger direct-entry observation.
+    """
 
     if actor.kind != "human" or not actor.ref:
         raise InvariantViolation("provenance attestation requires a human actor")
@@ -559,6 +581,33 @@ def record_span_attestation(
     key = _idempotency_key(idempotency_key)
     document_ref = _valid_record_id(document_id, "document_id")
     source_value = source or {"kind": "paste", "format": "plain_text"}
+    normalized_source = _source(source_value)
+    source_basis = (normalized_source["kind"], basis_kind)
+    if source_basis not in SPAN_SOURCE_BASIS_PAIRS:
+        raise InvariantViolation(
+            "source.kind and basis_kind are not an allowed provenance pair"
+        )
+    if basis_kind in {
+        "automatic_short_text_attribution",
+        "automatic_direct_entry_attribution",
+    }:
+        current_actor = actor_binding(actor)
+        if (
+            normalized["authorship"]["kind"] != "human"
+            or normalized["authorship"]["contributors"] != [current_actor]
+            or normalized["human_review"]
+            != {"status": "not_applicable", "reviewers": []}
+        ):
+            raise InvariantViolation(
+                "automatic attribution requires text authored by the acting user"
+            )
+        if (
+            basis_kind == "automatic_short_text_attribution"
+            and len(exact) > AUTOMATIC_SHORT_TEXT_MAX_CHARS
+        ):
+            raise InvariantViolation(
+                "automatic short-text attribution exceeds the size limit"
+            )
     expected_head = (
         None
         if expected_structured_head_sha256 is None
@@ -628,7 +677,7 @@ def record_span_attestation(
                         conn,
                         document_id=document.id,
                         attestation=attestation,
-                        source=source_value,
+                        source=normalized_source,
                         actor=actor,
                         idempotency_key=key,
                         target_kind="document_span",
@@ -686,7 +735,7 @@ def record_span_attestation(
                     conn,
                     document_id=document.id,
                     attestation=attestation,
-                    source=source_value,
+                    source=normalized_source,
                     actor=actor,
                     idempotency_key=key,
                     target_kind="document_span",
@@ -699,6 +748,348 @@ def record_span_attestation(
                     at=at,
                 )
                 return event, span.id
+
+
+_PROPOSAL_ACCEPTANCE_CONTEXT_MAX_CHARS = 2_048
+_COMMONMARK_ESCAPED_PUNCTUATION_RE = re.compile(
+    r"\\([!\"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~])"
+)
+
+
+def _proposal_projection_candidates(rendered_projection: str) -> tuple[str, ...]:
+    """Return conservative server views of a serialized Markdown projection.
+
+    A proposal replacement is inserted as literal editor text. The canonical
+    Markdown serializer may therefore backslash-escape punctuation (``*`` ->
+    ``\\*``), while the provenance selector must continue to name the visible
+    text. Validate the exact serialized projection first, then the one
+    CommonMark-safe unescape the browser's canonical parser will expose.
+    """
+
+    visible_punctuation = _COMMONMARK_ESCAPED_PUNCTUATION_RE.sub(
+        r"\1",
+        rendered_projection,
+    )
+    if visible_punctuation == rendered_projection:
+        return (rendered_projection,)
+    return rendered_projection, visible_punctuation
+
+
+def _proposal_acceptance_segment_selectors(
+    proposal: ProposalRecord,
+    *,
+    post_apply_start: int | None = None,
+) -> tuple[CompositeSelector, ...]:
+    """Return only the text the proposing agent added or replaced.
+
+    A common insertion proposal replaces ``original`` with
+    ``new text + original``. Treating the complete replacement as AI-authored
+    would silently relabel the preserved original. When the original occurs
+    exactly once, the text on either side is mechanically attributable to the
+    proposal. Multiple occurrences cannot identify which copy is preserved,
+    so the operation fails closed instead of guessing.
+    """
+
+    if post_apply_start is not None and (
+        isinstance(post_apply_start, bool)
+        or not isinstance(post_apply_start, int)
+        or post_apply_start < 0
+    ):
+        raise ProposalAcceptanceProvenanceError(
+            "The accepted proposal has an invalid application position."
+        )
+    if proposal.replacement in {None, ""}:
+        return ()
+    if proposal.quote_exact is None:
+        raise ProposalAcceptanceProvenanceError(
+            "The accepted proposal no longer carries its original quote."
+        )
+    try:
+        original_selector = CompositeSelector.from_json(proposal.selector_json)
+    except Exception as exc:  # noqa: BLE001 - corrupt anchors fail closed
+        raise ProposalAcceptanceProvenanceError(
+            "The accepted proposal has an invalid quote anchor."
+        ) from exc
+    if original_selector.exact != proposal.quote_exact:
+        raise ProposalAcceptanceProvenanceError(
+            "The accepted proposal quote does not match its frozen anchor."
+        )
+
+    replacement = proposal.replacement
+    original = proposal.quote_exact
+    occurrences: list[int] = []
+    cursor = replacement.find(original)
+    while cursor >= 0:
+        occurrences.append(cursor)
+        cursor = replacement.find(original, cursor + 1)
+    if len(occurrences) > 1:
+        raise ProposalAcceptanceProvenanceError(
+            "The accepted replacement repeats the original quote, so its "
+            "AI-authored insertion cannot be identified without guessing."
+        )
+
+    ranges = (
+        ((0, len(replacement)),)
+        if not occurrences
+        else (
+            (0, occurrences[0]),
+            (occurrences[0] + len(original), len(replacement)),
+        )
+    )
+    selectors: list[CompositeSelector] = []
+    for raw_start, raw_end in ranges:
+        raw = replacement[raw_start:raw_end]
+        if not raw.strip():
+            continue
+        leading = len(raw) - len(raw.lstrip())
+        trailing = len(raw) - len(raw.rstrip())
+        start = raw_start + leading
+        end = raw_end - trailing
+        exact = replacement[start:end]
+        prefix = (original_selector.prefix + replacement[:start])[
+            -_PROPOSAL_ACCEPTANCE_CONTEXT_MAX_CHARS:
+        ]
+        suffix = (replacement[end:] + original_selector.suffix)[
+            :_PROPOSAL_ACCEPTANCE_CONTEXT_MAX_CHARS
+        ]
+        selectors.append(
+            CompositeSelector(
+                exact=exact,
+                prefix=prefix,
+                suffix=suffix,
+                start=(
+                    None
+                    if post_apply_start is None
+                    else post_apply_start + start
+                ),
+                end=(
+                    None
+                    if post_apply_start is None
+                    else post_apply_start + end
+                ),
+            )
+        )
+    return tuple(selectors)
+
+
+def record_proposal_acceptance_attestations_locked(
+    store: TruthStore,
+    conn: sqlite3.Connection,
+    *,
+    proposal: ProposalRecord,
+    gesture_id: str,
+    actor: Actor,
+    target_structured_head_sha256: str,
+    rendered_projection: str,
+    post_apply_start: int | None = None,
+    at: str | None = None,
+) -> tuple[DocumentProvenanceAttestationRecord, ...]:
+    """Atomically attribute a confirmed agent proposal on its resulting head.
+
+    The human confirmation is the basis for recording AI authorship; it is not
+    itself a human review of the resulting prose. The immutable proposal keeps
+    the producing agent-run identity, while the attestation's human actor and
+    consumed gesture preserve who accepted the edit.
+    """
+
+    if actor.kind != "human" or not actor.ref:
+        raise ProposalAcceptanceProvenanceError(
+            "Proposal acceptance provenance requires a human actor."
+        )
+    if proposal.created_by_kind != "agent_run" or not str(
+        proposal.created_by_ref or ""
+    ).strip():
+        return ()
+    if not isinstance(rendered_projection, str):
+        raise ProposalAcceptanceProvenanceError(
+            "The accepted document projection is unavailable."
+        )
+    target_head = _valid_digest(
+        target_structured_head_sha256,
+        "target_structured_head_sha256",
+    )
+    if proposal.document_id != _valid_record_id(
+        proposal.document_id,
+        "proposal.document_id",
+    ):
+        raise ProposalAcceptanceProvenanceError(
+            "The accepted proposal has an invalid document target."
+        )
+    document = store._get_document_locked(conn, proposal.document_id)
+    if document is None:
+        raise ProposalAcceptanceProvenanceError(
+            "The accepted proposal's document is unavailable."
+        )
+
+    gesture_ref = _valid_record_id(gesture_id, "gesture_id")
+    gesture = store._get_gesture_locked(conn, gesture_ref)
+    if (
+        gesture is None
+        or gesture.subject_ref != proposal.id
+        or gesture.kind != "confirm"
+        or gesture.actor_ref != actor.ref
+        or gesture.payload_sha256 != proposal.canonical_sha256
+        or gesture.consumed_at is None
+    ):
+        raise ProposalAcceptanceProvenanceError(
+            "The proposal acceptance gesture is missing or does not match the edit."
+        )
+    latest = store._latest_proposal_status_locked(conn, proposal.id)
+    if (
+        latest is None
+        or latest.status != "applied"
+        or latest.decision != "confirm"
+        or latest.basis_kind != "gesture"
+        or latest.basis_ref != gesture.id
+    ):
+        raise ProposalAcceptanceProvenanceError(
+            "The proposal is not bound to the confirmed acceptance gesture."
+        )
+
+    try:
+        producer_meta = json.loads(proposal.meta_json or "{}")
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ProposalAcceptanceProvenanceError(
+            "The accepted proposal has invalid producer metadata."
+        ) from exc
+    if not isinstance(producer_meta, Mapping):
+        raise ProposalAcceptanceProvenanceError(
+            "The accepted proposal has invalid producer metadata."
+        )
+    try:
+        validate_agent_producer_meta(producer_meta)
+    except InvariantViolation as exc:
+        raise ProposalAcceptanceProvenanceError(str(exc)) from exc
+
+    selectors = _proposal_acceptance_segment_selectors(
+        proposal,
+        post_apply_start=post_apply_start,
+    )
+    # Prove every derived selector against the exact projection that produced
+    # target_head before appending any rows. This makes a multi-segment
+    # insertion all-or-nothing even for callers that catch this typed error.
+    for selector in selectors:
+        resolved = None
+        last_error: Exception | None = None
+        for projection_candidate in _proposal_projection_candidates(
+            rendered_projection
+        ):
+            try:
+                candidate = reanchor(projection_candidate, selector)
+            except Exception as exc:  # noqa: BLE001 - try visible Markdown
+                last_error = exc
+                continue
+            if candidate.exact != selector.exact:
+                last_error = ProposalAcceptanceProvenanceError(
+                    "The accepted AI-authored span changed before provenance "
+                    "was recorded."
+                )
+                continue
+            if selector.has_position and (
+                candidate.start != selector.start
+                or candidate.end != selector.end
+            ):
+                last_error = ProposalAcceptanceProvenanceError(
+                    "The accepted AI-authored span is not at its committed "
+                    "application position."
+                )
+                continue
+            resolved = candidate
+            break
+        if resolved is None:
+            raise ProposalAcceptanceProvenanceError(
+                "The accepted AI-authored span could not be resolved uniquely "
+                "in the committed document."
+            ) from last_error
+
+    normalized_attestation = {
+        "authorship": {"kind": "ai", "contributors": []},
+        "human_review": {"status": "not_reviewed", "reviewers": []},
+    }
+    producer = {
+        "kind": "agent_run",
+        "ref": str(proposal.created_by_ref),
+        **dict(producer_meta),
+    }
+    records: list[DocumentProvenanceAttestationRecord] = []
+    for index, selector in enumerate(selectors):
+        key = f"proposal-acceptance:{proposal.id}:{index:04d}"
+        identifier = _attestation_id(
+            store_id=store.store_id,
+            document_id=proposal.document_id,
+            actor_ref=actor.ref,
+            idempotency_key=key,
+        )
+        existing = store._get_document_provenance_attestation_locked(
+            conn,
+            identifier,
+        )
+        if existing is None:
+            span = _ensure_document_span_locked(
+                store,
+                conn,
+                document_id=proposal.document_id,
+                selector=selector,
+                quote_exact=selector.exact,
+                actor=actor,
+                author_kind="agent_run",
+                author_ref=proposal.created_by_ref,
+                at=at,
+                reuse_existing=False,
+            )
+            span_id = span.id
+        else:
+            if existing.document_span_id is None:
+                raise ProposalAcceptanceProvenanceError(
+                    "Proposal acceptance idempotency points to a non-span target."
+                )
+            span = store._get_document_span_locked(
+                conn,
+                existing.document_span_id,
+            )
+            if (
+                span is None
+                or span.document_id != proposal.document_id
+                or span.quote_exact != selector.exact
+                or span.selector_json != serialize_selector(selector)
+            ):
+                raise ProposalAcceptanceProvenanceError(
+                    "Proposal acceptance idempotency points to another span."
+                )
+            span_id = existing.document_span_id
+
+        source = {
+            "kind": "proposal_acceptance",
+            "proposal_id": proposal.id,
+            "proposal_canonical_sha256": proposal.canonical_sha256,
+            "accepted_replacement_sha256": sha256_text(
+                proposal.replacement or ""
+            ),
+            "acceptance_gesture_id": gesture.id,
+            "segment_index": index,
+            "segment_count": len(selectors),
+            "producer": producer,
+        }
+        record = _record_attestation_locked(
+            store,
+            conn,
+            document_id=proposal.document_id,
+            attestation={},
+            normalized_attestation=normalized_attestation,
+            source=source,
+            actor=actor,
+            idempotency_key=key,
+            target_kind="document_span",
+            document_version_id=None,
+            document_span_id=span_id,
+            target_structured_head_sha256=target_head,
+            basis_kind="proposal_acceptance",
+            basis_ref=gesture.id,
+            supersedes_id=None,
+            at=at,
+        )
+        records.append(record)
+    return tuple(records)
 
 
 def portable_attestation(
@@ -1340,12 +1731,15 @@ def record_human_review(
 
 __all__ = [
     "ATTESTATION_SCHEMA",
+    "AUTOMATIC_SHORT_TEXT_MAX_CHARS",
     "AUTHORSHIP_KINDS",
     "CURRENT_USER_IDENTITY_STATUSES",
     "ProvenanceActorBindingError",
     "ProvenanceConflictError",
     "ProvenanceReviewError",
+    "ProposalAcceptanceProvenanceError",
     "REVIEW_STATUSES",
+    "SPAN_SOURCE_BASIS_PAIRS",
     "actor_binding",
     "list_attestations",
     "normalize_attestation",
@@ -1353,5 +1747,6 @@ __all__ = [
     "project_attestations",
     "record_document_attestation",
     "record_human_review",
+    "record_proposal_acceptance_attestations_locked",
     "record_span_attestation",
 ]

@@ -296,7 +296,10 @@ def issue_gesture():
 
 
 def authenticate_request_session(
-    *, authority: LocalIdentityAuthority | None = None, require_csrf: bool = False
+    *,
+    authority: LocalIdentityAuthority | None = None,
+    require_csrf: bool = False,
+    allow_rotation_due: bool = False,
 ) -> LocalPrincipal:
     """Migration seam for a route that needs the canonical local principal."""
 
@@ -306,6 +309,7 @@ def authenticate_request_session(
         csrf_token=_csrf_token() if require_csrf else None,
         require_csrf=require_csrf,
         boundary=boundary_for_request(),
+        allow_rotation_due=allow_rotation_due,
     )
 
 

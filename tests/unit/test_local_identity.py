@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 from pathlib import Path
 
@@ -234,6 +235,28 @@ def test_csrf_rotation_revocation_and_expiry(
             cookie_token=rotated.cookie_token, boundary=_boundary()
         )
     assert revoked.value.code == "session_unavailable"
+
+
+def test_rotation_due_session_remains_valid_only_when_a_read_allows_it(
+    authority: tuple[LocalIdentityAuthority, Clock],
+) -> None:
+    service, clock = authority
+    session = _session(service)
+    clock.advance(_policy().session_rotation_seconds + 1)
+
+    principal = service.authenticate_session(
+        cookie_token=session.cookie_token,
+        boundary=_boundary(),
+        allow_rotation_due=True,
+    )
+
+    assert principal.actor == service.enrolled_actor()
+    with pytest.raises(LocalIdentityError) as protected:
+        service.authenticate_session(
+            cookie_token=session.cookie_token,
+            boundary=_boundary(),
+        )
+    assert protected.value.code == "session_rotation_required"
 
 
 def test_session_and_gesture_expiry_are_enforced(
@@ -673,6 +696,45 @@ def test_dashboard_human_authority_helper_fails_closed_remotely(
     assert response.json == {"ok": False, "code": "loopback_required"}
 
 
+def test_cowork_mutation_context_matches_browser_exact_whitespace_digest() -> None:
+    from work_buddy.cowork import api as cowork_api
+
+    body = {
+        "span": {
+            "exact": "Line  one\nLine\ttwo",
+            "prefix": "\nBefore  ",
+            "suffix": "\nAfter\t ",
+        },
+        "note": "  keep   spacing  ",
+    }
+    digest = cowork_api.cowork_mutation_context_sha256(
+        operation="provenance.attest",
+        store_id="store-1",
+        document_id="document-1",
+        body=body,
+    )
+
+    # Fixed against canonicalHumanAuthorityJson in the dashboard client. The
+    # bytes inside strings are part of the authority boundary, not semantic
+    # prose to normalize.
+    assert digest == "8cc88685011214b1de6d2cd9ff347f372dc5da6e3595d33744b2795aeb8b75a2"
+    normalized = cowork_api.cowork_mutation_context_sha256(
+        operation="provenance.attest",
+        store_id="store-1",
+        document_id="document-1",
+        body={
+            **body,
+            "span": {
+                "exact": "Line one Line two",
+                "prefix": "Before",
+                "suffix": "After",
+            },
+            "note": "keep spacing",
+        },
+    )
+    assert normalized != digest
+
+
 def test_cowork_action_rejects_absent_mismatched_replayed_and_remote_gestures(
     authority: tuple[LocalIdentityAuthority, Clock],
     monkeypatch: pytest.MonkeyPatch,
@@ -773,6 +835,155 @@ def test_cowork_action_rejects_absent_mismatched_replayed_and_remote_gestures(
     )
     assert remote.status_code == 403
     assert remote.json["code"] == "loopback_required"
+
+
+def test_direct_entry_route_accepts_multiline_anchor_and_consumes_gesture(
+    authority: tuple[LocalIdentityAuthority, Clock],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from work_buddy.cowork import api as cowork_api
+    from work_buddy.cowork import provenance
+    from work_buddy.truth import documents, ydoc_store
+    from work_buddy.truth.contracts import Actor
+    from work_buddy.truth.identity import sha256_bytes
+    from work_buddy.truth.registry import TruthStoreRegistry
+    from work_buddy.truth.store import TruthStore
+
+    service, _ = authority
+    monkeypatch.setattr(local_identity_api, "_authority", lambda: service)
+    monkeypatch.setattr(cowork_api, "_emit", lambda *_args, **_kwargs: None)
+
+    root = tmp_path / "cowork-authority-scope"
+    root.mkdir()
+    store = TruthStore.create(
+        root,
+        {
+            "store_id": "1" * 32,
+            "profile": "cowork-authority-test",
+            "title": "Throwaway Co-work authority test store",
+            "allowed_claim_kinds": ["fact", "preference"],
+            "required_fields": {},
+            "gate": {
+                "rejected_content": "retain",
+                "confirmation_surfaces": ["dashboard"],
+                "block_materialize_on_flags": False,
+            },
+            "projection": "none",
+            "export_committed": True,
+            "document_surface": {
+                "enabled": True,
+                "allowed_document_classes": ["co_authored"],
+                "feedback_capture": True,
+            },
+        },
+    )
+    registry = TruthStoreRegistry(tmp_path / "truth-registry.db")
+    registry.register(store)
+    monkeypatch.setattr(cowork_api, "_registry", lambda: registry)
+
+    actor_ref = service.enrolled_actor().canonical_id
+    actor = Actor("human", actor_ref)
+    snapshot = b"throwaway-multiline-authority-snapshot"
+    snapshot_sha256 = ydoc_store.write_snapshot(store, snapshot=snapshot)
+    document = documents.register_document(
+        store,
+        path="docs/throwaway-multiline-authority.md",
+        title="Throwaway multiline authority",
+        document_class="co_authored",
+        content_sha256=sha256_bytes(b"throwaway multiline authority body"),
+        ydoc_snapshot_sha256=snapshot_sha256,
+        actor=actor,
+    )
+    head = ydoc_store.current_structured_head(
+        store,
+        document_id=document.id,
+        snapshot_sha256=snapshot_sha256,
+    )
+    body = {
+        "span": {
+            "exact": "Typed  line",
+            "prefix": "",
+            "suffix": "\nOver  several\tdays, the next paragraph.",
+        },
+        "attestation": {
+            "schema": "cowork-authorship-attestation/v1",
+            "authorship": {
+                "kind": "human",
+                "contributors": [
+                    {
+                        "kind": "current_user",
+                        "ref": actor_ref,
+                        "identity_status": "local_actor_ref",
+                    }
+                ],
+            },
+            "human_review": {"status": "not_applicable", "reviewers": []},
+        },
+        "source_kind": "direct_entry",
+        "basis_kind": "automatic_direct_entry_attribution",
+        "expected_actor_ref": actor_ref,
+        "expected_actor_identity_status": "local_actor_ref",
+        "expected_structured_head_sha256": head,
+        "idempotency_key": "direct-entry-multiline-authority-0001",
+    }
+
+    session = _session(service)
+    action = "cowork.provenance.attest"
+    subject = f"cowork-document:{store.store_id}:{document.id}"
+    context_sha256 = cowork_api.cowork_mutation_context_sha256(
+        operation="provenance.attest",
+        store_id=store.store_id,
+        document_id=document.id,
+        body=body,
+    )
+    _, gesture = service.issue_gesture(
+        cookie_token=session.cookie_token,
+        csrf_token=session.csrf_token,
+        boundary=_boundary(),
+        action=action,
+        subject=subject,
+        context_sha256=context_sha256,
+    )
+
+    app = Flask("cowork-direct-entry-authority-test")
+    app.config.update(TESTING=True)
+    cowork_api.register_routes(app)
+    client = app.test_client()
+    client.set_cookie(
+        SESSION_COOKIE_NAME,
+        session.cookie_token,
+        domain="127.0.0.1",
+    )
+    headers = {
+        "Origin": "http://127.0.0.1:5127",
+        "Host": "127.0.0.1:5127",
+        "X-WB-CSRF": session.csrf_token,
+        "X-WB-Gesture": gesture.token,
+    }
+    url = (
+        f"/api/truth/doc/{document.id}/authorship-attestations"
+        f"?store_id={store.store_id}"
+    )
+
+    accepted = client.post(url, json=body, headers=headers)
+
+    assert accepted.status_code == 201
+    listed = provenance.list_attestations(store, document.id)
+    assert len(listed) == 1
+    assert listed[0]["source"]["kind"] == "direct_entry"
+    with store.connect() as conn:
+        span = conn.execute(
+            "SELECT selector_json FROM document_spans WHERE id = ?",
+            (listed[0]["scope"]["document_span_id"],),
+        ).fetchone()
+    selector = json.loads(span["selector_json"])[0]
+    assert selector["prefix"] == ""
+    assert selector["suffix"] == "\nOver  several\tdays, the next paragraph."
+
+    replay = client.post(url, json=body, headers=headers)
+    assert replay.status_code == 409
+    assert replay.get_json()["error"]["code"] == "gesture_replayed"
 
 
 def test_host_launch_places_one_time_grant_only_in_fragment(

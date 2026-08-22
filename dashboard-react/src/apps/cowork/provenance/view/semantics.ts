@@ -58,16 +58,39 @@ const SOURCE_DETAIL_FIELDS = [
   ["ref", "Reference"],
   ["surface", "Surface"],
   ["sha256", "Digest"],
+  ["proposal_id", "Proposal"],
+  ["acceptance_gesture_id", "Acceptance gesture"],
+] as const;
+
+const PRODUCER_DETAIL_FIELDS = [
+  ["model", "Producer model"],
+  ["harness", "Producer harness"],
+  ["surface", "Producer surface"],
+  ["session_id", "Producer run"],
 ] as const;
 
 /** Whitelisted, bounded source fields only; never dumps arbitrary source metadata. */
 export const provenanceSourceDetails = (
   record: ProvenanceAttestation,
-): readonly { readonly label: string; readonly value: string }[] =>
-  SOURCE_DETAIL_FIELDS.flatMap(([field, label]) => {
+): readonly { readonly label: string; readonly value: string }[] => {
+  const direct = SOURCE_DETAIL_FIELDS.flatMap(([field, label]) => {
     const value = boundedText(record.source[field]);
     return value === null ? [] : [{ label, value }];
   });
+  const producer = record.source.producer;
+  const nested =
+    typeof producer === "object" &&
+    producer !== null &&
+    !Array.isArray(producer)
+      ? PRODUCER_DETAIL_FIELDS.flatMap(([field, label]) => {
+          const value = boundedText(
+            (producer as Readonly<Record<string, unknown>>)[field],
+          );
+          return value === null ? [] : [{ label, value }];
+        })
+      : [];
+  return [...direct, ...nested];
+};
 
 export const provenanceIdentityStatusLabel = (
   status: ProvenanceIdentityStatus,
@@ -77,7 +100,5 @@ export const provenanceIdentityStatusLabel = (
   return "claimed name; not account-verified";
 };
 
-export const provenancePersonDetail = (
-  person: ProvenanceContributor,
-): string =>
+export const provenancePersonDetail = (person: ProvenanceContributor): string =>
   `${person.label ?? person.ref ?? "Unnamed person"} (${provenanceIdentityStatusLabel(person.identityStatus)})`;

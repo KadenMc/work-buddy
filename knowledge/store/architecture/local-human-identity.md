@@ -38,6 +38,35 @@ request logs or referrers. The browser removes the fragment synchronously and
 redeems it for an opaque HttpOnly Strict session cookie plus an in-memory CSRF
 token.
 
+Deliberate CLI and tray start/restart operations also use that trusted host
+boundary to recover dashboard tabs that survived a sidecar restart. After the
+dashboard is ready, the host mints a fresh one-use bootstrap and asks the
+browser integration to update an existing app tab in place while preserving
+its current route and query. Request/response nonces ensure that an unrelated
+tab export cannot be mistaken for a successful identity handoff. If no
+existing tab can be confirmed, including when a pre-update extension worker
+does not support that mutation, recovery uses a fresh grant for the normal
+trusted browser-launch path rather than replaying a possibly consumed grant or
+calling the older navigation mutation. This leaves any open Co-work document
+route intact while the new same-origin session becomes available to it.
+
+An open tab consumes a newly delivered bootstrap on hash change. On window
+focus or return to visible state it always recovers the exact-Origin cookie
+session and refreshes the in-memory CSRF token, including when the tab still
+looks authenticated with a stale token. A protected gesture that receives
+401/403 performs the same recovery once before retrying, then publishes an
+unauthenticated state if authority is still absent. These recovery paths do not
+mint authority in HTTP, extend the server's hard session or gesture TTLs, or
+weaken the direct-loopback, Origin, audience, CSRF, and exact-action checks.
+
+An informational actor-binding read may continue to identify the enrolled
+actor when an otherwise valid session has reached its rotation boundary. That
+read neither rotates the session nor authorizes a mutation. The next protected
+gesture request still receives the typed rotation requirement, rotates through
+the CSRF-protected session endpoint, and retries before the exact bound write
+can proceed. Expired, revoked, wrong-Origin, or otherwise invalid sessions
+remain unavailable to both reads and writes.
+
 Before a protected click, the browser requests a gesture for the exact action,
 subject, and canonical context digest. The domain mutation sends that one-use
 gesture and CSRF token; the backend consumes it and constructs the

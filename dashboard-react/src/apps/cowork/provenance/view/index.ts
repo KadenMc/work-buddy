@@ -9,6 +9,7 @@ export type {
   ProvenanceLoad,
   ProvenanceProvider,
   ProvenanceMutationBarrier,
+  ProvenanceSelectionAction,
   ProvenanceTarget,
   ProvenanceTargetResolution,
 } from "./contracts";

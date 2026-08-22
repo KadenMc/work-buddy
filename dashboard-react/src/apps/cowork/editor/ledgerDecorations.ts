@@ -72,8 +72,10 @@ export interface CoworkProvenanceOverlayDecoration {
   readonly quoteAnchor: QuoteAnchor | null;
   readonly isDocumentDefault: boolean;
   readonly authorship: "human" | "ai" | "mixed" | "unknown";
-  readonly reviewStatus: "reviewed" | "not_reviewed" | "not_applicable" | "unknown";
-  readonly currentness: "current" | "stale" | "requires_reanchor" | "unavailable";
+  readonly reviewStatus:
+    "reviewed" | "not_reviewed" | "not_applicable" | "unknown";
+  readonly currentness:
+    "current" | "stale" | "requires_reanchor" | "unavailable";
   readonly resolution: "resolved" | "conflicted";
   readonly source: string;
   readonly sourceDetail: string;
@@ -83,20 +85,27 @@ export interface CoworkProvenanceOverlayDecoration {
   readonly basis: string;
   readonly historyCount: number;
   readonly effectiveCount: number;
-  readonly recordState: "recorded" | "unrecorded";
+  readonly recordState: "recorded" | "unrecorded" | "pending";
   readonly authorshipFingerprint: string;
   readonly reviewFingerprint: string;
   readonly sourceFingerprint: string;
+}
+
+/**
+ * A browser-local direct-entry capture that has not received an authoritative
+ * server ledger projection yet. This is delivery state only: it deliberately
+ * carries no authorship, reviewer, or attester claim.
+ */
+export interface CoworkPendingProvenanceDecoration {
+  readonly captureId: string;
+  readonly quoteAnchor: QuoteAnchor;
 }
 
 export interface CoworkEvaluationDecoration {
   readonly resultId: string;
   readonly quoteAnchor: QuoteAnchor;
   readonly resultKind:
-    | "conforming"
-    | "nonconforming"
-    | "inconclusive"
-    | "review_comment";
+    "conforming" | "nonconforming" | "inconclusive" | "review_comment";
 }
 
 /**
@@ -119,11 +128,7 @@ export interface CoworkLedgerDecorationProjection {
 export interface CoworkFocusedAnchor {
   readonly id: string;
   readonly kind:
-    | "proposal"
-    | "claim"
-    | "expression"
-    | "provenance"
-    | "evaluation_result";
+    "proposal" | "claim" | "expression" | "provenance" | "evaluation_result";
 }
 
 export interface CoworkPassageHighlight {
@@ -134,6 +139,7 @@ export interface CoworkPassageHighlight {
 
 interface CoworkLedgerDecorationState {
   readonly projection: CoworkLedgerDecorationProjection;
+  readonly pendingProvenance: readonly CoworkPendingProvenanceDecoration[];
   readonly lens: CoworkEditorLens;
   readonly focused: CoworkFocusedAnchor | null;
   readonly flashFocused: boolean;
@@ -149,6 +155,10 @@ type CoworkLedgerDecorationMeta =
   | {
       readonly type: "set-lens";
       readonly lens: CoworkEditorLens;
+    }
+  | {
+      readonly type: "set-pending-provenance";
+      readonly pending: readonly CoworkPendingProvenanceDecoration[];
     }
   | {
       readonly type: "focus";
@@ -185,10 +195,7 @@ const rangeForQuote = (
   exact: string,
   quoteAnchor?: QuoteAnchor,
 ): { readonly from: number; readonly to: number } | null =>
-  resolveQuoteAnchor(
-    doc,
-    quoteAnchor ?? { exact, prefix: "", suffix: "" },
-  );
+  resolveQuoteAnchor(doc, quoteAnchor ?? { exact, prefix: "", suffix: "" });
 
 const anchorAttributes = (
   kind: CoworkEditorAnchorKind,
@@ -198,9 +205,7 @@ const anchorAttributes = (
   flashFocused: boolean,
   extra: Readonly<Record<string, string>> = {},
 ): Record<string, string> => {
-  const active =
-    focused?.kind === kind &&
-    focused.id === id;
+  const active = focused?.kind === kind && focused.id === id;
   return {
     class: [
       "wb-cowork-ledger-decoration",
@@ -262,7 +267,8 @@ const suggestionId = (raw: unknown): string | null =>
 const atomSuggestion = (
   raw: unknown,
 ): { readonly id: string; readonly type: string } | null => {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+    return null;
   const value = raw as Record<string, unknown>;
   return typeof value["id"] === "string" && typeof value["type"] === "string"
     ? { id: value["id"], type: value["type"] }
@@ -290,11 +296,15 @@ const provenanceClass = (
   const target = targets[0];
   const classes = [
     "wb-cowork-provenance-mark",
-    `wb-cowork-provenance--${target.authorship}`,
-    `wb-cowork-provenance--review-${target.reviewStatus.replace(/_/gu, "-")}`,
+    target.recordState === "pending"
+      ? ""
+      : `wb-cowork-provenance--${target.authorship}`,
+    target.recordState === "pending"
+      ? ""
+      : `wb-cowork-provenance--review-${target.reviewStatus.replace(/_/gu, "-")}`,
     `wb-cowork-provenance--${target.recordState}`,
   ];
-  return classes.join(" ");
+  return classes.filter(Boolean).join(" ");
 };
 
 /**
@@ -306,11 +316,17 @@ const provenanceClass = (
 const provenanceOverlayDecorations = (
   doc: ProseMirrorNode,
   projection: CoworkLedgerDecorationProjection,
+  pendingProvenance: readonly CoworkPendingProvenanceDecoration[],
   focused: CoworkFocusedAnchor | null,
   flashFocused: boolean,
 ): Decoration[] => {
-  if (projection.provenanceOverlay === undefined) return [];
-  const overlays = projection.provenanceOverlay;
+  if (
+    projection.provenanceOverlay === undefined &&
+    pendingProvenance.length === 0
+  ) {
+    return [];
+  }
+  const overlays = projection.provenanceOverlay ?? [];
   const documentDefaults = overlays.filter(
     (item) => item.isDocumentDefault && item.currentness === "current",
   );
@@ -331,6 +347,42 @@ const provenanceOverlayDecorations = (
       ? []
       : [{ target, from: resolution.from, to: resolution.to }];
   });
+  const resolvedPending: ResolvedProvenanceOverlay[] =
+    pendingProvenance.flatMap((pending) => {
+      const resolution = resolveProvenanceQuoteAnchorDetailed(
+        doc,
+        pending.quoteAnchor,
+      );
+      if (resolution.state !== "unique") return [];
+      return [
+        {
+          target: {
+            targetId: `pending:${pending.captureId}`,
+            recordId: `pending:${pending.captureId}`,
+            quoteAnchor: pending.quoteAnchor,
+            isDocumentDefault: false,
+            authorship: "unknown",
+            reviewStatus: "unknown",
+            currentness: "current",
+            resolution: "resolved",
+            source: "direct_entry",
+            sourceDetail: "Waiting for a durable provenance receipt",
+            contributors: "Not asserted while recording",
+            reviewers: "Not asserted while recording",
+            attester: "Not asserted while recording",
+            basis: "automatic_direct_entry_attribution",
+            historyCount: 0,
+            effectiveCount: 0,
+            recordState: "pending",
+            authorshipFingerprint: "pending",
+            reviewFingerprint: "pending",
+            sourceFingerprint: "pending",
+          },
+          from: resolution.from,
+          to: resolution.to,
+        },
+      ];
+    });
   const result: Decoration[] = [];
   doc.descendants((node, pos) => {
     if (!node.isText || node.nodeSize === 0) return true;
@@ -342,6 +394,11 @@ const provenanceOverlayDecorations = (
       boundaries.add(Math.max(nodeFrom, item.from));
       boundaries.add(Math.min(nodeTo, item.to));
     }
+    for (const item of resolvedPending) {
+      if (item.to <= nodeFrom || item.from >= nodeTo) continue;
+      boundaries.add(Math.max(nodeFrom, item.from));
+      boundaries.add(Math.min(nodeTo, item.to));
+    }
     const ordered = [...boundaries].sort((a, b) => a - b);
     for (let index = 0; index < ordered.length - 1; index += 1) {
       const from = ordered[index];
@@ -349,9 +406,17 @@ const provenanceOverlayDecorations = (
       const covering = resolved.filter(
         (item) => item.from < to && item.to > from,
       );
+      const pending = resolvedPending.filter(
+        (item) => item.from < to && item.to > from,
+      );
       let targets: readonly CoworkProvenanceOverlayDecoration[];
       if (covering.length > 0) {
+        // A server-projected span is authoritative as soon as it appears. The
+        // local pending marker may remain until outbox cleanup, but must never
+        // obscure or conflict with the recorded receipt.
         targets = covering.map((item) => item.target);
+      } else if (pending.length > 0) {
+        targets = pending.map((item) => item.target);
       } else if (documentDefaults.length > 0) {
         targets = documentDefaults;
       } else {
@@ -382,12 +447,13 @@ const provenanceOverlayDecorations = (
       }
       const incompatible = new Set(targets.map(provenanceAxes)).size > 1;
       const conflicted =
-        incompatible || targets.some((item) => item.resolution === "conflicted");
+        incompatible ||
+        targets.some((item) => item.resolution === "conflicted");
       const ids = targets.map((item) => item.targetId);
       const recordIds = targets.map((item) => item.recordId);
       const primary =
         focused?.kind === "provenance"
-          ? targets.find((item) => item.targetId === focused.id) ?? targets[0]
+          ? (targets.find((item) => item.targetId === focused.id) ?? targets[0])
           : targets[0];
       const attester =
         new Set(targets.map((item) => item.attester)).size > 1
@@ -410,30 +476,34 @@ const provenanceOverlayDecorations = (
           ? "multiple reviewer records"
           : primary.reviewers;
       const metadata = {
-          "data-wb-decoration": "provenance-overlay",
-          "data-wb-provenance-id": primary.targetId,
-          "data-wb-provenance-ids": JSON.stringify(ids),
-          "data-wb-provenance-record-ids": JSON.stringify(recordIds),
-          "data-wb-authorship": conflicted ? "conflict" : primary.authorship,
-          "data-wb-human-review": conflicted ? "conflict" : primary.reviewStatus,
-          "data-wb-source": conflicted ? "conflict" : primary.source,
-          "data-wb-source-detail": conflicted ? "multiple sources" : sourceDetail,
-          "data-wb-contributors": conflicted ? "multiple contributor records" : contributors,
-          "data-wb-reviewers": conflicted ? "multiple reviewer records" : reviewers,
-          "data-wb-attester": conflicted ? "multiple" : attester,
-          "data-wb-basis": conflicted ? "multiple" : basis,
-          "data-wb-history-count": String(
-            targets.reduce((count, item) => count + item.historyCount, 0),
-          ),
-          "data-wb-provenance-conflict": String(conflicted),
-          "data-wb-provenance-record-state": primary.recordState,
-          "data-wb-provenance-currentness":
-            new Set(targets.map((item) => item.currentness)).size > 1
-              ? "multiple target states"
-              : primary.currentness,
+        "data-wb-decoration": "provenance-overlay",
+        "data-wb-provenance-id": primary.targetId,
+        "data-wb-provenance-ids": JSON.stringify(ids),
+        "data-wb-provenance-record-ids": JSON.stringify(recordIds),
+        "data-wb-authorship": conflicted ? "conflict" : primary.authorship,
+        "data-wb-human-review": conflicted ? "conflict" : primary.reviewStatus,
+        "data-wb-source": conflicted ? "conflict" : primary.source,
+        "data-wb-source-detail": conflicted ? "multiple sources" : sourceDetail,
+        "data-wb-contributors": conflicted
+          ? "multiple contributor records"
+          : contributors,
+        "data-wb-reviewers": conflicted
+          ? "multiple reviewer records"
+          : reviewers,
+        "data-wb-attester": conflicted ? "multiple" : attester,
+        "data-wb-basis": conflicted ? "multiple" : basis,
+        "data-wb-history-count": String(
+          targets.reduce((count, item) => count + item.historyCount, 0),
+        ),
+        "data-wb-provenance-conflict": String(conflicted),
+        "data-wb-provenance-record-state": primary.recordState,
+        "data-wb-provenance-currentness":
+          new Set(targets.map((item) => item.currentness)).size > 1
+            ? "multiple target states"
+            : primary.currentness,
       };
       const attributes =
-        primary.recordState === "unrecorded"
+        primary.recordState !== "recorded"
           ? {
               class: `wb-cowork-ledger-decoration ${provenanceClass(targets, conflicted)}`,
               ...metadata,
@@ -462,6 +532,7 @@ const provenanceOverlayDecorations = (
 function buildDecorations(
   doc: ProseMirrorNode,
   projection: CoworkLedgerDecorationProjection,
+  pendingProvenance: readonly CoworkPendingProvenanceDecoration[],
   lens: CoworkEditorLens,
   focused: CoworkFocusedAnchor | null,
   flashFocused: boolean,
@@ -479,6 +550,7 @@ function buildDecorations(
       ...provenanceOverlayDecorations(
         doc,
         projection,
+        pendingProvenance,
         focused,
         flashFocused,
       ),
@@ -573,58 +645,59 @@ function buildDecorations(
   // Suggestion marks already carry the proposed text. These extra wrappers add one
   // plain, namespace-qualified anchor identity so geometry never has to parse the
   // vendored mark's JSON-encoded data-id attribute.
-  if (lens === "review") doc.descendants((node, pos) => {
-    if (node.isText) {
-      for (const mark of node.marks) {
-        if (
-          mark.type.name !== "insertion" &&
-          mark.type.name !== "deletion" &&
-          mark.type.name !== "modification"
-        ) {
-          continue;
+  if (lens === "review")
+    doc.descendants((node, pos) => {
+      if (node.isText) {
+        for (const mark of node.marks) {
+          if (
+            mark.type.name !== "insertion" &&
+            mark.type.name !== "deletion" &&
+            mark.type.name !== "modification"
+          ) {
+            continue;
+          }
+          const id = suggestionId(mark.attrs["id"]);
+          if (id === null) continue;
+          const decoration = inlineDecoration(
+            pos,
+            pos + node.nodeSize,
+            anchorAttributes(
+              "proposal",
+              id,
+              "wb-cowork-proposal-anchor",
+              focused,
+              flashFocused,
+              { "data-wb-decoration": "suggestion-anchor" },
+            ),
+            `proposal:${id}:${String(pos)}`,
+          );
+          if (decoration !== null) decorations.push(decoration);
         }
-        const id = suggestionId(mark.attrs["id"]);
-        if (id === null) continue;
-        const decoration = inlineDecoration(
-          pos,
-          pos + node.nodeSize,
-          anchorAttributes(
-            "proposal",
-            id,
-            "wb-cowork-proposal-anchor",
-            focused,
-            flashFocused,
-            { "data-wb-decoration": "suggestion-anchor" },
-          ),
-          `proposal:${id}:${String(pos)}`,
-        );
-        if (decoration !== null) decorations.push(decoration);
       }
-    }
 
-    const atom = atomSuggestion(node.attrs["wbSuggestion"]);
-    if (atom !== null) {
-      decorations.push(
-        Decoration.node(
-          pos,
-          pos + node.nodeSize,
-          anchorAttributes(
-            "proposal",
-            atom.id,
-            "wb-cowork-proposal-anchor",
-            focused,
-            flashFocused,
-            {
-              "data-wb-decoration": "atom-suggestion-anchor",
-              "data-wb-suggestion": atom.type,
-            },
+      const atom = atomSuggestion(node.attrs["wbSuggestion"]);
+      if (atom !== null) {
+        decorations.push(
+          Decoration.node(
+            pos,
+            pos + node.nodeSize,
+            anchorAttributes(
+              "proposal",
+              atom.id,
+              "wb-cowork-proposal-anchor",
+              focused,
+              flashFocused,
+              {
+                "data-wb-decoration": "atom-suggestion-anchor",
+                "data-wb-suggestion": atom.type,
+              },
+            ),
+            { key: `proposal-atom:${atom.id}:${String(pos)}` },
           ),
-          { key: `proposal-atom:${atom.id}:${String(pos)}` },
-        ),
-      );
-    }
-    return true;
-  });
+        );
+      }
+      return true;
+    });
 
   for (const flag of lens === "review" ? projection.flags : []) {
     const range = resolveQuoteAnchor(doc, flag.quoteAnchor);
@@ -653,7 +726,9 @@ function buildDecorations(
    * document pull as its Review card. The double underline distinguishes a
    * checked observation from proposals and provenance without relying on color.
    */
-  for (const evaluation of lens === "review" ? projection.evaluations ?? [] : []) {
+  for (const evaluation of lens === "review"
+    ? (projection.evaluations ?? [])
+    : []) {
     const range = resolveQuoteAnchor(doc, evaluation.quoteAnchor);
     if (range === null) continue;
     const decoration = inlineDecoration(
@@ -676,11 +751,7 @@ function buildDecorations(
   }
 
   for (const expression of lens === "truth" ? projection.expressions : []) {
-    const range = rangeForQuote(
-      doc,
-      expression.quote,
-      expression.quoteAnchor,
-    );
+    const range = rangeForQuote(doc, expression.quote, expression.quoteAnchor);
     if (range === null) continue;
     const expressionClaims =
       claimsByExpression.get(expression.expressionId) ?? [];
@@ -768,6 +839,7 @@ const mappedHighlight = (
 function createPluginState(
   doc: ProseMirrorNode,
   projection: CoworkLedgerDecorationProjection,
+  pendingProvenance: readonly CoworkPendingProvenanceDecoration[],
   lens: CoworkEditorLens,
   focused: CoworkFocusedAnchor | null,
   flashFocused: boolean,
@@ -775,6 +847,7 @@ function createPluginState(
 ): CoworkLedgerDecorationState {
   return {
     projection,
+    pendingProvenance,
     lens,
     focused,
     flashFocused,
@@ -782,6 +855,7 @@ function createPluginState(
     decorations: buildDecorations(
       doc,
       projection,
+      pendingProvenance,
       lens,
       focused,
       flashFocused,
@@ -798,6 +872,7 @@ export function coworkLedgerDecorationsPlugin(): Plugin<CoworkLedgerDecorationSt
         createPluginState(
           state.doc,
           EMPTY_PROJECTION,
+          [],
           "review",
           null,
           false,
@@ -805,8 +880,7 @@ export function coworkLedgerDecorationsPlugin(): Plugin<CoworkLedgerDecorationSt
         ),
       apply(transaction, value) {
         const meta = transaction.getMeta(coworkLedgerDecorationsKey) as
-          | CoworkLedgerDecorationMeta
-          | undefined;
+          CoworkLedgerDecorationMeta | undefined;
         if (meta === undefined && !transaction.docChanged) return value;
 
         /*
@@ -821,6 +895,7 @@ export function coworkLedgerDecorationsPlugin(): Plugin<CoworkLedgerDecorationSt
             return createPluginState(
               transaction.doc,
               value.projection,
+              value.pendingProvenance,
               value.lens,
               value.focused,
               value.flashFocused,
@@ -838,6 +913,7 @@ export function coworkLedgerDecorationsPlugin(): Plugin<CoworkLedgerDecorationSt
         }
 
         let projection = value.projection;
+        let pendingProvenance = value.pendingProvenance;
         let lens = value.lens;
         let focused = value.focused;
         let flashFocused = value.flashFocused;
@@ -845,6 +921,8 @@ export function coworkLedgerDecorationsPlugin(): Plugin<CoworkLedgerDecorationSt
 
         if (meta?.type === "project") {
           projection = meta.projection;
+        } else if (meta?.type === "set-pending-provenance") {
+          pendingProvenance = meta.pending;
         } else if (meta?.type === "set-lens") {
           lens = meta.lens;
           const visible =
@@ -876,6 +954,7 @@ export function coworkLedgerDecorationsPlugin(): Plugin<CoworkLedgerDecorationSt
         return createPluginState(
           transaction.doc,
           projection,
+          pendingProvenance,
           lens,
           focused,
           flashFocused,
@@ -904,7 +983,10 @@ const dispatchMeta = (
   editor: Editor,
   meta: CoworkLedgerDecorationMeta,
 ): boolean => {
-  if (editor.isDestroyed || coworkLedgerDecorationsKey.getState(editor.state) === undefined) {
+  if (
+    editor.isDestroyed ||
+    coworkLedgerDecorationsKey.getState(editor.state) === undefined
+  ) {
     return false;
   }
   editor.view.dispatch(
@@ -923,6 +1005,12 @@ export const setCoworkEditorLens = (
   editor: Editor,
   lens: CoworkEditorLens,
 ): boolean => dispatchMeta(editor, { type: "set-lens", lens });
+
+/** Replace only the browser-local delivery projection; server ledger data is untouched. */
+export const setCoworkPendingProvenance = (
+  editor: Editor,
+  pending: readonly CoworkPendingProvenanceDecoration[],
+): boolean => dispatchMeta(editor, { type: "set-pending-provenance", pending });
 
 export const focusCoworkLedgerAnchor = (
   editor: Editor,

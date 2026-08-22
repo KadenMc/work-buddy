@@ -10,9 +10,51 @@
 
 .wb-cowork-provenance-dialog__excerpt {
   margin: 0;
+  max-block-size: 12rem;
   padding: var(--wb-space-3);
   border-inline-start: 3px solid var(--wb-color-border-subtle);
   color: var(--wb-color-text-secondary);
   background: var(--wb-color-surface-subtle);
+  overflow: auto;
   overflow-wrap: anywhere;
+}
+
+/* Provenance replaces the generic selection-feedback verb while its lens is
+ * active. The trigger is intentionally only a router/ceremony opener: review
+ * mutations remain in stable panel detail. */
+.wb-cowork-provenance-selection {
+  position: absolute;
+  inset-block-start: var(--wb-space-4);
+  inset-inline-end: var(--wb-space-4);
+  inline-size: max-content;
+  max-inline-size: min(24rem, calc(100% - (2 * var(--wb-space-4))));
+  z-index: 5;
+}
+
+.wb-cowork-provenance-selection__trigger {
+  padding: var(--wb-space-2) var(--wb-space-4);
+  border: 1px solid var(--wb-color-border-default);
+  border-radius: var(--wb-radius-control);
+  background: var(--wb-color-surface-raised);
+  color: var(--wb-color-text-primary);
+  box-shadow: var(--wb-shadow-raised, 0 1px 2px rgba(0, 0, 0, 0.15));
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--wb-font-size-xs);
+  font-weight: var(--wb-font-weight-medium);
+}
+
+.wb-cowork-provenance-selection__trigger:hover {
+  background: var(--wb-color-surface-overlay);
+}
+
+.wb-cowork-provenance-selection__trigger:focus-visible {
+  outline: none;
+  box-shadow: var(--wb-shadow-focus);
+}
+
+@media (forced-colors: active) {
+  .wb-cowork-provenance-selection__trigger {
+    border-color: ButtonText;
+  }
 }

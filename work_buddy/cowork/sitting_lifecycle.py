@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
-from work_buddy.cowork import materialization, sittings
+from work_buddy.cowork import materialization, provenance, sittings
 from work_buddy.cowork.lifecycle_state import inspect_lifecycle_state
 from work_buddy.cowork.policy import document_surface_allowed
 from work_buddy.cowork.proposal_applicability import (
@@ -18,8 +18,14 @@ from work_buddy.cowork.proposal_applicability import (
 )
 from work_buddy.cowork.verify_coordination import record_review_application
 from work_buddy.truth import documents, proposals, ydoc_store
-from work_buddy.truth.contracts import Actor, InvariantViolation
-from work_buddy.truth.identity import canonical_json, new_id, sha256_text
+from work_buddy.truth.anchors import CompositeSelector, reanchor
+from work_buddy.truth.contracts import Actor, AnchorError, InvariantViolation
+from work_buddy.truth.identity import (
+    canonical_json,
+    new_id,
+    sha256_bytes,
+    sha256_text,
+)
 from work_buddy.truth.store import DocumentRecord, TruthStore, _valid_digest
 
 
@@ -409,6 +415,123 @@ def _commit_decisions(
     return [result for _, result in ordered], events
 
 
+def _post_apply_starts(
+    store: TruthStore,
+    intent: SittingIntent,
+    results: list[dict[str, Any]],
+    conn: sqlite3.Connection,
+) -> dict[str, int]:
+    """Map applied proposals to their exact starts in the committed projection.
+
+    Applicability is resolved against the pre-apply structured head during
+    prepare.  Carrying those server-frozen ranges through every accepted edit
+    lets provenance distinguish an inserted/replacement string from identical
+    text already elsewhere in the document.  If any applied edit lacks a
+    positional proof, callers retain the quote/context-only fail-closed path.
+    """
+
+    result_by_proposal = {
+        str(result.get("proposal_id")): result for result in results
+    }
+    edits: list[tuple[str, int, int, str]] = []
+    for entry in intent.admitted:
+        item = entry["item"]
+        proposal_id = str(item["proposal_id"])
+        result = result_by_proposal.get(proposal_id)
+        if result is None or result.get("result") != "applied":
+            continue
+        proof = item.get("_applicability")
+        if not isinstance(proof, Mapping) or proof.get("status") != "applicable":
+            return {}
+        if (
+            proof.get("current_structured_head_sha256")
+            != intent.expected_structured_head_sha256
+        ):
+            return {}
+        start = proof.get("resolved_start")
+        end = proof.get("resolved_end")
+        range_is_valid = not (
+            isinstance(start, bool)
+            or isinstance(end, bool)
+            or not isinstance(start, int)
+            or not isinstance(end, int)
+            or start < 0
+            or end <= start
+        )
+        proposal = proposals.get_proposal(store, proposal_id, conn=conn)
+        if not range_is_valid:
+            # Same-state applicability remains valid even when no canonical
+            # projection receipt is available to enrich its wire proof.  In
+            # that case, recover only a frozen TextPositionSelector that can
+            # be verified against the proposal's immutable base blob.
+            reason = proof.get("reason")
+            base_is_bound = (
+                reason == "same_structured_head"
+                and proposal.base_structured_head_sha256
+                == intent.expected_structured_head_sha256
+                and proposal.base_content_sha256
+                == intent.expected_file_sha256
+            ) or (
+                reason == "same_materialized_baseline"
+                and proposal.base_structured_head_sha256 is None
+                and proposal.base_content_sha256
+                == intent.expected_file_sha256
+            )
+            try:
+                selector = CompositeSelector.from_json(proposal.selector_json)
+            except AnchorError:
+                selector = None
+            base_path = store.resolve_blob_path(
+                f"blobs/{proposal.base_content_sha256}"
+            )
+            try:
+                base_bytes = base_path.read_bytes()
+                base_text = base_bytes.decode("utf-8")
+            except (OSError, UnicodeDecodeError):
+                base_text = None
+                base_bytes = b""
+            if (
+                not base_is_bound
+                or selector is None
+                or not selector.has_position
+                or base_text is None
+                or sha256_bytes(base_bytes) != proposal.base_content_sha256
+            ):
+                return {}
+            try:
+                resolved = reanchor(
+                    base_text,
+                    selector,
+                    expected_snapshot_sha256=proposal.base_content_sha256,
+                )
+            except AnchorError:
+                return {}
+            start = resolved.start
+            end = resolved.end
+        if item.get("verb") == "confirm":
+            replacement = proposal.replacement
+        else:
+            replacement = item.get("amend_content")
+        if not isinstance(replacement, str):
+            return {}
+        edits.append((proposal_id, start, end, replacement))
+
+    ordered = sorted(edits, key=lambda edit: (edit[1], edit[2], edit[0]))
+    if any(left[2] > right[1] for left, right in zip(ordered, ordered[1:])):
+        raise SittingError(
+            "proposal_provenance_unsafe",
+            "Accepted proposal application ranges overlap.",
+            status=409,
+        )
+
+    shift = 0
+    starts: dict[str, int] = {}
+    for proposal_id, start, end, replacement in ordered:
+        starts[proposal_id] = start + shift
+        shift += len(replacement) - (end - start)
+    return starts
+
+
 def _routing_deliveries(intent: SittingIntent) -> list[dict[str, Any]]:
     return [
         {
@@ -544,6 +667,68 @@ def commit_sitting(
             results, events = _commit_decisions(
                 store, document, actor, current_intent, conn, at=str(projection_receipt["materialized_at"])
             )
+            result_by_proposal = {
+                str(result.get("proposal_id")): result for result in results
+            }
+            post_apply_starts = _post_apply_starts(
+                store,
+                current_intent,
+                results,
+                conn,
+            )
+            for entry in current_intent.admitted:
+                item = entry["item"]
+                if item.get("verb") != "confirm":
+                    continue
+                proposal_id = str(item["proposal_id"])
+                result = result_by_proposal.get(proposal_id)
+                if result is None or result.get("result") != "applied":
+                    continue
+                accepted = proposals.get_proposal(
+                    store,
+                    proposal_id,
+                    conn=conn,
+                )
+                try:
+                    attestations = (
+                        provenance.record_proposal_acceptance_attestations_locked(
+                            store,
+                            conn,
+                            proposal=accepted,
+                            gesture_id=str(result["gesture_id"]),
+                            actor=actor,
+                            target_structured_head_sha256=str(
+                                projection_receipt["structured_head_sha256"]
+                            ),
+                            rendered_projection=rendered_markdown,
+                            post_apply_start=post_apply_starts.get(proposal_id),
+                            at=str(projection_receipt["materialized_at"]),
+                        )
+                    )
+                except provenance.ProposalAcceptanceProvenanceError as exc:
+                    raise SittingError(
+                        "proposal_provenance_unsafe",
+                        str(exc),
+                        status=409,
+                    ) from exc
+                result["provenance_attestation_ids"] = [
+                    attestation.id for attestation in attestations
+                ]
+                events.extend(
+                    (
+                        "truth.doc_provenance_attested",
+                        {
+                            "document_id": document.id,
+                            "attestation_id": attestation.id,
+                            "document_span_id": attestation.document_span_id,
+                            "target_structured_head_sha256": (
+                                attestation.target_structured_head_sha256
+                            ),
+                            "basis_kind": attestation.basis_kind,
+                        },
+                    )
+                    for attestation in attestations
+                )
             record_review_application(
                 store,
                 application_id=current_intent.id,

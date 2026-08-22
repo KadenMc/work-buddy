@@ -7,6 +7,7 @@ sidecar plumbing mocked (no real process spawn or kill).
 
 from __future__ import annotations
 
+import inspect
 import json
 import time
 from unittest.mock import Mock
@@ -68,6 +69,53 @@ def test_unknown_command_is_usage_error():
     assert dispatch.main(["bogus"]) == 2
 
 
+def test_start_recovers_identity_for_an_existing_dashboard_tab(
+    capsys,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        lifecycle,
+        "start_sidecar",
+        lambda **kwargs: {
+            "started": True,
+            "already_running": False,
+            "pid": 42,
+            "detail": "started",
+        },
+    )
+    monkeypatch.setattr(commands, "_ensure_tray", lambda: None)
+    monkeypatch.setattr(commands, "_print_dashboard_url", lambda prefix="": None)
+    recovered = Mock()
+    monkeypatch.setattr(commands, "_reconnect_open_dashboard_identity", recovered)
+
+    assert dispatch.main(["start"]) == 0
+
+    recovered.assert_called_once_with()
+    assert "Sidecar started" in capsys.readouterr().out
+
+
+def test_restart_recovers_identity_after_dashboard_returns(capsys, monkeypatch):
+    monkeypatch.setattr(
+        lifecycle,
+        "stop_sidecar",
+        lambda: {"was_running": True, "stopped": True, "detail": "stopped"},
+    )
+    monkeypatch.setattr(
+        lifecycle,
+        "start_sidecar",
+        lambda: {"started": True, "pid": 84, "detail": "started"},
+    )
+    monkeypatch.setattr(commands.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(commands, "_ensure_tray", lambda: None)
+    recovered = Mock()
+    monkeypatch.setattr(commands, "_reconnect_open_dashboard_identity", recovered)
+
+    assert dispatch.main(["restart"]) == 0
+
+    recovered.assert_called_once_with()
+    assert "Sidecar restarted" in capsys.readouterr().out
+
+
 def test_launch_starts_waits_and_opens_react_app(capsys, monkeypatch):
     monkeypatch.setattr(
         lifecycle,
@@ -108,6 +156,16 @@ def test_launch_does_not_open_a_dead_dashboard(capsys, monkeypatch):
     monkeypatch.setattr(commands, "_wait_for_dashboard_app", lambda url: False)
     assert dispatch.main(["launch"]) == 1
     assert "did not become ready" in capsys.readouterr().err
+
+
+def test_dashboard_startup_timeout_covers_slow_managed_imports():
+    assert commands.DASHBOARD_STARTUP_TIMEOUT_SECONDS == 120.0
+    assert (
+        inspect.signature(commands._wait_for_dashboard_app)
+        .parameters["timeout_seconds"]
+        .default
+        == commands.DASHBOARD_STARTUP_TIMEOUT_SECONDS
+    )
 
 
 def test_launch_operation_returns_open_failure(monkeypatch):

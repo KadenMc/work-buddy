@@ -8,10 +8,8 @@ import {
 } from "react";
 import { EditorContent, useEditor } from "@tiptap/react";
 import { Extension, type Editor } from "@tiptap/core";
-import {
-  Plugin,
-  type Transaction,
-} from "@tiptap/pm/state";
+import { Plugin, type Transaction } from "@tiptap/pm/state";
+import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import * as Y from "yjs";
 
 import {
@@ -29,12 +27,15 @@ import { importCoworkMarkdown } from "../editor/markdownImport";
 import type { ProposalInput } from "../suggestions/types";
 import type { CoworkApiError, CoworkDriftState } from "../contracts";
 import { isLocalHumanOrigin } from "../editor/applyOrigin";
+import {
+  setCoworkPendingProvenance,
+  type CoworkEditorLens,
+  type CoworkPendingProvenanceDecoration,
+} from "../editor/ledgerDecorations";
 import { serializeCoworkEditorMarkdown } from "../editor/serializeCoworkMarkdown";
 import { sha256Hex } from "../persistence/hashing";
 import { asCoworkApiError } from "../providers/errors";
-import {
-  HttpCoworkMaterializationClient,
-} from "../materialization/HttpCoworkMaterializationClient";
+import { HttpCoworkMaterializationClient } from "../materialization/HttpCoworkMaterializationClient";
 import { CoworkHttpClient } from "../providers/CoworkHttpClient";
 import type {
   CoworkMaterializationController,
@@ -42,7 +43,11 @@ import type {
   CoworkMaterializeReceipt,
   CoworkMaterializeRequest,
 } from "../materialization/contracts";
-import type { ProvenanceMutationBarrier } from "../provenance/view/contracts";
+import type {
+  ProvenanceMutationBarrier,
+  ProvenanceProvider,
+  ProvenanceSelectionAction,
+} from "../provenance/view/contracts";
 import type { FeedbackCapture } from "../chat";
 import {
   CoworkFeedbackAffordance,
@@ -66,6 +71,7 @@ import {
 import { CoworkWorkingTargetProjector } from "./CoworkWorkingTargetProjector";
 import {
   CoworkProvenanceDeterminationDialog,
+  CoworkProvenanceSelectionAffordance,
   COWORK_PROVENANCE_ACTOR_CHANGED,
   COWORK_PROVENANCE_EXACT_MAX_CHARS,
   COWORK_PROVENANCE_TARGET_CHANGED,
@@ -73,6 +79,7 @@ import {
   DurableCoworkPasteProvenanceOutbox,
   coworkPastePassageExcerpt,
   coworkPasteCaptureFromTransaction,
+  coworkDirectEntryCaptureFromTransaction,
   coworkPasteTransactionExceedsProvenanceLimit,
   coworkProvenanceExactWithinLimit,
   defaultCoworkProvenanceDetermination,
@@ -85,6 +92,10 @@ import {
   type CoworkProvenanceActorIdentity,
   type CoworkProvenanceDetermination,
 } from "../provenance";
+import {
+  quoteAnchorFromRange,
+  type RangeQuoteAnchor,
+} from "../feedback/feedbackAnchor";
 import {
   initializeLocalIdentity,
   refreshLocalIdentity,
@@ -121,6 +132,19 @@ export interface CoworkBridgeEditorProps {
   readonly onFeedbackCaptured?: (capture: FeedbackCapture) => void;
   /** Injectable R9 transport for the affordance, else the same-origin HTTP one. */
   readonly feedbackTransport?: CoworkFeedbackTransport;
+  /** The active view lens controls contextual selection actions. */
+  readonly activeLens?: CoworkEditorLens;
+  /** Authoritative projection used by Provenance selection actions. */
+  readonly provenanceProvider?: ProvenanceProvider;
+  /** Whether the stable Provenance rail can receive selection actions. */
+  readonly provenanceSelectionActionsActive?: boolean;
+  readonly onProvenanceSelectionAction?: (
+    action: ProvenanceSelectionAction & {
+      readonly intent: "review" | "view" | "inspect";
+    },
+  ) => void;
+  /** Pending input attribution remains true through authoritative refresh. */
+  readonly onInputProvenancePendingChange?: (pending: boolean) => void;
   /**
    * Persists authorship and human-review provenance for the exact span inserted
    * by a paste. Omitted in non-registered/demo editors that have no durable
@@ -146,7 +170,9 @@ export interface CoworkBridgeEditorProps {
     controller: CoworkMaterializationController | null,
   ) => void;
   readonly onMaterialized?: (receipt: CoworkMaterializeReceipt) => void;
-  readonly onSittingWorkspace?: (workspace: CoworkSittingWorkspace | null) => void;
+  readonly onSittingWorkspace?: (
+    workspace: CoworkSittingWorkspace | null,
+  ) => void;
   readonly onProvenanceMutationBarrier?: (
     barrier: ProvenanceMutationBarrier | null,
   ) => void;
@@ -183,6 +209,15 @@ const pasteIdempotencyKey = (): string =>
   globalThis.crypto?.randomUUID?.() ??
   `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
 
+interface DirectEntryBurst {
+  readonly idempotencyKey: string;
+  readonly from: number;
+  readonly to: number;
+  readonly capturedAt: string;
+  readonly determination: CoworkProvenanceDetermination;
+  readonly capturedActor?: CoworkProvenanceActorIdentity;
+}
+
 export const coworkPasteProvenanceOutboxKey = (
   storeId: string,
   documentId: string,
@@ -199,7 +234,7 @@ const terminalPasteProvenanceError = (): string =>
   "Co-work rejected this attribution. Review or correct it before starting a new save attempt.";
 
 const outboxPasteProvenanceError = (): string =>
-  "Co-work couldn’t safely store this paste attribution. The pasted text remains in the document; keep this page open and retry.";
+  "Co-work couldn’t safely store provenance for edited text. Your text remains in the document; keep this page open and retry.";
 
 const actorChangedPasteProvenanceError = (): string =>
   "The active identity changed before this attribution was saved. Confirm it again for the current person.";
@@ -225,6 +260,11 @@ function MountedBridgeEditor({
   storeId,
   onFeedbackCaptured,
   feedbackTransport,
+  activeLens,
+  provenanceProvider,
+  provenanceSelectionActionsActive,
+  onProvenanceSelectionAction,
+  onInputProvenancePendingChange,
   onRecordPasteProvenance,
   resolvedProvenanceActor,
   resolvedPasteProvenanceOutbox,
@@ -267,6 +307,20 @@ function MountedBridgeEditor({
   const onTeardownRef = useRef(onTeardown);
   const pasteRecorderRef = useRef(onRecordPasteProvenance);
   const pasteRecordTailRef = useRef<Promise<void>>(Promise.resolve());
+  const directEntryBurstRef = useRef<DirectEntryBurst | null>(null);
+  const directEntryClosingBurstsRef = useRef(
+    new Map<string, DirectEntryBurst>(),
+  );
+  const directEntryCaptureEnabledRef = useRef(false);
+  const provenanceEditGenerationRef = useRef(0);
+  const directEntryFinalizationRef = useRef<Promise<void> | null>(null);
+  const finalizeDirectEntryBurstRef = useRef<() => Promise<void>>(
+    async () => undefined,
+  );
+  const closeDirectEntryBurstRef = useRef<() => Promise<void>>(
+    async () => undefined,
+  );
+  const manualRecordEntryRef = useRef(new Map<string, number>());
   const pasteAttemptsRef = useRef(new Set<number>());
   const pasteSettlementsRef = useRef(new Set<number>());
   const pasteEditorRef = useRef<Editor | null>(null);
@@ -283,9 +337,54 @@ function MountedBridgeEditor({
   const [volatilePasteCaptures, setVolatilePasteCaptures] = useState<
     readonly CoworkPasteProvenanceCapture[]
   >([]);
+  const pendingDirectEntryDecorations = useMemo(() => {
+    const pending = new Map<string, CoworkPendingProvenanceDecoration>();
+    for (const capture of [...pasteEntries, ...volatilePasteCaptures]) {
+      if (capture.sourceKind !== "direct_entry") continue;
+      pending.set(capture.idempotencyKey, {
+        captureId: capture.idempotencyKey,
+        quoteAnchor: capture.anchor,
+      });
+    }
+    return [...pending.values()];
+  }, [pasteEntries, volatilePasteCaptures]);
+  const pendingDirectEntryDecorationsRef = useRef(
+    pendingDirectEntryDecorations,
+  );
+  pendingDirectEntryDecorationsRef.current = pendingDirectEntryDecorations;
+  const inputProvenancePending =
+    pasteEntries.some(
+      (entry) =>
+        entry.sourceKind === "direct_entry" ||
+        (entry.sourceKind === "legacy" &&
+          entry.status !== "awaiting_determination" &&
+          entry.status !== "stale_target" &&
+          entry.status !== "terminal_failure"),
+    ) ||
+    volatilePasteCaptures.some(
+      (capture) =>
+        capture.sourceKind !== undefined && capture.sourceKind !== "paste",
+    );
+  const directEntryFailurePending = pasteEntries.some(
+    (entry) =>
+      entry.sourceKind === "direct_entry" &&
+      (entry.status === "retryable_failure" ||
+        entry.status === "stale_target" ||
+        entry.status === "terminal_failure"),
+  );
+  const visibleOutboxError =
+    outboxError ??
+    (directEntryFailurePending
+      ? "Co-work couldn’t record provenance for recent typing. Your capture is safe; retry provenance storage."
+      : null);
   onReadyRef.current = onReady;
   onTeardownRef.current = onTeardown;
   pasteRecorderRef.current = onRecordPasteProvenance;
+
+  useEffect(() => {
+    onInputProvenancePendingChange?.(inputProvenancePending);
+    return () => onInputProvenancePendingChange?.(false);
+  }, [inputProvenancePending, onInputProvenancePendingChange]);
 
   const refreshPasteEntries = useCallback(async (): Promise<
     readonly CoworkPasteProvenanceOutboxEntry[] | null
@@ -297,14 +396,17 @@ function MountedBridgeEditor({
       if (currentEditor === null) return null;
       const validated: CoworkPasteProvenanceOutboxEntry[] = [];
       for (const entry of listed) {
+        // An evolving direct-entry quote is not a target yet. A frozen request
+        // is an immutable exactly-once retry and the server owns its CAS.
+        if (entry.status === "capturing" || entry.frozenRequest !== undefined) {
+          validated.push(entry);
+          continue;
+        }
         const resolution = resolveCoworkPasteAnchor(
           currentEditor.state.doc,
           entry.anchor,
         );
-        if (
-          resolution.kind === "unique" ||
-          entry.status === "stale_target"
-        ) {
+        if (resolution.kind === "unique" || entry.status === "stale_target") {
           validated.push(entry);
           continue;
         }
@@ -313,10 +415,9 @@ function MountedBridgeEditor({
             await resolvedPasteProvenanceOutbox.markFailure(entry.id, {
               code:
                 resolution.kind === "ambiguous"
-                  ? "paste_anchor_ambiguous"
-                  : "paste_anchor_absent",
-              message:
-                "The captured pasted passage no longer resolves uniquely.",
+                  ? "provenance_anchor_ambiguous"
+                  : "provenance_anchor_absent",
+              message: "The captured text no longer resolves uniquely.",
               kind: "stale_target",
             }),
           );
@@ -346,44 +447,18 @@ function MountedBridgeEditor({
       pasteAttemptsRef.current.add(entryId);
       setBusyPasteIds((current) => new Set(current).add(entryId));
       const run = async (): Promise<void> => {
+        let stored: CoworkPasteProvenanceOutboxEntry | undefined;
         try {
-          const stored = (
-            await resolvedPasteProvenanceOutbox.list()
-          ).find((entry) => entry.id === entryId);
+          stored = (await resolvedPasteProvenanceOutbox.list()).find(
+            (entry) => entry.id === entryId,
+          );
           if (
             stored === undefined ||
-            (stored.status !== "ready" &&
-              stored.status !== "retryable_failure")
+            (stored.status !== "ready" && stored.status !== "retryable_failure")
           ) {
             return;
           }
 
-          // The paste transaction enters Yjs after the synchronous recovery
-          // journal. Flush that update before resolving its quote anchor: the
-          // passage and the structured head frozen below must describe the
-          // same persisted document version.
-          await Promise.resolve();
-          await persistence.flush();
-          const currentEditor = pasteEditorRef.current;
-          const anchorResolution =
-            currentEditor === null
-              ? { kind: "absent" as const }
-              : resolveCoworkPasteAnchor(
-                  currentEditor.state.doc,
-                  stored.anchor,
-                );
-          if (anchorResolution.kind !== "unique") {
-            await resolvedPasteProvenanceOutbox.markFailure(entryId, {
-              code:
-                anchorResolution.kind === "ambiguous"
-                  ? "paste_anchor_ambiguous"
-                  : "paste_anchor_absent",
-              message:
-                "The captured pasted passage no longer resolves uniquely.",
-              kind: "stale_target",
-            });
-            return;
-          }
           const recorder = pasteRecorderRef.current;
           if (
             recorder === undefined ||
@@ -391,16 +466,41 @@ function MountedBridgeEditor({
             storeId === undefined
           ) {
             throw new Error(
-              "Paste provenance is unavailable for this document.",
+              "Text provenance is unavailable for this document.",
             );
           }
 
           let request = stored.frozenRequest;
           if (request === undefined) {
-            const expectedStructuredHeadSha256 = persistence.docSha256;
+            // Only an unfrozen capture is revalidated. Once frozen, replay the
+            // exact request/key first: the server may have committed it before
+            // the browser lost the response.
+            await Promise.resolve();
+            await persistence.flush();
+            const compacted = await persistence.compact();
+            const currentEditor = pasteEditorRef.current;
+            const anchorResolution =
+              currentEditor === null
+                ? { kind: "absent" as const }
+                : resolveCoworkPasteAnchor(
+                    currentEditor.state.doc,
+                    stored.anchor,
+                  );
+            if (anchorResolution.kind !== "unique") {
+              await resolvedPasteProvenanceOutbox.markFailure(entryId, {
+                code:
+                  anchorResolution.kind === "ambiguous"
+                    ? "provenance_anchor_ambiguous"
+                    : "provenance_anchor_absent",
+                message: "The captured text no longer resolves uniquely.",
+                kind: "stale_target",
+              });
+              return;
+            }
+            const expectedStructuredHeadSha256 = compacted.structuredHeadSha256;
             if (expectedStructuredHeadSha256.length === 0) {
               throw new Error(
-                "The pasted text does not have a persisted structured head.",
+                "The edited text does not have a persisted structured head.",
               );
             }
             const frozen = await resolvedPasteProvenanceOutbox.freezeRequest(
@@ -415,13 +515,32 @@ function MountedBridgeEditor({
           }
           if (request === undefined) {
             throw new Error(
-              "Paste provenance is unavailable for this document.",
+              "Text provenance is unavailable for this document.",
             );
           }
 
           // A resolved recorder call is the confirmed server receipt boundary.
           // Until then the complete frozen request remains replayable.
-          await recorder(request);
+          const receipt = await recorder(request);
+          // Keep the immutable request until the authoritative view includes
+          // the receipt. Manual Record must not close into an empty/stale lens.
+          if (provenanceProvider !== undefined) {
+            const refreshed = await provenanceProvider.refresh();
+            if (
+              refreshed.state !== "ready" ||
+              !refreshed.data.history.some(
+                (record) =>
+                  record.attestationId === receipt.attestationId &&
+                  record.scope.documentSpanId === receipt.documentSpanId &&
+                  record.scope.structuredHeadSha256 ===
+                    receipt.targetStructuredHeadSha256,
+              )
+            ) {
+              throw new Error(
+                "Co-work saved the provenance record but could not confirm it in the current view yet.",
+              );
+            }
+          }
           await resolvedPasteProvenanceOutbox.remove(entryId);
         } catch (error) {
           const apiError = asCoworkApiError(error);
@@ -436,24 +555,34 @@ function MountedBridgeEditor({
                 current.map((capture, index) => ({
                   ...capture,
                   idempotencyKey: `${recoveryPrefix}:volatile:${String(index)}`,
+                  sourceKind:
+                    capture.sourceKind === "direct_entry"
+                      ? "legacy"
+                      : capture.sourceKind,
                   basisKind: "user_attestation",
+                  capturedActor: undefined,
                   determination: unknownCoworkProvenanceDetermination(),
                   requiresExplicitDetermination: true,
                   status: "awaiting_determination",
                 })),
               );
               onProvenanceActorChanged?.();
-            } else {
+            } else if (stored !== undefined) {
               await resolvedPasteProvenanceOutbox.markFailure(entryId, {
                 code: apiError.code,
                 message: apiError.message,
                 kind:
                   apiError.code === COWORK_PROVENANCE_TARGET_CHANGED
                     ? "stale_target"
-                    : apiError.retryable
+                    : stored.sourceKind === "direct_entry" || apiError.retryable
                       ? "retryable"
                       : "terminal",
               });
+              if (stored.sourceKind !== "paste") {
+                setOutboxError(
+                  "Co-work couldn’t record provenance for recent typing. Your capture is safe; retry provenance storage.",
+                );
+              }
             }
           } catch {
             setOutboxError(outboxPasteProvenanceError());
@@ -479,6 +608,7 @@ function MountedBridgeEditor({
       resolvedProvenanceActor,
       resolvedPasteProvenanceOutbox,
       onProvenanceActorChanged,
+      provenanceProvider,
       storeId,
     ],
   );
@@ -513,19 +643,22 @@ function MountedBridgeEditor({
       const captureRequest = {
         anchor: capture.anchor,
         idempotencyKey: pasteIdempotencyKey(),
+        ...(resolvedProvenanceActor === undefined
+          ? {}
+          : { capturedActor: resolvedProvenanceActor }),
         capturedAt: new Date().toISOString(),
         passageExcerpt: coworkPastePassageExcerpt(capture.anchor.exact),
         ...(persistence.docSha256.length === 0
           ? {}
           : {
-              capturedBaseStructuredHeadSha256:
-                persistence.docSha256,
+              capturedBaseStructuredHeadSha256: persistence.docSha256,
             }),
       };
       if (capture.substantial || resolvedProvenanceActor === undefined) {
         const pendingCapture: CoworkPasteProvenanceCapture = {
           ...captureRequest,
           substantial: capture.substantial,
+          sourceKind: "paste",
           basisKind: "user_attestation",
           determination: unknownCoworkProvenanceDetermination(),
           ...(resolvedProvenanceActor === undefined
@@ -544,8 +677,7 @@ function MountedBridgeEditor({
             setVolatilePasteCaptures((current) => [
               ...current.filter(
                 (candidate) =>
-                  candidate.idempotencyKey !==
-                  pendingCapture.idempotencyKey,
+                  candidate.idempotencyKey !== pendingCapture.idempotencyKey,
               ),
               pendingCapture,
             ]);
@@ -559,6 +691,7 @@ function MountedBridgeEditor({
       const automaticCapture: CoworkPasteProvenanceCapture = {
         ...captureRequest,
         substantial: false,
+        sourceKind: "paste",
         basisKind: "automatic_short_text_attribution",
         determination: automatic,
         status: "ready",
@@ -577,8 +710,7 @@ function MountedBridgeEditor({
           setVolatilePasteCaptures((current) => [
             ...current.filter(
               (candidate) =>
-                candidate.idempotencyKey !==
-                automaticCapture.idempotencyKey,
+                candidate.idempotencyKey !== automaticCapture.idempotencyKey,
             ),
             automaticCapture,
           ]);
@@ -593,6 +725,655 @@ function MountedBridgeEditor({
       persistence,
       resolvedProvenanceActor,
       storeId,
+    ],
+  );
+
+  const directCaptureForBurst = useCallback(
+    (
+      burst: DirectEntryBurst,
+      editorDocument: ProseMirrorNode,
+    ): CoworkPasteProvenanceCapture | null => {
+      const anchor = quoteAnchorFromRange(editorDocument, burst.from, burst.to);
+      if (anchor === null) return null;
+      return {
+        anchor,
+        idempotencyKey: burst.idempotencyKey,
+        substantial: false,
+        sourceKind: "direct_entry",
+        basisKind: "automatic_direct_entry_attribution",
+        determination: burst.determination,
+        ...(burst.capturedActor === undefined
+          ? {}
+          : { capturedActor: burst.capturedActor }),
+        capturedAt: burst.capturedAt,
+        passageExcerpt: coworkPastePassageExcerpt(anchor.exact),
+        ...(persistence.docSha256.length === 0
+          ? {}
+          : {
+              capturedBaseStructuredHeadSha256: persistence.docSha256,
+            }),
+        status: "capturing",
+      };
+    },
+    [persistence],
+  );
+
+  const finalizeDirectEntryBurst = useCallback((): Promise<void> => {
+    if (directEntryFinalizationRef.current !== null) {
+      return directEntryFinalizationRef.current;
+    }
+    let retryForChangedGeneration = false;
+    const run = (async (): Promise<void> => {
+      if (resolvedPasteProvenanceOutbox === undefined) return;
+      const listed = await resolvedPasteProvenanceOutbox.list();
+      const closing = [...directEntryClosingBurstsRef.current.values()];
+      const current = directEntryBurstRef.current;
+      const bursts = [
+        ...closing,
+        ...(current === null ||
+        closing.some((burst) => burst.idempotencyKey === current.idempotencyKey)
+          ? []
+          : [current]),
+      ];
+      if (bursts.length === 0) return;
+
+      const generation = provenanceEditGenerationRef.current;
+      await persistence.flush();
+      const compacted = await persistence.compact();
+      if (generation !== provenanceEditGenerationRef.current) {
+        retryForChangedGeneration = true;
+        return;
+      }
+
+      for (const burst of bursts) {
+        let entry = listed.find(
+          (candidate) => candidate.idempotencyKey === burst.idempotencyKey,
+        );
+        if (entry === undefined) continue;
+
+        if (resolvedProvenanceActor === undefined) {
+          // Identity may recover from a trusted launcher without changing the
+          // editor. Preserve both actor-bound and actorless observations until
+          // that boundary can decide whether automatic attribution is honest.
+          continue;
+        }
+        const captureActorUnavailable = burst.capturedActor === undefined;
+        const captureActorChanged =
+          burst.capturedActor !== undefined &&
+          (burst.capturedActor.ref !== resolvedProvenanceActor.ref ||
+            burst.capturedActor.identity_status !==
+              resolvedProvenanceActor.identity_status);
+        if (captureActorUnavailable || captureActorChanged) {
+          // Never let an unavailable/changed actor make the observation
+          // disappear, and never let a later actor inherit it. Preserve the
+          // exact selector as an explicit legacy determination the user can
+          // resolve after a legitimate identity session is available.
+          if (entry.status === "capturing") {
+            const deferred =
+              await resolvedPasteProvenanceOutbox.deferDirectEntry(
+                entry.id,
+                // This automatic request has never been frozen or submitted, so
+                // preserving its key is both safe and important: a transaction
+                // that mapped the burst while demotion was queued may already
+                // have journalled one last capture under this key. Rotating it
+                // here would let that queued upsert append an orphan automatic
+                // row after the legacy replacement commits.
+                burst.idempotencyKey,
+                unknownCoworkProvenanceDetermination(),
+                {
+                  code: captureActorUnavailable
+                    ? "provenance_actor_unavailable_at_capture"
+                    : COWORK_PROVENANCE_ACTOR_CHANGED,
+                  message: captureActorUnavailable
+                    ? "No enrolled local actor was available when this text was entered."
+                    : "The acting identity changed before this attribution was saved.",
+                  kind: "terminal",
+                },
+              );
+            if (
+              generation !== provenanceEditGenerationRef.current ||
+              deferred.idempotencyKey !== burst.idempotencyKey
+            ) {
+              // A disjoint edit can arrive while durable demotion yields. Keep
+              // the burst refs intact and run the full close loop again so the
+              // newly actor-bound burst is frozen and delivered at its current
+              // structured head. The same-key replacement makes the queued
+              // stale upsert reject instead of resurrecting automatic work.
+              retryForChangedGeneration = true;
+              return;
+            }
+          }
+          directEntryClosingBurstsRef.current.delete(burst.idempotencyKey);
+          if (
+            directEntryBurstRef.current?.idempotencyKey === burst.idempotencyKey
+          ) {
+            directEntryBurstRef.current = null;
+          }
+          continue;
+        }
+
+        if (entry.status === "capturing") {
+          entry = await resolvedPasteProvenanceOutbox.markReady(
+            entry.id,
+            entry.determination,
+            "automatic_direct_entry_attribution",
+          );
+          entry = await resolvedPasteProvenanceOutbox.freezeRequest(entry.id, {
+            storeId: storeId!,
+            documentId: documentId!,
+            expectedStructuredHeadSha256: compacted.structuredHeadSha256,
+          });
+          if (generation !== provenanceEditGenerationRef.current) {
+            const currentEditor = pasteEditorRef.current;
+            const latestBurst =
+              directEntryClosingBurstsRef.current.get(burst.idempotencyKey) ??
+              (directEntryBurstRef.current?.idempotencyKey ===
+              burst.idempotencyKey
+                ? directEntryBurstRef.current
+                : burst);
+            const latestCapture =
+              currentEditor === null
+                ? null
+                : directCaptureForBurst(latestBurst, currentEditor.state.doc);
+            if (latestCapture !== null) {
+              await resolvedPasteProvenanceOutbox.reopenCapture(
+                entry.id,
+                latestCapture,
+              );
+              retryForChangedGeneration = true;
+            }
+            return;
+          }
+        }
+
+        directEntryClosingBurstsRef.current.delete(burst.idempotencyKey);
+        if (
+          directEntryBurstRef.current?.idempotencyKey === burst.idempotencyKey
+        ) {
+          directEntryBurstRef.current = null;
+        }
+        await attemptPasteProvenance(entry.id);
+      }
+      await refreshPasteEntries();
+    })()
+      .catch(() => {
+        // The mutable burst and synchronous intent remain available for a
+        // same-mount retry; fire-and-forget lifecycle callers never leak an
+        // unhandled rejection.
+        setOutboxError(outboxPasteProvenanceError());
+      })
+      .finally(() => {
+        directEntryFinalizationRef.current = null;
+        if (
+          retryForChangedGeneration &&
+          (directEntryBurstRef.current !== null ||
+            directEntryClosingBurstsRef.current.size > 0)
+        ) {
+          queueMicrotask(() => {
+            void finalizeDirectEntryBurstRef.current();
+          });
+        }
+      });
+    directEntryFinalizationRef.current = run;
+    return run;
+  }, [
+    attemptPasteProvenance,
+    directCaptureForBurst,
+    documentId,
+    persistence,
+    refreshPasteEntries,
+    resolvedPasteProvenanceOutbox,
+    resolvedProvenanceActor,
+    storeId,
+  ]);
+  finalizeDirectEntryBurstRef.current = finalizeDirectEntryBurst;
+
+  const closeDirectEntryBurst = useCallback((): Promise<void> => {
+    const burst = directEntryBurstRef.current;
+    if (burst !== null) {
+      directEntryClosingBurstsRef.current.set(burst.idempotencyKey, burst);
+      directEntryBurstRef.current = null;
+    }
+    return finalizeDirectEntryBurst();
+  }, [finalizeDirectEntryBurst]);
+  closeDirectEntryBurstRef.current = closeDirectEntryBurst;
+
+  const stageDirectEntryProvenanceBeforeTransaction = useCallback(
+    ({
+      editor: transactionEditor,
+      transaction,
+    }: {
+      readonly editor: Editor;
+      readonly transaction: Transaction;
+    }): void => {
+      if (
+        !directEntryCaptureEnabledRef.current ||
+        pasteRecorderRef.current === undefined ||
+        documentId === undefined ||
+        storeId === undefined ||
+        resolvedPasteProvenanceOutbox === undefined
+      ) {
+        return;
+      }
+      pasteEditorRef.current = transactionEditor;
+      if (
+        transaction.docChanged &&
+        directEntryClosingBurstsRef.current.size > 0
+      ) {
+        for (const queued of directEntryClosingBurstsRef.current.values()) {
+          const mapped: DirectEntryBurst = {
+            ...queued,
+            // This burst is already sealed. Insertions exactly at either
+            // boundary belong to the new gesture, never to both gestures.
+            from: transaction.mapping.map(queued.from, 1),
+            to: transaction.mapping.map(queued.to, -1),
+          };
+          if (mapped.to <= mapped.from) {
+            directEntryClosingBurstsRef.current.delete(queued.idempotencyKey);
+            void resolvedPasteProvenanceOutbox
+              .list()
+              .then((entries) =>
+                entries.find(
+                  (entry) => entry.idempotencyKey === queued.idempotencyKey,
+                ),
+              )
+              .then((entry) => {
+                if (entry === undefined) return undefined;
+                return entry.status === "capturing"
+                  ? resolvedPasteProvenanceOutbox.cancelCapture(entry.id)
+                  : resolvedPasteProvenanceOutbox.remove(entry.id);
+              })
+              .then(refreshPasteEntries)
+              .catch(() => setOutboxError(outboxPasteProvenanceError()));
+            continue;
+          }
+          const mappedCapture = directCaptureForBurst(mapped, transaction.doc);
+          if (mappedCapture === null) {
+            directEntryClosingBurstsRef.current.delete(queued.idempotencyKey);
+            void resolvedPasteProvenanceOutbox
+              .list()
+              .then((entries) =>
+                entries.find(
+                  (entry) => entry.idempotencyKey === queued.idempotencyKey,
+                ),
+              )
+              .then((entry) => {
+                if (entry === undefined) return undefined;
+                return entry.status === "capturing"
+                  ? resolvedPasteProvenanceOutbox.cancelCapture(entry.id)
+                  : resolvedPasteProvenanceOutbox.remove(entry.id);
+              })
+              .then(refreshPasteEntries)
+              .catch(() => setOutboxError(outboxPasteProvenanceError()));
+            continue;
+          }
+          directEntryClosingBurstsRef.current.set(
+            mapped.idempotencyKey,
+            mapped,
+          );
+          // upsertCapture stages the post-transaction quote synchronously. If
+          // the row was frozen a moment earlier, its durable mutation rejects;
+          // the generation guard reopens the same unsent key from this latest
+          // queued burst rather than from an obsolete loop snapshot.
+          void resolvedPasteProvenanceOutbox
+            .upsertCapture(mappedCapture)
+            .then(refreshPasteEntries)
+            .catch(() => undefined);
+        }
+      }
+      const capture = coworkDirectEntryCaptureFromTransaction(
+        transaction,
+        transaction.doc,
+      );
+      if (capture === null) {
+        const prior = directEntryBurstRef.current;
+        if (prior === null) return;
+        if (transaction.docChanged) {
+          const continuingMappedFrom = transaction.mapping.map(prior.from, -1);
+          const continuingMappedTo = transaction.mapping.map(prior.to, 1);
+          const previous = transactionEditor.state.selection;
+          const touchesBurst =
+            previous.from <= prior.to && previous.to >= prior.from;
+          if (
+            touchesBurst &&
+            transaction.getMeta("uiEvent") !== "paste" &&
+            transaction.getMeta("uiEvent") !== "drop"
+          ) {
+            if (continuingMappedTo <= continuingMappedFrom) {
+              directEntryBurstRef.current = null;
+              void resolvedPasteProvenanceOutbox
+                .list()
+                .then((entries) =>
+                  entries.find(
+                    (entry) => entry.idempotencyKey === prior.idempotencyKey,
+                  ),
+                )
+                .then((entry) =>
+                  entry === undefined
+                    ? undefined
+                    : resolvedPasteProvenanceOutbox.cancelCapture(entry.id),
+                )
+                .then(refreshPasteEntries)
+                .catch(() => setOutboxError(outboxPasteProvenanceError()));
+              return;
+            }
+            const nextBurst: DirectEntryBurst = {
+              ...prior,
+              from: continuingMappedFrom,
+              to: continuingMappedTo,
+            };
+            const nextCapture = directCaptureForBurst(
+              nextBurst,
+              transaction.doc,
+            );
+            if (nextCapture !== null) {
+              directEntryBurstRef.current = nextBurst;
+              void resolvedPasteProvenanceOutbox
+                .upsertCapture(nextCapture)
+                .then(refreshPasteEntries)
+                .catch(() => setOutboxError(outboxPasteProvenanceError()));
+              return;
+            }
+          }
+          // The transaction document is already the post-edit document. Keep
+          // the closing burst's positions and quote aligned with it before a
+          // second, disjoint burst can be staged and before compaction freezes
+          // both rows against that same head.
+          const sealedMappedFrom = transaction.mapping.map(prior.from, 1);
+          const sealedMappedTo = transaction.mapping.map(prior.to, -1);
+          if (sealedMappedTo <= sealedMappedFrom) {
+            directEntryBurstRef.current = null;
+            void resolvedPasteProvenanceOutbox
+              .list()
+              .then((entries) =>
+                entries.find(
+                  (entry) => entry.idempotencyKey === prior.idempotencyKey,
+                ),
+              )
+              .then((entry) =>
+                entry === undefined
+                  ? undefined
+                  : resolvedPasteProvenanceOutbox.cancelCapture(entry.id),
+              )
+              .then(refreshPasteEntries)
+              .catch(() => setOutboxError(outboxPasteProvenanceError()));
+            return;
+          }
+          const mappedBurst: DirectEntryBurst = {
+            ...prior,
+            from: sealedMappedFrom,
+            to: sealedMappedTo,
+          };
+          const mappedCapture = directCaptureForBurst(
+            mappedBurst,
+            transaction.doc,
+          );
+          if (mappedCapture === null) {
+            directEntryBurstRef.current = null;
+            void resolvedPasteProvenanceOutbox
+              .list()
+              .then((entries) =>
+                entries.find(
+                  (entry) => entry.idempotencyKey === prior.idempotencyKey,
+                ),
+              )
+              .then((entry) =>
+                entry === undefined
+                  ? undefined
+                  : resolvedPasteProvenanceOutbox.cancelCapture(entry.id),
+              )
+              .then(refreshPasteEntries)
+              .catch(() => setOutboxError(outboxPasteProvenanceError()));
+            return;
+          }
+          directEntryBurstRef.current = mappedBurst;
+          void resolvedPasteProvenanceOutbox
+            .upsertCapture(mappedCapture)
+            .then(refreshPasteEntries)
+            .catch(() => setOutboxError(outboxPasteProvenanceError()));
+          void closeDirectEntryBurstRef.current();
+          return;
+        }
+        if (
+          transaction.selectionSet &&
+          (!transaction.selection.empty ||
+            transaction.selection.head !== prior.to)
+        ) {
+          void closeDirectEntryBurstRef.current();
+        }
+        return;
+      }
+
+      const now = Date.now();
+      const prior = directEntryBurstRef.current;
+      const mappedPriorForExtension =
+        prior === null
+          ? null
+          : {
+              from: transaction.mapping.map(prior.from, -1),
+              to: transaction.mapping.map(prior.to, 1),
+            };
+      const mappedPriorForSeal =
+        prior === null
+          ? null
+          : {
+              // Keep a displaced burst disjoint from text inserted exactly at
+              // its boundaries. A valid same-actor continuation still merges
+              // the outward mapping with `capture` below.
+              from: transaction.mapping.map(prior.from, 1),
+              to: transaction.mapping.map(prior.to, -1),
+            };
+      const previousSelection = transactionEditor.state.selection;
+      const selectionContinuesBurst =
+        prior !== null &&
+        previousSelection.empty &&
+        previousSelection.head === prior.to &&
+        prior.capturedActor?.ref === resolvedProvenanceActor?.ref &&
+        prior.capturedActor?.identity_status ===
+          resolvedProvenanceActor?.identity_status;
+      const touchesPrior =
+        mappedPriorForExtension !== null &&
+        capture.range.from <= mappedPriorForExtension.to &&
+        capture.range.to >= mappedPriorForExtension.from;
+      const mergedFrom =
+        mappedPriorForExtension === null
+          ? capture.range.from
+          : Math.min(mappedPriorForExtension.from, capture.range.from);
+      const mergedTo =
+        mappedPriorForExtension === null
+          ? capture.range.to
+          : Math.max(mappedPriorForExtension.to, capture.range.to);
+      const safeTo = Math.max(mergedFrom, mergedTo - 1);
+      const sameTextblock = (() => {
+        try {
+          const start = transaction.doc.resolve(mergedFrom);
+          const end = transaction.doc.resolve(safeTo);
+          return start.sameParent(end) && start.parent.isTextblock;
+        } catch {
+          return false;
+        }
+      })();
+      const canExtend =
+        prior !== null &&
+        selectionContinuesBurst &&
+        touchesPrior &&
+        sameTextblock;
+      if (prior !== null && !canExtend) {
+        const displacedBurst: DirectEntryBurst = {
+          ...prior,
+          from: mappedPriorForSeal!.from,
+          to: mappedPriorForSeal!.to,
+        };
+        const displacedCapture = directCaptureForBurst(
+          displacedBurst,
+          transaction.doc,
+        );
+        if (displacedCapture !== null) {
+          // upsertCapture journals synchronously. The finalizer may start now,
+          // but list() will reconcile this post-transaction selector before it
+          // freezes any queued burst.
+          void resolvedPasteProvenanceOutbox
+            .upsertCapture(displacedCapture)
+            .then(refreshPasteEntries)
+            .catch(() => setOutboxError(outboxPasteProvenanceError()));
+          directEntryClosingBurstsRef.current.set(
+            displacedBurst.idempotencyKey,
+            displacedBurst,
+          );
+        } else {
+          void resolvedPasteProvenanceOutbox
+            .list()
+            .then((entries) =>
+              entries.find(
+                (entry) => entry.idempotencyKey === prior.idempotencyKey,
+              ),
+            )
+            .then((entry) =>
+              entry === undefined
+                ? undefined
+                : resolvedPasteProvenanceOutbox.cancelCapture(entry.id),
+            )
+            .then(refreshPasteEntries)
+            .catch(() => setOutboxError(outboxPasteProvenanceError()));
+        }
+        directEntryBurstRef.current = null;
+        void finalizeDirectEntryBurst();
+      }
+      const range = canExtend
+        ? { from: mergedFrom, to: mergedTo }
+        : capture.range;
+      const anchor = canExtend
+        ? quoteAnchorFromRange(transaction.doc, range.from, range.to)
+        : capture.anchor;
+      if (anchor === null) return;
+      const idempotencyKey = canExtend
+        ? prior!.idempotencyKey
+        : pasteIdempotencyKey();
+      const nextBurst: DirectEntryBurst = {
+        idempotencyKey,
+        from: range.from,
+        to: range.to,
+        capturedAt: canExtend ? prior!.capturedAt : new Date(now).toISOString(),
+        determination: canExtend
+          ? prior!.determination
+          : resolvedProvenanceActor === undefined
+            ? unknownCoworkProvenanceDetermination()
+            : defaultCoworkProvenanceDetermination(resolvedProvenanceActor),
+        ...(canExtend
+          ? prior!.capturedActor === undefined
+            ? {}
+            : { capturedActor: prior!.capturedActor }
+          : resolvedProvenanceActor === undefined
+            ? {}
+            : { capturedActor: resolvedProvenanceActor }),
+      };
+      directEntryBurstRef.current = nextBurst;
+      const directCapture: CoworkPasteProvenanceCapture = {
+        anchor,
+        idempotencyKey,
+        substantial: false,
+        sourceKind: "direct_entry",
+        basisKind: "automatic_direct_entry_attribution",
+        determination: nextBurst.determination,
+        ...(nextBurst.capturedActor === undefined
+          ? {}
+          : { capturedActor: nextBurst.capturedActor }),
+        capturedAt: nextBurst.capturedAt,
+        passageExcerpt: coworkPastePassageExcerpt(anchor.exact),
+        ...(persistence.docSha256.length === 0
+          ? {}
+          : {
+              capturedBaseStructuredHeadSha256: persistence.docSha256,
+            }),
+        status: "capturing",
+      };
+      // upsertCapture synchronously replaces the recovery-journal record before
+      // returning its promise. Focused contiguous typing stays mutable across
+      // idle pauses; blur, navigation, selection movement, or recovery closes it.
+      void resolvedPasteProvenanceOutbox
+        .upsertCapture(directCapture)
+        .then(refreshPasteEntries)
+        .catch(() => {
+          setVolatilePasteCaptures((current) => [
+            ...current.filter(
+              (candidate) => candidate.idempotencyKey !== idempotencyKey,
+            ),
+            directCapture,
+          ]);
+          setOutboxError(outboxPasteProvenanceError());
+        });
+    },
+    [
+      documentId,
+      persistence,
+      refreshPasteEntries,
+      resolvedPasteProvenanceOutbox,
+      resolvedProvenanceActor,
+      storeId,
+      directCaptureForBurst,
+    ],
+  );
+
+  const stageProvenanceBeforeTransaction = useCallback(
+    (context: {
+      readonly editor: Editor;
+      readonly transaction: Transaction;
+    }) => {
+      if (
+        directEntryCaptureEnabledRef.current &&
+        context.transaction.docChanged
+      ) {
+        provenanceEditGenerationRef.current += 1;
+      }
+      stageDirectEntryProvenanceBeforeTransaction(context);
+      stagePasteProvenanceBeforeTransaction(context);
+      if (context.transaction.docChanged) {
+        const pending = new Map(
+          pendingDirectEntryDecorationsRef.current.map((item) => [
+            item.captureId,
+            item,
+          ]),
+        );
+        const stageBurst = (burst: DirectEntryBurst): void => {
+          const capture = directCaptureForBurst(burst, context.transaction.doc);
+          if (capture === null) {
+            pending.delete(burst.idempotencyKey);
+            return;
+          }
+          pending.set(burst.idempotencyKey, {
+            captureId: burst.idempotencyKey,
+            quoteAnchor: capture.anchor,
+          });
+        };
+        for (const burst of directEntryClosingBurstsRef.current.values()) {
+          stageBurst(burst);
+        }
+        if (directEntryBurstRef.current !== null) {
+          stageBurst(directEntryBurstRef.current);
+        }
+        const staged = [...pending.values()];
+        // `beforeTransaction` fires after ProseMirror has derived the next
+        // state, so changing this transaction's metadata is too late. A
+        // microtask dispatch lands before the browser can paint the edited
+        // frame and avoids a re-entrant EditorView transaction.
+        queueMicrotask(() => {
+          if (
+            pasteEditorRef.current === context.editor &&
+            !context.editor.isDestroyed
+          ) {
+            setCoworkPendingProvenance(context.editor, staged);
+          }
+        });
+        if (staged.length > 0) {
+          onInputProvenancePendingChange?.(true);
+        }
+      }
+    },
+    [
+      directCaptureForBurst,
+      onInputProvenancePendingChange,
+      stageDirectEntryProvenanceBeforeTransaction,
+      stagePasteProvenanceBeforeTransaction,
     ],
   );
 
@@ -619,28 +1400,47 @@ function MountedBridgeEditor({
     // Tiptap exposes beforeTransaction as an editor event (not a constructor
     // option). Attach before the first writable paint; it fires before
     // EditorView.updateState, so the synchronous recovery journal is durable
-    // before y-prosemirror can publish the paste.
-    editor.on(
-      "beforeTransaction",
-      stagePasteProvenanceBeforeTransaction,
-    );
+    // before y-prosemirror can publish the inserted text.
+    editor.on("beforeTransaction", stageProvenanceBeforeTransaction);
     return () => {
-      editor.off(
-        "beforeTransaction",
-        stagePasteProvenanceBeforeTransaction,
-      );
+      editor.off("beforeTransaction", stageProvenanceBeforeTransaction);
     };
-  }, [editor, stagePasteProvenanceBeforeTransaction]);
+  }, [editor, stageProvenanceBeforeTransaction]);
 
-  const dismissedPasteEntries = pasteEntries.filter((entry) =>
-    dismissedPasteIds.has(entry.id),
+  useEffect(() => {
+    if (editor === null) return;
+    setCoworkPendingProvenance(editor, pendingDirectEntryDecorations);
+  }, [editor, pendingDirectEntryDecorations]);
+
+  const manualRecordEntryIds = new Set(manualRecordEntryRef.current.values());
+  const isDirectEntryRecovery = (
+    entry: CoworkPasteProvenanceOutboxEntry,
+  ): boolean =>
+    entry.sourceKind === "legacy" &&
+    entry.status === "awaiting_determination" &&
+    entry.requiresExplicitDetermination === true &&
+    entry.failure?.code === "provenance_actor_unavailable_at_capture" &&
+    !manualRecordEntryIds.has(entry.id);
+  const dismissedDeterminationEntries = pasteEntries.filter(
+    (entry) =>
+      dismissedPasteIds.has(entry.id) &&
+      (entry.sourceKind === "paste" || isDirectEntryRecovery(entry)),
   );
   const visiblePasteEntry =
     pasteEntries.find(
       (entry) =>
         !dismissedPasteIds.has(entry.id) &&
+        entry.sourceKind === "paste" &&
+        entry.status !== "capturing" &&
         (entry.substantial || entry.status !== "ready"),
-    ) ?? null;
+    ) ??
+    pasteEntries.find(
+      (entry) =>
+        !dismissedPasteIds.has(entry.id) && isDirectEntryRecovery(entry),
+    ) ??
+    null;
+  const visibleDirectEntryRecovery =
+    visiblePasteEntry !== null && isDirectEntryRecovery(visiblePasteEntry);
   const visiblePasteActorChanged =
     visiblePasteEntry?.failure?.code === COWORK_PROVENANCE_ACTOR_CHANGED;
   const visiblePasteRequiresExplicitDetermination =
@@ -718,6 +1518,7 @@ function MountedBridgeEditor({
             entry.id,
             determination,
             entry.basisKind,
+            resolvedProvenanceActor,
           );
         }
         await refreshPasteEntries();
@@ -739,6 +1540,7 @@ function MountedBridgeEditor({
       attemptPasteProvenance,
       refreshPasteEntries,
       resolvedPasteProvenanceOutbox,
+      resolvedProvenanceActor,
     ],
   );
 
@@ -747,16 +1549,57 @@ function MountedBridgeEditor({
     if (resolvedPasteProvenanceOutbox === undefined || editor === null) return;
     pasteEditorRef.current = editor;
     void refreshPasteEntries()
-      .then((entries) => {
+      .then(async (entries) => {
         if (!active || entries === null) return;
-        // "ready" means a determination was already made but the browser
-        // stopped before receipt. Attempt performs a second strict anchor
-        // resolution immediately before network egress.
+        // Recover an open typing burst exactly as captured. Capture-time actor
+        // and determination are immutable; a newly available identity never
+        // gets substituted for the author observed before the restart.
         for (const entry of entries) {
-          if (entry.status === "ready") {
-            void attemptPasteProvenance(entry.id);
+          if (
+            entry.status === "capturing" &&
+            entry.sourceKind === "direct_entry"
+          ) {
+            const resolution = resolveCoworkPasteAnchor(
+              editor.state.doc,
+              entry.anchor,
+            );
+            if (resolution.kind !== "unique") continue;
+            directEntryBurstRef.current = {
+              idempotencyKey: entry.idempotencyKey,
+              from: resolution.from,
+              to: resolution.to,
+              capturedAt: entry.capturedAt,
+              determination: entry.determination,
+              ...(entry.capturedActor === undefined
+                ? {}
+                : { capturedActor: entry.capturedActor }),
+            };
+            if (active) await finalizeDirectEntryBurstRef.current();
+            if (active && resolvedProvenanceActor !== undefined) {
+              // Actor recovery can race the actorless finalizer already in
+              // flight. Re-check the durable row after that promise settles;
+              // the ref now points at the callback bound to the recovered
+              // actor, so one follow-up closes rather than stranding it.
+              const stillCapturing = (
+                await resolvedPasteProvenanceOutbox.list()
+              ).some(
+                (candidate) =>
+                  candidate.id === entry.id && candidate.status === "capturing",
+              );
+              if (stillCapturing) {
+                await finalizeDirectEntryBurstRef.current();
+              }
+            }
+            continue;
+          }
+          if (
+            entry.status === "ready" ||
+            entry.status === "retryable_failure"
+          ) {
+            await attemptPasteProvenance(entry.id);
           }
         }
+        if (active) await refreshPasteEntries();
       })
       .catch(() => {
         if (active) setOutboxError(outboxPasteProvenanceError());
@@ -768,6 +1611,7 @@ function MountedBridgeEditor({
     attemptPasteProvenance,
     editor,
     refreshPasteEntries,
+    resolvedProvenanceActor,
     resolvedPasteProvenanceOutbox,
   ]);
 
@@ -782,6 +1626,7 @@ function MountedBridgeEditor({
   useEffect(() => {
     if (editor === null || boundRef.current) return;
     boundRef.current = true;
+    directEntryCaptureEnabledRef.current = false;
     pasteEditorRef.current = editor;
     // Persistence starts before seeding so a brand-new document's seed is
     // pushed through R4 as its first human-origin update (SP-2 load-order).
@@ -790,11 +1635,33 @@ function MountedBridgeEditor({
       editor.commands.setContent(seedContent);
     }
     stopCapturingLoadTimeIds(editor);
+    directEntryCaptureEnabledRef.current = true;
     onReadyRef.current?.({ editor, dom: editor.view.dom as HTMLElement });
   }, [editor, persistence, seedContent, seedWhenEmpty]);
 
   useEffect(() => {
+    if (editor === null) return;
+    const finishBurst = (): void => {
+      void closeDirectEntryBurst();
+    };
+    editor.view.dom.addEventListener("blur", finishBurst);
     return () => {
+      editor.view.dom.removeEventListener("blur", finishBurst);
+    };
+  }, [closeDirectEntryBurst, editor]);
+
+  useEffect(() => {
+    if (activeLens === "provenance") {
+      void closeDirectEntryBurst();
+    }
+  }, [activeLens, closeDirectEntryBurst]);
+
+  useEffect(() => {
+    return () => {
+      directEntryCaptureEnabledRef.current = false;
+      // Do not start network work after the editor disappears. The latest
+      // mutable burst is already in both the synchronous recovery journal and
+      // durable outbox; the next mount closes it against a live editor/head.
       pasteEditorRef.current = null;
       onTeardownRef.current?.();
     };
@@ -809,7 +1676,11 @@ function MountedBridgeEditor({
         continue;
       }
       try {
-        await resolvedPasteProvenanceOutbox.append(capture);
+        if (capture.status === "capturing") {
+          await resolvedPasteProvenanceOutbox.upsertCapture(capture);
+        } else {
+          await resolvedPasteProvenanceOutbox.append(capture);
+        }
       } catch {
         failed.push(capture);
       }
@@ -822,7 +1693,22 @@ function MountedBridgeEditor({
     }
     setOutboxError(null);
     for (const entry of entries) {
-      if (entry.status === "ready") {
+      if (
+        entry.sourceKind === "direct_entry" &&
+        (entry.status === "stale_target" || entry.status === "terminal_failure")
+      ) {
+        // The server explicitly rejected the frozen target, so this visible
+        // user retry starts a new attempt: resolve the captured quote against
+        // the current document, compact a fresh head, and freeze a new key.
+        await resolvedPasteProvenanceOutbox.retarget(
+          entry.id,
+          pasteIdempotencyKey(),
+          entry.determination,
+        );
+        await attemptPasteProvenance(entry.id);
+        continue;
+      }
+      if (entry.status === "ready" || entry.status === "retryable_failure") {
         await attemptPasteProvenance(entry.id);
       }
     }
@@ -833,45 +1719,207 @@ function MountedBridgeEditor({
     volatilePasteCaptures,
   ]);
 
+  const recordSelectedProvenance = useCallback(
+    async (
+      anchor: RangeQuoteAnchor,
+      determination: CoworkProvenanceDetermination,
+    ): Promise<void> => {
+      if (
+        resolvedPasteProvenanceOutbox === undefined ||
+        resolvedProvenanceActor === undefined
+      ) {
+        throw new Error("Provenance recording is not ready yet.");
+      }
+      if (!coworkProvenanceExactWithinLimit(anchor.exact)) {
+        throw new Error("The selected passage is too large to record at once.");
+      }
+      await closeDirectEntryBurst();
+      const manualKey = JSON.stringify(anchor);
+      let entries = await resolvedPasteProvenanceOutbox.list();
+      const existingId = manualRecordEntryRef.current.get(manualKey);
+      let entry =
+        existingId === undefined
+          ? undefined
+          : entries.find((candidate) => candidate.id === existingId);
+      if (existingId !== undefined && entry === undefined) {
+        manualRecordEntryRef.current.delete(manualKey);
+      }
+      if (entry === undefined) {
+        // Selection-dialog ownership is intentionally in-memory, while an
+        // actorless typing capture is durable. Reassociate the same exact
+        // selector after a reload/session recovery so explicit confirmation
+        // completes that row instead of appending an overlapping duplicate.
+        entry = entries.find(
+          (candidate) =>
+            candidate.sourceKind === "legacy" &&
+            candidate.status === "awaiting_determination" &&
+            candidate.frozenRequest === undefined &&
+            JSON.stringify(candidate.anchor) === manualKey,
+        );
+        if (entry !== undefined) {
+          manualRecordEntryRef.current.set(manualKey, entry.id);
+        }
+      }
+
+      if (
+        entry?.sourceKind === "legacy" &&
+        entry.frozenRequest !== undefined &&
+        JSON.stringify(entry.frozenRequest.attestation) !==
+          JSON.stringify(determination)
+      ) {
+        throw new Error(
+          "This pending request is already frozen. Retry using the provenance choice you previously confirmed; changing it requires a new selection after the pending request is resolved.",
+        );
+      }
+
+      if (entry === undefined) {
+        if (
+          entries.some(
+            (candidate) =>
+              candidate.sourceKind === "direct_entry" ||
+              (candidate.sourceKind === "legacy" &&
+                candidate.status !== "awaiting_determination"),
+          )
+        ) {
+          throw new Error(
+            "Recording recent typing. Try again when provenance finishes refreshing.",
+          );
+        }
+        const refreshed = await provenanceProvider?.refresh();
+        const currentEditor = pasteEditorRef.current;
+        if (refreshed?.state === "ready" && currentEditor !== null) {
+          const selected = resolveCoworkPasteAnchor(
+            currentEditor.state.doc,
+            anchor,
+          );
+          const overlapsRecordedTarget =
+            selected.kind === "unique" &&
+            (refreshed.data.documentDefault?.target.currentness === "current" ||
+              refreshed.data.spans.some((target) => {
+                if (target.span === null) return false;
+                const resolved = resolveCoworkPasteAnchor(
+                  currentEditor.state.doc,
+                  target.span,
+                );
+                return (
+                  resolved.kind === "unique" &&
+                  resolved.from < selected.to &&
+                  resolved.to > selected.from
+                );
+              }));
+          if (overlapsRecordedTarget) {
+            throw new Error(
+              "Provenance was already recorded for this selection. Refresh the selection to inspect it.",
+            );
+          }
+        }
+        entry = await resolvedPasteProvenanceOutbox.append({
+          anchor,
+          idempotencyKey: pasteIdempotencyKey(),
+          substantial: false,
+          capturedActor: resolvedProvenanceActor,
+          sourceKind: "legacy",
+          basisKind: "user_attestation",
+          determination,
+          capturedAt: new Date().toISOString(),
+          passageExcerpt: coworkPastePassageExcerpt(anchor.exact),
+          ...(persistence.docSha256.length === 0
+            ? {}
+            : {
+                capturedBaseStructuredHeadSha256: persistence.docSha256,
+              }),
+          status: "ready",
+        });
+        manualRecordEntryRef.current.set(manualKey, entry.id);
+      } else if (
+        (entry.status === "stale_target" ||
+          entry.status === "terminal_failure") &&
+        entry.failure?.code === COWORK_PROVENANCE_TARGET_CHANGED
+      ) {
+        entry = await resolvedPasteProvenanceOutbox.retarget(
+          entry.id,
+          pasteIdempotencyKey(),
+          determination,
+        );
+      } else if (
+        entry.status === "awaiting_determination" &&
+        entry.sourceKind === "legacy"
+      ) {
+        await resolvedPasteProvenanceOutbox.updateDetermination(
+          entry.id,
+          determination,
+        );
+        entry = await resolvedPasteProvenanceOutbox.markReady(
+          entry.id,
+          determination,
+          "user_attestation",
+          resolvedProvenanceActor,
+        );
+      }
+      await refreshPasteEntries();
+      await attemptPasteProvenance(entry.id);
+      entries = await resolvedPasteProvenanceOutbox.list();
+      const pending = entries.find((candidate) => candidate.id === entry.id);
+      if (pending !== undefined) {
+        throw new Error(
+          pending.failure?.message ?? "Provenance could not be recorded.",
+        );
+      }
+      manualRecordEntryRef.current.delete(manualKey);
+    },
+    [
+      attemptPasteProvenance,
+      closeDirectEntryBurst,
+      persistence,
+      provenanceProvider,
+      refreshPasteEntries,
+      resolvedPasteProvenanceOutbox,
+      resolvedProvenanceActor,
+    ],
+  );
+
   return (
     <>
       <EditorContent editor={editor} className="wb-cowork-editor__content" />
       {oversizedPasteBlocked ? (
         <InlineAlert tone="warning" role="alert">
           <span>{oversizedPasteProvenanceError()}</span>
-          <Button
-            size="small"
-            onClick={() => setOversizedPasteBlocked(false)}
-          >
+          <Button size="small" onClick={() => setOversizedPasteBlocked(false)}>
             Dismiss
           </Button>
         </InlineAlert>
       ) : null}
-      {outboxError !== null ? (
+      {visibleOutboxError !== null ? (
         <InlineAlert tone="danger" role="alert">
-          <span>{outboxError}</span>
+          <span>{visibleOutboxError}</span>
           <Button
             size="small"
-            onClick={() => void retryPasteOutbox().catch(() => {
-              setOutboxError(outboxPasteProvenanceError());
-            })}
+            onClick={() =>
+              void retryPasteOutbox().catch(() => {
+                setOutboxError(outboxPasteProvenanceError());
+              })
+            }
           >
-            Retry attribution storage
+            Retry provenance storage
           </Button>
         </InlineAlert>
       ) : null}
-      {dismissedPasteEntries.length > 0 && visiblePasteEntry === null ? (
+      {dismissedDeterminationEntries.length > 0 &&
+      visiblePasteEntry === null ? (
         <InlineAlert tone="info" role="status">
           <span>
-            {String(dismissedPasteEntries.length)} paste{" "}
-            {dismissedPasteEntries.length === 1 ? "attribution is" : "attributions are"} waiting.
+            {String(dismissedDeterminationEntries.length)} pending{" "}
+            {dismissedDeterminationEntries.length === 1
+              ? "attribution needs"
+              : "attributions need"}{" "}
+            your decision.
           </span>
           <Button
             size="small"
             onClick={() =>
               setDismissedPasteIds((current) => {
                 const next = new Set(current);
-                const first = dismissedPasteEntries[0]?.id;
+                const first = dismissedDeterminationEntries[0]?.id;
                 if (first !== undefined) next.delete(first);
                 return next;
               })
@@ -881,7 +1929,11 @@ function MountedBridgeEditor({
           </Button>
         </InlineAlert>
       ) : null}
-      {editor !== null && !readOnly && onFeedbackCaptured !== undefined && documentId !== undefined ? (
+      {editor !== null &&
+      activeLens !== "provenance" &&
+      !readOnly &&
+      onFeedbackCaptured !== undefined &&
+      documentId !== undefined ? (
         <CoworkFeedbackAffordance
           editor={editor}
           documentId={documentId}
@@ -890,13 +1942,36 @@ function MountedBridgeEditor({
           transport={feedbackTransport}
         />
       ) : null}
-      {visiblePasteEntry !== null &&
-      resolvedProvenanceActor !== undefined ? (
+      {editor !== null &&
+      activeLens === "provenance" &&
+      provenanceProvider !== undefined &&
+      resolvedProvenanceActor !== undefined &&
+      onProvenanceSelectionAction !== undefined ? (
+        <CoworkProvenanceSelectionAffordance
+          editor={editor}
+          active={provenanceSelectionActionsActive ?? true}
+          provider={provenanceProvider}
+          currentUserIdentity={resolvedProvenanceActor}
+          readOnly={readOnly}
+          inputProvenancePending={inputProvenancePending}
+          onRecord={recordSelectedProvenance}
+          onAction={onProvenanceSelectionAction}
+        />
+      ) : null}
+      {visiblePasteEntry !== null && resolvedProvenanceActor !== undefined ? (
         <CoworkProvenanceDeterminationDialog
           key={`${String(visiblePasteEntry.id)}:${resolvedProvenanceActor.identity_status}:${resolvedProvenanceActor.ref}`}
           value={visiblePasteEntry.determination}
           currentUserIdentity={resolvedProvenanceActor}
+          title={
+            visibleDirectEntryRecovery
+              ? "Recent typing needs attribution"
+              : undefined
+          }
           passageExcerpt={visiblePasteEntry.passageExcerpt}
+          passageLabel={
+            visibleDirectEntryRecovery ? "Recent passage" : undefined
+          }
           busy={busyPasteIds.has(visiblePasteEntry.id)}
           formDisabled={
             visiblePasteEntry.frozenRequest !== undefined &&
@@ -915,12 +1990,16 @@ function MountedBridgeEditor({
                     : null
           }
           description={
-            pasteEntries.length > 1
+            visibleDirectEntryRecovery
+              ? "Choose who created this passage and, if AI contributed, whether a person reviewed it."
+              : pasteEntries.length > 1
               ? `Record its authorship and review status. ${String(pasteEntries.length - 1)} more pasted ${pasteEntries.length === 2 ? "passage is" : "passages are"} waiting.`
               : undefined
           }
           confirmLabel={
-            visiblePasteActorChanged
+            visibleDirectEntryRecovery
+              ? "Confirm attribution"
+              : visiblePasteActorChanged
               ? "Confirm attribution"
               : visiblePasteEntry.status === "stale_target"
                 ? "Save against current version"
@@ -931,6 +2010,7 @@ function MountedBridgeEditor({
                     : undefined
           }
           cancelLabel={
+            visibleDirectEntryRecovery ||
             visiblePasteRequiresExplicitDetermination ||
             visiblePasteEntry.status === "stale_target" ||
             visiblePasteEntry.status === "terminal_failure"
@@ -940,11 +2020,10 @@ function MountedBridgeEditor({
           onChange={(value) =>
             updatePasteDetermination(visiblePasteEntry, value)
           }
-          onConfirm={(value) =>
-            settlePasteEntry(visiblePasteEntry, value)
-          }
+          onConfirm={(value) => settlePasteEntry(visiblePasteEntry, value)}
           onClose={() => {
             if (
+              visibleDirectEntryRecovery ||
               visiblePasteRequiresExplicitDetermination ||
               visiblePasteEntry.status === "stale_target" ||
               visiblePasteEntry.status === "terminal_failure"
@@ -1024,10 +2103,7 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
       return undefined;
     }
     return new DurableCoworkPasteProvenanceOutbox(
-      coworkPasteProvenanceOutboxKey(
-        props.storeId,
-        props.documentId,
-      ),
+      coworkPasteProvenanceOutboxKey(props.storeId, props.documentId),
     );
   }, [
     props.documentId,
@@ -1039,6 +2115,13 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
   const [hydrationError, setHydrationError] = useState<string>();
   const [attempt, setAttempt] = useState(0);
   const effectiveReadOnly = props.readOnly ?? false;
+  // A writable frame cannot precede the capture-time actor lookup. Otherwise
+  // normal typing can begin actorless and be split when that initial lookup
+  // resolves. A genuine lookup failure still restores actorless editing so
+  // the durable/manual recovery contract remains available.
+  const editorReadOnly =
+    effectiveReadOnly ||
+    (provenanceEnabled && provenanceActorState === "loading");
   const persistenceReadOnly = effectiveReadOnly || hydration === undefined;
   const editorRef = useRef<Editor | null>(null);
   const editGeneration = useRef(0);
@@ -1056,8 +2139,8 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
   const [materializationState, setMaterializationState] =
     useState<CoworkMaterializationState>({ kind: "checking" });
   const materializationStateRef = useRef(materializationState);
-  const readOnlyRef = useRef(effectiveReadOnly);
-  readOnlyRef.current = effectiveReadOnly;
+  const readOnlyRef = useRef(editorReadOnly);
+  readOnlyRef.current = editorReadOnly;
 
   const actionSnapshotController = useMemo(
     () =>
@@ -1113,7 +2196,8 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
     }
     void persistence.setReadOnly(readOnly).then(
       () => {
-        if (!readOnly && !readOnlyRef.current) editorRef.current?.setEditable(true);
+        if (!readOnly && !readOnlyRef.current)
+          editorRef.current?.setEditable(true);
       },
       () => undefined,
     );
@@ -1174,7 +2258,8 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
           fileSha256: null,
           error: {
             code: "file_hash_unavailable",
-            message: "Co-work could not verify the current Markdown file, so Save is disabled.",
+            message:
+              "Co-work could not verify the current Markdown file, so Save is disabled.",
             retryable: false,
           },
           canRetry: false,
@@ -1183,10 +2268,13 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
       }
       const checkedGeneration = editGeneration.current;
       const rendered = serializeCoworkEditorMarkdown(editor, props.document);
-      const renderedSha256 = await sha256Hex(new TextEncoder().encode(rendered));
+      const renderedSha256 = await sha256Hex(
+        new TextEncoder().encode(rendered),
+      );
       publishMaterializationState({
         kind:
-          editGeneration.current === checkedGeneration && renderedSha256 === fileSha256
+          editGeneration.current === checkedGeneration &&
+          renderedSha256 === fileSha256
             ? "up_to_date"
             : "unsaved",
         fileSha256,
@@ -1228,22 +2316,28 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
         props.onMaterialized?.(receipt);
       } catch (saveError) {
         const error = asCoworkApiError(saveError);
-        const isConflict = error.status === 409 || [
-          "snapshot_mismatch",
-          "stale_structured_head",
-          "update_tail_present",
-          "stale_file",
-          "missing_file",
-          "open_flags_block_save",
-          "external_write_race",
-          "recovery_required",
-        ].includes(error.code);
-        const canRetry = isConflict ? retryableConflict(error) : error.retryable;
+        const isConflict =
+          error.status === 409 ||
+          [
+            "snapshot_mismatch",
+            "stale_structured_head",
+            "update_tail_present",
+            "stale_file",
+            "missing_file",
+            "open_flags_block_save",
+            "external_write_race",
+            "recovery_required",
+          ].includes(error.code);
+        const canRetry = isConflict
+          ? retryableConflict(error)
+          : error.retryable;
         const canReplayExactRequest =
           !isConflict &&
           editGeneration.current === capturedGeneration &&
           (error.code === "network_error" ||
-            (error.status !== undefined && error.status >= 500 && error.retryable));
+            (error.status !== undefined &&
+              error.status >= 500 &&
+              error.retryable));
         if (!canReplayExactRequest) {
           retryAttempt.current = null;
         }
@@ -1288,15 +2382,25 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
         return;
       }
       try {
-        for (let stabilityAttempt = 0; stabilityAttempt < 2; stabilityAttempt += 1) {
+        for (
+          let stabilityAttempt = 0;
+          stabilityAttempt < 2;
+          stabilityAttempt += 1
+        ) {
           const generation = editGeneration.current;
-          if (persistence.lastError !== null || persistence.pendingBatchCount > 0) {
+          if (
+            persistence.lastError !== null ||
+            persistence.pendingBatchCount > 0
+          ) {
             await persistence.retry();
           }
           await persistence.flush();
           assertCanonicalCoworkEditorState(editor);
           const compacted = await persistence.compact();
-          const renderedMarkdown = serializeCoworkEditorMarkdown(editor, props.document);
+          const renderedMarkdown = serializeCoworkEditorMarkdown(
+            editor,
+            props.document,
+          );
           const renderedSha256 = await sha256Hex(
             new TextEncoder().encode(renderedMarkdown),
           );
@@ -1334,7 +2438,12 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
     } finally {
       saveInFlight.current = null;
     }
-  }, [persistence, props.document, publishMaterializationState, settleMaterialize]);
+  }, [
+    persistence,
+    props.document,
+    publishMaterializationState,
+    settleMaterialize,
+  ]);
 
   const retrySync = useCallback(async (): Promise<void> => {
     try {
@@ -1368,9 +2477,7 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
           return;
         }
         lastProvenanceSettlementGeneration.current = generation;
-        props.onProvenancePersistenceSettled?.(
-          receipt.structuredHeadSha256,
-        );
+        props.onProvenancePersistenceSettled?.(receipt.structuredHeadSha256);
       } catch {
         // Persistence publishes the actionable failure. Provenance remains
         // dirty until a later successful settlement and fresh R2 projection.
@@ -1419,13 +2526,18 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
         // A user edit racing the checkpoint causes a bounded recapture; Review
         // never pairs current prose with an older projection receipt.
         for (let attempt = 0; attempt < 2; attempt += 1) {
-          if (persistence.lastError !== null || persistence.pendingBatchCount > 0) {
+          if (
+            persistence.lastError !== null ||
+            persistence.pendingBatchCount > 0
+          ) {
             await persistence.retry();
           }
           await persistence.flush();
           const editor = editorRef.current;
           if (editor === null) {
-            throw new Error("The document is still loading. Try again in a moment.");
+            throw new Error(
+              "The document is still loading. Try again in a moment.",
+            );
           }
           assertCanonicalCoworkEditorState(editor);
           const generation = editGeneration.current;
@@ -1445,7 +2557,8 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
             projectionMarkdown,
             projectionSha256,
           });
-          if (receipt === null || generation !== editGeneration.current) continue;
+          if (receipt === null || generation !== editGeneration.current)
+            continue;
           return {
             expectedFileSha256: fileSha256,
             expectedStructuredHeadSha256: receipt.structuredHeadSha256,
@@ -1458,7 +2571,9 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
       },
       prepare: async (admittedItems, generation) => {
         if (editorRef.current === null) {
-          throw new Error("The document is still loading. Try again in a moment.");
+          throw new Error(
+            "The document is still loading. Try again in a moment.",
+          );
         }
         if (editGeneration.current !== generation) {
           throw new Error(
@@ -1497,9 +2612,7 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
         }
         const editor = editorRef.current;
         if (editor !== null) assertCanonicalCoworkEditorState(editor);
-        props.onProvenancePersistenceSettled?.(
-          response.structured_head_sha256,
-        );
+        props.onProvenancePersistenceSettled?.(response.structured_head_sha256);
         props.onSittingServerRefreshed?.();
       },
     }),
@@ -1518,12 +2631,17 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
       runWithSynchronizedDocument: async (operation) => {
         const liveEditor = editorRef.current;
         if (liveEditor === null) {
-          throw new Error("The document is still loading. Try again in a moment.");
+          throw new Error(
+            "The document is still loading. Try again in a moment.",
+          );
         }
         const wasEditable = liveEditor.isEditable;
         liveEditor.setEditable(false);
         try {
-          if (persistence.lastError !== null || persistence.pendingBatchCount > 0) {
+          if (
+            persistence.lastError !== null ||
+            persistence.pendingBatchCount > 0
+          ) {
             await persistence.retry();
           }
           await persistence.flush();
@@ -1560,7 +2678,11 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
     };
     props.document.on("update", onUpdate);
     return () => props.document.off("update", onUpdate);
-  }, [props.document, props.onLocalProvenanceEdit, publishMaterializationState]);
+  }, [
+    props.document,
+    props.onLocalProvenanceEdit,
+    publishMaterializationState,
+  ]);
 
   useEffect(() => {
     props.onMaterializationController?.(materializationController);
@@ -1654,10 +2776,7 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
         active = false;
       };
     }
-    if (
-      props.provenanceActor !== undefined &&
-      provenanceActorAttempt === 0
-    ) {
+    if (props.provenanceActor !== undefined && provenanceActorAttempt === 0) {
       setResolvedProvenanceActor(props.provenanceActor);
       setProvenanceActorState("ready");
       return () => {
@@ -1667,9 +2786,10 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
     setResolvedProvenanceActor(undefined);
     setProvenanceActorState("loading");
     const resolveActor = async (): Promise<CoworkProvenanceActorIdentity> => {
-      const identity = provenanceActorAttempt > 0
-        ? await refreshLocalIdentity()
-        : await initializeLocalIdentity();
+      const identity =
+        provenanceActorAttempt > 0
+          ? await refreshLocalIdentity()
+          : await initializeLocalIdentity();
       if (!identity.authenticated) {
         throw new Error(
           identity.reason ??
@@ -1703,11 +2823,23 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
   useEffect(
     () =>
       subscribeLocalIdentity((identity) => {
-        if (identity.authenticated && provenanceActorState === "error") {
+        if (!provenanceEnabled) return;
+        if (!identity.authenticated) {
+          // A session can expire or be replaced while the editor remains
+          // mounted. Never keep presenting its cached actor as current; direct
+          // entry remains durable and actorless until trusted recovery.
+          setResolvedProvenanceActor(undefined);
+          setProvenanceActorState("error");
+          return;
+        }
+        if (provenanceActorState !== "loading") {
+          // Authenticated publications can represent a newly delivered cookie
+          // (and potentially a different enrolled actor), so re-read the
+          // canonical actor even when the prior actor looked healthy.
           requestProvenanceActorRefresh();
         }
       }),
-    [provenanceActorState, requestProvenanceActorRefresh],
+    [provenanceActorState, provenanceEnabled, requestProvenanceActorRefresh],
   );
 
   useEffect(
@@ -1723,17 +2855,24 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
   return (
     <section className="wb-cowork-editor" aria-label="Editor">
       {hydrationError !== undefined ? (
-        <InlineAlert tone="danger" role="alert" className="wb-cowork-editor__hydration-error">
+        <InlineAlert
+          tone="danger"
+          role="alert"
+          className="wb-cowork-editor__hydration-error"
+        >
           <strong>Document couldn’t be opened.</strong>
           <span>{hydrationError}</span>
-          <Button size="small" onClick={() => setAttempt((current) => current + 1)}>
+          <Button
+            size="small"
+            onClick={() => setAttempt((current) => current + 1)}
+          >
             Try again
           </Button>
         </InlineAlert>
       ) : hydration !== undefined ? (
         <MountedBridgeEditor
           {...props}
-          readOnly={effectiveReadOnly}
+          readOnly={editorReadOnly}
           onReady={(context) => {
             editorRef.current = context.editor;
             actionSnapshotController?.attach(context.editor);

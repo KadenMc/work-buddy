@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -8,19 +9,20 @@ import {
 } from "react";
 
 import type {
-  ProvenanceAttestation, ProvenanceEditorIntegration, ProvenanceLoad,
-  ProvenanceProvider, ProvenanceTarget,
+  ProvenanceAttestation,
+  ProvenanceEditorIntegration,
+  ProvenanceLoad,
+  ProvenanceProvider,
+  ProvenanceTarget,
   ProvenanceMutationBarrier,
+  ProvenanceSelectionAction,
 } from "./contracts";
 import {
   provenanceDisplayedAxesFingerprint,
   provenancePersonDetail,
   provenanceSourceDetails,
 } from "./semantics";
-import {
-  asCoworkApiError,
-  coworkErrorMessage,
-} from "../../providers/errors";
+import { asCoworkApiError, coworkErrorMessage } from "../../providers/errors";
 
 type ProvenanceFilter = "all" | "needs_review" | "ai_authored" | "issues";
 
@@ -31,10 +33,15 @@ export interface ProvenancePanelProps {
   readonly editor?: ProvenanceEditorIntegration;
   readonly readOnly?: boolean;
   readonly mutationBarrier?: ProvenanceMutationBarrier;
+  /** Opens stable detail for a provenance-aware editor selection action. */
+  readonly selectionAction?: ProvenanceSelectionAction | null;
+  /** Browser-local direct entry is awaiting an authoritative ledger receipt. */
+  readonly inputProvenancePending?: boolean;
 }
 
 const sourceLabel = (attestation: ProvenanceAttestation): string => {
   const kind = attestation.source.kind;
+  if (kind === "legacy") return "Untracked / legacy";
   return typeof kind === "string" ? kind.replace(/_/gu, " ") : "Unknown source";
 };
 
@@ -61,18 +68,13 @@ const mutationErrorMessage = (cause: unknown): string => {
   );
 };
 
-const targetId = (target: ProvenanceTarget): string =>
-  target.projectionId;
+const targetId = (target: ProvenanceTarget): string => target.projectionId;
 
 const effective = (target: ProvenanceTarget): ProvenanceAttestation | null =>
   target.resolution === "resolved" ? target.effectiveAttestation : null;
 
 type AnchorState =
-  | "unique"
-  | "missing"
-  | "ambiguous"
-  | "document"
-  | "unavailable";
+  "unique" | "missing" | "ambiguous" | "document" | "unavailable";
 
 interface ResolvedPanelTarget {
   readonly target: ProvenanceTarget;
@@ -110,7 +112,9 @@ const incompatibleOverlap = (
   ) {
     return false;
   }
-  return new Set([...targetAxes(left.target), ...targetAxes(right.target)]).size > 1;
+  return (
+    new Set([...targetAxes(left.target), ...targetAxes(right.target)]).size > 1
+  );
 };
 
 const withPeerConflicts = (
@@ -133,41 +137,47 @@ const resolvePanelTargets = (
   view: Extract<ProvenanceLoad, { readonly state: "ready" }>["data"],
   editor: ProvenanceEditorIntegration | undefined,
 ): readonly ResolvedPanelTarget[] =>
-  [...withPeerConflicts(
-    [
-      ...(view.documentDefault === null ? [] : [view.documentDefault]),
-      ...view.spans,
-    ].map((target, payloadOrder) => {
-      const anchorResolution =
-        target.span === null && target.target.kind === "document_version"
-          ? {
-              state: "document" as const,
-              documentOrder: -1,
-              documentEnd: null,
-            }
-          : target.span === null
+  [
+    ...withPeerConflicts(
+      [
+        ...(view.documentDefault === null ? [] : [view.documentDefault]),
+        ...view.spans,
+      ].map((target, payloadOrder) => {
+        const anchorResolution =
+          target.span === null && target.target.kind === "document_version"
             ? {
-                state: "unavailable" as const,
-                documentOrder: null,
+                state: "document" as const,
+                documentOrder: -1,
                 documentEnd: null,
               }
-          : editor?.resolveTarget(target.span) ?? {
-              state: "missing" as const,
-              documentOrder: null,
-              documentEnd: null,
-            };
-      return { target, payloadOrder, anchorResolution };
-    }),
-  )].sort((left, right) => {
+            : target.span === null
+              ? {
+                  state: "unavailable" as const,
+                  documentOrder: null,
+                  documentEnd: null,
+                }
+              : (editor?.resolveTarget(target.span) ?? {
+                  state: "missing" as const,
+                  documentOrder: null,
+                  documentEnd: null,
+                });
+        return { target, payloadOrder, anchorResolution };
+      }),
+    ),
+  ].sort((left, right) => {
     const leftOrder = left.anchorResolution.documentOrder;
     const rightOrder = right.anchorResolution.documentOrder;
-    if (leftOrder !== null && rightOrder !== null) return leftOrder - rightOrder;
+    if (leftOrder !== null && rightOrder !== null)
+      return leftOrder - rightOrder;
     if (leftOrder !== null) return -1;
     if (rightOrder !== null) return 1;
     return left.payloadOrder - right.payloadOrder;
   });
 
-const statusLabel = (target: ProvenanceTarget, anchorState: AnchorState): string => {
+const statusLabel = (
+  target: ProvenanceTarget,
+  anchorState: AnchorState,
+): string => {
   if (anchorState === "unavailable") return "Passage unavailable";
   if (target.resolution === "conflicted") return "Conflicting records";
   if (anchorState === "missing") return "Passage not found";
@@ -175,11 +185,14 @@ const statusLabel = (target: ProvenanceTarget, anchorState: AnchorState): string
   if (target.target.currentness === "stale") return "Stale target";
   if (target.target.currentness === "unavailable") return "Target unavailable";
   if (target.target.currentness === "requires_reanchor") {
-    return anchorState === "unique" ? "Reanchored for inspection" : "Needs location check";
+    return anchorState === "unique"
+      ? "Reanchored for inspection"
+      : "Needs location check";
   }
   const record = effective(target);
   if (record === null) return "Unrecorded";
-  const author = record.authorship.kind === "ai" ? "AI" : record.authorship.kind;
+  const author =
+    record.authorship.kind === "ai" ? "AI" : record.authorship.kind;
   const review = record.humanReview.status.replace(/_/gu, " ");
   return `${author} · ${review}`;
 };
@@ -245,17 +258,18 @@ const matches = (
   }
   if (filter === "needs_review") {
     return (
-      (record?.authorship.kind === "ai" || record?.authorship.kind === "mixed") &&
-      (record.humanReview.status === "not_reviewed" || record.humanReview.status === "unknown")
+      (record?.authorship.kind === "ai" ||
+        record?.authorship.kind === "mixed") &&
+      (record.humanReview.status === "not_reviewed" ||
+        record.humanReview.status === "unknown")
     );
   }
-  return record?.authorship.kind === "ai" || record?.authorship.kind === "mixed";
+  return (
+    record?.authorship.kind === "ai" || record?.authorship.kind === "mixed"
+  );
 };
 
-const isIssue = (
-  item: ResolvedPanelTarget,
-  locallyDirty: boolean,
-): boolean =>
+const isIssue = (item: ResolvedPanelTarget, locallyDirty: boolean): boolean =>
   locallyDirty ||
   matches(
     item.target,
@@ -274,21 +288,74 @@ function RecordDetails({ record }: { readonly record: ProvenanceAttestation }) {
   const sourceDetails = provenanceSourceDetails(record);
   return (
     <dl className="wb-cowork-provenance-panel__facts">
-      <div><dt>Authorship</dt><dd>{record.authorship.kind}</dd></div>
-      <div><dt>Contributors</dt><dd>{record.authorship.contributors.map(provenancePersonDetail).join(", ") || "None recorded"}</dd></div>
-      <div><dt>Human review</dt><dd>{record.humanReview.status.replace(/_/gu, " ")}</dd></div>
-      <div><dt>Reviewers</dt><dd>{record.humanReview.reviewers.map(provenancePersonDetail).join(", ") || "None recorded"}</dd></div>
-      <div><dt>Source</dt><dd>{sourceLabel(record)}</dd></div>
+      <div>
+        <dt>Authorship</dt>
+        <dd>{record.authorship.kind}</dd>
+      </div>
+      <div>
+        <dt>Contributors</dt>
+        <dd>
+          {record.authorship.contributors
+            .map(provenancePersonDetail)
+            .join(", ") || "None recorded"}
+        </dd>
+      </div>
+      <div>
+        <dt>Human review</dt>
+        <dd>{record.humanReview.status.replace(/_/gu, " ")}</dd>
+      </div>
+      <div>
+        <dt>Reviewers</dt>
+        <dd>
+          {record.humanReview.reviewers
+            .map(provenancePersonDetail)
+            .join(", ") || "None recorded"}
+        </dd>
+      </div>
+      <div>
+        <dt>Source</dt>
+        <dd>{sourceLabel(record)}</dd>
+      </div>
       {sourceDetails.length === 0 ? null : (
         <div>
           <dt>Source details</dt>
-          <dd>{sourceDetails.map((detail) => `${detail.label}: ${detail.value}`).join(" · ")}</dd>
+          <dd>
+            {sourceDetails
+              .map((detail) => `${detail.label}: ${detail.value}`)
+              .join(" · ")}
+          </dd>
         </div>
       )}
-      <div><dt>Attested by</dt><dd>{attester}</dd></div>
-      <div><dt>Basis</dt><dd>{record.basis.kind.replace(/_/gu, " ")}</dd></div>
-      <div><dt>Target</dt><dd>{record.scope.kind === "document_span" ? "Passage" : "Document version"}{record.scope.documentSpanId === null ? "" : ` · ${shortIdentity(record.scope.documentSpanId)}`}{record.scope.documentVersionId === null ? "" : ` · ${shortIdentity(record.scope.documentVersionId)}`}</dd></div>
-      <div><dt>Recorded</dt><dd><time dateTime={record.at}>{new Date(record.at).toLocaleString()}</time></dd></div>
+      <div>
+        <dt>Attested by</dt>
+        <dd>{attester}</dd>
+      </div>
+      <div>
+        <dt>Basis</dt>
+        <dd>{record.basis.kind.replace(/_/gu, " ")}</dd>
+      </div>
+      <div>
+        <dt>Target</dt>
+        <dd>
+          {record.scope.kind === "document_span"
+            ? "Passage"
+            : "Document version"}
+          {record.scope.documentSpanId === null
+            ? ""
+            : ` · ${shortIdentity(record.scope.documentSpanId)}`}
+          {record.scope.documentVersionId === null
+            ? ""
+            : ` · ${shortIdentity(record.scope.documentVersionId)}`}
+        </dd>
+      </div>
+      <div>
+        <dt>Recorded</dt>
+        <dd>
+          <time dateTime={record.at}>
+            {new Date(record.at).toLocaleString()}
+          </time>
+        </dd>
+      </div>
     </dl>
   );
 }
@@ -299,7 +366,8 @@ function ProvenanceDetails({ target }: { readonly target: ProvenanceTarget }) {
     return (
       <div className="wb-cowork-provenance-panel__conflict">
         <p className="wb-cowork-provenance-panel__reason">
-          {target.issue?.message ?? `${String(target.effectiveAttestations.length)} effective records disagree; none is treated as authoritative.`}
+          {target.issue?.message ??
+            `${String(target.effectiveAttestations.length)} effective records disagree; none is treated as authoritative.`}
         </p>
         {target.effectiveAttestations.map((leaf) => (
           <article key={leaf.attestationId}>
@@ -314,12 +382,19 @@ function ProvenanceDetails({ target }: { readonly target: ProvenanceTarget }) {
     <>
       <RecordDetails record={record} />
       <details className="wb-cowork-provenance-panel__history">
-        <summary>{target.history.length} immutable {target.history.length === 1 ? "record" : "records"}</summary>
+        <summary>
+          {target.history.length} immutable{" "}
+          {target.history.length === 1 ? "record" : "records"}
+        </summary>
         <ol>
           {target.history.map((entry) => (
             <li key={entry.attestationId}>
               <RecordDetails record={entry} />
-              <p>{entry.supersedesId === null ? "Original record" : "Supersedes an earlier record"}</p>
+              <p>
+                {entry.supersedesId === null
+                  ? "Original record"
+                  : "Supersedes an earlier record"}
+              </p>
             </li>
           ))}
         </ol>
@@ -330,28 +405,63 @@ function ProvenanceDetails({ target }: { readonly target: ProvenanceTarget }) {
 
 function ProvenanceContents({
   load,
-  provider, editor, mutationBarrier,
+  provider,
+  editor,
+  mutationBarrier,
   readOnly,
+  selectionAction,
+  inputProvenancePending = false,
 }: {
   readonly load: ProvenanceLoad;
   readonly provider: ProvenanceProvider;
   readonly editor?: ProvenanceEditorIntegration;
   readonly readOnly?: boolean;
   readonly mutationBarrier?: ProvenanceMutationBarrier;
+  readonly selectionAction?: ProvenanceSelectionAction | null;
+  readonly inputProvenancePending?: boolean;
 }) {
   const view = load.state === "ready" ? load.data : undefined;
   const [filter, setFilter] = useState<ProvenanceFilter>("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [pendingId, setPendingId] = useState<string | null>(null);
   const mutationLock = useRef(false);
+  const routedRowRef = useRef<HTMLButtonElement | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  useEffect(() => {
+    if (
+      selectionAction === null ||
+      selectionAction === undefined ||
+      selectionAction.intent === "record" ||
+      selectionAction.targetIds.length === 0
+    ) {
+      return;
+    }
+    setFilter("all");
+    setSelectedId(selectionAction.targetIds[0]!);
+  }, [selectionAction]);
+  useLayoutEffect(() => {
+    const target = selectionAction?.targetIds[0];
+    if (
+      target === undefined ||
+      selectionAction?.intent === "record" ||
+      selectedId !== target
+    ) {
+      return;
+    }
+    const row = routedRowRef.current;
+    if (row === null) return;
+    row.focus({ preventScroll: true });
+    row.scrollIntoView?.({ block: "nearest" });
+  }, [selectedId, selectionAction]);
   if (view === undefined) {
     return (
       <div className="wb-cowork-provenance-panel__unavailable" role="status">
         <h2>Provenance view unavailable</h2>
         <p>
-          {load.state === "unavailable" ? load.reason : "This server did not provide the provenance view needed to explain the document safely."}
+          {load.state === "unavailable"
+            ? load.reason
+            : "This server did not provide the provenance view needed to explain the document safely."}
         </p>
       </div>
     );
@@ -379,7 +489,9 @@ function ProvenanceContents({
   const reviewedCount = targets.filter(
     ({ target }) => effective(target)?.humanReview.status === "reviewed",
   ).length;
-  const issueCount = targets.filter((item) => isIssue(item, locallyDirty)).length;
+  const issueCount = targets.filter((item) =>
+    isIssue(item, locallyDirty),
+  ).length;
   const unrecorded =
     (editor?.hasText() ?? true) &&
     (locallyDirty ||
@@ -395,8 +507,18 @@ function ProvenanceContents({
           ? [target.span]
           : [],
       ),
-    ) ?? true);
-  const selected = targets.find((item) => targetId(item.target) === selectedId)?.target ?? null;
+    ) ??
+      true);
+  const selected =
+    targets.find((item) => targetId(item.target) === selectedId)?.target ??
+    null;
+  const hasText = editor?.hasText() ?? true;
+  const noRecordedProvenance =
+    !inputProvenancePending &&
+    !locallyDirty &&
+    hasText &&
+    targets.length === 0 &&
+    view.history.length === 0;
   const markReviewed = async (target: ProvenanceTarget): Promise<void> => {
     if (mutationLock.current) return;
     const record = effective(target);
@@ -426,7 +548,10 @@ function ProvenanceContents({
           const refreshedItem = resolvePanelTargets(
             refreshed.data,
             editor,
-          ).find((candidate) => candidate.target.projectionId === target.projectionId);
+          ).find(
+            (candidate) =>
+              candidate.target.projectionId === target.projectionId,
+          );
           if (
             refreshed.data.currentStructuredHeadSha256 === null ||
             synchronized.structuredHeadSha256 !==
@@ -465,143 +590,298 @@ function ProvenanceContents({
   };
   return (
     <>
-      <dl className="wb-cowork-provenance-panel__summary" aria-label="Provenance summary">
-        <div><dt>Needs review</dt><dd>{needsReviewCount}</dd></div>
-        <div><dt>Reviewed</dt><dd>{reviewedCount}</dd></div>
-        <div><dt>Issues</dt><dd>{issueCount}</dd></div>
-        <div><dt>Unrecorded</dt><dd>{unrecorded ? "Yes" : "No"}</dd></div>
+      <dl
+        className="wb-cowork-provenance-panel__summary"
+        aria-label="Provenance summary"
+      >
+        <div>
+          <dt>Needs review</dt>
+          <dd>{needsReviewCount}</dd>
+        </div>
+        <div>
+          <dt>Reviewed</dt>
+          <dd>{reviewedCount}</dd>
+        </div>
+        <div>
+          <dt>Issues</dt>
+          <dd>{issueCount}</dd>
+        </div>
+        <div>
+          <dt>Unrecorded</dt>
+          <dd>
+            {inputProvenancePending ? "Updating…" : unrecorded ? "Yes" : "No"}
+          </dd>
+        </div>
       </dl>
-      <div className="wb-cowork-provenance-panel__filters" aria-label="Filter provenance" role="group">
-        {(["all", "needs_review", "ai_authored", "issues"] as const).map((item) => (
-          <button
-            key={item}
-            type="button"
-            aria-pressed={filter === item}
-            onClick={() => setFilter(item)}
-          >
-            {item.replace(/_/gu, " ").replace(/^./u, (letter: string) => letter.toUpperCase())}
-          </button>
-        ))}
+      <div
+        className="wb-cowork-provenance-panel__filters"
+        aria-label="Filter provenance"
+        role="group"
+      >
+        {(["all", "needs_review", "ai_authored", "issues"] as const).map(
+          (item) => (
+            <button
+              key={item}
+              type="button"
+              aria-pressed={filter === item}
+              onClick={() => setFilter(item)}
+            >
+              {item
+                .replace(/_/gu, " ")
+                .replace(/^./u, (letter: string) => letter.toUpperCase())}
+            </button>
+          ),
+        )}
       </div>
-      {error === null ? null : <p className="wb-cowork-provenance-panel__error" role="alert">{error}</p>}
-      {locallyDirty ? (
+      {error === null ? null : (
+        <p className="wb-cowork-provenance-panel__error" role="alert">
+          {error}
+        </p>
+      )}
+      {inputProvenancePending ? (
         <p className="wb-cowork-provenance-panel__reason" role="status">
-          Local edits are not yet represented by the latest provenance snapshot. Exact passages are reanchored for inspection; recording review waits for synchronization.
+          Recording provenance for recent typing… The editor has captured the
+          text; authorship and review will appear after the server confirms the
+          record.
+        </p>
+      ) : locallyDirty ? (
+        <p className="wb-cowork-provenance-panel__reason" role="status">
+          Local edits are not yet represented by the latest provenance snapshot.
+          Exact passages are reanchored for inspection; recording review waits
+          for synchronization.
         </p>
       ) : null}
       <p className="wb-cowork-provenance-panel__success" aria-live="polite">
         {success ?? ""}
       </p>
-      {unrecorded && filter === "all" ? (
+      {noRecordedProvenance && filter === "all" ? (
+        <article className="wb-cowork-provenance-panel__unrecorded">
+          <h3>No provenance has been recorded for this document</h3>
+          <p>
+            New typing is recorded automatically. Select existing text to record
+            who wrote it and whether it was reviewed; its earlier source will
+            remain untracked.
+          </p>
+        </article>
+      ) : !inputProvenancePending && unrecorded && filter === "all" ? (
         <article className="wb-cowork-provenance-panel__unrecorded">
           <h3>Some text has no current provenance record</h3>
-          <p>Unrecorded text is shown with the unknown pattern. It is not assumed to be human-authored.</p>
+          <p>
+            Unrecorded text is shown with the unknown pattern. It is not assumed
+            to be human-authored.
+          </p>
         </article>
       ) : null}
-      {!unrecorded && targets.length === 0 ? (
-        <p className="wb-cowork-provenance-panel__empty">There is no text to map yet.</p>
+      {!hasText ? (
+        <p className="wb-cowork-provenance-panel__empty">
+          There is no text to map yet.
+        </p>
       ) : null}
-      {visible.length === 0 && (editor?.hasText() ?? true) ? (
-        <p className="wb-cowork-provenance-panel__empty">No provenance records match this filter.</p>
+      {visible.length === 0 ? (
+        !inputProvenancePending &&
+        hasText &&
+        (!noRecordedProvenance || filter !== "all") ? (
+          <p className="wb-cowork-provenance-panel__empty">
+            No provenance records match this filter.
+          </p>
+        ) : null
       ) : (
         <ol className="wb-cowork-provenance-panel__list">
-          {visible.map(({ target, anchorResolution, peerConflictIds }, index) => {
-            const id = targetId(target);
-            const record = effective(target);
-            const quote =
-              target.span !== null
-                ? passageExcerpt(target.span.exact)
-                : target.target.kind === "document_version"
-                  ? "Whole document"
-                  : "Unavailable passage";
-            const active = selectedId === id;
-            return (
-              <li key={`${id}:${String(index)}`} data-state={peerConflictIds.length > 0 || target.resolution === "conflicted" || target.target.currentness !== "current" ? "issue" : "recorded"}>
-                <button
-                  type="button"
-                  className="wb-cowork-provenance-panel__item"
-                  aria-expanded={active}
-                  onClick={() => {
-                    setSelectedId(active ? null : id);
-                    if (anchorResolution.state === "unique") {
-                      editor?.focusTarget(id);
-                    }
-                  }}
+          {visible.map(
+            ({ target, anchorResolution, peerConflictIds }, index) => {
+              const id = targetId(target);
+              const record = effective(target);
+              const quote =
+                target.span !== null
+                  ? passageExcerpt(target.span.exact)
+                  : target.target.kind === "document_version"
+                    ? "Whole document"
+                    : "Unavailable passage";
+              const active = selectedId === id;
+              return (
+                <li
+                  key={`${id}:${String(index)}`}
+                  data-state={
+                    peerConflictIds.length > 0 ||
+                    target.resolution === "conflicted" ||
+                    target.target.currentness !== "current"
+                      ? "issue"
+                      : "recorded"
+                  }
                 >
-                  <span className="wb-cowork-provenance-panel__quote">{quote}</span>
-                  <span className="wb-cowork-provenance-panel__status">{peerConflictIds.length > 0 ? "Conflicts with overlapping passage" : locallyDirty && target.target.currentness === "current" ? target.span === null ? "Awaiting provenance refresh" : anchorResolution.state === "unique" ? "Reanchored for inspection" : statusLabel(target, anchorResolution.state) : statusLabel(target, anchorResolution.state)}</span>
-                </button>
-                {active ? (
-                  <div className="wb-cowork-provenance-panel__detail">
-                    <ProvenanceDetails target={target} />
-                    {peerConflictIds.length > 0 ? (
-                      <div className="wb-cowork-provenance-panel__conflict">
+                  <button
+                    type="button"
+                    ref={
+                      selectionAction?.targetIds[0] === id
+                        ? routedRowRef
+                        : undefined
+                    }
+                    className="wb-cowork-provenance-panel__item"
+                    aria-expanded={active}
+                    onClick={() => {
+                      setSelectedId(active ? null : id);
+                      if (anchorResolution.state === "unique") {
+                        editor?.focusTarget(id);
+                      }
+                    }}
+                  >
+                    <span className="wb-cowork-provenance-panel__quote">
+                      {quote}
+                    </span>
+                    <span className="wb-cowork-provenance-panel__status">
+                      {peerConflictIds.length > 0
+                        ? "Conflicts with overlapping passage"
+                        : locallyDirty &&
+                            target.target.currentness === "current"
+                          ? target.span === null
+                            ? "Awaiting provenance refresh"
+                            : anchorResolution.state === "unique"
+                              ? "Reanchored for inspection"
+                              : statusLabel(target, anchorResolution.state)
+                          : statusLabel(target, anchorResolution.state)}
+                    </span>
+                  </button>
+                  {active ? (
+                    <div className="wb-cowork-provenance-panel__detail">
+                      <ProvenanceDetails target={target} />
+                      {peerConflictIds.length > 0 ? (
+                        <div className="wb-cowork-provenance-panel__conflict">
+                          <p className="wb-cowork-provenance-panel__reason">
+                            Overlapping provenance records disagree on
+                            authorship, review, or source. Review recording is
+                            blocked until that conflict is resolved.
+                          </p>
+                          <ul>
+                            {peerConflictIds.map((peerId) => {
+                              const peer = targets.find(
+                                (candidate) =>
+                                  candidate.target.projectionId === peerId,
+                              )?.target;
+                              return peer === undefined ? null : (
+                                <li key={peerId}>
+                                  <strong>
+                                    {peer.span !== null
+                                      ? passageExcerpt(peer.span.exact)
+                                      : peer.target.kind === "document_version"
+                                        ? "Whole document"
+                                        : "Unavailable passage"}
+                                  </strong>
+                                  {peer.effectiveAttestations.map((leaf) => (
+                                    <RecordDetails
+                                      key={leaf.attestationId}
+                                      record={leaf}
+                                    />
+                                  ))}
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        </div>
+                      ) : null}
+                      {anchorResolution.state === "unavailable" ? (
                         <p className="wb-cowork-provenance-panel__reason">
-                          Overlapping provenance records disagree on authorship, review, or source. Review recording is blocked until that conflict is resolved.
+                          The recorded passage target is unavailable. Its
+                          append-only history remains inspectable, but it cannot
+                          be shown or reviewed.
                         </p>
-                        <ul>
-                          {peerConflictIds.map((peerId) => {
-                            const peer = targets.find(
-                              (candidate) => candidate.target.projectionId === peerId,
-                            )?.target;
-                            return peer === undefined ? null : (
-                              <li key={peerId}>
-                                 <strong>{peer.span !== null ? passageExcerpt(peer.span.exact) : peer.target.kind === "document_version" ? "Whole document" : "Unavailable passage"}</strong>
-                                {peer.effectiveAttestations.map((leaf) => (
-                                  <RecordDetails key={leaf.attestationId} record={leaf} />
-                                ))}
-                              </li>
+                      ) : anchorResolution.state === "missing" ? (
+                        <p className="wb-cowork-provenance-panel__reason">
+                          The recorded passage is no longer present in this
+                          document.
+                        </p>
+                      ) : anchorResolution.state === "ambiguous" ? (
+                        <p className="wb-cowork-provenance-panel__reason">
+                          The recorded passage matches multiple locations, so
+                          Co-work will not choose one.
+                        </p>
+                      ) : null}
+                      {target.span !== null &&
+                      anchorResolution.state === "unique" ? (
+                        <button
+                          type="button"
+                          onClick={() => editor?.revealTarget(id)}
+                        >
+                          Show in document
+                        </button>
+                      ) : null}
+                      {record !== null &&
+                      (record.authorship.kind === "ai" ||
+                        record.authorship.kind === "mixed")
+                        ? (() => {
+                            const targetCanReview = canReview(
+                              target,
+                              anchorResolution.state,
+                              peerConflictIds.length > 0,
+                              locallyDirty,
                             );
-                          })}
-                        </ul>
-                      </div>
-                    ) : null}
-                    {anchorResolution.state === "unavailable" ? (
-                      <p className="wb-cowork-provenance-panel__reason">The recorded passage target is unavailable. Its append-only history remains inspectable, but it cannot be shown or reviewed.</p>
-                    ) : anchorResolution.state === "missing" ? (
-                      <p className="wb-cowork-provenance-panel__reason">The recorded passage is no longer present in this document.</p>
-                    ) : anchorResolution.state === "ambiguous" ? (
-                      <p className="wb-cowork-provenance-panel__reason">The recorded passage matches multiple locations, so Co-work will not choose one.</p>
-                    ) : null}
-                    {target.span !== null && anchorResolution.state === "unique" ? (
-                      <button type="button" onClick={() => editor?.revealTarget(id)}>
-                        Show in document
-                      </button>
-                    ) : null}
-                    {canReview(target, anchorResolution.state, peerConflictIds.length > 0, locallyDirty) && view.currentStructuredHeadSha256 !== null && readOnly !== true && mutationBarrier !== undefined ? (
-                      <button
-                        type="button"
-                        disabled={pendingId !== null}
-                        onClick={() => void markReviewed(target)}
-                      >
-                        {pendingId === record?.attestationId ? "Recording…" : "Mark reviewed"}
-                      </button>
-                    ) : (
-                      <p className="wb-cowork-provenance-panel__reason">
-                        {peerConflictIds.length > 0
-                          ? "Overlapping provenance records disagree, so review cannot be recorded."
-                          : locallyDirty
-                            ? "Synchronize local edits and refresh provenance before recording review."
-                          : view.currentStructuredHeadSha256 === null && canReview(target, anchorResolution.state)
-                            ? "No current structured document head is available, so review cannot be recorded."
-                          : readOnly === true && canReview(target, anchorResolution.state)
-                          ? "This document is read-only, so review cannot be recorded."
-                          : mutationBarrier === undefined && canReview(target, anchorResolution.state)
-                            ? "The editor is not ready to record review safely."
-                          : reviewBlockedReason(target)}
-                      </p>
-                    )}
-                  </div>
-                ) : null}
-              </li>
-            );
-          })}
+                            const reviewEnabled =
+                              targetCanReview &&
+                              view.currentStructuredHeadSha256 !== null &&
+                              readOnly !== true &&
+                              mutationBarrier !== undefined &&
+                              pendingId === null;
+                            const reason =
+                              pendingId === record.attestationId
+                                ? "Human review is being recorded."
+                                : pendingId !== null
+                                  ? "Finish recording the current review before starting another."
+                                  : peerConflictIds.length > 0
+                                    ? "Overlapping provenance records disagree, so review cannot be recorded."
+                                    : locallyDirty
+                                      ? "Synchronize local edits and refresh provenance before recording review."
+                                      : view.currentStructuredHeadSha256 ===
+                                            null && targetCanReview
+                                        ? "No current structured document head is available, so review cannot be recorded."
+                                        : readOnly === true && targetCanReview
+                                          ? "This document is read-only, so review cannot be recorded."
+                                          : mutationBarrier === undefined &&
+                                              targetCanReview
+                                            ? "The editor is not ready to record review safely."
+                                            : reviewBlockedReason(target);
+                            const reasonId = `wb-cowork-provenance-review-reason-${id}`;
+                            return (
+                              <div className="wb-cowork-provenance-panel__actions">
+                                <h4>Actions</h4>
+                                <button
+                                  type="button"
+                                  disabled={!reviewEnabled}
+                                  aria-describedby={
+                                    reviewEnabled ? undefined : reasonId
+                                  }
+                                  onClick={() => void markReviewed(target)}
+                                >
+                                  {pendingId === record.attestationId
+                                    ? "Recording…"
+                                    : "Mark reviewed"}
+                                </button>
+                                {reviewEnabled ? (
+                                  <p className="wb-cowork-provenance-panel__reason">
+                                    Records that you reviewed this text. It does
+                                    not change its authorship or assert that it
+                                    is true.
+                                  </p>
+                                ) : (
+                                  <p
+                                    id={reasonId}
+                                    className="wb-cowork-provenance-panel__reason"
+                                  >
+                                    {reason}
+                                  </p>
+                                )}
+                              </div>
+                            );
+                          })()
+                        : null}
+                    </div>
+                  ) : null}
+                </li>
+              );
+            },
+          )}
         </ol>
       )}
       <details className="wb-cowork-provenance-panel__global-history">
-        <summary>
-          Complete provenance history ({view.history.length})
-        </summary>
+        <summary>Complete provenance history ({view.history.length})</summary>
         {view.history.length === 0 ? (
           <p>No immutable provenance records have been recorded.</p>
         ) : (
@@ -619,7 +899,9 @@ function ProvenanceContents({
           </ol>
         )}
       </details>
-      {selected === null ? null : <span className="wb-visually-hidden">Provenance target selected</span>}
+      {selected === null ? null : (
+        <span className="wb-visually-hidden">Provenance target selected</span>
+      )}
     </>
   );
 }
@@ -670,10 +952,73 @@ export function ProvenancePanel(props: ProvenancePanelProps) {
     };
   }, [load, props.active, props.provider]);
   const content = useMemo(() => {
-    if (error !== null && data === null) return <div className="wb-cowork-provenance-panel__unavailable" role="alert"><h2>Provenance could not load</h2><p>{error}</p><button type="button" onClick={() => setReload((value) => value + 1)}>Retry</button></div>;
-    if (data === null) return <p className="wb-cowork-provenance-panel__empty" role="status">Loading provenance…</p>;
-    if (data.state === "unavailable") return <div className="wb-cowork-provenance-panel__unavailable" role="status"><h2>Provenance view unavailable</h2><p>{data.reason}</p><button type="button" onClick={() => setReload((value) => value + 1)}>Retry</button></div>;
-    return <>{error === null ? null : <p className="wb-cowork-provenance-panel__error" role="alert">{error} <button type="button" onClick={() => setReload((value) => value + 1)}>Retry</button></p>}<ProvenanceContents load={data} provider={props.provider} editor={props.editor} readOnly={props.readOnly} mutationBarrier={props.mutationBarrier} /></>;
-  }, [data, error, props.editor, props.mutationBarrier, props.provider, props.readOnly]);
-  return <section className="wb-cowork-provenance-panel" aria-label="Document provenance" ref={props.scrollContainerRef}>{content}</section>;
+    if (error !== null && data === null)
+      return (
+        <div className="wb-cowork-provenance-panel__unavailable" role="alert">
+          <h2>Provenance could not load</h2>
+          <p>{error}</p>
+          <button type="button" onClick={() => setReload((value) => value + 1)}>
+            Retry
+          </button>
+        </div>
+      );
+    if (data === null)
+      return (
+        <p className="wb-cowork-provenance-panel__empty" role="status">
+          Loading provenance…
+        </p>
+      );
+    if (data.state === "unavailable")
+      return (
+        <div className="wb-cowork-provenance-panel__unavailable" role="status">
+          <h2>Provenance view unavailable</h2>
+          <p>{data.reason}</p>
+          <button type="button" onClick={() => setReload((value) => value + 1)}>
+            Retry
+          </button>
+        </div>
+      );
+    return (
+      <>
+        {error === null ? null : (
+          <p className="wb-cowork-provenance-panel__error" role="alert">
+            {error}{" "}
+            <button
+              type="button"
+              onClick={() => setReload((value) => value + 1)}
+            >
+              Retry
+            </button>
+          </p>
+        )}
+        <ProvenanceContents
+          load={data}
+          provider={props.provider}
+          editor={props.editor}
+          readOnly={props.readOnly}
+          mutationBarrier={props.mutationBarrier}
+          selectionAction={props.selectionAction}
+          inputProvenancePending={props.inputProvenancePending}
+        />
+      </>
+    );
+  }, [
+    data,
+    error,
+    props.editor,
+    props.inputProvenancePending,
+    props.mutationBarrier,
+    props.provider,
+    props.readOnly,
+    props.selectionAction,
+  ]);
+  return (
+    <section
+      className="wb-cowork-provenance-panel"
+      aria-label="Document provenance"
+      ref={props.scrollContainerRef}
+    >
+      {content}
+    </section>
+  );
 }

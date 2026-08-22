@@ -13,6 +13,7 @@ import { buildEditorExtensions } from "../editor/extensions";
 import { HttpCoworkYdocTransport } from "../persistence/HttpCoworkYdocTransport";
 import { sha256Hex as sha256Bytes } from "../persistence/hashing";
 import type {
+  CoworkPasteProvenanceReceipt,
   CoworkPasteProvenanceRequest,
   CoworkProvenanceActorIdentity,
   CoworkProvenanceDetermination,
@@ -88,8 +89,9 @@ const normalizeImportDescriptor = (
     rawSuffixes.some(
       (suffix) => typeof suffix !== "string" || !IMPORT_SUFFIX.test(suffix),
     ) ||
-    new Set(rawSuffixes.map((suffix) => String(suffix).toLocaleLowerCase("en-US")))
-      .size !== rawSuffixes.length ||
+    new Set(
+      rawSuffixes.map((suffix) => String(suffix).toLocaleLowerCase("en-US")),
+    ).size !== rawSuffixes.length ||
     typeof maxSourceBytes !== "number" ||
     !Number.isSafeInteger(maxSourceBytes) ||
     maxSourceBytes <= 0
@@ -171,12 +173,17 @@ export interface CoworkInspectionResult {
   readonly candidate: CoworkFolderCandidate | null;
   readonly folder: CoworkFolderSummary | null;
   readonly owner: CoworkFolderSummary | null;
-  readonly boundaries: readonly (CoworkFolderCandidate & { readonly storeId: string | null })[];
+  readonly boundaries: readonly (CoworkFolderCandidate & {
+    readonly storeId: string | null;
+  })[];
   readonly reasonCode: string | null;
   readonly actions: readonly string[];
   readonly inspectionToken: string | null;
   readonly continuationToken: string | null;
-  readonly progress: { readonly visited: number; readonly complete: false } | null;
+  readonly progress: {
+    readonly visited: number;
+    readonly complete: false;
+  } | null;
   readonly retryAfterMs: number | null;
 }
 
@@ -203,7 +210,8 @@ export interface CoworkBootstrapPrepared {
   readonly sourceUrl: string;
   readonly ydocSchema: string;
   readonly expiresAt: string;
-  readonly state: "prepared" | "publishing" | "committed" | "cancelled" | "failed";
+  readonly state:
+    "prepared" | "publishing" | "committed" | "cancelled" | "failed";
   readonly result: CoworkDocumentSummary | null;
 }
 
@@ -218,12 +226,6 @@ export interface CoworkBootstrapMetadata {
   readonly expectedFileSha256?: string | null;
   readonly documentId?: string | null;
   readonly idempotencyKey: string;
-}
-
-export interface CoworkPasteProvenanceReceipt {
-  readonly attestationId: string;
-  readonly documentSpanId: string;
-  readonly targetStructuredHeadSha256: string;
 }
 
 export interface CoworkDriftSource {
@@ -290,7 +292,9 @@ export interface CoworkRetirementPrepared {
   readonly consequenceSha256: string;
 }
 
-const normalizeFolderPermissions = (value: unknown): CoworkFolderPermissions => {
+const normalizeFolderPermissions = (
+  value: unknown,
+): CoworkFolderPermissions => {
   const source = record(value);
   return {
     read: bool(source.read, true),
@@ -303,8 +307,12 @@ const normalizeFolderPermissions = (value: unknown): CoworkFolderPermissions => 
 
 export const normalizeFolderSummary = (value: unknown): CoworkFolderSummary => {
   const source = record(value);
-  const documentSurface = record(source.document_surface ?? source.documentSurface);
-  const classes = documentSurface.allowed_document_classes ?? documentSurface.allowedDocumentClasses;
+  const documentSurface = record(
+    source.document_surface ?? source.documentSurface,
+  );
+  const classes =
+    documentSurface.allowed_document_classes ??
+    documentSurface.allowedDocumentClasses;
   return {
     storeId: text(source.store_id ?? source.storeId),
     folderName: text(source.folder_name ?? source.folderName),
@@ -312,7 +320,9 @@ export const normalizeFolderSummary = (value: unknown): CoworkFolderSummary => {
     layout: text(source.layout, "wbuddy_cowork_v1"),
     reachable: bool(source.reachable, true),
     eligibility: text(source.eligibility, "eligible"),
-    ineligibleReason: nullableText(source.ineligible_reason ?? source.ineligibleReason),
+    ineligibleReason: nullableText(
+      source.ineligible_reason ?? source.ineligibleReason,
+    ),
     documentSurface: {
       enabled: bool(documentSurface.enabled, true),
       allowedDocumentClasses: Array.isArray(classes)
@@ -327,7 +337,9 @@ export const normalizeFolderSummary = (value: unknown): CoworkFolderSummary => {
   };
 };
 
-const normalizeDocumentPermissions = (value: unknown): CoworkDocumentPermissions => {
+const normalizeDocumentPermissions = (
+  value: unknown,
+): CoworkDocumentPermissions => {
   const source = record(value);
   return {
     open: bool(source.open, true),
@@ -338,7 +350,9 @@ const normalizeDocumentPermissions = (value: unknown): CoworkDocumentPermissions
   };
 };
 
-export const normalizeDocumentSummary = (value: unknown): CoworkDocumentSummary => {
+export const normalizeDocumentSummary = (
+  value: unknown,
+): CoworkDocumentSummary => {
   const source = record(value);
   const hashes = record(source.hashes);
   const readiness = record(source.readiness);
@@ -356,7 +370,8 @@ export const normalizeDocumentSummary = (value: unknown): CoworkDocumentSummary 
   const path = text(source.path);
   const suppliedTitle = text(source.title).trim();
   const pathParts = path.split(/[\\/]/u);
-  const fallbackTitle = pathParts[pathParts.length - 1] || path || "Untitled document";
+  const fallbackTitle =
+    pathParts[pathParts.length - 1] || path || "Untitled document";
   const hasSnakeCaseWriteback = Object.prototype.hasOwnProperty.call(
     source,
     "source_writeback",
@@ -375,7 +390,10 @@ export const normalizeDocumentSummary = (value: unknown): CoworkDocumentSummary 
     path,
     title: suppliedTitle.length > 0 ? suppliedTitle : fallbackTitle,
     profile: text(source.profile ?? source.document_class, "co_authored"),
-    documentClass: text(source.document_class ?? source.documentClass, "co_authored"),
+    documentClass: text(
+      source.document_class ?? source.documentClass,
+      "co_authored",
+    ),
     // Absence identifies a legacy payload from before this field existed.
     // Once a server supplies the field, accept only the exact known values
     // and fail closed for malformed or future values.
@@ -429,12 +447,18 @@ export const normalizeDocumentSummary = (value: unknown): CoworkDocumentSummary 
     ),
     driftState:
       rawDrift === "drifted" || rawDrift === "missing" ? rawDrift : "clean",
-    openProposalCount: count(source.open_proposal_count ?? source.openProposalCount),
+    openProposalCount: count(
+      source.open_proposal_count ?? source.openProposalCount,
+    ),
     openFlagCount: count(source.open_flag_count ?? source.openFlagCount),
     updatedAt: nullableText(source.updated_at ?? source.updatedAt),
-    permissions: normalizeDocumentPermissions(source.permissions ?? readiness.permissions),
+    permissions: normalizeDocumentPermissions(
+      source.permissions ?? readiness.permissions,
+    ),
     disabledReason: nullableText(
-      source.disabled_reason ?? source.disabledReason ?? readiness.disabled_reason,
+      source.disabled_reason ??
+        source.disabledReason ??
+        readiness.disabled_reason,
     ),
   };
 };
@@ -471,7 +495,9 @@ const normalizeReimportReceipt = (value: unknown): CoworkReimportReceipt => {
   };
 };
 
-const normalizeRetirementReceipt = (value: unknown): CoworkRetirementReceipt => {
+const normalizeRetirementReceipt = (
+  value: unknown,
+): CoworkRetirementReceipt => {
   const source = record(value);
   return {
     intentId: text(source.intent_id ?? source.intentId),
@@ -491,13 +517,13 @@ export class CoworkHttpClient {
     this.#fetch = fetchImpl;
   }
 
-  async #json(
-    url: string,
-    init: RequestInit = {},
-  ): Promise<JsonRecord> {
+  async #json(url: string, init: RequestInit = {}): Promise<JsonRecord> {
     let response: Response;
     try {
-      response = await this.#fetch(url, { credentials: "same-origin", ...init });
+      response = await this.#fetch(url, {
+        credentials: "same-origin",
+        ...init,
+      });
     } catch (error) {
       throw new CoworkHttpError(normalizeCoworkError(error));
     }
@@ -520,13 +546,11 @@ export class CoworkHttpClient {
     if (
       payload.kind !== "human" ||
       ref.length === 0 ||
-      (identityStatus !== "local_actor_ref" &&
-        identityStatus !== "account_ref")
+      (identityStatus !== "local_actor_ref" && identityStatus !== "account_ref")
     ) {
       throw new CoworkHttpError({
         code: "invalid_current_actor_response",
-        message:
-          "Co-work couldn’t bind this action to the current identity.",
+        message: "Co-work couldn’t bind this action to the current identity.",
         retryable: true,
       });
     }
@@ -537,7 +561,9 @@ export class CoworkHttpClient {
     };
   }
 
-  async listFolders(includeIneligible = false): Promise<CoworkFolderListResult> {
+  async listFolders(
+    includeIneligible = false,
+  ): Promise<CoworkFolderListResult> {
     const payload = await this.#json(
       `/api/truth/cowork/folders?include_ineligible=${includeIneligible ? "1" : "0"}`,
     );
@@ -546,9 +572,13 @@ export class CoworkHttpClient {
     return {
       readOnly: bool(payload.read_only ?? payload.readOnly),
       folders: Array.isArray(payload.folders)
-        ? payload.folders.map(normalizeFolderSummary).filter((folder) => folder.storeId.length > 0)
+        ? payload.folders
+            .map(normalizeFolderSummary)
+            .filter((folder) => folder.storeId.length > 0)
         : [],
-      diagnostics: Array.isArray(payload.diagnostics) ? payload.diagnostics : [],
+      diagnostics: Array.isArray(payload.diagnostics)
+        ? payload.diagnostics
+        : [],
       chooser: {
         available,
         kind: text(chooser.kind, "host"),
@@ -580,7 +610,9 @@ export class CoworkHttpClient {
       cancelled: bool(payload.cancelled),
       folderName: text(payload.folder_name ?? payload.folderName),
       folderPath: text(payload.folder_path ?? payload.folderPath),
-      selectionToken: nullableText(payload.selection_token ?? payload.selectionToken),
+      selectionToken: nullableText(
+        payload.selection_token ?? payload.selectionToken,
+      ),
     };
   }
 
@@ -589,14 +621,17 @@ export class CoworkHttpClient {
    * workflow uses chooseImportFile and its typed importer identity.
    */
   async chooseMarkdownFile(storeId: string): Promise<CoworkNativePathResult> {
-    const payload = await this.#json("/api/truth/cowork/files/choose-markdown", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        [COWORK_FOLDER_PICKER_INTENT_HEADER]: COWORK_MARKDOWN_PICKER_INTENT,
+    const payload = await this.#json(
+      "/api/truth/cowork/files/choose-markdown",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          [COWORK_FOLDER_PICKER_INTENT_HEADER]: COWORK_MARKDOWN_PICKER_INTENT,
+        },
+        body: JSON.stringify({ store_id: storeId }),
       },
-      body: JSON.stringify({ store_id: storeId }),
-    });
+    );
     return normalizeNativePathResult(payload, "Markdown");
   }
 
@@ -650,14 +685,17 @@ export class CoworkHttpClient {
   }
 
   async chooseLocation(storeId: string): Promise<CoworkNativePathResult> {
-    const payload = await this.#json("/api/truth/cowork/folders/choose-location", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        [COWORK_FOLDER_PICKER_INTENT_HEADER]: COWORK_LOCATION_PICKER_INTENT,
+    const payload = await this.#json(
+      "/api/truth/cowork/folders/choose-location",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          [COWORK_FOLDER_PICKER_INTENT_HEADER]: COWORK_LOCATION_PICKER_INTENT,
+        },
+        body: JSON.stringify({ store_id: storeId }),
       },
-      body: JSON.stringify({ store_id: storeId }),
-    });
+    );
     return normalizeNativePathResult(payload, "location");
   }
 
@@ -670,7 +708,9 @@ export class CoworkHttpClient {
       ...(input.selectionToken === undefined
         ? {}
         : { selection_token: input.selectionToken }),
-      ...(input.folderPath === undefined ? {} : { folder_path: input.folderPath }),
+      ...(input.folderPath === undefined
+        ? {}
+        : { folder_path: input.folderPath }),
       ...(input.continuationToken === undefined
         ? {}
         : { continuation_token: input.continuationToken }),
@@ -684,7 +724,9 @@ export class CoworkHttpClient {
     const folderName = text(payload.folder_name ?? rawCandidate.folder_name);
     const folderPath = text(payload.folder_path ?? rawCandidate.folder_path);
     const rawProgress = record(payload.progress);
-    const rawBoundaries = Array.isArray(payload.boundaries) ? payload.boundaries : [];
+    const rawBoundaries = Array.isArray(payload.boundaries)
+      ? payload.boundaries
+      : [];
     const rawFolder = payload.folder ?? payload.folder_summary;
     const rawActions = payload.available_actions ?? payload.actions;
     return {
@@ -693,8 +735,12 @@ export class CoworkHttpClient {
         folderName.length === 0 && folderPath.length === 0
           ? null
           : { folderName, folderPath },
-      folder: rawFolder === undefined ? null : normalizeFolderSummary(rawFolder),
-      owner: payload.owner === undefined ? null : normalizeFolderSummary(payload.owner),
+      folder:
+        rawFolder === undefined ? null : normalizeFolderSummary(rawFolder),
+      owner:
+        payload.owner === undefined
+          ? null
+          : normalizeFolderSummary(payload.owner),
       boundaries: rawBoundaries.map((entry) => {
         const boundary = record(entry);
         return {
@@ -709,7 +755,9 @@ export class CoworkHttpClient {
             (entry): entry is string => typeof entry === "string",
           )
         : [],
-      inspectionToken: nullableText(payload.inspection_token ?? payload.inspectionToken),
+      inspectionToken: nullableText(
+        payload.inspection_token ?? payload.inspectionToken,
+      ),
       continuationToken: nullableText(
         payload.continuation_token ?? payload.continuationToken,
       ),
@@ -753,7 +801,9 @@ export class CoworkHttpClient {
     return normalizeFolderSummary(payload.folder ?? payload);
   }
 
-  async listDocuments(storeId: string): Promise<readonly CoworkDocumentSummary[]> {
+  async listDocuments(
+    storeId: string,
+  ): Promise<readonly CoworkDocumentSummary[]> {
     const payload = await this.#json(
       `/api/truth/doc/list?store_id=${encodeURIComponent(storeId)}`,
     );
@@ -762,10 +812,15 @@ export class CoworkHttpClient {
       : Array.isArray(payload.documents)
         ? payload.documents
         : [];
-    return docs.map(normalizeDocumentSummary).filter((doc) => doc.documentId.length > 0);
+    return docs
+      .map(normalizeDocumentSummary)
+      .filter((doc) => doc.documentId.length > 0);
   }
 
-  async readDocument(storeId: string, documentId: string): Promise<CoworkDocumentSummary> {
+  async readDocument(
+    storeId: string,
+    documentId: string,
+  ): Promise<CoworkDocumentSummary> {
     const payload = await this.#json(
       `/api/truth/doc/${encodeURIComponent(documentId)}?store_id=${encodeURIComponent(storeId)}`,
     );
@@ -808,7 +863,9 @@ export class CoworkHttpClient {
       // reject a snapshot produced by bootstrapCoworkYdoc itself.
       const fidelity = ydoc.getMap<unknown>("wb-cowork:fidelity");
       if (fidelity.get("schema") !== "cowork-fidelity/v1") {
-        throw new Error("The Co-work fidelity schema is missing or unsupported.");
+        throw new Error(
+          "The Co-work fidelity schema is missing or unsupported.",
+        );
       }
       void ydoc.getXmlFragment("default");
       // Actually mount the document against the production ProseMirror schema. A Yjs update
@@ -836,9 +893,15 @@ export class CoworkHttpClient {
     query: string,
     cursor?: string,
   ): Promise<CoworkCandidatesResult> {
-    const params = new URLSearchParams({ store_id: storeId, query, limit: "50" });
+    const params = new URLSearchParams({
+      store_id: storeId,
+      query,
+      limit: "50",
+    });
     if (cursor !== undefined) params.set("cursor", cursor);
-    const payload = await this.#json(`/api/truth/doc/candidates?${params.toString()}`);
+    const payload = await this.#json(
+      `/api/truth/doc/candidates?${params.toString()}`,
+    );
     const entries = Array.isArray(payload.candidates) ? payload.candidates : [];
     return {
       candidates: entries.map((entry) => {
@@ -890,7 +953,10 @@ export class CoworkHttpClient {
     };
     form.append("metadata", JSON.stringify(wireMetadata));
     if (source !== undefined) {
-      form.append("source", new Blob([source as BlobPart], { type: "application/octet-stream" }));
+      form.append(
+        "source",
+        new Blob([source as BlobPart], { type: "application/octet-stream" }),
+      );
     }
     const authorityHeaders = await coworkHumanAuthorityHeaders(
       {
@@ -901,7 +967,8 @@ export class CoworkHttpClient {
           `bootstrap:${metadata.idempotencyKey || "new"}`,
         body: {
           metadata: wireMetadata,
-          source_sha256: source === undefined ? null : await sha256Bytes(source),
+          source_sha256:
+            source === undefined ? null : await sha256Bytes(source),
           source_byte_length: source?.byteLength ?? 0,
         },
       },
@@ -921,7 +988,10 @@ export class CoworkHttpClient {
       sourceUrl: text(payload.source_url),
       ydocSchema: text(payload.ydoc_schema),
       expiresAt: text(payload.expires_at),
-      state: text(payload.state, "prepared") as CoworkBootstrapPrepared["state"],
+      state: text(
+        payload.state,
+        "prepared",
+      ) as CoworkBootstrapPrepared["state"],
       result:
         payload.result === undefined || payload.result === null
           ? null
@@ -933,7 +1003,8 @@ export class CoworkHttpClient {
     const parsed = new URL(sourceUrl, "http://localhost");
     const storeId = parsed.searchParams.get("store_id") ?? "";
     const match = parsed.pathname.match(/\/bootstrap\/([^/]+)\/source$/u);
-    const bootstrapId = match === null ? "" : decodeURIComponent(match[1] ?? "");
+    const bootstrapId =
+      match === null ? "" : decodeURIComponent(match[1] ?? "");
     const authorityHeaders = await coworkHumanAuthorityHeaders(
       {
         operation: "bootstrap.source_read",
@@ -982,7 +1053,9 @@ export class CoworkHttpClient {
     );
     form.append(
       "projection",
-      new Blob([projection as BlobPart], { type: "text/markdown;charset=utf-8" }),
+      new Blob([projection as BlobPart], {
+        type: "text/markdown;charset=utf-8",
+      }),
     );
     const authorityHeaders = await coworkHumanAuthorityHeaders(
       {
@@ -1015,9 +1088,17 @@ export class CoworkHttpClient {
     const body = {
       span: request.anchor,
       attestation: request.attestation,
+      ...(request.expectedActorRef === undefined
+        ? {}
+        : { expected_actor_ref: request.expectedActorRef }),
+      ...(request.expectedActorIdentityStatus === undefined
+        ? {}
+        : {
+            expected_actor_identity_status: request.expectedActorIdentityStatus,
+          }),
+      source_kind: request.sourceKind,
       basis_kind: request.basisKind,
-      expected_structured_head_sha256:
-        request.expectedStructuredHeadSha256,
+      expected_structured_head_sha256: request.expectedStructuredHeadSha256,
       idempotency_key: request.idempotencyKey,
     };
     const authorityHeaders = await coworkHumanAuthorityHeaders(
@@ -1049,8 +1130,7 @@ export class CoworkHttpClient {
     ) {
       throw new CoworkHttpError({
         code: "invalid_provenance_response",
-        message:
-          "Co-work could not confirm where the pasted text was recorded.",
+        message: "Co-work could not confirm where the passage was recorded.",
         retryable: true,
       });
     }
@@ -1077,19 +1157,25 @@ export class CoworkHttpClient {
     );
   }
 
-  async inspectDrift(storeId: string, documentId: string): Promise<CoworkDriftInspection> {
+  async inspectDrift(
+    storeId: string,
+    documentId: string,
+  ): Promise<CoworkDriftInspection> {
     const payload = await this.#json(
       `/api/truth/doc/${encodeURIComponent(documentId)}/drift?store_id=${encodeURIComponent(storeId)}`,
     );
     const rawState = text(payload.state, "clean");
     return {
-      state: rawState === "drifted" || rawState === "missing" ? rawState : "clean",
+      state:
+        rawState === "drifted" || rawState === "missing" ? rawState : "clean",
       lastMaterializedSha256: text(payload.last_materialized_sha256),
       currentFileSha256: nullableText(payload.current_file_sha256),
       snapshotSha256: nullableText(payload.snapshot_sha256),
       structuredHeadSha256: nullableText(payload.structured_head_sha256),
       updateTailPresent: bool(payload.update_tail_present),
-      unmaterializedStructuredEdits: bool(payload.unmaterialized_structured_edits),
+      unmaterializedStructuredEdits: bool(
+        payload.unmaterialized_structured_edits,
+      ),
       baseline: normalizeDriftSource(payload.baseline),
       source: normalizeDriftSource(payload.source),
       diffAvailable: bool(payload.diff_available),
@@ -1105,7 +1191,9 @@ export class CoworkHttpClient {
       response = await this.#fetch(source.sourceUrl, {
         method: "GET",
         credentials: "same-origin",
-        ...(source.etag === null ? {} : { headers: { "If-Match": source.etag } }),
+        ...(source.etag === null
+          ? {}
+          : { headers: { "If-Match": source.etag } }),
       });
     } catch (error) {
       throw new CoworkHttpError(normalizeCoworkError(error));
@@ -1123,7 +1211,8 @@ export class CoworkHttpClient {
     if (source.etag !== null && etag !== null && etag !== source.etag) {
       throw new CoworkHttpError({
         code: "source_changed",
-        message: "The Markdown changed while Co-work was reading the comparison.",
+        message:
+          "The Markdown changed while Co-work was reading the comparison.",
         retryable: true,
       });
     }
@@ -1242,7 +1331,11 @@ export class CoworkHttpClient {
     return normalizeReimportReceipt(payload);
   }
 
-  async cancelReimport(storeId: string, documentId: string, intentId: string): Promise<void> {
+  async cancelReimport(
+    storeId: string,
+    documentId: string,
+    intentId: string,
+  ): Promise<void> {
     const authorityHeaders = await coworkHumanAuthorityHeaders(
       {
         operation: "reimport.cancel",

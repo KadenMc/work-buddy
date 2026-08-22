@@ -41,6 +41,7 @@ const markdownImporter = {
 const pasteProvenanceRequest: CoworkPasteProvenanceRequest = {
   storeId: "store with space",
   documentId: "doc/with slash",
+  sourceKind: "paste",
   basisKind: "user_attestation",
   expectedStructuredHeadSha256: "a".repeat(64),
   anchor: {
@@ -113,6 +114,7 @@ describe("CoworkHttpClient document lifecycle contracts", () => {
       expect(JSON.parse(String(init.body))).toEqual({
         span: pasteProvenanceRequest.anchor,
         attestation: pasteProvenanceRequest.attestation,
+        source_kind: "paste",
         basis_kind: "user_attestation",
         expected_structured_head_sha256: "a".repeat(64),
         idempotency_key: "paste-provenance-key",
