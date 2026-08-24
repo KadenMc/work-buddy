@@ -375,6 +375,27 @@ describe("CoworkBridgeEditor paste provenance", () => {
       await entered;
       await waitFor(() => expect(pendingChanges).toContain(true));
 
+      const unrelated = resolveCoworkPasteAnchor(mounted.editor.state.doc, {
+        exact: "after",
+        prefix: "Before ",
+        suffix: "",
+      });
+      expect(unrelated.kind).toBe("unique");
+      if (unrelated.kind === "unique") {
+        act(() => {
+          mounted.editor.commands.setTextSelection({
+            from: unrelated.from,
+            to: unrelated.to,
+          });
+        });
+      }
+      expect(
+        await screen.findByRole("button", { name: "Record provenance" }),
+      ).toBeEnabled();
+      expect(
+        screen.queryByRole("button", { name: /Recording recent typing/u }),
+      ).toBeNull();
+
       releaseRecorder();
       await waitFor(() => expect(outbox.list()).resolves.toEqual([]));
       await waitFor(() => {
@@ -390,6 +411,313 @@ describe("CoworkBridgeEditor paste provenance", () => {
       mounted.unmount();
     }
   }, 30_000);
+
+  it("blocks duplicate manual recording only for an overlapping volatile typing capture", async () => {
+    const memoryBacking =
+      new InMemoryCoworkPasteProvenanceOutboxBackingStore();
+    let failWrites = true;
+    const failingBacking: CoworkPasteProvenanceOutboxBackingStore = {
+      durable: false,
+      read: (key) => memoryBacking.read(key),
+      mutate: (key, mutation) =>
+        failWrites
+          ? Promise.reject(new Error("injected outbox write failure"))
+          : memoryBacking.mutate(key, mutation),
+    };
+    const outbox = new DurableCoworkPasteProvenanceOutbox(
+      `volatile-direct-entry-${String(Date.now())}`,
+      failingBacking,
+    );
+    const recorder = vi.fn<CoworkPasteProvenanceRecorder>();
+    const mounted = await mountPasteEditor(recorder, {
+      outbox,
+      activeLens: "neutral",
+      provenanceProvider: provenanceProvider(),
+    });
+
+    try {
+      act(() => mounted.editor.commands.insertContentAt(1, "Pending text"));
+      mounted.setActiveLens("provenance");
+      await screen.findByRole("button", { name: "Retry provenance storage" });
+      failWrites = false;
+
+      const pending = resolveCoworkPasteAnchor(mounted.editor.state.doc, {
+        exact: "Pending text",
+        prefix: "",
+        suffix: "Before ",
+      });
+      expect(pending.kind).toBe("unique");
+      if (pending.kind === "unique") {
+        act(() => {
+          mounted.editor.commands.setTextSelection({
+            from: pending.from,
+            to: pending.to,
+          });
+        });
+      }
+      await userEvent.click(
+        await screen.findByRole("button", { name: "Record provenance" }),
+      );
+      const dialog = await screen.findByRole("dialog", {
+        name: "Record provenance",
+      });
+      await userEvent.click(
+        within(dialog).getByRole("button", { name: "Record provenance" }),
+      );
+
+      expect(
+        await within(dialog).findByText(
+          /Provenance delivery is already pending for this selection/u,
+        ),
+      ).toBeVisible();
+      expect(recorder).toHaveBeenCalledOnce();
+      expect(recorder.mock.calls[0]?.[0].sourceKind).toBe("direct_entry");
+    } finally {
+      mounted.unmount();
+    }
+  }, 30_000);
+
+  it("finalizes a volatile typing capture when provenance storage is retried", async () => {
+    const memoryBacking =
+      new InMemoryCoworkPasteProvenanceOutboxBackingStore();
+    let failWrites = true;
+    const failingBacking: CoworkPasteProvenanceOutboxBackingStore = {
+      durable: false,
+      read: (key) => memoryBacking.read(key),
+      mutate: (key, mutation) =>
+        failWrites
+          ? Promise.reject(new Error("injected outbox write failure"))
+          : memoryBacking.mutate(key, mutation),
+    };
+    const outbox = new DurableCoworkPasteProvenanceOutbox(
+      `retry-volatile-direct-entry-${String(Date.now())}`,
+      failingBacking,
+    );
+    const recorder = vi.fn<CoworkPasteProvenanceRecorder>();
+    const pendingChanges: boolean[] = [];
+    const mounted = await mountPasteEditor(recorder, {
+      outbox,
+      activeLens: "neutral",
+      provenanceProvider: provenanceProvider(),
+      onInputProvenancePendingChange: (pending) =>
+        pendingChanges.push(pending),
+    });
+
+    try {
+      act(() => mounted.editor.commands.insertContentAt(1, "Recovered typing"));
+      mounted.setActiveLens("provenance");
+      const retry = await screen.findByRole("button", {
+        name: "Retry provenance storage",
+      });
+
+      failWrites = false;
+      await userEvent.click(retry);
+
+      await waitFor(() => expect(recorder).toHaveBeenCalledOnce());
+      await waitFor(() => expect(outbox.list()).resolves.toEqual([]));
+      await waitFor(() =>
+        expect(pendingChanges[pendingChanges.length - 1]).toBe(false),
+      );
+      expect(
+        screen.queryByRole("button", { name: "Retry provenance storage" }),
+      ).toBeNull();
+    } finally {
+      mounted.unmount();
+    }
+  }, 30_000);
+
+  it("drains a recovered typing capture queued behind an in-flight finalizer", async () => {
+    const memoryBacking =
+      new InMemoryCoworkPasteProvenanceOutboxBackingStore();
+    let failWrites = false;
+    const backing: CoworkPasteProvenanceOutboxBackingStore = {
+      durable: false,
+      read: (key) => memoryBacking.read(key),
+      mutate: (key, mutation) =>
+        failWrites
+          ? Promise.reject(new Error("injected outbox write failure"))
+          : memoryBacking.mutate(key, mutation),
+    };
+    const outbox = new DurableCoworkPasteProvenanceOutbox(
+      `racing-volatile-direct-entry-${String(Date.now())}`,
+      backing,
+    );
+    let blockPush = false;
+    let releasePush!: () => void;
+    const pushGate = new Promise<void>((resolve) => {
+      releasePush = resolve;
+    });
+    let signalBlockedPush!: () => void;
+    const blockedPush = new Promise<void>((resolve) => {
+      signalBlockedPush = resolve;
+    });
+    const recorder = vi.fn<CoworkPasteProvenanceRecorder>();
+    const mounted = await mountPasteEditor(recorder, {
+      outbox,
+      activeLens: "neutral",
+      provenanceProvider: provenanceProvider(),
+      beforePush: async () => {
+        if (!blockPush) return;
+        signalBlockedPush();
+        await pushGate;
+      },
+    });
+
+    try {
+      act(() => mounted.editor.commands.insertContentAt(1, "First burst "));
+      await waitFor(async () =>
+        expect(await outbox.list()).toEqual([
+          expect.objectContaining({
+            sourceKind: "direct_entry",
+            status: "capturing",
+          }),
+        ]),
+      );
+
+      blockPush = true;
+      mounted.setActiveLens("provenance");
+      await blockedPush;
+
+      failWrites = true;
+      act(() => mounted.editor.commands.insertContentAt(13, "Second burst "));
+      const retry = await screen.findByRole("button", {
+        name: "Retry provenance storage",
+      });
+
+      failWrites = false;
+      await userEvent.click(retry);
+      await waitFor(async () =>
+        expect(
+          (await outbox.list()).filter(
+            (entry) => entry.status === "capturing",
+          ),
+        ).toHaveLength(2),
+      );
+      releasePush();
+
+      await waitFor(() => expect(recorder).toHaveBeenCalledTimes(2), {
+        timeout: 10_000,
+      });
+      await waitFor(() => expect(outbox.list()).resolves.toEqual([]));
+      expect(
+        screen.queryByRole("button", { name: "Retry provenance storage" }),
+      ).toBeNull();
+    } finally {
+      releasePush();
+      mounted.unmount();
+    }
+  }, 30_000);
+
+  it("retries independent ready provenance while an open capture stays stuck", async () => {
+    const memoryBacking =
+      new InMemoryCoworkPasteProvenanceOutboxBackingStore();
+    let failWrites = false;
+    const backing: CoworkPasteProvenanceOutboxBackingStore = {
+      durable: false,
+      read: (key) => memoryBacking.read(key),
+      mutate: (key, mutation) =>
+        failWrites
+          ? Promise.reject(new Error("injected outbox write failure"))
+          : memoryBacking.mutate(key, mutation),
+    };
+    const outbox = new DurableCoworkPasteProvenanceOutbox(
+      `independent-ready-${String(Date.now())}`,
+      backing,
+    );
+    await outbox.upsertCapture({
+      anchor: { exact: "Missing direct entry", prefix: "", suffix: "" },
+      idempotencyKey: "stuck-open-capture",
+      substantial: false,
+      sourceKind: "direct_entry",
+      basisKind: "automatic_direct_entry_attribution",
+      determination: unknownCoworkProvenanceDetermination(),
+      capturedActor: ACTOR,
+      capturedAt: new Date().toISOString(),
+      passageExcerpt: "Missing direct entry",
+      status: "capturing",
+    });
+    failWrites = true;
+    const recorder = vi.fn<CoworkPasteProvenanceRecorder>();
+    const mounted = await mountPasteEditor(recorder, {
+      outbox,
+      activeLens: "neutral",
+      provenanceProvider: provenanceProvider(),
+    });
+
+    try {
+      act(() => mounted.editor.commands.insertContentAt(1, "Volatile typing "));
+      const retry = await screen.findByRole("button", {
+        name: "Retry provenance storage",
+      });
+      failWrites = false;
+      await outbox.append({
+        anchor: { exact: "Before", prefix: "typing ", suffix: " after" },
+        idempotencyKey: "unrelated-ready-capture",
+        substantial: false,
+        sourceKind: "paste",
+        basisKind: "automatic_short_text_attribution",
+        determination: unknownCoworkProvenanceDetermination(),
+        capturedActor: ACTOR,
+        capturedAt: new Date().toISOString(),
+        passageExcerpt: "Before",
+        status: "ready",
+      });
+
+      await userEvent.click(retry);
+
+      await waitFor(() =>
+        expect(
+          recorder.mock.calls.some(
+            ([request]) =>
+              request.idempotencyKey === "unrelated-ready-capture",
+          ),
+        ).toBe(true),
+      );
+      expect(
+        await screen.findByRole("button", {
+          name: "Retry provenance storage",
+        }),
+      ).toBeVisible();
+      await expect(outbox.list()).resolves.toEqual([
+        expect.objectContaining({
+          idempotencyKey: "stuck-open-capture",
+          status: "capturing",
+        }),
+      ]);
+    } finally {
+      mounted.unmount();
+    }
+  }, 30_000);
+
+  it("does not strand the host pending signal when a staged burst is deleted immediately", async () => {
+    const pendingChanges: boolean[] = [];
+    const recorder = vi.fn<CoworkPasteProvenanceRecorder>();
+    const outbox = new DurableCoworkPasteProvenanceOutbox(
+      `deleted-staged-direct-entry-${String(Date.now())}`,
+      new InMemoryCoworkPasteProvenanceOutboxBackingStore(),
+    );
+    const mounted = await mountPasteEditor(recorder, {
+      outbox,
+      activeLens: "neutral",
+      provenanceProvider: provenanceProvider(),
+      onInputProvenancePendingChange: (pending) =>
+        pendingChanges.push(pending),
+    });
+
+    try {
+      act(() => {
+        mounted.editor.commands.insertContentAt(1, "X");
+        mounted.editor.commands.deleteRange({ from: 1, to: 2 });
+      });
+
+      await waitFor(() => expect(outbox.list()).resolves.toEqual([]));
+      await act(async () => Promise.resolve());
+      expect(pendingChanges[pendingChanges.length - 1]).toBe(false);
+      expect(recorder).not.toHaveBeenCalled();
+    } finally {
+      mounted.unmount();
+    }
+  });
 
   it("keeps the frozen capture pending until the refreshed projection matches the complete receipt", async () => {
     const data = emptyProvenanceData();
@@ -481,6 +809,94 @@ describe("CoworkBridgeEditor paste provenance", () => {
           ),
         ).toBeNull(),
       );
+    } finally {
+      mounted.unmount();
+    }
+  }, 30_000);
+
+  it("reconciles a frozen direct-entry receipt when a later provenance snapshot publishes it", async () => {
+    const data = emptyProvenanceData();
+    const requests: CoworkPasteProvenanceRequest[] = [];
+    const snapshotListeners = new Set<() => void>();
+    const pendingChanges: boolean[] = [];
+    let receipt: CoworkPasteProvenanceReceipt | undefined;
+    let receiptProjected = false;
+    const provider: ProvenanceProvider = {
+      load: vi.fn().mockImplementation(async () => ({
+        state: "ready" as const,
+        data: {
+          ...data,
+          history:
+            receipt === undefined || !receiptProjected
+              ? []
+              : [attestationForReceipt(receipt)],
+        },
+      })),
+      refresh: vi.fn().mockImplementation(async () => ({
+        state: "ready" as const,
+        data: {
+          ...data,
+          history:
+            receipt === undefined || !receiptProjected
+              ? []
+              : [attestationForReceipt(receipt)],
+        },
+      })),
+      subscribe: (listener) => {
+        snapshotListeners.add(listener);
+        return () => snapshotListeners.delete(listener);
+      },
+      markReviewed: vi.fn().mockResolvedValue(undefined),
+    };
+    const outbox = new DurableCoworkPasteProvenanceOutbox(
+      `published-receipt-${String(Date.now())}`,
+      new InMemoryCoworkPasteProvenanceOutboxBackingStore(),
+    );
+    const mounted = await mountPasteEditor(
+      async (request) => {
+        requests.push(request);
+        receipt ??= testProvenanceReceipt(request);
+        return receipt;
+      },
+      {
+        outbox,
+        activeLens: "neutral",
+        provenanceProvider: provider,
+        onInputProvenancePendingChange: (pending) =>
+          pendingChanges.push(pending),
+      },
+    );
+
+    try {
+      act(() => mounted.editor.commands.insertContentAt(1, "Published receipt"));
+      mounted.setActiveLens("provenance");
+
+      await screen.findByRole("button", { name: "Retry provenance storage" });
+      expect(requests).toHaveLength(1);
+      await expect(outbox.list()).resolves.toEqual([
+        expect.objectContaining({
+          sourceKind: "direct_entry",
+          status: "retryable_failure",
+          frozenRequest: expect.objectContaining({
+            idempotencyKey: requests[0]!.idempotencyKey,
+          }),
+        }),
+      ]);
+
+      receiptProjected = true;
+      act(() => {
+        for (const listener of snapshotListeners) listener();
+      });
+
+      await waitFor(() => expect(requests).toHaveLength(2));
+      expect(requests[1]).toEqual(requests[0]);
+      await waitFor(() => expect(outbox.list()).resolves.toEqual([]));
+      await waitFor(() =>
+        expect(pendingChanges[pendingChanges.length - 1]).toBe(false),
+      );
+      expect(
+        screen.queryByRole("button", { name: "Retry provenance storage" }),
+      ).toBeNull();
     } finally {
       mounted.unmount();
     }

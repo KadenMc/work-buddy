@@ -327,12 +327,27 @@
 }
 
 .wb-cowork-provenance-panel__list > li,
+.wb-cowork-provenance-panel__selection-review,
 .wb-cowork-provenance-panel__unrecorded,
 .wb-cowork-provenance-panel__unavailable {
   border: 1px solid var(--wb-color-border-subtle);
   border-inline-start: 3px solid var(--wb-color-accent);
   border-radius: var(--wb-radius-control);
   background: var(--wb-color-surface-raised);
+}
+
+.wb-cowork-provenance-panel__selection-review {
+  display: grid;
+  gap: var(--wb-space-2);
+  padding: var(--wb-space-3);
+}
+
+.wb-cowork-provenance-panel__selection-review > * {
+  margin: 0;
+}
+
+.wb-cowork-provenance-panel__selection-review button {
+  justify-self: start;
 }
 
 .wb-cowork-provenance-panel__list > li[data-state="issue"] {
@@ -407,6 +422,7 @@
 
 @media (forced-colors: active) {
   .wb-cowork-provenance-panel__list > li,
+  .wb-cowork-provenance-panel__selection-review,
   .wb-cowork-provenance-panel__unrecorded {
     border-inline-start-color: CanvasText;
   }

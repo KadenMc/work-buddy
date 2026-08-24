@@ -1256,6 +1256,8 @@ def test_ai_provenance_human_review_is_target_bound_and_idempotent(
     )
     body = {
         "attestation_id": original.id,
+        "expected_actor_ref": HUMAN.ref,
+        "expected_actor_identity_status": "local_actor_ref",
         "expected_structured_head_sha256": head,
         "idempotency_key": "review-route-command-0001",
     }
@@ -1284,6 +1286,188 @@ def test_ai_provenance_human_review_is_target_bound_and_idempotent(
     assert view["summary"]["ai_unreviewed_count"] == 0
     assert view["spans"][0]["effective_attestation"] == first
     assert len(view["spans"][0]["history"]) == 2
+
+
+def test_provenance_review_route_batches_selected_targets_atomically(
+    client,
+    seeded,
+):
+    document = seeded["document"]
+    head = ydoc_store.current_structured_head(
+        seeded["store"],
+        document_id=document.id,
+        snapshot_sha256=seeded["snapshot_sha256"],
+    )
+    originals = [
+        provenance.record_span_attestation(
+            seeded["store"],
+            document_id=document.id,
+            exact=exact,
+            prefix=prefix,
+            suffix=suffix,
+            attestation={
+                "schema": "cowork-authorship-attestation/v1",
+                "authorship": {"kind": "ai", "contributors": []},
+                "human_review": {
+                    "status": "not_reviewed",
+                    "reviewers": [],
+                },
+            },
+            actor=HUMAN,
+            idempotency_key=key,
+            expected_structured_head_sha256=head,
+        )[0]
+        for exact, prefix, suffix, key in [
+            (
+                "Original sentence",
+                "",
+                " for co-work tests.",
+                "review-route-batch-origin-0001",
+            ),
+            (
+                "co-work tests",
+                "Original sentence for ",
+                ".",
+                "review-route-batch-origin-0002",
+            ),
+        ]
+    ]
+    url = _url(
+        f"/api/truth/doc/{document.id}/authorship-attestations/human-review",
+        seeded["store_id"],
+    )
+    body = {
+        "attestation_ids": [record.id for record in originals],
+        "expected_actor_ref": HUMAN.ref,
+        "expected_actor_identity_status": "local_actor_ref",
+        "expected_structured_head_sha256": head,
+        "idempotency_key": "review-route-batch-command-0001",
+    }
+
+    reviewed = client.post(url, json=body)
+    replay = client.post(url, json=body)
+
+    assert reviewed.status_code == replay.status_code == 201
+    records = reviewed.get_json()["attestations"]
+    assert replay.get_json()["attestations"] == records
+    assert [record["supersedes_id"] for record in records] == [
+        original.id for original in originals
+    ]
+    assert all(
+        record["human_review"]["reviewers"][0]["ref"] == HUMAN.ref
+        for record in records
+    )
+
+
+@pytest.mark.parametrize(
+    "malformation",
+    [
+        "duplicate_ids",
+        "too_many_ids",
+        "malformed_id",
+        "malformed_head",
+        "malformed_key",
+        "missing_actor_pair",
+    ],
+)
+def test_provenance_review_batch_prevalidates_malformed_requests_as_400(
+    client,
+    seeded,
+    monkeypatch,
+    malformation,
+):
+    document = seeded["document"]
+    body = {
+        "attestation_ids": ["a" * 32],
+        "expected_actor_ref": HUMAN.ref,
+        "expected_actor_identity_status": "local_actor_ref",
+        "expected_structured_head_sha256": "0" * 64,
+        "idempotency_key": "review-route-validation-0001",
+    }
+    if malformation == "duplicate_ids":
+        body["attestation_ids"] = ["a" * 32, "A" * 32]
+    elif malformation == "too_many_ids":
+        body["attestation_ids"] = [f"{index:032x}" for index in range(101)]
+    elif malformation == "malformed_id":
+        body["attestation_ids"] = ["not-an-attestation-id"]
+    elif malformation == "malformed_head":
+        body["expected_structured_head_sha256"] = "not-a-digest"
+    elif malformation == "malformed_key":
+        body["idempotency_key"] = "short"
+    else:
+        body.pop("expected_actor_identity_status")
+
+    monkeypatch.setattr(
+        api,
+        "_require_human_action",
+        lambda **_kwargs: pytest.fail(
+            "malformed batch reached human-authority consumption"
+        ),
+    )
+    response = client.post(
+        _url(
+            f"/api/truth/doc/{document.id}/authorship-attestations/human-review",
+            seeded["store_id"],
+        ),
+        json=body,
+    )
+
+    assert response.status_code == 400
+
+
+def test_provenance_review_batch_rejects_changed_actor_without_append(
+    client,
+    seeded,
+):
+    document = seeded["document"]
+    head = ydoc_store.current_structured_head(
+        seeded["store"],
+        document_id=document.id,
+        snapshot_sha256=seeded["snapshot_sha256"],
+    )
+    original, _span_id = provenance.record_span_attestation(
+        seeded["store"],
+        document_id=document.id,
+        exact=DOC_QUOTE,
+        attestation={
+            "schema": "cowork-authorship-attestation/v1",
+            "authorship": {"kind": "ai", "contributors": []},
+            "human_review": {"status": "not_reviewed", "reviewers": []},
+        },
+        actor=HUMAN,
+        idempotency_key="review-route-actor-change-origin-0001",
+        expected_structured_head_sha256=head,
+    )
+    history_before = provenance.list_attestations(
+        seeded["store"],
+        document.id,
+    )
+
+    response = client.post(
+        _url(
+            f"/api/truth/doc/{document.id}/authorship-attestations/human-review",
+            seeded["store_id"],
+        ),
+        json={
+            "attestation_ids": [original.id],
+            "expected_actor_ref": "another-reviewer",
+            "expected_actor_identity_status": "local_actor_ref",
+            "expected_structured_head_sha256": head,
+            "idempotency_key": "review-route-actor-change-command-0001",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.get_json()["error"] == {
+        "code": "provenance_actor_changed",
+        "message": "The acting identity changed before review was recorded.",
+        "details": {},
+        "retryable": False,
+    }
+    assert (
+        provenance.list_attestations(seeded["store"], document.id)
+        == history_before
+    )
 
 
 @pytest.mark.parametrize("damage", ["missing", "malformed_selector"])

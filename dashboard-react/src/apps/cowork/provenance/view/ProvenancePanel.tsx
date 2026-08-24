@@ -423,11 +423,17 @@ function ProvenanceContents({
   const view = load.state === "ready" ? load.data : undefined;
   const [filter, setFilter] = useState<ProvenanceFilter>("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [pendingId, setPendingId] = useState<string | null>(null);
+  const [pendingIds, setPendingIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const mutationLock = useRef(false);
   const routedRowRef = useRef<HTMLButtonElement | null>(null);
+  const routedSelectionReviewRef = useRef<HTMLButtonElement | null>(null);
+  const routedSelectionReviewCardRef = useRef<HTMLElement | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [completedSelectionFingerprint, setCompletedSelectionFingerprint] =
+    useState<string | null>(null);
   useEffect(() => {
     if (
       selectionAction === null ||
@@ -441,6 +447,17 @@ function ProvenanceContents({
     setSelectedId(selectionAction.targetIds[0]!);
   }, [selectionAction]);
   useLayoutEffect(() => {
+    if (selectionAction?.intent === "review") {
+      const action = routedSelectionReviewRef.current;
+      const focusTarget =
+        action !== null && !action.disabled
+          ? action
+          : routedSelectionReviewCardRef.current;
+      if (focusTarget === null) return;
+      focusTarget.focus({ preventScroll: true });
+      focusTarget.scrollIntoView?.({ block: "nearest" });
+      return;
+    }
     const target = selectionAction?.targetIds[0];
     if (
       target === undefined ||
@@ -453,7 +470,7 @@ function ProvenanceContents({
     if (row === null) return;
     row.focus({ preventScroll: true });
     row.scrollIntoView?.({ block: "nearest" });
-  }, [selectedId, selectionAction]);
+  }, [load, selectedId, selectionAction]);
   if (view === undefined) {
     return (
       <div className="wb-cowork-provenance-panel__unavailable" role="status">
@@ -519,12 +536,92 @@ function ProvenanceContents({
     hasText &&
     targets.length === 0 &&
     view.history.length === 0;
-  const markReviewed = async (target: ProvenanceTarget): Promise<void> => {
+  const selectionReviewFingerprint =
+    selectionAction?.intent === "review"
+      ? JSON.stringify({
+          requestId: selectionAction.requestId,
+          anchor: selectionAction.anchor,
+          from: selectionAction.from,
+          to: selectionAction.to,
+          targetIds: selectionAction.targetIds,
+          coversWholeDocument: selectionAction.coversWholeDocument ?? false,
+          reviewer: selectionAction.reviewer,
+        })
+      : null;
+  const selectionReviewItems =
+    selectionAction?.intent === "review" &&
+    selectionReviewFingerprint !== completedSelectionFingerprint
+      ? selectionAction.targetIds.map((id) =>
+          targets.find(
+            (candidate) => candidate.target.projectionId === id,
+          ),
+        )
+      : [];
+  const selectionReviewTargets = selectionReviewItems.some(
+    (item) => item === undefined,
+  )
+    ? []
+    : selectionReviewItems.flatMap((item) =>
+        item === undefined ? [] : [item.target],
+      );
+  const selectionReviewTargetsAreCurrent =
+    selectionReviewTargets.length > 0 &&
+    selectionReviewItems.every((item) => {
+      if (item === undefined) return false;
+      const record = effective(item.target);
+      const reviewer = selectionAction?.reviewer;
+      const targetIsContained =
+        item.target.span === null
+          ? selectionAction?.coversWholeDocument === true
+          : selectionAction?.intent === "review" &&
+            item.anchorResolution.documentOrder !== null &&
+            item.anchorResolution.documentEnd !== null &&
+            selectionAction.from <= item.anchorResolution.documentOrder &&
+            selectionAction.to >= item.anchorResolution.documentEnd;
+      return (
+        item.peerConflictIds.length === 0 &&
+        item.target.resolution === "resolved" &&
+        item.target.target.currentness === "current" &&
+        ["eligible", "already_reviewed"].includes(
+          item.target.reviewEligibility,
+        ) &&
+        reviewer !== undefined &&
+        record !== null &&
+        !record.humanReview.reviewers.some(
+          (candidate) =>
+            candidate.ref === reviewer.ref &&
+            candidate.identityStatus === reviewer.identityStatus,
+        ) &&
+        (record.authorship.kind === "ai" ||
+          record.authorship.kind === "mixed") &&
+        (item.anchorResolution.state === "unique" ||
+          item.anchorResolution.state === "document") &&
+        targetIsContained
+      );
+    });
+  const markReviewed = async (
+    requestedTargets: readonly ProvenanceTarget[],
+    allowPreviouslyReviewed = false,
+  ): Promise<void> => {
     if (mutationLock.current) return;
-    const record = effective(target);
-    if (record === null || view.currentStructuredHeadSha256 === null) return;
+    const records = requestedTargets.map(effective);
+    if (requestedTargets.length === 0 || view.currentStructuredHeadSha256 === null) {
+      return;
+    }
+    if (records.some((record) => record === null)) {
+      setError(
+        "The selected provenance changed. Reselect the passage before recording review.",
+      );
+      return;
+    }
     mutationLock.current = true;
-    setPendingId(record.attestationId);
+    setPendingIds(
+      new Set(
+        records.flatMap((record) =>
+          record === null ? [] : [record.attestationId],
+        ),
+      ),
+    );
     setError(null);
     setSuccess(null);
     try {
@@ -537,47 +634,106 @@ function ProvenanceContents({
           if (refreshed.state !== "ready") {
             throw new Error(refreshed.reason);
           }
-          const refreshedTarget = [
+          const refreshedTargets = [
             ...(refreshed.data.documentDefault === null
               ? []
               : [refreshed.data.documentDefault]),
             ...refreshed.data.spans,
-          ].find((candidate) => candidate.projectionId === target.projectionId);
-          const refreshedRecord =
-            refreshedTarget === undefined ? null : effective(refreshedTarget);
-          const refreshedItem = resolvePanelTargets(
+          ];
+          const refreshedItems = resolvePanelTargets(
             refreshed.data,
             editor,
-          ).find(
-            (candidate) =>
-              candidate.target.projectionId === target.projectionId,
           );
           if (
             refreshed.data.currentStructuredHeadSha256 === null ||
             synchronized.structuredHeadSha256 !==
-              refreshed.data.currentStructuredHeadSha256 ||
-            refreshedTarget === undefined ||
-            refreshedTarget.reviewEligibility !== "eligible" ||
-            refreshedRecord?.attestationId !== record.attestationId ||
-            refreshedItem === undefined ||
-            refreshedItem.peerConflictIds.length > 0
+              refreshed.data.currentStructuredHeadSha256
           ) {
             throw new Error(
               "The document changed. Provenance was refreshed; inspect the passage and try again.",
             );
           }
-          if (
-            refreshedTarget.span !== null &&
-            editor?.resolveTarget(refreshedTarget.span).state !== "unique"
-          ) {
-            throw new Error("The passage no longer resolves to one location.");
+          const refreshedRecords = requestedTargets.map((target, index) => {
+            const refreshedTarget = refreshedTargets.find(
+              (candidate) =>
+                candidate.projectionId === target.projectionId,
+            );
+            const refreshedRecord =
+              refreshedTarget === undefined ? null : effective(refreshedTarget);
+            const refreshedItem = refreshedItems.find(
+              (candidate) =>
+                candidate.target.projectionId === target.projectionId,
+            );
+            const expectedRecord = records[index];
+            const eligible =
+              refreshedTarget?.reviewEligibility === "eligible" ||
+              (allowPreviouslyReviewed &&
+                refreshedTarget?.reviewEligibility === "already_reviewed");
+            const reviewerStillNeeded =
+              !allowPreviouslyReviewed ||
+              (selectionAction?.reviewer !== undefined &&
+                !refreshedRecord?.humanReview.reviewers.some(
+                  (candidate) =>
+                    candidate.ref === selectionAction.reviewer?.ref &&
+                    candidate.identityStatus ===
+                      selectionAction.reviewer?.identityStatus,
+                ));
+            if (
+              refreshedTarget === undefined ||
+              !eligible ||
+              !reviewerStillNeeded ||
+              refreshedRecord?.attestationId !==
+                expectedRecord?.attestationId ||
+              refreshedItem === undefined ||
+              refreshedItem.peerConflictIds.length > 0
+            ) {
+              throw new Error(
+                "The document changed. Provenance was refreshed; inspect the passage and try again.",
+              );
+            }
+            if (
+              refreshedTarget.span !== null &&
+              editor?.resolveTarget(refreshedTarget.span).state !== "unique"
+            ) {
+              throw new Error(
+                "A selected passage no longer resolves to one location.",
+              );
+            }
+            return refreshedRecord;
+          });
+          if (refreshedRecords.some((record) => record === null)) {
+            throw new Error(
+              "The selected provenance is no longer available for review.",
+            );
           }
-          await provider.markReviewed(
-            refreshedRecord.attestationId,
-            refreshed.data.currentStructuredHeadSha256,
+          const refreshedAttestationIds = refreshedRecords.flatMap((record) =>
+            record === null ? [] : [record.attestationId],
           );
+          if (
+            allowPreviouslyReviewed &&
+            selectionAction?.reviewer !== undefined
+          ) {
+            await provider.markReviewed(
+              refreshedAttestationIds,
+              refreshed.data.currentStructuredHeadSha256,
+              selectionAction.reviewer,
+            );
+          } else {
+            await provider.markReviewed(
+              refreshedAttestationIds,
+              refreshed.data.currentStructuredHeadSha256,
+            );
+          }
+          if (
+            allowPreviouslyReviewed &&
+            selectionReviewFingerprint !== null
+          ) {
+            setCompletedSelectionFingerprint(selectionReviewFingerprint);
+          }
           setSuccess(
-            `Human review was recorded for “${refreshedTarget.span === null ? "the whole document" : passageExcerpt(refreshedTarget.span.exact)}”.`,
+            requestedTargets.length === 1
+              ? `Your review was recorded for “${requestedTargets[0]!.span === null ? "the whole document" : passageExcerpt(requestedTargets[0]!.span.exact)}”.`
+              : `Your review was recorded for ${String(requestedTargets.length)} selected passages.`,
           );
         },
       );
@@ -585,9 +741,17 @@ function ProvenanceContents({
       setError(mutationErrorMessage(cause));
     } finally {
       mutationLock.current = false;
-      setPendingId(null);
+      setPendingIds(new Set());
     }
   };
+  const selectionReviewEnabled =
+    selectionReviewTargets.length > 0 &&
+    selectionReviewTargetsAreCurrent &&
+    !locallyDirty &&
+    view.currentStructuredHeadSha256 !== null &&
+    readOnly !== true &&
+    mutationBarrier !== undefined &&
+    pendingIds.size === 0;
   return (
     <>
       <dl
@@ -640,9 +804,9 @@ function ProvenanceContents({
       )}
       {inputProvenancePending ? (
         <p className="wb-cowork-provenance-panel__reason" role="status">
-          Recording provenance for recent typing… The editor has captured the
-          text; authorship and review will appear after the server confirms the
-          record.
+          Recent typing provenance is awaiting confirmation. The editor has
+          captured the text, and other provenance actions remain available while
+          authorship and review catch up.
         </p>
       ) : locallyDirty ? (
         <p className="wb-cowork-provenance-panel__reason" role="status">
@@ -654,6 +818,49 @@ function ProvenanceContents({
       <p className="wb-cowork-provenance-panel__success" aria-live="polite">
         {success ?? ""}
       </p>
+      {selectionReviewItems.length === 0 ? null : (
+        <article
+          ref={routedSelectionReviewCardRef}
+          className="wb-cowork-provenance-panel__selection-review"
+          tabIndex={-1}
+          aria-label="Review selected provenance"
+        >
+          <h3>
+            {selectionAction?.targetIds.length === 1
+              ? "Review selected passage"
+              : `Review ${String(selectionAction?.targetIds.length ?? 0)} selected passages`}
+          </h3>
+          <p>
+            Records your review for the eligible AI or mixed-authored
+            provenance fully contained in the selection. It does not change
+            authorship or assert that the text is true.
+          </p>
+          <button
+            ref={routedSelectionReviewRef}
+            type="button"
+            disabled={!selectionReviewEnabled}
+            aria-describedby={
+              selectionReviewTargetsAreCurrent
+                ? undefined
+                : "wb-cowork-selection-review-stale"
+            }
+            onClick={() =>
+              void markReviewed(selectionReviewTargets, true)
+            }
+          >
+            {pendingIds.size > 0 ? "Recording…" : "Mark as reviewed"}
+          </button>
+          {selectionReviewTargetsAreCurrent ? null : (
+            <p
+              id="wb-cowork-selection-review-stale"
+              className="wb-cowork-provenance-panel__reason"
+            >
+              The selected provenance changed. Reselect the passage to review
+              its current record.
+            </p>
+          )}
+        </article>
+      )}
       {noRecordedProvenance && filter === "all" ? (
         <article className="wb-cowork-provenance-panel__unrecorded">
           <h3>No provenance has been recorded for this document</h3>
@@ -819,11 +1026,11 @@ function ProvenanceContents({
                               view.currentStructuredHeadSha256 !== null &&
                               readOnly !== true &&
                               mutationBarrier !== undefined &&
-                              pendingId === null;
+                              pendingIds.size === 0;
                             const reason =
-                              pendingId === record.attestationId
+                              pendingIds.has(record.attestationId)
                                 ? "Human review is being recorded."
-                                : pendingId !== null
+                                : pendingIds.size > 0
                                   ? "Finish recording the current review before starting another."
                                   : peerConflictIds.length > 0
                                     ? "Overlapping provenance records disagree, so review cannot be recorded."
@@ -848,9 +1055,9 @@ function ProvenanceContents({
                                   aria-describedby={
                                     reviewEnabled ? undefined : reasonId
                                   }
-                                  onClick={() => void markReviewed(target)}
+                                  onClick={() => void markReviewed([target])}
                                 >
-                                  {pendingId === record.attestationId
+                                  {pendingIds.has(record.attestationId)
                                     ? "Recording…"
                                     : "Mark reviewed"}
                                 </button>

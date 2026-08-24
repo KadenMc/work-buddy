@@ -9,6 +9,14 @@ export type ProvenanceIdentityStatus =
   | "account_ref"
   | "claimed_name";
 
+export interface ProvenanceReviewerBinding {
+  readonly ref: string;
+  readonly identityStatus: Exclude<
+    ProvenanceIdentityStatus,
+    "claimed_name"
+  >;
+}
+
 export interface ProvenanceActor {
   readonly kind: string;
   readonly ref: string | null;
@@ -103,7 +111,11 @@ export interface ProvenanceProvider {
   /** Force one fresh authoritative document pull (used by mutation preflight). */
   refresh(): Promise<ProvenanceLoad>;
   subscribe(listener: () => void): () => void;
-  markReviewed(attestationId: string, expectedStructuredHeadSha256: string): Promise<void>;
+  markReviewed(
+    attestationIds: readonly string[],
+    expectedStructuredHeadSha256: string,
+    expectedReviewer?: ProvenanceReviewerBinding,
+  ): Promise<void>;
 }
 
 export interface ProvenanceMutationBarrier {
@@ -129,4 +141,8 @@ export interface ProvenanceSelectionAction {
   readonly from: number;
   readonly to: number;
   readonly targetIds: readonly string[];
+  /** True only when the frozen selection spans all document text. */
+  readonly coversWholeDocument?: boolean;
+  /** Frozen actor binding for actor-aware review revalidation in stable detail. */
+  readonly reviewer?: ProvenanceReviewerBinding;
 }

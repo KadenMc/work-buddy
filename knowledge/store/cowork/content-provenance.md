@@ -9,10 +9,10 @@ summary: >-
   exact spans, with direct entry shown as pending delivery before its receipt
   and actorless captures retained for explicit attribution after recovery.
   Accepted agent proposals transactionally attribute only replacement text to
-  the producing run. A human review action appends a user-attested superseding
-  record while preserving source and authorship. Attestations report what a
-  person says about content; they do not verify authorship, correctness, or
-  claims.
+  the producing run. Human review is recorded per enrolled user and can append
+  one atomic batch of superseding records for eligible selected targets while
+  preserving source and authorship. Attestations report what a person says
+  about content; they do not verify authorship, correctness, or claims.
 tags:
 - cowork
 - provenance
@@ -25,6 +25,14 @@ aliases:
 - authorship attestation
 - human review attestation
 - document provenance attestation
+dev_notes: >-
+  The browser pending projection is derived from synchronous staged captures,
+  mounted-page volatile captures, and durable outbox rows; authoritative
+  receipt coverage wins before local cleanup. Selection request identities must
+  remain unique across Provenance-affordance remounts because the stable panel
+  persists across lens changes. Review-batch slot keys bind the ordered
+  predecessor IDs plus expected structured head and require an exact slot set;
+  both the panel and server revalidate the frozen reviewer binding.
 parents:
 - cowork
 ---
@@ -118,12 +126,22 @@ inspectable without receiving a guessed range.
 
 The generic **Give feedback** selection bubble belongs to the other lenses and
 is suppressed in Provenance. A selected passage instead gets exactly one
-coverage-aware action: **Record provenance** when uncovered, **Review provenance**
-when it exactly matches one eligible AI/mixed span, **View provenance** for one
-healthy record, or **Inspect provenance** for stale, ambiguous, conflicting, or
-multiple coverage. Review provenance only opens the stable target detail; its
-guarded append remains in the panel. Recording pre-existing text uses an
-explicit determination and keeps its source labeled **Untracked / legacy**.
+coverage-aware action: **Record provenance** when uncovered, **Mark as
+reviewed** when the selection fully contains at least one current AI/mixed
+target which the current enrolled user has not reviewed, **View provenance**
+for one healthy record, or **Inspect provenance** for stale, ambiguous, or
+conflicting coverage. A selection can review several fully contained span
+targets together; a partially selected target is never promoted into a claim
+that its whole passage was reviewed. A document-version fallback is eligible
+from the selection action only when all document text is selected. Review by
+another person does not suppress the current user's action.
+
+The floating action routes review to a stable confirmation card rather than
+mutating immediately. If a selected target disappears, conflicts, or becomes
+ineligible before confirmation, that card stays visible, disables the write,
+and receives focus with a reselect-and-inspect explanation. Recording
+pre-existing text uses an explicit determination and keeps its source labeled
+**Untracked / legacy**.
 
 Provenance has a dedicated typed provider and panel projection. It can share the
 authoritative open-document snapshot source with other rails, but it does not
@@ -154,25 +172,30 @@ requiring re-anchor, so newly typed text cannot inherit stale authorship. A
 unique span may stay paintable for inspection; review stays unavailable until
 persistence settles and a matching fresh authoritative projection arrives.
 
-**Mark reviewed** is a constrained append-only action for one effective,
-exact-current-head AI- or mixed-authored document-version or span target. The
-server derives a superseding record
-which preserves the target, source, authorship, and contributors, changes human
-review to reviewed, and records the enrolled acting user as reviewer and
-attester. The new record has a `user_attestation` basis referencing its
-predecessor; the old record keeps its own automatic, proposal, migration, or
-legacy basis in history. The transition therefore remains “AI-authored,
-human-reviewed,” not “human-authored.” Reviewed is not approval, factual
-confirmation, or acceptance.
+**Mark as reviewed** is a constrained, per-user append-only action for one or
+more effective, exact-current-head AI- or mixed-authored document-version or
+span targets. Each derived successor preserves its target, source, authorship,
+and contributors, changes human review to reviewed, retains every distinct
+prior reviewer, and adds the enrolled acting user as reviewer and attester. A
+review already recorded by someone else therefore remains eligible for the
+current user; a duplicate review by that same current user is rejected. Every
+new record has a `user_attestation` basis referencing its predecessor, while
+the old record keeps its own automatic, proposal, migration, or legacy basis in
+history. The transition remains “AI-authored, human-reviewed,” not
+“human-authored.” Reviewed is not approval, factual confirmation, or
+acceptance.
 
 The editor owns the review mutation barrier. It disables editing, retries and
 flushes pending Yjs persistence, verifies canonical state, and compacts to one
 durable structured head. While that lock remains held, the dedicated provider
 forces a fresh document pull and the panel rechecks the same effective leaf,
 head, eligibility, unique exact-span resolution, and incompatible peer overlap.
-Only then does it post the append-only transition and repull authoritative
-state. Any drift fails closed; the editor is re-enabled only if the mounted
-document is still writable.
+Only then does it post one atomic batch and repull authoritative state. The
+signed command is bound to the frozen reviewer, ordered predecessor IDs, and
+exact structured head; an identity change, changed target set, reordered
+replay, partial prior batch, or head drift fails before any target is appended.
+Any drift fails closed; the editor is re-enabled only if the mounted document
+is still writable.
 
 ## Accepted agent proposals
 
@@ -225,14 +248,21 @@ Provenance lens projects the uniquely resolved exact local capture range as
 **Recording provenance…**. This pending decoration is delivery state only. It
 does not provisionally assert authorship, review, contributor, reviewer, or
 attester facts, even when the capture already carries a frozen actor binding.
-The stable panel exposes the same pending state and does not announce that the
-passage has no provenance. As soon as authoritative recorded coverage is
-present, that ledger projection wins for the overlapping range even if local
-outbox cleanup has not completed; removing the pending row later cannot make a
-server receipt disappear. The client retains the frozen outbox row and pending
-treatment until a fresh history entry matches the server receipt's attestation
-ID, document-span ID, and structured head. A missing, stale, misbound, or failed
-refresh therefore remains visibly pending and safely retryable.
+The stable panel exposes the same passage-scoped pending state and does not
+announce that the passage has no provenance. Pending typing never replaces or
+disables the selection menu for unrelated text. Manual recording is blocked
+only when its selected range overlaps an unresolved local capture, preventing a
+duplicate attestation while leaving every other provenance action available.
+
+As soon as authoritative recorded coverage is present, that ledger projection
+wins for the overlapping range even if local outbox cleanup has not completed;
+removing the pending row later cannot make a server receipt disappear. The
+client retains the frozen outbox row and pending treatment until a fresh
+history entry matches the server receipt's attestation ID, document-span ID,
+and structured head. A missing, stale, misbound, or failed refresh therefore
+remains visibly pending and safely retryable. Publication of a later matching
+snapshot automatically replays and reconciles the frozen request, so receipt
+visibility does not depend on another user gesture.
 
 Typing observed without a capture-time actor, or whose actor changes before
 the automatic request can be frozen, is not discarded. Its exact selector
@@ -255,7 +285,10 @@ The synchronous recovery journal retains the newest coalesced burst over an
 older unfrozen `capturing` row. It never overwrites a ready or frozen request.
 Closing the page leaves an unfinished capture recoverable rather than trying to
 resolve it after the editor has disappeared. Once frozen, retry is the same
-immutable logical request.
+immutable logical request. A visible storage retry rehydrates and explicitly
+finalizes an open mounted-page capture, including one queued behind an already
+running finalizer. If an open row still cannot resolve or finalize, the retry
+warning remains visible while independent ready rows continue delivery.
 
 Text that predates this path cannot be safely attributed retroactively. In the
 Provenance lens the user can select that text and choose **Record provenance**;

@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -10,6 +10,11 @@ import type {
   ProvenanceSelectionAction,
 } from "./contracts";
 import { ProvenancePanel } from "./ProvenancePanel";
+
+const REVIEWER = {
+  ref: "user-1",
+  identityStatus: "local_actor_ref",
+} as const;
 
 const attestation = {
   attestationId: "attestation-1",
@@ -187,7 +192,533 @@ describe("ProvenancePanel", () => {
       screen.getByRole("button", { name: "Mark reviewed" }),
     );
     await waitFor(() => expect(source.markReviewed).toHaveBeenCalledOnce());
+    expect(source.markReviewed).toHaveBeenCalledWith(
+      ["attestation-1"],
+      "a".repeat(64),
+    );
     expect(locked).toBe(false);
+  });
+
+  it("atomically marks every eligible provenance target routed from a selection", async () => {
+    const secondAttestation = {
+      ...attestation,
+      attestationId: "attestation-2",
+      scope: {
+        ...attestation.scope,
+        documentSpanId: "span-2",
+      },
+    };
+    const secondTarget = {
+      ...data.spans[0]!,
+      projectionId: "document_span:span-2",
+      target: {
+        ...data.spans[0]!.target,
+        documentSpanId: "span-2",
+      },
+      span: { exact: "Second AI passage", prefix: "", suffix: "" },
+      effectiveAttestations: [secondAttestation],
+      effectiveAttestation: secondAttestation,
+      history: [secondAttestation],
+    };
+    const selectionData: ProvenanceData = {
+      ...data,
+      spans: [data.spans[0]!, secondTarget],
+      history: [attestation, secondAttestation],
+      summary: {
+        ...data.summary,
+        totalTargets: 2,
+        currentSpanCount: 2,
+        aiUnreviewedCount: 2,
+      },
+    };
+    const source = provider();
+    vi.mocked(source.load).mockResolvedValue({
+      state: "ready",
+      data: selectionData,
+    });
+    vi.mocked(source.refresh).mockResolvedValue({
+      state: "ready",
+      data: selectionData,
+    });
+    const barrier: ProvenanceMutationBarrier = {
+      runWithSynchronizedDocument: (operation) =>
+        operation({ structuredHeadSha256: "a".repeat(64) }),
+    };
+    const selectionAction: ProvenanceSelectionAction = {
+      requestId: 1,
+      intent: "review",
+      reviewer: REVIEWER,
+      anchor: { exact: "selected passages", prefix: "", suffix: "" },
+      from: 1,
+      to: 30,
+      targetIds: ["document_span:span-1", "document_span:span-2"],
+    };
+    const rendered = render(
+      <ProvenancePanel
+        provider={source}
+        active
+        editor={editor}
+        mutationBarrier={barrier}
+        selectionAction={selectionAction}
+      />,
+    );
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Mark as reviewed" }),
+    );
+    await waitFor(() =>
+      expect(source.markReviewed).toHaveBeenCalledWith(
+        ["attestation-1", "attestation-2"],
+        "a".repeat(64),
+        REVIEWER,
+      ),
+    );
+    expect(
+      screen.queryByRole("button", { name: "Mark as reviewed" }),
+    ).toBeNull();
+    rendered.rerender(
+      <ProvenancePanel
+        provider={source}
+        active
+        editor={editor}
+        mutationBarrier={barrier}
+        selectionAction={{
+          ...selectionAction,
+          anchor: { exact: "Second AI passage", prefix: "", suffix: "" },
+          from: 16,
+          to: 30,
+          targetIds: ["document_span:span-2"],
+        }}
+      />,
+    );
+    expect(
+      await screen.findByRole("button", { name: "Mark as reviewed" }),
+    ).toBeEnabled();
+  });
+
+  it("records this user's review when another user already reviewed the target", async () => {
+    const reviewedByOther = {
+      ...attestation,
+      humanReview: {
+        status: "reviewed" as const,
+        reviewers: [
+          {
+            kind: "human" as const,
+            ref: "other-reviewer",
+            label: null,
+            identityStatus: "local_actor_ref" as const,
+          },
+        ],
+      },
+    };
+    const reviewedTarget = {
+      ...data.spans[0]!,
+      effectiveAttestations: [reviewedByOther],
+      effectiveAttestation: reviewedByOther,
+      reviewEligibility: "already_reviewed" as const,
+      history: [reviewedByOther],
+    };
+    const reviewedData: ProvenanceData = {
+      ...data,
+      spans: [reviewedTarget],
+      history: [reviewedByOther],
+    };
+    const source = provider();
+    vi.mocked(source.load).mockResolvedValue({
+      state: "ready",
+      data: reviewedData,
+    });
+    vi.mocked(source.refresh).mockResolvedValue({
+      state: "ready",
+      data: reviewedData,
+    });
+    render(
+      <ProvenancePanel
+        provider={source}
+        active
+        editor={editor}
+        mutationBarrier={{
+          runWithSynchronizedDocument: (operation) =>
+            operation({ structuredHeadSha256: "a".repeat(64) }),
+        }}
+        selectionAction={{
+          requestId: 1,
+          intent: "review",
+          reviewer: REVIEWER,
+          anchor: { exact: "AI passage", prefix: "", suffix: "" },
+          from: 20,
+          to: 30,
+          targetIds: ["document_span:span-1"],
+        }}
+      />,
+    );
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Mark as reviewed" }),
+    );
+    await waitFor(() =>
+      expect(source.markReviewed).toHaveBeenCalledWith(
+        ["attestation-1"],
+        "a".repeat(64),
+        REVIEWER,
+      ),
+    );
+  });
+
+  it("records this user's review for a fully selected document default", async () => {
+    const documentRecord = {
+      ...attestation,
+      scope: {
+        ...attestation.scope,
+        kind: "document_version" as const,
+        documentVersionId: "version-1",
+        documentSpanId: null,
+      },
+      humanReview: {
+        status: "reviewed" as const,
+        reviewers: [
+          {
+            kind: "human" as const,
+            ref: "other-reviewer",
+            label: "Other reviewer",
+            identityStatus: "local_actor_ref" as const,
+          },
+        ],
+      },
+    };
+    const documentTarget = {
+      ...data.spans[0]!,
+      projectionId: "document_version:version-1",
+      target: {
+        kind: "document_version" as const,
+        documentVersionId: "version-1",
+        documentSpanId: null,
+        structuredHeadSha256: "a".repeat(64),
+        currentness: "current" as const,
+      },
+      span: null,
+      effectiveAttestations: [documentRecord],
+      effectiveAttestation: documentRecord,
+      reviewEligibility: "already_reviewed" as const,
+      history: [documentRecord],
+    };
+    const documentData: ProvenanceData = {
+      ...data,
+      documentDefault: documentTarget,
+      spans: [],
+      history: [documentRecord],
+    };
+    const source = provider();
+    vi.mocked(source.load).mockResolvedValue({
+      state: "ready",
+      data: documentData,
+    });
+    vi.mocked(source.refresh).mockResolvedValue({
+      state: "ready",
+      data: documentData,
+    });
+    render(
+      <ProvenancePanel
+        provider={source}
+        active
+        editor={editor}
+        mutationBarrier={{
+          runWithSynchronizedDocument: (operation) =>
+            operation({ structuredHeadSha256: "a".repeat(64) }),
+        }}
+        selectionAction={{
+          requestId: 1,
+          intent: "review",
+          reviewer: REVIEWER,
+          anchor: { exact: "Whole document", prefix: "", suffix: "" },
+          from: 0,
+          to: 100,
+          targetIds: ["document_version:version-1"],
+          coversWholeDocument: true,
+        }}
+      />,
+    );
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Mark as reviewed" }),
+    );
+    await waitFor(() =>
+      expect(source.markReviewed).toHaveBeenCalledWith(
+        ["attestation-1"],
+        "a".repeat(64),
+        REVIEWER,
+      ),
+    );
+  });
+
+  it("disables a routed action when this user's review appears before confirmation", async () => {
+    const reviewedByCurrentUser = {
+      ...attestation,
+      humanReview: {
+        status: "reviewed" as const,
+        reviewers: [
+          {
+            kind: "human" as const,
+            ref: REVIEWER.ref,
+            label: null,
+            identityStatus: REVIEWER.identityStatus,
+          },
+        ],
+      },
+    };
+    const reviewedTarget = {
+      ...data.spans[0]!,
+      effectiveAttestations: [reviewedByCurrentUser],
+      effectiveAttestation: reviewedByCurrentUser,
+      reviewEligibility: "already_reviewed" as const,
+      history: [reviewedByCurrentUser],
+    };
+    render(
+      <ProvenancePanel
+        provider={{
+          ...provider(),
+          load: vi.fn().mockResolvedValue({
+            state: "ready",
+            data: { ...data, spans: [reviewedTarget] },
+          }),
+        }}
+        active
+        editor={editor}
+        mutationBarrier={{ runWithSynchronizedDocument: vi.fn() }}
+        selectionAction={{
+          requestId: 1,
+          intent: "review",
+          reviewer: REVIEWER,
+          anchor: { exact: "AI passage", prefix: "", suffix: "" },
+          from: 20,
+          to: 30,
+          targetIds: ["document_span:span-1"],
+        }}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("button", { name: "Mark as reviewed" }),
+    ).toBeDisabled();
+    expect(screen.getByText(/selected provenance changed/u)).toBeVisible();
+  });
+
+  it("keeps a completed selection action dismissed after its successor refreshes", async () => {
+    let currentData = data;
+    let publish = (): void => undefined;
+    const base = provider();
+    const source: ProvenanceProvider = {
+      ...base,
+      load: vi.fn().mockImplementation(async () => ({
+        state: "ready" as const,
+        data: currentData,
+      })),
+      refresh: vi.fn().mockResolvedValue({ state: "ready", data }),
+      subscribe: (listener) => {
+        publish = listener;
+        return () => undefined;
+      },
+    };
+    const selectionAction: ProvenanceSelectionAction = {
+      requestId: 1,
+      intent: "review",
+      reviewer: REVIEWER,
+      anchor: { exact: "AI passage", prefix: "", suffix: "" },
+      from: 20,
+      to: 30,
+      targetIds: ["document_span:span-1"],
+    };
+    render(
+      <ProvenancePanel
+        provider={source}
+        active
+        editor={editor}
+        mutationBarrier={{
+          runWithSynchronizedDocument: (operation) =>
+            operation({ structuredHeadSha256: "a".repeat(64) }),
+        }}
+        selectionAction={selectionAction}
+      />,
+    );
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Mark as reviewed" }),
+    );
+    await waitFor(() => expect(source.markReviewed).toHaveBeenCalledOnce());
+    expect(
+      screen.queryByRole("button", { name: "Mark as reviewed" }),
+    ).toBeNull();
+
+    const successor = {
+      ...attestation,
+      attestationId: "attestation-reviewed",
+      humanReview: {
+        status: "reviewed" as const,
+        reviewers: [
+          {
+            kind: "human" as const,
+            ref: "user-1",
+            label: null,
+            identityStatus: "local_actor_ref" as const,
+          },
+        ],
+      },
+      supersedesId: attestation.attestationId,
+    };
+    currentData = {
+      ...data,
+      spans: [
+        {
+          ...data.spans[0]!,
+          effectiveAttestations: [successor],
+          effectiveAttestation: successor,
+          reviewEligibility: "already_reviewed",
+          history: [attestation, successor],
+        },
+      ],
+      history: [attestation, successor],
+    };
+    await act(async () => {
+      publish();
+      await Promise.resolve();
+    });
+    await screen.findByText("AI · reviewed");
+    expect(
+      screen.queryByRole("button", { name: "Mark as reviewed" }),
+    ).toBeNull();
+  });
+
+  it("disables a routed selection action after its target becomes conflicted", async () => {
+    const peer = { ...attestation, attestationId: "attestation-peer" };
+    const conflicted = {
+      ...data.spans[0]!,
+      effectiveAttestations: [attestation, peer],
+      effectiveAttestation: null,
+      resolution: "conflicted" as const,
+      reviewEligibility: "conflicted" as const,
+      issue: { code: "peer_conflict", message: "Conflicting records." },
+      history: [attestation, peer],
+    };
+    render(
+      <ProvenancePanel
+        provider={{
+          ...provider(),
+          load: vi.fn().mockResolvedValue({
+            state: "ready",
+            data: { ...data, spans: [conflicted] },
+          }),
+        }}
+        active
+        editor={editor}
+        mutationBarrier={{ runWithSynchronizedDocument: vi.fn() }}
+        selectionAction={{
+          requestId: 1,
+          intent: "review",
+          reviewer: REVIEWER,
+          anchor: { exact: "AI passage", prefix: "", suffix: "" },
+          from: 20,
+          to: 30,
+          targetIds: ["document_span:span-1"],
+        }}
+      />,
+    );
+
+    const action = await screen.findByRole("button", {
+      name: "Mark as reviewed",
+    });
+    expect(action).toBeDisabled();
+    expect(screen.getByText(/selected provenance changed/u)).toBeVisible();
+    expect(screen.getByLabelText("Review selected provenance")).toHaveFocus();
+  });
+
+  it("moves routed focus to feedback when a live refresh disables review", async () => {
+    const peer = { ...attestation, attestationId: "attestation-peer" };
+    const conflicted = {
+      ...data.spans[0]!,
+      effectiveAttestations: [attestation, peer],
+      effectiveAttestation: null,
+      resolution: "conflicted" as const,
+      reviewEligibility: "conflicted" as const,
+      issue: { code: "peer_conflict", message: "Conflicting records." },
+      history: [attestation, peer],
+    };
+    let currentData = data;
+    let publish = (): void => undefined;
+    const source: ProvenanceProvider = {
+      ...provider(),
+      load: vi.fn().mockImplementation(async () => ({
+        state: "ready" as const,
+        data: currentData,
+      })),
+      subscribe: (listener) => {
+        publish = listener;
+        return () => undefined;
+      },
+    };
+    render(
+      <ProvenancePanel
+        provider={source}
+        active
+        editor={editor}
+        mutationBarrier={{ runWithSynchronizedDocument: vi.fn() }}
+        selectionAction={{
+          requestId: 1,
+          intent: "review",
+          reviewer: REVIEWER,
+          anchor: { exact: "AI passage", prefix: "", suffix: "" },
+          from: 20,
+          to: 30,
+          targetIds: ["document_span:span-1"],
+        }}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("button", { name: "Mark as reviewed" }),
+    ).toHaveFocus();
+    currentData = { ...data, spans: [conflicted] };
+    act(() => publish());
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Mark as reviewed" }),
+      ).toBeDisabled(),
+    );
+    expect(screen.getByLabelText("Review selected provenance")).toHaveFocus();
+  });
+
+  it("keeps routed review feedback visible when the selected target disappeared", async () => {
+    render(
+      <ProvenancePanel
+        provider={{
+          ...provider(),
+          load: vi.fn().mockResolvedValue({
+            state: "ready",
+            data: { ...data, spans: [], history: [] },
+          }),
+        }}
+        active
+        editor={editor}
+        mutationBarrier={{ runWithSynchronizedDocument: vi.fn() }}
+        selectionAction={{
+          requestId: 1,
+          intent: "review",
+          reviewer: REVIEWER,
+          anchor: { exact: "AI passage", prefix: "", suffix: "" },
+          from: 20,
+          to: 30,
+          targetIds: ["document_span:span-1"],
+        }}
+      />,
+    );
+
+    const feedback = await screen.findByLabelText(
+      "Review selected provenance",
+    );
+    expect(
+      screen.getByRole("button", { name: "Mark as reviewed" }),
+    ).toBeDisabled();
+    expect(screen.getByText(/selected provenance changed/u)).toBeVisible();
+    await waitFor(() => expect(feedback).toHaveFocus());
   });
 
   it("blocks the write when a fresh pull introduces an incompatible overlap", async () => {
@@ -265,7 +796,7 @@ describe("ProvenancePanel", () => {
     ).toBeNull();
   });
 
-  it("shows recent typing as recording instead of definitively unrecorded", async () => {
+  it("shows recent typing as pending without blocking other provenance actions", async () => {
     render(
       <ProvenancePanel
         provider={provider()}
@@ -276,7 +807,7 @@ describe("ProvenancePanel", () => {
     );
 
     expect(
-      await screen.findByText(/Recording provenance for recent typing…/u),
+      await screen.findByText(/other provenance actions remain available/u),
     ).toBeVisible();
     expect(screen.getByText("Updating…")).toBeVisible();
     expect(
@@ -372,9 +903,10 @@ describe("ProvenancePanel", () => {
     const selectionAction: ProvenanceSelectionAction = {
       requestId: 1,
       intent: "review",
+      reviewer: REVIEWER,
       anchor: { exact: "AI passage", prefix: "", suffix: "" },
-      from: 5,
-      to: 15,
+      from: 20,
+      to: 30,
       targetIds: ["document_span:span-1"],
     };
     render(
@@ -389,7 +921,9 @@ describe("ProvenancePanel", () => {
 
     expect(await screen.findByText("Actions")).toBeVisible();
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: /AI passage/u })).toHaveFocus(),
+      expect(
+        screen.getByRole("button", { name: "Mark as reviewed" }),
+      ).toHaveFocus(),
     );
     expect(screen.getByRole("button", { name: "Mark reviewed" })).toBeEnabled();
   });
