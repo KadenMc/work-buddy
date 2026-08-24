@@ -9,6 +9,7 @@ from flask import Flask
 
 from work_buddy.cowork import api as cowork_api
 from work_buddy.cowork import bootstrap, bootstrap_api, materialization_api
+from work_buddy.truth.contracts import Actor
 from work_buddy.truth.identity import sha256_bytes
 
 
@@ -51,10 +52,46 @@ def test_bootstrap_binary_http_round_trip(store_ctx, monkeypatch):
     )
     assert prepared.status_code == 201
     intent = prepared.get_json()
-    staged = client.get(intent["source_url"].replace("store_id=test", "store_id=test"))
+    source_url = intent["source_url"].replace("store_id=test", "store_id=test")
+    authority_calls: list[dict] = []
+
+    def capture_authority(**kwargs):
+        authority_calls.append(kwargs)
+        return Actor("human", "reviewer-kaden")
+
+    monkeypatch.setattr(bootstrap_api, "_human_actor", capture_authority)
+
+    assert client.get(source_url).status_code == 405
+
+    missing_body = client.post(source_url)
+    assert missing_body.status_code == 400
+    assert missing_body.get_json()["error"]["code"] == "invalid_request"
+
+    mismatched_body = client.post(
+        source_url,
+        json={"bootstrap_id": "another-bootstrap"},
+    )
+    assert mismatched_body.status_code == 400
+    assert (
+        mismatched_body.get_json()["error"]["code"]
+        == "bootstrap_id_mismatch"
+    )
+    assert authority_calls == []
+
+    source_body = {"bootstrap_id": intent["bootstrap_id"]}
+    staged = client.post(source_url, json=source_body)
     assert staged.status_code == 200
     assert staged.data == source
+    assert staged.headers["Cache-Control"] == "no-store"
     assert staged.headers["X-WB-BOM"] == "utf-8"
+    assert authority_calls == [
+        {
+            "operation": "bootstrap.source_read",
+            "store_id": store_ctx["store"].store_id,
+            "document_id": intent["bootstrap_id"],
+            "body": source_body,
+        }
+    ]
 
     snapshot = b"opaque-browser-ydoc"
     committed = client.put(

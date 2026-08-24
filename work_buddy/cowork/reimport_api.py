@@ -120,9 +120,19 @@ def api_prepare_reimport(document_id: str):
         return _error(reimport.ReimportError("invalid_request", str(exc)))
 
 
-@reimport_blueprint.get("/api/truth/doc/<document_id>/reimport/<intent_id>/source")
+@reimport_blueprint.post("/api/truth/doc/<document_id>/reimport/<intent_id>/source")
 def api_reimport_source(document_id: str, intent_id: str):
     try:
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            raise reimport.ReimportError(
+                "invalid_request", "Request body must be a JSON object."
+            )
+        if body.get("intent_id") != intent_id:
+            raise reimport.ReimportError(
+                "intent_id_mismatch",
+                "intent_id must match the route target.",
+            )
         store = _store()
         intent, data = reimport.read_reimport_source(
             store,
@@ -131,7 +141,7 @@ def api_reimport_source(document_id: str, intent_id: str):
                 operation="reimport.source_read",
                 store_id=store.store_id,
                 document_id=document_id,
-                body={"intent_id": intent_id},
+                body=body,
             ),
         )
         if intent.document_id != document_id:
@@ -142,6 +152,7 @@ def api_reimport_source(document_id: str, intent_id: str):
             )
         response = Response(data, mimetype="application/octet-stream")
         response.headers["ETag"] = f'"{intent.expected_file_sha256}"'
+        response.headers["Cache-Control"] = "no-store"
         response.headers["X-WB-Source-Sha256"] = intent.expected_file_sha256
         response.headers["X-WB-Source-Byte-Length"] = str(len(data))
         response.headers["X-WB-Source-Encoding"] = "utf-8"

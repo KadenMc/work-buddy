@@ -4,6 +4,10 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
 
+vi.mock("../../../security/humanAuthority", () => ({
+  coworkHumanAuthorityHeaders: vi.fn(async () => ({})),
+}));
+
 import type { CoworkDocumentSummary } from "../contracts";
 import { buildEditorExtensions } from "../editor/extensions";
 import { serializeCoworkEditorMarkdown } from "../editor/serializeCoworkMarkdown";

@@ -1000,24 +1000,60 @@ export class CoworkHttpClient {
   }
 
   async readBootstrapSource(sourceUrl: string): Promise<Uint8Array> {
-    const parsed = new URL(sourceUrl, "http://localhost");
+    let parsed: URL;
+    try {
+      parsed = new URL(sourceUrl, "http://localhost");
+    } catch {
+      throw new CoworkHttpError({
+        code: "invalid_bootstrap_source_url",
+        message: "Co-work returned an invalid staged-source address.",
+        retryable: false,
+      });
+    }
     const storeId = parsed.searchParams.get("store_id") ?? "";
-    const match = parsed.pathname.match(/\/bootstrap\/([^/]+)\/source$/u);
-    const bootstrapId =
-      match === null ? "" : decodeURIComponent(match[1] ?? "");
+    const match = parsed.pathname.match(
+      /^\/api\/truth\/doc\/bootstrap\/([^/]+)\/source$/u,
+    );
+    let bootstrapId = "";
+    try {
+      bootstrapId = match === null ? "" : decodeURIComponent(match[1] ?? "");
+    } catch {
+      // The contract check below maps malformed path encoding to a typed error.
+    }
+    const queryEntries = Array.from(parsed.searchParams.entries());
+    if (
+      !sourceUrl.startsWith("/") ||
+      sourceUrl.startsWith("//") ||
+      parsed.origin !== "http://localhost" ||
+      match === null ||
+      bootstrapId.length === 0 ||
+      storeId.length === 0 ||
+      queryEntries.length !== 1 ||
+      queryEntries[0]?.[0] !== "store_id" ||
+      parsed.hash.length !== 0
+    ) {
+      throw new CoworkHttpError({
+        code: "invalid_bootstrap_source_url",
+        message: "Co-work returned an invalid staged-source address.",
+        retryable: false,
+      });
+    }
+    const body = { bootstrap_id: bootstrapId };
     const authorityHeaders = await coworkHumanAuthorityHeaders(
       {
         operation: "bootstrap.source_read",
         storeId,
         documentId: bootstrapId,
-        body: { bootstrap_id: bootstrapId },
+        body,
       },
       this.#fetch,
     );
     const response = await this.#fetch(sourceUrl, {
-      method: "GET",
+      method: "POST",
       credentials: "same-origin",
-      headers: authorityHeaders,
+      cache: "no-store",
+      headers: { "Content-Type": "application/json", ...authorityHeaders },
+      body: JSON.stringify(body),
     });
     if (!response.ok) {
       let payload: unknown = {};
@@ -1265,21 +1301,24 @@ export class CoworkHttpClient {
     intentId: string,
   ): Promise<Uint8Array> {
     const url = `/api/truth/doc/${encodeURIComponent(documentId)}/reimport/${encodeURIComponent(intentId)}/source?store_id=${encodeURIComponent(storeId)}`;
+    const body = { intent_id: intentId };
     const authorityHeaders = await coworkHumanAuthorityHeaders(
       {
         operation: "reimport.source_read",
         storeId,
         documentId,
-        body: { intent_id: intentId },
+        body,
       },
       this.#fetch,
     );
     let response: Response;
     try {
       response = await this.#fetch(url, {
-        method: "GET",
+        method: "POST",
         credentials: "same-origin",
-        headers: authorityHeaders,
+        cache: "no-store",
+        headers: { "Content-Type": "application/json", ...authorityHeaders },
+        body: JSON.stringify(body),
       });
     } catch (error) {
       throw new CoworkHttpError(normalizeCoworkError(error));

@@ -157,6 +157,31 @@ const mintBrowserIdentityBootstrap = async (page: Page): Promise<string> => {
   return result.payload.token!;
 };
 
+const gotoAuthenticatedCowork = async (
+  page: Page,
+  search = "?mode=launcher",
+): Promise<void> => {
+  const bootstrap = await mintBrowserIdentityBootstrap(page);
+  await page.goto(
+    `${backendBaseURL}/app/cowork${search}` +
+      `#wb-bootstrap=${encodeURIComponent(bootstrap)}`,
+    { waitUntil: "domcontentloaded" },
+  );
+  await expect(page.getByRole("heading", { level: 1, name: "Co-work" })).toBeVisible({
+    timeout: 60_000,
+  });
+  expect(new URL(page.url()).hash).not.toContain("wb-bootstrap");
+  await expect
+    .poll(
+      async () =>
+        page.evaluate(async () =>
+          (await fetch("/api/truth/cowork/current-actor")).status,
+        ),
+      { timeout: 30_000 },
+    )
+    .toBe(200);
+};
+
 const chooseFolder = async (
   page: Page,
   folder: { readonly name: string; readonly path: string },
@@ -1141,29 +1166,10 @@ test.describe.serial("Co-work live lifecycle", () => {
     const sourceBytes = Buffer.from(`${existingParagraph}\n`, "utf-8");
     await writeFile(sourcePath, sourceBytes);
 
-    const bootstrap = await mintBrowserIdentityBootstrap(page);
-    // Same-origin GET does not normally carry Origin, but bootstrap source reads
-    // are human-authority actions. Mirror a trusted browser launch's exact
-    // loopback boundary across every request in this isolated page.
-    await page.setExtraHTTPHeaders({ Origin: new URL(backendBaseURL).origin });
-    await page.goto(
-      `${backendBaseURL}/app/cowork?store_id=${fixture.initialized.store_id}` +
-        `#wb-bootstrap=${encodeURIComponent(bootstrap)}`,
-      { waitUntil: "domcontentloaded" },
+    await gotoAuthenticatedCowork(
+      page,
+      `?store_id=${fixture.initialized.store_id}`,
     );
-    await expect(page.getByRole("heading", { level: 1, name: "Co-work" })).toBeVisible({
-      timeout: 60_000,
-    });
-    expect(new URL(page.url()).hash).not.toContain("wb-bootstrap");
-    await expect
-      .poll(
-        async () =>
-          page.evaluate(async () =>
-            (await fetch("/api/truth/cowork/current-actor")).status,
-          ),
-        { timeout: 30_000 },
-      )
-      .toBe(200);
 
     await page.route(
       "**/api/truth/cowork/files/choose-import",
@@ -1197,8 +1203,29 @@ test.describe.serial("Co-work live lifecycle", () => {
       },
       { times: 1 },
     );
+    // Observe rather than route this request: the browser must supply its natural
+    // exact Origin, which same-origin GET would omit.
+    const bootstrapSourceRead = page.waitForRequest(
+      (candidate) =>
+        /^\/api\/truth\/doc\/bootstrap\/[^/]+\/source$/.test(
+          new URL(candidate.url()).pathname,
+        ),
+      { timeout: 30_000 },
+    );
     await page.getByRole("button", { name: "From file", exact: true }).click();
     await page.getByRole("button", { name: "Import", exact: true }).click();
+    const bootstrapSourceRequest = await bootstrapSourceRead;
+    const bootstrapSourceMatch = new URL(bootstrapSourceRequest.url()).pathname.match(
+      /^\/api\/truth\/doc\/bootstrap\/([^/]+)\/source$/,
+    );
+    expect(bootstrapSourceRequest.method()).toBe("POST");
+    expect((await bootstrapSourceRequest.allHeaders())["origin"]).toBe(
+      new URL(backendBaseURL).origin,
+    );
+    expect(bootstrapSourceMatch).not.toBeNull();
+    expect(bootstrapSourceRequest.postDataJSON()).toEqual({
+      bootstrap_id: decodeURIComponent(bootstrapSourceMatch![1]),
+    });
     const editor = await waitForEditor(page);
     await expect(editor).toHaveAttribute("aria-readonly", "false");
     await expect(editor.locator("p")).toHaveCount(1);
@@ -1714,7 +1741,7 @@ test.describe.serial("Co-work live lifecycle", () => {
     page,
     request,
   }) => {
-    await gotoCowork(
+    await gotoAuthenticatedCowork(
       page,
       `?store_id=${ordinaryStoreId}&document_id=${importedDocumentId}`,
     );
@@ -1752,7 +1779,30 @@ test.describe.serial("Co-work live lifecycle", () => {
         new URL(response.url()).pathname.includes(`/reimport/`),
       { timeout: 30_000 },
     );
+    const reimportSourceRead = page.waitForRequest(
+      (candidate) => {
+        const pathname = new URL(candidate.url()).pathname;
+        return (
+          pathname.startsWith(
+            `/api/truth/doc/${encodeURIComponent(importedDocumentId)}/reimport/`,
+          ) && pathname.endsWith("/source")
+        );
+      },
+      { timeout: 30_000 },
+    );
     await page.getByRole("button", { name: "Replace Co-work document" }).click();
+    const reimportSourceRequest = await reimportSourceRead;
+    const reimportSourceMatch = new URL(reimportSourceRequest.url()).pathname.match(
+      /\/reimport\/([^/]+)\/source$/,
+    );
+    expect(reimportSourceRequest.method()).toBe("POST");
+    expect((await reimportSourceRequest.allHeaders())["origin"]).toBe(
+      new URL(backendBaseURL).origin,
+    );
+    expect(reimportSourceMatch).not.toBeNull();
+    expect(reimportSourceRequest.postDataJSON()).toEqual({
+      intent_id: decodeURIComponent(reimportSourceMatch![1]),
+    });
     const commitResponse = await committed;
     const commitBody = await commitResponse.text();
     expect(commitResponse.ok(), commitBody).toBe(true);

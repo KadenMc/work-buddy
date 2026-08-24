@@ -320,12 +320,18 @@ def require_human_authority_request(
     context_sha256: str,
     authority: LocalIdentityAuthority | None = None,
 ) -> HumanAuthorityContext:
-    """Hard gate for a human-authority domain mutation.
+    """Hard gate for a protected human-authority domain action.
 
     The actor is always read from server enrollment/session state.  Request
     headers such as ``X-WB-User-Ref`` and actor-shaped JSON fields are ignored.
     """
 
+    if request.method in {"GET", "HEAD", "OPTIONS", "TRACE"}:
+        raise LocalIdentityError(
+            "human_authority_method_not_allowed",
+            "Protected human-authority actions must use a non-safe HTTP method.",
+            status=405,
+        )
     service = authority or _authority()
     return service.authorize_human_mutation(
         cookie_token=_cookie_token(),

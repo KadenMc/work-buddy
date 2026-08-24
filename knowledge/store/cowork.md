@@ -91,6 +91,14 @@ requires its exact Co-work intent header, rejects cross-site browser provenance
 or a mismatched Origin, and the dashboard denies framing so another site cannot
 place the controls in a clickjacking frame.
 
+Bootstrap and re-import stage source bytes behind human authority. Their source
+retrieval routes are therefore non-safe POSTs, not GETs or HEADs: the JSON body
+repeats the staged intent ID, must exactly match the route target, and is bound
+into the one-use gesture context. Successful staged-byte responses are
+`no-store`. This method choice is a security invariant because Chromium does
+not normally send `Origin` on same-origin GET or HEAD requests, while the
+authority verifier must require the exact loopback Origin.
+
 ## Working with folders and documents
 
 With no folder open, the toolbar's **folder** control opens the native picker

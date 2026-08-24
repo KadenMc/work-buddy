@@ -696,6 +696,69 @@ def test_dashboard_human_authority_helper_fails_closed_remotely(
     assert response.json == {"ok": False, "code": "loopback_required"}
 
 
+@pytest.mark.parametrize("method", ["GET", "HEAD", "OPTIONS", "TRACE"])
+def test_dashboard_human_authority_helper_rejects_safe_method_before_consuming_gesture(
+    authority: tuple[LocalIdentityAuthority, Clock],
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+) -> None:
+    service, _ = authority
+    monkeypatch.setattr(local_identity_api, "_authority", lambda: service)
+    app = Flask("local-identity-safe-method-test")
+    context_digest = hashlib.sha256(b"protected read context").hexdigest()
+    session = _session(service)
+    _, gesture = service.issue_gesture(
+        cookie_token=session.cookie_token,
+        csrf_token=session.csrf_token,
+        boundary=_boundary(),
+        action="cowork.bootstrap.source_read",
+        subject="cowork-document:store-1:bootstrap-1",
+        context_sha256=context_digest,
+    )
+
+    @app.route(
+        "/protected",
+        methods=["GET", "HEAD", "OPTIONS", "POST", "TRACE"],
+        provide_automatic_options=False,
+    )
+    def protected():
+        try:
+            local_identity_api.require_human_authority_request(
+                action="cowork.bootstrap.source_read",
+                subject="cowork-document:store-1:bootstrap-1",
+                context_sha256=context_digest,
+            )
+        except LocalIdentityError as exc:
+            return {"ok": False, "code": exc.code}, exc.status
+        return {"ok": True}, 200
+
+    client = app.test_client()
+    client.set_cookie(
+        SESSION_COOKIE_NAME,
+        session.cookie_token,
+        domain="127.0.0.1",
+    )
+    headers = {
+        "Origin": "http://127.0.0.1:5127",
+        "Host": "127.0.0.1:5127",
+        "X-WB-CSRF": session.csrf_token,
+        "X-WB-Gesture": gesture.token,
+    }
+
+    rejected = client.open("/protected", method=method, headers=headers)
+    assert rejected.status_code == 405
+    if method != "HEAD":
+        assert rejected.json == {
+            "ok": False,
+            "code": "human_authority_method_not_allowed",
+        }
+
+    # The central method gate runs before the one-use gesture is consumed.
+    accepted = client.post("/protected", headers=headers)
+    assert accepted.status_code == 200
+    assert accepted.json == {"ok": True}
+
+
 def test_cowork_mutation_context_matches_browser_exact_whitespace_digest() -> None:
     from work_buddy.cowork import api as cowork_api
 
@@ -835,6 +898,275 @@ def test_cowork_action_rejects_absent_mismatched_replayed_and_remote_gestures(
     )
     assert remote.status_code == 403
     assert remote.json["code"] == "loopback_required"
+
+
+def test_bootstrap_source_post_requires_origin_and_accepts_exact_human_authority(
+    authority: tuple[LocalIdentityAuthority, Clock],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from work_buddy.cowork import api as cowork_api
+    from work_buddy.cowork import bootstrap, bootstrap_api
+    from work_buddy.truth.contracts import Actor
+    from work_buddy.truth.identity import sha256_bytes
+    from work_buddy.truth.registry import TruthStoreRegistry
+    from work_buddy.truth.store import TruthStore
+
+    service, _ = authority
+    monkeypatch.setattr(local_identity_api, "_authority", lambda: service)
+
+    root = tmp_path / "cowork-source-read-authority"
+    root.mkdir()
+    store = TruthStore.create(
+        root,
+        {
+            "store_id": "2" * 32,
+            "profile": "cowork-source-read-authority-test",
+            "title": "Throwaway Co-work source-read authority test store",
+            "allowed_claim_kinds": ["fact", "preference"],
+            "required_fields": {},
+            "gate": {
+                "rejected_content": "retain",
+                "confirmation_surfaces": ["dashboard"],
+                "block_materialize_on_flags": False,
+            },
+            "projection": "none",
+            "export_committed": True,
+            "document_surface": {
+                "enabled": True,
+                "allowed_document_classes": ["co_authored"],
+                "feedback_capture": True,
+            },
+        },
+    )
+    registry = TruthStoreRegistry(tmp_path / "truth-registry-source-read.db")
+    registry.register(store)
+    monkeypatch.setattr(cowork_api, "_registry", lambda: registry)
+
+    source = b"# Throwaway protected source\n\nExact staged bytes.\n"
+    actor = Actor("human", service.enrolled_actor().canonical_id)
+    intent, created = bootstrap.prepare_bootstrap(
+        store,
+        metadata={
+            "mode": "create",
+            "path": "docs/throwaway-protected-source.md",
+            "title": "Throwaway protected source",
+            "initial_source_sha256": sha256_bytes(source),
+            "idempotency_key": "source-read-authority-0001",
+        },
+        source=source,
+        actor=actor,
+    )
+    assert created is True
+
+    app = Flask("cowork-bootstrap-source-authority-test")
+    app.config.update(TESTING=True)
+    bootstrap_api.register_bootstrap_routes(app)
+    client = app.test_client()
+    session = _session(service)
+    client.set_cookie(
+        SESSION_COOKIE_NAME,
+        session.cookie_token,
+        domain="127.0.0.1",
+    )
+
+    body = {"bootstrap_id": intent.id}
+    action = "cowork.bootstrap.source_read"
+    subject = f"cowork-document:{store.store_id}:{intent.id}"
+    context_sha256 = cowork_api.cowork_mutation_context_sha256(
+        operation="bootstrap.source_read",
+        store_id=store.store_id,
+        document_id=intent.id,
+        body=body,
+    )
+
+    def gesture_token() -> str:
+        _, gesture = service.issue_gesture(
+            cookie_token=session.cookie_token,
+            csrf_token=session.csrf_token,
+            boundary=_boundary(),
+            action=action,
+            subject=subject,
+            context_sha256=context_sha256,
+        )
+        return gesture.token
+
+    url = (
+        f"/api/truth/doc/bootstrap/{intent.id}/source"
+        f"?store_id={store.store_id}"
+    )
+    base_headers = {
+        "Host": "127.0.0.1:5127",
+        "X-WB-CSRF": session.csrf_token,
+    }
+    missing_origin = client.post(
+        url,
+        json=body,
+        headers={**base_headers, "X-WB-Gesture": gesture_token()},
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+    assert missing_origin.status_code == 403
+    assert missing_origin.get_json()["error"]["code"] == "origin_required"
+
+    accepted = client.post(
+        url,
+        json=body,
+        headers={
+            **base_headers,
+            "Origin": "http://127.0.0.1:5127",
+            "X-WB-Gesture": gesture_token(),
+        },
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+    assert accepted.status_code == 200
+    assert accepted.data == source
+    assert accepted.headers["Cache-Control"] == "no-store"
+
+
+def test_reimport_source_post_requires_origin_and_accepts_exact_human_authority(
+    authority: tuple[LocalIdentityAuthority, Clock],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from work_buddy.cowork import api as cowork_api
+    from work_buddy.cowork import bootstrap, reimport, reimport_api
+    from work_buddy.truth.contracts import Actor
+    from work_buddy.truth.identity import sha256_bytes
+    from work_buddy.truth.registry import TruthStoreRegistry
+    from work_buddy.truth.store import TruthStore
+
+    service, _ = authority
+    monkeypatch.setattr(local_identity_api, "_authority", lambda: service)
+
+    root = tmp_path / "cowork-reimport-source-read-authority"
+    root.mkdir()
+    store = TruthStore.create(
+        root,
+        {
+            "store_id": "3" * 32,
+            "profile": "cowork-reimport-source-read-authority-test",
+            "title": "Throwaway Co-work re-import authority test store",
+            "allowed_claim_kinds": ["fact", "preference"],
+            "required_fields": {},
+            "gate": {
+                "rejected_content": "retain",
+                "confirmation_surfaces": ["dashboard"],
+                "block_materialize_on_flags": False,
+            },
+            "projection": "none",
+            "export_committed": True,
+            "document_surface": {
+                "enabled": True,
+                "allowed_document_classes": ["co_authored"],
+                "feedback_capture": True,
+            },
+        },
+    )
+    registry = TruthStoreRegistry(tmp_path / "truth-registry-reimport-source-read.db")
+    registry.register(store)
+    monkeypatch.setattr(cowork_api, "_registry", lambda: registry)
+
+    actor = Actor("human", service.enrolled_actor().canonical_id)
+    initial_source = b"# Original source\n\nBefore external drift.\n"
+    bootstrap_intent, created = bootstrap.prepare_bootstrap(
+        store,
+        metadata={
+            "mode": "create",
+            "path": "docs/throwaway-protected-reimport.md",
+            "title": "Throwaway protected re-import",
+            "initial_source_sha256": sha256_bytes(initial_source),
+            "idempotency_key": "reimport-source-authority-bootstrap-0001",
+        },
+        source=initial_source,
+        actor=actor,
+    )
+    assert created is True
+    snapshot = b"YDOC-INITIALIZED:" + sha256_bytes(initial_source).encode("ascii")
+    ready = bootstrap.commit_bootstrap(
+        store,
+        bootstrap_id=bootstrap_intent.id,
+        snapshot=snapshot,
+        source_sha256=bootstrap_intent.source_sha256,
+        snapshot_sha256=sha256_bytes(snapshot),
+        ydoc_schema=bootstrap.YDOC_SCHEMA,
+        actor=actor,
+    )
+    document_id = ready["document_id"]
+
+    external_source = b"# External replacement\n\nExact staged replacement bytes.\n"
+    (root / "docs" / "throwaway-protected-reimport.md").write_bytes(
+        external_source
+    )
+    intent, prepared = reimport.prepare_reimport(
+        store,
+        document_id=document_id,
+        actor=actor,
+        idempotency_key="reimport-source-authority-0001",
+    )
+    assert prepared is True
+
+    app = Flask("cowork-reimport-source-authority-test")
+    app.config.update(TESTING=True)
+    reimport_api.register_reimport_routes(app)
+    client = app.test_client()
+    session = _session(service)
+    client.set_cookie(
+        SESSION_COOKIE_NAME,
+        session.cookie_token,
+        domain="127.0.0.1",
+    )
+
+    body = {"intent_id": intent.id}
+    action = "cowork.reimport.source_read"
+    subject = f"cowork-document:{store.store_id}:{document_id}"
+    context_sha256 = cowork_api.cowork_mutation_context_sha256(
+        operation="reimport.source_read",
+        store_id=store.store_id,
+        document_id=document_id,
+        body=body,
+    )
+
+    def gesture_token() -> str:
+        _, gesture = service.issue_gesture(
+            cookie_token=session.cookie_token,
+            csrf_token=session.csrf_token,
+            boundary=_boundary(),
+            action=action,
+            subject=subject,
+            context_sha256=context_sha256,
+        )
+        return gesture.token
+
+    url = (
+        f"/api/truth/doc/{document_id}/reimport/{intent.id}/source"
+        f"?store_id={store.store_id}"
+    )
+    base_headers = {
+        "Host": "127.0.0.1:5127",
+        "X-WB-CSRF": session.csrf_token,
+    }
+    missing_origin = client.post(
+        url,
+        json=body,
+        headers={**base_headers, "X-WB-Gesture": gesture_token()},
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+    assert missing_origin.status_code == 403
+    assert missing_origin.get_json()["error"]["code"] == "origin_required"
+
+    accepted = client.post(
+        url,
+        json=body,
+        headers={
+            **base_headers,
+            "Origin": "http://127.0.0.1:5127",
+            "X-WB-Gesture": gesture_token(),
+        },
+        environ_base={"REMOTE_ADDR": "127.0.0.1"},
+    )
+    assert accepted.status_code == 200
+    assert accepted.data == external_source
+    assert accepted.headers["Cache-Control"] == "no-store"
 
 
 def test_direct_entry_route_accepts_multiline_anchor_and_consumes_gesture(
