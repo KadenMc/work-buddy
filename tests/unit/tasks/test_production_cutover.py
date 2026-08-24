@@ -36,6 +36,7 @@ from work_buddy.tasks.migration import (
     LegacyManifestEntry,
     canonical_sha256,
 )
+import work_buddy.tasks.production_cutover as production_cutover_module
 from work_buddy.tasks.production_cutover import (
     CANCEL_RETRIES_CONFIRMATION,
     RESTORE_RECEIPT_SCHEMA,
@@ -1133,10 +1134,70 @@ def test_local_link_collision_aborts_activation_and_root_is_disabled(tmp_path):
         importer.close()
 
 
+def test_acl_probe_requires_explicit_descendant_and_frozen_parent_denies(
+    tmp_path, monkeypatch
+):
+    frozen_parent = tmp_path / "_frozen"
+    root = frozen_parent / "work-buddy-task-tree-test"
+    root.mkdir(parents=True)
+    parent_mask = 64 | 262144 | 524288
+    owner_mask = 262144 | 524288
+    payload = {
+        "filesystem_type": "NTFS",
+        "current_sid": "S-1-5-21-test",
+        "owner_sid": "S-1-5-21-test",
+        "root_acl_protected": True,
+        "root_sddl": "O:SYD:P(D;;FA;;;S-1-5-21-test)",
+        "entry_count": 2,
+        "issues": [],
+        "acl_records": [".\u0000root-sddl", "tasks\u0000tasks-sddl"],
+        "frozen_parent": str(frozen_parent.resolve()),
+        "frozen_parent_owner_sid": "S-1-5-21-test",
+        "frozen_parent_acl_protected": True,
+        "frozen_parent_acl_canonical": True,
+        "frozen_parent_sddl": "O:SYD:P(D;;DCWDWO;;;S-1-5-21-test)",
+        "frozen_parent_current_user_denied_mask": parent_mask,
+        "frozen_parent_owner_rights_denied_mask": owner_mask,
+        "parent_issues": [],
+    }
+    observed = {}
+
+    def fake_run(command, **_kwargs):
+        script = command[-1]
+        observed["script"] = script
+        return type("Completed", (), {"stdout": json.dumps(payload)})()
+
+    monkeypatch.setattr(production_cutover_module.sys, "platform", "win32")
+    monkeypatch.setattr(production_cutover_module.subprocess, "run", fake_run)
+
+    evidence = ProductionTaskCutover._probe_windows_acl(root)
+    script = observed["script"]
+    assert "$inheritOnly -or $rule.IsInherited" in script
+    assert "$rule.IdentityReference.Value -eq $currentSid" in script
+    assert "$rule.IdentityReference.Value -eq $ownerRightsSid" in script
+    assert "WB_CUTOVER_PARENT_ACL_MASK" in script
+    assert "frozen_parent_sddl" in script
+    assert evidence["frozen_parent"] == str(frozen_parent.resolve())
+    assert evidence["frozen_parent_sddl"] == payload["frozen_parent_sddl"]
+    assert len(evidence["frozen_parent_sddl_sha256"]) == 64
+    assert len(evidence["acl_scope_sha256"]) == 64
+
+    payload["parent_issues"] = [
+        {
+            "path": str(frozen_parent.resolve()),
+            "missing_rights": 64,
+            "owner_rights_missing": 0,
+            "acl_canonical": True,
+        }
+    ]
+    with pytest.raises(CutoverPreconditionError, match="deny fence is incomplete"):
+        ProductionTaskCutover._probe_windows_acl(root)
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="WinPS smoke test is Windows-only")
 def test_windows_acl_probe_script_is_compatible_with_windows_powershell_51(tmp_path):
-    root = tmp_path / "acl-smoke"
-    root.mkdir()
+    root = tmp_path / "_frozen" / "work-buddy-task-tree-smoke"
+    root.mkdir(parents=True)
     (root / "child.txt").write_text("smoke", encoding="utf-8")
     with pytest.raises(CutoverPreconditionError) as raised:
         ProductionTaskCutover._probe_windows_acl(root)

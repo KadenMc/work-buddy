@@ -2279,53 +2279,59 @@ class ProductionTaskCutover:
         # ownership takeover. SYSTEM/Administrators can retain recovery access;
         # the interactive token must be explicitly denied every one of these.
         blocked_rights = 2 | 4 | 16 | 64 | 256 | 65536 | 262144 | 524288
+        parent_blocked_rights = 64 | 262144 | 524288
+        owner_blocked_rights = 262144 | 524288
         script = r"""
 $ErrorActionPreference = 'Stop'
 $rootPath = [Environment]::GetEnvironmentVariable('WB_CUTOVER_ACL_ROOT')
 $blocked = [int64][Environment]::GetEnvironmentVariable('WB_CUTOVER_ACL_MASK')
+$parentBlocked = [int64][Environment]::GetEnvironmentVariable('WB_CUTOVER_PARENT_ACL_MASK')
+$ownerBlocked = [int64][Environment]::GetEnvironmentVariable('WB_CUTOVER_OWNER_ACL_MASK')
 $root = Get-Item -LiteralPath $rootPath -Force
 $rootFull = [IO.Path]::GetFullPath($root.FullName).TrimEnd('\')
 $rootPrefix = $rootFull + '\'
+$frozenParent = Get-Item -LiteralPath $root.Parent.FullName -Force
+$frozenParentFull = [IO.Path]::GetFullPath($frozenParent.FullName).TrimEnd('\')
+if ($frozenParent.Name -ine '_frozen' -or
+    ([int]$frozenParent.Attributes -band [int][IO.FileAttributes]::ReparsePoint) -ne 0) {
+  throw 'The dedicated wrapper parent must be a real _frozen directory.'
+}
 $volume = New-Object System.IO.DriveInfo -ArgumentList $root.PSDrive.Root
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-$principal = New-Object Security.Principal.WindowsPrincipal -ArgumentList $identity
-# Deny-only UAC groups still participate in deny ACEs, but they do not make
-# the token an effective member/owner. Keep the two sets deliberately separate.
-$denySids = @($identity.User.Value)
-$denySids += @($identity.Groups | ForEach-Object { $_.Value })
-$ownerCapableSids = @($identity.User.Value)
-foreach ($group in $identity.Groups) {
-  if ($principal.IsInRole($group)) {
-    $ownerCapableSids += $group.Value
-  }
-}
+$currentSid = $identity.User.Value
 $ownerRightsSid = 'S-1-3-4'
-$ownerFenceMask = [int64]262144 -bor [int64]524288
+
+function Get-ExplicitDenyMasks {
+  param([Security.AccessControl.FileSystemSecurity]$Acl)
+  $userDenied = [int64]0
+  $ownerRightsDenied = [int64]0
+  $rules = $Acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])
+  foreach ($rule in $rules) {
+    $inheritOnly = ([int]$rule.PropagationFlags -band [int][Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0
+    if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Deny -or
+        $inheritOnly -or $rule.IsInherited) {
+      continue
+    }
+    if ($rule.IdentityReference.Value -eq $currentSid) {
+      $userDenied = $userDenied -bor [int64]$rule.FileSystemRights
+    }
+    if ($rule.IdentityReference.Value -eq $ownerRightsSid) {
+      $ownerRightsDenied = $ownerRightsDenied -bor [int64]$rule.FileSystemRights
+    }
+  }
+  return @{ user_denied=$userDenied; owner_rights_denied=$ownerRightsDenied }
+}
+
 $items = @($root) + @(Get-ChildItem -LiteralPath $rootPath -Force -Recurse)
 $issues = @()
 $records = @()
 $rootAcl = Get-Acl -LiteralPath $rootPath
 foreach ($item in $items) {
   $acl = Get-Acl -LiteralPath $item.FullName
-  $denied = [int64]0
-  $ownerRightsDenied = [int64]0
-  $rules = $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])
-  foreach ($rule in $rules) {
-    $inheritOnly = ([int]$rule.PropagationFlags -band [int][Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0
-    if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Deny -and
-        -not $inheritOnly) {
-      if ($denySids -contains $rule.IdentityReference.Value) {
-        $denied = $denied -bor [int64]$rule.FileSystemRights
-      }
-      if ($rule.IdentityReference.Value -eq $ownerRightsSid) {
-        $ownerRightsDenied = $ownerRightsDenied -bor [int64]$rule.FileSystemRights
-      }
-    }
-  }
-  $missing = $blocked -band (-bnot $denied)
+  $masks = Get-ExplicitDenyMasks $acl
+  $missing = $blocked -band (-bnot [int64]$masks.user_denied)
+  $ownerFenceMissing = $ownerBlocked -band (-bnot [int64]$masks.owner_rights_denied)
   $itemOwnerSid = (New-Object Security.Principal.NTAccount($acl.Owner)).Translate([Security.Principal.SecurityIdentifier]).Value
-  $tokenOwnsItem = $ownerCapableSids -contains $itemOwnerSid
-  $ownerFenceMissing = $ownerFenceMask -band (-bnot $ownerRightsDenied)
   $itemFull = [IO.Path]::GetFullPath($item.FullName)
   if ([String]::Equals($itemFull, $rootFull, [StringComparison]::OrdinalIgnoreCase)) {
     $relative = '.'
@@ -2334,33 +2340,57 @@ foreach ($item in $items) {
   } else {
     throw "ACL entry escaped the frozen root: $itemFull"
   }
-  if ($missing -ne 0 -or ($tokenOwnsItem -and $ownerFenceMissing -ne 0)) {
+  if ($missing -ne 0 -or $ownerFenceMissing -ne 0 -or -not $acl.AreAccessRulesCanonical) {
     $issues += @{
       path=$relative
       missing_rights=[int64]$missing
-      token_owner_sid=$(if ($tokenOwnsItem -and $ownerFenceMissing -ne 0) { $itemOwnerSid } else { $null })
-      owner_rights_missing=$(if ($tokenOwnsItem) { [int64]$ownerFenceMissing } else { [int64]0 })
+      owner_sid=$itemOwnerSid
+      owner_rights_missing=[int64]$ownerFenceMissing
+      acl_canonical=[bool]$acl.AreAccessRulesCanonical
     }
   }
   $records += "$relative`0$($acl.Sddl)"
 }
+$parentAcl = Get-Acl -LiteralPath $frozenParentFull
+$parentMasks = Get-ExplicitDenyMasks $parentAcl
+$parentMissing = $parentBlocked -band (-bnot [int64]$parentMasks.user_denied)
+$parentOwnerMissing = $ownerBlocked -band (-bnot [int64]$parentMasks.owner_rights_denied)
+$parentOwnerSid = (New-Object Security.Principal.NTAccount($parentAcl.Owner)).Translate([Security.Principal.SecurityIdentifier]).Value
+$parentIssues = @()
+if ($parentMissing -ne 0 -or $parentOwnerMissing -ne 0 -or -not $parentAcl.AreAccessRulesCanonical) {
+  $parentIssues += @{
+    path=$frozenParentFull
+    missing_rights=[int64]$parentMissing
+    owner_sid=$parentOwnerSid
+    owner_rights_missing=[int64]$parentOwnerMissing
+    acl_canonical=[bool]$parentAcl.AreAccessRulesCanonical
+  }
+}
 $ownerSid = (New-Object Security.Principal.NTAccount($rootAcl.Owner)).Translate([Security.Principal.SecurityIdentifier]).Value
 @{
   filesystem_type = $volume.DriveFormat
-  current_sid = $identity.User.Value
-  deny_sid_count = $denySids.Count
-  owner_capable_sids = $ownerCapableSids
+  current_sid = $currentSid
   owner_sid = $ownerSid
   root_acl_protected = $rootAcl.AreAccessRulesProtected
   root_sddl = $rootAcl.Sddl
   entry_count = $items.Count
   issues = $issues
   acl_records = $records
+  frozen_parent = $frozenParentFull
+  frozen_parent_owner_sid = $parentOwnerSid
+  frozen_parent_acl_protected = $parentAcl.AreAccessRulesProtected
+  frozen_parent_acl_canonical = $parentAcl.AreAccessRulesCanonical
+  frozen_parent_sddl = $parentAcl.Sddl
+  frozen_parent_current_user_denied_mask = [int64]$parentMasks.user_denied
+  frozen_parent_owner_rights_denied_mask = [int64]$parentMasks.owner_rights_denied
+  parent_issues = $parentIssues
 } | ConvertTo-Json -Compress -Depth 6
 """
         environment = os.environ.copy()
         environment["WB_CUTOVER_ACL_ROOT"] = str(root)
         environment["WB_CUTOVER_ACL_MASK"] = str(blocked_rights)
+        environment["WB_CUTOVER_PARENT_ACL_MASK"] = str(parent_blocked_rights)
+        environment["WB_CUTOVER_OWNER_ACL_MASK"] = str(owner_blocked_rights)
         # ``uv run`` can inherit a PowerShell 7 module directory before the
         # Windows PowerShell 5.1 modules.  powershell.exe then discovers the
         # incompatible PS7 Security manifest first and even Get-Acl fails to
@@ -2388,13 +2418,48 @@ $ownerSid = (New-Object Security.Principal.NTAccount($rootAcl.Owner)).Translate(
         if not bool(value.get("root_acl_protected")):
             raise CutoverPreconditionError("The frozen root DACL still inherits mutable parent rules.")
         issues = value.get("issues") or []
-        if issues:
+        parent_issues = value.get("parent_issues") or []
+        if issues or parent_issues:
             raise CutoverPreconditionError(
-                "The NTFS deny fence is incomplete.", details={"acl_issues": issues[:50]}
+                "The NTFS deny fence is incomplete.",
+                details={
+                    "acl_issues": issues[:50],
+                    "frozen_parent_acl_issues": parent_issues[:10],
+                },
             )
+        expected_parent = root.expanduser().resolve(strict=False).parent
+        observed_parent = Path(str(value.get("frozen_parent") or "")).expanduser().resolve(
+            strict=False
+        )
+        if os.path.normcase(str(observed_parent)) != os.path.normcase(str(expected_parent)):
+            raise CutoverPreconditionError("The ACL evidence names another _frozen parent.")
+        parent_sddl = str(value.get("frozen_parent_sddl") or "")
+        if not parent_sddl:
+            raise CutoverPreconditionError("The _frozen parent SDDL evidence is missing.")
+        if (
+            int(value.get("frozen_parent_current_user_denied_mask") or 0)
+            & parent_blocked_rights
+            != parent_blocked_rights
+            or int(value.get("frozen_parent_owner_rights_denied_mask") or 0)
+            & owner_blocked_rights
+            != owner_blocked_rights
+        ):
+            raise CutoverPreconditionError("The _frozen parent deny masks are incomplete.")
         records = sorted(str(item) for item in value.pop("acl_records", []))
         value["acl_tree_sha256"] = canonical_sha256(records)
+        value["frozen_parent_sddl_sha256"] = hashlib.sha256(
+            parent_sddl.encode("utf-8")
+        ).hexdigest()
+        value["acl_scope_sha256"] = canonical_sha256(
+            {
+                "wrapper_and_descendants": records,
+                "frozen_parent": str(observed_parent),
+                "frozen_parent_sddl": parent_sddl,
+            }
+        )
         value["blocked_rights_mask"] = blocked_rights
+        value["frozen_parent_blocked_rights_mask"] = parent_blocked_rights
+        value["owner_rights_blocked_mask"] = owner_blocked_rights
         return value
 
     def _frozen_evidence(self) -> Mapping[str, Any]:
