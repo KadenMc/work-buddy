@@ -44,13 +44,21 @@ const input: TaskQuickAddInput = {
   options: { projects: [{ value: "work-buddy", label: "Work Buddy" }], namespaces: [], contracts: [], contexts: [] },
 };
 
-const renderComposer = (emit: (intent: WidgetIntent) => Promise<IntentResult>) => render(
+const composerElement = (
+  emit: (intent: WidgetIntent) => Promise<IntentResult>,
+  widgetInput: TaskQuickAddInput = input,
+) => (
   <DashboardAnnouncer>
-    <WidgetDraftTestScope definition={TASKS_APP_CONTRIBUTION.widgetDefinitions[0]} presentation={presentation} input={input}>
-      <TaskComposer input={input} emit={emit} presentation={presentation} />
+    <WidgetDraftTestScope definition={TASKS_APP_CONTRIBUTION.widgetDefinitions[0]} presentation={presentation} input={widgetInput}>
+      <TaskComposer input={widgetInput} emit={emit} presentation={presentation} />
     </WidgetDraftTestScope>
-  </DashboardAnnouncer>,
+  </DashboardAnnouncer>
 );
+
+const renderComposer = (
+  emit: (intent: WidgetIntent) => Promise<IntentResult>,
+  widgetInput: TaskQuickAddInput = input,
+) => render(composerElement(emit, widgetInput));
 
 describe("TaskComposer", () => {
   it("normalizes pasted checklists and marks duplicate lines", () => {
@@ -81,6 +89,17 @@ describe("TaskComposer", () => {
 
     expect(isTaskCreateDraftPristine(EMPTY_TASK_CREATE_DRAFT)).toBe(true);
     expect(changed.every((value) => !isTaskCreateDraftPristine(value))).toBe(true);
+  });
+
+  it("disables creation without repeating the view-level editing notice", async () => {
+    const reason = "Task editing is temporarily unavailable while setup finishes.";
+    renderComposer(vi.fn(), {
+      ...input,
+      access: { mode: "read_only", reason },
+    });
+
+    expect(await screen.findByRole("textbox", { name: "New task" })).toBeDisabled();
+    expect(screen.queryByText(reason)).not.toBeInTheDocument();
   });
 
   it("captures title plus Enter through one idempotent create intent", async () => {
@@ -193,6 +212,34 @@ describe("TaskComposer", () => {
       intent_type: TASK_INTENTS.create,
       payload: { project: "new-project" },
     });
+  });
+
+  it("retains structure confirmation while disabling it after access becomes read-only", async () => {
+    const user = userEvent.setup();
+    const emit = vi.fn(async (intent) => ({
+      intent_id: intent.intent_id,
+      status: "accepted" as const,
+      revision: 8,
+    }));
+    const view = renderComposer(emit);
+
+    await user.type(await screen.findByRole("textbox", { name: "New task" }), "Plan launch");
+    await user.click(screen.getByRole("button", { name: "Add details" }));
+    await user.type(screen.getByRole("combobox", { name: "Project" }), "new-project");
+    await user.click(screen.getByRole("button", { name: "Add task" }));
+
+    const confirmation = screen.getByRole("button", { name: "Confirm structure and add" });
+    expect(confirmation).toBeEnabled();
+    view.rerender(composerElement(emit, {
+      ...input,
+      access: { mode: "read_only", reason: "Editing is temporarily unavailable." },
+    }));
+
+    expect(screen.getByText(/This will create project “new-project”/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Confirm structure and add" })).toBeDisabled();
+    expect(screen.getByRole("textbox", { name: "New task" })).toHaveValue("Plan launch");
+    await user.click(screen.getByRole("button", { name: "Confirm structure and add" }));
+    expect(emit).not.toHaveBeenCalled();
   });
 
   it("associates server field errors and focuses the first invalid control", async () => {

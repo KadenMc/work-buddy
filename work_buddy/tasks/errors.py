@@ -91,9 +91,7 @@ class TaskMutationFenced(TaskDomainError):
     retryable = True
 
     def __init__(self) -> None:
-        super().__init__(
-            "Task mutations are temporarily blocked by the migration maintenance fence."
-        )
+        super().__init__("Task editing is temporarily paused for maintenance.")
 
 
 class TaskAuthorityUnavailable(TaskDomainError):
@@ -104,7 +102,7 @@ class TaskAuthorityUnavailable(TaskDomainError):
 
     def __init__(self) -> None:
         super().__init__(
-            "Task authority could not be verified; refusing to fall back to legacy task files."
+            "Task editing is temporarily unavailable because setup could not be verified."
         )
 
 
@@ -115,8 +113,8 @@ class TaskReplayAuthorityMismatch(TaskDomainError):
 
     def __init__(self) -> None:
         super().__init__(
-            "This task retry was recorded under a different authority epoch; "
-            "refusing to replay it against legacy task files or the native store."
+            "This queued task update was created for an older task-system version "
+            "and cannot be applied safely."
         )
 
 
@@ -127,6 +125,6 @@ class TaskLegacyEffectRetired(TaskDomainError):
 
     def __init__(self) -> None:
         super().__init__(
-            "Legacy Obsidian/Markdown task effect verification is retired under "
-            "native task authority."
+            "This task update uses an unsupported compatibility path and cannot "
+            "be applied."
         )

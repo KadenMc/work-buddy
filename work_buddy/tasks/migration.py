@@ -1827,6 +1827,19 @@ class TaskMigrationLedger:
                     raise CohortStateError(
                         "Active cohort replay arguments do not match its cutover receipt."
                     )
+                inactive_roots = int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM (SELECT DISTINCT s.root_id "
+                        "FROM task_migration_local_link_stage s "
+                        "LEFT JOIN task_local_file_roots r ON r.root_id=s.root_id "
+                        "WHERE s.cohort_id=? AND (r.root_id IS NULL OR r.status!='active'))",
+                        (cohort_id,),
+                    ).fetchone()[0]
+                )
+                if inactive_roots:
+                    raise CutoverPreconditionError(
+                        "An active cohort has an unavailable linked-file root."
+                    )
                 arm_native_authority_latch(
                     self.store.path,
                     cohort_id=cohort_id,
@@ -1857,6 +1870,36 @@ class TaskMigrationLedger:
             self._activate_idless_rows(conn, cohort_id, now)
             self._activate_document_links(conn, cohort_id, now)
             self._activate_local_links(conn, cohort_id, now)
+            expected_roots = int(
+                conn.execute(
+                    "SELECT COUNT(DISTINCT root_id) FROM task_migration_local_link_stage "
+                    "WHERE cohort_id=?",
+                    (cohort_id,),
+                ).fetchone()[0]
+            )
+            if expected_roots:
+                sealed_roots = int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM task_local_file_roots WHERE status='sealed' "
+                        "AND root_id IN (SELECT DISTINCT root_id "
+                        "FROM task_migration_local_link_stage WHERE cohort_id=?)",
+                        (cohort_id,),
+                    ).fetchone()[0]
+                )
+                if sealed_roots != expected_roots:
+                    raise CutoverPreconditionError(
+                        "The sealed linked-file root cohort is not exact."
+                    )
+                conn.execute(
+                    "UPDATE task_local_file_roots SET status='active', updated_at=? "
+                    "WHERE status='sealed' AND root_id IN (SELECT DISTINCT root_id "
+                    "FROM task_migration_local_link_stage WHERE cohort_id=?)",
+                    (now, cohort_id),
+                )
+                if int(conn.execute("SELECT changes()").fetchone()[0]) != expected_roots:
+                    raise CutoverPreconditionError(
+                        "Linked-file roots changed during activation."
+                    )
             # This filesystem latch is intentionally durable before the
             # SQLite authority compare-and-swap. If the process dies between
             # these operations, routing sees native intent plus a legacy DB
@@ -1988,6 +2031,13 @@ class TaskMigrationLedger:
                     "SET state='aborted', aborted_at=?, updated_at=? "
                     "WHERE cohort_id=?",
                     (now, now, cohort_id),
+                )
+                conn.execute(
+                    "UPDATE task_local_file_roots SET status='aborted', updated_at=? "
+                    "WHERE status IN ('pending_seal','sealed') AND root_id IN "
+                    "(SELECT DISTINCT root_id FROM task_migration_local_link_stage "
+                    "WHERE cohort_id=?)",
+                    (now, cohort_id),
                 )
                 self._receipt(
                     conn,
@@ -2431,6 +2481,34 @@ class TaskMigrationLedger:
                     now,
                 ),
             )
+            columns = (
+                "link_id",
+                "task_id",
+                "store_id",
+                "document_id",
+                "root_id",
+                "relative_path",
+                "display_name",
+                "suffix",
+                "media_type",
+                "byte_length",
+                "sha256",
+                "sensitivity",
+                "allowed_action",
+                "policy_revision",
+                "source_receipt_id",
+            )
+            existing = conn.execute(
+                "SELECT " + ",".join(columns) + " FROM task_local_file_links "
+                "WHERE link_id=?",
+                (row["link_id"],),
+            ).fetchone()
+            if existing is None or tuple(existing[column] for column in columns) != tuple(
+                row[column] for column in columns
+            ):
+                raise CutoverPreconditionError(
+                    f"A local-file link collides with different catalog data: {row['link_id']}"
+                )
             conn.execute(
                 "UPDATE task_migration_local_link_stage SET activated_at=? "
                 "WHERE cohort_id=? AND link_id=?",

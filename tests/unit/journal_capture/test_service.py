@@ -90,6 +90,10 @@ def test_direct_capture_persists_and_materializes_before_optional_processing(
     assert "  exact\ntext  " in path.read_text(encoding="utf-8")
     projected = view_snapshot(store)
     assert projected["runningNotes"]["items"][0]["markdown"] == "  exact\ntext  "
+    reason = projected["runningNotes"]["access"]["reason"]
+    assert reason == "Open a running note in Co-work to edit it."
+    assert "authority" not in reason.lower()
+    assert "migration" not in reason.lower()
     assert projected["capture"]["recentSubmissions"][0]["placementStatus"] == "placed"
 
 

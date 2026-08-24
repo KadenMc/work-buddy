@@ -779,7 +779,7 @@ def create_tasks_blueprint(
         if not authority_active:
             return {
                 "mode": "read_only",
-                "reason": "Native task authority has not been activated.",
+                "reason": "Task editing is temporarily unavailable while setup finishes.",
             }
         return {"mode": "read_write"}
 
@@ -794,7 +794,9 @@ def create_tasks_blueprint(
         from work_buddy.tasks.runtime import native_task_mutation_authority
 
         if not native_task_mutation_authority(store.path):
-            raise TaskDomainError("Native task authority has not been activated.")
+            raise TaskDomainError(
+                "Task editing is temporarily unavailable while setup finishes."
+            )
         if dashboard_read_only and dashboard_read_only():
             raise TaskDomainError("The dashboard is read-only.")
         return authorizer(operation, subject, request.method, path, body)

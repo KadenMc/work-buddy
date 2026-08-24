@@ -33948,12 +33948,50 @@ const COWORK_UNIQUE_ID_TYPES = [
   "orderedList",
   "horizontalRule"
 ];
+const COWORK_LOCAL_FILE_URI = /^wb-local-file:([A-Za-z0-9][A-Za-z0-9_-]{15,127})$/;
+const COWORK_TRUTH_URI = /^wb-truth:\/\/[A-Za-z0-9._~-]+\/[A-Za-z0-9._~!$&'()*+,;=:@/-]+$/;
+const EXPLICIT_URI_SCHEME = /^([A-Za-z][A-Za-z0-9+.-]*):/;
+const isAllowedCoworkLinkUri = (value) => {
+  if (typeof value !== "string" || value.length === 0 || value !== value.trim() || /[\u0000-\u001f\u007f]/.test(value)) {
+    return false;
+  }
+  if (COWORK_LOCAL_FILE_URI.test(value) || COWORK_TRUTH_URI.test(value)) {
+    return true;
+  }
+  const scheme2 = EXPLICIT_URI_SCHEME.exec(value)?.[1]?.toLowerCase();
+  if (scheme2 === "http" || scheme2 === "https") {
+    try {
+      const parsed = new URL(value);
+      return parsed.protocol === `${scheme2}:` && parsed.hostname.length > 0;
+    } catch {
+      return false;
+    }
+  }
+  if (scheme2 === "mailto") {
+    return /^mailto:[^\s@]+@[^\s@]+$/i.test(value);
+  }
+  if (scheme2 !== void 0) return false;
+  return !value.startsWith("//") && !value.includes("\\");
+};
+const CoworkSafeLinkMarkdown = Extension.create({
+  name: "coworkSafeLinkMarkdown",
+  priority: 1100,
+  markdownTokenName: "link",
+  parseMarkdown: (token, helpers) => {
+    const content = helpers.parseInline(token.tokens ?? []);
+    return isAllowedCoworkLinkUri(token.href) ? helpers.applyMark("link", content, {
+      href: token.href,
+      title: token.title || null
+    }) : content;
+  }
+});
 const COWORK_LINK_OPTIONS = {
   autolink: false,
   openOnClick: false,
   linkOnPaste: false,
   defaultProtocol: "https",
-  protocols: ["http", "https", "mailto", "wb-truth"]
+  protocols: ["http", "https", "mailto", "wb-truth", "wb-local-file"],
+  isAllowedUri: isAllowedCoworkLinkUri
 };
 const buildDocumentSchemaExtensions = () => [
   index_default$1.configure({
@@ -33966,6 +34004,7 @@ const buildDocumentSchemaExtensions = () => [
   index_default,
   WbProvenanceTint,
   WbExpressionMark,
+  CoworkSafeLinkMarkdown,
   UniqueID.configure({ types: [...COWORK_UNIQUE_ID_TYPES] })
 ];
 const createDocumentMarkdownManager = () => new MarkdownManager({ extensions: buildDocumentSchemaExtensions() });

@@ -302,7 +302,9 @@ export class HttpTasksProvider implements ViewProvider {
       instanceId: request.instanceId,
       revision: snapshot.revision,
       observedAt: snapshot.observedAt,
-      status: snapshot.status,
+      // The view chrome owns the single editing-status notice. Widgets still
+      // receive read-only access and keep every mutating control disabled.
+      status: "ready",
       quality: snapshot.quality,
       input: snapshot.widgetInputs[request.instanceId] ?? null,
     };

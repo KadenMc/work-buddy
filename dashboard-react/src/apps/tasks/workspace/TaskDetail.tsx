@@ -362,10 +362,9 @@ export function TaskDetail({
       {message ? <InlineAlert tone={message.tone}>{message.text}</InlineAlert> : null}
       {undoDeleteRevision !== null ? (
         <InlineAlert tone="success">
-          Task moved to trash. <Button size="small" onClick={() => void undoDelete()}>Undo delete</Button>
+          Task moved to trash. <Button size="small" disabled={readOnly || busy} onClick={() => void undoDelete()}>Undo delete</Button>
         </InlineAlert>
       ) : null}
-      {readOnly ? <InlineAlert tone="warning">This task collection is read-only.</InlineAlert> : null}
       {deleted ? <InlineAlert tone="warning">Restore this task before editing it.</InlineAlert> : null}
 
       <form ref={formRef} className="wb-task-detail__form" onSubmit={save} noValidate>
@@ -465,7 +464,7 @@ export function TaskDetail({
               <p id="wb-task-delete-description">The task and knowledge document remain recoverable.</p>
               <div>
                 <Button autoFocus size="small" onClick={closeDeleteDialog}>Cancel</Button>
-                <Button size="small" variant="danger" onClick={() => void deleteTask()}>Move to trash</Button>
+                <Button size="small" variant="danger" disabled={readOnly || busy} onClick={() => void deleteTask()}>Move to trash</Button>
               </div>
             </div>
           </div>

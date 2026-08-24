@@ -187,6 +187,14 @@ def _historical_noop(conn: sqlite3.Connection) -> None:
     """
     _m001_bootstrap_v11(conn)
     task_columns = (
+        # A handful of early installs carried a truthful user_version but a
+        # deliberately minimal task_metadata table.  CREATE TABLE IF NOT
+        # EXISTS cannot fill those historical baseline columns, so reconcile
+        # the complete v11 shape before any native index refers to it.
+        ("complexity", "TEXT"),
+        ("note_uuid", "TEXT"),
+        ("snooze_until", "TEXT"),
+        ("completed_at", "TEXT"),
         ("task_kind", "TEXT NOT NULL DEFAULT 'task'"),
         ("density", "TEXT NOT NULL DEFAULT 'sparse'"),
         ("outcome_text", "TEXT"),

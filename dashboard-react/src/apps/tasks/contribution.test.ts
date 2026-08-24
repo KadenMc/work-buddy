@@ -28,6 +28,7 @@ describe("Tasks contribution", () => {
     expect(TASKS_VIEW_DEFINITION.readingOrder).toEqual(
       TASKS_VIEW_DEFINITION.mobileOrder,
     );
+    expect(JSON.stringify(TASKS_APP_CONTRIBUTION)).not.toMatch(/authorit/i);
   });
 
   it("declares device drafts and full Theme Contract support", () => {

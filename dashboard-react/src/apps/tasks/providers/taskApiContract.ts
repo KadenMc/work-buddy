@@ -346,7 +346,7 @@ export function parseTaskAccess(value: unknown): TaskAccess {
     mode: "read_only",
     reason: typeof item.reason === "string" && item.reason.length > 0
       ? item.reason
-      : "Task write authority could not be verified.",
+      : "Task editing is temporarily unavailable.",
   };
 }
 

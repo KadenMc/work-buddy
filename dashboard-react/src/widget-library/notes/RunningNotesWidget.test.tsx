@@ -194,6 +194,22 @@ describe("RunningNotesWidget", () => {
     expect(screen.getByRole("button", { name: "Delete" })).toBeDisabled();
   });
 
+  it("does not warn about expected edit limits when there are no notes", () => {
+    render(
+      renderNotes(
+        {
+          ...input,
+          access: { mode: "read_only", reason: "Open a running note in Co-work to edit it." },
+          items: [],
+        },
+        vi.fn(),
+      ),
+    );
+
+    expect(screen.getByText("No running notes for this collection.")).toBeInTheDocument();
+    expect(screen.queryByText("Open a running note in Co-work to edit it.")).not.toBeInTheDocument();
+  });
+
   it("offers the source-bound Co-work document action even while note editing is read-only", async () => {
     const emit = vi.fn().mockResolvedValue({
       intent_id: "open-note",

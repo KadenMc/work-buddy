@@ -6,7 +6,12 @@ vi.mock("../../../security/humanAuthority", () => ({
 
 import type { DashboardIntent } from "../../../dashboard/contributions/contracts";
 import type { ViewLocationAdapter } from "../../../dashboard/contributions/viewModules";
-import { TASKS_APP_ID, TASKS_INSTANCE_IDS, TASKS_VIEW_ID } from "../bindings";
+import {
+  TASKS_APP_ID,
+  TASKS_INSTANCE_IDS,
+  TASKS_VIEW_ID,
+  TASKS_WIDGET_TYPE_IDS,
+} from "../bindings";
 import { TASK_INTENTS } from "../contracts";
 import { HttpTasksProvider } from "./HttpTasksProvider";
 
@@ -134,8 +139,15 @@ describe("HttpTasksProvider", () => {
     expect(snapshot.status).toBe("read-only");
     expect(snapshot.model.access).toEqual({
       mode: "read_only",
-      reason: "Task write authority could not be verified.",
+      reason: "Task editing is temporarily unavailable.",
     });
+
+    const widget = await provider.loadWidget(TASKS_WIDGET_TYPE_IDS.quickAdd, {
+      viewId: TASKS_VIEW_ID,
+      instanceId: TASKS_INSTANCE_IDS.quickAdd,
+    });
+    expect(widget.status).toBe("ready");
+    expect(widget.input).toMatchObject({ access: snapshot.model.access });
   });
 
   it("returns a typed server batch preview without requesting mutation authority", async () => {
@@ -290,12 +302,12 @@ describe("HttpTasksProvider", () => {
     });
   });
 
-  it("maps an authority-unavailable 503 to an unavailable intent", async () => {
+  it("maps a temporarily unavailable task store to an unavailable intent", async () => {
     const fetchImpl = vi.fn(async () => json({
       ok: false,
       error: {
         code: "task_authority_unavailable",
-        message: "Task authority could not be verified.",
+        message: "Task editing is temporarily unavailable because setup could not be verified.",
         retryable: true,
       },
     }, 503));
@@ -309,7 +321,7 @@ describe("HttpTasksProvider", () => {
 
     expect(result).toMatchObject({
       status: "unavailable",
-      message: "Task authority could not be verified.",
+      message: "Task editing is temporarily unavailable because setup could not be verified.",
     });
   });
 

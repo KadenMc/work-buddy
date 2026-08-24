@@ -49,8 +49,11 @@ def co_env(tmp_path, monkeypatch):
     # load_config stub below drops the ``tasks`` key, which would
     # otherwise fall through to the real tasks DB.
     from work_buddy.obsidian.tasks import store as _task_store
+    from work_buddy.tasks import store as _native_task_store
 
-    monkeypatch.setattr(_task_store, "_db_path", lambda: tmp_path / "tasks.db")
+    task_db = tmp_path / "tasks.db"
+    monkeypatch.setattr(_task_store, "_db_path", lambda: task_db)
+    monkeypatch.setattr(_native_task_store, "default_task_db_path", lambda: task_db)
 
     repos_root = tmp_path / "repos"
     repos_root.mkdir()

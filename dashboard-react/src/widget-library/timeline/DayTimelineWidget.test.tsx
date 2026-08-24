@@ -202,4 +202,21 @@ describe("DayTimelineWidget", () => {
     expect(screen.getAllByText("Heavy item 179").length).toBeGreaterThan(0);
     expect(container.querySelectorAll("[data-wb-calendar-item-id]")).toHaveLength(180);
   });
+
+  it("defers a whole-view access notice while keeping timeline changes disabled", () => {
+    render(
+      <DayTimelineWidget
+        input={{
+          ...input,
+          access: { mode: "read_only", reason: "Editing is paused." },
+          accessNotice: "view",
+        }}
+        emit={vi.fn()}
+        presentation={{ ...presentation, sizeMode: "expanded" }}
+      />,
+    );
+
+    expect(screen.queryByText("Editing is paused.")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Request replan" })).toBeDisabled();
+  });
 });

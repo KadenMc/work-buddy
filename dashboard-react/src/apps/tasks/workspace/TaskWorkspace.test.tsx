@@ -108,6 +108,18 @@ describe("TaskWorkspace", () => {
     expect(tomorrow(new Date(2026, 7, 23, 23, 30))).toBe("2026-08-24");
   });
 
+  it("disables task changes without repeating the view-level editing notice", async () => {
+    const reason = "Task editing is temporarily unavailable while setup finishes.";
+    renderWorkspace(
+      { ...input(detail), access: { mode: "read_only", reason } },
+      vi.fn(),
+    );
+
+    expect(await screen.findByRole("textbox", { name: "Title" })).toBeDisabled();
+    expect(screen.queryByText(reason)).not.toBeInTheDocument();
+    expect(screen.queryByText("This task collection is read-only.")).not.toBeInTheDocument();
+  });
+
   it("has no automated accessibility violations in its ready detail state", async () => {
     const emit = vi.fn(async (intent) => ({ intent_id: intent.intent_id, status: "accepted" as const, revision: 17 }));
     const view = renderWorkspace(input(detail), emit);
@@ -384,8 +396,33 @@ describe("TaskWorkspace", () => {
     expect(confirm).toHaveFocus();
     fireEvent.keyDown(confirm, { key: "Tab" });
     expect(cancel).toHaveFocus();
-    await user.click(confirm);
-    await user.click(await screen.findByRole("button", { name: "Undo delete" }));
+
+    view.rerender(workspaceElement({
+      ...input(detail),
+      access: { mode: "read_only", reason: "Editing is temporarily unavailable." },
+    }, emit));
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+    expect(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Move to trash" })).toBeDisabled();
+    await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Move to trash" }));
+    expect(emit).not.toHaveBeenCalled();
+
+    view.rerender(workspaceElement(input(detail), emit));
+    expect(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Move to trash" })).toBeEnabled();
+    const retainedConfirm = within(screen.getByRole("alertdialog")).getByRole("button", { name: "Move to trash" });
+    await user.click(retainedConfirm);
+
+    await screen.findByRole("button", { name: "Undo delete" });
+    view.rerender(workspaceElement({
+      ...input(deletedDetail),
+      access: { mode: "read_only", reason: "Editing is temporarily unavailable." },
+    }, emit));
+    expect(screen.getByRole("button", { name: "Undo delete" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Undo delete" }));
+    expect(emit).toHaveBeenCalledTimes(1);
+
+    view.rerender(workspaceElement(input(deletedDetail), emit));
+    expect(screen.getByRole("button", { name: "Undo delete" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Undo delete" }));
 
     expect(emit.mock.calls[0]?.[0]).toMatchObject({
       intent_type: TASK_INTENTS.delete,

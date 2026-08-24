@@ -69,7 +69,7 @@ const roles: readonly WidgetRoleContract[] = [
     roleId: TASKS_ROLE_IDS.quickAdd,
     ownerAppId: TASKS_APP_ID,
     displayName: "Task quick add",
-    description: "Create one or many authoritative tasks quickly.",
+    description: "Create one or many tasks quickly.",
     inputSchema: QUICK_ADD_INPUT,
     outputIntentSchemas: intentSchemas.filter(({ schemaId }) =>
       schemaId === TASK_INTENTS.create ||
@@ -81,7 +81,7 @@ const roles: readonly WidgetRoleContract[] = [
     roleId: TASKS_ROLE_IDS.workspace,
     ownerAppId: TASKS_APP_ID,
     displayName: "Task workspace",
-    description: "Find, edit, and manage authoritative tasks.",
+    description: "Find, edit, and manage tasks.",
     inputSchema: WORKSPACE_INPUT,
     outputIntentSchemas: intentSchemas.filter(({ schemaId }) =>
       schemaId !== TASK_INTENTS.create &&

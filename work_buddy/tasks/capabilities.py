@@ -671,7 +671,7 @@ def retired_legacy_surface(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
     return {
         "success": False,
         "retired": True,
-        "error": "This Obsidian task surface was retired by the native task cutover.",
+        "error": "This older task command is no longer available. Use the Tasks view instead.",
     }
 
 

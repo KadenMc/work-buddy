@@ -134,7 +134,7 @@ def test_unavailable_dashboard_authority_does_not_open_task_store(monkeypatch):
 
     assert result["authority"] == "unavailable"
     assert result["tasks"] == []
-    assert "legacy fallback is disabled" in result["error"]
+    assert result["error"] == "Task data is temporarily unavailable."
 
 
 def test_native_dashboard_sync_is_retired_before_legacy_import(monkeypatch):
@@ -172,3 +172,6 @@ def test_unavailable_dashboard_sync_fails_closed(monkeypatch):
 
     assert response.status_code == 503
     assert response.get_json()["error"]["code"] == "task_authority_unavailable"
+    assert response.get_json()["error"]["message"] == (
+        "Task data is temporarily unavailable."
+    )

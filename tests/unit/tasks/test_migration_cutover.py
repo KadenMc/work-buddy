@@ -32,6 +32,7 @@ from work_buddy.tasks.migration import (
 )
 from work_buddy.tasks.store import TaskStore
 from work_buddy.truth import documents
+from work_buddy.truth.migrations import backfill_v8_legacy_import_provenance
 from work_buddy.truth.registry import TruthStoreRegistry
 
 
@@ -522,6 +523,75 @@ def test_shadow_fast_resume_cas_backfills_null_receipt_without_upstream_import(
             ).fetchone()[0] == attestations_before
         finally:
             truth_conn.close()
+    finally:
+        importer.close()
+
+
+def test_shadow_fast_resume_accepts_exact_v8_provenance_backfill_race(
+    tmp_path,
+    monkeypatch,
+):
+    operator, importer, _task_store, _sources, stores = _operator(tmp_path)
+    try:
+        original_record = legacy_import.provenance.record_document_attestation
+
+        def backfill_before_task_attestation(store, *args, **kwargs):
+            conn = store.connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                assert backfill_v8_legacy_import_provenance(conn) == 1
+                conn.commit()
+            finally:
+                conn.close()
+            return original_record(store, *args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                legacy_import.provenance,
+                "record_document_attestation",
+                backfill_before_task_attestation,
+            )
+            baseline = operator.shadow_import(backup_receipts=BACKUP_RECEIPTS)
+
+        store = stores.open_existing()
+        conn = store.connect()
+        try:
+            counts = tuple(
+                row[0]
+                for row in conn.execute(
+                    "SELECT COUNT(*) FROM document_provenance_attestations "
+                    "GROUP BY document_id ORDER BY document_id"
+                )
+            )
+        finally:
+            conn.close()
+        assert counts and set(counts) == {2}
+
+        def unexpected_import(*_args, **_kwargs):
+            raise AssertionError("exact compatibility backfill must resume in place")
+
+        monkeypatch.setattr(importer, "import_note", unexpected_import)
+        assert operator.shadow_import(backup_receipts=BACKUP_RECEIPTS) == baseline
+
+        original_attestations = type(store).list_document_provenance_attestations
+
+        def tampered_compatibility_attestation(self, document_id, **kwargs):
+            rows = original_attestations(self, document_id, **kwargs)
+            return tuple(
+                replace(row, basis_ref="tampered-v8-basis")
+                if row.idempotency_key.startswith("migration:v8:file-import:")
+                else row
+                for row in rows
+            )
+
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                type(store),
+                "list_document_provenance_attestations",
+                tampered_compatibility_attestation,
+            )
+            with pytest.raises(LegacyInventoryError, match="fast-resume verification"):
+                operator.shadow_import(backup_receipts=BACKUP_RECEIPTS)
     finally:
         importer.close()
 

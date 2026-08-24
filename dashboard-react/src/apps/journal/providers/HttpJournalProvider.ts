@@ -296,7 +296,7 @@ function runningNote(value: unknown): JournalRunningNoteItem {
     ) {
       const epoch = value.document.contentAuthorityEpoch;
       if (typeof epoch !== "number" || !Number.isInteger(epoch) || epoch < 1) {
-        throw new Error("Journal response has invalid content authority epoch");
+        throw new Error("Journal response has an invalid note document version");
       }
       document = {
         state: value.document.state,
@@ -401,16 +401,28 @@ function emptyTimeline(native: NativeJournalPayload): JournalTimelineInput {
 function timelineFromLegacy(
   legacy: LegacyJournalViewSnapshot,
   native: NativeJournalPayload,
+  viewAccess: JournalViewModel["access"],
 ): JournalTimelineInput {
   const candidate = legacy.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.timeline];
   if (candidate === undefined || candidate.day.dayId !== native.day.dayId) {
     return emptyTimeline(native);
   }
+  const timelineAccess = candidate.access ?? {
+    mode: "read_only" as const,
+    reason: "This timeline is available for review only.",
+  };
+  const viewExplainsTimelineAccess =
+    viewAccess.mode === "read_only" &&
+    timelineAccess.mode === "read_only" &&
+    viewAccess.reason === timelineAccess.reason;
   return {
     ...candidate,
     revision: native.revision,
     day: native.day,
-    access: candidate.access ?? { mode: "read_only", reason: "Legacy Today timeline." },
+    access: timelineAccess,
+    // Repeat the timeline's review-only notice only when it conveys a
+    // limitation beyond the access notice already owned by Journal chrome.
+    accessNotice: viewExplainsTimelineAccess ? "view" : "widget",
   } as JournalTimelineInput;
 }
 
@@ -478,7 +490,6 @@ export class HttpJournalProvider implements ViewProvider {
       this.#readNative(),
     ]);
     const canWrite = identity.authenticated && native.access.mode === "read_write";
-    const identityReason = identity.authenticated ? undefined : identity.reason;
     const writeAccess = canWrite
       ? ({ mode: "read_write" } as const)
       : ({
@@ -486,7 +497,7 @@ export class HttpJournalProvider implements ViewProvider {
           reason:
             native.access.mode === "read_only"
               ? native.access.reason
-              : identityReason ?? "Open Journal through the local Work Buddy launcher to capture.",
+              : "Editing is paused in this browser. Open Journal from the Work Buddy tray to reconnect.",
         } as const);
     const issues = [...native.quality.issues];
     if (legacy.model === null) {
@@ -509,8 +520,13 @@ export class HttpJournalProvider implements ViewProvider {
           ...native.capture,
           revision: native.revision,
           access: writeAccess,
+          accessNotice: "view",
         },
-        [JOURNAL_WIDGET_INSTANCE_IDS.timeline]: timelineFromLegacy(legacy, native),
+        [JOURNAL_WIDGET_INSTANCE_IDS.timeline]: timelineFromLegacy(
+          legacy,
+          native,
+          writeAccess,
+        ),
         [JOURNAL_WIDGET_INSTANCE_IDS.runningNotes]: native.runningNotes,
       },
     };
@@ -561,7 +577,14 @@ export class HttpJournalProvider implements ViewProvider {
       instanceId: request.instanceId,
       revision: snapshot.revision,
       observedAt: snapshot.observedAt,
-      status: input === undefined ? "unavailable" : snapshot.status,
+      // Whole-view read-only access is already explained once in Journal
+      // chrome. Other contextual states (stale/offline) remain widget-visible.
+      status:
+        input === undefined
+          ? "unavailable"
+          : snapshot.status === "read-only"
+            ? "ready"
+            : snapshot.status,
       quality: snapshot.quality,
       input: input ?? null,
     };
@@ -588,7 +611,7 @@ export class HttpJournalProvider implements ViewProvider {
         intent,
         "unavailable",
         intent.intent_type.startsWith("wb.notes.")
-          ? "Captured notes remain editable in the authoritative daily note during migration."
+          ? "Open this note in Co-work to make changes."
           : "That live Journal action is not available yet.",
       );
     }
@@ -613,7 +636,7 @@ export class HttpJournalProvider implements ViewProvider {
         return this.#result(
           intent,
           "unavailable",
-          identity.reason ?? "An authenticated local Journal session is required.",
+          "Editing is paused in this browser. Open Journal from the Work Buddy tray to reconnect.",
         );
       }
       const contextSha256 = await journalCaptureGestureContext(body);
@@ -681,7 +704,7 @@ export class HttpJournalProvider implements ViewProvider {
         return this.#result(
           intent,
           "unavailable",
-          identity.reason ?? "An authenticated local Journal session is required.",
+          "Editing is paused in this browser. Open Journal from the Work Buddy tray to reconnect.",
         );
       }
       const gesture = await issueHumanGesture(

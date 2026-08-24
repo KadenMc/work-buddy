@@ -112,7 +112,10 @@ def test_capability_registered():
     registry = get_registry()
     cap = registry.get("task_search")
     assert cap is not None
-    assert cap.callable is task_search
+    # The long-lived gateway resolves legacy/native authority per invocation,
+    # so its registered callable is intentionally a stable router.
+    assert callable(cap.callable)
+    assert cap.callable.__name__ == "authority_routed_task_search"
     # No bridge required — store-only.
     assert cap.requires == []
     # Search aliases are populated for discoverability.

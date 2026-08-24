@@ -41,6 +41,8 @@ export interface QuickTextCaptureInput {
   readonly revision: string;
   readonly dayId: string;
   readonly access: WidgetAccess;
+  /** `view` means a containing surface already renders the access notice. */
+  readonly accessNotice?: "widget" | "view";
   readonly smartHelp?: {
     readonly summary: string;
     readonly details: string;

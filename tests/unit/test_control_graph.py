@@ -60,6 +60,9 @@ def mock_inputs(monkeypatch):
         def check_all(self, include_unwanted: bool = False):
             return list(levers["reqs"])
 
+        def is_applicable(self, _requirement):
+            return True
+
     def _get_registry():
         return dict(levers["registry"])
 

@@ -1211,9 +1211,103 @@ class LegacyTaskCutoverOperator:
         ):
             self._resume_failure(item.note_uuid, "initial document version changed")
         attestations = store.list_document_provenance_attestations(document.id)
-        if len(attestations) != 1:
+        expected_attestation_key = (
+            f"legacy-task-import:{item.note_uuid}:{item.content_sha256}"
+        )
+        matching_attestations = tuple(
+            row
+            for row in attestations
+            if row.idempotency_key == expected_attestation_key
+        )
+        if len(matching_attestations) != 1:
             self._resume_failure(item.note_uuid, "document provenance history changed")
-        attestation = attestations[0]
+        attestation = matching_attestations[0]
+        compatibility_attestations = tuple(
+            row for row in attestations if row is not attestation
+        )
+        if len(compatibility_attestations) > 1:
+            self._resume_failure(item.note_uuid, "document provenance history changed")
+        if compatibility_attestations:
+            compatibility = compatibility_attestations[0]
+            try:
+                compatibility_source = json.loads(compatibility.source_json)
+                compatibility_contributors = json.loads(
+                    compatibility.human_contributors_json
+                )
+                compatibility_reviewers = json.loads(
+                    compatibility.human_reviewers_json
+                )
+            except (TypeError, json.JSONDecodeError):
+                self._resume_failure(
+                    item.note_uuid,
+                    "document compatibility provenance is malformed",
+                )
+            expected_compatibility_source = {
+                "kind": "file_import",
+                "path": document.path,
+                "sha256": item.content_sha256,
+            }
+            expected_compatibility_basis = "truth-schema-v8:legacy-file-import"
+            expected_compatibility_id = hashlib.sha256(
+                canonical_json(
+                    {
+                        "schema": provenance.ATTESTATION_SCHEMA,
+                        "document_id": document.id,
+                        "document_version_id": expected_version_id,
+                        "basis_kind": "migration_backfill",
+                    }
+                ).encode("utf-8")
+            ).hexdigest()[:32]
+            expected_compatibility_canonical = (
+                provenance.attestation_canonical_sha256(
+                    document_id=document.id,
+                    target_kind="document_version",
+                    document_version_id=expected_version_id,
+                    document_span_id=None,
+                    target_structured_head_sha256=structured_head,
+                    authorship_kind="unknown",
+                    human_contributors=[],
+                    review_status="unknown",
+                    human_reviewers=[],
+                    source_kind="file_import",
+                    source=expected_compatibility_source,
+                    basis_kind="migration_backfill",
+                    basis_ref=expected_compatibility_basis,
+                    supersedes_id=None,
+                    attested_by_kind="system",
+                    attested_by_ref=None,
+                    attested_by_meta=None,
+                )
+            )
+            if (
+                compatibility.id != expected_compatibility_id
+                or compatibility.document_id != document.id
+                or compatibility.target_kind != "document_version"
+                or compatibility.document_version_id != expected_version_id
+                or compatibility.document_span_id is not None
+                or compatibility.target_structured_head_sha256 != structured_head
+                or compatibility.authorship_kind != "unknown"
+                or compatibility_contributors != []
+                or compatibility.review_status != "unknown"
+                or compatibility_reviewers != []
+                or compatibility.source_kind != "file_import"
+                or compatibility_source != expected_compatibility_source
+                or compatibility.basis_kind != "migration_backfill"
+                or compatibility.basis_ref != expected_compatibility_basis
+                or compatibility.supersedes_id is not None
+                or compatibility.idempotency_key
+                != f"migration:v8:file-import:{expected_version_id}"
+                or compatibility.canonical_sha256
+                != expected_compatibility_canonical
+                or compatibility.created_at != version.created_at
+                or compatibility.attested_by_kind != "system"
+                or compatibility.attested_by_ref is not None
+                or compatibility.attested_by_meta_json is not None
+            ):
+                self._resume_failure(
+                    item.note_uuid,
+                    "document compatibility provenance changed",
+                )
         try:
             source = json.loads(attestation.source_json)
             contributors = json.loads(attestation.human_contributors_json)
@@ -1242,8 +1336,7 @@ class LegacyTaskCutoverOperator:
             or attestation.basis_kind != "user_attestation"
             or attestation.basis_ref is not None
             or attestation.supersedes_id is not None
-            or attestation.idempotency_key
-            != f"legacy-task-import:{item.note_uuid}:{item.content_sha256}"
+            or attestation.idempotency_key != expected_attestation_key
             or attestation.attested_by_kind != "human"
             or attestation.attested_by_ref != self.documents.attestation_actor_ref
             or attestation.attested_by_meta_json is not None

@@ -97,42 +97,42 @@ export const LEGACY_JOURNAL_UNSUPPORTED = [
   {
     capability: "native_day_container",
     state: "unavailable",
-    reason: "The Today response does not expose a native Journal day or day boundary.",
+    reason: "This older Today view does not include Journal day boundaries.",
   },
   {
     capability: "capture_persistence",
     state: "unavailable",
-    reason: "The Today endpoint is read-only and exposes no capture persistence contract.",
+    reason: "Quick Capture is unavailable in this older Today view.",
   },
   {
     capability: "running_notes_records",
     state: "unavailable",
-    reason: "The Today response does not expose native Running Notes records.",
+    reason: "Running Notes are unavailable in this older Today view.",
   },
   {
     capability: "observed_log_records",
     state: "unavailable",
-    reason: "The Today response does not expose observed Journal log records.",
+    reason: "Journal activity records are unavailable in this older Today view.",
   },
   {
     capability: "calendar_provenance",
     state: "unavailable",
-    reason: "A calendar count is not enough to reconstruct calendar-backed items or provenance.",
+    reason: "Calendar details are unavailable in this older Today view.",
   },
   {
     capability: "smart_processing",
     state: "unavailable",
-    reason: "The Today response exposes no smart-write lifecycle or annotations.",
+    reason: "Smart Capture details are unavailable in this older Today view.",
   },
   {
     capability: "write_intents",
     state: "unavailable",
-    reason: "No Dashboard write intent is mapped to this read-only endpoint.",
+    reason: "Changes are unavailable in this older Today view.",
   },
   {
     capability: "native_revision",
     state: "unavailable",
-    reason: "The endpoint has no revision; the adapter revision is only a projection hash.",
+    reason: "This older Today view cannot track Journal changes.",
   },
 ] as const satisfies readonly LegacyAdapterLimitation[];
 
@@ -146,7 +146,7 @@ export interface LegacyFieldMapping {
 export const LEGACY_TODAY_FIELD_MAPPING = [
   {
     source: "journal_day",
-    target: "Authoritative Journal day binding",
+    target: "Journal day binding",
     fidelity: "direct",
     note: "When supplied, the backend-owned date, boundary, timezone, and exact window instants replace every compatibility reconstruction.",
   },
@@ -154,7 +154,7 @@ export const LEGACY_TODAY_FIELD_MAPPING = [
     source: "timezone",
     target: "Journal day and calendar presentation timezone",
     fidelity: "direct",
-    note: "The configured Work Buddy IANA zone is authoritative; browser timezone is never substituted.",
+    note: "Journal uses the configured Work Buddy IANA zone instead of the browser timezone.",
   },
   {
     source: "now",
@@ -176,19 +176,19 @@ export const LEGACY_TODAY_FIELD_MAPPING = [
   },
   {
     source: "recommendations",
-    target: "Legacy view metadata",
+    target: "Older Today view metadata",
     fidelity: "metadata_only",
     note: "Recommendations have no temporal placement and are not invented as timeline items.",
   },
   {
     source: "status/errors",
-    target: "Snapshot quality and legacy source state",
+    target: "Snapshot quality and Today data state",
     fidelity: "direct",
     note: "Degraded and error states remain visible rather than being normalized to ready.",
   },
   {
     source: "calendar_event_count",
-    target: "Legacy view metadata",
+    target: "Older Today view metadata",
     fidelity: "metadata_only",
     note: "The count is retained, but no calendar records or provenance are reconstructed.",
   },
@@ -251,7 +251,7 @@ export interface LegacyFlaskViewAdapterOptions {
 }
 
 const READ_ONLY_REASON =
-  "Legacy Today data is a partial read-only projection; Journal write behavior is unavailable.";
+  "This older Today view can be reviewed here, but changes are not available.";
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === "object" && value !== null;
@@ -333,7 +333,7 @@ function parseJournalDay(value: unknown): LegacyTodayJournalDay {
     (value.boundary_effective_at !== null &&
       !isIsoInstant(value.boundary_effective_at))
   ) {
-    throw new Error("Legacy Today response has invalid journal_day metadata");
+    throw new Error("Journal data has invalid day information.");
   }
   return {
     local_date: value.local_date,
@@ -349,7 +349,7 @@ function parseJournalDay(value: unknown): LegacyTodayJournalDay {
 
 function parsePayload(value: unknown): LegacyTodayPayload {
   if (!isRecord(value) || !isRecord(value.now)) {
-    throw new Error("Legacy Today response is not an object with a now block");
+    throw new Error("Journal data is missing its current-time information.");
   }
   const iso = value.now.iso;
   const localHhmm = value.now.local_hhmm;
@@ -363,7 +363,7 @@ function parsePayload(value: unknown): LegacyTodayPayload {
     minutesIntoDay < 0 ||
     minutesIntoDay >= 24 * 60
   ) {
-    throw new Error("Legacy Today response has invalid now metadata");
+    throw new Error("Journal data has invalid current-time information.");
   }
   const workHours = value.work_hours;
   if (
@@ -372,7 +372,7 @@ function parsePayload(value: unknown): LegacyTodayPayload {
     !isFiniteNumber(workHours[0]) ||
     !isFiniteNumber(workHours[1])
   ) {
-    throw new Error("Legacy Today response has invalid work_hours metadata");
+    throw new Error("Journal data has invalid work-hours information.");
   }
 
   return {
@@ -407,7 +407,7 @@ function localDateFor(iso: string, timezone: string): string {
     .setZone(timezone)
     .toISODate();
   if (localDate === null) {
-    throw new Error("Legacy Today response has invalid temporal metadata");
+    throw new Error("Journal data has invalid time information.");
   }
   return localDate;
 }
@@ -451,7 +451,7 @@ function instantAtLocalMinute(
   );
   const instant = local.toUTC().toISO({ suppressMilliseconds: false });
   if (!date.isValid || !local.isValid || instant === null) {
-    throw new Error(`Cannot reconstruct legacy local time in ${timezone}`);
+    throw new Error(`Journal data could not be shown in ${timezone}.`);
   }
   return instant;
 }
@@ -492,11 +492,11 @@ function timelineItem(
     itemId: itemId(item, index),
     kind: "plan",
     title: item.text,
-    detail: `${item.time_start}–${item.time_end} · legacy generated plan`,
+    detail: `${item.time_start}–${item.time_end} · generated plan`,
     status: item.checked ? "completed" : "planned",
     mutability: Date.parse(endAt) <= Date.parse(now.iso) ? "past_protected" : "editable",
     precision: "derived",
-    provenance: { source: "planner", label: "Legacy Today plan" },
+    provenance: { source: "planner", label: "Today plan" },
     shape: "span",
     startAt,
     endAt,
@@ -540,6 +540,7 @@ function createModel(payload: LegacyTodayPayload, timezone: string): LegacyJourn
     revision,
     day,
     access: { mode: "read_only", reason: READ_ONLY_REASON },
+    accessNotice: "view",
     renderMode: "timeline",
     density: "comfortable",
     items: payload.plan.flatMap((item, index) => {
@@ -565,7 +566,7 @@ function createModel(payload: LegacyTodayPayload, timezone: string): LegacyJourn
         {
           code: "legacy_today_partial_projection",
           message:
-            "Live legacy Today data is partial; native Journal behavior is unavailable.",
+            "This older Today view does not support every Journal feature.",
           affectedInstanceIds: [
             JOURNAL_WIDGET_INSTANCE_IDS.capture,
             JOURNAL_WIDGET_INSTANCE_IDS.timeline,
@@ -625,10 +626,10 @@ function snapshotStatus(status: LegacyTodaySourceStatus): SnapshotStatus {
 
 function qualityMessage(status: LegacyTodaySourceStatus): string {
   return status === "degraded"
-    ? "Partial/degraded legacy Today projection; native Journal behavior is unavailable."
+    ? "Some Journal data from the older Today view is unavailable."
     : status === "error"
-      ? "Partial legacy Today projection reported an error."
-      : "Partial read-only legacy Today projection; native Journal behavior is unavailable.";
+      ? "The older Today view reported an error."
+      : "This older Today view is available for review only.";
 }
 
 function toSnapshot(model: LegacyJournalViewModel): LegacyJournalViewSnapshot {
@@ -672,7 +673,7 @@ export class LegacyFlaskViewAdapter implements ViewProvider {
     _request: ViewLoadRequest,
   ): Promise<LegacyJournalViewSnapshot> {
     if (viewId !== JOURNAL_VIEW_DEFINITION_ID) {
-      throw new Error(`LegacyFlaskViewAdapter cannot load view ${viewId}`);
+      throw new Error(`This Journal data provider cannot load view ${viewId}.`);
     }
     const snapshot = await this.#readSnapshot();
     this.#lastSnapshot = snapshot;
@@ -684,7 +685,7 @@ export class LegacyFlaskViewAdapter implements ViewProvider {
     request: WidgetLoadRequest,
   ): Promise<LegacyJournalWidgetSnapshot> {
     if (request.viewId !== JOURNAL_VIEW_DEFINITION_ID) {
-      throw new Error(`LegacyFlaskViewAdapter cannot load widgets for ${request.viewId}`);
+      throw new Error(`This Journal data provider cannot load widgets for ${request.viewId}.`);
     }
     const expectedType = JOURNAL_WIDGET_TYPE_BY_INSTANCE.get(request.instanceId);
     const isTimeline =
@@ -724,7 +725,14 @@ export class LegacyFlaskViewAdapter implements ViewProvider {
       instanceId: request.instanceId,
       revision: snapshot.revision,
       observedAt: snapshot.observedAt,
-      status: input === undefined ? "unavailable" : snapshot.status,
+      // The Journal chrome already explains whole-view access. Keep the
+      // timeline interactive for review without repeating the same notice.
+      status:
+        snapshot.status === "read-only"
+          ? input === undefined
+            ? "unavailable"
+            : "ready"
+          : snapshot.status,
       quality: snapshot.quality,
       input: input ?? null,
     };
@@ -771,7 +779,7 @@ export class LegacyFlaskViewAdapter implements ViewProvider {
         credentials: "same-origin",
       });
       if (!response.ok) {
-        throw new Error(`Legacy Today endpoint returned HTTP ${response.status}`);
+        throw new Error(`The Today data request returned HTTP ${response.status}.`);
       }
       const payload = parsePayload(await response.json());
       const model = createModel(payload, this.#timezoneOverride ?? payload.timezone);
@@ -784,7 +792,7 @@ export class LegacyFlaskViewAdapter implements ViewProvider {
         status: "unavailable",
         quality: {
           kind: "partial",
-          message: `Legacy Today endpoint unavailable: ${message}`,
+          message: `The older Today view is unavailable: ${message}`,
         },
         model: null,
         bindings: {},

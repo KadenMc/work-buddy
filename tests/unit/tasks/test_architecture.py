@@ -4,7 +4,13 @@ import ast
 from pathlib import Path
 
 
-_LEGACY_IMPORT_BOUNDARY = {"migration.py", "import_legacy.py"}
+_LEGACY_IMPORT_BOUNDARY = {
+    "migration.py",
+    "import_legacy.py",
+    "production_cutover.py",
+}
+_LEGACY_EXPORT_BOUNDARY = {"rollback_export.py"}
+_LEGACY_TASK_BOUNDARY = _LEGACY_IMPORT_BOUNDARY | _LEGACY_EXPORT_BOUNDARY
 
 
 def test_neutral_task_domain_has_no_vault_or_plugin_dependency():
@@ -12,7 +18,7 @@ def test_neutral_task_domain_has_no_vault_or_plugin_dependency():
     joined = "\n".join(
         path.read_text(encoding="utf-8")
         for path in root.glob("*.py")
-        if path.name not in _LEGACY_IMPORT_BOUNDARY
+        if path.name not in _LEGACY_TASK_BOUNDARY
     ).casefold()
     forbidden = (
         "work_buddy.obsidian",

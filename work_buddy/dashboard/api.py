@@ -565,9 +565,7 @@ def get_tasks_summary() -> dict[str, Any]:
             "counts": {},
             "synced_at": None,
             "authority": "unavailable",
-            "error": (
-                "Native task authority is unavailable; legacy fallback is disabled."
-            ),
+            "error": "Task data is temporarily unavailable.",
         }
     native_authority = authority == "native"
 
@@ -716,9 +714,7 @@ def list_namespaces(recent_days: int = 14) -> dict[str, Any]:
             "count": 0,
             "recent_days": int(recent_days),
             "authority": "unavailable",
-            "error": (
-                "Native task authority is unavailable; legacy fallback is disabled."
-            ),
+            "error": "Task data is temporarily unavailable.",
         }
     try:
         from datetime import datetime, timedelta, timezone
@@ -788,9 +784,7 @@ def get_tasks_by_namespace(
             "tasks": [],
             "descendants": [],
             "authority": "unavailable",
-            "error": (
-                "Native task authority is unavailable; legacy fallback is disabled."
-            ),
+            "error": "Task data is temporarily unavailable.",
         }
 
     try:

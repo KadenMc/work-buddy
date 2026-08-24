@@ -30,7 +30,7 @@ export const TASKS_VIEW_DEFINITION = {
     label: "Tasks",
     order: 20,
   },
-  primaryJob: "Capture, clarify, and complete authoritative work without leaving Tasks.",
+  primaryJob: "Capture, clarify, and complete work without leaving Tasks.",
   settings: {
     pageId: asSettingsPageId("wb.settings.app.tasks"),
     label: "Task settings",
@@ -61,12 +61,12 @@ export const TASKS_VIEW_DEFINITION = {
       defaultWidgetTypeId: TASKS_WIDGET_TYPE_IDS.workspace,
       presence: "required",
       help: {
-        summary: "Find, triage, and manage authoritative tasks.",
+        summary: "Find, triage, and manage tasks.",
         details:
           "Lenses and filters narrow the task collection; the detail pane edits task fields and opens the bound Co-work knowledge document.",
       },
       lockedReason:
-        "Tasks needs the workspace to show and manage the authoritative task collection.",
+        "Tasks needs the workspace to show and manage your task collection.",
       defaultSettings: {},
       defaultLayout: { x: 0, y: 6, w: 24, h: 20 },
       allowedSubstitution: { minimumDefinitionVersion: 1 },

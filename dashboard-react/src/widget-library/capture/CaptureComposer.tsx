@@ -155,7 +155,9 @@ export function CaptureComposer({ input, density, onSubmit }: CaptureComposerPro
 
   return (
     <form className={`wb-capture wb-capture--${density}`} onSubmit={submit}>
-      {readOnly && <InlineAlert tone="warning">{input.access.reason}</InlineAlert>}
+      {readOnly && input.accessNotice !== "view" ? (
+        <InlineAlert tone="warning">{input.access.reason}</InlineAlert>
+      ) : null}
       {draftState.error ? (
         <InlineAlert tone="danger">{draftState.error} Your current text remains open.</InlineAlert>
       ) : null}

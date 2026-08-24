@@ -44,6 +44,8 @@ export interface DayTimelineInput {
   readonly revision: string;
   readonly day: TimelineDayWindow;
   readonly access?: WidgetAccess;
+  /** `view` means a containing surface already renders the access notice. */
+  readonly accessNotice?: "widget" | "view";
   readonly renderMode: TimelineRenderMode;
   readonly density: TimelineDensity;
   readonly items: readonly DayTimelineItem[];

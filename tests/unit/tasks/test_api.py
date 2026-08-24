@@ -240,6 +240,23 @@ def test_native_task_api_batch_preview_reports_existing_duplicates_and_row_error
     assert authorized == []
 
 
+def test_task_view_uses_plain_setup_copy_before_activation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from work_buddy.dashboard import tasks_api
+
+    app, _store, _authorized = _app(tmp_path)
+    monkeypatch.setattr(tasks_api, "_authority_active", lambda _store: False)
+
+    response = app.test_client().get("/api/tasks/view?lens=inbox")
+
+    assert response.status_code == 200
+    reason = response.get_json()["access"]["reason"]
+    assert reason == "Task editing is temporarily unavailable while setup finishes."
+    assert "authority" not in reason.lower()
+
+
 def test_native_task_api_rejects_stale_or_unpreviewed_batch_commit(tmp_path: Path) -> None:
     app, _store, _authorized = _app(tmp_path)
     client = app.test_client()
@@ -357,6 +374,12 @@ def test_native_task_api_fails_closed_when_external_authority_latch_is_missing(
     assert view.status_code == created.status_code == 503
     assert view.get_json()["error"]["code"] == "task_authority_unavailable"
     assert created.get_json()["error"]["code"] == "task_authority_unavailable"
+    message = view.get_json()["error"]["message"]
+    assert message == (
+        "Task editing is temporarily unavailable because setup could not be verified."
+    )
+    assert "authority" not in message.lower()
+    assert "legacy" not in message.lower()
     assert authorized == []
 
 

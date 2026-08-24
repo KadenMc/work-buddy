@@ -303,7 +303,6 @@ export default function TaskWorkspace({
 
   return (
     <section className="wb-task-workspace" aria-label="Task workspace">
-      {input.access.mode === "read_only" ? <InlineAlert tone="warning">{input.access.reason ?? "Tasks is read-only."}</InlineAlert> : null}
       {notice ? <InlineAlert tone={notice.tone}>{notice.text}</InlineAlert> : null}
 
       <nav className="wb-task-lenses" aria-label="Task lenses">

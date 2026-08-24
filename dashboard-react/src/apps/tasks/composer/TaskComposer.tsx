@@ -331,7 +331,6 @@ export default function TaskComposer({
 
   return (
     <form ref={formRef} className="wb-task-composer" onSubmit={submitOne} noValidate>
-      {readOnly ? <InlineAlert tone="warning">{input.access.reason ?? "Tasks is read-only."}</InlineAlert> : null}
       {draft.error ? <InlineAlert tone="danger">{draft.error} Your draft remains open.</InlineAlert> : null}
       {message ? <InlineAlert tone={message.tone}>{message.text}</InlineAlert> : null}
       {structureConfirmation.length > 0 ? (
@@ -339,7 +338,11 @@ export default function TaskComposer({
           <span>
             This will create {structureConfirmation.join(" and ")}. The task is not saved yet.
           </span>{" "}
-          <Button size="small" onClick={() => void createOne(true)}>
+          <Button
+            size="small"
+            disabled={readOnly || submitting}
+            onClick={() => void createOne(true)}
+          >
             Confirm structure and add
           </Button>
         </InlineAlert>

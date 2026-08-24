@@ -1144,10 +1144,7 @@ def api_task_sync():
                 "ok": False,
                 "error": {
                     "code": "task_authority_unavailable",
-                    "message": (
-                        "Native task authority is unavailable; legacy sync "
-                        "fallback is disabled."
-                    ),
+                    "message": "Task data is temporarily unavailable.",
                     "retryable": True,
                 },
             }
@@ -1159,7 +1156,7 @@ def api_task_sync():
                 "ok": False,
                 "error": {
                     "code": "task_mutation_fenced",
-                    "message": "Task mutations are blocked during migration maintenance.",
+                    "message": "Task editing is temporarily paused for maintenance.",
                     "retryable": True,
                 },
             }
@@ -1170,7 +1167,10 @@ def api_task_sync():
                 "ok": False,
                 "error": {
                     "code": "task_legacy_sync_retired",
-                    "message": "Task Markdown sync is unavailable after native task cutover.",
+                    "message": (
+                        "Task syncing is no longer needed. Use the Tasks view "
+                        "to make changes."
+                    ),
                     "retryable": False,
                 },
             }
