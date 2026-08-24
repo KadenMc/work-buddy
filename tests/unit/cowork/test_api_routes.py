@@ -17,7 +17,7 @@ import pytest
 
 from work_buddy.conversations import store as conversation_store
 from work_buddy.conversations.execution import EXECUTION_METADATA_KEY
-from work_buddy.cowork import api, transport
+from work_buddy.cowork import api, reimport_api, transport
 from work_buddy.cowork import conversations, document_agent, provenance
 from work_buddy.truth import documents, expressions, proposals, ydoc_store
 from work_buddy.truth.anchors import CompositeSelector
@@ -1819,7 +1819,7 @@ def test_drift_reports_out_of_band_edit(client, store_ctx):
     assert drifted["current_file_sha256"] == sha256_bytes(drifted_body.encode("utf-8"))
 
 
-def test_reimport_records_change_set(client, store_ctx):
+def test_reimport_records_change_set(client, store_ctx, monkeypatch):
     ready, _source = _bootstrap_ready(
         client,
         store_ctx,
@@ -1839,15 +1839,46 @@ def test_reimport_records_change_set(client, store_ctx):
     )
     assert prepare.status_code == 201
     intent = prepare.get_json()
-    source = client.get(
-        _url(
-            f"/api/truth/doc/{ready['document_id']}/reimport/"
-            f"{intent['intent_id']}/source",
-            store_ctx["store_id"],
-        )
+    source_url = _url(
+        f"/api/truth/doc/{ready['document_id']}/reimport/"
+        f"{intent['intent_id']}/source",
+        store_ctx["store_id"],
     )
+    authority_calls: list[dict] = []
+
+    def capture_authority(**kwargs):
+        authority_calls.append(kwargs)
+        return HUMAN
+
+    monkeypatch.setattr(reimport_api, "_human_actor", capture_authority)
+
+    assert client.get(source_url).status_code == 405
+
+    missing_body = client.post(source_url)
+    assert missing_body.status_code == 400
+    assert missing_body.get_json()["error"]["code"] == "invalid_request"
+
+    mismatched_body = client.post(
+        source_url,
+        json={"intent_id": "another-intent"},
+    )
+    assert mismatched_body.status_code == 400
+    assert mismatched_body.get_json()["error"]["code"] == "intent_id_mismatch"
+    assert authority_calls == []
+
+    source_body = {"intent_id": intent["intent_id"]}
+    source = client.post(source_url, json=source_body)
     assert source.status_code == 200
     assert source.data == drifted_body.encode("utf-8")
+    assert source.headers["Cache-Control"] == "no-store"
+    assert authority_calls == [
+        {
+            "operation": "reimport.source_read",
+            "store_id": store_ctx["store_id"],
+            "document_id": ready["document_id"],
+            "body": source_body,
+        }
+    ]
 
     replacement_snapshot = b"YDOC:" + drifted_body.encode("utf-8")
     commit = client.put(

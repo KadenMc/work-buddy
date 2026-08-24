@@ -2,6 +2,10 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
+vi.mock("../../../security/humanAuthority", () => ({
+  coworkHumanAuthorityHeaders: vi.fn(async () => ({})),
+}));
+
 import type { CoworkFolderSummary } from "../contracts";
 import { sha256Hex } from "../persistence/hashing";
 import { CoworkHttpClient } from "../providers/CoworkHttpClient";
@@ -104,7 +108,8 @@ describe("CoworkDocumentLifecycleDialog idempotent recovery", () => {
           normalized_path: "retry-document.md",
           source_sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
           source_byte_length: 0,
-          source_url: "/bootstrap-1/source",
+          source_url:
+            "/api/truth/doc/bootstrap/bootstrap-1/source?store_id=store-1",
           ydoc_schema: "yjs-v1",
           expires_at: "2026-07-22T13:00:00.000Z",
         };
@@ -133,7 +138,10 @@ describe("CoworkDocumentLifecycleDialog idempotent recovery", () => {
           { status: committed ? 200 : 201, headers: { "Content-Type": "application/json" } },
         );
       }
-      if (url === "/bootstrap-1/source") {
+      if (
+        url ===
+        "/api/truth/doc/bootstrap/bootstrap-1/source?store_id=store-1"
+      ) {
         sourceReads += 1;
         return new Response(new Uint8Array(0), { status: 200 });
       }
@@ -221,7 +229,8 @@ describe("CoworkDocumentLifecycleDialog idempotent recovery", () => {
             normalized_path: repairDocument.path,
             source_sha256: sourceSha,
             source_byte_length: source.byteLength,
-            source_url: "/bootstrap-repair/source",
+            source_url:
+              "/api/truth/doc/bootstrap/bootstrap-repair/source?store_id=store-1",
             ydoc_schema: "yjs-v1",
             expires_at: "2026-07-22T20:00:00Z",
             state: "prepared",
@@ -229,7 +238,10 @@ describe("CoworkDocumentLifecycleDialog idempotent recovery", () => {
           { status: 201, headers: { "Content-Type": "application/json" } },
         );
       }
-      if (url === "/bootstrap-repair/source") {
+      if (
+        url ===
+        "/api/truth/doc/bootstrap/bootstrap-repair/source?store_id=store-1"
+      ) {
         return new Response(source as BodyInit, { status: 200 });
       }
       if (url.startsWith("/api/truth/doc/bootstrap/bootstrap-repair?")) {
@@ -274,7 +286,7 @@ describe("CoworkDocumentLifecycleDialog idempotent recovery", () => {
     );
     expect(requests).toEqual([
       "/api/truth/doc/bootstrap?store_id=store-1",
-      "/bootstrap-repair/source",
+      "/api/truth/doc/bootstrap/bootstrap-repair/source?store_id=store-1",
       "/api/truth/doc/bootstrap/bootstrap-repair?store_id=store-1",
     ]);
   }, 20_000);
@@ -342,7 +354,8 @@ describe("CoworkDocumentLifecycleDialog idempotent recovery", () => {
             source_sha256:
               "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
             source_byte_length: 0,
-            source_url: "/bootstrap-create/source",
+            source_url:
+              "/api/truth/doc/bootstrap/bootstrap-create/source?store_id=store-1",
             ydoc_schema: "yjs-v1",
             expires_at: "2026-07-22T20:00:00Z",
             state: "prepared",
@@ -350,7 +363,12 @@ describe("CoworkDocumentLifecycleDialog idempotent recovery", () => {
           { status: 201, headers: { "Content-Type": "application/json" } },
         );
       }
-      if (url === "/bootstrap-create/source") return new Response(new Uint8Array(0));
+      if (
+        url ===
+        "/api/truth/doc/bootstrap/bootstrap-create/source?store_id=store-1"
+      ) {
+        return new Response(new Uint8Array(0));
+      }
       if (url.startsWith("/api/truth/doc/bootstrap/bootstrap-create?")) {
         return new Response(
           JSON.stringify({
@@ -468,7 +486,8 @@ describe("CoworkDocumentLifecycleDialog idempotent recovery", () => {
             normalized_path: "drafts/imported-source.md",
             source_sha256: sourceSha256,
             source_byte_length: source.byteLength,
-            source_url: "/bootstrap-import/source",
+            source_url:
+              "/api/truth/doc/bootstrap/bootstrap-import/source?store_id=store-1",
             ydoc_schema: "yjs-v1",
             expires_at: "2026-07-22T20:00:00Z",
             state: "prepared",
@@ -476,7 +495,10 @@ describe("CoworkDocumentLifecycleDialog idempotent recovery", () => {
           { status: 201, headers: { "Content-Type": "application/json" } },
         );
       }
-      if (url === "/bootstrap-import/source") {
+      if (
+        url ===
+        "/api/truth/doc/bootstrap/bootstrap-import/source?store_id=store-1"
+      ) {
         return new Response(source, { status: 200 });
       }
       if (url.startsWith("/api/truth/doc/bootstrap/bootstrap-import?")) {

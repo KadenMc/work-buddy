@@ -170,15 +170,26 @@ def api_bootstrap_prepare():
         return _error(bootstrap.BootstrapError("invalid_request", str(exc)))
 
 
-@bootstrap_blueprint.get("/api/truth/doc/bootstrap/<bootstrap_id>/source")
+@bootstrap_blueprint.post("/api/truth/doc/bootstrap/<bootstrap_id>/source")
 def api_bootstrap_source(bootstrap_id: str):
     try:
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            raise bootstrap.BootstrapError(
+                "invalid_request",
+                "bootstrap source read requires a JSON object",
+            )
+        if body.get("bootstrap_id") != bootstrap_id:
+            raise bootstrap.BootstrapError(
+                "bootstrap_id_mismatch",
+                "bootstrap_id must match the route target",
+            )
         store = _store()
         actor = _human_actor(
             operation="bootstrap.source_read",
             store_id=store.store_id,
             document_id=bootstrap_id,
-            body={"bootstrap_id": bootstrap_id},
+            body=body,
         )
         intent, payload = bootstrap.read_staged_source(
             store, bootstrap_id=bootstrap_id, actor=actor
@@ -186,6 +197,7 @@ def api_bootstrap_source(bootstrap_id: str):
         media_type = intent.source_media_type or "text/markdown"
         response = Response(payload, mimetype=media_type)
         response.headers["ETag"] = f'"{intent.source_sha256}"'
+        response.headers["Cache-Control"] = "no-store"
         response.headers["X-WB-Source-Sha256"] = intent.source_sha256
         response.headers["X-WB-Source-Byte-Length"] = str(len(payload))
         if intent.importer_id is not None:

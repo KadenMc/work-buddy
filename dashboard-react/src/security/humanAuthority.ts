@@ -1,4 +1,4 @@
-/** Exact-body local human-authority headers for application mutations. */
+/** Exact-body local human-authority headers for protected application actions. */
 
 import {
   initializeLocalIdentity,

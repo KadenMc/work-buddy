@@ -1,7 +1,7 @@
 ---
 name: Local human identity boundary
 kind: concept
-description: Persistent installation-qualified actor, loopback session, Origin/CSRF, and exact one-use gesture boundary for protected local dashboard writes.
+description: Persistent installation-qualified actor, loopback session, Origin/CSRF, and exact one-use gesture boundary for protected local dashboard actions.
 summary: Work Buddy can prove that an enrolled local profile submitted a specific request through a bound loopback dashboard session. This is stronger than caller headers but deliberately does not prove physical presence, sole composition, or authorship.
 entry_points:
 - work_buddy.security.local_identity
@@ -26,7 +26,9 @@ requires:
 dev_notes: |-
   Protected routes must call the server verifier with the exact action, subject, and canonical context SHA-256. They derive the canonical actor from the consumed session/gesture and ignore caller-selected actor fields and legacy `X-WB-User-Ref`.
 
-  v1 is direct-loopback only. Reverse-proxied/Tailscale requests cannot make human-authority writes until a separate authenticated remote principal provider exists. Do not weaken this by treating same-origin alone as authentication.
+  A browser endpoint that consumes human authority must not use GET or HEAD, even when its domain result is a read. Chromium normally omits `Origin` on same-origin safe-method requests, so the exact-Origin verifier cannot authenticate them. The shared request gate rejects safe methods before consuming a gesture. Use a non-safe POST with the exact JSON request context bound into the gesture, validate any route/body target IDs for equality, and return `Cache-Control: no-store` for protected staged bytes.
+
+  v1 is direct-loopback only. Reverse-proxied/Tailscale requests cannot perform human-authority actions until a separate authenticated remote principal provider exists. Do not weaken this by treating same-origin alone as authentication.
 ---
 
 # Local human identity boundary

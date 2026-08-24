@@ -1,9 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../security/humanAuthority", () => ({
-  coworkHumanAuthorityHeaders: vi.fn(async () => ({})),
+  coworkHumanAuthorityHeaders: vi.fn(async () => ({
+    "X-WB-CSRF": "test-csrf-token",
+    "X-WB-Gesture": "test-gesture-token",
+  })),
 }));
 
+import { coworkHumanAuthorityHeaders } from "../../../security/humanAuthority";
 import type { CoworkPasteProvenanceRequest } from "../provenance";
 import {
   COWORK_FOLDER_PICKER_INTENT,
@@ -473,6 +477,93 @@ describe("CoworkHttpClient document lifecycle contracts", () => {
     ).toBe("never");
   });
 
+  it("posts the exact bootstrap source body with human authority and no caching", async () => {
+    vi.mocked(coworkHumanAuthorityHeaders).mockClear();
+    const source = new TextEncoder().encode("# Imported source\n");
+    const sourceUrl =
+      "/api/truth/doc/bootstrap/bootstrap-1/source?store_id=store%20one";
+    const fetchImpl = vi.fn(
+      async (input: RequestInfo | URL, init: RequestInit = {}) => {
+        expect(String(input)).toBe(sourceUrl);
+        expect(init).toMatchObject({
+          method: "POST",
+          credentials: "same-origin",
+          cache: "no-store",
+          body: JSON.stringify({ bootstrap_id: "bootstrap-1" }),
+        });
+        const headers = new Headers(init.headers);
+        expect(headers.get("Content-Type")).toBe("application/json");
+        expect(headers.get("X-WB-CSRF")).toBe("test-csrf-token");
+        expect(headers.get("X-WB-Gesture")).toBe("test-gesture-token");
+        return new Response(source, { status: 200 });
+      },
+    );
+    const client = new CoworkHttpClient(fetchImpl as typeof fetch);
+
+    expect(Array.from(await client.readBootstrapSource(sourceUrl))).toEqual(
+      Array.from(source),
+    );
+    expect(coworkHumanAuthorityHeaders).toHaveBeenCalledOnce();
+    expect(coworkHumanAuthorityHeaders).toHaveBeenLastCalledWith(
+      {
+        operation: "bootstrap.source_read",
+        storeId: "store one",
+        documentId: "bootstrap-1",
+        body: { bootstrap_id: "bootstrap-1" },
+      },
+      fetchImpl,
+    );
+  });
+
+  it("rejects a noncanonical bootstrap source URL before minting authority", async () => {
+    vi.mocked(coworkHumanAuthorityHeaders).mockClear();
+    const fetchImpl = vi.fn();
+    const client = new CoworkHttpClient(fetchImpl as typeof fetch);
+
+    for (const sourceUrl of [
+      "https://attacker.example/api/truth/doc/bootstrap/bootstrap-1/source?store_id=store-1",
+      "/bootstrap/bootstrap-1/source?store_id=store-1",
+    ]) {
+      await expect(client.readBootstrapSource(sourceUrl)).rejects.toMatchObject({
+        apiError: {
+          code: "invalid_bootstrap_source_url",
+          retryable: false,
+        },
+      });
+    }
+    expect(coworkHumanAuthorityHeaders).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("preserves a structured bootstrap source-read error", async () => {
+    const client = new CoworkHttpClient(
+      vi.fn(async () =>
+        json(
+          {
+            error: {
+              code: "bootstrap_expired",
+              message: "The prepared import expired.",
+              retryable: false,
+            },
+          },
+          410,
+        ),
+      ) as typeof fetch,
+    );
+
+    await expect(
+      client.readBootstrapSource(
+        "/api/truth/doc/bootstrap/bootstrap-1/source?store_id=store-1",
+      ),
+    ).rejects.toMatchObject({
+      apiError: {
+        code: "bootstrap_expired",
+        retryable: false,
+        status: 410,
+      },
+    });
+  });
+
   it("uses prepare, exact staged source, and multipart commit for re-import", async () => {
     const requests: Array<{ readonly url: string; readonly init: RequestInit }> = [];
     const source = new TextEncoder().encode("# External source\n");
@@ -496,7 +587,16 @@ describe("CoworkHttpClient document lifecycle contracts", () => {
         });
       }
       if (url.endsWith("/reimport/reimport-1/source?store_id=store-1")) {
-        expect(init).toMatchObject({ method: "GET", credentials: "same-origin" });
+        expect(init).toMatchObject({
+          method: "POST",
+          credentials: "same-origin",
+          cache: "no-store",
+          body: JSON.stringify({ intent_id: "reimport-1" }),
+        });
+        const headers = new Headers(init.headers);
+        expect(headers.get("Content-Type")).toBe("application/json");
+        expect(headers.get("X-WB-CSRF")).toBe("test-csrf-token");
+        expect(headers.get("X-WB-Gesture")).toBe("test-gesture-token");
         return new Response(source, { status: 200 });
       }
       if (url.endsWith("/reimport/reimport-1/commit?store_id=store-1")) {
@@ -533,6 +633,15 @@ describe("CoworkHttpClient document lifecycle contracts", () => {
         await client.readReimportSource("store-1", "doc-1", prepared.intentId),
       ),
     ).toEqual(Array.from(source));
+    expect(coworkHumanAuthorityHeaders).toHaveBeenLastCalledWith(
+      {
+        operation: "reimport.source_read",
+        storeId: "store-1",
+        documentId: "doc-1",
+        body: { intent_id: "reimport-1" },
+      },
+      fetchImpl,
+    );
     const receipt = await client.commitReimport(
       "store-1",
       "doc-1",
@@ -546,6 +655,33 @@ describe("CoworkHttpClient document lifecycle contracts", () => {
       staledProposalIds: ["proposal-1"],
     });
     expect(requests).toHaveLength(3);
+  });
+
+  it("preserves a structured re-import source-read error", async () => {
+    const client = new CoworkHttpClient(
+      vi.fn(async () =>
+        json(
+          {
+            error: {
+              code: "reimport_source_changed",
+              message: "The staged source changed.",
+              retryable: true,
+            },
+          },
+          409,
+        ),
+      ) as typeof fetch,
+    );
+
+    await expect(
+      client.readReimportSource("store-1", "doc-1", "reimport-1"),
+    ).rejects.toMatchObject({
+      apiError: {
+        code: "reimport_source_changed",
+        retryable: true,
+        status: 409,
+      },
+    });
   });
 
   it("uses the same retirement route for server-prepared consequence and commit", async () => {
