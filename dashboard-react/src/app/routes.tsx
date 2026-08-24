@@ -85,6 +85,11 @@ function StandardWidgetViewMount({
         ? search
         : `?${search}`;
       const current = currentLocationRef.current;
+      // Providers reconcile immediately after accepting a location intent. Keep
+      // the adapter coherent during the gap before React Router commits its next
+      // render so that reconciliation loads the requested query, not the one the
+      // user just left.
+      currentLocationRef.current = { ...current, search: normalized };
       void navigateRef.current(
         {
           pathname: current.pathname,

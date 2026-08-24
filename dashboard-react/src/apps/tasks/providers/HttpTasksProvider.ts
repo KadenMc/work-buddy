@@ -196,6 +196,26 @@ const validateCoworkHref = (href: unknown): string => {
   return `${parsed.pathname}${parsed.search}`;
 };
 
+const readJsonResponse = async (response: Response): Promise<unknown> => {
+  const mediaType = response.headers.get("Content-Type")
+    ?.split(";", 1)[0]
+    ?.trim()
+    .toLowerCase();
+  if (mediaType !== "application/json" && mediaType?.endsWith("+json") !== true) {
+    const message = response.status === 404
+      ? "The Tasks API is unavailable. Restart work-buddy so the dashboard and API use the same build."
+      : `The Tasks API returned ${mediaType ?? "a non-JSON response"}.`;
+    throw Object.assign(new Error(message), { status: response.status });
+  }
+  try {
+    return await response.json() as unknown;
+  } catch {
+    throw Object.assign(new Error("The Tasks API returned invalid JSON."), {
+      status: response.status,
+    });
+  }
+};
+
 export class HttpTasksProvider implements ViewProvider {
   readonly appId = TASKS_APP_ID;
   readonly #fetch: typeof fetch;
@@ -218,7 +238,7 @@ export class HttpTasksProvider implements ViewProvider {
       credentials: "same-origin",
       headers: { Accept: "application/json" },
     });
-    const payload = await response.json() as unknown;
+    const payload = await readJsonResponse(response);
     if (!response.ok) throw parseTaskApiError(response.status, payload);
     const model = parseTaskViewPayload(payload);
     const quickAdd: TaskQuickAddInput = {
@@ -337,7 +357,7 @@ export class HttpTasksProvider implements ViewProvider {
         },
         body: JSON.stringify(body),
       });
-      const payload = await response.json() as unknown;
+      const payload = await readJsonResponse(response);
       if (!response.ok) throw parseTaskApiError(response.status, payload);
       if (spec.preview === true) {
         const preview = parseBatchPreview(payload);
@@ -385,7 +405,7 @@ export class HttpTasksProvider implements ViewProvider {
         credentials: "same-origin",
         headers: { Accept: "application/json" },
       });
-      const raw = await response.json() as unknown;
+      const raw = await readJsonResponse(response);
       if (!response.ok) throw parseTaskApiError(response.status, raw);
       if (!isRecord(raw)) throw new Error("Task document response is invalid.");
       const source = isRecord(raw.document) ? raw.document : raw;

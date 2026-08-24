@@ -110,6 +110,21 @@ describe("HttpTasksProvider", () => {
     });
   });
 
+  it("explains a stale dashboard/API build mismatch instead of leaking a JSON parse error", async () => {
+    const fetchImpl = vi.fn(async () => new Response("<!doctype html>", {
+      status: 404,
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+    }));
+    const provider = new HttpTasksProvider({
+      fetchImpl: fetchImpl as typeof fetch,
+      location: locationAdapter("").location,
+    });
+
+    await expect(provider.loadView(TASKS_VIEW_ID, { reason: "mount" })).rejects.toThrow(
+      "The Tasks API is unavailable. Restart work-buddy so the dashboard and API use the same build.",
+    );
+  });
+
   it("fails closed when task access metadata is malformed", async () => {
     const fetchImpl = vi.fn(async () => json({ ...viewPayload, access: { mode: "mystery" } }));
     const provider = new HttpTasksProvider({ fetchImpl: fetchImpl as typeof fetch, location: locationAdapter().location });
