@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -8,12 +9,15 @@ import shutil
 import sqlite3
 import sys
 import tarfile
+import threading
 import zipfile
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+
+import work_buddy.tasks.production_cutover as production_cutover_module
 
 from tests.unit.tasks.test_migration_cutover import BACKUP_RECEIPTS, _operator
 from tests.unit.tasks.test_migration_inventory import _manifest_csv
@@ -683,6 +687,86 @@ def test_capture_stop_after_bindings_returns_bound_receipt_without_overwrite(tmp
             cutover.capture_process_stop_receipt()
         assert cutover.paths.process_stop_receipt.read_bytes() == before
     finally:
+        importer.close()
+
+
+def test_prepare_serializes_stop_receipt_recheck_and_fence_arm(tmp_path, monkeypatch):
+    cutover, importer, _operations, task_store = _cutover_fixture(tmp_path)
+    original_bytes = cutover.paths.process_stop_receipt.read_bytes()
+    original_payload = json.loads(original_bytes)["payload_sha256"]
+    register_entered = threading.Event()
+    release_register = threading.Event()
+    capture_lock_attempted = threading.Event()
+    capture_done = threading.Event()
+    results = {}
+    errors = {}
+    original_register = cutover._register_frozen_root
+    original_file_lock = production_cutover_module.file_lock
+
+    def paused_register(attachment):
+        register_entered.set()
+        if not release_register.wait(timeout=10):
+            raise AssertionError("test did not release frozen-root registration")
+        return original_register(attachment)
+
+    @contextmanager
+    def observed_file_lock(path, *args, **kwargs):
+        if threading.current_thread().name == "capture-racer":
+            capture_lock_attempted.set()
+        with original_file_lock(path, *args, **kwargs):
+            yield
+
+    def run_prepare():
+        try:
+            results["prepare"] = cutover.prepare(target_authority_epoch="native:1")
+        except BaseException as exc:  # surfaced in the main test thread
+            errors["prepare"] = exc
+
+    def run_capture():
+        try:
+            results["capture"] = cutover.capture_process_stop_receipt()
+        except BaseException as exc:  # surfaced in the main test thread
+            errors["capture"] = exc
+        finally:
+            capture_done.set()
+
+    cutover._register_frozen_root = paused_register
+    cutover.clock = lambda: (
+        NOW + timedelta(minutes=1)
+        if threading.current_thread().name == "capture-racer"
+        else NOW
+    )
+    monkeypatch.setattr(production_cutover_module, "file_lock", observed_file_lock)
+    prepare_thread = threading.Thread(target=run_prepare, name="prepare-racer")
+    capture_thread = threading.Thread(target=run_capture, name="capture-racer")
+    try:
+        prepare_thread.start()
+        assert register_entered.wait(timeout=30), "prepare never entered its locked root step"
+        capture_thread.start()
+        assert capture_lock_attempted.wait(timeout=5), "capture never attempted the receipt lock"
+        assert not capture_done.is_set(), "capture escaped while prepare held the receipt lock"
+        release_register.set()
+        prepare_thread.join(timeout=30)
+        capture_thread.join(timeout=30)
+        assert not prepare_thread.is_alive()
+        assert not capture_thread.is_alive()
+        assert errors == {}
+        assert results["prepare"]["cohort"]["state"] == "prepared"
+        assert results["capture"]["replayed"] is True
+        assert results["capture"]["payload_sha256"] == original_payload
+        assert cutover.paths.process_stop_receipt.read_bytes() == original_bytes
+        with task_store.connect() as connection:
+            bound_fence = connection.execute(
+                "SELECT fence_receipt_id FROM task_migration_cohorts WHERE cohort_id=?",
+                (cutover.inventory.cohort_id,),
+            ).fetchone()[0]
+        assert bound_fence == "fence_" + original_payload[:32]
+    finally:
+        release_register.set()
+        if prepare_thread.ident is not None:
+            prepare_thread.join(timeout=5)
+        if capture_thread.ident is not None:
+            capture_thread.join(timeout=5)
         importer.close()
 
 

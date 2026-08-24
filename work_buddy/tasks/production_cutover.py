@@ -3092,16 +3092,29 @@ $ownerSid = (New-Object Security.Principal.NTAccount($rootAcl.Owner)).Translate(
                 },
             )
             return {"cohort": existing, "operator_receipt": str(receipt), "replayed": True}
-        stop = self._stop_receipt_evidence()
-        root_binding = self._register_frozen_root(checks["attachment_parity"].evidence)
-        fence_receipt_id = "fence_" + str(stop["stop_payload_sha256"])[:32]
-        operator.ledger.arm_mutation_fence(
-            self.inventory.cohort_id,
-            fence_receipt_id=fence_receipt_id,
-            expected_process_generation=int(stop["process_generation"]),
-            actor=operator.actor,
-            session_id=operator.session_id,
-        )
+        # capture-stop uses this same file lock before it reads the cohort and
+        # replaces the fixed receipt path. Hold it from the exact receipt
+        # re-read through root registration and the SQLite fence CAS, so the
+        # fence can never commit a digest whose receipt was concurrently
+        # replaced while the cohort still said shadow.
+        with file_lock(self.paths.process_stop_receipt, timeout=30.0):
+            stop = self._stop_receipt_evidence()
+            checks["process_generations_stopped"] = GateCheck(
+                name="process_generations_stopped",
+                passed=True,
+                evidence=stop,
+            )
+            root_binding = self._register_frozen_root(
+                checks["attachment_parity"].evidence
+            )
+            fence_receipt_id = "fence_" + str(stop["stop_payload_sha256"])[:32]
+            operator.ledger.arm_mutation_fence(
+                self.inventory.cohort_id,
+                fence_receipt_id=fence_receipt_id,
+                expected_process_generation=int(stop["process_generation"]),
+                actor=operator.actor,
+                session_id=operator.session_id,
+            )
         for name in _PREPARE_GATES:
             operator.ledger.record_gate(
                 self.inventory.cohort_id,
