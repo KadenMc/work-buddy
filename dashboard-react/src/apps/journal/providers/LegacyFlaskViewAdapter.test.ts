@@ -261,7 +261,7 @@ describe("LegacyFlaskViewAdapter", () => {
       status: "read-only",
       quality: { kind: "partial" },
     });
-    expect(snapshot.quality.message).toMatch(/partial read-only legacy today/i);
+    expect(snapshot.quality.message).toMatch(/older Today view.*review only/i);
     expect(model.source).toEqual({ kind: "live" });
     expect(model.legacy).toMatchObject({
       endpoint: LEGACY_TODAY_ENDPOINT,
@@ -293,7 +293,7 @@ describe("LegacyFlaskViewAdapter", () => {
       status: "completed",
       mutability: "past_protected",
       precision: "derived",
-      provenance: { source: "planner", label: "Legacy Today plan" },
+      provenance: { source: "planner", label: "Today plan" },
       startAt: "2026-07-11T14:00:00.000Z",
       endAt: "2026-07-11T15:00:00.000Z",
     });
@@ -334,9 +334,9 @@ describe("LegacyFlaskViewAdapter", () => {
       },
     );
     expect(capture).toMatchObject({ status: "unavailable", input: null });
-    expect(capture.quality.message).toMatch(/no capture persistence contract/i);
+    expect(capture.quality.message).toMatch(/Quick Capture is unavailable/i);
     expect(runningNotes).toMatchObject({ status: "unavailable", input: null });
-    expect(runningNotes.quality.message).toMatch(/native Running Notes records/i);
+    expect(runningNotes.quality.message).toMatch(/Running Notes are unavailable/i);
     // Unsupported widget reads use the known partial snapshot and never call another API.
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
@@ -360,6 +360,8 @@ describe("LegacyFlaskViewAdapter", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(timeline.revision).toBe(view.revision);
     expect(timeline.observedAt).toBe(view.observedAt);
+    expect(timeline.status).toBe("ready");
+    expect(timeline.input).toMatchObject({ accessNotice: "view" });
     expect(timeline.input).toEqual(
       view.widgetInputs[JOURNAL_INSTANCE_IDS.timeline],
     );
@@ -387,7 +389,7 @@ describe("LegacyFlaskViewAdapter", () => {
       status: "unavailable",
       revision: before.revision,
     });
-    expect(result.message).toMatch(/read-only projection/i);
+    expect(result.message).toMatch(/reviewed here.*changes are not available/i);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
@@ -409,7 +411,7 @@ describe("LegacyFlaskViewAdapter", () => {
 
     expect(snapshot.status).toBe("read-only");
     expect(snapshot.quality).toMatchObject({ kind: "partial" });
-    expect(snapshot.quality.message).toMatch(/partial\/degraded/i);
+    expect(snapshot.quality.message).toMatch(/Some Journal data.*unavailable/i);
     expect(model.legacy.sourceStatus).toBe("degraded");
     expect(model.legacy.errors).toEqual(["Calendar source unavailable"]);
     expect(model.quality.issues).toEqual(
@@ -421,10 +423,11 @@ describe("LegacyFlaskViewAdapter", () => {
   });
 
   it("keeps a source-reported error distinct from transport unavailability", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse({ ...READY_PAYLOAD, status: "error", errors: ["Planner failed"] }),
+    );
     const provider = new LegacyFlaskViewAdapter({
-      fetchImpl: vi.fn(async () =>
-        jsonResponse({ ...READY_PAYLOAD, status: "error", errors: ["Planner failed"] }),
-      ),
+      fetchImpl,
       timezone: "America/New_York",
     });
 
@@ -435,6 +438,15 @@ describe("LegacyFlaskViewAdapter", () => {
     expect(snapshot.status).toBe("error");
     expect(snapshot.quality.kind).toBe("partial");
     expect(modelOrThrow(snapshot.model).legacy.sourceStatus).toBe("error");
+
+    const timeline = await provider.loadWidget(JOURNAL_WIDGET_TYPE_IDS.timeline, {
+      viewId: JOURNAL_VIEW_DEFINITION_ID,
+      instanceId: JOURNAL_INSTANCE_IDS.timeline,
+      knownRevision: snapshot.revision,
+    });
+    expect(timeline.status).toBe("error");
+    expect(timeline.input).not.toBeNull();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("returns an unmistakable unavailable snapshot on HTTP, network, or schema failure", async () => {
@@ -463,7 +475,14 @@ describe("LegacyFlaskViewAdapter", () => {
         bindings: {},
         widgetInputs: {},
       });
-      expect(snapshot.quality.message).toMatch(/endpoint unavailable/i);
+      expect(snapshot.quality.message).toMatch(/older Today view is unavailable/i);
+
+      const timeline = await provider.loadWidget(JOURNAL_WIDGET_TYPE_IDS.timeline, {
+        viewId: JOURNAL_VIEW_DEFINITION_ID,
+        instanceId: JOURNAL_INSTANCE_IDS.timeline,
+      });
+      expect(timeline).toMatchObject({ status: "unavailable", input: null });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
     }
   });
 

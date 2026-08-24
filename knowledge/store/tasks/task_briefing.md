@@ -21,6 +21,8 @@ aliases:
 - my current work status
 parents:
 - tasks
-requires:
-- obsidian
+requires: []
 ---
+
+Uses native task state, lifecycle, and history and remains available without
+Obsidian.

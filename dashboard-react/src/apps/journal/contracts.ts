@@ -118,6 +118,7 @@ export interface JournalTimelineInput {
   readonly revision: JournalRevision;
   readonly day: JournalDayBinding;
   readonly access: JournalAccess;
+  readonly accessNotice?: "widget" | "view";
   readonly renderMode: TimelineRenderMode;
   readonly density: TimelineDensity;
   readonly items: readonly JournalTimelineItem[];
@@ -172,6 +173,7 @@ export interface JournalCaptureInput {
   readonly revision: JournalRevision;
   readonly dayId: string;
   readonly access: JournalAccess;
+  readonly accessNotice?: "widget" | "view";
   readonly smartHelp?: {
     readonly summary: string;
     readonly details: string;

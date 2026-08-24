@@ -44,6 +44,7 @@ from work_buddy.logging_config import get_logger
 from work_buddy.markdown_db import FieldSpec, MarkdownDB, WriteProvenance
 from work_buddy.markdown_db.types import ParsedFileRow, ReconcileReport
 from work_buddy.obsidian.tasks import store as task_store
+from work_buddy.obsidian.tasks.authority import frozen_task_mutation_boundary
 from work_buddy.obsidian.tasks.mutations import (
     MASTER_TASK_FILE,
     replace_description_in_line,
@@ -317,6 +318,7 @@ class TaskMarkdownDB(MarkdownDB):
             logger.exception("TaskMarkdownDB: ingest event emission failed")
 
 
+@frozen_task_mutation_boundary
 def reconcile_tasks() -> dict[str, Any]:
     """Reconcile the master task list against the SQLite store.
 

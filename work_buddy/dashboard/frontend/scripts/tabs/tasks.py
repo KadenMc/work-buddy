@@ -1,7 +1,7 @@
 """Dashboard Tasks tab JS.
 
-Owns the Tasks tab loader, master-task-list rendering, namespace tree
-filtering, and the state-chip filter cluster (#todo states).
+Owns the frozen pre-cutover Tasks compatibility loader, namespace tree
+filtering, and state chips. Native authority always redirects to React.
 
 Publishes ``window.tasksSurface`` so the SSE event bus can refresh on
 ``task.created`` / ``task.state_changed`` / ``task.description_changed``
@@ -133,6 +133,10 @@ function _taskOnStateChange(key, nextSet) {
 }
 
 async function loadTasks() {
+    if (WB_NATIVE_TASKS_ACTIVE) {
+        window.location.assign('/app/tasks');
+        return;
+    }
     _renderTaskStateChips();
     await _refreshTaskView();
 
@@ -331,8 +335,22 @@ function _renderNamespaceTree(root) {
 }
 
 async function _refreshTaskView() {
-    const data = await fetchJSON('/api/tasks');
-    if (!data) return;
+    let response;
+    let data;
+    try {
+        response = await fetch('/api/tasks');
+        data = await response.json();
+    } catch (e) {
+        return;
+    }
+    // A dashboard tab can remain open across cutover. Trust the server's
+    // current authority on every refresh and leave this compatibility UI
+    // before rendering any native row as an Obsidian-era task.
+    if (data && (data.authority === 'native' || data.authority === 'unavailable')) {
+        window.location.assign('/app/tasks');
+        return;
+    }
+    if (!response.ok || !data) return;
 
     const allTasks = data.tasks || [];
     const activeStates = window._taskStateFilter || new Set();

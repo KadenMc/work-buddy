@@ -116,7 +116,9 @@ export default function DayTimelineWidget({
           </Button>
         )}
       </div>
-      {readOnly && <InlineAlert tone="warning">{input.access?.reason}</InlineAlert>}
+      {readOnly && input.accessNotice !== "view" ? (
+        <InlineAlert tone="warning">{input.access?.reason}</InlineAlert>
+      ) : null}
       {input.items.length === 0 ? (
         <p className="wb-day-timeline__empty">No temporal items for this day.</p>
       ) : (

@@ -58,8 +58,8 @@ DOMAINS: list[_DomainDef] = [
         "id": "domain:journal",
         "label": "Journal",
         "description": (
-            "Daily journaling, running notes, and the task lifecycle built "
-            "on top of Obsidian."
+            "Daily journaling and running notes, alongside the native task "
+            "lifecycle and its Co-work knowledge documents."
         ),
         "grouping_parents": [],
         "children_components": [],  # reached via subsystem:daily-notes, subsystem:task-lifecycle
@@ -183,15 +183,12 @@ SUBSYSTEMS: list[_DomainDef] = [
         "id": "subsystem:task-lifecycle",
         "label": "Task Lifecycle",
         "description": (
-            "Master task list plus the Obsidian Tasks plugin, which "
-            "work-buddy reads for task state and due dates."
+            "Native TaskStore authority, revisioned mutations, the React "
+            "Tasks workspace, and projection-free Co-work knowledge documents."
         ),
         "grouping_parents": ["domain:journal"],
-        "component_deps": ["obsidian"],
-        "requirement_ids": [
-            "obsidian/plugins/tasks-plugin",
-            "obsidian/tasks/master-list-exists",
-        ],
+        "component_deps": [],
+        "requirement_ids": [],
     },
     # --- domain:knowledge ---
     {

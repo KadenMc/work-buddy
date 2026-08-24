@@ -1,7 +1,7 @@
 ---
 name: Email Create Umbrella Task
 kind: capability
-description: Create a single task representing the whole email cluster. The cluster label becomes the task text; the linked summary note lists every email's subject + sender + date for context.
+description: Create one native task for an email cluster and place its message context in a Co-work knowledge document.
 capability_name: email_create_umbrella_task
 category: email
 op: op.wb.email_create_umbrella_task
@@ -39,6 +39,5 @@ aliases:
 - single task for email group
 parents:
 - email
-requires:
-- obsidian
+requires: []
 ---

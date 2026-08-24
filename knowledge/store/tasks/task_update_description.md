@@ -1,7 +1,7 @@
 ---
 name: Task Update Description
 kind: capability
-description: 'Rewrite the description text on a task line. Preserves checkbox, #todo, #projects/*, namespace tags, wikilinks, 🆔 + ID, plugin emojis (📅, ✅, urgency). Updates the store''s description column in lockstep. Use this instead of filesystem-direct edits — it routes through the same consent-aware, retry-aware path as the other mutations and avoids the read-modify-write race on the master task list.'
+description: Update a native task description with revision checking and an idempotent mutation receipt.
 capability_name: task_update_description
 category: tasks
 op: op.wb.task_update_description
@@ -15,15 +15,18 @@ parameters:
     type: str
     description: New description text. Single line; whitespace is collapsed.
     required: true
-  file_path:
+  expected_revision:
+    type: int
+    description: Current task revision for compare-and-swap; the gateway pins it when omitted.
+    required: false
+  client_mutation_id:
     type: str
-    description: 'Vault-relative path. Default: tasks/master-task-list.md'
+    description: Optional stable idempotency key.
     required: false
 mutates_state: true
 retry_policy: verify_first
 consent_operations:
 - tasks.update_task
-- obsidian.write_file
 tags:
 - tasks
 - task
@@ -36,9 +39,8 @@ aliases:
 - change task text
 - update task wording
 - rephrase task
-- rewrite task line
+- rewrite task text
 parents:
 - tasks
-requires:
-- obsidian
+requires: []
 ---

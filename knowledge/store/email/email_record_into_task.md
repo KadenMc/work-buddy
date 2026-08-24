@@ -1,7 +1,7 @@
 ---
 name: Email Record Into Task
 kind: capability
-description: File an email cluster as a context section on an existing task's linked note. Use when the cluster is context for ongoing work (replies on an active deliverable, PR-review notifications about a task you're already tracking) rather than a new task. The target task must already have a note attached; this capability does not implicitly create one. Appends a bulleted 'Emails recorded' section listing each email's subject + sender + date.
+description: Append an email cluster as context in an existing task's Co-work knowledge document. The target task must already have an active document.
 capability_name: email_record_into_task
 category: email
 op: op.wb.email_record_into_task
@@ -13,7 +13,7 @@ parameters:
     required: true
   target_task_id:
     type: str
-    description: Task ID (e.g. 't-xxxxxxxx') to file the cluster against. Must already have a linked note.
+    description: Native task ID whose active Co-work document receives the context.
     required: true
   section_heading:
     type: str
@@ -36,6 +36,8 @@ aliases:
 - attach emails to existing task
 parents:
 - email
-requires:
-- obsidian
+requires: []
 ---
+
+The native result carries task/document identity, task revision, and mutation
+receipt metadata. It never reports or writes a Markdown note path.

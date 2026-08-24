@@ -55,7 +55,22 @@ def _vault_name() -> str:
 _VAULT_BOOTSTRAP = (
     "const WB_VAULT_NAME = (document.documentElement "
     "&& document.documentElement.dataset.vaultName) || '';\n"
+    "const WB_NATIVE_TASKS_ACTIVE = ((document.documentElement "
+    "&& document.documentElement.dataset.nativeTasks) || '') === 'true';\n"
 )
+
+
+def _native_tasks_active() -> bool:
+    """Route native or unavailable authority away from legacy task UI."""
+    try:
+        from work_buddy.tasks.runtime import native_authority_active
+
+        return native_authority_active()
+    except Exception:
+        # Fail closed.  If the native latch and SQLite state cannot be
+        # reconciled, the legacy page must not expose frozen Markdown links or
+        # sync controls while an operator repairs native storage.
+        return True
 
 
 def assembled_js() -> str:
@@ -115,8 +130,10 @@ def render_page() -> str:
     """
     _ensure_assets()
     vault_attr = _htmlstd.escape(_vault_name(), quote=True)
+    native_tasks_active = _native_tasks_active()
+    native_tasks_attr = "true" if native_tasks_active else "false"
     return f"""<!DOCTYPE html>
-<html lang="en" data-vault-name="{vault_attr}">
+<html lang="en" data-vault-name="{vault_attr}" data-native-tasks="{native_tasks_attr}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -127,7 +144,7 @@ def render_page() -> str:
     <script src="/vendor/morphdom-umd.min.js"></script>
 </head>
 <body>
-    {_html()}
+    {_html(native_tasks_active=native_tasks_active)}
     <script src="/assets/{_JS_NAME}"></script>
 </body>
 </html>"""

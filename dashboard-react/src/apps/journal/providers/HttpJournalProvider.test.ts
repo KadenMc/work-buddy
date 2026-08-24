@@ -2,12 +2,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { resetLocalIdentityForTests } from "../../../security/localIdentity";
 import {
+  JOURNAL_INSTANCE_IDS,
   JOURNAL_VIEW_DEFINITION_ID,
+  JOURNAL_WIDGET_TYPE_IDS,
   toDashboardJournalIntent,
 } from "../bindings";
 import {
   JOURNAL_WIDGET_INSTANCE_IDS,
   type JournalCaptureSubmitIntent,
+  type JournalRunningNoteEditIntent,
   type JournalRunningNoteOpenDocumentIntent,
 } from "../contracts";
 import {
@@ -209,6 +212,39 @@ describe("HttpJournalProvider", () => {
       });
     expect(snapshot.model?.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.runningNotes].access.mode)
       .toBe("read_only");
+    expect(snapshot.model?.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.timeline].accessNotice)
+      .toBe("widget");
+  });
+
+  it("delegates the Timeline notice only when Journal chrome explains the same limitation", async () => {
+    const reviewOnlyReason =
+      "This older Today view can be reviewed here, but changes are not available.";
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/local-identity/session/csrf") {
+        return json({ ok: true, authenticated: true, principal: principal(), csrf_token: "csrf" });
+      }
+      if (url === LEGACY_TODAY_ENDPOINT) return json(legacy);
+      if (url === JOURNAL_VIEW_ENDPOINT) {
+        return json({
+          ...native,
+          view: {
+            ...native.view,
+            access: { mode: "read_only", reason: reviewOnlyReason },
+          },
+        });
+      }
+      throw new Error(`Unexpected ${url}`);
+    });
+    const provider = new HttpJournalProvider({ fetchImpl });
+
+    const snapshot = await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, { reason: "mount" });
+    const timeline = snapshot.model?.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.timeline];
+
+    expect(snapshot.status).toBe("read-only");
+    expect(snapshot.model?.access).toEqual({ mode: "read_only", reason: reviewOnlyReason });
+    expect(timeline?.access).toEqual({ mode: "read_only", reason: reviewOnlyReason });
+    expect(timeline?.accessNotice).toBe("view");
   });
 
   it("binds a single-use gesture to the exact capture before posting", async () => {
@@ -283,6 +319,39 @@ describe("HttpJournalProvider", () => {
     const snapshot = await provider.loadView(JOURNAL_VIEW_DEFINITION_ID, { reason: "mount" });
     const capture = snapshot.model?.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.capture];
     expect(capture?.access.mode).toBe("read_only");
+    const reason = capture?.access.mode === "read_only" ? capture.access.reason : undefined;
+    expect(reason).toBe(
+      "Editing is paused in this browser. Open Journal from the Work Buddy tray to reconnect.",
+    );
+    expect(reason).not.toMatch(/authority|authenticated|migration/i);
+    expect(capture?.accessNotice).toBe("view");
+    expect(snapshot.model?.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.timeline].accessNotice)
+      .toBe("widget");
+
+    const widget = await provider.loadWidget(JOURNAL_WIDGET_TYPE_IDS.capture, {
+      viewId: JOURNAL_VIEW_DEFINITION_ID,
+      instanceId: JOURNAL_INSTANCE_IDS.capture,
+    });
+    expect(widget.status).toBe("ready");
+  });
+
+  it("uses plain guidance for unsupported inline note changes", async () => {
+    const provider = new HttpJournalProvider({ fetchImpl: vi.fn() });
+    const intent: JournalRunningNoteEditIntent = {
+      intent_type: "wb.notes.edit-requested",
+      schema_version: 1,
+      intent_id: "edit-note-one",
+      client_mutation_id: "edit-note-one",
+      view_id: "wb.journal.main",
+      instance_id: JOURNAL_WIDGET_INSTANCE_IDS.runningNotes,
+      payload: { item_id: "entry-one", expected_version: 1, markdown: "updated" },
+    };
+    const result = await provider.dispatch(toDashboardJournalIntent(intent));
+
+    expect(result).toMatchObject({
+      status: "unavailable",
+      message: "Open this note in Co-work to make changes.",
+    });
   });
 
   it("opens a Running Note through an exact gesture without resubmitting its text", async () => {

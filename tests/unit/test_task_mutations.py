@@ -19,7 +19,13 @@ from work_buddy.obsidian.tasks import mutations
 @pytest.fixture(autouse=True)
 def _bypass_consent_and_retry():
     """Bypass consent checks and bridge_retry for all tests."""
-    with patch("work_buddy.consent._cache") as mock_cache:
+    with (
+        patch("work_buddy.consent._cache") as mock_cache,
+        patch(
+            "work_buddy.tasks.runtime.native_task_mutation_authority",
+            return_value=False,
+        ),
+    ):
         mock_cache.is_granted.return_value = True
         mock_cache.get_mode.return_value = "always"
         yield

@@ -262,4 +262,21 @@ describe("QuickTextCaptureWidget", () => {
     expect(screen.getByRole("textbox", { name: "Capture text" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Capture" })).toBeDisabled();
   });
+
+  it("defers an access notice to a containing view without enabling capture", async () => {
+    render(
+      renderCapture(
+        {
+          ...baseInput,
+          access: { mode: "read_only", reason: "Editing is paused." },
+          accessNotice: "view",
+        },
+        vi.fn(),
+      ),
+    );
+
+    expect(screen.queryByText("Editing is paused.")).not.toBeInTheDocument();
+    expect(await screen.findByRole("textbox", { name: "Capture text" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Capture" })).toBeDisabled();
+  });
 });

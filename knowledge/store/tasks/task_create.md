@@ -1,7 +1,7 @@
 ---
 name: Task Create
 kind: capability
-description: Create a new task in the master task list. Optionally attach a note file for details/subtasks. GTD vocabulary (task_kind, density, outcome_text, next_action_text, definition_of_done, creation_effort, user_involvement, creation_provenance, deadline, dependency) is optional and defaults to 'looks like a legacy manually-authored task'. Agent-driven creators should set creation_provenance (e.g. 'agent_inferred_from_journal') and lower user_involvement.
+description: Create a native task and optionally provision a projection-free Co-work knowledge document. GTD vocabulary is optional; agent-driven creators should set creation_provenance and appropriate user_involvement.
 capability_name: task_create
 category: tasks
 op: op.wb.task_create
@@ -17,7 +17,7 @@ parameters:
     required: false
   project:
     type: str
-    description: 'Project slug (added as #projects/<slug>)'
+    description: Project slug stored as a structured project tag.
     required: false
   due_date:
     type: str
@@ -29,11 +29,11 @@ parameters:
     required: false
   summary:
     type: str
-    description: If provided, creates a linked note file with this summary
+    description: If provided, creates a linked Co-work knowledge document with this initial content.
     required: false
   tags:
     type: list[str]
-    description: Namespace tags (no leading '#'), e.g. ['paper/ecg-classifier', 'experiment/augmentation']. Appended to the task line; picked up into the tag cache on next task_sync.
+    description: Structured namespace tags without a leading '#'.
     required: false
   task_kind:
     type: str
@@ -83,11 +83,14 @@ parameters:
     type: str
     description: 'free-text hint about the dependency (e.g. ''needs Ben’s review'').'
     required: false
+  client_mutation_id:
+    type: str
+    description: Optional stable idempotency key. The gateway pins one before dispatch when omitted.
+    required: false
 mutates_state: true
 retry_policy: verify_first
 consent_operations:
 - tasks.create_task
-- obsidian.write_file
 is_action: true
 intrinsic_amplifiers:
   irreversibility: low
@@ -103,8 +106,7 @@ aliases:
 - add todo
 parents:
 - tasks
-requires:
-- obsidian
+requires: []
 ---
 
-The creating agent session is recorded automatically on the task as `created_by_session` — the *created-by* role of the three session↔task provenance roles (created-by / assigned / developed-by; see `tasks/task_provenance`). `create_task` captures the gateway-pinned originating session, falling back to the env session for direct (non-gateway) callers — the same idiom `task_assign` uses to record the claiming session. It is **not a parameter** (never pass it); it is read from context. NULL when unrecorded — a human/plugin/bootstrap creation, or a task predating the column (migration v11). Surfaced via `task_provenance` and as `read_task`'s top-level `created_by` field; historical NULLs can be filled from note prose by the re-runnable `backfill_created_by` pass.
+The creating agent session is recorded automatically as `created_by_session`; it is not a caller parameter. The result includes the native task ID, task and collection revisions, a durable mutation receipt, and Co-work document metadata when `summary` provisions knowledge. It never returns a Markdown task line or note path. Replaying the same `client_mutation_id` after response loss returns the original semantic result.

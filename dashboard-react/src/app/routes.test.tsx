@@ -198,6 +198,7 @@ describe("projectDashboardRoutes", () => {
     await waitFor(() => expect(adapter).toBeDefined());
     await screen.findByRole("heading", { name: "Location ·" });
     fireEvent.click(screen.getByRole("button", { name: "Open second document" }));
+    expect(adapter && adapter.getSearch()).toBe("?document_id=two");
     await screen.findByText("?document_id=two");
     expect(listener).toHaveBeenCalledWith("?document_id=two");
     expect(adapter && adapter.getSearch()).toBe("?document_id=two");

@@ -1,7 +1,7 @@
 ---
 name: Task-note Migration Operator
 kind: capability
-description: Inventory task-note bodies and run one conservative shadow, parity, cutover, rollback, or recovery step through the source-backed Co-work migration boundary.
+description: Legacy per-note migration operator retained only for pre-native recovery; superseded by the native task importer and cutover.
 capability_name: task_note_migration_operator
 category: tasks
 op: op.wb.task_note_migration_operator
@@ -51,7 +51,11 @@ parents:
 - tasks
 ---
 
-This capability migrates only the Markdown body identified by `note_uuid`.
+This capability belongs to the superseded per-note Markdown migration. It is
+retained for inspection and recovery of pre-native receipts and must not be used
+as the native task cutover path or invoked after native authority activates.
+
+For a pre-cutover recovery run, it migrates only the Markdown body identified by `note_uuid`.
 It never moves task-master, status, scheduling, or link authority. Inventory is
 content-free. Shadow import captures the exact Markdown file as a Source with
 unknown authorship and persists the managed-copy dependency before Source
@@ -72,4 +76,6 @@ unexpected file base. Recovery resumes receipts by idempotency key.
 Source redaction scrubs automatically only while the exact Source-produced
 document head remains current and has no direct edits. A changed/mixed head is
 marked for review; Hindsight, projections, and compatibility Markdown never
-become content authority.
+become content authority. The whole-system backup, deterministic legacy import,
+recovery catalog, durable authority latch, and guarded activation are documented
+at `tasks/native-task-system`.

@@ -92,6 +92,19 @@ def _email_summary_lines(emails: list[dict[str, Any]]) -> list[str]:
     return lines
 
 
+def _created_task_result(
+    item_id: str,
+    result: dict[str, Any],
+    *,
+    native_tasks: bool,
+) -> dict[str, Any]:
+    if not native_tasks:
+        return {"item_id": item_id, "task_line": result.get("task_line")}
+    from work_buddy.tasks.integration_results import native_creation_result
+
+    return {"item_id": item_id, **native_creation_result(result)}
+
+
 # ---------------------------------------------------------------------------
 # email_close — advisory dismiss of the cluster
 # ---------------------------------------------------------------------------
@@ -131,15 +144,17 @@ def email_create_tasks(
 ) -> dict[str, Any]:
     """Walk an email-cluster thread and create one task per email.
 
-    Each task's text uses the email subject; the sender + date land
-    in the linked summary note for context.
+    Each task's text uses the email subject; the sender + date land in the
+    summary-backed Co-work knowledge document under native task authority.
 
     Returns ``{"thread_id": str, "created": [...], "failed": [...]}``.
     """
     from work_buddy.threads.models import Task
+    from work_buddy.tasks.runtime import native_authority_active
 
     thread = _get_thread_or_raise(thread_id)
     emails = _emails_from_thread(thread)
+    native_tasks = native_authority_active()
     if not emails:
         return {
             "thread_id": thread_id,
@@ -171,10 +186,11 @@ def email_create_tasks(
                 user_involvement="medium",
             )
             if result.get("success"):
-                created.append({
-                    "item_id": email["id"],
-                    "task_line": result.get("task_line"),
-                })
+                created.append(
+                    _created_task_result(
+                        email["id"], result, native_tasks=native_tasks,
+                    )
+                )
             else:
                 failed.append({
                     "item_id": email["id"],
@@ -213,9 +229,11 @@ def email_create_umbrella_task(
     user has the full bundle of context on one task.
     """
     from work_buddy.threads.models import Task
+    from work_buddy.tasks.runtime import native_authority_active
 
     thread = _get_thread_or_raise(thread_id)
     emails = _emails_from_thread(thread)
+    native_tasks = native_authority_active()
     if not emails:
         return {
             "thread_id": thread_id,
@@ -259,14 +277,12 @@ def email_create_umbrella_task(
                 "error": result.get("message", "create_task returned success=False"),
             }],
         }
-    return {
-        "thread_id": thread_id,
-        "created": {
-            "task_line": result.get("task_line"),
-            "email_count": len(emails),
-        },
-        "failed": [],
-    }
+    created = _created_task_result(
+        "umbrella", result, native_tasks=native_tasks,
+    )
+    created.pop("item_id")
+    created["email_count"] = len(emails)
+    return {"thread_id": thread_id, "created": created, "failed": []}
 
 
 # ---------------------------------------------------------------------------
@@ -280,49 +296,58 @@ def email_record_into_task(
     target_task_id: str,
     section_heading: str | None = None,
 ) -> dict[str, Any]:
-    """Append the cluster's emails as a section in an existing task's note.
+    """Append the cluster's emails to an existing task's knowledge surface.
 
     Use when the email cluster is *context for ongoing work* rather than
     a new task in itself — e.g., reply threads on an active deliverable,
     PR-review notifications about a task you're already tracking. The
-    cluster's emails are appended as a bulleted section to the target
-    task's linked note.
+    cluster's emails are appended as a bulleted section to the target task's
+    Co-work knowledge document under native authority, or its compatibility
+    note before cutover.
 
-    The target task must exist AND have a linked note. If the task
-    has no note yet, returns ``{"appended": False, "error": ...}``
-    rather than implicitly creating one — adding a note to a task is
-    a different decision the user should make explicitly.
+    The target task must already have the corresponding knowledge surface.
+    This action never creates one implicitly.
 
     Args:
         thread_id: Email-cluster sub-thread carrying the emails to record.
         target_task_id: Task ID (e.g. ``"t-a3f8c1e2"``) the cluster
-            should be filed against. Must already have a note attached.
+            should be filed against. Must already have knowledge attached.
         section_heading: Optional override for the section heading
             written into the note. Defaults to ``"Emails recorded"``.
 
     Returns:
-        ``{"thread_id": str, "target_task_id": str, "appended": bool,
-           "email_count": int, "note_path": str | None,
-           "error": str | None, "skipped_empty": bool}``.
+        Native results carry ``task_id``, task ``revision``, and ``document``
+        metadata; compatibility results retain the legacy ``note_path`` shape.
     """
-    from work_buddy.obsidian.tasks.mutations import read_task
-    from work_buddy.task_notes import get_task_note_adapter, note_uuid_from_path
+    from work_buddy.tasks.runtime import native_authority_active
 
     thread = _get_thread_or_raise(thread_id)
     emails = _emails_from_thread(thread)
+    native_tasks = native_authority_active()
     if not emails:
-        return {
+        result = {
             "thread_id": thread_id,
             "target_task_id": target_task_id,
             "appended": False,
             "email_count": 0,
-            "note_path": None,
             "skipped_empty": True,
         }
+        if native_tasks:
+            result.update({"task_id": target_task_id, "document": None})
+        else:
+            result["note_path"] = None
+        return result
 
     # Resolve target task + its linked note path.
     try:
-        task_payload = read_task(target_task_id)
+        if native_tasks:
+            from work_buddy.tasks.capabilities import task_read
+
+            task_payload = task_read(target_task_id)
+        else:
+            from work_buddy.obsidian.tasks.mutations import read_task
+
+            task_payload = read_task(target_task_id)
     except Exception as exc:
         raise EmailThreadActionError(
             f"Could not read target task {target_task_id!r}: {exc}",
@@ -333,8 +358,29 @@ def email_record_into_task(
             f"Target task {target_task_id!r} not found",
         )
 
+    knowledge_document = task_payload.get("knowledge_document")
     note_path = task_payload.get("note_path")
-    if not note_path:
+    task_metadata = task_payload.get("metadata")
+    task_revision = (
+        task_metadata.get("revision")
+        if isinstance(task_metadata, dict)
+        else task_payload.get("revision")
+    )
+    if native_tasks and not knowledge_document:
+        return {
+            "thread_id": thread_id,
+            "target_task_id": target_task_id,
+            "task_id": target_task_id,
+            "revision": task_revision,
+            "appended": False,
+            "email_count": len(emails),
+            "document": None,
+            "error": (
+                f"Target task {target_task_id!r} has no linked knowledge document. "
+                "Create one in Tasks and retry."
+            ),
+        }
+    if not native_tasks and not note_path:
         # Don't implicitly create a note — that's a separate decision
         # the user should make explicitly via task_assign or similar.
         return {
@@ -354,12 +400,55 @@ def email_record_into_task(
     bullet_lines = _email_summary_lines(emails)
     section = f"## {heading}\n\n" + "\n".join(bullet_lines)
 
+    if native_tasks:
+        try:
+            from work_buddy.tasks.documents import TaskDocumentService
+            from work_buddy.tasks.runtime import originating_session
+
+            appended_document = TaskDocumentService().append_markdown(
+                task_id=target_task_id,
+                markdown=section,
+                actor_ref=originating_session() or "service:email",
+                idempotency_key=f"email-thread:{thread_id}:task:{target_task_id}",
+            )
+        except Exception as exc:
+            logger.warning(
+                "email_record_into_task: Co-work append failed for %s: %s",
+                target_task_id,
+                exc,
+            )
+            return {
+                "thread_id": thread_id,
+                "target_task_id": target_task_id,
+                "task_id": target_task_id,
+                "revision": task_revision,
+                "appended": False,
+                "email_count": len(emails),
+                "document": knowledge_document,
+                "error": str(exc),
+            }
+        document = {
+            **knowledge_document,
+            **appended_document.to_dict(),
+        }
+        return {
+            "thread_id": thread_id,
+            "target_task_id": target_task_id,
+            "task_id": target_task_id,
+            "revision": task_revision,
+            "appended": True,
+            "email_count": len(emails),
+            "document": document,
+        }
+
     # Append through the authority-aware task-note adapter. The call site is
     # consent-gated at the capability level
     # (email_record_into_task has mutates_state=True + requires obsidian)
     # so going through the consent-wrapped append_to_note here would
     # double-prompt for the same user-initiated click.
     try:
+        from work_buddy.task_notes import get_task_note_adapter, note_uuid_from_path
+
         note_uuid = note_uuid_from_path(note_path)
         note_adapter = get_task_note_adapter()
     except (ValueError, OSError):

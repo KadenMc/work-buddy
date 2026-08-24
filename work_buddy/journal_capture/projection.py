@@ -180,16 +180,13 @@ def view_snapshot(
             "dayId": day["dayId"],
             "access": {
                 "mode": "read_only",
-                "reason": (
-                    "Captured notes are observable here; editing remains in the "
-                    "authoritative daily note until document authority is migrated."
-                ),
+                "reason": "Open a running note in Co-work to edit it.",
             },
             "displayMode": "chronological",
             "items": [_running_note(store, item) for item in notes],
             "legacyCompatibility": {
                 "status": "unmanaged_present_or_unknown",
-                "message": "Older unmarked notes stay read-only until their identities are migrated.",
+                "message": "Older notes without stable IDs are shown read-only.",
             },
         },
         "logEntries": [_log_entry(item) for item in logs],

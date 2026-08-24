@@ -61,6 +61,19 @@ def run_fix(req_id: str, params: dict[str, Any] | None = None) -> dict[str, Any]
             "spawned": None,
         }
 
+    checker = RequirementChecker()
+    if not checker.is_applicable(req):
+        return {
+            "ok": True,
+            "detail": (
+                f"No action: requirement {req_id} is not applicable in the "
+                "current authority epoch."
+            ),
+            "side_effects": [],
+            "recheck": None,
+            "spawned": None,
+        }
+
     if req.fix_kind == "none":
         return {
             "ok": False,
@@ -152,7 +165,6 @@ def run_fix(req_id: str, params: dict[str, Any] | None = None) -> dict[str, Any]
     # Re-run the check so the caller can show the new state immediately.
     # If the fix said ok=True but the check still fails, surface that —
     # it means the fix didn't actually fix what we claimed.
-    checker = RequirementChecker()
     recheck = checker._run_check(req).to_dict()
 
     # Bust the graph cache so the next /api/control/graph read includes

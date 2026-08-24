@@ -34,7 +34,7 @@ export function createRuntime(
       },
       {
         id: "legacy",
-        label: "Live data · partial legacy Today adapter",
+        label: "Older Today view · review only",
         isDemo: false,
         provider: new LegacyFlaskViewAdapter(),
       },

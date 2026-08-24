@@ -185,7 +185,8 @@ def test_real_capabilities_have_consent_operations():
         # obsidian.write_file is listed for UX (rich bundled notification).
         # Correctness no longer depends on it — the consent context handles
         # nesting automatically. But it enriches the notification body.
-        assert "obsidian.write_file" in task_create.consent_operations
+    assert task_create.consent_operations == ["tasks.create_task"]
+    assert "obsidian.write_file" not in task_create.consent_operations
 
     task_toggle = reg.get("task_toggle")
     if task_toggle is not None:

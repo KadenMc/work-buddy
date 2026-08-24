@@ -59,7 +59,9 @@ export default function RunningNotesWidget({
 
   return (
     <div className="wb-running-notes">
-      {readOnly && <InlineAlert tone="warning">{input.access.reason}</InlineAlert>}
+      {readOnly && input.items.length > 0 && input.access.reason ? (
+        <InlineAlert tone="warning">{input.access.reason}</InlineAlert>
+      ) : null}
       {input.items.length === 0 ? (
         <p className="wb-running-notes__empty">No running notes for this collection.</p>
       ) : (

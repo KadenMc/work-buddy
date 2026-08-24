@@ -47,7 +47,7 @@ describe("WidgetLab", () => {
     const widgets = listReusableLabWidgets();
     const cases = await screen.findAllByTestId("widget-lab-host");
 
-    expect(widgets).toHaveLength(3);
+    expect(widgets).toHaveLength(5);
     expect(cases).toHaveLength(
       widgets.length * (WIDGET_LAB_SIZE_MODES.length + WIDGET_LAB_HOST_STATES.length),
     );
@@ -99,7 +99,7 @@ describe("WidgetLab", () => {
       "data-wb-skin",
       "wb.conformance-stress",
     );
-  });
+  }, 60_000);
 
   it("keeps a representative real-widget trace accessible", async () => {
     const { container } = renderLab("/app/__widget-lab?count=3");

@@ -1,8 +1,8 @@
 ---
 name: Dashboard — Automation surfaces
 kind: concept
-description: Dashboard surfaces that project the operating-tier resolver and who-can-act decision into the Today tab. The earlier Review Queue, Daily Log, and Engage tabs were retired when the Threads tab became the canonical resolution surface; what remains is the Today tab and the per-task Auto column on the Tasks tab.
-summary: Today tab + the Tasks-tab Auto column are the surviving automation surfaces. Review Queue, Daily Log, and Engage tabs were retired when Threads became the canonical resolution surface; the engage helper survives as a private collaborator of ``_build_today_payload``.
+description: Dashboard automation surfaces remaining in Today plus native task attention and triage controls in the React Tasks view.
+summary: Today remains the planning surface; /app/tasks owns focused/MIT/snooze/archive triage against native task authority.
 tags:
 - dashboard
 - today
@@ -32,7 +32,7 @@ dev_notes: |-
 
 # Dashboard automation surfaces
 
-v5 Threads is the canonical resolution surface for everything that needs the user's attention; triage flows through the unified source pipeline and surfaces on the Threads tab via group sub-threads. A **Review Queue** tab (tier-3 outputs), a **Daily Log** tab (tier-4 events), and an **Engage** tab (who-can-act + current-context filter) used to project the operating-tier resolver output directly; those are gone (see "What used to be here" below), and what remains is the Today tab and the per-task Auto column on the Tasks tab.
+v5 Threads is the canonical resolution surface for source-pipeline items that need the user's attention. Review Queue, Daily Log, and Engage tabs are retired. Today remains the planning surface, while task-specific attention and inbox triage now live in the React Tasks view.
 
 ## What's left
 
@@ -40,9 +40,9 @@ v5 Threads is the canonical resolution surface for everything that needs the use
 
 ``GET /api/automation/today?contexts=<csv>`` -> composes the engage helper output + the clamp-to-now plan from ``work_buddy.task_me.build_now_plan`` + top-2 recommendations from ``task_me.top_recommendations`` + active-contracts banner. Re-runnable on every refresh.
 
-### Tasks tab — Auto column
+### React Tasks view
 
-The existing Tasks tab still surfaces the resolver: per-row tier badge, typed pipeline-blocker badge (when capped), and last-actor pill, backed by enrichment in ``get_tasks_summary``.
+`/app/tasks` exposes native attention states and an Inbox triage lens. Each of up to five candidates can become Most Important, Working on now, Snoozed, or Archived. **Skip this pass** rotates a candidate locally and does not mutate task state. See `services/dashboard/react/tasks-view`.
 
 ## Internal helpers (no HTTP route)
 

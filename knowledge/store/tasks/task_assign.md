@@ -1,7 +1,7 @@
 ---
 name: Task Assign
 kind: capability
-description: Claim a task for the current session and get full context (text, note, metadata)
+description: Claim a native task for the current session and return structured task plus current Co-work knowledge context.
 capability_name: task_assign
 category: tasks
 op: op.wb.task_assign
@@ -11,6 +11,16 @@ parameters:
     type: str
     description: Task ID (e.g., 't-xxxxxxxx')
     required: true
+  expected_revision:
+    type: int
+    description: Current task revision for compare-and-swap; the gateway pins it when omitted.
+    required: false
+  client_mutation_id:
+    type: str
+    description: Optional stable idempotency key.
+    required: false
+mutates_state: true
+retry_policy: verify_first
 tags:
 - tasks
 - task
@@ -22,6 +32,8 @@ aliases:
 - start task
 parents:
 - tasks
-requires:
-- obsidian
+requires: []
 ---
+
+Returns native task/document context and a mutation receipt. It never returns a
+Markdown note path or task line.

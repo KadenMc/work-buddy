@@ -2,7 +2,7 @@
 name: Task Assign Directions
 kind: directions
 description: How to assign a task — presentation format, completion tracking, state change protocol
-summary: 'Use MCP tool directly, never Python. task_assign = claim + read; use task_read when you only want to inspect. Present: task text/state/urgency, contract, note preview with path, session count. State NOT changed by assignment. After completing deliverable, proactively ask to mark done — always confirm first.'
+summary: 'Use the capability directly. task_assign = claim + read; use task_read for inspection only. Present native fields, current Co-work knowledge, revision, and session count. Assignment does not change attention state.'
 trigger: user runs /wb-task-assign or asks to assign a task to the current session
 command: wb-task-assign
 capabilities:
@@ -39,7 +39,7 @@ The assignment is queryable in both directions: the read payload embeds `assigne
 
 1. Task: text and current state/urgency
 2. Contract: which contract it serves (if any)
-3. Note: preview of note content (if exists) + file path
+3. Knowledge: current Co-work content/excerpt and document identity, with no path
 4. Sessions: how many sessions have worked on this task
 
 ## State

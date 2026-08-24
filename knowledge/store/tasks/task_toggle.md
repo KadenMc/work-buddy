@@ -1,7 +1,7 @@
 ---
 name: Task Toggle
 kind: capability
-description: Mark a task complete, incomplete, or toggle. Handles checkbox, done date, and store state atomically. Use done=true to complete, done=false to reopen, omit to toggle. Consent-gated.
+description: Complete, reopen, or toggle a native task atomically. Preserves an optional historical done date and the prior attention state for an idempotent reopen.
 capability_name: task_toggle
 category: tasks
 op: op.wb.task_toggle
@@ -19,11 +19,18 @@ parameters:
     type: str
     description: ISO YYYY-MM-DD to stamp as the completion date when marking done. Defaults to today. Use for retroactive completion (e.g. the landing-commit date a completeness check uncovered). Ignored when reopening.
     required: false
+  expected_revision:
+    type: int
+    description: Current task revision for compare-and-swap; the gateway pins it when omitted.
+    required: false
+  client_mutation_id:
+    type: str
+    description: Optional stable idempotency key.
+    required: false
 mutates_state: true
 retry_policy: verify_first
 consent_operations:
 - tasks.toggle_task
-- obsidian.write_file
 tags:
 - tasks
 - task
@@ -37,6 +44,5 @@ aliases:
 - reopen task
 parents:
 - tasks
-requires:
-- obsidian
+requires: []
 ---

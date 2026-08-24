@@ -4,7 +4,7 @@ Serves:
     - ``GET /health`` — sidecar health check
     - ``GET /`` — single-page dashboard app
     - ``GET /api/state`` — aggregated system state
-    - ``GET /api/tasks`` — task list from Obsidian Tasks
+    - ``GET /api/tasks`` — compatibility task list from the neutral store
     - ``GET /api/sessions`` — active agent sessions
     - ``GET /api/services`` — child service health
     - ``GET /api/contracts`` — active contract summaries
@@ -1112,13 +1112,15 @@ def api_requirements_component(component_id: str):
 
 @app.get("/api/tasks")
 def api_tasks():
-    """Task summaries from Obsidian Tasks."""
-    return jsonify(get_tasks_summary())
+    """Compatibility task summaries from the neutral task store."""
+    summary = get_tasks_summary()
+    status = 503 if summary.get("authority") == "unavailable" else 200
+    return jsonify(summary), status
 
 
 @app.post("/api/task_sync")
 def api_task_sync():
-    """Trigger a task_sync run from the dashboard's Sync button.
+    """Run legacy task sync only while legacy authority is provable.
 
     The user's click is the consent boundary — wrap the underlying
     capability invocation in ``user_initiated('dashboard.task_sync')``
@@ -1129,6 +1131,51 @@ def api_task_sync():
     if blocked:
         return blocked
     try:
+        from work_buddy.tasks.runtime import (
+            mutation_fence_active,
+            native_authority_active,
+        )
+
+        native_authority = native_authority_active()
+        fenced = mutation_fence_active()
+    except Exception:
+        return jsonify(
+            {
+                "ok": False,
+                "error": {
+                    "code": "task_authority_unavailable",
+                    "message": "Task data is temporarily unavailable.",
+                    "retryable": True,
+                },
+            }
+        ), 503
+
+    if fenced:
+        return jsonify(
+            {
+                "ok": False,
+                "error": {
+                    "code": "task_mutation_fenced",
+                    "message": "Task editing is temporarily paused for maintenance.",
+                    "retryable": True,
+                },
+            }
+        ), 503
+    if native_authority:
+        return jsonify(
+            {
+                "ok": False,
+                "error": {
+                    "code": "task_legacy_sync_retired",
+                    "message": (
+                        "Task syncing is no longer needed. Use the Tasks view "
+                        "to make changes."
+                    ),
+                    "retryable": False,
+                },
+            }
+        ), 410
+    try:
         from work_buddy.consent import user_initiated
         from work_buddy.obsidian.tasks.sync import task_sync
     except Exception as exc:
@@ -1138,6 +1185,19 @@ def api_task_sync():
             result = task_sync()
         return jsonify({"ok": True, "result": result})
     except Exception as exc:
+        from work_buddy.tasks.errors import TaskDomainError
+
+        if isinstance(exc, TaskDomainError):
+            return jsonify(
+                {
+                    "ok": False,
+                    "error": {
+                        "code": exc.code,
+                        "message": str(exc),
+                        "retryable": exc.retryable,
+                    },
+                }
+            ), (503 if exc.retryable else 410)
         logger.exception("api_task_sync: task_sync failed")
         return jsonify({"ok": False, "error": str(exc)}), 500
 
@@ -1520,9 +1580,9 @@ def api_chat_tasks(session_id: str):
     list when the session touched no tasks. Bridge-independent.
     """
     try:
-        from work_buddy.obsidian.tasks.provenance import build_session_task_roles
+        from work_buddy.tasks.capabilities import session_task_roles
 
-        return jsonify(build_session_task_roles(session_id))
+        return jsonify(session_task_roles(session_id))
     except Exception as exc:
         logger.exception("chat tasks error")
         return jsonify({"error": str(exc)}), 500
@@ -5737,9 +5797,11 @@ from work_buddy.dashboard.local_identity_api import (
     register_routes as _register_local_identity_routes,
 )
 from work_buddy.journal_capture.api import register_routes as _register_journal_capture_routes
+from work_buddy.dashboard.tasks_api import register_routes as _register_tasks_routes
 
 _register_local_identity_routes(app)
 _register_journal_capture_routes(app)
+_register_tasks_routes(app)
 _register_cowork_routes(app)
 
 

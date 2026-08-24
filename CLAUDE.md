@@ -133,14 +133,14 @@ Every scope below is browsable with `mcp__work-buddy__wb_run("agent_docs", {"sco
 
 | Scope | Contents |
 |---|---|
-| `tasks/` | Create, assign, toggle, list, triage, archive, weekly review, completeness sweep, namespace tags |
+| `tasks/` | Native TaskStore authority, revisioned mutations, React workspace, projection-free Co-work knowledge, import/cutover/rollback, and frozen legacy policy |
 | `contracts/` | Commitments, health, WIP limits, constraints |
 | `projects/` | Registry, observations, memory bank |
 | `entities/` | Entity registry — authored names, hierarchical tags, aliases, federated `entity_resolve`, append-only reference index |
 | `journal/` | Daily note, sign-in, running notes, day planner |
 | `context/` | Collectors (git, chrome, calendar, obsidian, vault, datacore…), bundles, conversation search, session inspection, knowledge-store editing |
 | `conversation_observability/` | Durable session-attributed commits / writes / PR activity / uncommitted-work / topic summaries derived from Claude Code JSONL sessions |
-| `obsidian/` | Bridge, vault writer, tasks plugin, datacore |
+| `obsidian/` | Bridge, vault writer, datacore, and retired pre-cutover task compatibility (never live task authority) |
 | `vault/` | Vault-recon collector, investigation-agent directions, accept-loop |
 | `email/` | Thunderbird bridge, provider abstraction, email triage adapter |
 | `calendar/` | Calendar reads via provider seam (canonical models, protocol + factory, Obsidian-bridge adapter), coverage |
@@ -197,7 +197,8 @@ work_buddy/                            # Python package
   embedding/                           # Embedding service (localhost:5124)
   collectors/                          # Context collectors (git, obsidian, chrome, …)
   conversation_observability/          # Durable session-derived activity DB (commits, writes, summaries)
-  obsidian/                            # Bridge + plugin integrations
+  tasks/                               # Native task authority, migration, Co-work bindings, receipts, lifecycle
+  obsidian/                            # Bridge + vault integrations; task code here is frozen compatibility only
   email/                               # Email provider abstraction + Thunderbird bridge client
   calendar/                            # Calendar provider abstraction + Obsidian-bridge adapter
   notifications/                       # Human-in-the-loop surfaces

@@ -284,6 +284,9 @@ def project_bound_document(
     sweep retries it; divergence itself is represented as a paused cursor.
     """
 
+    if binding.projection_mode == "none":
+        return None
+
     if (
         binding.domain_namespace == "tasks"
         and binding.domain_kind == "task_note"
@@ -448,6 +451,7 @@ def project_bound_document(
         "documentId": binding.document_id,
         "contentAuthority": binding.content_authority,
         "contentAuthorityEpoch": binding.content_authority_epoch,
+        "projectionMode": binding.projection_mode,
     }
     if effective_change is not None:
         inspection["change"] = {

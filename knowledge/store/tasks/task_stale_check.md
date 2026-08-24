@@ -21,6 +21,7 @@ aliases:
 - tasks going stale
 parents:
 - tasks
-requires:
-- obsidian
+requires: []
 ---
+
+Staleness is derived from native task timestamps and lifecycle history.

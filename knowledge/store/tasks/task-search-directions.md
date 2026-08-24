@@ -31,7 +31,7 @@ Note: to *list* tasks (the whole filtered set) rather than search by text, use `
 
 ## task_search - search by description text (store-only)
 
-Looks at the `description` column of `task_metadata` - the human-readable task line text (`Fix the auth bug`, `Refactor the dashboard`, ...). Bridge-independent: works even when Obsidian isn't running. Cheap, deterministic, no embedding service.
+Looks at the native task description (`Fix the auth bug`, `Refactor the dashboard`, ...). Bridge-independent and deterministic.
 
 ```
 mcp__work-buddy__wb_run("task_search", {"query": "$ARGUMENTS"})
@@ -42,7 +42,7 @@ Use this when:
   - You need to look up a task ID from a description.
   - The bridge is down and you still need to find a task.
 
-Returns task records (full task_metadata rows) ordered most-recently-updated first. Legacy tasks created before the description column existed may have NULL description and won't surface here until task_sync runs (<=30 min).
+Returns native task records ordered most-recently-updated first. Imported ID-less legacy rows receive deterministic descriptions during migration; there is no post-cutover `task_sync` repair loop.
 
 ## context_search(source="task_note") - search by note body (hybrid)
 

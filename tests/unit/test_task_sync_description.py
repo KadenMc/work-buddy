@@ -21,6 +21,13 @@ import pytest
 from work_buddy.obsidian.tasks import store, sync
 
 
+@pytest.fixture(autouse=True)
+def legacy_task_authority(monkeypatch):
+    from work_buddy.tasks import runtime
+
+    monkeypatch.setattr(runtime, "native_task_mutation_authority", lambda: False)
+
+
 @pytest.fixture
 def isolated_store(tmp_path: Path, monkeypatch) -> Path:
     db_dir = tmp_path / "db"

@@ -159,6 +159,11 @@ def _assemble() -> dict[str, ControlNode]:
     checker = RequirementChecker()
     req_results = checker.check_all(include_unwanted=True)
     req_by_id: dict[str, Any] = {r.id: r for r in req_results}
+    applicable_req_ids = {
+        req_id
+        for req_id, req in REQUIREMENT_REGISTRY.items()
+        if checker.is_applicable(req)
+    }
 
     try:
         registry = get_registry()
@@ -182,7 +187,9 @@ def _assemble() -> dict[str, ControlNode]:
             deps.append(Edge(target_id=dep_sub))
 
         requirement_ids = [
-            f"req:{rid}" for rid in static.get("requirement_ids", [])
+            f"req:{rid}"
+            for rid in static.get("requirement_ids", [])
+            if rid in applicable_req_ids
         ]
 
         nodes[node_id] = ControlNode(
@@ -241,7 +248,7 @@ def _assemble() -> dict[str, ControlNode]:
 
         # Requirement ids for this component
         requirement_ids_for_comp = [
-            f"req:{rid}" for rid in comp.requirements
+            f"req:{rid}" for rid in comp.requirements if rid in applicable_req_ids
         ]
 
         # Affects-capabilities inverse edge — computed lazily below
@@ -276,9 +283,13 @@ def _assemble() -> dict[str, ControlNode]:
     for static in iter_static_nodes():
         owner_id = static["id"]
         for rid in static.get("requirement_ids", []):
+            if rid not in applicable_req_ids:
+                continue
             static_req_parents.setdefault(rid, []).append(owner_id)
 
     for req_id, req in REQUIREMENT_REGISTRY.items():
+        if req_id not in applicable_req_ids:
+            continue
         node_id = f"req:{req_id}"
         result = req_by_id.get(req_id)
 

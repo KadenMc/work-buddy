@@ -89,6 +89,9 @@ RESOURCES: dict[str, str] = {
     # This resource is intentionally absent from the current unencrypted
     # VITAL_DBS backup set; Sources owns its authorized export contract.
     "stores/sources":            "db/sources",
+    # Neutral, non-vault-backed Co-work store for task knowledge documents.
+    # The stable Truth store itself lives below this root in .wbuddy/cowork.
+    "stores/cowork-tasks":       "cowork/tasks",
     "db/journal-capture":        "db/journal_capture.db",
     # Compatibility-migration state for task-note bodies. Journal prose
     # migration lives with Journal captures; the task master list remains in

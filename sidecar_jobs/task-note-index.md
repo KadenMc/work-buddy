@@ -10,9 +10,10 @@ params:
   days: 30  # ignored by the task_note source (notes don't expire)
 ---
 Rebuild the task-note IR index so that hybrid (BM25 + dense) search over
-note bodies stays fresh. The source adapter discovers every task whose
-`note_uuid` column is non-null and whose markdown file exists on disk;
-the engine skips unchanged files via mtime, so this is fast when nothing
-has changed.
+note bodies stays fresh. Before native Task activation, the source adapter
+uses the frozen legacy Markdown compatibility reader. After activation, it
+discovers task-linked Co-work document heads directly and uses their content
+fingerprints to skip unchanged documents. It does not require Markdown task
+notes or Obsidian in native mode.
 
 Searched via `context_search` with `source="task_note"`.

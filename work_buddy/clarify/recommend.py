@@ -499,16 +499,17 @@ def contextualize_intents(
 def _load_task_info() -> dict[str, dict[str, Any]]:
     """Load task metadata + state history for all active tasks."""
     try:
-        from work_buddy.obsidian.tasks import store as task_store
         from work_buddy.clarify.task_match import _read_task_texts
+        from work_buddy.tasks.store import TaskStore
         from work_buddy.threads.models import Task
 
+        task_store = TaskStore()
         task_texts = _read_task_texts()
         result: dict[str, dict[str, Any]] = {}
 
         for task in (t.row for t in Task.query(include_archived=False)):
             tid = task["task_id"]
-            history = task_store.get_history(tid)
+            history = [item.to_dict() for item in task_store.history(tid)]
             result[tid] = {
                 "state": task["state"],
                 "text": task_texts.get(tid, ""),
@@ -528,7 +529,7 @@ def _load_task_info() -> dict[str, dict[str, Any]]:
                     "state": "done",
                     "text": task_texts.get(tid, ""),
                     "completed_at": task.get("completed_at", ""),
-                    "history": task_store.get_history(tid),
+                    "history": [item.to_dict() for item in task_store.history(tid)],
                 }
 
         return result

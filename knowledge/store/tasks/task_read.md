@@ -1,7 +1,7 @@
 ---
 name: Task Read
 kind: capability
-description: Read a task's full context (text, note, metadata) without claiming it for the current session
+description: Read native structured task context plus the current projection-free Co-work knowledge-document head without claiming it.
 capability_name: task_read
 category: tasks
 parameters:
@@ -23,6 +23,8 @@ aliases:
 - look at task
 parents:
 - tasks
-requires:
-- obsidian
+requires: []
 ---
+
+The document content includes the current structured head and uncompacted Yjs
+updates. No Markdown task line, note path, or Obsidian bridge is involved.

@@ -1,7 +1,7 @@
 ---
 name: Task Archive
 kind: capability
-description: Move completed tasks from the master list to tasks/archive.md. Consent-gated; the prompt shows the exact count and a random 5-title sample so the user approves a concrete scope. Default policy archives tasks completed >= 7 days ago so recent work stays visible. Posts a fire-and-forget summary notification after the move so a bulk archive doesn't happen silently.
+description: Archive eligible completed native tasks by lifecycle flag without moving or rendering Markdown. Default policy leaves the last 7 days visible.
 capability_name: task_archive
 category: tasks
 op: op.wb.task_archive
@@ -15,7 +15,6 @@ parameters:
     required: false
 consent_operations:
 - tasks.archive
-- obsidian.write_file
 tags:
 - tasks
 - task
@@ -29,6 +28,5 @@ aliases:
 - tidy task list
 parents:
 - tasks
-requires:
-- obsidian
+requires: []
 ---

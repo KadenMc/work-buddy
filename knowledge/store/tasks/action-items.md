@@ -3,13 +3,9 @@ name: Task action items
 kind: reference
 description: 'Per-action-item rows attached to a parent task. Each item carries its own risk profile + required contexts + definition_of_done. Safety rule: items with authorship=''agent_unapproved'' cannot be executed by the agent -- is_executable enforces this.'
 entry_points:
-- work_buddy.obsidian.tasks.action_items.create
-- work_buddy.obsidian.tasks.action_items.list_for_task
-- work_buddy.obsidian.tasks.action_items.update
-- work_buddy.obsidian.tasks.action_items.approve
-- work_buddy.obsidian.tasks.action_items.set_current
-- work_buddy.obsidian.tasks.action_items.is_executable
-- work_buddy.obsidian.tasks.action_items.position_in_task
+- work_buddy.tasks.service.TaskService.create_action_item
+- work_buddy.tasks.service.TaskService.update_action_item
+- work_buddy.tasks.store.TaskStore
 tags:
 - tasks
 - action-items
@@ -28,10 +24,12 @@ aliases:
 - authorship
 parents:
 - tasks
-dev_notes: The `authorship` enum supersedes the older `user_authored INTEGER` + `approved_at TEXT` pair; same three states, one canonical column. Markdown round-trip for action items is deferred (the master-list `step N of M` frontend and `/wb-task-develop` slash command depend on Resolution Surface integration). `set_current` uses raw SQL because `store.update` does not yet take the `current_action_item_id` kwarg -- when other callers need to write that column, add the kwarg to `store.update` like the context-array fields.
+dev_notes: Native writes validate required-context arrays, definition_of_done, and risk_profile_json before opening a receipt transaction. A risk profile string must decode to a JSON object. Automatic sequence allocation uses the highest historical sequence including soft-deleted rows, so deletion never reuses an identity-bearing position.
 ---
 
-Per-action-item rows attached to a parent task. Module: `work_buddy/obsidian/tasks/action_items.py`. Schema: `task_action_items` table + `task_metadata.current_action_item_id` column.
+Per-action-item rows are owned by native `TaskStore` and mutated through
+`TaskService` with the parent task's expected revision and a stable mutation ID.
+Every change advances task history and returns a mutation receipt.
 
 ## Schema
 
@@ -64,7 +62,8 @@ Every executor / Resolution Surface accept-action button / develop-at-pickup wri
 
 ## position_in_task
 
-`position_in_task(item) -> (1-based-index, total)` powers the master-list "step N of M" badge.
+Position and current-item state are rendered directly from structured rows in
+the React Tasks view; no Markdown round-trip is involved.
 
 ## See also
 

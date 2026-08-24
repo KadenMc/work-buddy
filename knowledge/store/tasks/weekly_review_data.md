@@ -20,6 +20,5 @@ aliases:
 - prepare weekly review
 parents:
 - tasks
-requires:
-- obsidian
+requires: []
 ---

@@ -3,7 +3,7 @@
 Each ``get_*`` function returns a JSON-serializable dict/list.
 Data sources:
     - ``sidecar_state.json`` for service health and job state
-    - Obsidian Tasks for task summaries
+    - Native TaskStore for task summaries (legacy Markdown only pre-cutover)
     - Agent session manifests for session info
     - Contract markdown files for contract summaries
 """
@@ -38,6 +38,22 @@ _AGENTS_DIR = data_dir("agents")
 
 # Rolling bridge latency samples (kept in dashboard process memory)
 _BRIDGE_HISTORY: deque[dict[str, Any]] = deque(maxlen=60)  # ~30min at 30s refresh
+
+
+def _task_authority_mode() -> str:
+    """Return ``legacy``, ``native``, or fail-closed ``unavailable``.
+
+    This check intentionally runs before opening TaskStore from a legacy
+    dashboard endpoint.  A native latch with a missing/corrupt database must
+    never let the compatibility surface create a fresh legacy database and
+    resume reading frozen Markdown.
+    """
+    try:
+        from work_buddy.tasks.runtime import native_authority_active
+
+        return "native" if native_authority_active() else "legacy"
+    except Exception:
+        return "unavailable"
 
 
 _PROBE_REFRESH_INTERVAL = 60  # seconds between tool probe refreshes
@@ -531,25 +547,49 @@ def _store_row_to_display(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def get_tasks_summary() -> dict[str, Any]:
-    """Task summary, SQLite-primary.
+    """Task summary from TaskStore, with guarded pre-cutover compatibility.
 
-    Reads the canonical task_metadata table for tracked rows, and
-    appends ID-less legacy lines from master-task-list.md / archive.md
-    as thin entries (state derived from checkbox; ID column renders as
-    ``—`` on the frontend). The markdown files are joined in only to
-    surface legacy lines that were never written into the store.
+    Native authority never opens or parses task Markdown.  Before cutover,
+    ID-less legacy lines may still be appended as thin compatibility rows.
     """
     from datetime import datetime, timedelta, timezone
-    from work_buddy.threads.models import Task
+    from work_buddy.tasks.models import TaskQuery
+    from work_buddy.tasks.store import TaskStore
 
     tasks: list[dict[str, Any]] = []
 
+    authority = _task_authority_mode()
+    if authority == "unavailable":
+        return {
+            "tasks": [],
+            "counts": {},
+            "synced_at": None,
+            "authority": "unavailable",
+            "error": "Task data is temporarily unavailable.",
+        }
+    native_authority = authority == "native"
+
     # ── Tracked tasks: canonical from SQLite ────────────────────────
     try:
-        store_rows = [t.row for t in Task.query(include_archived=True)]
+        task_store = TaskStore()
+        native_tasks = task_store.list(
+            TaskQuery(
+                include_done=True,
+                include_archived=True,
+                include_snoozed=True,
+                limit=5000,
+            )
+        )
+        store_rows = [task.to_dict() for task in native_tasks]
     except Exception as exc:
         logger.warning("Failed to read task_metadata: %s", exc)
-        return {"tasks": [], "counts": {}, "error": str(exc)}
+        return {
+            "tasks": [],
+            "counts": {},
+            "synced_at": None,
+            "authority": authority,
+            "error": str(exc),
+        }
 
     for row in store_rows:
         tasks.append(_store_row_to_display(row))
@@ -561,7 +601,7 @@ def get_tasks_summary() -> dict[str, Any]:
     # era. The frontend renders an empty `id` field as "—" in the
     # ID column.
     vault_root = _cfg.get("vault_root", "")
-    if vault_root:
+    if not native_authority and vault_root:
         tasks_dir = Path(vault_root) / "tasks"
         for path, mark_archived in [
             (tasks_dir / "master-task-list.md", False),
@@ -618,24 +658,12 @@ def get_tasks_summary() -> dict[str, Any]:
     # Attach namespace tags per task (is_namespace=1 only) so the dashboard
     # tree can be built + counted client-side from the same payload that
     # drives the list. One bulk query, no N+1.
-    try:
-        from work_buddy.obsidian.tasks import store as tasks_store
-        conn = tasks_store.get_connection()
-        try:
-            rows = conn.execute(
-                "SELECT task_id, tag FROM task_tags WHERE is_namespace = 1"
-            ).fetchall()
-        finally:
-            conn.close()
-        tags_by_task: dict[str, list[str]] = {}
-        for r in rows:
-            tags_by_task.setdefault(r["task_id"], []).append(r["tag"])
-        for t in tasks:
-            t["tags"] = tags_by_task.get(t.get("id"), [])
-    except Exception as exc:
-        logger.debug("Task tag enrichment skipped: %s", exc)
-        for t in tasks:
-            t.setdefault("tags", [])
+    tags_by_task = {
+        task.task_id: list(task.namespace_tags)
+        for task in native_tasks
+    }
+    for task in tasks:
+        task["tags"] = tags_by_task.get(task.get("id"), [])
 
     # Count by (enriched) state
     counts: dict[str, int] = {}
@@ -646,21 +674,32 @@ def get_tasks_summary() -> dict[str, Any]:
     # Surface the most recent task_sync timestamp so the frontend's
     # inline filter status can render "synced Xm ago".
     synced_at: str | None = None
-    try:
-        from work_buddy.obsidian.tasks import store as _tasks_store
-        sst = _tasks_store.get_sync_status()
-        if sst:
-            synced_at = sst.get("last_full_sync_at")
-    except Exception as exc:
-        logger.debug("get_sync_status skipped: %s", exc)
+    if not native_authority:
+        try:
+            conn = task_store.connect()
+            try:
+                row = conn.execute(
+                    "SELECT last_full_sync_at FROM task_sync_status WHERE id = 1"
+                ).fetchone()
+            finally:
+                conn.close()
+            if row is not None:
+                synced_at = row["last_full_sync_at"]
+        except Exception as exc:
+            logger.debug("legacy sync status skipped: %s", exc)
 
-    return {"tasks": tasks, "counts": counts, "synced_at": synced_at}
+    return {
+        "tasks": tasks,
+        "counts": counts,
+        "synced_at": synced_at,
+        "authority": authority,
+    }
 
 
 def list_namespaces(recent_days: int = 14) -> dict[str, Any]:
     """Return every namespacey tag in the cache with its open-task count.
 
-    Backed by ``task_tags`` (populated by ``task_sync``). Returns a flat
+    Backed by TaskStore's ``task_tags`` relation. Returns a flat
     list ordered by tag ascending; the frontend is responsible for
     rendering the tree (split on ``/``).
 
@@ -669,9 +708,50 @@ def list_namespaces(recent_days: int = 14) -> dict[str, Any]:
     ``recent_days`` days). The frontend builds a relevance score from
     these for tree ordering.
     """
+    if _task_authority_mode() == "unavailable":
+        return {
+            "namespaces": [],
+            "count": 0,
+            "recent_days": int(recent_days),
+            "authority": "unavailable",
+            "error": "Task data is temporarily unavailable.",
+        }
     try:
-        from work_buddy.obsidian.tasks import store as tasks_store
-        rows = tasks_store.distinct_namespace_tags(recent_days=recent_days)
+        from datetime import datetime, timedelta, timezone
+
+        from work_buddy.tasks.store import TaskStore
+
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=max(0, int(recent_days)))
+        ).isoformat()
+        conn = TaskStore().connect()
+        try:
+            db_rows = conn.execute(
+                """
+                SELECT tt.tag,
+                       SUM(CASE WHEN tm.state != 'done' AND tm.archived_at IS NULL
+                                     AND tm.deleted_at IS NULL THEN 1 ELSE 0 END) AS count,
+                       SUM(CASE WHEN tm.state != 'done' AND tm.archived_at IS NULL
+                                     AND tm.deleted_at IS NULL AND tm.created_at >= ?
+                                THEN 1 ELSE 0 END) AS recent_count
+                FROM task_tags tt
+                JOIN task_metadata tm ON tm.task_id = tt.task_id
+                WHERE tt.is_namespace = 1
+                GROUP BY tt.tag
+                ORDER BY tt.tag
+                """,
+                (cutoff,),
+            ).fetchall()
+        finally:
+            conn.close()
+        rows = [
+            {
+                "tag": str(row["tag"]),
+                "count": int(row["count"] or 0),
+                "recent_count": int(row["recent_count"] or 0),
+            }
+            for row in db_rows
+        ]
         return {
             "namespaces": rows,
             "count": len(rows),
@@ -697,11 +777,34 @@ def get_tasks_by_namespace(
     if not namespace:
         return {"namespace": "", "count": 0, "tasks": [], "descendants": []}
 
+    if _task_authority_mode() == "unavailable":
+        return {
+            "namespace": namespace,
+            "count": 0,
+            "tasks": [],
+            "descendants": [],
+            "authority": "unavailable",
+            "error": "Task data is temporarily unavailable.",
+        }
+
     try:
-        from work_buddy.obsidian.tasks import store as tasks_store
-        matched_ids = set(
-            tasks_store.tasks_with_tag(namespace, prefix_match=include_descendants)
+        from work_buddy.tasks.models import TaskQuery
+        from work_buddy.tasks.store import TaskStore
+
+        candidates = TaskStore().list(
+            TaskQuery(
+                namespace=namespace,
+                include_done=True,
+                include_archived=True,
+                include_snoozed=True,
+                limit=5000,
+            )
         )
+        matched_ids = {
+            task.task_id
+            for task in candidates
+            if include_descendants or namespace in task.namespace_tags
+        }
     except Exception as exc:
         logger.warning("Failed to query task_tags for %r: %s", namespace, exc)
         return {
@@ -721,9 +824,8 @@ def get_tasks_by_namespace(
     # Descendant namespaces (one level below) for UI drill-down.
     descendants: dict[str, int] = {}
     try:
-        from work_buddy.obsidian.tasks import store as tasks_store
         prefix = namespace + "/"
-        for row in tasks_store.distinct_namespace_tags():
+        for row in list_namespaces(recent_days=14).get("namespaces", []):
             tag = row["tag"]
             if tag.startswith(prefix):
                 remainder = tag[len(prefix):]
@@ -1081,7 +1183,7 @@ def _load_tasks_for_sessions(
     if not session_ids:
         return {}
     try:
-        from work_buddy.obsidian.tasks import store
+        from work_buddy.tasks.store import TaskStore
     except Exception as exc:  # pragma: no cover — defensive
         logger.debug("task store unavailable: %s", exc)
         return {}
@@ -1089,7 +1191,7 @@ def _load_tasks_for_sessions(
     sids = list(session_ids)
     placeholders = ",".join(["?"] * len(sids))
     try:
-        conn = store.get_connection()
+        conn = TaskStore().connect()
     except Exception as exc:
         logger.debug("task store DB unreachable: %s", exc)
         return {}

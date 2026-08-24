@@ -29,6 +29,7 @@ from typing import Any
 from work_buddy.config import load_config
 from work_buddy.logging_config import get_logger
 from work_buddy.obsidian.tasks import store
+from work_buddy.obsidian.tasks.authority import frozen_task_mutation_boundary
 from work_buddy.obsidian.tasks.mutations import (
     DONE_DATE_RE,
     DUE_DATE_RE,
@@ -341,6 +342,7 @@ def _rebuild_tag_cache(
     return written
 
 
+@frozen_task_mutation_boundary
 def task_sync() -> dict[str, Any]:
     """Reconcile the master task list against the SQLite task store.
 

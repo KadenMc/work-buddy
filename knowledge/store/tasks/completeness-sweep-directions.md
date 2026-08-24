@@ -46,7 +46,7 @@ Call `task_list` (no arguments) to get every live, non-archived, OPEN task, brid
 mcp__work-buddy__wb_run("task_list", {})
 ```
 
-Read `count` and the `tasks` list. Each row is a full `task_metadata` record, so for a large backlog the result can be sizable and your harness may save it to a file rather than inline it. You only need `task_id`, `description`, `state`, and `created_at` per task: extract just those (e.g. with `jq`/a small script over the saved file) rather than carrying every column. If the user passed a scope hint (e.g. "older than 30 days", "just the inbox ones"), apply it by filtering the returned list, or pass `state=`/`limit=` to `task_list`. Optionally split out empty-shell rows (no `description` and no linked note) as non-auditable and report them separately rather than spending an investigator on them.
+Read `count` and the `tasks` list. Each row is a full native task record, so for a large backlog the result can be sizable and your harness may save it to a file rather than inline it. You only need `task_id`, `description`, `state`, and `created_at` per task: extract just those rather than carrying every field. If the user passed a scope hint, filter the returned list or pass `state=`/`limit=` to `task_list`. Optionally split out empty-shell rows (no description and no Co-work knowledge document) as non-auditable.
 
 ## Step 2 — Cost gate (the upfront warning)
 

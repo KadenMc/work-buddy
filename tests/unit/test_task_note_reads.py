@@ -32,6 +32,10 @@ _TASK_ID = "t-aaaaaaaa"
 def fresh_db(tmp_path, monkeypatch):
     db = tmp_path / "tasks.sqlite3"
     monkeypatch.setattr(store, "_db_path", lambda: db)
+    monkeypatch.setattr(
+        "work_buddy.tasks.store.default_task_db_path",
+        lambda: db,
+    )
     yield db
 
 

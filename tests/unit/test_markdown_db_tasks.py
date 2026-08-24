@@ -101,7 +101,9 @@ def task_env(tmp_path, monkeypatch):
     from work_buddy.obsidian.tasks import store as task_store
     from work_buddy.obsidian.tasks import sync as task_sync_mod
     from work_buddy.obsidian.tasks import markdown_db as md_mod
+    from work_buddy.tasks import runtime
 
+    monkeypatch.setattr(runtime, "native_task_mutation_authority", lambda: False)
     monkeypatch.setattr(task_store, "load_config", lambda *a, **k: fake_cfg)
     monkeypatch.setattr(task_sync_mod, "load_config", lambda *a, **k: fake_cfg)
     monkeypatch.setattr(md_mod, "load_config", lambda *a, **k: fake_cfg)
