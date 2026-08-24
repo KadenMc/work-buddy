@@ -42,6 +42,9 @@ class RequirementDef:
         severity: ``"required"`` or ``"recommended"``.
         fix_hint: Human-readable fix instructions (legacy; new code prefers fix_*).
         setup_group: Wizard grouping: ``"repository"``, ``"journal"``, ``"tasks"``, etc.
+        applies_fn: Optional dotted callable returning whether this requirement
+            applies in the current authority epoch. Non-applicable requirements
+            are omitted from sweeps and component/group views.
 
     Fix system (added 2026-04-22) — opt-in per requirement:
         fix_kind: How this requirement can be fixed:
@@ -82,6 +85,7 @@ class RequirementDef:
     fix_params: dict[str, dict[str, Any]] = field(default_factory=dict)
     fix_preview: str | None = None
     fix_agent_brief: str | None = None
+    applies_fn: str | None = None
 
 
 @dataclass
@@ -418,23 +422,32 @@ _register(RequirementDef(
 _register(RequirementDef(
     id="obsidian/tasks/master-list-exists",
     component="obsidian",
-    description="Master task list file exists",
+    description="Legacy master task list exists (pre-cutover only)",
     check_fn="work_buddy.health.requirement_checks.check_master_task_list",
     severity="required",
-    fix_hint="Create the master task list at tasks/master-task-list.md in your vault.",
+    fix_hint=(
+        "Before native cutover, create tasks/master-task-list.md in the vault. "
+        "After cutover the frozen file is retained but never inspected or repaired."
+    ),
     setup_group="tasks",
     fix_kind="programmatic",
     fix_fn="work_buddy.health.fixers.fix_master_task_list",
-    fix_preview="Create vault/tasks/master-task-list.md with a minimal heading + Obsidian Tasks usage hint.",
+    fix_preview="Pre-cutover only: seed the legacy master task list if it is missing.",
+    applies_fn=(
+        "work_buddy.health.requirement_checks.frozen_task_compatibility_required"
+    ),
 ))
 
 _register(RequirementDef(
     id="obsidian/plugins/tasks-plugin",
     component="obsidian",
-    description="Obsidian Tasks plugin is installed and enabled",
+    description="Legacy Obsidian Tasks plugin is enabled (pre-cutover only)",
     check_fn="work_buddy.health.requirement_checks.check_tasks_plugin",
     severity="required",
-    fix_hint="Install and enable the 'Tasks' community plugin in Obsidian.",
+    fix_hint=(
+        "Before native cutover, install and enable the 'Tasks' community "
+        "plugin in Obsidian. It is retired and unnecessary after cutover."
+    ),
     setup_group="tasks",
     fix_kind="agent_handoff",
     fix_preview="Spawns a Claude Code session that walks you through installing and enabling the Tasks plugin in Obsidian.",
@@ -455,6 +468,9 @@ _register(RequirementDef(
         "If Community Plugins is disabled (Restricted Mode), help the "
         "user turn it off first — Settings → Community plugins → Turn on "
         "community plugins."
+    ),
+    applies_fn=(
+        "work_buddy.health.requirement_checks.frozen_task_compatibility_required"
     ),
 ))
 
@@ -1110,6 +1126,28 @@ _register(RequirementDef(
 class RequirementChecker:
     """Validates requirements against the current environment."""
 
+    @staticmethod
+    def is_applicable(req: RequirementDef) -> bool:
+        """Resolve a requirement's optional epoch/applicability predicate.
+
+        Predicate failures keep the requirement visible.  Individual
+        predicates are responsible for domain-specific fail-closed behavior;
+        silently dropping an arbitrary required check would be unsafe.
+        """
+        if not req.applies_fn:
+            return True
+        try:
+            module_path, fn_name = req.applies_fn.rsplit(".", 1)
+            module = importlib.import_module(module_path)
+            return bool(getattr(module, fn_name)())
+        except Exception as exc:
+            log.warning(
+                "Requirement applicability check %s failed: %s",
+                req.id,
+                exc,
+            )
+            return True
+
     def _run_check(self, req: RequirementDef) -> RequirementResult:
         """Execute a single requirement check."""
         try:
@@ -1147,6 +1185,8 @@ class RequirementChecker:
 
         results = []
         for req in REQUIREMENT_REGISTRY.values():
+            if not self.is_applicable(req):
+                continue
             if req.component is not None and not include_unwanted:
                 pref = is_wanted(req.component)
                 if pref is False:
@@ -1159,7 +1199,7 @@ class RequirementChecker:
         return [
             self._run_check(req)
             for req in REQUIREMENT_REGISTRY.values()
-            if req.id.startswith("core/")
+            if req.id.startswith("core/") and self.is_applicable(req)
         ]
 
     def check_component(self, component_id: str) -> list[RequirementResult]:
@@ -1167,7 +1207,7 @@ class RequirementChecker:
         return [
             self._run_check(req)
             for req in REQUIREMENT_REGISTRY.values()
-            if req.component == component_id
+            if req.component == component_id and self.is_applicable(req)
         ]
 
     def check_group(self, group_name: str) -> list[RequirementResult]:
@@ -1175,7 +1215,7 @@ class RequirementChecker:
         return [
             self._run_check(req)
             for req in REQUIREMENT_REGISTRY.values()
-            if req.setup_group == group_name
+            if req.setup_group == group_name and self.is_applicable(req)
         ]
 
     @staticmethod

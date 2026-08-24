@@ -97,13 +97,16 @@ def journal_route_to_tasks(
 ) -> dict[str, Any]:
     """Create one task per ``context_item`` on ``thread_id``.
 
-    Returns ``{"created": [...], "failed": [{"item_id", "error"}, ...],
-    "thread_id": str}``.
+    Native ``created`` entries carry task identity, revisions, mutation receipt,
+    and optional knowledge-document metadata. Legacy entries retain their
+    ``task_line`` compatibility field.
     """
     from work_buddy.journal_backlog.route import _create_task_impl
+    from work_buddy.tasks.runtime import native_authority_active
 
     thread = _get_thread_or_raise(thread_id)
     items = _items_from_thread(thread)
+    native_tasks = native_authority_active()
     if not items:
         return {
             "thread_id": thread_id,
@@ -111,7 +114,7 @@ def journal_route_to_tasks(
             "failed": [],
             "skipped_empty": True,
         }
-    root = _resolve_vault_root(vault_root)
+    root = None if native_tasks else _resolve_vault_root(vault_root)
 
     created: list[dict[str, Any]] = []
     failed: list[dict[str, Any]] = []
@@ -126,10 +129,19 @@ def journal_route_to_tasks(
                 due_date=None,
             )
             if result.get("success"):
-                created.append({
-                    "item_id": item["id"],
-                    "task_line": result.get("task_line"),
-                })
+                if native_tasks:
+                    from work_buddy.tasks.integration_results import (
+                        native_creation_result,
+                    )
+
+                    created.append(
+                        {"item_id": item["id"], **native_creation_result(result)}
+                    )
+                else:
+                    created.append({
+                        "item_id": item["id"],
+                        "task_line": result.get("task_line"),
+                    })
             else:
                 failed.append({
                     "item_id": item["id"],

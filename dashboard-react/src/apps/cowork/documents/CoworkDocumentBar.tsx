@@ -15,6 +15,7 @@ import {
 import type { CoworkSyncStatus } from "../persistence/CoworkYdocPersistence";
 import type { CoworkMaterializationState } from "../materialization/contracts";
 import { coworkErrorMessage } from "../providers/errors";
+import { LinkedLocalFilesPanel } from "./LinkedLocalFilesPanel";
 
 interface CoworkDocumentBarProps {
   readonly model: CoworkViewModel;
@@ -156,9 +157,9 @@ export function CoworkDocumentBar({
     model.folderSelection.kind === "initialized"
       ? model.folderSelection.folder
       : model.folders.find((entry) => entry.storeId === model.activeFolderStoreId) ?? null;
-  const document = model.activeSession.kind === "registered"
-    ? model.activeSession.document
-    : null;
+  const registeredSession =
+    model.activeSession.kind === "registered" ? model.activeSession : null;
+  const document = registeredSession?.document ?? null;
   const scratch = model.activeSession.kind === "scratch" ? model.activeSession : null;
   const openingFolder =
     model.folderSelection.kind === "choosing" ||
@@ -204,7 +205,8 @@ export function CoworkDocumentBar({
   }, [folder]);
 
   return (
-    <header className="wb-cowork__document-bar" aria-label="Co-work document controls">
+    <>
+      <header className="wb-cowork__document-bar" aria-label="Co-work document controls">
       <div className="wb-cowork__document-context">
         <div
           className="wb-cowork__folder-control"
@@ -507,6 +509,13 @@ export function CoworkDocumentBar({
           </span>
         ) : null}
       </div>
-    </header>
+      </header>
+      {registeredSession !== null ? (
+        <LinkedLocalFilesPanel
+          storeId={registeredSession.storeId}
+          documentId={registeredSession.document.documentId}
+        />
+      ) : null}
+    </>
   );
 }

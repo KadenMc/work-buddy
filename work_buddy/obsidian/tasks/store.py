@@ -334,15 +334,15 @@ def get_connection() -> sqlite3.Connection:
 def _migrate_schema(conn: sqlite3.Connection) -> None:
     """Apply any pending migrations to bring the DB to current schema.
 
-    Delegates to ``TASK_MIGRATIONS.run(conn)``. The schema history
-    lives in ``work_buddy/obsidian/tasks/migrations.py`` as a numbered
-    ladder of idempotent DDL callables. New schema work appends a new
-    migration step (e.g. m010) — never modifies existing ones (the
-    runner's hash audit refuses edits to shipped migrations).
+    Delegates to the authority-neutral task migration ladder.  The native
+    store extends the historical schema in place, so legacy readers must use
+    the same runner during the reversible coexistence window.  Otherwise a
+    native-opened database appears "too new" to the legacy adapter before the
+    authority epoch is switched.
     """
     # Lazy import: keeps the module load cycle clean if migrations.py
     # ever needs to reference store.py for legitimate reasons.
-    from work_buddy.obsidian.tasks.migrations import TASK_MIGRATIONS
+    from work_buddy.tasks.migrations import TASK_MIGRATIONS
     TASK_MIGRATIONS.run(conn)
 
 

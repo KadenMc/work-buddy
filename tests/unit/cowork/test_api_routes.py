@@ -1556,7 +1556,10 @@ def test_bound_ydoc_push_uses_document_kernel_receipt_and_projection(
         snapshot_sha256=seeded["snapshot_sha256"],
     )
     generation = documents.current_ydoc_generation(store, document.id)
-    binding = SimpleNamespace(content_authority="co_work")
+    binding = SimpleNamespace(
+        content_authority="co_work",
+        projection_mode="managed_section",
+    )
     monkeypatch.setattr(api, "current_domain_binding", lambda *_args: binding)
     source_store = object()
     monkeypatch.setattr(api.SourceStore, "create", lambda *_args: source_store)
@@ -1601,6 +1604,51 @@ def test_bound_ydoc_push_uses_document_kernel_receipt_and_projection(
     assert observed["kwargs"]["update"] == b"kernel-verified-update"
     assert observed["kwargs"]["source_store"] is source_store
     assert observed["kwargs"]["input_assurance"] == "enrolled_local_session"
+
+
+def test_bound_ydoc_push_without_projection_reports_not_applicable(
+    client, seeded, monkeypatch
+):
+    document = seeded["document"]
+    store = seeded["store"]
+    head = ydoc_store.current_structured_head(
+        store,
+        document_id=document.id,
+        snapshot_sha256=seeded["snapshot_sha256"],
+    )
+    generation = documents.current_ydoc_generation(store, document.id)
+    binding = SimpleNamespace(
+        content_authority="co_work",
+        projection_mode="none",
+    )
+    monkeypatch.setattr(api, "current_domain_binding", lambda *_args: binding)
+    monkeypatch.setattr(api.SourceStore, "create", lambda *_args: object())
+    monkeypatch.setattr(
+        api,
+        "apply_bound_direct_push",
+        lambda *args, **kwargs: SimpleNamespace(
+            binding=binding,
+            change=SimpleNamespace(
+                result_structured_head_sha256="f" * 64,
+                change_id="1" * 32,
+            ),
+            next_offset="42",
+            projection=None,
+        ),
+    )
+
+    response = client.post(
+        _url(f"/api/truth/doc/{document.id}/ydoc", seeded["store_id"]),
+        data=b"kernel-verified-update",
+        content_type="application/octet-stream",
+        headers={
+            "X-WB-Base-Ydoc-Sha256": head,
+            "X-WB-Base-Ydoc-Generation": generation,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["domain_projection_status"] == "not_applicable"
 
 
 def test_ydoc_capture_compaction_returns_projection_receipt(client, seeded):

@@ -1,7 +1,7 @@
 ---
 name: Context Pipeline
 kind: reference
-description: Unified two-stage context collection + curation. ContextCollector fetches raw JSON from registered sources (git, tasks, projects, chrome + 9 markdown wrappers), ContextCurator renders into depth-adapted markdown or JSON. Feeds LLM prompts (build_triage_context retrofits onto this) and bundle files (collect.py retrofits onto this).
+description: Unified two-stage context collection and curation, including structured native task context and separate Obsidian vault context.
 summary: Two-stage pipeline. ContextCollector fetches raw JSON per source with cache awareness (max_age + source-level is_stale). ContextCurator renders any cached Context into markdown or JSON at the caller's depth. 13 registered sources split into structured (git/tasks/projects/chrome with drill-down) and markdown-wrapper (9 sources delegating to legacy collectors). Exposed over MCP as context_block + context_drill_down.
 entry_points:
 - work_buddy.context.types
@@ -33,7 +33,11 @@ parents:
 - architecture
 ---
 
-Two-stage pipeline. ContextCollector fetches raw JSON per source with cache awareness (max_age + source-level is_stale). ContextCurator renders any cached Context into markdown or JSON at the caller's depth. 13 registered sources split into structured (git/tasks/projects/chrome with drill-down) and markdown-wrapper (9 sources delegating to legacy collectors). Exposed over MCP as context_block + context_drill_down.
+Two-stage pipeline. ContextCollector fetches raw JSON per source with cache awareness (max_age + source-level is_stale). ContextCurator renders any cached Context into markdown or JSON at the caller's depth. Structured sources include git, native tasks, projects, and chrome; vault-oriented wrappers remain separate. Exposed over MCP as context_block + context_drill_down.
+
+After native task activation, `TasksSource` and the task section of the Obsidian
+collector query `TaskStore`. They never scan the frozen master list or task-note
+Markdown as current task truth.
 
 GitSource is multi-repo since the Phase-A migration: it walks every `.git` directory at depth 1 under `cfg['repos_root']`, tags commits with a per-repo `project` field, and renders them bucketed under `#### <project>` subheadings. Pass `custom={'git': {'repo_path': ...}}` to force single-repo scope. The legacy `work_buddy/collectors/git_collector.py` is retained for test fixtures and historical callers but is no longer on the bundle path.
 

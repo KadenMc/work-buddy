@@ -237,11 +237,37 @@ def _extract_status_table(content: str) -> list[dict[str, str]] | None:
 
 
 def _scan_task_projects(vault_root: Path) -> dict[str, dict[str, int]]:
-    """Count tasks per #projects/<slug> tag in master task list.
+    """Count tasks per project tag from the active task authority.
 
     Returns {slug: {open: N, done: N}}.
-    Uses direct file reading to avoid Obsidian bridge dependency.
+    Native authority reads neutral SQLite only.  The frozen Markdown branch is
+    retained solely for the pre-cutover epoch.
     """
+    from work_buddy.tasks.runtime import native_authority_active
+
+    if native_authority_active():
+        from work_buddy.tasks.store import TaskStore
+
+        store = TaskStore()
+        conn = store.connect()
+        try:
+            rows = conn.execute(
+                "SELECT g.tag, t.state, COUNT(*) AS task_count "
+                "FROM task_tags g JOIN task_metadata t ON t.task_id = g.task_id "
+                "WHERE g.tag LIKE 'projects/%' AND t.deleted_at IS NULL "
+                "AND t.archived_at IS NULL GROUP BY g.tag, t.state"
+            ).fetchall()
+        finally:
+            conn.close()
+        counts: dict[str, dict[str, int]] = defaultdict(
+            lambda: {"open": 0, "done": 0}
+        )
+        for row in rows:
+            slug = _normalize_slug(str(row["tag"]).removeprefix("projects/"))
+            lane = "done" if str(row["state"]) == "done" else "open"
+            counts[slug][lane] += int(row["task_count"])
+        return dict(counts)
+
     task_file = vault_root / "tasks" / "master-task-list.md"
     if not task_file.is_file():
         return {}

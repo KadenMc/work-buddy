@@ -20,6 +20,7 @@ import { CoworkLedgerDecorations } from "./ledgerDecorations";
 import { CoworkWorkingTargetDecorations } from "./workingTargetDecorations";
 import {
   buildDocumentSchemaExtensions,
+  CoworkSafeLinkMarkdown,
   COWORK_FRAGMENT_FIELD,
   COWORK_LINK_OPTIONS,
   COWORK_UNIQUE_ID_TYPES,
@@ -87,6 +88,7 @@ export const buildEditorExtensions = (document: Y.Doc): AnyExtension[] => [
   CoworkImage,
   WbProvenanceTint,
   WbExpressionMark,
+  CoworkSafeLinkMarkdown,
   ...buildSuggestionExtensions(),
   CoworkLedgerDecorations,
   CoworkWorkingTargetDecorations,

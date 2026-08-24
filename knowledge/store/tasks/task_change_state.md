@@ -27,11 +27,22 @@ parameters:
     type: str
     description: Due date as YYYY-MM-DD
     required: false
+  snooze_until:
+    type: str
+    description: ISO date or datetime used when state is snoozed.
+    required: false
+  expected_revision:
+    type: int
+    description: Current task revision for compare-and-swap; the gateway pins it when omitted.
+    required: false
+  client_mutation_id:
+    type: str
+    description: Optional stable idempotency key.
+    required: false
 mutates_state: true
 retry_policy: verify_first
 consent_operations:
 - tasks.update_task
-- obsidian.write_file
 tags:
 - tasks
 - task
@@ -48,6 +59,5 @@ aliases:
 - move task to inbox
 parents:
 - tasks
-requires:
-- obsidian
+requires: []
 ---

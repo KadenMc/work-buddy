@@ -7,8 +7,8 @@ uses for its ``gather-evidence`` auto_run code step.
 signals an agent needs to judge whether a task was *already* completed,
 so the agent doesn't have to issue a dozen tool calls by hand:
 
-* the task payload + linked note (``read_task`` — already includes
-  ``assigned_sessions``),
+* the task payload + linked Co-work knowledge content (``task_read`` — already
+  includes ``assigned_sessions``),
 * per assigned session: the commits attributed to it (with a targeted,
   bounded refresh so freshly-landed fixes show up), its file writes, and
   its cached topic summary.
@@ -50,7 +50,7 @@ def gather_completeness_evidence(task_id: str) -> dict[str, Any]:
           (``"error"`` only when the task itself can't be read)
         - ``task_id``: echoed back
         - ``task``: the read-only task payload (text, state, urgency,
-          contract, note_content, …) — empty dict on read failure
+          contract, Co-work ``note_content``, …) — empty dict on read failure
         - ``assigned_sessions``: list of ``{task_id, session_id,
           assigned_at}`` rows (the sessions that ever claimed this task)
         - ``provenance``: ``build_task_provenance`` output —
@@ -79,8 +79,17 @@ def gather_completeness_evidence(task_id: str) -> dict[str, Any]:
 
     # --- Task payload (also carries assigned_sessions) ------------------
     try:
-        from work_buddy.obsidian.tasks import mutations
-        payload = mutations.read_task(task_id)
+        from work_buddy.tasks.runtime import native_authority_active
+
+        native_tasks = native_authority_active()
+        if native_tasks:
+            from work_buddy.tasks.capabilities import task_read
+
+            payload = task_read(task_id)
+        else:
+            from work_buddy.obsidian.tasks import mutations
+
+            payload = mutations.read_task(task_id)
     except Exception as exc:  # pragma: no cover — best-effort
         logger.warning("task_completeness: read_task failed: %s", exc)
         out["status"] = "error"
@@ -110,8 +119,14 @@ def gather_completeness_evidence(task_id: str) -> dict[str, Any]:
     # ``intent_attribution`` signpost names the Rung-3 (intent-only) case.
     prov: dict[str, Any] | None = None
     try:
-        from work_buddy.obsidian.tasks import provenance as _prov
-        prov = _prov.build_task_provenance(task_id, include_awareness=True)
+        if native_tasks:
+            from work_buddy.tasks.capabilities import task_provenance
+
+            prov = task_provenance(task_id)
+        else:
+            from work_buddy.obsidian.tasks import provenance as _prov
+
+            prov = _prov.build_task_provenance(task_id, include_awareness=True)
     except Exception as exc:  # pragma: no cover — best-effort
         logger.warning("task_completeness: provenance build failed: %s", exc)
         out["status"] = "degraded"
@@ -146,17 +161,24 @@ def gather_completeness_evidence(task_id: str) -> dict[str, Any]:
     # a task with readers-but-no-commits no longer falls into the
     # no-structural-link early return — its readers get full evidence.
     try:
-        from work_buddy.threads.models import Task
-        from work_buddy.obsidian.tasks.provenance import (
-            sessions_who_read_task,
-        )
-        # note_uuid from the authoritative store row (read_task's payload
-        # exposes note_path, not a bare uuid); matches build_task_provenance.
-        # Read through the WorkItem family — Task.load carries the row, so
-        # .row is the same dict; include_deleted to match a tombstoned task.
-        _t = Task.load(task_id, include_deleted=True)
-        _row = _t.row if _t is not None else {}
-        note_uuid = _row.get("note_uuid")
+        if native_tasks:
+            from work_buddy.tasks.capabilities import (
+                task_note_readers as sessions_who_read_task,
+            )
+            note_uuid = (
+                payload.get("note_uuid")
+                or (payload.get("metadata") or {}).get("note_uuid")
+            )
+        else:
+            from work_buddy.threads.models import Task
+            from work_buddy.obsidian.tasks.provenance import (
+                sessions_who_read_task,
+            )
+            # Legacy read_task exposes a path rather than the note UUID, so
+            # the compatibility facade remains necessary before cutover.
+            _t = Task.load(task_id, include_deleted=True)
+            _row = _t.row if _t is not None else {}
+            note_uuid = _row.get("note_uuid")
         for r in sessions_who_read_task(
             task_id, note_uuid=note_uuid, include_saw_id=False
         ):

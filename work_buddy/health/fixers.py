@@ -189,12 +189,25 @@ def fix_personal_knowledge_dir() -> dict[str, Any]:
 
 
 def fix_master_task_list() -> dict[str, Any]:
-    """Create the master task list file with a minimal seed if missing.
+    """Create the legacy master list only before native task cutover.
 
     The file is checked-for at ``<vault>/tasks/master-task-list.md``.
     Seeded with a heading + commented placeholder so the user has
     structure to start filling in.
     """
+    from work_buddy.health.requirement_checks import (
+        frozen_task_compatibility_required,
+    )
+
+    if not frozen_task_compatibility_required():
+        return {
+            "ok": True,
+            "detail": (
+                "No action: native tasks are authoritative and frozen legacy "
+                "task files are never repaired."
+            ),
+            "side_effects": [],
+        }
     vault = _vault_root()
     if vault is None:
         return {

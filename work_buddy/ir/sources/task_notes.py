@@ -1,17 +1,8 @@
-"""Task-note source adapter — task-linked markdown notes to IR documents.
+"""Task-knowledge IR source with a frozen-legacy compatibility reader.
 
-Every task in `task_metadata.note_uuid` with a non-null UUID maps to a
-markdown file at `<vault_root>/tasks/notes/<uuid>.md`. This adapter
-discovers those files and emits one Document per note, enabling
-hybrid (BM25 + dense) search over note BODIES via the shared IR engine.
-
-Change detection is mtime-based (handled by the IR engine's
-`indexed_items` table), so unchanged notes are skipped on rebuild.
-
-This adapter is read-only — it never mutates the task store or the
-vault. Notes whose files are missing on disk (dangling pointer) are
-silently skipped in discover(), not flagged; the repair path for
-dangling pointers belongs elsewhere.
+After the native authority epoch, item identity and freshness come from the
+projection-free Co-work document head; no Markdown task file or vault path is
+read or exposed.  The legacy branch remains read-only for pre-cutover use.
 """
 
 from __future__ import annotations
@@ -31,18 +22,16 @@ _H1_RE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
 
 
 class TaskNoteSource:
-    """IR source adapter for task-linked markdown notes (`tasks/notes/*.md`)."""
+    """IR adapter for task knowledge: live Co-work heads or legacy Markdown."""
 
     @property
     def name(self) -> str:
         return "task_note"
 
     def default_field_weights(self) -> dict[str, float]:
-        # `line` is the authoritative task-line text (from the master list,
-        # not the note's H1). `title` is the note's H1 — usually restates
-        # the task but drifts if the task is renamed after the note was
-        # created. `body` is the bulk of the note. BM25 over all three so
-        # a keyword hit in any signal still lands.
+        # `line` is the authoritative native task description after cutover
+        # (or the legacy task line before it). `title` is the document H1 and
+        # `body` is the bulk knowledge content. BM25 spans all three.
         return {"line": 2.0, "title": 1.5, "body": 1.0}
 
     def projection_schema(self) -> dict[str, ProjectionSpec]:
@@ -76,6 +65,65 @@ class TaskNoteSource:
           query-time filter on the ``lifecycle_state`` metadata, not a
           build-time exclusion. See HISTORY-PARTITION-COVERAGE.md.
         """
+        from work_buddy.tasks.runtime import native_authority_active
+
+        if native_authority_active():
+            from work_buddy.tasks.documents import TaskDocumentStoreManager
+            from work_buddy.tasks.store import TaskStore
+            from work_buddy.truth import documents, ydoc_store
+
+            store = TaskStore()
+            conn = store.connect()
+            try:
+                clauses = [
+                    "l.note_uuid IS NOT NULL",
+                    "l.lifecycle NOT IN ('retired', 'deleted')",
+                    "t.deleted_at IS NULL",
+                ]
+                if coverage != "all":
+                    clauses.append("t.archived_at IS NULL")
+                rows = conn.execute(
+                    "SELECT l.note_uuid, l.store_id, l.document_id "
+                    "FROM task_document_links l "
+                    "JOIN task_metadata t ON t.task_id = l.task_id "
+                    f"WHERE {' AND '.join(clauses)}"
+                ).fetchall()
+            finally:
+                conn.close()
+            try:
+                cowork_store = TaskDocumentStoreManager().open_existing()
+            except Exception as exc:
+                logger.warning("task_note source: Co-work store unavailable (%s)", exc)
+                return []
+            discovered: list[tuple[str, float]] = []
+            for row in rows:
+                try:
+                    if cowork_store.store_id != row["store_id"]:
+                        continue
+                    document = documents.get_document(cowork_store, row["document_id"])
+                    if document.ydoc_snapshot_sha256 is None:
+                        fingerprint = document.content_sha256
+                    else:
+                        fingerprint = ydoc_store.current_structured_head(
+                            cowork_store,
+                            document_id=document.id,
+                            snapshot_sha256=document.ydoc_snapshot_sha256,
+                        )
+                    # The IR protocol calls this value an mtime, but only
+                    # equality/change semantics matter.  A 52-bit slice of
+                    # the structured-head digest is exact as a Python float
+                    # and changes for un-compacted editor updates too.
+                    modified = float(int(fingerprint[:13], 16))
+                except Exception as exc:
+                    logger.warning(
+                        "task_note source: document %s unavailable (%s)",
+                        row["document_id"],
+                        exc,
+                    )
+                    continue
+                discovered.append((f"task_note:{row['note_uuid']}", modified))
+            return discovered
+
         from work_buddy.config import load_config
         from work_buddy.obsidian.tasks import store as task_store
         from work_buddy.task_notes import get_task_note_adapter
@@ -127,6 +175,31 @@ class TaskNoteSource:
         being set wins over the raw ``state``. Items with no task row map to
         ``"unknown"``.
         """
+        from work_buddy.tasks.runtime import native_authority_active
+
+        if native_authority_active():
+            from work_buddy.tasks.store import TaskStore
+
+            conn = TaskStore().connect()
+            try:
+                rows = conn.execute(
+                    "SELECT l.note_uuid, t.state, t.archived_at "
+                    "FROM task_document_links l "
+                    "JOIN task_metadata t ON t.task_id = l.task_id"
+                ).fetchall()
+            finally:
+                conn.close()
+            by_uuid = {
+                str(row["note_uuid"]): (
+                    "archived" if row["archived_at"] else (row["state"] or "open")
+                )
+                for row in rows
+            }
+            return {
+                item_id: by_uuid.get(item_id.removeprefix("task_note:"), "unknown")
+                for item_id in item_ids
+            }
+
         from work_buddy.obsidian.tasks import store as task_store
 
         conn = task_store.get_connection()
@@ -146,7 +219,12 @@ class TaskNoteSource:
     # ------------------------------------------------------------------ parse
 
     def parse(self, item_id: str) -> list[Document]:
-        """Parse one `tasks/notes/<uuid>.md` file into a single Document."""
+        """Parse one task knowledge item into a single IR Document."""
+        from work_buddy.tasks.runtime import native_authority_active
+
+        if native_authority_active():
+            return self._parse_native(item_id)
+
         from work_buddy.config import load_config
         from work_buddy.obsidian.tasks import store as task_store
 
@@ -253,6 +331,83 @@ class TaskNoteSource:
         )
         return [doc]
 
+    def _parse_native(self, item_id: str) -> list[Document]:
+        """Read a projection-free Co-work head by stable task/document IDs."""
+
+        from work_buddy.config import load_config
+        from work_buddy.tasks.documents import (
+            TaskDocumentStoreManager,
+            project_live_markdown,
+        )
+        from work_buddy.tasks.store import TaskStore
+
+        if not item_id.startswith("task_note:"):
+            logger.warning("task_note parse: invalid native item id %r", item_id)
+            return []
+        note_uuid = item_id.removeprefix("task_note:")
+        task_store = TaskStore()
+        conn = task_store.connect()
+        try:
+            row = conn.execute(
+                "SELECT t.task_id, t.description, t.state, l.store_id, "
+                "l.document_id FROM task_document_links l "
+                "JOIN task_metadata t ON t.task_id = l.task_id "
+                "WHERE l.note_uuid = ? AND t.deleted_at IS NULL "
+                "AND l.lifecycle NOT IN ('retired', 'deleted') LIMIT 1",
+                (note_uuid,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return []
+        try:
+            cowork_store = TaskDocumentStoreManager().open_existing()
+            if cowork_store.store_id != row["store_id"]:
+                return []
+            raw = project_live_markdown(cowork_store, row["document_id"])
+        except Exception as exc:
+            logger.warning("task_note parse: Co-work document unavailable: %s", exc)
+            return []
+
+        body = raw
+        h1_match = _H1_RE.search(body)
+        task_line = str(row["description"] or "").strip()
+        title = h1_match.group(1).strip() if h1_match else task_line or note_uuid
+        line_text = task_line or title
+        max_dense = load_config().get("ir", {}).get("dense_text_max_chars", 1500)
+        body_text = body.strip()[:max_dense] if body.strip() else ""
+        display = next(
+            (
+                line.strip()[:200]
+                for line in body.splitlines()
+                if line.strip() and not line.strip().startswith("#")
+            ),
+            line_text[:200],
+        )
+        return [
+            Document(
+                doc_id=f"task_note:{note_uuid}",
+                source="task_note",
+                fields={"line": line_text, "title": title, "body": body[:20000]},
+                dense_text=f"{line_text}\n{body_text}"[:max_dense],
+                display_text=display,
+                metadata={
+                    "note_uuid": note_uuid,
+                    "task_id": str(row["task_id"]),
+                    "task_state": str(row["state"]),
+                    "store_id": str(row["store_id"]),
+                    "document_id": str(row["document_id"]),
+                    "indexed_at": time.time(),
+                },
+                projections={
+                    "line": Projection(text=line_text),
+                    "body": Projection(text=body_text)
+                    if body_text
+                    else Projection(text=line_text),
+                },
+            )
+        ]
+
 
 def _lookup_task_line_text(task_id: str) -> str | None:
     """Return the canonical task-line description for a task_id.
@@ -261,6 +416,14 @@ def _lookup_task_line_text(task_id: str) -> str | None:
     to a direct scan of the master task list. Returns None if the task
     isn't resolvable — the caller should default to the note's H1.
     """
+    from work_buddy.tasks.runtime import native_authority_active
+
+    if native_authority_active():
+        from work_buddy.tasks.store import TaskStore
+
+        task = TaskStore().get(task_id, include_deleted=True)
+        return None if task is None else task.description
+
     try:
         from work_buddy.obsidian.tasks.env import verify_task
         info = verify_task(task_id=task_id)

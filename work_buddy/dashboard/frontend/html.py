@@ -3,7 +3,41 @@
 from __future__ import annotations
 
 
-def _html() -> str:
+def _tasks_panel(*, native_tasks_active: bool) -> str:
+    """Render either the frozen compatibility panel or a native doorway."""
+    if native_tasks_active:
+        return """
+<!-- TASKS — native authority doorway; no legacy paths or sync controls. -->
+<div class="tab-panel" id="panel-tasks">
+    <div class="empty-state">
+        Tasks now live in the React workspace.
+        <a href="/app/tasks">Open Tasks</a>
+    </div>
+</div>
+"""
+    return """
+<!-- TASKS — frozen pre-cutover compatibility surface. -->
+<div class="tab-panel" id="panel-tasks">
+    <div class="task-toolbar">
+        <div class="section-title"><a id="master-task-link" href="#" style="color: var(--accent); text-decoration: none;" title="Open in Obsidian">Master Task List</a> <span id="task-namespace-breadcrumb" class="task-namespace-breadcrumb"></span></div>
+        <div class="task-toolbar-controls">
+            <div id="task-state-chips" class="wb-filters" title="Toggle which task states to show"></div>
+            <span id="task-filter-status" class="task-filter-status" title="Filtered task count and last sync time"></span>
+            <button id="task-sync-btn" class="task-sync-btn" title="Run task_sync now (refreshes the view when done)">↻ Sync</button>
+            <input type="text" id="task-search" class="task-search-input" placeholder="Filter tasks..." />
+        </div>
+    </div>
+    <div class="task-layout">
+        <aside id="task-namespace-tree" class="task-namespace-tree">
+            <div class="loading">Loading namespaces...</div>
+        </aside>
+        <div id="task-list" class="task-list-col"><div class="loading">Loading tasks...</div></div>
+    </div>
+</div>
+"""
+
+
+def _html(*, native_tasks_active: bool = False) -> str:
     return """
 <header class="header">
     <h1><span>work-buddy</span> dashboard</h1>
@@ -114,24 +148,7 @@ def _html() -> str:
     <div id="today-plan"><div class="loading">Loading plan...</div></div>
 </div>
 
-<!-- TASKS -->
-<div class="tab-panel" id="panel-tasks">
-    <div class="task-toolbar">
-        <div class="section-title"><a id="master-task-link" href="#" style="color: var(--accent); text-decoration: none;" title="Open in Obsidian">Master Task List</a> <span id="task-namespace-breadcrumb" class="task-namespace-breadcrumb"></span></div>
-        <div class="task-toolbar-controls">
-            <div id="task-state-chips" class="wb-filters" title="Toggle which task states to show"></div>
-            <span id="task-filter-status" class="task-filter-status" title="Filtered task count and last sync time"></span>
-            <button id="task-sync-btn" class="task-sync-btn" title="Run task_sync now (refreshes the view when done)">↻ Sync</button>
-            <input type="text" id="task-search" class="task-search-input" placeholder="Filter tasks..." />
-        </div>
-    </div>
-    <div class="task-layout">
-        <aside id="task-namespace-tree" class="task-namespace-tree">
-            <div class="loading">Loading namespaces...</div>
-        </aside>
-        <div id="task-list" class="task-list-col"><div class="loading">Loading tasks...</div></div>
-    </div>
-</div>
+""" + _tasks_panel(native_tasks_active=native_tasks_active) + """
 
 <!-- (Removed: Review tab + drawer — retired in clarify -> Threads
      migration. Triage now flows through the unified source pipeline

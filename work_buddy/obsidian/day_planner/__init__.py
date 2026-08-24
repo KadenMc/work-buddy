@@ -1,7 +1,8 @@
 """Day Planner plugin integration via Obsidian eval_js bridge.
 
-Provides plan reading/writing and gap-filling schedule generation.
-Plan entries are scheduling artifacts, not canonical tasks.
+Provides journal-plan reading/writing and gap-filling schedule generation.
+Plan entries are scheduling artifacts, not canonical tasks, and this package
+does not participate in task authority after the native cutover.
 
 Modules:
 - env.py: Plugin readiness, plan I/O, resync triggers

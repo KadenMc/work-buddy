@@ -1,8 +1,9 @@
 """Day Planner plugin (v0.28.0) runtime access via eval_js bridge.
 
-Provides readiness checks, plan reading/writing, and resync triggers.
-Plan entries are ephemeral scheduling artifacts — NOT canonical tasks.
-The source of truth for tasks remains the master-task-list + SQLite store.
+Provides readiness checks, journal-plan reading/writing, and resync triggers.
+Plan entries are ephemeral scheduling artifacts — NOT canonical tasks. Native
+TaskStore remains authoritative after cutover; this module neither reads nor
+writes the retained legacy task Markdown.
 
 Runtime surface (discovered via probing):
 - plugin.store (Redux): getState(), dispatch(), subscribe()

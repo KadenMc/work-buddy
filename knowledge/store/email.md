@@ -93,9 +93,9 @@ Email triage runs through the unified source pipeline at `work_buddy.pipelines.e
 
 Email action library (`pipelines/email.py:EMAIL_ACTIONS`):
 - **`email_close`** — advisory: dismisses the cluster Thread without touching the underlying mailbox. Routes through `thread_dismiss`.
-- **`email_create_tasks`** — one task per email; subject → task text, sender + date → linked summary note.
-- **`email_create_umbrella_task`** — one task for the whole cluster; cluster label → task text, bullet list of emails → summary note.
-- **`email_record_into_task`** — file the cluster as a context section on an existing task's linked note. Use when the cluster is *context for ongoing work* (replies on an active deliverable, PR-review notifications about a task you're already tracking) rather than a new task. The user picks the target task at approval time.
+- **`email_create_tasks`** — one native task per email; sender and date go into a projection-free Co-work knowledge document.
+- **`email_create_umbrella_task`** — one native task for the cluster with its message list in a Co-work knowledge document.
+- **`email_record_into_task`** — append the cluster as context to an existing task's active Co-work document. Use when the cluster is *context for ongoing work* rather than new work. The user picks the target task at approval time.
 
 The universal action library (`thread_dismiss`, `thread_defer`, `thread_rename`) layers on top.
 

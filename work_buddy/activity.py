@@ -593,9 +593,22 @@ def _collect_task_events(
 ) -> list[ActivityEvent]:
     """Collect task state changes from the SQLite store as ActivityEvents."""
     try:
-        from work_buddy.obsidian.tasks.store import get_events_in_range
+        from work_buddy.tasks.store import TaskStore
 
-        raw = get_events_in_range(since.isoformat(), until.isoformat())
+        conn = TaskStore().connect()
+        try:
+            raw = [
+                dict(row)
+                for row in conn.execute(
+                    "SELECT task_id, old_state, new_state, changed_at, reason "
+                    "FROM task_state_history "
+                    "WHERE changed_at >= ? AND changed_at <= ? "
+                    "ORDER BY changed_at",
+                    (since.isoformat(), until.isoformat()),
+                )
+            ]
+        finally:
+            conn.close()
     except Exception:
         return []
 

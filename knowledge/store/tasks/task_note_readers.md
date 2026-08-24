@@ -1,7 +1,7 @@
 ---
 name: Task Note Readers
 kind: capability
-description: Sessions whose transcripts show they READ a task's note — the inverse of developed-by. Detects native Read of tasks/notes/<uuid>.md plus task_read/task_assign MCP calls carrying the task id. Surfaces the Rung-3 "read it, did the work, never referenced the task id in a commit" developer that developed-by misses. Read-only; full-history JSONL scan with a durable-table fast path.
+description: Sessions whose transcripts show they read a task through native task/document calls, with legacy Markdown reads retained only as historical evidence.
 capability_name: task_note_readers
 category: tasks
 op: op.wb.task_note_readers
@@ -13,7 +13,7 @@ parameters:
     required: true
   note_uuid:
     type: str
-    description: The task's note UUID. Enables Read-tool detection on tasks/notes/<uuid>.md; without it only the task_read/task_assign MCP-call signals fire. Get it from the task record's note_uuid field.
+    description: Optional legacy note UUID used only to include pre-cutover Read-tool evidence.
     required: false
   include_saw_id:
     type: bool
@@ -38,11 +38,11 @@ parents:
 requires: []
 ---
 
-Returns the sessions whose JSONL transcripts demonstrate they *read* a
-task's note — the inverse of `task_provenance`'s `developed_by`.
+Returns sessions whose transcripts demonstrate they read a task or its current
+Co-work knowledge — the inverse of `task_provenance`'s `developed_by`.
 
 Where `developed_by` answers "who *committed* against this task id,"
-`task_note_readers` answers "who *read the note*." That gap is the Rung-3
+`task_note_readers` answers "who read the task or knowledge." That gap is the Rung-3
 "forgot to toggle" case: a session reads the note, does the work, but
 never references the task id in a commit message — invisible to
 `developed_by`, yet exactly the developer `/wb-task-completeness` wants to
@@ -54,12 +54,13 @@ Each returned session carries:
   `include_saw_id=true`, `saw_id` (the id appeared without a demonstrable
   read).
 - **sources** — which explicit-read signals fired, each with first/last
-  timestamps and a count: `read_tool` (a `Read` on
-  `tasks/notes/<uuid>.md`), `task_read_mcp`, `task_assign_mcp`.
+  timestamps and a count: native `task_read_mcp`, `task_assign_mcp`, Co-work
+  document access, or historical `read_tool` evidence for a frozen legacy path.
 - **first_seen / last_seen** — ISO timestamps bounding the reads.
 
 Results are ranked `read_note` before `saw_id`, then most-recent first.
-Pass `note_uuid` for full fidelity (it's what enables `read_tool`
-detection). Bridge-independent — reads session JSONL + the durable
+Pass `note_uuid` only when pre-cutover path evidence is relevant.
+Bridge-independent — reads session JSONL plus the durable
 `session_task_note_reads` table (when populated, used as an O(1) fast
-path), never the Obsidian bridge.
+path), never the Obsidian bridge. A legacy path read is provenance, not current
+content authority.

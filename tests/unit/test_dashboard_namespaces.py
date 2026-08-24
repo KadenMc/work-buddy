@@ -9,12 +9,14 @@ import pytest
 
 from work_buddy.dashboard import api as dashboard_api
 from work_buddy.obsidian.tasks import store
+from work_buddy.tasks import store as native_task_store
 
 
 @pytest.fixture
 def _isolated_store(monkeypatch, tmp_path):
     db_file = tmp_path / "tasks.sqlite"
     monkeypatch.setattr(store, "_db_path", lambda: db_file)
+    monkeypatch.setattr(native_task_store, "default_task_db_path", lambda: db_file)
     return db_file
 
 

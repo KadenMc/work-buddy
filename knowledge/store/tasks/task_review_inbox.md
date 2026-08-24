@@ -21,6 +21,8 @@ aliases:
 - decide on new tasks
 parents:
 - tasks
-requires:
-- obsidian
+requires: []
 ---
+
+Returns native inbox tasks with attention-state recommendations. The React
+Tasks view provides the interactive five-item triage surface.

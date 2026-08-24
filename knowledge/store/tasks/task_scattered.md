@@ -1,7 +1,7 @@
 ---
 name: Task Scattered
 kind: capability
-description: Find open tasks scattered across the vault outside the master task list. Groups by file with counts. Uses Datacore structural queries.
+description: Retired legacy vault-task discovery surface; unavailable under native task authority.
 capability_name: task_scattered
 category: tasks
 op: op.wb.task_scattered
@@ -24,6 +24,8 @@ aliases:
 - tasks in docs
 parents:
 - tasks
-requires:
-- obsidian
+requires: []
 ---
+
+Do not use this as a task source after native cutover. Vault checkboxes may be
+captured through explicit intake workflows, but they are never peer task truth.

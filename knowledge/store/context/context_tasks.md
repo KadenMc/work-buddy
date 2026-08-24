@@ -1,7 +1,7 @@
 ---
 name: Context Tasks
 kind: capability
-description: 'Obsidian task summary: outstanding tasks + recent state changes (last 48h by default)'
+description: 'Native task summary: outstanding tasks plus recent lifecycle changes (last 48h by default)'
 capability_name: context_tasks
 category: context
 op: op.wb.context_tasks
@@ -28,6 +28,8 @@ aliases:
 - task changes
 parents:
 - context
-requires:
-- obsidian
+requires: []
 ---
+
+After native activation this capability queries `TaskStore`; it never scans the
+frozen master list or task-note Markdown.

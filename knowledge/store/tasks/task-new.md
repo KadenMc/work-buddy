@@ -28,7 +28,7 @@ steps:
   depends_on:
   - plan
   auto_run:
-    callable: work_buddy.obsidian.tasks.namespace_suggest.enrich_plan
+    callable: work_buddy.tasks.capabilities.enrich_plan
     input_map:
       plan: plan
     timeout: 30
@@ -63,7 +63,9 @@ steps:
     include_keys:
     - success
     - task_id
-    - task_line
+    - revision
+    - receipt
+    - document
     - skipped
     - message
   invokes:
@@ -97,7 +99,7 @@ Advance with a dict of this exact shape (omit optional fields when unknown; do N
   "project": "slug, if obvious or explicit",
   "contract": "contract slug the task serves, if known",
   "due_date": "YYYY-MM-DD, only if the user mentioned a date",
-  "summary": "only if the user asked for a linked note",
+  "summary": "initial Co-work knowledge, when useful or requested",
   "proposed_tags": ["projects/work-buddy/systems/task-system", "admin/uhn"]
 }
 ```
@@ -106,13 +108,13 @@ Reason about both project assignment and free-form namespace tags here, using wh
 
 1. **Project**: try to infer one. If a project is obvious (the user named it, the cwd is a project repo, the task is clearly an ECG-paper task, etc.), set `project` to its slug. If you also have a sensible subtree, include the full path as a tag in `proposed_tags` — `projects/<slug>/<area>/<subarea>` matches the in-vault convention better than the bare slug. Skip only when the project is genuinely ambiguous; don't default to skipping.
 2. **Namespace tags**: free-form user namespaces (`#admin/uhn`, `#paper/ecg-classifier`, etc.) go in `proposed_tags`.
-3. Don't propose `#todo` (auto-added), `#tasker/*` (state metadata), or `#wb/todo`/`#wb/done` (inline-todo markers). Those are managed elsewhere.
+3. Propose only structured project and namespace tags. Native state and completion are separate fields.
 
 The next step enriches your proposal with project-registry checks, existing-subtree lookups, and near-match data against the namespace universe.
 
 ## enrich
 
-Auto-run. Calls namespace_suggest.enrich_plan on the plan from the prior step. Returns:
+Auto-run. Calls the native `work_buddy.tasks.capabilities.enrich_plan` on the plan from the prior step. Returns:
 - `suggestions`: ranked existing namespaces relevant to task_text (includes #projects/* tags)
 - `tag_status`: per proposed_tag, whether it already exists, and if not, the closest near-matches
 - `project_status`: registry-aware project info — `known_projects` (the registered project list), `proposed_slug` (echoed back), `slug_exists` (whether plan.project / the project slug from proposed_tags is in the registry), `near_subtrees` (existing #projects/<slug>/... paths under the proposed slug), `subtree_matches` (did-you-mean ranker output if a full subtree path was proposed)
@@ -125,7 +127,7 @@ Agentic step. Using the enriched output:
 
 1. **Project gate**:
    - If `project_status.proposed_slug` is set and `project_status.slug_exists` is true, accept the slug silently — it's a registered project.
-   - If `proposed_slug` is set but `slug_exists` is false, the agent is about to mint a new project. Ask: is this a real new project (then call `project_create` first) or did you mean one of the existing slugs (`project_status.known_projects`)? Do NOT silently call task_create — the slug will be rejected by the registry validation in `_normalize_tags` / `create_task`.
+   - If `proposed_slug` is set but `slug_exists` is false, the agent is about to mint a new project. Ask: is this a real new project (then call `project_create` first) or did you mean one of the existing slugs (`project_status.known_projects`)? Do NOT silently call task_create — the native service rejects unknown project slugs.
    - If a full subtree path was proposed (`projects/<slug>/<subtree>`) and `near_subtrees` shows existing paths, surface them only when the proposed subtree is novel under an existing project (e.g., proposing `systems/artifacts` when only `systems/knowledge` and `systems/projects` exist). Default-silent when the subtree already exists or when the user clearly named it.
 2. **Tag gate**:
    - If all proposed_tags have `tag_status[tag].exists == true`, accept silently.
@@ -170,4 +172,4 @@ Return the task_create result as the step output. If task_create returns a conse
 
 ## report
 
-Agentic step. One-line confirmation: task ID and a short paraphrase. Do NOT open the note, do NOT suggest follow-ups unless the user asked. If apply.skipped is true, say the task was not created.
+Agentic step. One-line confirmation: native task ID and a short paraphrase. Do not open the Co-work document or suggest follow-ups unless the user asked. If apply.skipped is true, say the task was not created.

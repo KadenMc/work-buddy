@@ -10,6 +10,8 @@ import {
   JOURNAL_READ_ONLY_FIXTURE,
   JOURNAL_STALE_FIXTURE,
 } from "../../apps/journal/fixtures/states";
+import { TASKS_WIDGET_TYPE_IDS } from "../../apps/tasks/bindings";
+import { tasksWidgetLabInputs } from "../../apps/tasks/fixtures/widgetLab";
 import {
   asViewId,
   asWidgetInstanceId,
@@ -73,8 +75,15 @@ const inputForType = (
   if (widgetTypeId === JOURNAL_WIDGET_TYPE_IDS.runningNotes) {
     return inputs[JOURNAL_INSTANCE_IDS.runningNotes];
   }
+  const taskInputs = tasksWidgetLabInputs(status === "read-only");
+  if (widgetTypeId === TASKS_WIDGET_TYPE_IDS.quickAdd) {
+    return taskInputs.quickAdd;
+  }
+  if (widgetTypeId === TASKS_WIDGET_TYPE_IDS.workspace) {
+    return taskInputs.workspace;
+  }
   throw new Error(
-    `Widget Lab needs a deterministic Journal binding for ${widgetTypeId}`,
+    `Widget Lab needs a deterministic binding for ${widgetTypeId}`,
   );
 };
 

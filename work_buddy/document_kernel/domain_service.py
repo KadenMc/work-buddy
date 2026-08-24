@@ -265,6 +265,7 @@ class RunningNoteDocumentService:
             role=role,
             created_by=actors.get("selected_by") or "system:journal-capture",
             projection_path=projection_path or f"journal/{day_id}.md",
+            projection_mode="managed_section",
             migration_origin=migration_origin,
         )
         source_ref = resolved.source_ref.uri

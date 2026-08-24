@@ -26,6 +26,7 @@ rules can never drift between the two. This module only handles
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -55,12 +56,12 @@ def _task_note_maps() -> tuple[dict[str, str], dict[str, str], set[str]]:
     tasks appear — a note whose task was deleted is absent, so reads of an
     orphan note never produce a row.
     """
-    from work_buddy.obsidian.tasks import store
+    from work_buddy.tasks.store import TaskStore
 
     uuid_to_task: dict[str, str] = {}
     task_to_uuid: dict[str, str] = {}
     known: set[str] = set()
-    conn = store.get_connection()
+    conn = TaskStore().connect()
     try:
         for row in conn.execute(
             "SELECT task_id, note_uuid FROM task_metadata"
@@ -74,6 +75,80 @@ def _task_note_maps() -> tuple[dict[str, str], dict[str, str], set[str]]:
     finally:
         conn.close()
     return uuid_to_task, task_to_uuid, known
+
+
+def _iter_tool_use_blocks(entry: dict[str, Any]):
+    message = entry.get("message")
+    if not isinstance(message, dict):
+        return
+    content = message.get("content")
+    if not isinstance(content, list):
+        return
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "tool_use":
+            yield block
+
+
+def _scan_session_for_task(
+    path: Path,
+    task_id: str,
+    note_uuid: str | None = None,
+) -> dict[str, Any]:
+    """Detect explicit native task reads without importing legacy task code."""
+
+    historical_note = f"tasks/notes/{note_uuid}.md" if note_uuid else None
+    sources: dict[str, dict[str, Any]] = {}
+    saw_id = False
+
+    def record(source: str, timestamp: str | None) -> None:
+        current = sources.get(source)
+        if current is None:
+            sources[source] = {
+                "first": timestamp,
+                "last": timestamp,
+                "count": 1,
+            }
+            return
+        current["count"] += 1
+        if timestamp:
+            if current["first"] is None or timestamp < current["first"]:
+                current["first"] = timestamp
+            if current["last"] is None or timestamp > current["last"]:
+                current["last"] = timestamp
+
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for raw in handle:
+                hit_id = task_id in raw
+                hit_historical_note = bool(historical_note and historical_note in raw)
+                if not hit_id and not hit_historical_note:
+                    continue
+                saw_id = True
+                try:
+                    entry = json.loads(raw)
+                except Exception:
+                    continue
+                timestamp = entry.get("timestamp") if isinstance(entry, dict) else None
+                for block in _iter_tool_use_blocks(entry):
+                    name = str(block.get("name") or "")
+                    payload = block.get("input") or {}
+                    if (
+                        historical_note
+                        and name == "Read"
+                        and historical_note in str(payload.get("file_path", ""))
+                    ):
+                        # Historical provenance is retained as evidence; this
+                        # scans the transcript, never the frozen task tree.
+                        record("read_tool", timestamp)
+                    serialized = json.dumps(payload, default=str)
+                    if task_id in serialized:
+                        if "task_read" in serialized:
+                            record("task_read_mcp", timestamp)
+                        if "task_assign" in serialized:
+                            record("task_assign_mcp", timestamp)
+    except OSError:
+        return {"sources": {}, "saw_id": False}
+    return {"sources": sources, "saw_id": saw_id}
 
 
 def _candidate_tasks_in_text(
@@ -115,7 +190,6 @@ def refresh_session_note_reads(
 
     Returns ``{rows_written, scanned_sessions}``.
     """
-    from work_buddy.obsidian.tasks.provenance import _scan_session_for_task
     from work_buddy.sessions.inspector import _recent_sessions
 
     now_iso = datetime.now(timezone.utc).isoformat()

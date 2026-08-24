@@ -34,7 +34,7 @@ The service hosts two distinct frontends during incremental migration:
 - `/` is the Python-generated root dashboard documented at `services/dashboard/frontend`.
 - `/app` is the React dashboard documented at `services/dashboard/react`.
 
-The React surface is the primary desktop entry point, but it does not imply that every root-dashboard tab or mutation has moved. Both frontends use the same Flask process and same-origin API authority; neither browser may call sibling localhost service ports directly.
+The React surface is the primary desktop entry point, but it does not imply that every root-dashboard tab or mutation has moved. Tasks is an explicit completed migration: `/app/tasks` owns the UI, the old root task route redirects there, and same-origin `/api/tasks` uses native TaskStore authority. Both frontends use the same Flask process and same-origin API authority; neither browser may call sibling localhost service ports directly.
 
 ## Tabs
 
@@ -57,7 +57,7 @@ The Settings panel also has **Embeddings** and **Inference** sub-views. Settings
 * **Frame boundary:** Every response sets ``Content-Security-Policy: frame-ancestors 'none'`` and ``X-Frame-Options: DENY`` so another site cannot embed dashboard controls.
 * **Read-only mode:** ``dashboard.read_only: true`` in ``config.yaml`` gates every mutating HTTP method (403) and hides or disables mutation controls in both frontends.
 
-The React dashboard's standardized widget runtime, appearance contract, and calendar presentation are documented under `services/dashboard/react`. Registry-driven configuration authority is documented at `settings`.
+The React dashboard's standardized widget runtime, appearance contract, calendar presentation, and native Tasks view are documented under `services/dashboard/react`. Registry-driven configuration authority is documented at `settings`.
 
 ## Card registry (feature cards)
 

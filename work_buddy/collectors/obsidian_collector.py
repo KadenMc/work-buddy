@@ -304,7 +304,24 @@ def _get_journal_stats(vault_root: Path, journal_dir: str) -> dict[str, Any] | N
 
 
 def _get_tasks(vault_root: Path) -> str:
-    """Extract incomplete tasks from master task list."""
+    """Extract incomplete tasks from the active authority."""
+    from work_buddy.tasks.runtime import native_authority_active
+
+    if native_authority_active():
+        from work_buddy.tasks.models import TaskQuery
+        from work_buddy.tasks.store import TaskStore
+
+        tasks = TaskStore().list(
+            TaskQuery(
+                include_done=False,
+                include_archived=False,
+                include_deleted=False,
+                include_snoozed=True,
+                limit=5000,
+            )
+        )
+        return "\n".join(f"- [ ] {task.description}" for task in tasks)
+
     task_file = vault_root / "tasks" / "master-task-list.md"
     if not task_file.exists():
         return ""
@@ -555,11 +572,18 @@ def collect(cfg: dict[str, Any]) -> tuple[str, str]:
     obsidian_md = "\n".join(lines)
 
     # Build tasks summary
+    from work_buddy.tasks.runtime import native_authority_active
+
+    task_source = (
+        "native task store"
+        if native_authority_active()
+        else "`tasks/master-task-list.md` (pre-cutover)"
+    )
     task_lines = [
         "# Tasks Summary",
         "",
         f"*Collected: {to_local_naive(now).strftime('%Y-%m-%d %H:%M')}*",
-        f"*Source: `tasks/master-task-list.md`*",
+        f"*Source: {task_source}*",
         "",
     ]
     if tasks_md:

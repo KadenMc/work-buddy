@@ -390,6 +390,21 @@ class RetrySweep:
         if record.get("type") == "internal":
             return self._replay_internal(record)
         try:
+            _assert_task_replay_boundary(record)
+        except Exception as exc:
+            try:
+                from work_buddy.tasks.errors import TaskDomainError
+            except ImportError:
+                TaskDomainError = ()  # type: ignore[assignment,misc]
+            if not isinstance(exc, TaskDomainError):
+                raise
+            return {
+                "success": False,
+                "error": f"{type(exc).__name__}: {exc}",
+                "error_code": exc.code,
+                "transient": bool(exc.retryable),
+            }
+        try:
             from work_buddy.mcp_server.registry import (
                 Capability,
                 get_disabled_registry,
@@ -488,6 +503,18 @@ class RetrySweep:
 
             originating = record.get("originating_session_id")
             token = set_originating_session(originating) if originating else None
+            operation_name = str(record.get("name") or "")
+            if operation_name.startswith("task_"):
+                from work_buddy.tasks.runtime import mutation_fence_active
+
+                if mutation_fence_active():
+                    if token is not None:
+                        reset_originating_session(token)
+                    return {
+                        "success": False,
+                        "error": "task mutation fenced for migration maintenance",
+                        "transient": True,
+                    }
             # Bind a REPLAY consent principal: the decorator's is_granted
             # resolves against the originating agent's DB and rides individual
             # grants only — a workflow grant that was live when this op was
@@ -503,15 +530,24 @@ class RetrySweep:
             # Keep an idempotency-bearing replay (e.g. task_create) on its
             # original note identity even when the consent wait outran the
             # cache TTL, so the sweep heals rather than orphaning a note.
-            try:
-                from work_buddy.obsidian.tasks.mutations import (
-                    refresh_idempotency_on_replay,
-                )
-                refresh_idempotency_on_replay(
-                    record.get("name"), record.get("params", {}),
-                )
-            except Exception:  # pragma: no cover — never break a sweep
-                pass
+            from work_buddy.tasks.runtime import (
+                is_task_mutation_capability,
+                native_authority_active,
+            )
+
+            if (
+                is_task_mutation_capability(record.get("name"))
+                and not native_authority_active()
+            ):
+                try:
+                    from work_buddy.obsidian.tasks.mutations import (
+                        refresh_idempotency_on_replay,
+                    )
+                    refresh_idempotency_on_replay(
+                        record.get("name"), record.get("params", {}),
+                    )
+                except Exception:  # pragma: no cover — legacy best effort
+                    pass
             try:
                 with _principal_ctx:
                     result = entry.callable(**record.get("params", {}))
@@ -579,6 +615,16 @@ class RetrySweep:
                 ObsidianPostWriteUncertain = ()  # type-tuple sentinel
 
             if isinstance(exc, ObsidianPostWriteUncertain):
+                if _native_task_record(record):
+                    from work_buddy.tasks.errors import TaskLegacyEffectRetired
+
+                    retired = TaskLegacyEffectRetired()
+                    return {
+                        "success": False,
+                        "error": f"{type(retired).__name__}: {retired}",
+                        "error_code": retired.code,
+                        "transient": False,
+                    }
                 from work_buddy.obsidian.post_write_verify import verify_post_write
                 verdict = verify_post_write(exc)
                 if verdict == "verified":
@@ -932,6 +978,43 @@ def _partial_verified_fields(verified: Any) -> list[str]:
 # inner op record. The wrapper itself has no effects manifest — verify paths
 # need the inner capability's manifest to walk multi-effect state correctly.
 _WRAPPER_CAPS: frozenset[str] = frozenset({"retry", "obsidian_retry"})
+
+
+def _effective_task_record(record: dict[str, Any]) -> dict[str, Any]:
+    return _resolve_inner_op_for_wrapper(record) or record
+
+
+def _native_task_record(record: dict[str, Any]) -> bool:
+    effective = _effective_task_record(record)
+    from work_buddy.tasks.runtime import (
+        is_task_mutation_capability,
+        native_authority_active,
+    )
+
+    return (
+        is_task_mutation_capability(effective.get("name"))
+        and native_authority_active()
+    )
+
+
+def _assert_task_replay_boundary(record: dict[str, Any]) -> None:
+    """Fence retry records before any legacy effect pre-verification."""
+
+    effective = _effective_task_record(record)
+    from work_buddy.tasks.runtime import (
+        assert_task_replay_authority,
+        is_task_mutation_capability,
+        native_authority_active,
+    )
+
+    if not is_task_mutation_capability(effective.get("name")):
+        return
+    assert_task_replay_authority(effective.get("task_authority_epoch"))
+    carrier = effective.get("pwu_carrier") or record.get("pwu_carrier")
+    if native_authority_active() and carrier:
+        from work_buddy.tasks.errors import TaskLegacyEffectRetired
+
+        raise TaskLegacyEffectRetired()
 
 
 def _resolve_inner_op_for_wrapper(

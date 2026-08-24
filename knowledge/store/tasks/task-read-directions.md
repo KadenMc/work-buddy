@@ -31,7 +31,7 @@ If no argument provided, ask for the task ID.
 - **task_read** — pure inspection. No session is recorded against the task. Use when the user is browsing, auditing, or you only need the payload for an upstream flow.
 - **task_assign** — inspection PLUS claims the task for the current session. Use when the user is starting work on it.
 
-Both return the same read payload (task text, metadata, note content, file + line, existing session list). If you assigned a task earlier in the conversation and only want to re-inspect it now, task_read is fine — assigning again just writes an idempotent duplicate session row.
+Both return the same native task fields, current Co-work knowledge, revision, and existing session list. Neither returns a Markdown file or line. If you assigned a task earlier in the conversation and only want to re-inspect it now, task_read is fine — assigning again just writes an idempotent duplicate session row.
 
 ## Presentation
 
@@ -39,7 +39,7 @@ Same as task_assign:
 
 1. Task: text and current state/urgency
 2. Contract: which contract it serves (if any)
-3. Note: preview of note content (if exists) + file path
+3. Knowledge: current Co-work content/excerpt and document identity, with no path
 4. Sessions: how many sessions have worked on this task (read-only view)
 
 ## Do NOT

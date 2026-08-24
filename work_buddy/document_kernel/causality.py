@@ -18,9 +18,10 @@ from work_buddy.backups.source_foundation_restore import (
 )
 
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _ID = re.compile(r"^[0-9a-f]{32}$")
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
+_PROJECTION_MODES = {"none", "managed_file", "managed_section"}
 
 
 class DocumentCausalityError(RuntimeError):
@@ -51,6 +52,7 @@ class DomainDocumentBinding:
     content_authority: str
     content_authority_epoch: int
     projection_path: str | None
+    projection_mode: str
     migration_origin: str | None
     created_at: str
     created_by: str
@@ -151,6 +153,12 @@ def _identifier(value: str, label: str) -> str:
     return value
 
 
+def _projection_mode(value: str) -> str:
+    if value not in _PROJECTION_MODES:
+        raise ValueError("invalid projection mode")
+    return value
+
+
 class DocumentCausalityStore:
     """Per-Co-work-store causality database beside the Truth store."""
 
@@ -237,7 +245,9 @@ class DocumentCausalityStore:
                     created_at TEXT NOT NULL,
                     created_by TEXT NOT NULL,
                     superseded_at TEXT,
-                    superseded_by TEXT
+                    superseded_by TEXT,
+                    projection_mode TEXT NOT NULL DEFAULT 'managed_file'
+                      CHECK(projection_mode IN ('none','managed_file','managed_section'))
                 );
                 CREATE UNIQUE INDEX IF NOT EXISTS uq_domain_binding_current
                   ON domain_document_bindings(domain_namespace,domain_kind,domain_entity_id,role)
@@ -358,6 +368,28 @@ class DocumentCausalityStore:
                     "INSERT INTO causality_meta(key,value) VALUES('schema_version',?)",
                     (str(_SCHEMA_VERSION),),
                 )
+            elif int(row["value"]) == 1:
+                columns = {
+                    str(item["name"])
+                    for item in conn.execute(
+                        "PRAGMA table_info(domain_document_bindings)"
+                    ).fetchall()
+                }
+                if "projection_mode" not in columns:
+                    conn.execute(
+                        "ALTER TABLE domain_document_bindings ADD COLUMN "
+                        "projection_mode TEXT NOT NULL DEFAULT 'managed_file' "
+                        "CHECK(projection_mode IN ('none','managed_file','managed_section'))"
+                    )
+                    conn.execute(
+                        "UPDATE domain_document_bindings SET projection_mode="
+                        "CASE WHEN domain_namespace='journal' "
+                        "THEN 'managed_section' ELSE 'managed_file' END"
+                    )
+                conn.execute(
+                    "UPDATE causality_meta SET value=? WHERE key='schema_version'",
+                    (str(_SCHEMA_VERSION),),
+                )
             elif int(row["value"]) != _SCHEMA_VERSION:
                 raise DocumentCausalityError("unsupported_document_causality_schema")
 
@@ -404,8 +436,12 @@ class DocumentCausalityStore:
         role: str,
         created_by: str,
         projection_path: str | None = None,
+        projection_mode: str = "managed_file",
         migration_origin: str | None = None,
     ) -> DomainDocumentBinding:
+        projection_mode = _projection_mode(projection_mode)
+        if projection_mode == "none" and projection_path is not None:
+            raise ValueError("projection_path must be absent when projection_mode is none")
         identity = "\0".join(
             (domain_namespace, domain_kind, domain_entity_id, role, store_id, document_id)
         )
@@ -418,17 +454,28 @@ class DocumentCausalityStore:
             ).fetchone()
             if row is not None:
                 existing = self._binding(row)
-                if existing.store_id != store_id or existing.document_id != document_id:
+                if (
+                    existing.store_id != store_id
+                    or existing.document_id != document_id
+                    or existing.projection_mode != projection_mode
+                    or existing.projection_path != projection_path
+                ):
                     raise BindingConflict()
                 return existing
             now = _now()
             try:
                 conn.execute(
-                    "INSERT INTO domain_document_bindings VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO domain_document_bindings "
+                    "(binding_id,domain_namespace,domain_kind,domain_entity_id,"
+                    "domain_revision,store_id,document_id,role,lifecycle,content_authority,"
+                    "content_authority_epoch,projection_path,migration_origin,created_at,"
+                    "created_by,superseded_at,superseded_by,projection_mode) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         binding_id, domain_namespace, domain_kind, domain_entity_id,
                         domain_revision, store_id, document_id, role, "current", "domain", 0,
                         projection_path, migration_origin, now, created_by, None, None,
+                        projection_mode,
                     ),
                 )
             except sqlite3.IntegrityError as exc:
@@ -508,6 +555,7 @@ class DocumentCausalityStore:
         document_id: str,
         created_by: str,
         projection_path: str | None = None,
+        projection_mode: str | None = None,
         migration_origin: str | None = None,
     ) -> DomainDocumentBinding:
         """Atomically replace one current reverse binding with its successor."""
@@ -533,6 +581,13 @@ class DocumentCausalityStore:
                 raise BindingConflict()
             if current.store_id == store_id and current.document_id == document_id:
                 return current
+            next_projection_mode = _projection_mode(
+                current.projection_mode if projection_mode is None else projection_mode
+            )
+            if next_projection_mode == "none" and projection_path is not None:
+                raise ValueError(
+                    "projection_path must be absent when projection_mode is none"
+                )
             identity = "\0".join(
                 (
                     current.domain_namespace,
@@ -552,7 +607,12 @@ class DocumentCausalityStore:
             )
             try:
                 conn.execute(
-                    "INSERT INTO domain_document_bindings VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO domain_document_bindings "
+                    "(binding_id,domain_namespace,domain_kind,domain_entity_id,"
+                    "domain_revision,store_id,document_id,role,lifecycle,content_authority,"
+                    "content_authority_epoch,projection_path,migration_origin,created_at,"
+                    "created_by,superseded_at,superseded_by,projection_mode) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         successor_id,
                         current.domain_namespace,
@@ -571,6 +631,7 @@ class DocumentCausalityStore:
                         created_by,
                         None,
                         None,
+                        next_projection_mode,
                     ),
                 )
             except sqlite3.IntegrityError as exc:
@@ -581,6 +642,63 @@ class DocumentCausalityStore:
             ).fetchone()
             assert successor is not None
             return self._binding(successor)
+
+    def configure_projection_mode(
+        self,
+        binding_id: str,
+        *,
+        projection_mode: str,
+        projection_path: str | None,
+    ) -> DomainDocumentBinding:
+        """Change projection policy while domain authority is still fenced.
+
+        This is intentionally unavailable after Co-work authority activates: a
+        cutover receipt must never silently change whether external writes are
+        expected.  Existing prepared projection work also blocks the change.
+        """
+
+        _identifier(binding_id, "binding_id")
+        projection_mode = _projection_mode(projection_mode)
+        if projection_mode == "none" and projection_path is not None:
+            raise ValueError("projection_path must be absent when projection_mode is none")
+        with self.transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM domain_document_bindings WHERE binding_id=?",
+                (binding_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError("binding_not_found")
+            current = self._binding(row)
+            if current.lifecycle != "current" or current.content_authority != "domain":
+                raise BindingConflict()
+            pending = conn.execute(
+                "SELECT 1 FROM document_projection_intents WHERE binding_id=? "
+                "AND state='prepared' LIMIT 1",
+                (binding_id,),
+            ).fetchone()
+            if pending is not None:
+                raise BindingConflict()
+            if (
+                current.projection_mode == projection_mode
+                and current.projection_path == projection_path
+            ):
+                return current
+            conn.execute(
+                "UPDATE domain_document_bindings SET projection_mode=?,projection_path=? "
+                "WHERE binding_id=?",
+                (projection_mode, projection_path, binding_id),
+            )
+            if projection_mode == "none":
+                conn.execute(
+                    "DELETE FROM document_projection_cursors WHERE binding_id=?",
+                    (binding_id,),
+                )
+            refreshed = conn.execute(
+                "SELECT * FROM domain_document_bindings WHERE binding_id=?",
+                (binding_id,),
+            ).fetchone()
+            assert refreshed is not None
+            return self._binding(refreshed)
 
     def retire_binding(self, binding_id: str) -> DomainDocumentBinding:
         """Retire a current binding without deleting its causality history."""
@@ -640,11 +758,17 @@ class DocumentCausalityStore:
                 "WHERE binding_id=?",
                 (domain_revision, binding_id),
             )
-            conn.execute(
-                "INSERT OR REPLACE INTO document_projection_cursors VALUES(?,?,?,?,?,?,?,?)",
-                (binding_id, current.content_authority_epoch + 1, None, None, None,
-                 "pending", None, _now()),
-            )
+            if current.projection_mode == "none":
+                conn.execute(
+                    "DELETE FROM document_projection_cursors WHERE binding_id=?",
+                    (binding_id,),
+                )
+            else:
+                conn.execute(
+                    "INSERT OR REPLACE INTO document_projection_cursors VALUES(?,?,?,?,?,?,?,?)",
+                    (binding_id, current.content_authority_epoch + 1, None, None, None,
+                     "pending", None, _now()),
+                )
             refreshed = conn.execute(
                 "SELECT * FROM domain_document_bindings WHERE binding_id=?", (binding_id,)
             ).fetchone()
@@ -703,11 +827,17 @@ class DocumentCausalityStore:
                 "AND content_authority_epoch=? AND state='prepared'",
                 (binding_id, expected_epoch),
             )
-            conn.execute(
-                "INSERT OR REPLACE INTO document_projection_cursors "
-                "VALUES(?,?,?,?,?,?,?,?)",
-                (binding_id, next_epoch, None, None, None, "failed", None, _now()),
-            )
+            if current.projection_mode == "none":
+                conn.execute(
+                    "DELETE FROM document_projection_cursors WHERE binding_id=?",
+                    (binding_id,),
+                )
+            else:
+                conn.execute(
+                    "INSERT OR REPLACE INTO document_projection_cursors "
+                    "VALUES(?,?,?,?,?,?,?,?)",
+                    (binding_id, next_epoch, None, None, None, "failed", None, _now()),
+                )
             refreshed = conn.execute(
                 "SELECT * FROM domain_document_bindings WHERE binding_id=?", (binding_id,)
             ).fetchone()
@@ -996,6 +1126,14 @@ class DocumentCausalityStore:
         _digest(section_sha256, "section")
         _digest(file_sha256, "file")
         with self.transaction() as conn:
+            binding = conn.execute(
+                "SELECT projection_mode FROM domain_document_bindings WHERE binding_id=?",
+                (binding_id,),
+            ).fetchone()
+            if binding is None:
+                raise KeyError("binding_not_found")
+            if binding["projection_mode"] == "none":
+                raise ChangeConflict()
             row = conn.execute(
                 "SELECT * FROM document_projection_cursors WHERE binding_id=?",
                 (binding_id,),
@@ -1050,6 +1188,7 @@ class DocumentCausalityStore:
                 binding is None
                 or binding["lifecycle"] != "current"
                 or binding["content_authority"] != "co_work"
+                or binding["projection_mode"] == "none"
                 or int(binding["content_authority_epoch"]) != content_authority_epoch
             ):
                 raise ChangeConflict()
@@ -1091,7 +1230,7 @@ class DocumentCausalityStore:
             if intent is None:
                 raise KeyError("projection_not_found")
             binding = conn.execute(
-                "SELECT lifecycle,content_authority,content_authority_epoch "
+                "SELECT lifecycle,content_authority,content_authority_epoch,projection_mode "
                 "FROM domain_document_bindings WHERE binding_id=?",
                 (intent["binding_id"],),
             ).fetchone()
@@ -1100,6 +1239,7 @@ class DocumentCausalityStore:
                 or binding is None
                 or binding["lifecycle"] != "current"
                 or binding["content_authority"] != "co_work"
+                or binding["projection_mode"] == "none"
                 or int(binding["content_authority_epoch"])
                 != int(intent["content_authority_epoch"])
             ):
@@ -1162,6 +1302,14 @@ class DocumentCausalityStore:
         divergence_source_ref: str,
     ) -> ProjectionCursor:
         with self.transaction() as conn:
+            binding = conn.execute(
+                "SELECT projection_mode FROM domain_document_bindings WHERE binding_id=?",
+                (binding_id,),
+            ).fetchone()
+            if binding is None:
+                raise KeyError("binding_not_found")
+            if binding["projection_mode"] == "none":
+                raise ChangeConflict()
             cursor = conn.execute(
                 "SELECT * FROM document_projection_cursors WHERE binding_id=?", (binding_id,)
             ).fetchone()
@@ -1217,6 +1365,55 @@ class DocumentCausalityStore:
             "payload": payload,
         }
 
+    @staticmethod
+    def _normalize_export_bundle(
+        bundle: Mapping[str, Any],
+        *,
+        error_code: str,
+    ) -> dict[str, Any]:
+        """Upgrade portable v1 rows without invalidating their signed envelope.
+
+        Schema version 1 pre-dates explicit projection policy.  Those backups
+        remain restorable: Journal bindings used managed sections and every
+        other legacy binding used managed files.  The caller must validate an
+        enclosing recovery digest *before* invoking this normalizer.
+        """
+
+        if (
+            not isinstance(bundle, Mapping)
+            or bundle.get("schema") != "work-buddy-document-causality-export/v1"
+            or bundle.get("schema_version") not in {1, _SCHEMA_VERSION}
+            or not isinstance(bundle.get("tables"), Mapping)
+        ):
+            raise DocumentCausalityError(error_code)
+        version = int(bundle["schema_version"])
+        normalized_tables: dict[str, list[dict[str, Any]]] = {}
+        tables = bundle["tables"]
+        assert isinstance(tables, Mapping)
+        for table, rows in tables.items():
+            if not isinstance(table, str) or not isinstance(rows, list):
+                raise DocumentCausalityError(error_code)
+            normalized_rows: list[dict[str, Any]] = []
+            for row in rows:
+                if not isinstance(row, Mapping):
+                    raise DocumentCausalityError(error_code)
+                record = dict(row)
+                if version == 1 and table == "domain_document_bindings":
+                    if "projection_mode" in record:
+                        raise DocumentCausalityError(error_code)
+                    record["projection_mode"] = (
+                        "managed_section"
+                        if record.get("domain_namespace") == "journal"
+                        else "managed_file"
+                    )
+                normalized_rows.append(record)
+            normalized_tables[table] = normalized_rows
+        return {
+            "schema": "work-buddy-document-causality-export/v1",
+            "schema_version": _SCHEMA_VERSION,
+            "tables": normalized_tables,
+        }
+
     @classmethod
     def validate_recovery_bundle(
         cls,
@@ -1240,16 +1437,14 @@ class DocumentCausalityStore:
             raise DocumentCausalityError(
                 "document_causality_recovery_store_identity_mismatch"
             )
-        payload = bundle["payload"]
-        assert isinstance(payload, Mapping)
-        if bundle.get("payload_sha256") != cls._bundle_sha256(payload):
+        raw_payload = bundle["payload"]
+        assert isinstance(raw_payload, Mapping)
+        if bundle.get("payload_sha256") != cls._bundle_sha256(raw_payload):
             raise DocumentCausalityError("document_causality_recovery_digest_mismatch")
-        if (
-            payload.get("schema") != "work-buddy-document-causality-export/v1"
-            or payload.get("schema_version") != _SCHEMA_VERSION
-            or not isinstance(payload.get("tables"), Mapping)
-        ):
-            raise DocumentCausalityError("invalid_document_causality_recovery_bundle")
+        payload = cls._normalize_export_bundle(
+            raw_payload,
+            error_code="invalid_document_causality_recovery_bundle",
+        )
         tables = payload["tables"]
         assert isinstance(tables, Mapping)
         expected_tables = {
@@ -1361,13 +1556,11 @@ class DocumentCausalityStore:
                     )
 
     def import_bundle(self, bundle: Mapping[str, Any]) -> None:
-        if (
-            bundle.get("schema") != "work-buddy-document-causality-export/v1"
-            or bundle.get("schema_version") != _SCHEMA_VERSION
-            or not isinstance(bundle.get("tables"), Mapping)
-        ):
-            raise DocumentCausalityError("invalid_document_causality_export")
-        tables = bundle["tables"]
+        normalized = self._normalize_export_bundle(
+            bundle,
+            error_code="invalid_document_causality_export",
+        )
+        tables = normalized["tables"]
         assert isinstance(tables, Mapping)
         order = (
             "domain_document_bindings", "document_change_intents",

@@ -33,20 +33,17 @@ VALID_CONSIDERATION_STATUSES = {
 
 def _create_task_impl(
     task_text: str,
-    vault_root: Path,
+    vault_root: Path | None,
     urgency: str = "medium",
     project: str | None = None,
     due_date: str | None = None,
 ) -> dict[str, Any]:
-    """Create a task in the master task list. No consent gate.
+    """Create a task through the authority-aware WorkItem port. No consent gate.
 
-    Routes through the WorkItem write port (``Task.create`` → the task mutation
-    layer) so the task gets the atomic dual-surface (markdown + store) write, a
-    full store record, and a ``task.created`` audit event — the same path every
-    other task-creation entry point uses, and the reason a journal-routed task
-    is no longer invisible to the WorkItem event log. ``vault_root`` is advisory:
-    the mutation layer resolves the master list (and any note) from config, not
-    from this argument.
+    Native authority returns the task identity, revisions, and mutation receipt
+    without claiming a Markdown line or file path.  Before cutover, the same port
+    preserves the legacy master-list response. ``vault_root`` is a compatibility
+    argument and is not used by native task creation.
     """
     if urgency not in VALID_URGENCIES:
         raise ValueError(
@@ -54,7 +51,9 @@ def _create_task_impl(
         )
 
     from work_buddy.threads.models import Task
+    from work_buddy.tasks.runtime import native_authority_active
 
+    native_tasks = native_authority_active()
     result = Task.create(
         task_text=task_text,
         urgency=urgency,
@@ -71,6 +70,14 @@ def _create_task_impl(
         }
 
     logger.info("Created task: %s (id=%s)", task_text[:60], result.get("task_id"))
+    if native_tasks:
+        from work_buddy.tasks.integration_results import native_creation_result
+
+        return {
+            "success": True,
+            **native_creation_result(result),
+            "message": "Task created",
+        }
     return {
         "success": True,
         "task_line": result.get("task_line"),
@@ -244,7 +251,7 @@ def _append_to_note_impl(
 
 @requires_consent(
     operation="journal_backlog_create_task",
-    reason="Creating a new task in the Obsidian master task list",
+    reason="Creating a new task in the task system",
     risk="moderate",
     default_ttl=30,
 )
@@ -255,17 +262,18 @@ def create_task(
     project: str | None = None,
     due_date: str | None = None,
 ) -> dict[str, Any]:
-    """Create a task in the master task list (consent-gated).
+    """Create a task through the active task authority (consent-gated).
 
     Args:
         task_text: The task description text.
-        vault_root: Path to the Obsidian vault root.
+        vault_root: Compatibility vault root used only before native cutover.
         urgency: ``"low"``, ``"medium"``, or ``"high"``.
         project: Optional project slug (e.g., ``"my-research"``).
         due_date: Optional due date as ``YYYY-MM-DD``.
 
     Returns:
-        Dict with ``success``, ``task_line``, ``file``, ``message``.
+        Native results include task/document identity, revisions, and receipt;
+        legacy results retain ``task_line`` and ``file``.
     """
     return _create_task_impl(task_text, vault_root, urgency, project, due_date)
 

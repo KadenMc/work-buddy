@@ -1,10 +1,10 @@
-"""Task write port — the one-way bridge from a ``Task`` to the task mutation layer.
+"""Task write port with a runtime authority-epoch strangler seam.
 
-The single place that translates "write intent against a task" into a call on
-``work_buddy.obsidian.tasks.mutations``. ``Task(WorkItem)`` reaches the markdown
-master list + the ``task_metadata`` store *through* these functions rather than
-calling the mutation layer directly, so the task system's write path runs through
-the WorkItem family.
+The single place that translates "write intent against a task" into the native
+TaskStore application service.  Before cutover only, the same functions retain
+a fenced compatibility branch into ``work_buddy.obsidian.tasks.mutations``.
+Authority is resolved for every invocation so a long-lived process cannot keep
+writing task Markdown after native activation.
 
 Design rules this module honours:
 
@@ -13,19 +13,65 @@ Design rules this module honours:
   instance. The module has no dependency on ``work_buddy.threads``, which keeps
   the dependency one-way (``Task`` → adapter → ``mutations``) and free of import
   cycles.
-* **Pure pass-through.** Each function forwards to its ``mutations`` counterpart
-  and returns that result unchanged. The mutation layer owns validation, the
-  atomic dual-surface (markdown + store) write, plugin-marker preservation,
-  consent, bridge-retry, and event emission (``_publish_task_event`` →
-  dashboard + ``work_item_events``). This port adds none of those and emits
-  nothing of its own, so routing a write through it changes no behaviour.
-* **Import-light.** ``mutations`` (transitively ``sqlite3``) is imported inside
-  each function, never at module top, per ``architecture/mcp-import-discipline``.
+* **Native first.** Native writes produce revisioned receipts and never render
+  Markdown. The Obsidian mutation import is reachable only while the verified
+  authority epoch remains pre-cutover.
+* **Import-light.** Both authority implementations are imported inside each
+  function, never at module top, per ``architecture/mcp-import-discipline``.
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
+import uuid
+
+
+def _native_active() -> bool:
+    from work_buddy.tasks.runtime import native_task_mutation_authority
+
+    return native_task_mutation_authority()
+
+
+def _native_authority(operation: str, supplied: str | None = None) -> dict[str, Any]:
+    from work_buddy.tasks.runtime import (
+        mutation_actor,
+        new_client_mutation_id,
+        originating_session,
+    )
+
+    return {
+        "actor": mutation_actor(),
+        "session_id": originating_session(),
+        "client_mutation_id": new_client_mutation_id(operation, supplied),
+    }
+
+
+def _native_result(result: Any, **extra: Any) -> dict[str, Any]:
+    from work_buddy.tasks.events import publish_pending_async
+    from work_buddy.tasks.store import TaskStore
+
+    publish_pending_async(TaskStore())
+    return {
+        "success": True,
+        "task_id": result.task.task_id,
+        "task": result.task.to_dict(),
+        "revision": result.task.revision,
+        "collection_revision": result.collection_revision,
+        "receipt": result.receipt.to_dict(),
+        "replayed": result.replayed,
+        **extra,
+    }
+
+
+def _native_task(task_id: str):
+    from work_buddy.tasks.errors import TaskNotFound
+    from work_buddy.tasks.store import TaskStore
+
+    task = TaskStore().get(task_id, include_deleted=True)
+    if task is None:
+        raise TaskNotFound(task_id)
+    return task
 
 
 def create(
@@ -37,16 +83,101 @@ def create(
     contract: str | None = None,
     summary: str | None = None,
     tags: list[str] | None = None,
+    client_mutation_id: str | None = None,
     **kwargs: Any,
 ) -> dict[str, Any]:
-    """Create a new task. Forwards to ``mutations.create_task``.
+    """Create a task under the currently verified authority epoch.
 
     The long GTD/risk/context keyword tail of ``create_task`` (``task_kind``,
     ``density``, ``creation_provenance``, ``user_involvement``,
     ``risk_profile_json``, …) is forwarded verbatim through ``**kwargs``.
-    Returns the raw ``create_task`` result dict (the minted ``task_id`` +
-    verification state callers consume).
+    Returns the stable task id plus native revision/receipt metadata after
+    cutover; the compatibility result shape is preserved before cutover.
     """
+    if _native_active():
+        from work_buddy.tasks.models import Tag, TaskDocumentLink
+        from work_buddy.tasks.service import TaskApplicationService
+        from work_buddy.tasks.store import TaskStore
+        from work_buddy.tasks.documents import TaskDocumentService
+
+        store = TaskStore()
+        service = TaskApplicationService(store)
+        authority = _native_authority("create", client_mutation_id)
+        session_id = authority.pop("session_id")
+        native_tags = [Tag(str(tag).strip(" #"), True) for tag in (tags or [])]
+        if project:
+            native_tags.append(Tag(f"projects/{project.strip().strip('#/')}", True))
+        accepted = {
+            key: kwargs[key]
+            for key in (
+                "task_id",
+                "state",
+                "complexity",
+                "deadline_date",
+                "task_kind",
+                "density",
+                "outcome_text",
+                "next_action_text",
+                "definition_of_done",
+                "creation_effort",
+                "user_involvement",
+                "creation_provenance",
+                "has_dependency",
+                "dependency_hint",
+                "risk_profile_json",
+                "automation_tier_achievable",
+                "agent_required_contexts",
+                "user_required_contexts",
+                "required_contexts_source",
+            )
+            if key in kwargs
+        }
+        result = service.create(
+            description=task_text,
+            urgency=urgency,
+            due_date=due_date,
+            contract=contract,
+            summary_text=summary,
+            tags=native_tags,
+            session_id=session_id,
+            **authority,
+            **accepted,
+        )
+        note_uuid = None
+        if summary:
+            document = TaskDocumentService().create(
+                task_id=result.task.task_id,
+                title=result.task.description,
+                domain_revision=str(result.task.revision),
+                created_by=str(authority["actor"]),
+                initial_markdown=f"# {result.task.description}\n\n{summary.strip()}\n",
+            )
+            now = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+            note_uuid = str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"work-buddy:task-note:{result.task.task_id}",
+                )
+            )
+            result = service.attach_document(
+                result.task.task_id,
+                link=TaskDocumentLink(
+                    task_id=result.task.task_id,
+                    note_uuid=note_uuid,
+                    store_id=document.store_id,
+                    document_id=document.document_id,
+                    binding_id=document.binding_id,
+                    lifecycle="active",
+                    created_at=now,
+                    updated_at=now,
+                ),
+                expected_revision=result.task.revision,
+                client_mutation_id=f"{authority['client_mutation_id']}:document",
+                actor=str(authority["actor"]),
+                session_id=session_id,
+            )
+        return _native_result(result, note_uuid=note_uuid)
+
     from work_buddy.obsidian.tasks import mutations
 
     return mutations.create_task(
@@ -67,8 +198,30 @@ def toggle(
     done: bool | None = None,
     file_path: str | None = None,
     done_date: str | None = None,
+    expected_revision: int | None = None,
+    client_mutation_id: str | None = None,
 ) -> dict[str, Any]:
-    """Toggle a task's completion. Forwards to ``mutations.toggle_task``."""
+    """Toggle completion through the authority-routed task service."""
+    if _native_active():
+        if file_path is not None:
+            raise ValueError("file_path is unavailable under native task authority")
+        from work_buddy.tasks.service import TaskApplicationService
+        from work_buddy.tasks.store import TaskStore
+
+        task = _native_task(task_id)
+        authority = _native_authority("toggle", client_mutation_id)
+        authority["expected_revision"] = (
+            task.revision if expected_revision is None else expected_revision
+        )
+        service = TaskApplicationService(TaskStore())
+        if done is True:
+            result = service.complete(task_id, done_date=done_date, **authority)
+        elif done is False:
+            result = service.reopen(task_id, **authority)
+        else:
+            result = service.toggle(task_id, done_date=done_date, **authority)
+        return _native_result(result)
+
     from work_buddy.obsidian.tasks import mutations
 
     return mutations.toggle_task(
@@ -88,8 +241,10 @@ def update(
     due_date: str | None = None,
     reason: str | None = None,
     file_path: str | None = None,
+    expected_revision: int | None = None,
+    client_mutation_id: str | None = None,
 ) -> dict[str, Any]:
-    """Update task metadata. Forwards to ``mutations.update_task``.
+    """Update task metadata through the authority-routed task service.
 
     ``description_match`` (a substring fallback for tasks without an id) is
     carried for full parity with the underlying mutation — instance callers
@@ -97,6 +252,88 @@ def update(
     exposes the fallback. Cannot set ``state='done'`` — ``mutations.update_task``
     rejects it; use :func:`toggle` for completion.
     """
+    if _native_active():
+        if file_path is not None:
+            raise ValueError("file_path is unavailable under native task authority")
+        from work_buddy.tasks.errors import TaskNotFound, TaskValidationError
+        from work_buddy.tasks.service import TaskApplicationService
+        from work_buddy.tasks.store import TaskStore
+
+        store = TaskStore()
+        service = TaskApplicationService(store)
+        if task_id is None:
+            if not description_match:
+                raise TaskValidationError(
+                    {"task_id": "Task ID is required under native authority."}
+                )
+            matches = service.search(description_match, limit=3)
+            if len(matches) != 1:
+                raise TaskValidationError(
+                    {
+                        "description_match": (
+                            "Description fallback must identify exactly one task."
+                        )
+                    }
+                )
+            task_id = matches[0].task_id
+        task = store.get(task_id, include_deleted=True)
+        if task is None:
+            raise TaskNotFound(task_id)
+        revision = task.revision if expected_revision is None else expected_revision
+        authority = _native_authority("update", client_mutation_id)
+        changes = {
+            key: value
+            for key, value in {
+                "urgency": urgency,
+                "complexity": complexity,
+                "contract": contract,
+                "due_date": due_date,
+            }.items()
+            if value is not None
+        }
+        if state == "done":
+            raise TaskValidationError(
+                {"state": "Use task_toggle to complete a task."}
+            )
+        # Snooze is a lifecycle operation. Apply any ordinary fields first so
+        # both changes retain their own receipt and optimistic-lock boundary.
+        if state == "snoozed":
+            if changes:
+                interim = service.update(
+                    task_id,
+                    expected_revision=revision,
+                    changes=changes,
+                    reason=reason,
+                    client_mutation_id=(
+                        f"{authority['client_mutation_id']}:fields"
+                    ),
+                    actor=str(authority["actor"]),
+                    session_id=authority.get("session_id"),
+                )
+                revision = interim.task.revision
+            if not snooze_until:
+                raise TaskValidationError(
+                    {"snooze_until": "A snooze date is required."}
+                )
+            result = service.snooze(
+                task_id,
+                until=snooze_until,
+                expected_revision=revision,
+                client_mutation_id=str(authority["client_mutation_id"]),
+                actor=str(authority["actor"]),
+                session_id=authority.get("session_id"),
+            )
+        else:
+            result = service.update(
+                task_id,
+                expected_revision=revision,
+                changes=changes,
+                state=state,
+                reason=reason,
+                **authority,
+            )
+        return _native_result(result)
+
     from work_buddy.obsidian.tasks import mutations
 
     return mutations.update_task(
@@ -114,13 +351,32 @@ def update(
 
 
 def set_description(
-    task_id: str, new_description: str, *, file_path: str | None = None,
+    task_id: str,
+    new_description: str,
+    *,
+    file_path: str | None = None,
+    expected_revision: int | None = None,
+    client_mutation_id: str | None = None,
 ) -> dict[str, Any]:
-    """Rewrite a task's description text.
+    """Rewrite a task's native description (or pre-cutover legacy line)."""
+    if _native_active():
+        if file_path is not None:
+            raise ValueError("file_path is unavailable under native task authority")
+        from work_buddy.tasks.service import TaskApplicationService
+        from work_buddy.tasks.store import TaskStore
 
-    Forwards to ``mutations.update_task_description`` (which preserves every
-    structural token — checkbox, ``#todo``, tags, wikilinks, 🆔, plugin emojis).
-    """
+        task = _native_task(task_id)
+        authority = _native_authority("description", client_mutation_id)
+        result = TaskApplicationService(TaskStore()).update(
+            task_id,
+            expected_revision=(
+                task.revision if expected_revision is None else expected_revision
+            ),
+            changes={"description": new_description},
+            **authority,
+        )
+        return _native_result(result)
+
     from work_buddy.obsidian.tasks import mutations
 
     return mutations.update_task_description(
@@ -128,12 +384,31 @@ def set_description(
     )
 
 
-def set_tags(task_id: str, namespace_tags: list[str]) -> dict[str, Any]:
-    """Replace a task line's user-modifiable tags.
+def set_tags(
+    task_id: str,
+    namespace_tags: list[str],
+    *,
+    expected_revision: int | None = None,
+    client_mutation_id: str | None = None,
+) -> dict[str, Any]:
+    """Replace the complete desired namespace-tag set."""
+    if _native_active():
+        from work_buddy.tasks.models import Tag
+        from work_buddy.tasks.service import TaskApplicationService
+        from work_buddy.tasks.store import TaskStore
 
-    Forwards to ``mutations.set_task_tags_on_line`` (pass the complete desired
-    tag list; anything omitted is removed).
-    """
+        task = _native_task(task_id)
+        authority = _native_authority("tags", client_mutation_id)
+        result = TaskApplicationService(TaskStore()).replace_tags(
+            task_id,
+            tags=[Tag(str(tag).strip(" #"), True) for tag in namespace_tags],
+            expected_revision=(
+                task.revision if expected_revision is None else expected_revision
+            ),
+            **authority,
+        )
+        return _native_result(result)
+
     from work_buddy.obsidian.tasks import mutations
 
     return mutations.set_task_tags_on_line(
@@ -141,21 +416,70 @@ def set_tags(task_id: str, namespace_tags: list[str]) -> dict[str, Any]:
     )
 
 
-def delete(task_id: str) -> dict[str, Any]:
-    """Delete a task — line, note file, and store record (soft-delete).
+def delete(
+    task_id: str,
+    *,
+    expected_revision: int | None = None,
+    client_mutation_id: str | None = None,
+) -> dict[str, Any]:
+    """Soft-delete a native task (legacy destructive semantics pre-cutover)."""
+    if _native_active():
+        from work_buddy.tasks.service import TaskApplicationService
+        from work_buddy.tasks.store import TaskStore
 
-    Forwards to ``mutations.delete_task``.
-    """
+        task = _native_task(task_id)
+        authority = _native_authority("delete", client_mutation_id)
+        result = TaskApplicationService(TaskStore()).delete(
+            task_id,
+            expected_revision=(
+                task.revision if expected_revision is None else expected_revision
+            ),
+            **authority,
+        )
+        return _native_result(result, soft_deleted=True)
+
     from work_buddy.obsidian.tasks import mutations
 
     return mutations.delete_task(task_id=task_id)
 
 
-def assign(task_id: str) -> dict[str, Any]:
-    """Claim a task for the current agent session and return its full context.
+def assign(
+    task_id: str,
+    *,
+    expected_revision: int | None = None,
+    client_mutation_id: str | None = None,
+) -> dict[str, Any]:
+    """Claim a task for the current agent session and return its context."""
+    if _native_active():
+        from work_buddy.tasks.errors import TaskValidationError
+        from work_buddy.tasks.runtime import originating_session
+        from work_buddy.tasks.service import TaskApplicationService
+        from work_buddy.tasks.store import TaskStore
 
-    Forwards to ``mutations.assign_task``.
-    """
+        task = _native_task(task_id)
+        session_id = originating_session()
+        if not session_id:
+            raise TaskValidationError(
+                {"session_id": "An originating agent session is required."}
+            )
+        authority = _native_authority("assign", client_mutation_id)
+        authority.pop("session_id")
+        result = TaskApplicationService(TaskStore()).assign(
+            task_id,
+            session_id,
+            expected_revision=(
+                task.revision if expected_revision is None else expected_revision
+            ),
+            actor_session_id=session_id,
+            **authority,
+        )
+        link = TaskStore().get_task_document_link(task_id)
+        return _native_result(
+            result,
+            session_id=session_id,
+            document=None if link is None else link.to_dict(),
+        )
+
     from work_buddy.obsidian.tasks import mutations
 
     return mutations.assign_task(task_id=task_id)

@@ -1757,7 +1757,13 @@ def api_doc_ydoc_push(document_id: str):
                     "next_offset": direct.next_offset,
                     "document_change_id": direct.change.change_id,
                     "domain_projection_status": (
-                        direct.projection.status if direct.projection is not None else "pending"
+                        "not_applicable"
+                        if bound.projection_mode == "none"
+                        else (
+                            direct.projection.status
+                            if direct.projection is not None
+                            else "pending"
+                        )
                     ),
                 }
                 status = 200
@@ -1782,7 +1788,9 @@ def api_doc_ydoc_push(document_id: str):
                         source_principal=source_principal,
                     )
                     payload["domain_projection_status"] = (
-                        cursor.status if cursor is not None else "pending"
+                        "not_applicable"
+                        if bound.projection_mode == "none"
+                        else (cursor.status if cursor is not None else "pending")
                     )
     except InvariantViolation as exc:
         return _fail(str(exc), 400)
@@ -2613,6 +2621,7 @@ def register_routes(app):
     from work_buddy.cowork.chat_api import chat_blueprint
     from work_buddy.cowork.folder_api import cowork_folder_blueprint
     from work_buddy.cowork.materialization_api import materialization_blueprint
+    from work_buddy.cowork.local_files import cowork_local_file_blueprint
     from work_buddy.cowork.reimport_api import reimport_blueprint
     from work_buddy.cowork.retirement_api import retirement_blueprint
     from work_buddy.cowork.sitting_api import sitting_blueprint
@@ -2625,6 +2634,7 @@ def register_routes(app):
     app.register_blueprint(chat_blueprint)
     app.register_blueprint(cowork_folder_blueprint)
     app.register_blueprint(materialization_blueprint)
+    app.register_blueprint(cowork_local_file_blueprint)
     app.register_blueprint(reimport_blueprint)
     app.register_blueprint(retirement_blueprint)
     app.register_blueprint(sitting_blueprint)

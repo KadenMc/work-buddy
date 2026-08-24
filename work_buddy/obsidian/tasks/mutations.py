@@ -25,6 +25,7 @@ from work_buddy.logging_config import get_logger
 from work_buddy.obsidian import bridge
 from work_buddy.obsidian.errors import ObsidianError
 from work_buddy.obsidian.retry import bridge_failure, bridge_retry
+from work_buddy.obsidian.tasks.authority import frozen_task_mutation_boundary
 from work_buddy.obsidian.tasks.env import _escape_js, _run_js
 from work_buddy.obsidian.tasks import store
 
@@ -1053,6 +1054,7 @@ def _rewrite_namespace_tags(line: str, new_tags: list[str]) -> str:
 
 
 @bridge_retry()
+@frozen_task_mutation_boundary
 def set_task_tags_on_line(
     task_id: str,
     namespace_tags: list[str],
@@ -1145,6 +1147,7 @@ def verify_task(
     default_ttl=30,
 )
 @bridge_retry()
+@frozen_task_mutation_boundary
 def update_task(
     *,
     task_id: str | None = None,
@@ -1420,6 +1423,7 @@ def _archive_consent_body_extras() -> str:
     body_extras=_archive_consent_body_extras,
 )
 @bridge_retry()
+@frozen_task_mutation_boundary
 def archive_completed(
     older_than_days: int = _ARCHIVE_DEFAULT_AGE_DAYS,
 ) -> dict[str, Any]:
@@ -1630,6 +1634,7 @@ def _send_archive_summary_notification(
     default_ttl=30,
 )
 @bridge_retry()
+@frozen_task_mutation_boundary
 def create_task(
     task_text: str,
     urgency: str = "medium",
@@ -2018,6 +2023,7 @@ def _verify_task_creation(task_id: str, note_path: str | None) -> dict[str, str]
     default_ttl=30,
 )
 @bridge_retry()
+@frozen_task_mutation_boundary
 def toggle_task(
     task_id: str,
     done: bool | None = None,
@@ -2160,6 +2166,7 @@ def toggle_task(
     default_ttl=5,
 )
 @bridge_retry()
+@frozen_task_mutation_boundary
 def delete_task(
     task_id: str,
 ) -> dict[str, Any]:
@@ -2332,6 +2339,7 @@ def delete_task(
     default_ttl=30,
 )
 @bridge_retry()
+@frozen_task_mutation_boundary
 def update_task_description(
     task_id: str,
     new_description: str,
@@ -2588,6 +2596,7 @@ def read_task(task_id: str) -> dict[str, Any]:
 
 
 @bridge_retry()
+@frozen_task_mutation_boundary
 def assign_task(task_id: str) -> dict[str, Any]:
     """Claim a task for the current agent session and return full context.
 

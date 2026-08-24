@@ -62,4 +62,9 @@ Browser code uses same-origin `/api/...` routes only. It never calls sibling loc
 
 The root dashboard remains in service while React coverage grows. Moving one view does not imply that all root tabs, mutations, or integrations have moved. Compatibility providers state whether they are read-only or write-capable, and a failed live source remains visibly failed instead of falling back to demo fixtures.
 
-See `services/dashboard/react/widget-platform` for widget composition, `services/dashboard/react/appearance` for visual compatibility, `services/dashboard/react/calendar-surface` for the temporal presentation adapter, `settings` for configuration authority, and `services/dashboard/frontend` for the Python-generated root frontend.
+See `services/dashboard/react/tasks-view` for the native task workspace,
+`services/dashboard/react/widget-platform` for widget composition,
+`services/dashboard/react/appearance` for visual compatibility,
+`services/dashboard/react/calendar-surface` for the temporal presentation
+adapter, `settings` for configuration authority, and
+`services/dashboard/frontend` for the Python-generated root frontend.

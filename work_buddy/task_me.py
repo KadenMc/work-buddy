@@ -9,11 +9,12 @@ its auto_run code steps:
   collectors but consolidates them so the engage step has one
   payload to reason against.
 
-* :func:`build_now_plan` — calls
+* :func:`build_now_plan` — calls the pure scheduling algorithm still housed at
   ``work_buddy.obsidian.day_planner.planner.generate_plan`` with
-  ``clamp_to_now=True`` so nothing lands in the past.  Returns the
-  proposed timeline (NOT written back; write-back is a consent-gated
-  reasoning step in the workflow).
+  ``clamp_to_now=True`` so nothing lands in the past.  That module consumes
+  caller-supplied task dictionaries and never reads Obsidian task data.
+  Returns the proposed timeline (NOT written back; journal write-back is a
+  consent-gated reasoning step in the workflow).
 
 Both callables degrade gracefully — a missing capability returns the
 partial state with a status field so the engage step can render
@@ -94,7 +95,12 @@ def load_context_for_task_me(
 
     # --- Task briefing ----------------------------------------------
     try:
-        from work_buddy.obsidian.tasks.manager import daily_briefing
+        from work_buddy.tasks.runtime import native_authority_active
+
+        if native_authority_active():
+            from work_buddy.tasks.capabilities import daily_briefing
+        else:
+            from work_buddy.obsidian.tasks.manager import daily_briefing
         out["task_briefing"] = daily_briefing()
     except Exception as exc:  # pragma: no cover — best-effort
         logger.warning("task_me: task_briefing failed: %s", exc)

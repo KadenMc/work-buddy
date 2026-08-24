@@ -149,6 +149,84 @@ def test_projection_cursor_and_export_round_trip(tmp_path: Path) -> None:
     assert restored.projection_cursor(binding.binding_id) == committed
 
 
+def test_schema_one_export_remains_restorable_with_legacy_projection_policy(
+    tmp_path: Path,
+) -> None:
+    source = DocumentCausalityStore(tmp_path / "source-v1")
+    binding = _binding(source)
+    legacy = copy.deepcopy(source.export_bundle())
+    legacy["schema_version"] = 1
+    for row in legacy["tables"]["domain_document_bindings"]:
+        row.pop("projection_mode")
+
+    restored = DocumentCausalityStore(tmp_path / "restored-v1")
+    restored.import_bundle(legacy)
+
+    recovered = restored.get_binding(binding.binding_id)
+    assert recovered is not None
+    assert recovered.projection_mode == "managed_section"
+
+
+def test_no_projection_binding_is_settled_without_external_cursor(
+    tmp_path: Path,
+) -> None:
+    source = DocumentCausalityStore(tmp_path / "source-no-projection")
+    binding = source.ensure_binding(
+        domain_namespace="tasks",
+        domain_kind="task_knowledge",
+        domain_entity_id="1" * 32,
+        domain_revision="revision-1",
+        store_id="3" * 32,
+        document_id="2" * 32,
+        role="task_knowledge",
+        created_by="service:tasks",
+        projection_mode="none",
+    )
+
+    assert binding.projection_mode == "none"
+    assert binding.projection_path is None
+    authoritative = source.cutover_to_cowork(
+        binding.binding_id,
+        domain_revision="revision-2",
+    )
+    assert authoritative.content_authority == "co_work"
+    assert source.projection_cursor(binding.binding_id) is None
+    with pytest.raises(ChangeConflict):
+        source.prepare_projection(
+            binding_id=binding.binding_id,
+            content_authority_epoch=authoritative.content_authority_epoch,
+            document_head_sha256="a" * 64,
+            expected_section_sha256=None,
+            result_section_sha256="b" * 64,
+            result_projection_sha256="c" * 64,
+        )
+
+    restored = DocumentCausalityStore(tmp_path / "restored-no-projection")
+    restored.import_bundle(source.export_bundle())
+    assert restored.get_binding(binding.binding_id) == authoritative
+    assert restored.projection_cursor(binding.binding_id) is None
+
+
+def test_projection_mode_can_only_be_changed_before_cutover(tmp_path: Path) -> None:
+    store = DocumentCausalityStore(tmp_path / "projection-policy")
+    binding = _binding(store)
+    no_projection = store.configure_projection_mode(
+        binding.binding_id,
+        projection_mode="none",
+        projection_path=None,
+    )
+    assert no_projection.projection_mode == "none"
+    assert no_projection.projection_path is None
+
+    store.cutover_to_cowork(binding.binding_id, domain_revision="revision-2")
+    with pytest.raises(BindingConflict):
+        store.configure_projection_mode(
+            binding.binding_id,
+            projection_mode="managed_file",
+            projection_path="tasks/notes/example.md",
+        )
+
+
 def test_identity_bound_recovery_bundle_requires_clean_matching_store(
     tmp_path: Path,
 ) -> None:

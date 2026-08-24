@@ -1,7 +1,9 @@
 """Match triage clusters against existing tasks.
 
-Embeds active task descriptions and computes cosine similarity against
-cluster centroids to find potential matches.
+Embeds descriptions from the active task authority and computes cosine
+similarity against cluster centroids to find potential matches.  After
+cutover the descriptions come directly from :class:`TaskStore`; the retained
+Markdown reader exists only for guarded pre-cutover compatibility.
 
 Runs in a **subprocess** (auto_run) — safe to import sqlite3.
 """
@@ -81,11 +83,39 @@ def match_clusters_to_tasks(
 
 
 def _load_active_tasks(states: list[str]) -> list[dict[str, Any]]:
-    """Load active tasks with their text descriptions.
+    """Load task descriptions from the currently selected authority."""
+    from work_buddy.tasks.runtime import native_authority_active
 
-    Reads metadata from SQLite store, then reads task text from the
-    master task list file.
-    """
+    if native_authority_active():
+        from work_buddy.tasks.models import TaskQuery
+        from work_buddy.tasks.store import TaskStore
+
+        store = TaskStore()
+        result: list[dict[str, Any]] = []
+        for state in states:
+            for task in store.list(
+                TaskQuery(
+                    state=state,
+                    include_done=state == "done",
+                    include_archived=False,
+                    include_snoozed=state == "snoozed",
+                    limit=5000,
+                )
+            ):
+                if not task.description:
+                    continue
+                result.append(
+                    {
+                        "task_id": task.task_id,
+                        "text": task.description,
+                        "state": task.state,
+                        "project": task.contract or "",
+                    }
+                )
+        return result
+
+    # Before cutover, metadata and descriptions live on separate retained
+    # legacy surfaces.  Keep that reader isolated to this authority branch.
     from work_buddy.threads.models import Task
 
     all_tasks: list[dict[str, Any]] = []
@@ -116,7 +146,31 @@ def _load_active_tasks(states: list[str]) -> list[dict[str, Any]]:
 
 
 def _read_task_texts() -> dict[str, str]:
-    """Read task descriptions from master task list, keyed by task ID."""
+    """Read descriptions from the active authority, keyed by task ID.
+
+    Native mode never opens the retained master task list.  The Markdown
+    parser below is reachable only while the durable authority epoch remains
+    pre-cutover.
+    """
+    from work_buddy.tasks.runtime import native_authority_active
+
+    if native_authority_active():
+        from work_buddy.tasks.models import TaskQuery
+        from work_buddy.tasks.store import TaskStore
+
+        return {
+            task.task_id: task.description
+            for task in TaskStore().list(
+                TaskQuery(
+                    include_done=True,
+                    include_archived=True,
+                    include_snoozed=True,
+                    limit=5000,
+                )
+            )
+            if task.description
+        }
+
     from work_buddy.obsidian import bridge
 
     # read_file_raw raises a typed ObsidianError on a transient bridge failure

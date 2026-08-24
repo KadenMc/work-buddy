@@ -101,6 +101,12 @@ import {
   refreshLocalIdentity,
   subscribeLocalIdentity,
 } from "../../../security/localIdentity";
+import { parseCoworkLocalFileHref } from "../document-kernel/schema";
+import {
+  HttpCoworkLocalFileClient,
+  linkedLocalFileWarning,
+  type CoworkLocalFileClient,
+} from "../localFiles";
 
 /** What the host reports up once the canonical editor is mounted. */
 export interface CoworkEditorReadyContext {
@@ -124,6 +130,10 @@ export interface CoworkBridgeEditorProps {
   readonly documentId?: string;
   /** The scope store id the R9 feedback route takes. */
   readonly storeId?: string;
+  /** Injectable metadata-only local-file client; registered documents get HTTP by default. */
+  readonly localFileClient?: CoworkLocalFileClient;
+  /** Test/host seam for the explicit credential reveal warning. */
+  readonly confirmCredentialReveal?: (warning: string) => boolean;
   /**
    * When supplied, the selection-triggered Give-feedback affordance mounts over
    * the editor and reports a successful R9 capture here. Omitted (demo, tests)
@@ -258,6 +268,8 @@ function MountedBridgeEditor({
   onTeardown,
   documentId,
   storeId,
+  localFileClient,
+  confirmCredentialReveal,
   onFeedbackCaptured,
   feedbackTransport,
   activeLens,
@@ -272,6 +284,17 @@ function MountedBridgeEditor({
   readOnly = false,
 }: MountedProps) {
   const [oversizedPasteBlocked, setOversizedPasteBlocked] = useState(false);
+  const [localFileActionError, setLocalFileActionError] = useState<string | null>(
+    null,
+  );
+  const resolvedLocalFileClient = useMemo<CoworkLocalFileClient | undefined>(
+    () =>
+      localFileClient ??
+      (documentId === undefined || storeId === undefined
+        ? undefined
+        : new HttpCoworkLocalFileClient({ documentId, storeId })),
+    [documentId, localFileClient, storeId],
+  );
   const pasteSizeGuard = useMemo(
     () =>
       Extension.create({
@@ -1377,6 +1400,33 @@ function MountedBridgeEditor({
     ],
   );
 
+  const activateLocalFileLink = useCallback(
+    async (linkId: string): Promise<void> => {
+      if (resolvedLocalFileClient === undefined) return;
+      setLocalFileActionError(null);
+      try {
+        const links = await resolvedLocalFileClient.list();
+        const link = links.find((candidate) => candidate.linkId === linkId);
+        if (link === undefined) {
+          throw new Error("The local-file link is not registered for this document.");
+        }
+        const warning = linkedLocalFileWarning(link);
+        if (warning) {
+          const confirmReveal =
+            confirmCredentialReveal ??
+            ((message: string): boolean => globalThis.confirm(message));
+          if (!confirmReveal(warning)) return;
+        }
+        await resolvedLocalFileClient.activate(link);
+      } catch {
+        setLocalFileActionError(
+          "The linked local file could not be opened. Its bytes remain untouched.",
+        );
+      }
+    },
+    [confirmCredentialReveal, resolvedLocalFileClient],
+  );
+
   const editor = useEditor(
     {
       extensions,
@@ -1390,9 +1440,33 @@ function MountedBridgeEditor({
           "aria-multiline": "true",
           "aria-readonly": readOnly ? "true" : "false",
         },
+        handleClick: (_view, _position, event) => {
+          const target = event.target;
+          if (!(target instanceof Element)) return false;
+          const anchor = target.closest("a[href]");
+          const linkId = parseCoworkLocalFileHref(
+            anchor?.getAttribute("href") ?? "",
+          );
+          if (linkId === null) return false;
+          // Local links never fall through to browser navigation. Scratch and
+          // unregistered editors deliberately leave them inert.
+          event.preventDefault();
+          if (
+            event.button !== 0 ||
+            event.altKey ||
+            event.ctrlKey ||
+            event.metaKey ||
+            event.shiftKey ||
+            resolvedLocalFileClient === undefined
+          ) {
+            return true;
+          }
+          void activateLocalFileLink(linkId);
+          return true;
+        },
       },
     },
-    [extensions],
+    [activateLocalFileLink, extensions, resolvedLocalFileClient],
   );
 
   useLayoutEffect(() => {
@@ -1881,6 +1955,14 @@ function MountedBridgeEditor({
   return (
     <>
       <EditorContent editor={editor} className="wb-cowork-editor__content" />
+      {localFileActionError !== null ? (
+        <InlineAlert tone="warning" role="alert">
+          <span>{localFileActionError}</span>
+          <Button size="small" onClick={() => setLocalFileActionError(null)}>
+            Dismiss
+          </Button>
+        </InlineAlert>
+      ) : null}
       {oversizedPasteBlocked ? (
         <InlineAlert tone="warning" role="alert">
           <span>{oversizedPasteProvenanceError()}</span>

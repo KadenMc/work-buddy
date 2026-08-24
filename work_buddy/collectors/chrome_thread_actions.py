@@ -62,6 +62,19 @@ def _tabs_from_thread(thread) -> list[dict[str, Any]]:
     return out
 
 
+def _created_task_result(
+    item_id: str,
+    result: dict[str, Any],
+    *,
+    native_tasks: bool,
+) -> dict[str, Any]:
+    if not native_tasks:
+        return {"item_id": item_id, "task_line": result.get("task_line")}
+    from work_buddy.tasks.integration_results import native_creation_result
+
+    return {"item_id": item_id, **native_creation_result(result)}
+
+
 # ---------------------------------------------------------------------------
 # chrome_route_to_tasks — one task per tab
 # ---------------------------------------------------------------------------
@@ -74,15 +87,17 @@ def chrome_route_to_tasks(
     project: str | None = None,
 ) -> dict[str, Any]:
     """Walk a Chrome-group thread's tabs and create one task per
-    tab. The task text uses the tab title; the URL goes into the
-    task's summary (linked note).
+    tab. The task text uses the tab title; the URL goes into the task's
+    summary-backed knowledge document under native task authority.
 
     Returns ``{"created": [...], "failed": [{...}], "thread_id": str}``.
     """
     from work_buddy.threads.models import Task
+    from work_buddy.tasks.runtime import native_authority_active
 
     thread = _get_thread_or_raise(thread_id)
     tabs = _tabs_from_thread(thread)
+    native_tasks = native_authority_active()
     if not tabs:
         return {
             "thread_id": thread_id,
@@ -106,10 +121,11 @@ def chrome_route_to_tasks(
                 user_involvement="medium",
             )
             if result.get("success"):
-                created.append({
-                    "item_id": tab["id"],
-                    "task_line": result.get("task_line"),
-                })
+                created.append(
+                    _created_task_result(
+                        tab["id"], result, native_tasks=native_tasks,
+                    )
+                )
             else:
                 failed.append({
                     "item_id": tab["id"],
@@ -148,9 +164,11 @@ def chrome_route_to_umbrella_task(
     up the context later.
     """
     from work_buddy.threads.models import Task
+    from work_buddy.tasks.runtime import native_authority_active
 
     thread = _get_thread_or_raise(thread_id)
     tabs = _tabs_from_thread(thread)
+    native_tasks = native_authority_active()
     if not tabs:
         return {
             "thread_id": thread_id,
@@ -205,11 +223,9 @@ def chrome_route_to_umbrella_task(
                 "error": result.get("message", "create_task returned success=False"),
             }],
         }
-    return {
-        "thread_id": thread_id,
-        "created": {
-            "task_line": result.get("task_line"),
-            "tab_count": len(tabs),
-        },
-        "failed": [],
-    }
+    created = _created_task_result(
+        "umbrella", result, native_tasks=native_tasks,
+    )
+    created.pop("item_id")
+    created["tab_count"] = len(tabs)
+    return {"thread_id": thread_id, "created": created, "failed": []}

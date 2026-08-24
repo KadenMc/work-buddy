@@ -1,0 +1,71 @@
+.wb-cowork__linked-files {
+  flex: 0 0 auto;
+  padding: 0 var(--wb-space-4) var(--wb-space-2);
+  border-block-end: 1px solid var(--wb-color-border-default);
+  background: var(--wb-color-surface-raised);
+}
+
+.wb-cowork__linked-files summary {
+  inline-size: max-content;
+  color: var(--wb-color-text-secondary);
+  cursor: pointer;
+  font-size: var(--wb-font-size-sm);
+  font-weight: var(--wb-font-weight-medium);
+}
+
+.wb-cowork__linked-file-controls {
+  display: flex;
+  justify-content: flex-end;
+  margin-block-start: var(--wb-space-2);
+}
+
+.wb-cowork__linked-file-list {
+  display: grid;
+  gap: var(--wb-space-2);
+  margin: var(--wb-space-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.wb-cowork__linked-file {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--wb-space-2);
+  padding: var(--wb-space-2);
+  border: 1px solid var(--wb-color-border-subtle);
+  border-radius: var(--wb-radius-md);
+  background: var(--wb-color-surface-canvas);
+}
+
+.wb-cowork__linked-file-icon,
+.wb-cowork__linked-file .wb-button svg {
+  inline-size: var(--wb-icon-size-sm);
+  block-size: var(--wb-icon-size-sm);
+}
+
+.wb-cowork__linked-file-copy {
+  display: grid;
+  min-inline-size: 0;
+}
+
+.wb-cowork__linked-file-copy strong,
+.wb-cowork__linked-file-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wb-cowork__linked-file-copy small {
+  color: var(--wb-color-text-muted);
+}
+
+.wb-cowork__linked-file-copy .wb-cowork__linked-file-warning {
+  color: var(--wb-color-status-warning);
+}
+
+.wb-cowork__linked-file-status {
+  margin: var(--wb-space-2) 0 0;
+  color: var(--wb-color-text-secondary);
+  font-size: var(--wb-font-size-sm);
+}

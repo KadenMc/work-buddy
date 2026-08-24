@@ -1,21 +1,17 @@
-"""``tasks`` context source — currently-active tasks from the vault task store.
+"""``tasks`` context source — active tasks from the selected authority.
 
-Consolidates the task-fetching logic that lived in
-:func:`work_buddy.clarify.recommend.build_triage_context`. Items are the
-cleaned one-liner task descriptions (from the master task list), not
-the full task notes — a future drill-down call via
-:func:`work_buddy.context.sources.tasks.TasksSource.drill_down` returns
-the note body.
+After native cutover, structured task rows come directly from
+:class:`work_buddy.tasks.store.TaskStore`, and note drill-down returns the
+linked projection-free Co-work knowledge document.  The vault task store and
+task-note adapter remain reachable only in the guarded pre-cutover branch.
 
 Depth semantics:
   - BRIEF:  top 5 by state priority, title only.
   - NORMAL: top 12, title + state.
   - DEEP:   up to 30, title + state + contract linkage.
 
-``target_date`` support: when the request supplies a past date, we
-filter on :func:`work_buddy.obsidian.tasks.store.get_history` —
-tasks active on that date based on state transitions. Future dates
-snap to "now" (no forecasting).
+``target_date`` support uses the active authority's state history to retain
+tasks active on that date. Future dates snap to "now" (no forecasting).
 """
 
 from __future__ import annotations
@@ -99,11 +95,16 @@ class TasksSource(BaseContextSource):
         """
         from pathlib import Path
         try:
-            from work_buddy.obsidian.tasks.store import _db_path
-        except Exception:
-            return False
-        try:
-            path = Path(_db_path())
+            from work_buddy.tasks.runtime import native_authority_active
+
+            if native_authority_active():
+                from work_buddy.tasks.store import default_task_db_path
+
+                path = Path(default_task_db_path())
+            else:
+                from work_buddy.obsidian.tasks.store import _db_path
+
+                path = Path(_db_path())
         except Exception:
             return False
         if not path.exists():
@@ -113,7 +114,7 @@ class TasksSource(BaseContextSource):
         return store_mtime > cached_at
 
     def drill_down(self, item_id: str, field: str) -> dict[str, Any]:
-        """Expand one task. ``field='note'`` returns the task-note body.
+        """Expand one task. ``field='note'`` returns its knowledge content.
 
         ``field='line'`` returns the cleaned one-liner (same shape
         shown in ``items``). Unknown fields raise ``KeyError`` so the
@@ -155,50 +156,89 @@ def _collect_tasks(
     ``text``, ``contract``. Mirrors the shape
     :func:`build_triage_context` produced so callers retrofit cleanly.
     """
-    try:
-        from work_buddy.threads.models import Task
-        from work_buddy.clarify.task_match import _read_task_texts
-    except Exception as exc:
-        logger.debug("tasks source: deps unavailable (%s)", exc)
-        return []
-
-    try:
-        task_texts = _read_task_texts()
-    except Exception as exc:
-        # Best-effort display source: stay resilient (don't break the bundle),
-        # but make a transient bridge failure observable rather than silently
-        # rendering "0 tasks". The decision-driving callers of _read_task_texts
-        # (triage match, drill_down) let the transient propagate instead.
-        from work_buddy.obsidian.errors import ObsidianError
-        if isinstance(exc, ObsidianError):
-            logger.warning(
-                "tasks source: bridge transient reading task texts (%s) — "
-                "task list shown empty this cycle, will self-heal", exc,
-            )
-        else:
-            logger.debug("tasks source: _read_task_texts failed: %s", exc)
-        task_texts = {}
+    from work_buddy.tasks.runtime import native_authority_active
 
     rows: list[dict[str, Any]] = []
-    for state in states:
+    if native_authority_active():
+        # Do not route native reads through the transitional WorkItem facade:
+        # querying the owned store directly makes it impossible for this
+        # context source to drift back onto a retained Obsidian task adapter.
         try:
-            query_rows = [t.row for t in Task.query(state=state)]
+            from work_buddy.tasks.models import TaskQuery
+            from work_buddy.tasks.store import TaskStore
+
+            store = TaskStore()
+            for state in states:
+                for task in store.list(
+                    TaskQuery(
+                        state=state,
+                        include_done=state == "done",
+                        include_archived=False,
+                        include_snoozed=state == "snoozed",
+                        limit=5000,
+                    )
+                ):
+                    if not task.description:
+                        continue
+                    rows.append(
+                        {
+                            "task_id": task.task_id,
+                            "state": task.state,
+                            "text": task.description,
+                            "contract": task.contract or "",
+                        }
+                    )
         except Exception as exc:
-            logger.debug("tasks source: query(state=%r) failed: %s", state, exc)
-            continue
-        for task in query_rows:
-            tid = task.get("task_id")
-            if not tid:
+            logger.debug("tasks source: native task query failed: %s", exc)
+            return []
+    else:
+        try:
+            from work_buddy.threads.models import Task
+            from work_buddy.clarify.task_match import _read_task_texts
+        except Exception as exc:
+            logger.debug("tasks source: legacy deps unavailable (%s)", exc)
+            return []
+
+        try:
+            task_texts = _read_task_texts()
+        except Exception as exc:
+            # This source is display-only, so a transient legacy bridge error
+            # degrades the bundle without being mistaken for authority data.
+            from work_buddy.obsidian.errors import ObsidianError
+
+            if isinstance(exc, ObsidianError):
+                logger.warning(
+                    "tasks source: legacy bridge transient reading task texts "
+                    "(%s) — task list shown empty this cycle, will self-heal",
+                    exc,
+                )
+            else:
+                logger.debug("tasks source: legacy task text read failed: %s", exc)
+            task_texts = {}
+
+        for state in states:
+            try:
+                query_rows = [t.row for t in Task.query(state=state)]
+            except Exception as exc:
+                logger.debug(
+                    "tasks source: legacy query(state=%r) failed: %s", state, exc
+                )
                 continue
-            text = task_texts.get(tid, "")
-            if not text:
-                continue
-            rows.append({
-                "task_id": tid,
-                "state": state,
-                "text": text,
-                "contract": task.get("contract", ""),
-            })
+            for task in query_rows:
+                tid = task.get("task_id")
+                if not tid:
+                    continue
+                text = task_texts.get(tid, "")
+                if not text:
+                    continue
+                rows.append(
+                    {
+                        "task_id": tid,
+                        "state": state,
+                        "text": text,
+                        "contract": task.get("contract", ""),
+                    }
+                )
 
     if target_date is None:
         return rows
@@ -211,14 +251,24 @@ def _filter_by_target_date(
 ) -> list[dict[str, Any]]:
     """Keep only tasks whose state on ``target`` was in their current states list.
 
-    Uses :func:`task_store.get_history` to reconstruct each task's
-    state at ``target``. On missing/unreadable history we assume the
-    current state held (conservative — includes rather than drops).
+    Uses the selected authority's history to reconstruct each task's state at
+    ``target``. On missing/unreadable history we assume the current state held
+    (conservative — includes rather than drops).
     """
-    try:
-        from work_buddy.obsidian.tasks.store import get_history
-    except Exception:
-        return rows
+    from work_buddy.tasks.runtime import native_authority_active
+
+    if native_authority_active():
+        from work_buddy.tasks.store import TaskStore
+
+        task_store = TaskStore()
+
+        def get_history(task_id: str) -> list[dict[str, Any]]:
+            return [entry.to_dict() for entry in task_store.history(task_id)]
+    else:
+        try:
+            from work_buddy.obsidian.tasks.store import get_history
+        except Exception:
+            return rows
 
     target_end = datetime.combine(target, datetime.max.time(), tzinfo=timezone.utc)
     filtered: list[dict[str, Any]] = []
@@ -262,13 +312,22 @@ def _state_at(
 
 
 def _read_task_note(task_id: str) -> str | None:
-    """Pull a task's note body. Returns None when no note exists.
+    """Pull a task's knowledge content. Returns ``None`` when absent.
 
-    Tasks store note UUIDs on each record; the file lives at
-    ``tasks/notes/<uuid>.md`` in the vault. We go through the bridge
-    so the read is consistent with how other capabilities fetch vault
-    content.
+    Native authority resolves the active Co-work document binding through
+    ``task_read``.  Only the pre-cutover compatibility branch resolves a
+    retained task-note UUID through the vault adapter.
     """
+    from work_buddy.tasks.runtime import native_authority_active
+
+    if native_authority_active():
+        from work_buddy.tasks.capabilities import task_read
+
+        payload = task_read(task_id)
+        if not payload.get("success"):
+            return None
+        return payload.get("note_content")
+
     try:
         # Read through the WorkItem family: Task.load carries the row, so
         # .row is the same dict store.get would return (single query).

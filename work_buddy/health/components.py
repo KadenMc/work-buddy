@@ -208,8 +208,9 @@ _register(ComponentDef(
         "obsidian/daily-note/log-section",
         "obsidian/daily-note/sign-in-section",
         "obsidian/daily-note/running-notes-section",
-        "obsidian/tasks/master-list-exists",
-        "obsidian/plugins/tasks-plugin",
+        # Task authority is native.  The frozen master-list and Tasks-plugin
+        # checks remain discoverable only through their pre-cutover
+        # applicability predicates; they are not Obsidian bridge health.
         "obsidian/contracts/dir-exists",
         "obsidian/knowledge/personal-path",
     ],

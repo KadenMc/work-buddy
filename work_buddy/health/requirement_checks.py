@@ -47,6 +47,23 @@ def _obsidian_config_dir(vault: Path | None = None) -> Path:
     return resolve_config_dir(vault if vault is not None else _vault_root())
 
 
+def frozen_task_compatibility_required() -> bool:
+    """Return whether the frozen Obsidian task stack is still authoritative.
+
+    This is deliberately a read-only authority check.  Once native authority
+    has been activated, health sweeps must not inspect the frozen master task
+    list or the Obsidian Tasks plugin.  An unavailable/corrupt authority state
+    also fails closed: operators should repair the native store, never fall
+    back to probing (or later repairing) legacy task files.
+    """
+    try:
+        from work_buddy.tasks.runtime import native_authority_active
+
+        return not native_authority_active()
+    except Exception:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Core / bootstrap checks
 # ---------------------------------------------------------------------------
@@ -381,7 +398,15 @@ def check_running_notes_section() -> dict[str, Any]:
 
 
 def check_master_task_list() -> dict[str, Any]:
-    """Check that the master task list file exists."""
+    """Check the frozen master list only before native task cutover."""
+    if not frozen_task_compatibility_required():
+        return {
+            "ok": True,
+            "detail": (
+                "Retired after native task cutover; the frozen legacy task "
+                "files were not inspected."
+            ),
+        }
     vault = _vault_root()
     task_file = vault / "tasks" / "master-task-list.md"
     if task_file.exists():
@@ -466,12 +491,20 @@ def _community_plugin_state(
 
 
 def check_tasks_plugin() -> dict[str, Any]:
-    """Check that the Obsidian Tasks community plugin is installed AND enabled.
+    """Check the Obsidian Tasks plugin only before native task cutover.
 
     Distinguishes installed-but-disabled (toggle it on) from not-
     installed (install first). Uses direct file inspection rather than
     importing plugins.py to avoid triggering agent_session side-effects.
     """
+    if not frozen_task_compatibility_required():
+        return {
+            "ok": True,
+            "detail": (
+                "Retired after native task cutover; the Obsidian Tasks "
+                "plugin was not inspected."
+            ),
+        }
     return _community_plugin_state(
         plugin_id="obsidian-tasks-plugin",
         folder_name="obsidian-tasks-plugin",

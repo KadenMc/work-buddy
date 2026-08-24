@@ -519,7 +519,6 @@ def obsidian_retry(
         exhaustion.
     """
     from work_buddy.mcp_server.registry import get_registry
-    from work_buddy.obsidian.bridge import is_available, get_latency_context
     from work_buddy.errors import classify_error
     from work_buddy.mcp_server.tools.gateway import _load_operation
     from work_buddy.consent import ConsentRequired
@@ -549,6 +548,51 @@ def obsidian_retry(
                 f"in its record — cannot replay."
             ),
         }
+
+    task_mutations = {
+        "task_archive",
+        "task_assign",
+        "task_change_state",
+        "task_create",
+        "task_delete",
+        "task_set_tags",
+        "task_sync",
+        "task_toggle",
+        "task_update_description",
+    }
+    is_task_mutation = capability in task_mutations
+    if is_task_mutation:
+        from work_buddy.tasks.runtime import (
+            assert_task_replay_authority,
+            native_authority_active,
+        )
+
+        try:
+            assert_task_replay_authority(record.get("task_authority_epoch"))
+        except Exception as exc:
+            from work_buddy.tasks.errors import TaskDomainError
+
+            if not isinstance(exc, TaskDomainError):
+                raise
+            return {
+                "success": False,
+                "error": str(exc),
+                "error_code": exc.code,
+            }
+        if native_authority_active():
+            return {
+                "success": False,
+                "retired": True,
+                "error": (
+                    "obsidian_retry cannot replay native task operations; "
+                    "use the bridge-independent retry capability instead."
+                ),
+                "error_code": "task_obsidian_retry_retired",
+            }
+
+    # Do not even probe/import the Obsidian bridge until the task authority
+    # boundary above has ruled out every post-cutover task replay.
+    from work_buddy.obsidian.bridge import is_available, get_latency_context
 
     registry = get_registry()
     entry = registry.get(capability)
@@ -606,13 +650,14 @@ def obsidian_retry(
             # original note identity, even if the consent wait outran the
             # cache TTL — otherwise a successful replay mints a fresh UUID
             # and orphans the first note.
-            try:
-                from work_buddy.obsidian.tasks.mutations import (
-                    refresh_idempotency_on_replay,
-                )
-                refresh_idempotency_on_replay(capability, params)
-            except Exception:  # pragma: no cover — never break a replay
-                pass
+            if is_task_mutation:
+                try:
+                    from work_buddy.obsidian.tasks.mutations import (
+                        refresh_idempotency_on_replay,
+                    )
+                    refresh_idempotency_on_replay(capability, params)
+                except Exception:  # pragma: no cover — legacy best effort
+                    pass
             try:
                 with _principal_ctx:
                     result = entry.callable(**params)

@@ -19,27 +19,24 @@ aliases:
 - add task
 parents:
 - tasks
-dev_notes: Project-slug validation lives in `_normalize_tags` (work_buddy/obsidian/tasks/mutations.py) with a `validate_project_slugs=False` escape hatch for the idempotency-cache resolver. The structural cutoff for what `task_set_tags` can/can't edit is the preserve list inside `_rewrite_namespace_tags` — if you add a new reserved prefix here, sync's `RESERVED_TAG_PREFIXES` has to know too. The plan step's `project` field is a slug-only shortcut; deeper subtree paths land via `proposed_tags` (e.g. `projects/work-buddy/systems/task-system`).
+dev_notes: Project and tag validation live in the native task service. The plan step's `project` field is a slug-only shortcut; deeper subtree paths land via `proposed_tags` (for example `projects/work-buddy/systems/task-system`). The enrich auto-run must stay on `work_buddy.tasks.capabilities.enrich_plan`; importing the legacy Obsidian namespace module would reintroduce a task runtime dependency.
 ---
 
 Route user task requests through the task-new workflow. The workflow's DAG enforces plan → enrich → confirm → create; agents don't manually sequence the suggester anymore. Project assignment is first-class: the plan step infers a project + subtree path alongside free-form namespace tags, and the confirm step gates only the minting of *new* projects or *new* subtrees, not the application of existing ones.
 
-## Tag categories on a task line
+## Structured tags
 
-The master-list line for a task carries up to four kinds of `#tag`:
-
-| Kind | Example | Set via | Notes |
-|---|---|---|---|
-| `#todo` | `#todo` | `task_create` (auto) | Plugin marker; never propose. |
-| `#projects/<slug>[/<subtree>...]` | `#projects/work-buddy/systems/task-system` | `task_create`'s `project` kwarg AND/OR `tags` list | Slug validates against the project registry; subtree below is free-form. Multiple `#projects/...` tokens per task are fine — the in-vault convention uses `<project>/<area>/<subarea>`. |
-| Free-form namespace | `#admin/uhn`, `#paper/ecg-classifier` | `task_create`'s `tags` list | Any well-formed slug; classified by sync's discovery threshold. |
-| `#tasker/*` | `#tasker/state/focused` | `task_change_state` | Mirrors store metadata; do NOT touch via tag tools. |
-
-The inline-todo markers `#wb/todo` / `#wb/done` are workflow-internal and not user-modifiable through this surface.
+Native tasks store project and namespace tags as structured rows. A project tag
+uses `projects/<slug>[/<subtree>...]`; free-form namespaces use paths such as
+`admin/uhn` or `paper/ecg-classifier`. The registered project slug is validated,
+while an intentional subtree may be minted after confirmation. There is no
+`#todo`, Tasks-plugin, checkbox, or master-line syntax in the native contract.
 
 ## MIT tasks require a summary
 
-When creating a task that includes `#tasker/state/focused` in `task_text` (a Most Important Task), `summary` is required. Pass a handoff-quality note: what needs to be done, why, and any relevant context, so a future agent picking up the task does not need to ask. A focused task without a note is a continuity gap.
+When creating a Most Important task, provide `summary` as handoff-quality initial
+content for its Co-work knowledge document: what needs to be done, why, and any
+relevant context. A focused task without knowledge is a continuity gap.
 
 ## GTD vocabulary (optional)
 
@@ -49,6 +46,8 @@ The task-new workflow's `plan` step doesn't currently emit these fields — they
 
 ## Retroactive tag edits
 
-`task_set_tags` manages every user-modifiable tag on the line at once — free-form namespaces AND `#projects/<slug>/...` paths AND opt-in prefixes. Pass the complete desired list. Project slugs validate against the registry; unknown slugs raise ValueError (use `project_create` first).
+`task_set_tags` replaces the complete structured tag set. Pass every desired
+free-form namespace and `projects/<slug>/...` path. Unknown project slugs are
+rejected (use `project_create` first).
 
 Directly programmatic callers that bypass the task-new workflow (e.g. the triage executor creating a task from a Review decision that already carries suggested_namespace_tags, or a session-handoff helper minting a task from prior context) MUST pass `project=` (and full subtree paths via `tags`) themselves. The workflow's enrichment is the right place for inference; programmatic call sites without that inference are responsible for landing tasks with correct project assignment.

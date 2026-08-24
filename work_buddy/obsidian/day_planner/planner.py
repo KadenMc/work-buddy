@@ -1,7 +1,9 @@
 """Gap-filling schedule generator for Day Planner.
 
-Pure logic — no side effects. Takes calendar events and focused tasks,
-returns time-blocked plan entries that fit into calendar gaps.
+Pure logic — no side effects or authority reads. Takes caller-supplied calendar
+events and structured focused-task dictionaries, then returns time-blocked
+plan entries that fit into calendar gaps. Its legacy package location does not
+make Obsidian a task dependency.
 """
 
 from __future__ import annotations

@@ -345,23 +345,16 @@ class Thread(WorkItem):
 
 @dataclass
 class Task(WorkItem):
-    """The master-list-contract subtype of :class:`WorkItem`.
+    """The task-authority subtype of :class:`WorkItem`.
 
     A Task is a **sibling** of :class:`Thread` on ``WorkItem`` — NOT a
     ``Thread`` subclass. This is the WorkItem inversion: the heavy
     resolution FSM stays on ``Thread``; ``Task`` has **no FSM**.
-    Its lifecycle is the task system's own state vocab (inbox / mit /
-    focused / snoozed / done) and it persists in the ``obsidian/tasks``
-    task_metadata store + the markdown master list — **never** in the
-    ``threads`` table.
-
-    This type is a *transitional facade*: it wraps existing task rows and
-    reads through the live task store; the markdown sync adapter +
-    write-delegation are extracted when the facade is later collapsed onto
-    an owned adapter. Field-ownership
-    follows ``TaskMarkdownDB.FIELDS`` — the Obsidian Tasks plugin owns its
-    in-markdown markers (checkbox / dates / recurrence / priority); this
-    facade never fights the plugin.
+    Its lifecycle is the task system's own state vocabulary (inbox / mit /
+    focused / snoozed / done). Native authority persists in ``TaskStore`` and
+    projection-free Co-work knowledge documents, never in the ``threads``
+    table or task Markdown. A fenced legacy branch remains reachable only
+    before cutover (or after an explicit rollback epoch).
 
     Subtype is fixed ``'task'`` and never mutated.
     """
@@ -371,21 +364,25 @@ class Task(WorkItem):
     # live task store's id shape so a Task wraps its existing row 1:1.
     thread_id: str = field(default_factory=_new_task_id)
 
-    # Read cache of the ``task_metadata`` row this Task was loaded from. A
-    # *cache*, never a source of truth: the store (markdown above it) stays
-    # authoritative; mutations write field-targeted deltas through the port,
-    # never this snapshot. ``None`` ⇒ not loaded from the store yet (a freshly
-    # constructed Task) — reads then lazily fill it via a live read. Set by
-    # ``from_store_row`` / ``refresh``; invalidated (set ``None``) after a
-    # mutation. Excluded from init / equality / repr / serialization.
+    # Read cache of the current authority row. A cache, never a source of
+    # truth: mutations write field-targeted deltas through the port, never this
+    # snapshot. The paired epoch invalidates even a long-held legacy snapshot
+    # at cutover. Excluded from init / equality / repr / serialization.
     _row: Optional[dict[str, Any]] = field(
+        default=None, init=False, compare=False, repr=False,
+    )
+    _row_authority_epoch: Optional[str] = field(
         default=None, init=False, compare=False, repr=False,
     )
 
     @classmethod
-    def from_store_row(cls, row: dict[str, Any]) -> "Task":
-        """Build a Task from a live ``task_metadata`` row dict (the shape
-        returned by ``obsidian.tasks.store.get`` / ``.query``).
+    def from_store_row(
+        cls,
+        row: dict[str, Any],
+        *,
+        authority_epoch: Optional[str] = None,
+    ) -> "Task":
+        """Build a Task from a row returned by the current authority store.
 
         Maps the store's columns onto the WorkItem universal slots and
         caches the full row on the instance (see :attr:`row`) so reads of
@@ -414,19 +411,32 @@ class Task(WorkItem):
         # Carry the content this Task was built from so a subsequent read of
         # task content costs no second query. A read cache, not authority.
         task._row = dict(row)
+        if authority_epoch is None:
+            from work_buddy.tasks.runtime import authority_epoch as current_epoch
+
+            authority_epoch = current_epoch()
+        task._row_authority_epoch = authority_epoch
         return task
 
     def live_row(self) -> Optional[dict[str, Any]]:
         """Always-fresh read of this Task's row from the live store.
 
-        Bypasses the :attr:`_row` snapshot and does NOT update it — use this
-        (or :meth:`refresh`) when you need current truth rather than the
-        point-in-time snapshot that :attr:`row` and the field accessors
-        serve. The markdown-backed store is the source of truth for task
-        content + state. Lazily imports the store so ``threads.models`` stays
-        decoupled from ``obsidian.tasks`` at import time. ``None`` if the
-        task is absent / soft-deleted.
+        Bypasses the :attr:`_row` snapshot and does NOT update it. Authority is
+        resolved on every call so native activation cannot leave a stale read
+        path into the compatibility store. ``None`` if the task is absent or
+        soft-deleted.
         """
+        from work_buddy.tasks.runtime import (
+            authority_epoch,
+            is_native_authority_epoch,
+        )
+
+        read_epoch = authority_epoch()
+        if is_native_authority_epoch(read_epoch):
+            from work_buddy.tasks.store import TaskStore
+
+            task = TaskStore().get(self.thread_id)
+            return None if task is None else task.to_dict()
         from work_buddy.obsidian.tasks import store as _task_store
 
         return _task_store.get(self.thread_id)
@@ -439,6 +449,9 @@ class Task(WorkItem):
         snapshot to ``None`` if the task is now absent / soft-deleted.
         """
         self._row = self.live_row()
+        from work_buddy.tasks.runtime import authority_epoch
+
+        self._row_authority_epoch = authority_epoch()
         return self
 
     def _ensure_row(self) -> Optional[dict[str, Any]]:
@@ -447,8 +460,12 @@ class Task(WorkItem):
         A Task built via :meth:`from_store_row` / :meth:`load` already holds
         the snapshot; a freshly-constructed one fills it on first read.
         """
-        if self._row is None:
+        from work_buddy.tasks.runtime import authority_epoch
+
+        current_epoch = authority_epoch()
+        if self._row is None or self._row_authority_epoch != current_epoch:
             self._row = self.live_row()
+            self._row_authority_epoch = current_epoch
         return self._row
 
     @property
@@ -522,10 +539,9 @@ class Task(WorkItem):
 
     # ------------------------------------------------------------------
     # Write surface — a Task is mutated *as a WorkItem*, through the
-    # task write port (``work_item.task_adapter``). The port delegates to
-    # the live mutation layer, which owns the atomic dual-surface write,
-    # plugin-marker preservation, consent, bridge-retry, and event
-    # emission — so these methods add no behaviour of their own. The
+    # task write port (``work_item.task_adapter``). The port resolves native
+    # TaskStore authority or the fenced pre-cutover compatibility layer, so
+    # these methods add no persistence behaviour of their own. The
     # adapter is imported inside each method to keep ``threads.models``
     # decoupled from it at import time (and cycle-free).
     # ------------------------------------------------------------------
@@ -542,10 +558,26 @@ class Task(WorkItem):
         ``include_deleted``). Lazily imports the store (same decoupling as
         :meth:`live_row`).
         """
-        from work_buddy.obsidian.tasks import store as _task_store
+        from work_buddy.tasks.runtime import (
+            authority_epoch,
+            is_native_authority_epoch,
+        )
 
-        row = _task_store.get(task_id, include_deleted=include_deleted)
-        return cls.from_store_row(row) if row is not None else None
+        read_epoch = authority_epoch()
+        if is_native_authority_epoch(read_epoch):
+            from work_buddy.tasks.store import TaskStore
+
+            task = TaskStore().get(task_id, include_deleted=include_deleted)
+            row = None if task is None else task.to_dict()
+        else:
+            from work_buddy.obsidian.tasks import store as _task_store
+
+            row = _task_store.get(task_id, include_deleted=include_deleted)
+        return (
+            cls.from_store_row(row, authority_epoch=read_epoch)
+            if row is not None
+            else None
+        )
 
     @classmethod
     def query(
@@ -564,11 +596,37 @@ class Task(WorkItem):
         :attr:`row`) — so iterating ``.row`` / accessors over the result
         adds no further queries.
         """
+        from work_buddy.tasks.runtime import (
+            authority_epoch,
+            is_native_authority_epoch,
+        )
+
+        read_epoch = authority_epoch()
+        if is_native_authority_epoch(read_epoch):
+            from work_buddy.tasks.models import TaskQuery
+            from work_buddy.tasks.store import TaskStore
+
+            candidates = TaskStore().list(
+                TaskQuery(
+                    state=state,
+                    urgency=urgency,
+                    include_done=state is None or state == "done",
+                    include_archived=include_archived,
+                    include_deleted=include_deleted,
+                    include_snoozed=state is None or state == "snoozed",
+                    limit=5000,
+                )
+            )
+            if contract is not None:
+                candidates = [task for task in candidates if task.contract == contract]
+            return [
+                cls.from_store_row(task.to_dict(), authority_epoch=read_epoch)
+                for task in candidates
+            ]
+
         from work_buddy.obsidian.tasks import store as _task_store
 
-        # Forward only the filters that narrow the query — store.query
-        # already defaults the rest — so the underlying call stays minimal
-        # and shaped like a direct store.query(state=...) call.
+        # Forward only filters that narrow the compatibility query.
         kwargs: dict[str, Any] = {}
         if state is not None:
             kwargs["state"] = state
@@ -580,7 +638,10 @@ class Task(WorkItem):
             kwargs["include_archived"] = True
         if include_deleted:
             kwargs["include_deleted"] = True
-        return [cls.from_store_row(r) for r in _task_store.query(**kwargs)]
+        return [
+            cls.from_store_row(r, authority_epoch=read_epoch)
+            for r in _task_store.query(**kwargs)
+        ]
 
     @classmethod
     def create(
@@ -598,9 +659,8 @@ class Task(WorkItem):
         """Create a new task through the WorkItem write port.
 
         A classmethod — there is no Task yet (no ``thread_id`` to act on); the
-        id is minted inside the mutation layer's idempotency cache, so this
-        never generates its own. Returns the raw ``create_task`` result dict
-        (the minted ``task_id`` + verification state callers consume), NOT a
+        id is minted inside the authority service, so this never generates its
+        own. Returns the authority result dict, NOT a
         Task; a caller wanting the object does ``Task.load(result["task_id"])``.
         The GTD/risk keyword tail is forwarded via ``**kwargs``.
         """
@@ -647,7 +707,7 @@ class Task(WorkItem):
     ) -> dict[str, Any]:
         """Update this task's metadata through the WorkItem write port.
 
-        Cannot set ``state='done'`` — the mutation layer rejects it; use
+        Cannot set ``state='done'`` — the task service rejects it; use
         :meth:`toggle` for completion.
         """
         from work_buddy.work_item import task_adapter

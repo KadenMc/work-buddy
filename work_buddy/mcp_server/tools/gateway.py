@@ -179,6 +179,169 @@ def _reject_constrained_top_level(
 
 _OPERATIONS_DIR: Path | None = None
 
+# Parameters owned by the native task mutation contract.  Some are transport
+# concerns (``client_mutation_id``), while the public capability declarations
+# expose the optimistic-lock and lifecycle fields.  Keeping the allowance here
+# lets an older, already-loaded registry generation accept the hardened
+# contract immediately; a data-only registry reload then supplies the richer
+# wb_search schema without requiring a gateway process restart.
+_TASK_MUTATION_CONTRACT_PARAMS: dict[str, frozenset[str]] = {
+    "task_create": frozenset({"client_mutation_id"}),
+    "task_set_tags": frozenset({"client_mutation_id", "expected_revision"}),
+    "task_assign": frozenset({"client_mutation_id", "expected_revision"}),
+    "task_toggle": frozenset({"client_mutation_id", "expected_revision"}),
+    "task_delete": frozenset({"client_mutation_id", "expected_revision"}),
+    "task_change_state": frozenset(
+        {"client_mutation_id", "expected_revision", "snooze_until"}
+    ),
+    "task_update_description": frozenset(
+        {"client_mutation_id", "expected_revision"}
+    ),
+}
+_TASK_MUTATION_CAPABILITY_NAMES = frozenset(
+    {*_TASK_MUTATION_CONTRACT_PARAMS, "task_archive", "task_sync"}
+)
+
+_RETRY_WRAPPER_CAPABILITIES = frozenset({"retry", "obsidian_retry"})
+
+
+def _effective_task_operation(
+    capability: str,
+    params: dict[str, Any] | None = None,
+) -> tuple[str, dict[str, Any] | None]:
+    """Resolve a retry wrapper to the operation whose effects it can replay."""
+
+    if capability not in _RETRY_WRAPPER_CAPABILITIES:
+        return capability, None
+    inner_id = (params or {}).get("operation_id")
+    if not inner_id:
+        return capability, None
+    inner = _load_operation(str(inner_id))
+    if inner is None:
+        return capability, None
+    return str(inner.get("name") or ""), inner
+
+
+def _assert_task_retry_record_authority(record: dict[str, Any]) -> None:
+    """Reject a durable task mutation that crosses the cutover boundary."""
+
+    name, inner = _effective_task_operation(
+        str(record.get("name") or ""),
+        record.get("params") or {},
+    )
+    effective = inner or record
+    if name not in _TASK_MUTATION_CAPABILITY_NAMES:
+        return
+    from work_buddy.tasks.runtime import (
+        assert_task_replay_authority,
+        native_authority_active,
+    )
+
+    assert_task_replay_authority(effective.get("task_authority_epoch"))
+    if native_authority_active() and effective.get("pwu_carrier"):
+        from work_buddy.tasks.errors import TaskLegacyEffectRetired
+
+        raise TaskLegacyEffectRetired()
+
+
+def _native_task_effect_verification_retired(
+    capability: str,
+    params: dict[str, Any] | None,
+) -> bool:
+    """Return True when a PWU path would inspect retired task Markdown."""
+
+    name, _inner = _effective_task_operation(capability, params)
+    if name not in _TASK_MUTATION_CAPABILITY_NAMES:
+        return False
+    from work_buddy.tasks.runtime import native_authority_active
+
+    return native_authority_active()
+
+
+def _prepare_task_mutation_params(
+    capability: str,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    """Pin native task retry authority before the operation is persisted.
+
+    A durable idempotency key is necessary but not sufficient for an existing
+    task mutation: the receipt request hash also contains
+    ``expected_revision``.  If a caller omitted the revision and the first
+    response was lost, recomputing it from the now-mutated row on replay would
+    turn a valid replay into an idempotency conflict.  We therefore snapshot
+    the native revision into the operation record before first dispatch.
+
+    The adapter remains the authoritative validator.  This helper deliberately
+    leaves parameters alone when native authority is inactive, the task cannot
+    be resolved, or the authority probe is unavailable; the subsequently
+    recorded dispatch will then return the normal typed error.
+    """
+    if capability not in _TASK_MUTATION_CONTRACT_PARAMS:
+        return params
+
+    prepared = dict(params)
+    if prepared.get("client_mutation_id") is None:
+        prepared["client_mutation_id"] = f"mcp:{uuid.uuid4().hex}"
+
+    if capability == "task_create" or prepared.get("expected_revision") is not None:
+        return prepared
+
+    try:
+        from work_buddy.tasks.runtime import native_authority_active
+
+        if not native_authority_active():
+            return prepared
+
+        from work_buddy.tasks.service import TaskApplicationService
+        from work_buddy.tasks.store import TaskStore
+
+        store = TaskStore()
+        task_id = prepared.get("task_id")
+        task = (
+            store.get(str(task_id), include_deleted=True)
+            if task_id
+            else None
+        )
+        if (
+            task is None
+            and capability == "task_change_state"
+            and prepared.get("description_match")
+        ):
+            matches = TaskApplicationService(store).search(
+                str(prepared["description_match"]),
+                limit=2,
+            )
+            if len(matches) == 1:
+                task = matches[0]
+                prepared["task_id"] = task.task_id
+        if task is not None:
+            prepared["expected_revision"] = task.revision
+    except Exception:
+        # Revision pinning is a transport hardening step, not a second
+        # authority/error policy.  The adapter performs the authoritative
+        # probe and validation after the operation record exists.
+        pass
+    return prepared
+
+
+def _task_domain_error_payload(
+    exc: Exception,
+    operation_id: str,
+) -> dict[str, Any] | None:
+    """Serialize native task conflicts/validation without losing metadata."""
+    try:
+        from work_buddy.tasks.errors import TaskDomainError
+    except ImportError:  # pragma: no cover - task package is optional at boot
+        return None
+    if not isinstance(exc, TaskDomainError):
+        return None
+    detail = exc.to_dict()
+    return {
+        **detail,
+        "error": detail["message"],
+        "operation_id": operation_id,
+    }
+
 
 def _get_operations_dir() -> Path:
     """Return (and lazily create) the global operations directory."""
@@ -217,6 +380,16 @@ def _save_operation(
         "created_at": now.isoformat(),
         "completed_at": None,
     }
+    if name in _TASK_MUTATION_CAPABILITY_NAMES:
+        from work_buddy.tasks.runtime import authority_epoch
+
+        try:
+            record["task_authority_epoch"] = authority_epoch()
+        except Exception:
+            # The subsequent task dispatch returns the typed fail-closed
+            # authority error. Persist an explicit non-epoch so no later retry
+            # can reinterpret this operation as legacy.
+            record["task_authority_epoch"] = "unavailable"
     path = _get_operations_dir() / f"{op_id}.json"
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(record, default=_json_default, indent=2), encoding="utf-8")
@@ -1900,6 +2073,11 @@ def register_tools(mcp: FastMCP) -> None:
             else:
                 retry_policy = "replay"
 
+        # Persist task idempotency and optimistic-lock authority with the
+        # operation itself.  Replay must use the exact same request hash after
+        # a response-loss failure.
+        parsed_params = _prepare_task_mutation_params(capability, parsed_params)
+
         # Save operation record before dispatch
         op_id = _save_operation(capability, parsed_params, retry_policy, op_type=op_type)
 
@@ -1983,6 +2161,7 @@ def register_tools(mcp: FastMCP) -> None:
                     parsed_params[canonical] = parsed_params.pop(alias)
         if parsed_params and entry.parameters:
             known = set(entry.parameters)
+            known.update(_TASK_MUTATION_CONTRACT_PARAMS.get(capability, ()))
             unknown = set(parsed_params) - known
             if unknown:
                 param_help = registry._entry_to_dict(entry).get("parameters", {})
@@ -2280,6 +2459,17 @@ def register_tools(mcp: FastMCP) -> None:
                     )
                     continue
 
+                task_error = _task_domain_error_payload(exc, op_id)
+                if task_error is not None:
+                    error_str = f"{type(exc).__name__}: {exc}"
+                    _complete_operation(op_id, error=error_str)
+                    record_capability(
+                        capability, entry.category, op_id, parsed_params,
+                        entry.mutates_state, _t0, None, error_str, False,
+                        **_ledger_kw,
+                    )
+                    return _prepare(task_error)
+
                 # CP5: post-write-verify recovery. ObsidianPostWriteUncertain
                 # signals "PUT body sent then client timeout — vault state
                 # may or may not reflect the write." Read filesystem to
@@ -2297,6 +2487,23 @@ def register_tools(mcp: FastMCP) -> None:
                     ObsidianPostWriteUncertain = ()  # noqa: N806 — typed-tuple sentinel
 
                 if isinstance(exc, ObsidianPostWriteUncertain):
+                    if _native_task_effect_verification_retired(
+                        capability, parsed_params,
+                    ):
+                        from work_buddy.tasks.errors import TaskLegacyEffectRetired
+
+                        retired = TaskLegacyEffectRetired()
+                        error_str = f"{type(retired).__name__}: {retired}"
+                        _complete_operation(op_id, error=error_str)
+                        record_capability(
+                            capability, entry.category, op_id, parsed_params,
+                            entry.mutates_state, _t0, None, error_str, False,
+                            **_ledger_kw,
+                        )
+                        return _prepare(
+                            _task_domain_error_payload(retired, op_id)
+                            or {"error": str(retired), "operation_id": op_id}
+                        )
                     # Fix-(b) effect-graph-aware verify: capabilities with
                     # a declared effects manifest get the multi-effect
                     # verifier, which can detect "some effects landed,
@@ -2507,6 +2714,27 @@ def register_tools(mcp: FastMCP) -> None:
             )
             if not isinstance(result_error_kind, str):
                 result_error_kind = None
+
+            if (
+                result_error_kind == "obsidian_post_write_uncertain"
+                and _native_task_effect_verification_retired(
+                    capability, parsed_params,
+                )
+            ):
+                from work_buddy.tasks.errors import TaskLegacyEffectRetired
+
+                retired = TaskLegacyEffectRetired()
+                error_str = f"{type(retired).__name__}: {retired}"
+                _complete_operation(op_id, result=result, error=error_str)
+                record_capability(
+                    capability, entry.category, op_id, parsed_params,
+                    entry.mutates_state, _t0, result, error_str, False,
+                    **_ledger_kw,
+                )
+                return _prepare(
+                    _task_domain_error_payload(retired, op_id)
+                    or {"error": str(retired), "operation_id": op_id}
+                )
 
             # CP-A6 defense-in-depth: if a result dict carries
             # error_kind="obsidian_post_write_uncertain" AND embeds the
@@ -2958,6 +3186,18 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
             "operation_id": operation_id,
         }
 
+    try:
+        _assert_task_retry_record_authority(record)
+    except Exception as exc:
+        task_error = _task_domain_error_payload(exc, operation_id)
+        if task_error is None:
+            raise
+        _complete_operation(
+            operation_id,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        return task_error
+
     # Check execution lease — prevent double-dispatch
     locked = record.get("locked_until")
     if locked:
@@ -3027,13 +3267,20 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
                 # its original note identity even if the consent wait outran
                 # the cache TTL — otherwise a successful replay mints a fresh
                 # UUID and orphans the first note.
-                try:
-                    from work_buddy.obsidian.tasks.mutations import (
-                        refresh_idempotency_on_replay,
-                    )
-                    refresh_idempotency_on_replay(cap_name, record["params"])
-                except Exception:  # pragma: no cover — never break a replay
-                    pass
+                if cap_name in _TASK_MUTATION_CAPABILITY_NAMES:
+                    from work_buddy.tasks.runtime import native_authority_active
+
+                if (
+                    cap_name in _TASK_MUTATION_CAPABILITY_NAMES
+                    and not native_authority_active()
+                ):
+                    try:
+                        from work_buddy.obsidian.tasks.mutations import (
+                            refresh_idempotency_on_replay,
+                        )
+                        refresh_idempotency_on_replay(cap_name, record["params"])
+                    except Exception:  # pragma: no cover — legacy best effort
+                        pass
                 # Bind a REPLAY principal so the decorator's is_granted
                 # check resolves against the originating agent's DB and
                 # rides individual grants only (no workflow time-travel).
@@ -3117,6 +3364,14 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
                 )
                 continue
 
+            task_error = _task_domain_error_payload(exc, operation_id)
+            if task_error is not None:
+                _complete_operation(
+                    operation_id,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                return task_error
+
             # CP5: post-write-verify on retried writes too. If a retried
             # write capability raises ObsidianPostWriteUncertain, the
             # filesystem may show the second-attempt write actually
@@ -3128,6 +3383,20 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
                 ObsidianPostWriteUncertain = ()  # noqa: N806
 
             if isinstance(exc, ObsidianPostWriteUncertain):
+                if _native_task_effect_verification_retired(
+                    cap_name, record.get("params") or {},
+                ):
+                    from work_buddy.tasks.errors import TaskLegacyEffectRetired
+
+                    retired = TaskLegacyEffectRetired()
+                    _complete_operation(
+                        operation_id,
+                        error=f"{type(retired).__name__}: {retired}",
+                    )
+                    return _task_domain_error_payload(retired, operation_id) or {
+                        "error": str(retired),
+                        "operation_id": operation_id,
+                    }
                 from work_buddy.obsidian.post_write_verify import verify_post_write
                 verdict = verify_post_write(exc)
                 if verdict == "verified":
@@ -3219,6 +3488,24 @@ def retry_operation(operation_id: str) -> dict[str, Any]:
         )
         if not isinstance(result_error_kind, str):
             result_error_kind = None
+        if (
+            result_error_kind == "obsidian_post_write_uncertain"
+            and _native_task_effect_verification_retired(
+                cap_name, record.get("params") or {},
+            )
+        ):
+            from work_buddy.tasks.errors import TaskLegacyEffectRetired
+
+            retired = TaskLegacyEffectRetired()
+            _complete_operation(
+                operation_id,
+                result=result,
+                error=f"{type(retired).__name__}: {retired}",
+            )
+            return _task_domain_error_payload(retired, operation_id) or {
+                "error": str(retired),
+                "operation_id": operation_id,
+            }
         if (
             _is_transient(result)
             and retry_policy in ("replay", "verify_first")

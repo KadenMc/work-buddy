@@ -41,6 +41,13 @@ const staticLoaders = {
 window.staticLoaders = staticLoaders;
 
 function switchTab(tabName) {
+    // Once the native authority epoch is active, the React Tasks view is the
+    // only authoring surface.  Keep the old tab as a discoverable doorway,
+    // but never load its Obsidian-era renderer or Markdown links.
+    if (tabName === 'tasks' && WB_NATIVE_TASKS_ACTIVE) {
+        window.location.assign('/app/tasks');
+        return;
+    }
     // Update all tab buttons (static + dynamic)
     document.querySelectorAll('.tab-btn').forEach(b => {
         b.classList.toggle('active', b.dataset.tab === tabName);
@@ -329,8 +336,10 @@ document.addEventListener('visibilitychange', () => {
 });
 
 // ---- Init ----
-// Set dynamic Obsidian vault links
-if (WB_VAULT_NAME) {
+// Set the frozen pre-cutover task link only while legacy authority is active.
+// Native/unavailable pages do not render this element at all; the authority
+// guard also protects a stale cached HTML shell during cutover.
+if (!WB_NATIVE_TASKS_ACTIVE && WB_VAULT_NAME) {
     const mtl = document.getElementById('master-task-link');
     if (mtl) mtl.href = `obsidian://open?vault=${encodeURIComponent(WB_VAULT_NAME)}&file=tasks%2Fmaster-task-list.md`;
 }

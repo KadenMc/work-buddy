@@ -1,7 +1,7 @@
 ---
 name: Task Delete
 kind: capability
-description: 'Permanently delete a task: remove line, note file, and store record. Consent-gated.'
+description: Soft-delete a native task into Trash. Task history and Co-work knowledge remain recoverable.
 capability_name: task_delete
 category: tasks
 op: op.wb.task_delete
@@ -11,12 +11,18 @@ parameters:
     type: str
     description: Task ID (e.g., 't-xxxxxxxx')
     required: true
+  expected_revision:
+    type: int
+    description: Current task revision for compare-and-swap; the gateway pins it when omitted.
+    required: false
+  client_mutation_id:
+    type: str
+    description: Optional stable idempotency key.
+    required: false
 mutates_state: true
 retry_policy: manual
 consent_operations:
 - tasks.delete_task
-- obsidian.write_file
-- obsidian.eval_js
 tags:
 - tasks
 - task
@@ -31,6 +37,8 @@ aliases:
 - drop task
 parents:
 - tasks
-requires:
-- obsidian
+requires: []
 ---
+
+Delete is reversible. Restore keeps retired document history and creates a new
+active Co-work binding when the prior binding was retired.

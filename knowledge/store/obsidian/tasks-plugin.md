@@ -1,7 +1,7 @@
 ---
-name: Obsidian Tasks Plugin Integration
+name: Retired Obsidian Tasks Plugin Compatibility
 kind: integration
-description: Runtime integration with Tasks plugin (v7.23.1) -- cache API, ownership split, mutation pipeline, tag behavior, emoji-aware sync, soft-delete contract
+description: Frozen pre-cutover Tasks-plugin integration retained for import, audit, and rollback evidence only; never live task authority.
 tags:
 - obsidian
 - tasks
@@ -22,7 +22,19 @@ parents:
 - obsidian
 ---
 
-Runtime integration with Obsidian Tasks plugin (v7.23.1) via eval_js bridge.
+# Retired task integration
+
+This integration describes the pre-cutover Obsidian Tasks plugin (v7.23.1)
+pipeline. After native task authority activates, Obsidian and the plugin are
+disconnected from live task reads, writes, sync, notes, context, dashboards, and
+secondary consumers. `TaskStore` and projection-free Co-work documents are the
+only current authorities; see `tasks/native-task-system`.
+
+The code and frozen files remain solely for backup verification, deterministic
+import, audit, and explicitly invoked rollback work. They are retained
+indefinitely. No scheduled process reconciles or deletes them.
+
+## Historical architecture
 
 ## Architecture
 
@@ -40,38 +52,34 @@ executeToggleTaskDoneCommand(line, path) -> programmatic toggle, returns new lin
 4. Write string to file via bridge.write_file() or vault.process()
 5. Cache auto-reindexes from file change via vault subscription
 
-## Ownership Split
+## Historical ownership split
 
 Tasks plugin owns: checkbox state, done/cancelled dates, recurrence, priority emojis, due/scheduled/start dates.
 work-buddy owns: state (inbox/mit/focused/snoozed/done/deleted), urgency, complexity, contract link, snooze-until, state change history, task ID (t-<hex>), soft-delete tombstone (deleted_at).
 Shared: #projects/* tags.
 
-Rule: Never fight the plugin's output. Let it compute its part, then add/update ours.
+This split no longer applies to native tasks.
 
-## Emoji-aware sync
+## Historical emoji-aware import
 
-When the master list is reconciled against the store, `task_sync` parses Tasks-plugin emoji metadata and drift-checks against the store:
+The one-time legacy importer parses Tasks-plugin emoji metadata into native fields:
 
 - deadline emoji + YYYY-MM-DD -> `task_metadata.deadline_date` + `has_deadline=True`
 - urgency emojis (high / medium / low) -> `task_metadata.urgency`
 - done emoji + YYYY-MM-DD -> `task_metadata.completed_at`
 
-See `tasks/task_sync` for the full reconcile pipeline and the no-orphan-cleanup decision.
+`task_sync` is retired and its scheduled job is disabled.
 
-## Soft-delete contract
+## Native lifecycle replacement
 
-The store side enforces a no-DELETE discipline across three call sites:
+The native store uses reversible lifecycle fields across tasks and action items:
 
-- `store.delete(task_id)` -> `UPDATE task_metadata SET deleted_at = now`. Restorable via `store.restore`. See `tasks/task_delete`.
-- `store.set_task_tags(task_id, tags)` -> diff-and-update. Never DELETEs from `task_tags`. See `tasks/task_set_tags`.
-- `action_items.delete(item_id)` -> `UPDATE task_action_items SET deleted_at = now`. See `tasks/action-items`.
+- task delete sets `deleted_at` and can be restored;
+- archive sets `archived_at` and can be reversed;
+- action-item delete retains the row and its sequence.
 
-Foreign keys on `task_action_items` / `task_tags` have no `ON DELETE` action (`_m009_drop_cascade`) so even raw SQL can't accidentally cascade. The off-machine backup system (`architecture/backups`) is the last line of defense.
-
-## Tag Behavior
-
-New tasks: clean lines with only #todo and #projects/* inline. State/urgency/complexity in SQLite store.
-Legacy tasks: may still have #tasker/state/* and #tasker/urgency/* inline. Manager reads store first, falls back to inline tags.
+Restoring a retired task document creates a new active Co-work binding while
+preserving retired document history.
 
 ## Priority Mapping
 

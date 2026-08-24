@@ -29,6 +29,18 @@ def task_note_migration_operator(
 ) -> dict[str, Any]:
     """Run one explicit migration/recovery action without reading note content out."""
 
+    from work_buddy.tasks.runtime import native_authority_active
+
+    if native_authority_active():
+        return {
+            "success": False,
+            "retired": True,
+            "error": (
+                "The per-note Markdown migration operator is retired under "
+                "native task authority. Use the native task cutover/rollback operator."
+            ),
+        }
+
     from work_buddy import config as config_module
     from work_buddy.dashboard import local_identity_api
     from work_buddy.journal_capture.migration import latest_current_exit_evidence
