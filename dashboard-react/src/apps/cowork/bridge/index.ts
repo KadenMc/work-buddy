@@ -17,6 +17,7 @@ export {
   CoworkBridgeEditor,
   type CoworkBridgeEditorProps,
   type CoworkEditorReadyContext,
+  type CoworkProvenanceIdentityState,
 } from "./CoworkBridgeEditor";
 export {
   LiveReviewRailProvider,

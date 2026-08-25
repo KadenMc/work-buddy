@@ -12,7 +12,7 @@ from work_buddy.cowork import bootstrap, provenance
 from work_buddy.truth import documents, export as truth_export, ydoc_store
 from work_buddy.truth.contracts import Actor, InvariantViolation
 from work_buddy.truth.export import FORMAT_VERSION, export_store, import_store
-from work_buddy.truth.identity import sha256_bytes
+from work_buddy.truth.identity import canonical_json, sha256_bytes, sha256_text
 from work_buddy.truth.queries import integrity_findings
 
 from .conftest import HUMAN
@@ -619,6 +619,433 @@ def test_human_review_supersedes_effective_ai_without_rewriting_source(
         "kind": "user_attestation",
         "ref": original.id,
     }
+
+
+def test_human_review_accumulates_distinct_reviewers_without_duplicates(
+    store_ctx,
+):
+    store = store_ctx["store"]
+    document, version, _intent, _source = _import_ready(store_ctx)
+    original, _span_id = provenance.record_span_attestation(
+        store,
+        document_id=document.id,
+        exact="durable provenance",
+        prefix="A ",
+        suffix=" target.",
+        attestation=_attestation(authorship="ai", review="not_reviewed"),
+        actor=HUMAN,
+        idempotency_key="multi-reviewer-origin-0001",
+        expected_structured_head_sha256=version.structured_head_sha256,
+    )
+    first = provenance.record_human_review(
+        store,
+        document_id=document.id,
+        attestation_id=original.id,
+        actor=HUMAN,
+        idempotency_key="multi-reviewer-first-0001",
+        expected_structured_head_sha256=version.structured_head_sha256,
+    )
+    second_actor = Actor(
+        "human",
+        "local:second-reviewer",
+        {"identity_status": "local_actor_ref"},
+    )
+    second = provenance.record_human_review(
+        store,
+        document_id=document.id,
+        attestation_id=first.id,
+        actor=second_actor,
+        idempotency_key="multi-reviewer-second-0001",
+        expected_structured_head_sha256=version.structured_head_sha256,
+    )
+
+    assert json.loads(second.human_reviewers_json) == [
+        provenance.actor_binding(HUMAN),
+        provenance.actor_binding(second_actor),
+    ]
+    assert second.supersedes_id == first.id
+    with pytest.raises(provenance.ProvenanceReviewError) as duplicate:
+        provenance.record_human_review(
+            store,
+            document_id=document.id,
+            attestation_id=second.id,
+            actor=second_actor,
+            idempotency_key="multi-reviewer-duplicate-0001",
+            expected_structured_head_sha256=version.structured_head_sha256,
+        )
+    assert duplicate.value.code == "provenance_review_already_recorded"
+
+
+def test_human_review_batch_is_atomic_across_multiple_targets(store_ctx):
+    store = store_ctx["store"]
+    document, version, _intent, _source = _import_ready(store_ctx)
+    first, _ = provenance.record_span_attestation(
+        store,
+        document_id=document.id,
+        exact="Imported",
+        prefix="# ",
+        suffix="\n\nA",
+        attestation=_attestation(authorship="ai", review="not_reviewed"),
+        actor=HUMAN,
+        idempotency_key="batch-review-first-origin-0001",
+        expected_structured_head_sha256=version.structured_head_sha256,
+    )
+    second, _ = provenance.record_span_attestation(
+        store,
+        document_id=document.id,
+        exact="durable provenance",
+        prefix="A ",
+        suffix=" target.",
+        attestation=_attestation(authorship="mixed", review="unknown"),
+        actor=HUMAN,
+        idempotency_key="batch-review-second-origin-0001",
+        expected_structured_head_sha256=version.structured_head_sha256,
+    )
+
+    reviewed = provenance.record_human_reviews(
+        store,
+        document_id=document.id,
+        attestation_ids=[first.id, second.id],
+        actor=HUMAN,
+        idempotency_key="batch-review-command-0001",
+        expected_structured_head_sha256=version.structured_head_sha256,
+    )
+    replay = provenance.record_human_reviews(
+        store,
+        document_id=document.id,
+        attestation_ids=[first.id, second.id],
+        actor=HUMAN,
+        idempotency_key="batch-review-command-0001",
+        expected_structured_head_sha256=version.structured_head_sha256,
+    )
+
+    assert replay == reviewed
+    assert [row.supersedes_id for row in reviewed] == [first.id, second.id]
+    assert all(row.review_status == "reviewed" for row in reviewed)
+
+    third, _ = provenance.record_span_attestation(
+        store,
+        document_id=document.id,
+        exact="target",
+        prefix="provenance ",
+        suffix=".",
+        attestation=_attestation(authorship="ai", review="not_reviewed"),
+        actor=HUMAN,
+        idempotency_key="batch-review-third-origin-0001",
+        expected_structured_head_sha256=version.structured_head_sha256,
+    )
+    ineligible, _ = provenance.record_span_attestation(
+        store,
+        document_id=document.id,
+        exact="A",
+        prefix="\n\n",
+        suffix=" durable",
+        attestation=_attestation(authorship="human", review="not_applicable"),
+        actor=HUMAN,
+        idempotency_key="batch-review-ineligible-origin-0001",
+        expected_structured_head_sha256=version.structured_head_sha256,
+    )
+    history_before = store.list_document_provenance_attestations(document.id)
+    with pytest.raises(provenance.ProvenanceReviewError) as failed:
+        provenance.record_human_reviews(
+            store,
+            document_id=document.id,
+            attestation_ids=[third.id, ineligible.id],
+            actor=HUMAN,
+            idempotency_key="batch-review-atomic-failure-0001",
+            expected_structured_head_sha256=version.structured_head_sha256,
+        )
+    assert failed.value.code == "provenance_review_ineligible"
+    assert store.list_document_provenance_attestations(document.id) == history_before
+
+
+def test_human_review_batch_accumulates_distinct_reviewers_and_rejects_repeat(
+    store_ctx,
+):
+    store = store_ctx["store"]
+    document, version, _intent, _source = _import_ready(store_ctx)
+    original, _ = provenance.record_span_attestation(
+        store,
+        document_id=document.id,
+        exact="durable provenance",
+        prefix="A ",
+        suffix=" target.",
+        attestation=_attestation(authorship="ai", review="not_reviewed"),
+        actor=HUMAN,
+        idempotency_key="batch-multi-reviewer-origin-0001",
+        expected_structured_head_sha256=version.structured_head_sha256,
+    )
+    first = provenance.record_human_reviews(
+        store,
+        document_id=document.id,
+        attestation_ids=[original.id],
+        actor=HUMAN,
+        idempotency_key="batch-multi-reviewer-first-0001",
+        expected_structured_head_sha256=version.structured_head_sha256,
+    )[0]
+    second_actor = Actor(
+        "human",
+        "local:second-batch-reviewer",
+        {"identity_status": "local_actor_ref"},
+    )
+    second = provenance.record_human_reviews(
+        store,
+        document_id=document.id,
+        attestation_ids=[first.id],
+        actor=second_actor,
+        idempotency_key="batch-multi-reviewer-second-0001",
+        expected_structured_head_sha256=version.structured_head_sha256,
+    )[0]
+
+    assert json.loads(second.human_reviewers_json) == [
+        provenance.actor_binding(HUMAN),
+        provenance.actor_binding(second_actor),
+    ]
+    with pytest.raises(provenance.ProvenanceReviewError) as duplicate:
+        provenance.record_human_reviews(
+            store,
+            document_id=document.id,
+            attestation_ids=[second.id],
+            actor=second_actor,
+            idempotency_key="batch-multi-reviewer-duplicate-0001",
+            expected_structured_head_sha256=version.structured_head_sha256,
+        )
+    assert duplicate.value.code == "provenance_review_already_recorded"
+
+
+def test_human_review_batch_rolls_back_mid_append_then_retries_idempotently(
+    store_ctx,
+    monkeypatch,
+):
+    store = store_ctx["store"]
+    document, version, _intent, _source = _import_ready(store_ctx)
+    first, _ = provenance.record_span_attestation(
+        store,
+        document_id=document.id,
+        exact="Imported",
+        prefix="# ",
+        suffix="\n\nA",
+        attestation=_attestation(authorship="ai", review="not_reviewed"),
+        actor=HUMAN,
+        idempotency_key="batch-rollback-first-origin-0001",
+        expected_structured_head_sha256=version.structured_head_sha256,
+    )
+    second, _ = provenance.record_span_attestation(
+        store,
+        document_id=document.id,
+        exact="durable provenance",
+        prefix="A ",
+        suffix=" target.",
+        attestation=_attestation(authorship="mixed", review="unknown"),
+        actor=HUMAN,
+        idempotency_key="batch-rollback-second-origin-0001",
+        expected_structured_head_sha256=version.structured_head_sha256,
+    )
+    history_before = store.list_document_provenance_attestations(document.id)
+    original_record = provenance._record_attestation_locked
+    calls = 0
+
+    def fail_second_append(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("injected second append failure")
+        return original_record(*args, **kwargs)
+
+    monkeypatch.setattr(provenance, "_record_attestation_locked", fail_second_append)
+    with pytest.raises(RuntimeError, match="injected second append failure"):
+        provenance.record_human_reviews(
+            store,
+            document_id=document.id,
+            attestation_ids=[first.id, second.id],
+            actor=HUMAN,
+            idempotency_key="batch-rollback-command-0001",
+            expected_structured_head_sha256=version.structured_head_sha256,
+        )
+    assert store.list_document_provenance_attestations(document.id) == history_before
+
+    monkeypatch.setattr(provenance, "_record_attestation_locked", original_record)
+    reviewed = provenance.record_human_reviews(
+        store,
+        document_id=document.id,
+        attestation_ids=[first.id, second.id],
+        actor=HUMAN,
+        idempotency_key="batch-rollback-command-0001",
+        expected_structured_head_sha256=version.structured_head_sha256,
+    )
+    replay = provenance.record_human_reviews(
+        store,
+        document_id=document.id,
+        attestation_ids=[first.id, second.id],
+        actor=HUMAN,
+        idempotency_key="batch-rollback-command-0001",
+        expected_structured_head_sha256=version.structured_head_sha256,
+    )
+    assert replay == reviewed
+    assert [row.supersedes_id for row in reviewed] == [first.id, second.id]
+
+
+def test_human_review_batch_binds_key_to_exact_ordered_target_set(store_ctx):
+    store = store_ctx["store"]
+    document, version, _intent, _source = _import_ready(store_ctx)
+    first, _ = provenance.record_span_attestation(
+        store,
+        document_id=document.id,
+        exact="Imported",
+        prefix="# ",
+        suffix="\n\nA",
+        attestation=_attestation(authorship="ai", review="not_reviewed"),
+        actor=HUMAN,
+        idempotency_key="batch-binding-first-origin-0001",
+        expected_structured_head_sha256=version.structured_head_sha256,
+    )
+    second, _ = provenance.record_span_attestation(
+        store,
+        document_id=document.id,
+        exact="durable provenance",
+        prefix="A ",
+        suffix=" target.",
+        attestation=_attestation(authorship="ai", review="not_reviewed"),
+        actor=HUMAN,
+        idempotency_key="batch-binding-second-origin-0001",
+        expected_structured_head_sha256=version.structured_head_sha256,
+    )
+    provenance.record_human_reviews(
+        store,
+        document_id=document.id,
+        attestation_ids=[first.id, second.id],
+        actor=HUMAN,
+        idempotency_key="batch-binding-command-0001",
+        expected_structured_head_sha256=version.structured_head_sha256,
+    )
+    history_before = store.list_document_provenance_attestations(document.id)
+
+    for changed_targets in ([second.id, first.id], [first.id]):
+        with pytest.raises(provenance.ProvenanceReviewError) as conflict:
+            provenance.record_human_reviews(
+                store,
+                document_id=document.id,
+                attestation_ids=changed_targets,
+                actor=HUMAN,
+                idempotency_key="batch-binding-command-0001",
+                expected_structured_head_sha256=(
+                    version.structured_head_sha256
+                ),
+            )
+
+        assert conflict.value.code == "provenance_idempotency_conflict"
+        assert (
+            store.list_document_provenance_attestations(document.id)
+            == history_before
+        )
+
+
+def test_human_review_batch_binds_key_to_expected_structured_head(store_ctx):
+    store = store_ctx["store"]
+    document, version, _intent, _source = _import_ready(store_ctx)
+    original, _ = provenance.record_span_attestation(
+        store,
+        document_id=document.id,
+        exact="durable provenance",
+        prefix="A ",
+        suffix=" target.",
+        attestation=_attestation(authorship="ai", review="not_reviewed"),
+        actor=HUMAN,
+        idempotency_key="batch-head-binding-origin-0001",
+        expected_structured_head_sha256=version.structured_head_sha256,
+    )
+    provenance.record_human_reviews(
+        store,
+        document_id=document.id,
+        attestation_ids=[original.id],
+        actor=HUMAN,
+        idempotency_key="batch-head-binding-command-0001",
+        expected_structured_head_sha256=version.structured_head_sha256,
+    )
+    history_before = store.list_document_provenance_attestations(document.id)
+
+    with pytest.raises(provenance.ProvenanceReviewError) as conflict:
+        provenance.record_human_reviews(
+            store,
+            document_id=document.id,
+            attestation_ids=[original.id],
+            actor=HUMAN,
+            idempotency_key="batch-head-binding-command-0001",
+            expected_structured_head_sha256="0" * 64,
+        )
+
+    assert conflict.value.code == "provenance_idempotency_conflict"
+    assert store.list_document_provenance_attestations(document.id) == history_before
+
+
+@pytest.mark.parametrize("contamination", ["partial_slot", "unexpected_slot"])
+def test_human_review_batch_rejects_contaminated_slot_namespace(
+    store_ctx,
+    contamination,
+):
+    store = store_ctx["store"]
+    document, version, _intent, _source = _import_ready(store_ctx)
+    first, _ = provenance.record_span_attestation(
+        store,
+        document_id=document.id,
+        exact="Imported",
+        prefix="# ",
+        suffix="\n\nA",
+        attestation=_attestation(authorship="ai", review="not_reviewed"),
+        actor=HUMAN,
+        idempotency_key="batch-contamination-first-origin-0001",
+        expected_structured_head_sha256=version.structured_head_sha256,
+    )
+    second, _ = provenance.record_span_attestation(
+        store,
+        document_id=document.id,
+        exact="durable provenance",
+        prefix="A ",
+        suffix=" target.",
+        attestation=_attestation(authorship="ai", review="not_reviewed"),
+        actor=HUMAN,
+        idempotency_key="batch-contamination-second-origin-0001",
+        expected_structured_head_sha256=version.structured_head_sha256,
+    )
+    batch_key = "batch-contamination-command-0001"
+    batch_prefix = f"review-batch:{sha256_text(batch_key)}:"
+    request_digest = sha256_text(
+        canonical_json(
+            {
+                "attestation_ids": [first.id, second.id],
+                "expected_structured_head_sha256": (
+                    version.structured_head_sha256
+                ),
+            }
+        )
+    )[:32]
+    contaminating_key = (
+        f"{batch_prefix}{request_digest}:000"
+        if contamination == "partial_slot"
+        else f"{batch_prefix}unexpected"
+    )
+    provenance.record_human_review(
+        store,
+        document_id=document.id,
+        attestation_id=first.id,
+        actor=HUMAN,
+        idempotency_key=contaminating_key,
+        expected_structured_head_sha256=version.structured_head_sha256,
+    )
+    history_before = store.list_document_provenance_attestations(document.id)
+
+    with pytest.raises(provenance.ProvenanceReviewError) as conflict:
+        provenance.record_human_reviews(
+            store,
+            document_id=document.id,
+            attestation_ids=[first.id, second.id],
+            actor=HUMAN,
+            idempotency_key=batch_key,
+            expected_structured_head_sha256=version.structured_head_sha256,
+        )
+
+    assert conflict.value.code == "provenance_idempotency_conflict"
+    assert store.list_document_provenance_attestations(document.id) == history_before
 
 
 def test_human_review_of_proposal_acceptance_round_trips(

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from work_buddy.cowork.lifecycle_lock import document_lifecycle_lock
@@ -1576,6 +1576,18 @@ def record_human_review(
                     prior=prior,
                 )
 
+                prior_reviewers = (
+                    json.loads(prior.human_reviewers_json)
+                    if prior.review_status == "reviewed"
+                    else []
+                )
+                if reviewer in prior_reviewers:
+                    raise ProvenanceReviewError(
+                        "Review by this user is already recorded for this text.",
+                        code="provenance_review_already_recorded",
+                        status=409,
+                    )
+                reviewers = [*prior_reviewers, reviewer]
                 normalized = {
                     "authorship": {
                         "kind": prior.authorship_kind,
@@ -1585,7 +1597,7 @@ def record_human_review(
                     },
                     "human_review": {
                         "status": "reviewed",
-                        "reviewers": [reviewer],
+                        "reviewers": reviewers,
                     },
                 }
                 source = json.loads(prior.source_json)
@@ -1606,7 +1618,7 @@ def record_human_review(
                     authorship_kind=prior.authorship_kind,
                     human_contributors=normalized["authorship"]["contributors"],
                     review_status="reviewed",
-                    human_reviewers=[reviewer],
+                    human_reviewers=reviewers,
                     source_kind=prior.source_kind,
                     source=source,
                     basis_kind="user_attestation",
@@ -1664,15 +1676,14 @@ def record_human_review(
                     )
                 if (
                     prior.authorship_kind not in {"ai", "mixed"}
-                    or prior.review_status not in {"not_reviewed", "unknown"}
+                    or prior.review_status
+                    not in {"not_reviewed", "unknown", "reviewed"}
                 ):
                     raise ProvenanceReviewError(
-                        "Only unreviewed AI or mixed-authored content can be "
-                        "marked reviewed.",
+                        "Only AI or mixed-authored content can be marked reviewed.",
                         code="provenance_review_ineligible",
                         status=400,
                     )
-
                 all_rows = store._document_provenance_attestations_locked(
                     conn,
                     document_ref,
@@ -1729,6 +1740,320 @@ def record_human_review(
                 )
 
 
+def record_human_reviews(
+    store: TruthStore,
+    *,
+    document_id: str,
+    attestation_ids: Sequence[str],
+    actor: Actor,
+    idempotency_key: str,
+    expected_structured_head_sha256: str,
+    at: str | None = None,
+) -> list[DocumentProvenanceAttestationRecord]:
+    """Atomically append per-user review successors for effective targets."""
+
+    if actor.kind != "human" or not actor.ref:
+        raise InvariantViolation("provenance review requires a human actor")
+    document_ref = _valid_record_id(document_id, "document_id")
+    prior_ids = [
+        _valid_record_id(value, "attestation_id") for value in attestation_ids
+    ]
+    if not prior_ids:
+        raise InvariantViolation("attestation_ids must contain at least one target")
+    if len(prior_ids) > 100:
+        raise InvariantViolation("attestation_ids may contain at most 100 targets")
+    if len(set(prior_ids)) != len(prior_ids):
+        raise InvariantViolation("attestation_ids must not contain duplicates")
+    batch_key = _idempotency_key(idempotency_key)
+    batch_prefix = f"review-batch:{sha256_text(batch_key)}:"
+    expected_head = _valid_digest(
+        expected_structured_head_sha256,
+        "expected_structured_head_sha256",
+    )
+    # Keep the batch-key namespace stable so every prior use is discoverable,
+    # while binding its exact slots to the complete logical request.  The
+    # truncated request digest leaves the generated keys inside the public
+    # 128-character idempotency-key limit.
+    request_digest = sha256_text(
+        canonical_json(
+            {
+                "attestation_ids": prior_ids,
+                "expected_structured_head_sha256": expected_head,
+            }
+        )
+    )[:32]
+    expected_slot_keys = [
+        f"{batch_prefix}{request_digest}:{index:03d}"
+        for index in range(len(prior_ids))
+    ]
+    reviewer = actor_binding(actor)
+
+    with document_lifecycle_lock(store.store_id, document_ref):
+        with ydoc_store.document_lock(store, document_ref):
+            with store.write_transaction() as conn:
+                document = store._get_document_locked(conn, document_ref)
+                if document is None:
+                    raise ProvenanceReviewError(
+                        f"document does not exist: {document_ref}",
+                        code="provenance_review_target_mismatch",
+                        status=404,
+                    )
+                all_rows = store._document_provenance_attestations_locked(
+                    conn,
+                    document_ref,
+                )
+                existing_batch_rows = conn.execute(
+                    "SELECT id, idempotency_key "
+                    "FROM document_provenance_attestations "
+                    "WHERE document_id = ? AND attested_by_kind = ? "
+                    "AND ifnull(attested_by_ref, '') = ? "
+                    "AND idempotency_key GLOB ?",
+                    (
+                        document_ref,
+                        actor.kind,
+                        actor.ref or "",
+                        f"{batch_prefix}*",
+                    ),
+                ).fetchall()
+                existing_slot_keys = {
+                    row["idempotency_key"] for row in existing_batch_rows
+                }
+                if existing_batch_rows and existing_slot_keys != set(
+                    expected_slot_keys
+                ):
+                    raise ProvenanceReviewError(
+                        "The idempotency key was already used for a different "
+                        "provenance review batch.",
+                        code="provenance_idempotency_conflict",
+                        details={
+                            "existing_attestation_ids": [
+                                row["id"] for row in existing_batch_rows
+                            ]
+                        },
+                    )
+                prepared: list[dict[str, Any]] = []
+                for index, prior_id in enumerate(prior_ids):
+                    prior = store._get_document_provenance_attestation_locked(
+                        conn,
+                        prior_id,
+                    )
+                    if prior is None:
+                        raise ProvenanceReviewError(
+                            "That provenance attestation no longer exists.",
+                            code="provenance_attestation_not_found",
+                            status=404,
+                        )
+                    if prior.document_id != document_ref:
+                        raise ProvenanceReviewError(
+                            "The attestation does not belong to this document.",
+                            code="provenance_review_target_mismatch",
+                        )
+                    _validate_review_target_locked(
+                        store,
+                        conn,
+                        document_id=document_ref,
+                        prior=prior,
+                    )
+                    prior_reviewers = (
+                        json.loads(prior.human_reviewers_json)
+                        if prior.review_status == "reviewed"
+                        else []
+                    )
+                    if reviewer in prior_reviewers:
+                        raise ProvenanceReviewError(
+                            "Review by this user is already recorded for this text.",
+                            code="provenance_review_already_recorded",
+                            status=409,
+                        )
+                    reviewers = [*prior_reviewers, reviewer]
+                    normalized = {
+                        "authorship": {
+                            "kind": prior.authorship_kind,
+                            "contributors": json.loads(
+                                prior.human_contributors_json
+                            ),
+                        },
+                        "human_review": {
+                            "status": "reviewed",
+                            "reviewers": reviewers,
+                        },
+                    }
+                    source = json.loads(prior.source_json)
+                    # The durable slot binds this batch key to the exact target
+                    # ordering and expected structured head. Reusing a key
+                    # with any changed logical request collides before append.
+                    target_key = expected_slot_keys[index]
+                    identifier = _attestation_id(
+                        store_id=store.store_id,
+                        document_id=document_ref,
+                        actor_ref=actor.ref,
+                        idempotency_key=target_key,
+                    )
+                    expected_canonical = attestation_canonical_sha256(
+                        document_id=document_ref,
+                        target_kind=prior.target_kind,
+                        document_version_id=prior.document_version_id,
+                        document_span_id=prior.document_span_id,
+                        target_structured_head_sha256=(
+                            prior.target_structured_head_sha256
+                        ),
+                        authorship_kind=prior.authorship_kind,
+                        human_contributors=normalized["authorship"][
+                            "contributors"
+                        ],
+                        review_status="reviewed",
+                        human_reviewers=reviewers,
+                        source_kind=prior.source_kind,
+                        source=source,
+                        basis_kind="user_attestation",
+                        basis_ref=prior.id,
+                        supersedes_id=prior.id,
+                        attested_by_kind=actor.kind,
+                        attested_by_ref=actor.ref,
+                        attested_by_meta=(
+                            dict(actor.meta) if actor.meta else None
+                        ),
+                    )
+                    existing = store._get_document_provenance_attestation_locked(
+                        conn,
+                        identifier,
+                    )
+                    if existing is not None:
+                        if existing.canonical_sha256 != expected_canonical:
+                            raise ProvenanceReviewError(
+                                "The idempotency key was already used for a different "
+                                "provenance review batch.",
+                                code="provenance_idempotency_conflict",
+                                details={
+                                    "existing_attestation_ids": [existing.id]
+                                },
+                            )
+                        prepared.append({"existing": existing})
+                        continue
+                    prepared.append(
+                        {
+                            "prior": prior,
+                            "prior_reviewers": prior_reviewers,
+                            "normalized": normalized,
+                            "source": source,
+                            "target_key": target_key,
+                        }
+                    )
+
+                pending = [item for item in prepared if "existing" not in item]
+                if pending:
+                    if (
+                        documents._lifecycle_locked(store, conn, document.id)
+                        != "active"
+                    ):
+                        raise ProvenanceReviewError(
+                            "provenance cannot be reviewed on a retired document",
+                            code="provenance_review_state_conflict",
+                        )
+                    if not document_surface_allowed(store, document):
+                        raise ProvenanceReviewError(
+                            "This document is not available in Co-work for this folder",
+                            code="provenance_review_forbidden",
+                            status=403,
+                        )
+                    if document.ydoc_snapshot_sha256 is None:
+                        raise ProvenanceReviewError(
+                            "document has no frozen structured baseline",
+                            code="provenance_review_state_conflict",
+                        )
+                    current_head = ydoc_store.current_structured_head(
+                        store,
+                        document_id=document.id,
+                        snapshot_sha256=document.ydoc_snapshot_sha256,
+                    )
+                    if current_head != expected_head:
+                        raise ProvenanceReviewError(
+                            "The provenance target changed before review was recorded.",
+                            code="provenance_target_changed",
+                            retryable=True,
+                        )
+
+                for item in pending:
+                    prior = item["prior"]
+                    if prior.target_structured_head_sha256 != expected_head:
+                        raise ProvenanceReviewError(
+                            "The provenance target changed before review was recorded.",
+                            code="provenance_target_changed",
+                            retryable=True,
+                        )
+                    if prior.authorship_kind not in {"ai", "mixed"} or (
+                        prior.review_status
+                        not in {"not_reviewed", "unknown", "reviewed"}
+                    ):
+                        raise ProvenanceReviewError(
+                            "Only AI or mixed-authored content can be marked reviewed.",
+                            code="provenance_review_ineligible",
+                            status=400,
+                        )
+                    same_target = [
+                        row
+                        for row in all_rows
+                        if row.target_kind == prior.target_kind
+                        and row.document_version_id == prior.document_version_id
+                        and row.document_span_id == prior.document_span_id
+                    ]
+                    if any(
+                        row.target_structured_head_sha256
+                        != prior.target_structured_head_sha256
+                        for row in same_target
+                    ):
+                        raise ProvenanceReviewError(
+                            "The target has incompatible frozen provenance records.",
+                            code="provenance_review_conflict",
+                        )
+                    superseded = {
+                        row.supersedes_id
+                        for row in same_target
+                        if row.supersedes_id is not None
+                    }
+                    leaves = [
+                        row.id for row in same_target if row.id not in superseded
+                    ]
+                    if leaves != [prior.id]:
+                        raise ProvenanceReviewError(
+                            "The attestation is no longer the sole effective record "
+                            "for this target.",
+                            code="provenance_review_conflict",
+                            details={"effective_attestation_ids": leaves},
+                        )
+
+                records: list[DocumentProvenanceAttestationRecord] = []
+                for item in prepared:
+                    existing = item.get("existing")
+                    if existing is not None:
+                        records.append(existing)
+                        continue
+                    prior = item["prior"]
+                    records.append(
+                        _record_attestation_locked(
+                            store,
+                            conn,
+                            document_id=document_ref,
+                            attestation={},
+                            normalized_attestation=item["normalized"],
+                            source=item["source"],
+                            actor=actor,
+                            idempotency_key=item["target_key"],
+                            target_kind=prior.target_kind,
+                            document_version_id=prior.document_version_id,
+                            document_span_id=prior.document_span_id,
+                            target_structured_head_sha256=(
+                                prior.target_structured_head_sha256
+                            ),
+                            basis_kind="user_attestation",
+                            basis_ref=prior.id,
+                            supersedes_id=prior.id,
+                            at=at,
+                        )
+                    )
+                return records
+
+
 __all__ = [
     "ATTESTATION_SCHEMA",
     "AUTOMATIC_SHORT_TEXT_MAX_CHARS",
@@ -1747,6 +2072,7 @@ __all__ = [
     "project_attestations",
     "record_document_attestation",
     "record_human_review",
+    "record_human_reviews",
     "record_proposal_acceptance_attestations_locked",
     "record_span_attestation",
 ]

@@ -36,15 +36,20 @@ interface SelectionClassification {
   readonly targetIds: readonly string[];
 }
 
+let provenanceSelectionRequestSequence = 0;
+
+const nextProvenanceSelectionRequestId = (): number => {
+  provenanceSelectionRequestSequence += 1;
+  return provenanceSelectionRequestSequence;
+};
+
 export interface CoworkProvenanceSelectionAffordanceProps {
   readonly editor: Editor;
   /** Only the active Provenance lens may replace the general feedback action. */
   readonly active: boolean;
   readonly provider: ProvenanceProvider;
-  readonly currentUserIdentity: CoworkProvenanceActorIdentity;
+  readonly currentUserIdentity?: CoworkProvenanceActorIdentity;
   readonly readOnly?: boolean;
-  /** Authoritative editor/outbox state; survives mounting after the edit. */
-  readonly inputProvenancePending?: boolean;
   /**
    * Persists a user-confirmed attestation for a frozen uncovered selection.
    * The caller owns persistence settlement, target/head checks, and refresh.
@@ -63,7 +68,7 @@ export interface CoworkProvenanceSelectionAffordanceProps {
 
 const actionLabel = (intent: ProvenanceSelectionAction["intent"]): string => {
   if (intent === "record") return "Record provenance";
-  if (intent === "review") return "Review provenance";
+  if (intent === "review") return "Mark as reviewed";
   if (intent === "view") return "View provenance";
   return "Inspect provenance";
 };
@@ -73,7 +78,7 @@ const actionTitle = (intent: ProvenanceSelectionAction["intent"]): string => {
     return "Record who wrote the selected text and whether it was reviewed; its earlier source remains untracked.";
   }
   if (intent === "review") {
-    return "Open Provenance to confirm and record human review for this passage.";
+    return "Open Provenance to record your review for the eligible selected passages.";
   }
   if (intent === "view") {
     return "Open the provenance details for this passage.";
@@ -112,6 +117,27 @@ const targetIsHealthy = (
   (target.target.kind === "document_version" || rangeState === "unique") &&
   effectiveRecord(target) !== null;
 
+const selectionCoversDocumentText = (
+  doc: ProseMirrorNode,
+  from: number,
+  to: number,
+): boolean => {
+  let firstTextPosition: number | null = null;
+  let lastTextPosition: number | null = null;
+  doc.descendants((node, position) => {
+    if (!node.isText) return true;
+    firstTextPosition ??= position;
+    lastTextPosition = position + node.nodeSize;
+    return false;
+  });
+  return (
+    firstTextPosition !== null &&
+    lastTextPosition !== null &&
+    from <= firstTextPosition &&
+    to >= lastTextPosition
+  );
+};
+
 /**
  * Classify a selection against the same authoritative projection the panel
  * consumes. Explicit span targets take precedence over a document fallback.
@@ -122,6 +148,7 @@ export const classifyCoworkProvenanceSelection = ({
   from,
   to,
   readOnly,
+  currentUserIdentity,
   locallyDirty = false,
 }: {
   readonly data: ProvenanceData;
@@ -129,6 +156,7 @@ export const classifyCoworkProvenanceSelection = ({
   readonly from: number;
   readonly to: number;
   readonly readOnly: boolean;
+  readonly currentUserIdentity?: CoworkProvenanceActorIdentity;
   readonly locallyDirty?: boolean;
 }): SelectionClassification => {
   const explicit = data.spans.flatMap((target) => {
@@ -147,8 +175,10 @@ export const classifyCoworkProvenanceSelection = ({
         state: "unique" as const,
         completelyCoversSelection:
           resolution.from <= from && resolution.to >= to,
-        selectionExactlyMatchesTarget:
-          resolution.from === from && resolution.to === to,
+        selectionCompletelyCoversTarget:
+          from <= resolution.from && to >= resolution.to,
+        from: resolution.from,
+        to: resolution.to,
       },
     ];
   });
@@ -163,7 +193,13 @@ export const classifyCoworkProvenanceSelection = ({
               target: data.documentDefault,
               state: "document" as const,
               completelyCoversSelection: true,
-              selectionExactlyMatchesTarget: false,
+              selectionCompletelyCoversTarget: selectionCoversDocumentText(
+                doc,
+                from,
+                to,
+              ),
+              from: null,
+              to: null,
             },
           ];
   const targetIds = [
@@ -172,30 +208,74 @@ export const classifyCoworkProvenanceSelection = ({
 
   if (matches.length === 0) {
     return {
-      intent: readOnly || locallyDirty ? "inspect" : "record",
+      intent:
+        readOnly || locallyDirty || currentUserIdentity === undefined
+          ? "inspect"
+          : "record",
       targetIds: [],
     };
   }
+  const overlappingTargets = matches.some(
+    (candidate, index) =>
+      candidate.from !== null &&
+      candidate.to !== null &&
+      matches.slice(index + 1).some(
+        (peer) =>
+          peer.from !== null &&
+          peer.to !== null &&
+          candidate.from! < peer.to &&
+          candidate.to! > peer.from,
+      ),
+  );
   if (
     locallyDirty ||
-    matches.length !== 1 ||
-    !matches[0]!.completelyCoversSelection ||
-    !targetIsHealthy(matches[0]!.target, matches[0]!.state)
+    overlappingTargets ||
+    matches.some(
+      (match) => !targetIsHealthy(match.target, match.state),
+    )
   ) {
     return { intent: "inspect", targetIds };
   }
 
-  const target = matches[0]!.target;
-  const record = effectiveRecord(target)!;
-  const canOfferReview =
+  const needsCurrentUserReview = (target: ProvenanceTarget): boolean => {
+    if (currentUserIdentity === undefined) return false;
+    const record = effectiveRecord(target);
+    if (
+      record === null ||
+      !["eligible", "already_reviewed"].includes(target.reviewEligibility) ||
+      (record.authorship.kind !== "ai" && record.authorship.kind !== "mixed")
+    ) {
+      return false;
+    }
+    return !record.humanReview.reviewers.some(
+      (reviewer) =>
+        reviewer.ref === currentUserIdentity.ref &&
+        reviewer.identityStatus === currentUserIdentity.identity_status,
+    );
+  };
+  const reviewNeeded = matches.filter(({ target }) =>
+    needsCurrentUserReview(target),
+  );
+  const reviewTargets = reviewNeeded.filter(
+    ({ selectionCompletelyCoversTarget }) => selectionCompletelyCoversTarget,
+  );
+  if (
     !readOnly &&
-    target.reviewEligibility === "eligible" &&
-    matches[0]!.selectionExactlyMatchesTarget &&
-    (record.authorship.kind === "ai" || record.authorship.kind === "mixed") &&
-    (record.humanReview.status === "not_reviewed" ||
-      record.humanReview.status === "unknown");
+    reviewTargets.length > 0
+  ) {
+    return {
+      intent: "review",
+      targetIds: reviewTargets.map(({ target }) => target.projectionId),
+    };
+  }
+  if (
+    matches.length !== 1 ||
+    !matches[0]!.completelyCoversSelection
+  ) {
+    return { intent: "inspect", targetIds };
+  }
   return {
-    intent: canOfferReview ? "review" : "view",
+    intent: "view",
     targetIds,
   };
 };
@@ -206,14 +286,12 @@ export function CoworkProvenanceSelectionAffordance({
   provider,
   currentUserIdentity,
   readOnly = false,
-  inputProvenancePending = false,
   onRecord,
   onAction,
 }: CoworkProvenanceSelectionAffordanceProps) {
   const [selection, setSelection] = useState<EditorSelection | null>(null);
   const [load, setLoad] = useState<ProvenanceLoad | null>(null);
   const requestSequence = useRef(0);
-  const actionSequence = useRef(0);
   const [locallyDirty, setLocallyDirty] = useState(false);
   const [recording, setRecording] = useState<{
     readonly action: ProvenanceSelectionAction;
@@ -301,12 +379,13 @@ export function CoworkProvenanceSelectionAffordance({
       from: selection.from,
       to: selection.to,
       readOnly,
-      locallyDirty: locallyDirty || inputProvenancePending,
+      currentUserIdentity,
+      locallyDirty,
     });
   }, [
     anchor,
+    currentUserIdentity,
     editor,
-    inputProvenancePending,
     load,
     locallyDirty,
     readOnly,
@@ -339,23 +418,37 @@ export function CoworkProvenanceSelectionAffordance({
             type="button"
             className="wb-cowork-provenance-selection__trigger"
             title={
-              inputProvenancePending
-                ? "Co-work is recording provenance for recent typing."
-                : actionTitle(classification.intent)
+              actionTitle(classification.intent)
             }
-            disabled={inputProvenancePending}
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => {
-              actionSequence.current += 1;
               const action: ProvenanceSelectionAction = {
-                requestId: actionSequence.current,
+                // The panel survives lens changes while this affordance does
+                // not. A module-lifetime sequence prevents a remount from
+                // reusing a completed action's identity.
+                requestId: nextProvenanceSelectionRequestId(),
                 intent: classification.intent,
                 anchor,
                 from: selection.from,
                 to: selection.to,
                 targetIds: classification.targetIds,
+                coversWholeDocument: selectionCoversDocumentText(
+                  editor.state.doc,
+                  selection.from,
+                  selection.to,
+                ),
+                ...(classification.intent === "review" &&
+                currentUserIdentity !== undefined
+                  ? {
+                      reviewer: {
+                        ref: currentUserIdentity.ref,
+                        identityStatus: currentUserIdentity.identity_status,
+                      },
+                    }
+                  : {}),
               };
               if (action.intent === "record") {
+                if (currentUserIdentity === undefined) return;
                 setRecordError(null);
                 setRecording({
                   action,
@@ -367,11 +460,11 @@ export function CoworkProvenanceSelectionAffordance({
               onAction({ ...action, intent: action.intent });
             }}
           >
-            {inputProvenancePending ? "Recording recent typing…" : label}
+            {label}
           </button>
         </div>
       )}
-      {recording === null ? null : (
+      {recording === null || currentUserIdentity === undefined ? null : (
         <CoworkProvenanceDeterminationDialog
           value={recording.value}
           currentUserIdentity={currentUserIdentity}

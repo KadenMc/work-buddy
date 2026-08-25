@@ -1,7 +1,11 @@
 import type { CoworkDocClient } from "../../bridge/HttpCoworkDocClient";
 import type { R2DocPayload } from "../../bridge/types";
 import { mapProvenanceView } from "./provenanceMapping";
-import type { ProvenanceLoad, ProvenanceProvider } from "./contracts";
+import type {
+  ProvenanceLoad,
+  ProvenanceProvider,
+  ProvenanceReviewerBinding,
+} from "./contracts";
 
 export interface ProvenanceSnapshotSource {
   loadPayload(): Promise<R2DocPayload>;
@@ -53,29 +57,56 @@ export class LiveProvenanceProvider implements ProvenanceProvider {
   }
 
   async markReviewed(
-    attestationId: string,
+    attestationIds: readonly string[],
     expectedStructuredHeadSha256: string,
+    expectedReviewer?: ProvenanceReviewerBinding,
   ): Promise<void> {
-    const mutation = this.#client.markProvenanceReviewed;
-    if (mutation === undefined) throw new Error("Provenance review is unavailable.");
-    const fingerprint = `${attestationId}\u0000${expectedStructuredHeadSha256}`;
+    if (attestationIds.length === 0) return;
+    const batchMutation =
+      expectedReviewer === undefined
+        ? undefined
+        : this.#client.markProvenanceSelectionReviewed;
+    const singleMutation = this.#client.markProvenanceReviewed;
+    if (batchMutation === undefined && (attestationIds.length !== 1 || singleMutation === undefined)) {
+      throw new Error("Provenance review is unavailable.");
+    }
+    const fingerprint = `${JSON.stringify(attestationIds)}\u0000${expectedStructuredHeadSha256}\u0000${JSON.stringify(expectedReviewer ?? null)}`;
     const idempotencyKey =
       this.#pendingKeys.get(fingerprint) ??
       `provenance-review-${globalThis.crypto.randomUUID()}`;
     this.#pendingKeys.set(fingerprint, idempotencyKey);
-    await mutation.call(
-      this.#client,
-      attestationId,
-      expectedStructuredHeadSha256,
-      idempotencyKey,
-    );
+    if (batchMutation !== undefined) {
+      await batchMutation.call(
+        this.#client,
+        attestationIds,
+        expectedStructuredHeadSha256,
+        idempotencyKey,
+        expectedReviewer,
+      );
+    } else {
+      await singleMutation!.call(
+        this.#client,
+        attestationIds[0]!,
+        expectedStructuredHeadSha256,
+        idempotencyKey,
+        expectedReviewer,
+      );
+    }
     const fresh = this.#map(await this.#source.refreshPayload());
     if (
       fresh.state === "ready" &&
-      fresh.data.history.some(
-        (record) =>
-          record.supersedesId === attestationId &&
-          record.humanReview.status === "reviewed",
+      attestationIds.every((attestationId) =>
+        fresh.data.history.some(
+          (record) =>
+            record.supersedesId === attestationId &&
+            record.humanReview.status === "reviewed" &&
+            (expectedReviewer === undefined ||
+              record.humanReview.reviewers.some(
+                (reviewer) =>
+                  reviewer.ref === expectedReviewer.ref &&
+                  reviewer.identityStatus === expectedReviewer.identityStatus,
+              )),
+        ),
       )
     ) {
       this.#pendingKeys.delete(fingerprint);

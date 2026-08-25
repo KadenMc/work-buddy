@@ -115,6 +115,12 @@ export interface CoworkEditorReadyContext {
   readonly dom: HTMLElement;
 }
 
+export type CoworkProvenanceIdentityState =
+  | "disabled"
+  | "loading"
+  | "ready"
+  | "error";
+
 export interface CoworkBridgeEditorProps {
   /** The canonical collaborative document. Open proposals never mutate it. */
   readonly document: Y.Doc;
@@ -155,6 +161,10 @@ export interface CoworkBridgeEditorProps {
   ) => void;
   /** Pending input attribution remains true through authoritative refresh. */
   readonly onInputProvenancePendingChange?: (pending: boolean) => void;
+  /** Keeps provenance mutation controls aligned with the editor's actor lookup. */
+  readonly onProvenanceIdentityStateChange?: (
+    state: CoworkProvenanceIdentityState,
+  ) => void;
   /**
    * Persists authorship and human-review provenance for the exact span inserted
    * by a paste. Omitted in non-registered/demo editors that have no durable
@@ -208,6 +218,7 @@ export interface CoworkBridgeEditorProps {
 interface MountedProps extends CoworkBridgeEditorProps {
   readonly persistence: CoworkYdocPersistence;
   readonly resolvedProvenanceActor?: CoworkProvenanceActorIdentity;
+  readonly allowActorlessProvenanceInspection: boolean;
   readonly resolvedPasteProvenanceOutbox?: CoworkPasteProvenanceOutbox;
   readonly onProvenanceActorChanged?: () => void;
   readonly seedWhenEmpty: boolean;
@@ -279,6 +290,7 @@ function MountedBridgeEditor({
   onInputProvenancePendingChange,
   onRecordPasteProvenance,
   resolvedProvenanceActor,
+  allowActorlessProvenanceInspection,
   resolvedPasteProvenanceOutbox,
   onProvenanceActorChanged,
   readOnly = false,
@@ -360,6 +372,8 @@ function MountedBridgeEditor({
   const [volatilePasteCaptures, setVolatilePasteCaptures] = useState<
     readonly CoworkPasteProvenanceCapture[]
   >([]);
+  const [stagedDirectEntryDecorations, setStagedDirectEntryDecorations] =
+    useState<readonly CoworkPendingProvenanceDecoration[]>([]);
   const pendingDirectEntryDecorations = useMemo(() => {
     const pending = new Map<string, CoworkPendingProvenanceDecoration>();
     for (const capture of [...pasteEntries, ...volatilePasteCaptures]) {
@@ -369,13 +383,21 @@ function MountedBridgeEditor({
         quoteAnchor: capture.anchor,
       });
     }
+    // beforeTransaction observes the edit before the async outbox mutation can
+    // publish a durable/volatile capture. Keep that synchronous staging gap in
+    // React state so both the editor decoration and host pending signal settle
+    // from one source of truth.
+    for (const decoration of stagedDirectEntryDecorations) {
+      pending.set(decoration.captureId, decoration);
+    }
     return [...pending.values()];
-  }, [pasteEntries, volatilePasteCaptures]);
+  }, [pasteEntries, stagedDirectEntryDecorations, volatilePasteCaptures]);
   const pendingDirectEntryDecorationsRef = useRef(
     pendingDirectEntryDecorations,
   );
   pendingDirectEntryDecorationsRef.current = pendingDirectEntryDecorations;
   const inputProvenancePending =
+    stagedDirectEntryDecorations.length > 0 ||
     pasteEntries.some(
       (entry) =>
         entry.sourceKind === "direct_entry" ||
@@ -403,6 +425,24 @@ function MountedBridgeEditor({
   onReadyRef.current = onReady;
   onTeardownRef.current = onTeardown;
   pasteRecorderRef.current = onRecordPasteProvenance;
+
+  useEffect(() => {
+    const retainedKeys = new Set(
+      [...pasteEntries, ...volatilePasteCaptures]
+        .filter((capture) => capture.sourceKind === "direct_entry")
+        .map((capture) => capture.idempotencyKey),
+    );
+    for (const burst of directEntryClosingBurstsRef.current.values()) {
+      retainedKeys.add(burst.idempotencyKey);
+    }
+    if (directEntryBurstRef.current !== null) {
+      retainedKeys.add(directEntryBurstRef.current.idempotencyKey);
+    }
+    setStagedDirectEntryDecorations((current) => {
+      const next = current.filter((item) => retainedKeys.has(item.captureId));
+      return next.length === current.length ? current : next;
+    });
+  }, [pasteEntries, volatilePasteCaptures]);
 
   useEffect(() => {
     onInputProvenancePendingChange?.(inputProvenancePending);
@@ -1379,6 +1419,7 @@ function MountedBridgeEditor({
         // state, so changing this transaction's metadata is too late. A
         // microtask dispatch lands before the browser can paint the edited
         // frame and avoids a re-entrant EditorView transaction.
+        setStagedDirectEntryDecorations(staged);
         queueMicrotask(() => {
           if (
             pasteEditorRef.current === context.editor &&
@@ -1387,14 +1428,10 @@ function MountedBridgeEditor({
             setCoworkPendingProvenance(context.editor, staged);
           }
         });
-        if (staged.length > 0) {
-          onInputProvenancePendingChange?.(true);
-        }
       }
     },
     [
       directCaptureForBurst,
-      onInputProvenancePendingChange,
       stageDirectEntryProvenanceBeforeTransaction,
       stagePasteProvenanceBeforeTransaction,
     ],
@@ -1689,6 +1726,66 @@ function MountedBridgeEditor({
     resolvedPasteProvenanceOutbox,
   ]);
 
+  useEffect(() => {
+    if (
+      provenanceProvider === undefined ||
+      resolvedPasteProvenanceOutbox === undefined
+    ) {
+      return;
+    }
+    let active = true;
+    let retryingPublishedSnapshot = false;
+    const retryFrozenDirectEntries = (): void => {
+      // A recorder attempt forces its own provider refresh. Ignore that
+      // publication while the immutable request is still in flight, otherwise
+      // a missing projection could recursively replay itself forever.
+      if (
+        !active ||
+        retryingPublishedSnapshot ||
+        pasteAttemptsRef.current.size > 0
+      ) {
+        return;
+      }
+      retryingPublishedSnapshot = true;
+      void resolvedPasteProvenanceOutbox
+        .list()
+        .then(async (entries) => {
+          if (!active) return;
+          for (const entry of entries) {
+            if (
+              entry.sourceKind !== "direct_entry" ||
+              entry.status !== "retryable_failure" ||
+              entry.frozenRequest === undefined
+            ) {
+              continue;
+            }
+            // attemptPasteProvenance replays frozenRequest byte-for-byte. A
+            // server that already committed it returns the same receipt; the
+            // now-published authoritative history then permits outbox removal.
+            await attemptPasteProvenance(entry.id);
+            if (!active) return;
+          }
+        })
+        .catch(() => {
+          if (active) setOutboxError(outboxPasteProvenanceError());
+        })
+        .finally(() => {
+          retryingPublishedSnapshot = false;
+        });
+    };
+    const unsubscribe = provenanceProvider.subscribe(
+      retryFrozenDirectEntries,
+    );
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [
+    attemptPasteProvenance,
+    provenanceProvider,
+    resolvedPasteProvenanceOutbox,
+  ]);
+
   // Catalog refreshes can revoke editing without changing the keyed document session.
   // Update the actual ProseMirror view during layout so no writable frame is painted.
   useLayoutEffect(() => {
@@ -1760,12 +1857,92 @@ function MountedBridgeEditor({
       }
     }
     setVolatilePasteCaptures(failed);
-    const entries = await refreshPasteEntries();
+    let entries = await refreshPasteEntries();
     if (failed.length > 0 || entries === null) {
       setOutboxError(outboxPasteProvenanceError());
       return;
     }
-    setOutboxError(null);
+    let restoredOpenBurst = false;
+    const recoveredCapturingKeys = new Set<string>();
+    const currentEditor = pasteEditorRef.current;
+    if (currentEditor !== null) {
+      for (const entry of entries) {
+        if (
+          entry.sourceKind !== "direct_entry" ||
+          entry.status !== "capturing"
+        ) {
+          continue;
+        }
+        recoveredCapturingKeys.add(entry.idempotencyKey);
+        const resolution = resolveCoworkPasteAnchor(
+          currentEditor.state.doc,
+          entry.anchor,
+        );
+        if (resolution.kind !== "unique") continue;
+        const alreadyTracked =
+          directEntryClosingBurstsRef.current.has(entry.idempotencyKey) ||
+          directEntryBurstRef.current?.idempotencyKey === entry.idempotencyKey;
+        if (!alreadyTracked) {
+          directEntryClosingBurstsRef.current.set(entry.idempotencyKey, {
+            idempotencyKey: entry.idempotencyKey,
+            from: resolution.from,
+            to: resolution.to,
+            capturedAt: entry.capturedAt,
+            determination: entry.determination,
+            ...(entry.capturedActor === undefined
+              ? {}
+              : { capturedActor: entry.capturedActor }),
+          });
+        }
+        restoredOpenBurst = true;
+      }
+    }
+    if (restoredOpenBurst) {
+      // A volatile direct-entry capture failed before it reached the durable
+      // outbox. Rehydrating it as `capturing` is only half of Retry: the
+      // original blur may already have closed the in-memory burst, so finish
+      // the recovered row explicitly instead of waiting for another gesture.
+      await finalizeDirectEntryBurstRef.current();
+      entries = await refreshPasteEntries();
+      if (entries === null) {
+        setOutboxError(outboxPasteProvenanceError());
+        return;
+      }
+      if (
+        entries.some(
+          (entry) =>
+            entry.status === "capturing" &&
+            recoveredCapturingKeys.has(entry.idempotencyKey),
+        )
+      ) {
+        // Retry can blur the editor while another finalizer is already in
+        // flight. That older pass may have snapshotted its rows before this
+        // recovery was rehydrated, so drain the newly queued burst once the
+        // first promise releases its single-flight lock.
+        await finalizeDirectEntryBurstRef.current();
+        entries = await refreshPasteEntries();
+        if (entries === null) {
+          setOutboxError(outboxPasteProvenanceError());
+          return;
+        }
+      }
+    }
+    const hasStuckRecoveredCapture =
+      entries.some(
+        (entry) =>
+          entry.sourceKind === "direct_entry" &&
+          entry.status === "capturing" &&
+          (recoveredCapturingKeys.size === 0 ||
+            recoveredCapturingKeys.has(entry.idempotencyKey)),
+      );
+    if (hasStuckRecoveredCapture) {
+      // A non-unique anchor, unavailable actor, or failed finalizer must remain
+      // visibly retryable. Never clear the only recovery affordance while a
+      // durable row is still open.
+      setOutboxError(outboxPasteProvenanceError());
+    } else {
+      setOutboxError(null);
+    }
     for (const entry of entries) {
       if (
         entry.sourceKind === "direct_entry" &&
@@ -1785,6 +1962,12 @@ function MountedBridgeEditor({
       if (entry.status === "ready" || entry.status === "retryable_failure") {
         await attemptPasteProvenance(entry.id);
       }
+    }
+    if (hasStuckRecoveredCapture) {
+      // Successful delivery of an independent row clears transient errors in
+      // attemptPasteProvenance. Restore this durable recovery signal until the
+      // still-open row itself can be finalized.
+      setOutboxError(outboxPasteProvenanceError());
     }
   }, [
     attemptPasteProvenance,
@@ -1847,25 +2030,50 @@ function MountedBridgeEditor({
       }
 
       if (entry === undefined) {
-        if (
-          entries.some(
-            (candidate) =>
+        const currentEditor = pasteEditorRef.current;
+        const selected =
+          currentEditor === null
+            ? { kind: "absent" as const }
+            : resolveCoworkPasteAnchor(currentEditor.state.doc, anchor);
+        const overlapsPendingCapture =
+          selected.kind === "unique" &&
+          currentEditor !== null &&
+          [
+            ...entries.flatMap((candidate) =>
               candidate.sourceKind === "direct_entry" ||
               (candidate.sourceKind === "legacy" &&
-                candidate.status !== "awaiting_determination"),
-          )
-        ) {
+                candidate.status !== "awaiting_determination")
+                ? [candidate.anchor]
+                : [],
+            ),
+            ...volatilePasteCaptures.flatMap((candidate) =>
+              candidate.sourceKind === "direct_entry" ||
+              (candidate.sourceKind === "legacy" &&
+                candidate.status !== "awaiting_determination")
+                ? [candidate.anchor]
+                : [],
+            ),
+            ...stagedDirectEntryDecorations.map(
+              (candidate) => candidate.quoteAnchor,
+            ),
+          ].some((pendingAnchor) => {
+            const pending = resolveCoworkPasteAnchor(
+              currentEditor.state.doc,
+              pendingAnchor,
+            );
+            return (
+              pending.kind === "unique" &&
+              pending.from < selected.to &&
+              pending.to > selected.from
+            );
+          });
+        if (overlapsPendingCapture) {
           throw new Error(
-            "Recording recent typing. Try again when provenance finishes refreshing.",
+            "Provenance delivery is already pending for this selection. You can keep working while Co-work confirms it.",
           );
         }
         const refreshed = await provenanceProvider?.refresh();
-        const currentEditor = pasteEditorRef.current;
         if (refreshed?.state === "ready" && currentEditor !== null) {
-          const selected = resolveCoworkPasteAnchor(
-            currentEditor.state.doc,
-            anchor,
-          );
           const overlapsRecordedTarget =
             selected.kind === "unique" &&
             (refreshed.data.documentDefault?.target.currentness === "current" ||
@@ -1949,8 +2157,18 @@ function MountedBridgeEditor({
       refreshPasteEntries,
       resolvedPasteProvenanceOutbox,
       resolvedProvenanceActor,
+      stagedDirectEntryDecorations,
+      volatilePasteCaptures,
     ],
   );
+
+  const provenanceSelectionAffordanceActive =
+    activeLens === "provenance" &&
+    (provenanceSelectionActionsActive ?? true) &&
+    provenanceProvider !== undefined &&
+    (resolvedProvenanceActor !== undefined ||
+      allowActorlessProvenanceInspection) &&
+    onProvenanceSelectionAction !== undefined;
 
   return (
     <>
@@ -2012,7 +2230,7 @@ function MountedBridgeEditor({
         </InlineAlert>
       ) : null}
       {editor !== null &&
-      activeLens !== "provenance" &&
+      !provenanceSelectionAffordanceActive &&
       !readOnly &&
       onFeedbackCaptured !== undefined &&
       documentId !== undefined ? (
@@ -2024,18 +2242,13 @@ function MountedBridgeEditor({
           transport={feedbackTransport}
         />
       ) : null}
-      {editor !== null &&
-      activeLens === "provenance" &&
-      provenanceProvider !== undefined &&
-      resolvedProvenanceActor !== undefined &&
-      onProvenanceSelectionAction !== undefined ? (
+      {editor !== null && provenanceSelectionAffordanceActive ? (
         <CoworkProvenanceSelectionAffordance
           editor={editor}
           active={provenanceSelectionActionsActive ?? true}
           provider={provenanceProvider}
           currentUserIdentity={resolvedProvenanceActor}
           readOnly={readOnly}
-          inputProvenancePending={inputProvenancePending}
           onRecord={recordSelectedProvenance}
           onAction={onProvenanceSelectionAction}
         />
@@ -2156,15 +2369,14 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
   const [resolvedProvenanceActor, setResolvedProvenanceActor] = useState<
     CoworkProvenanceActorIdentity | undefined
   >(props.provenanceActor);
-  const [provenanceActorState, setProvenanceActorState] = useState<
-    "disabled" | "loading" | "ready" | "error"
-  >(
-    !provenanceEnabled
-      ? "disabled"
-      : props.provenanceActor === undefined
-        ? "loading"
-        : "ready",
-  );
+  const [provenanceActorState, setProvenanceActorState] =
+    useState<CoworkProvenanceIdentityState>(
+      !provenanceEnabled
+        ? "disabled"
+        : props.provenanceActor === undefined
+          ? "loading"
+          : "ready",
+    );
   const [provenanceActorAttempt, setProvenanceActorAttempt] = useState(0);
   const requestProvenanceActorRefresh = useCallback(() => {
     setResolvedProvenanceActor(undefined);
@@ -2902,6 +3114,10 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
     provenanceEnabled,
   ]);
 
+  useEffect(() => {
+    props.onProvenanceIdentityStateChange?.(provenanceActorState);
+  }, [props.onProvenanceIdentityStateChange, provenanceActorState]);
+
   useEffect(
     () =>
       subscribeLocalIdentity((identity) => {
@@ -2936,6 +3152,21 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
 
   return (
     <section className="wb-cowork-editor" aria-label="Editor">
+      {provenanceEnabled &&
+      provenanceActorState === "error" &&
+      props.activeLens === "provenance" ? (
+        <InlineAlert tone="warning" role="alert">
+          <strong>Provenance identity is unavailable.</strong>
+          <span>
+            Open Work Buddy from its launcher to reconnect, then try again.
+            Viewing and inspection remain available; recording and review need
+            a reconnected human identity.
+          </span>
+          <Button size="small" onClick={requestProvenanceActorRefresh}>
+            Retry provenance identity
+          </Button>
+        </InlineAlert>
+      ) : null}
       {hydrationError !== undefined ? (
         <InlineAlert
           tone="danger"
@@ -2970,6 +3201,9 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
           }}
           persistence={persistence}
           resolvedProvenanceActor={resolvedProvenanceActor}
+          allowActorlessProvenanceInspection={
+            effectiveReadOnly || provenanceActorState === "error"
+          }
           resolvedPasteProvenanceOutbox={resolvedPasteProvenanceOutbox}
           onProvenanceActorChanged={requestProvenanceActorRefresh}
           seedWhenEmpty={hydration.wasEmpty}

@@ -86,6 +86,97 @@ describe("HttpCoworkDocClient Verify setup", () => {
     });
   });
 
+  it("posts one exact provenance review batch", async () => {
+    const head = "a".repeat(64);
+    const fetchImpl = authenticatedHumanAuthorityFetch(async () =>
+      new Response(
+        JSON.stringify({
+          ok: true,
+          attestations: [
+            {
+              attestation_id: "new-a",
+              supersedes_id: "old-a",
+              scope: { structured_head_sha256: head },
+              human_review: { status: "reviewed" },
+            },
+            {
+              attestation_id: "new-b",
+              supersedes_id: "old-b",
+              scope: { structured_head_sha256: head },
+              human_review: { status: "reviewed" },
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    const client = new HttpCoworkDocClient({
+      documentId: "doc-1",
+      storeId: "store-1",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await client.markProvenanceSelectionReviewed(
+      ["old-a", "old-b"],
+      head,
+      "provenance-review-batch-0001",
+      { ref: "reviewer-1", identityStatus: "local_actor_ref" },
+    );
+
+    const [url, init] = applicationRequest(fetchImpl) ?? [];
+    expect(url).toBe(
+      "/api/truth/doc/doc-1/authorship-attestations/human-review?store_id=store-1",
+    );
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(String(init?.body))).toEqual({
+      attestation_ids: ["old-a", "old-b"],
+      expected_structured_head_sha256: head,
+      idempotency_key: "provenance-review-batch-0001",
+      expected_actor_ref: "reviewer-1",
+      expected_actor_identity_status: "local_actor_ref",
+    });
+  });
+
+  it("rejects a provenance review batch receipt bound to different targets", async () => {
+    const head = "a".repeat(64);
+    const fetchImpl = authenticatedHumanAuthorityFetch(async () =>
+      new Response(
+        JSON.stringify({
+          ok: true,
+          attestations: [
+            {
+              attestation_id: "new-a",
+              supersedes_id: "old-b",
+              scope: { structured_head_sha256: head },
+              human_review: { status: "reviewed" },
+            },
+            {
+              attestation_id: "new-b",
+              supersedes_id: "old-a",
+              scope: { structured_head_sha256: head },
+              human_review: { status: "reviewed" },
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    const client = new HttpCoworkDocClient({
+      documentId: "doc-1",
+      storeId: "store-1",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await expect(
+      client.markProvenanceSelectionReviewed(
+        ["old-a", "old-b"],
+        head,
+        "provenance-review-batch-0002",
+        { ref: "reviewer-1", identityStatus: "local_actor_ref" },
+      ),
+    ).rejects.toThrow("invalid receipt");
+  });
+
   it("routes Discuss with the exact Co-think item hash into Chat", async () => {
     const fetchImpl = authenticatedHumanAuthorityFetch(async () =>
       new Response(

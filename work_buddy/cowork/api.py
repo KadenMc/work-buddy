@@ -72,7 +72,12 @@ from work_buddy.truth.events import emit_truth_event
 from work_buddy.truth.expressions import ensure_document_span
 from work_buddy.truth.identity import parse_truth_uri, sha256_text
 from work_buddy.truth.registry import TruthStoreRegistry
-from work_buddy.truth.store import DocumentRecord, TruthStore
+from work_buddy.truth.store import (
+    DocumentRecord,
+    TruthStore,
+    _valid_digest,
+    _valid_record_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -2060,6 +2065,190 @@ def api_doc_authorship_attestation(document_id: str):
 
 
 @cowork_blueprint.post(
+    "/api/truth/doc/<document_id>/authorship-attestations/human-review"
+)
+def api_doc_provenance_human_review_batch(document_id: str):
+    """Atomically append per-user review successors for selected targets."""
+
+    blocked = _reject_read_only()
+    if blocked:
+        return blocked
+    store, error = _resolve_store(request.args.get("store_id"))
+    if error:
+        return error
+    gate = _document_surface_or_403(store)
+    if gate:
+        return gate
+    document, doc_error = _resolve_document(store, document_id)
+    if doc_error:
+        return doc_error
+    if not document_surface_allowed(store, document):
+        return _fail(
+            "This document is not available in Co-work for this folder.",
+            403,
+        )
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return _fail("request body must be a JSON object", 400)
+    if set(body) != {
+        "attestation_ids",
+        "expected_actor_identity_status",
+        "expected_actor_ref",
+        "expected_structured_head_sha256",
+        "idempotency_key",
+    }:
+        return _fail(
+            "human review requires exactly attestation_ids, "
+            "expected_actor_ref, expected_actor_identity_status, "
+            "expected_structured_head_sha256, and idempotency_key",
+            400,
+        )
+    attestation_ids = body.get("attestation_ids")
+    expected_actor_ref = body.get("expected_actor_ref")
+    expected_actor_identity_status = body.get(
+        "expected_actor_identity_status"
+    )
+    expected_head = body.get("expected_structured_head_sha256")
+    idempotency_key = body.get("idempotency_key")
+    if (
+        not isinstance(attestation_ids, list)
+        or not attestation_ids
+        or any(not isinstance(value, str) or not value for value in attestation_ids)
+    ):
+        return _fail("attestation_ids must be a non-empty string array", 400)
+    if len(attestation_ids) > 100:
+        return _fail("attestation_ids may contain at most 100 targets", 400)
+    if (
+        not isinstance(expected_actor_ref, str)
+        or not expected_actor_ref
+        or expected_actor_identity_status
+        not in provenance.CURRENT_USER_IDENTITY_STATUSES
+    ):
+        return _fail(
+            "expected_actor_ref and expected_actor_identity_status are required",
+            400,
+        )
+    try:
+        normalized_attestation_ids = [
+            _valid_record_id(value, "attestation_id")
+            for value in attestation_ids
+        ]
+        expected_head = _valid_digest(
+            expected_head,
+            "expected_structured_head_sha256",
+        )
+        idempotency_key = provenance._idempotency_key(idempotency_key)
+    except InvariantViolation as exc:
+        return _fail(str(exc), 400)
+    if len(set(normalized_attestation_ids)) != len(
+        normalized_attestation_ids
+    ):
+        return _fail("attestation_ids must not contain duplicates", 400)
+
+    try:
+        _authority_context, actor = _require_human_action(
+            operation="provenance.review",
+            store_id=store.store_id,
+            document_id=document.id,
+            body=body,
+        )
+    except LocalIdentityError as exc:
+        return _local_identity_error(exc)
+    try:
+        acting_binding = provenance.actor_binding(actor)
+        if (
+            acting_binding["ref"] != expected_actor_ref
+            or acting_binding["identity_status"]
+            != expected_actor_identity_status
+        ):
+            raise provenance.ProvenanceActorBindingError(
+                "The acting identity changed before review was recorded."
+            )
+        from work_buddy.consent import user_initiated
+
+        with user_initiated("dashboard.cowork.provenance_review_selection"):
+            records = provenance.record_human_reviews(
+                store,
+                document_id=document.id,
+                attestation_ids=normalized_attestation_ids,
+                actor=actor,
+                idempotency_key=idempotency_key,
+                expected_structured_head_sha256=expected_head,
+            )
+    except provenance.ProvenanceActorBindingError as exc:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": {
+                        "code": exc.code,
+                        "message": str(exc),
+                        "details": {},
+                        "retryable": False,
+                    },
+                }
+            ),
+            exc.status,
+        )
+    except provenance.ProvenanceReviewError as exc:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": {
+                        "code": exc.code,
+                        "message": str(exc),
+                        "details": exc.details,
+                        "retryable": exc.retryable,
+                    },
+                }
+            ),
+            exc.status,
+        )
+    except (provenance.ProvenanceConflictError, InvariantViolation) as exc:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": {
+                        "code": "provenance_review_state_conflict",
+                        "message": str(exc),
+                        "details": {},
+                        "retryable": False,
+                    },
+                }
+            ),
+            409,
+        )
+
+    for record in records:
+        _emit(
+            "truth.doc_provenance_reviewed",
+            store.store_id,
+            {
+                "document_id": document.id,
+                "attestation_id": record.id,
+                "supersedes_id": record.supersedes_id,
+                "target_structured_head_sha256": (
+                    record.target_structured_head_sha256
+                ),
+            },
+            event_id=f"truth-doc-provenance-review-{record.id}",
+        )
+    return (
+        jsonify(
+            {
+                "ok": True,
+                "attestations": [
+                    provenance.portable_attestation(record) for record in records
+                ],
+            }
+        ),
+        201,
+    )
+
+
+@cowork_blueprint.post(
     "/api/truth/doc/<document_id>/authorship-attestations/"
     "<attestation_id>/human-review"
 )
@@ -2089,24 +2278,47 @@ def api_doc_provenance_human_review(
     body = request.get_json(silent=True)
     if not isinstance(body, dict):
         return _fail("request body must be a JSON object", 400)
-    if set(body) != {
+    base_fields = {
         "attestation_id",
         "expected_structured_head_sha256",
         "idempotency_key",
+    }
+    actor_fields = {
+        "expected_actor_identity_status",
+        "expected_actor_ref",
+    }
+    if frozenset(body) not in {
+        frozenset(base_fields),
+        frozenset(base_fields | actor_fields),
     }:
         return _fail(
             "human review requires exactly attestation_id, "
-            "expected_structured_head_sha256, and idempotency_key",
+            "expected_structured_head_sha256, and idempotency_key, with an "
+            "optional expected_actor_ref and expected_actor_identity_status pair",
             400,
         )
     if body.get("attestation_id") != attestation_id:
         return _fail("attestation_id must match the route target", 400)
     expected_head = body.get("expected_structured_head_sha256")
     idempotency_key = body.get("idempotency_key")
+    expected_actor_ref = body.get("expected_actor_ref")
+    expected_actor_identity_status = body.get(
+        "expected_actor_identity_status"
+    )
     if not isinstance(expected_head, str) or not expected_head:
         return _fail("expected_structured_head_sha256 is required", 400)
     if not isinstance(idempotency_key, str) or not idempotency_key:
         return _fail("idempotency_key is required", 400)
+    if actor_fields.issubset(body) and (
+        not isinstance(expected_actor_ref, str)
+        or not expected_actor_ref
+        or expected_actor_identity_status
+        not in provenance.CURRENT_USER_IDENTITY_STATUSES
+    ):
+        return _fail(
+            "expected_actor_ref and expected_actor_identity_status are required",
+            400,
+        )
 
     try:
         _authority_context, actor = _require_human_action(
@@ -2118,6 +2330,16 @@ def api_doc_provenance_human_review(
     except LocalIdentityError as exc:
         return _local_identity_error(exc)
     try:
+        if actor_fields.issubset(body):
+            acting_binding = provenance.actor_binding(actor)
+            if (
+                acting_binding["ref"] != expected_actor_ref
+                or acting_binding["identity_status"]
+                != expected_actor_identity_status
+            ):
+                raise provenance.ProvenanceActorBindingError(
+                    "The acting identity changed before review was recorded."
+                )
         from work_buddy.consent import user_initiated
 
         with user_initiated("dashboard.cowork.provenance_review"):
@@ -2129,6 +2351,21 @@ def api_doc_provenance_human_review(
                 idempotency_key=idempotency_key,
                 expected_structured_head_sha256=expected_head,
             )
+    except provenance.ProvenanceActorBindingError as exc:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": {
+                        "code": exc.code,
+                        "message": str(exc),
+                        "details": {},
+                        "retryable": False,
+                    },
+                }
+            ),
+            exc.status,
+        )
     except provenance.ProvenanceReviewError as exc:
         return (
             jsonify(

@@ -24,6 +24,7 @@ import {
   CoworkHttpError,
   normalizeCoworkError,
 } from "../providers/errors";
+import type { ProvenanceReviewerBinding } from "../provenance/view/contracts";
 
 type JsonObject = Record<string, unknown>;
 
@@ -74,6 +75,13 @@ export interface CoworkDocClient {
     attestationId: string,
     expectedStructuredHeadSha256: string,
     idempotencyKey: string,
+    expectedReviewer?: ProvenanceReviewerBinding,
+  ): Promise<void>;
+  markProvenanceSelectionReviewed?(
+    attestationIds: readonly string[],
+    expectedStructuredHeadSha256: string,
+    idempotencyKey: string,
+    expectedReviewer?: ProvenanceReviewerBinding,
   ): Promise<void>;
 }
 
@@ -126,11 +134,18 @@ export class HttpCoworkDocClient implements CoworkDocClient {
     attestationId: string,
     expectedStructuredHeadSha256: string,
     idempotencyKey: string,
+    expectedReviewer?: ProvenanceReviewerBinding,
   ): Promise<void> {
     const body = {
       attestation_id: attestationId,
       expected_structured_head_sha256: expectedStructuredHeadSha256,
       idempotency_key: idempotencyKey,
+      ...(expectedReviewer === undefined
+        ? {}
+        : {
+            expected_actor_ref: expectedReviewer.ref,
+            expected_actor_identity_status: expectedReviewer.identityStatus,
+          }),
     };
     const authorityHeaders = await this.#authority("provenance.review", body);
     const response = await this.#fetch(
@@ -161,6 +176,64 @@ export class HttpCoworkDocClient implements CoworkDocClient {
       stringValue(receipt.supersedes_id) !== attestationId ||
       stringValue(scope.structured_head_sha256) !== expectedStructuredHeadSha256 ||
       stringValue(review.status) !== "reviewed"
+    ) {
+      throw new Error("The provenance review returned an invalid receipt.");
+    }
+  }
+
+  async markProvenanceSelectionReviewed(
+    attestationIds: readonly string[],
+    expectedStructuredHeadSha256: string,
+    idempotencyKey: string,
+    expectedReviewer?: ProvenanceReviewerBinding,
+  ): Promise<void> {
+    const body = {
+      attestation_ids: attestationIds,
+      expected_structured_head_sha256: expectedStructuredHeadSha256,
+      idempotency_key: idempotencyKey,
+      ...(expectedReviewer === undefined
+        ? {}
+        : {
+            expected_actor_ref: expectedReviewer.ref,
+            expected_actor_identity_status: expectedReviewer.identityStatus,
+          }),
+    };
+    const authorityHeaders = await this.#authority("provenance.review", body);
+    const response = await this.#fetch(
+      `/api/truth/doc/${encodeURIComponent(this.#documentId)}/authorship-attestations/human-review?store_id=${encodeURIComponent(this.#storeId)}`,
+      {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", ...authorityHeaders },
+        body: JSON.stringify(body),
+      },
+    );
+    const payload = objectValue(await response.json().catch(() => ({})));
+    if (!response.ok) {
+      throw new CoworkHttpError(
+        normalizeCoworkError(
+          payload,
+          response.status,
+          "Provenance review could not be recorded.",
+        ),
+      );
+    }
+    const receipts = arrayValue(payload.attestations);
+    if (
+      payload.ok !== true ||
+      receipts.length !== attestationIds.length ||
+      receipts.some((value, index) => {
+        const receipt = objectValue(value);
+        const scope = objectValue(receipt.scope);
+        const review = objectValue(receipt.human_review);
+        return (
+          stringValue(receipt.attestation_id).length === 0 ||
+          stringValue(receipt.supersedes_id) !== attestationIds[index] ||
+          stringValue(scope.structured_head_sha256) !==
+            expectedStructuredHeadSha256 ||
+          stringValue(review.status) !== "reviewed"
+        );
+      })
     ) {
       throw new Error("The provenance review returned an invalid receipt.");
     }
