@@ -145,7 +145,7 @@ def _seed_native_store(tmp_path: Path, *, distinct_dates: bool = False):
                 "t-cc33",
                 "inbox",
                 "low",
-                "Retain deleted task",
+                None,
                 NOTE_DELETED,
                 None,
                 "2026-11-03",
@@ -422,6 +422,7 @@ def test_prepare_exports_tree_v11_database_and_native_supplement(tmp_path):
         assert rows["t-bb22"]["deadline_date"] == "2026-10-02"
         assert rows["t-cc33"]["deadline_date"] == "2026-11-03"
         assert rows["t-cc33"]["deleted_at"] is not None
+        assert rows["t-cc33"]["description"] is None
         assert connection.execute("SELECT COUNT(*) FROM task_tags").fetchone()[0] == 3
         assert connection.execute("SELECT COUNT(*) FROM task_state_history").fetchone()[0] == 3
         assert [
@@ -448,6 +449,35 @@ def test_prepare_exports_tree_v11_database_and_native_supplement(tmp_path):
         assert old.execute("PRAGMA user_version").fetchone()[0] == 11
     finally:
         old.close()
+
+
+def test_prepare_preserves_deleted_tombstone_without_document_link(tmp_path):
+    operator, _database, store, _documents = _operator(tmp_path)
+    with store.transaction() as connection:
+        connection.execute(
+            "DELETE FROM task_document_links WHERE task_id = 't-cc33'"
+        )
+
+    _prepare(operator)
+
+    legacy_db = operator.staging_root / "task_metadata.v11.db"
+    connection = sqlite3.connect(legacy_db)
+    connection.row_factory = sqlite3.Row
+    try:
+        row = connection.execute(
+            "SELECT description, note_uuid, deleted_at "
+            "FROM task_metadata WHERE task_id = 't-cc33'"
+        ).fetchone()
+        assert dict(row) == {
+            "description": None,
+            "note_uuid": NOTE_DELETED,
+            "deleted_at": "2026-08-25T00:00:00+00:00",
+        }
+    finally:
+        connection.close()
+    assert not (
+        operator.staging_root / "legacy-tree" / "notes" / f"{NOTE_DELETED}.md"
+    ).exists()
 
 
 def test_distinct_due_deadline_blocks_until_explicit_per_task_resolution(tmp_path):
@@ -754,8 +784,8 @@ def test_local_files_require_hash_verified_frozen_root_and_are_rehydrated(tmp_pa
                 NOW,
             ),
         )
-    documents["doc-live"] += "\nLocal file (Spec): wb-local-file:lf_asset\n"
-    documents["doc-live"] += "\nKey location: wb-local-file:lf_key\n"
+    documents["doc-live"] += "\nLocal file (Spec): wb-local-file:lf\\_asset\n"
+    documents["doc-live"] += "\nKey location: wb-local-file:lf\\_key\n"
     without_root = ReverseLegacyTaskExportOperator(
         source_db_path=database,
         staging_root=tmp_path / "rollback-stage",

@@ -34,6 +34,8 @@ dev_notes: |-
   The task Co-work store ID is persisted in `task_system_state` and resolved through the Truth store registry so relocation preserves identity. Task reads and IR indexing project the current structured head plus uncompacted Yjs updates. Do not read only the last compacted blob.
 
   Document create/attach and delete/restore are recoverable sagas. Restoring a task whose binding was retired preserves the retired document and binding, creates one new projection-free successor with retained content, and atomically attaches it at the current task revision.
+
+  Reverse export intentionally splits legacy representability by liveness. Live rows must have parser-safe single-line descriptions and complete note-link identity because they render into master/archive Markdown. Deleted rows are database-only v11 tombstones: preserve nullable descriptions and dangling but syntactically valid note UUIDs in SQLite, while still validating task IDs and any document links that do exist. Local-file handles read from projected Co-work Markdown must be canonicalized for Markdown-escaped punctuation (for example, `lf\_...`) before catalog matching and replacement; verified assets are then rehydrated only from the sealed frozen root.
 ---
 
 # Native task authority
