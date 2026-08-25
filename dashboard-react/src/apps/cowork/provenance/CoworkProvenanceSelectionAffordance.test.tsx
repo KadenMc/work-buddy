@@ -117,6 +117,8 @@ const mount = (
   options: {
     readonly onAction?: CoworkProvenanceSelectionAffordanceProps["onAction"];
     readonly active?: boolean;
+    readonly actorless?: boolean;
+    readonly readOnly?: boolean;
   } = {},
 ) => {
   editor = makeSuggestionEditor({ content: CONTENT });
@@ -132,7 +134,8 @@ const mount = (
       editor={editor}
       active={options.active ?? true}
       provider={source}
-      currentUserIdentity={ACTOR}
+      currentUserIdentity={options.actorless ? undefined : ACTOR}
+      readOnly={options.readOnly}
       onRecord={onRecord}
       onAction={onAction}
     />,
@@ -213,6 +216,25 @@ describe("CoworkProvenanceSelectionAffordance", () => {
         targetIds: ["document_span:span-1"],
       }),
     );
+  });
+
+  it("keeps non-mutating provenance inspection available without an actor", async () => {
+    const onAction =
+      vi.fn<CoworkProvenanceSelectionAffordanceProps["onAction"]>();
+    mount(data([target()]), { actorless: true, readOnly: true, onAction });
+    select("precise");
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "View provenance" }),
+    );
+
+    expect(onAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        intent: "view",
+        targetIds: ["document_span:span-1"],
+      }),
+    );
+    expect(onAction.mock.calls[0]?.[0]).not.toHaveProperty("reviewer");
   });
 
   it("does not reuse a review action identity after the affordance remounts", async () => {

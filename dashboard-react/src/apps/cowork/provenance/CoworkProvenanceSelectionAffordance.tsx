@@ -48,7 +48,7 @@ export interface CoworkProvenanceSelectionAffordanceProps {
   /** Only the active Provenance lens may replace the general feedback action. */
   readonly active: boolean;
   readonly provider: ProvenanceProvider;
-  readonly currentUserIdentity: CoworkProvenanceActorIdentity;
+  readonly currentUserIdentity?: CoworkProvenanceActorIdentity;
   readonly readOnly?: boolean;
   /**
    * Persists a user-confirmed attestation for a frozen uncovered selection.
@@ -156,7 +156,7 @@ export const classifyCoworkProvenanceSelection = ({
   readonly from: number;
   readonly to: number;
   readonly readOnly: boolean;
-  readonly currentUserIdentity: CoworkProvenanceActorIdentity;
+  readonly currentUserIdentity?: CoworkProvenanceActorIdentity;
   readonly locallyDirty?: boolean;
 }): SelectionClassification => {
   const explicit = data.spans.flatMap((target) => {
@@ -208,7 +208,10 @@ export const classifyCoworkProvenanceSelection = ({
 
   if (matches.length === 0) {
     return {
-      intent: readOnly || locallyDirty ? "inspect" : "record",
+      intent:
+        readOnly || locallyDirty || currentUserIdentity === undefined
+          ? "inspect"
+          : "record",
       targetIds: [],
     };
   }
@@ -235,6 +238,7 @@ export const classifyCoworkProvenanceSelection = ({
   }
 
   const needsCurrentUserReview = (target: ProvenanceTarget): boolean => {
+    if (currentUserIdentity === undefined) return false;
     const record = effectiveRecord(target);
     if (
       record === null ||
@@ -433,7 +437,8 @@ export function CoworkProvenanceSelectionAffordance({
                   selection.from,
                   selection.to,
                 ),
-                ...(classification.intent === "review"
+                ...(classification.intent === "review" &&
+                currentUserIdentity !== undefined
                   ? {
                       reviewer: {
                         ref: currentUserIdentity.ref,
@@ -443,6 +448,7 @@ export function CoworkProvenanceSelectionAffordance({
                   : {}),
               };
               if (action.intent === "record") {
+                if (currentUserIdentity === undefined) return;
                 setRecordError(null);
                 setRecording({
                   action,
@@ -458,7 +464,7 @@ export function CoworkProvenanceSelectionAffordance({
           </button>
         </div>
       )}
-      {recording === null ? null : (
+      {recording === null || currentUserIdentity === undefined ? null : (
         <CoworkProvenanceDeterminationDialog
           value={recording.value}
           currentUserIdentity={currentUserIdentity}

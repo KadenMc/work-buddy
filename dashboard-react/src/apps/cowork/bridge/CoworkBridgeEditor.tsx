@@ -115,6 +115,12 @@ export interface CoworkEditorReadyContext {
   readonly dom: HTMLElement;
 }
 
+export type CoworkProvenanceIdentityState =
+  | "disabled"
+  | "loading"
+  | "ready"
+  | "error";
+
 export interface CoworkBridgeEditorProps {
   /** The canonical collaborative document. Open proposals never mutate it. */
   readonly document: Y.Doc;
@@ -155,6 +161,10 @@ export interface CoworkBridgeEditorProps {
   ) => void;
   /** Pending input attribution remains true through authoritative refresh. */
   readonly onInputProvenancePendingChange?: (pending: boolean) => void;
+  /** Keeps provenance mutation controls aligned with the editor's actor lookup. */
+  readonly onProvenanceIdentityStateChange?: (
+    state: CoworkProvenanceIdentityState,
+  ) => void;
   /**
    * Persists authorship and human-review provenance for the exact span inserted
    * by a paste. Omitted in non-registered/demo editors that have no durable
@@ -208,6 +218,7 @@ export interface CoworkBridgeEditorProps {
 interface MountedProps extends CoworkBridgeEditorProps {
   readonly persistence: CoworkYdocPersistence;
   readonly resolvedProvenanceActor?: CoworkProvenanceActorIdentity;
+  readonly allowActorlessProvenanceInspection: boolean;
   readonly resolvedPasteProvenanceOutbox?: CoworkPasteProvenanceOutbox;
   readonly onProvenanceActorChanged?: () => void;
   readonly seedWhenEmpty: boolean;
@@ -279,6 +290,7 @@ function MountedBridgeEditor({
   onInputProvenancePendingChange,
   onRecordPasteProvenance,
   resolvedProvenanceActor,
+  allowActorlessProvenanceInspection,
   resolvedPasteProvenanceOutbox,
   onProvenanceActorChanged,
   readOnly = false,
@@ -2150,6 +2162,14 @@ function MountedBridgeEditor({
     ],
   );
 
+  const provenanceSelectionAffordanceActive =
+    activeLens === "provenance" &&
+    (provenanceSelectionActionsActive ?? true) &&
+    provenanceProvider !== undefined &&
+    (resolvedProvenanceActor !== undefined ||
+      allowActorlessProvenanceInspection) &&
+    onProvenanceSelectionAction !== undefined;
+
   return (
     <>
       <EditorContent editor={editor} className="wb-cowork-editor__content" />
@@ -2210,7 +2230,7 @@ function MountedBridgeEditor({
         </InlineAlert>
       ) : null}
       {editor !== null &&
-      activeLens !== "provenance" &&
+      !provenanceSelectionAffordanceActive &&
       !readOnly &&
       onFeedbackCaptured !== undefined &&
       documentId !== undefined ? (
@@ -2222,11 +2242,7 @@ function MountedBridgeEditor({
           transport={feedbackTransport}
         />
       ) : null}
-      {editor !== null &&
-      activeLens === "provenance" &&
-      provenanceProvider !== undefined &&
-      resolvedProvenanceActor !== undefined &&
-      onProvenanceSelectionAction !== undefined ? (
+      {editor !== null && provenanceSelectionAffordanceActive ? (
         <CoworkProvenanceSelectionAffordance
           editor={editor}
           active={provenanceSelectionActionsActive ?? true}
@@ -2353,15 +2369,14 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
   const [resolvedProvenanceActor, setResolvedProvenanceActor] = useState<
     CoworkProvenanceActorIdentity | undefined
   >(props.provenanceActor);
-  const [provenanceActorState, setProvenanceActorState] = useState<
-    "disabled" | "loading" | "ready" | "error"
-  >(
-    !provenanceEnabled
-      ? "disabled"
-      : props.provenanceActor === undefined
-        ? "loading"
-        : "ready",
-  );
+  const [provenanceActorState, setProvenanceActorState] =
+    useState<CoworkProvenanceIdentityState>(
+      !provenanceEnabled
+        ? "disabled"
+        : props.provenanceActor === undefined
+          ? "loading"
+          : "ready",
+    );
   const [provenanceActorAttempt, setProvenanceActorAttempt] = useState(0);
   const requestProvenanceActorRefresh = useCallback(() => {
     setResolvedProvenanceActor(undefined);
@@ -3099,6 +3114,10 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
     provenanceEnabled,
   ]);
 
+  useEffect(() => {
+    props.onProvenanceIdentityStateChange?.(provenanceActorState);
+  }, [props.onProvenanceIdentityStateChange, provenanceActorState]);
+
   useEffect(
     () =>
       subscribeLocalIdentity((identity) => {
@@ -3133,6 +3152,21 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
 
   return (
     <section className="wb-cowork-editor" aria-label="Editor">
+      {provenanceEnabled &&
+      provenanceActorState === "error" &&
+      props.activeLens === "provenance" ? (
+        <InlineAlert tone="warning" role="alert">
+          <strong>Provenance identity is unavailable.</strong>
+          <span>
+            Open Work Buddy from its launcher to reconnect, then try again.
+            Viewing and inspection remain available; recording and review need
+            a reconnected human identity.
+          </span>
+          <Button size="small" onClick={requestProvenanceActorRefresh}>
+            Retry provenance identity
+          </Button>
+        </InlineAlert>
+      ) : null}
       {hydrationError !== undefined ? (
         <InlineAlert
           tone="danger"
@@ -3167,6 +3201,9 @@ export function CoworkBridgeEditor(props: CoworkBridgeEditorProps) {
           }}
           persistence={persistence}
           resolvedProvenanceActor={resolvedProvenanceActor}
+          allowActorlessProvenanceInspection={
+            effectiveReadOnly || provenanceActorState === "error"
+          }
           resolvedPasteProvenanceOutbox={resolvedPasteProvenanceOutbox}
           onProvenanceActorChanged={requestProvenanceActorRefresh}
           seedWhenEmpty={hydration.wasEmpty}

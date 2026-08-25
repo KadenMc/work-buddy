@@ -928,6 +928,62 @@ describe("ProvenancePanel", () => {
     expect(screen.getByRole("button", { name: "Mark reviewed" })).toBeEnabled();
   });
 
+  it("keeps review actions visible but disabled while provenance identity reconnects", async () => {
+    const source = provider();
+    const barrier = { runWithSynchronizedDocument: vi.fn() };
+    const selectionAction: ProvenanceSelectionAction = {
+      requestId: 1,
+      intent: "review",
+      reviewer: REVIEWER,
+      anchor: { exact: "AI passage", prefix: "", suffix: "" },
+      from: 20,
+      to: 30,
+      targetIds: ["document_span:span-1"],
+    };
+    const blockedReason =
+      "Open Work Buddy from its launcher to reconnect provenance identity before recording review.";
+    const rendered = render(
+      <ProvenancePanel
+        provider={source}
+        active
+        editor={editor}
+        mutationBarrier={barrier}
+        selectionAction={selectionAction}
+      />,
+    );
+
+    const selectedAction = await screen.findByRole("button", {
+      name: "Mark as reviewed",
+    });
+    expect(await screen.findByText("Actions")).toBeVisible();
+    await waitFor(() => expect(selectedAction).toHaveFocus());
+    rendered.rerender(
+      <ProvenancePanel
+        provider={source}
+        active
+        editor={editor}
+        mutationBarrier={barrier}
+        mutationBlockedReason={blockedReason}
+        selectionAction={selectionAction}
+      />,
+    );
+
+    const targetAction = screen.getByRole("button", {
+      name: "Mark reviewed",
+    });
+    expect(selectedAction).toBeDisabled();
+    expect(targetAction).toBeDisabled();
+    expect(selectedAction).toHaveAccessibleDescription(blockedReason);
+    expect(targetAction).toHaveAccessibleDescription(blockedReason);
+    expect(screen.getByRole("status")).toHaveTextContent(blockedReason);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("article", { name: "Review selected provenance" }),
+      ).toHaveFocus(),
+    );
+    expect(source.markReviewed).not.toHaveBeenCalled();
+  });
+
   it("keeps Mark reviewed discoverable but disabled with a specific reason", async () => {
     const stale = {
       ...data.spans[0]!,

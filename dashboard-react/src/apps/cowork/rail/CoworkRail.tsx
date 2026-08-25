@@ -102,6 +102,7 @@ export interface CoworkRailProps {
     readonly mutationBarrier?: ProvenanceMutationBarrier;
     readonly selectionAction?: ProvenanceSelectionAction | null;
     readonly inputProvenancePending?: boolean;
+    readonly mutationBlockedReason?: string;
   };
   readonly chat: CoworkRailChat;
   /** Fired only for a present user click on the wide Chat tab. */
@@ -465,6 +466,7 @@ export function CoworkRail(props: CoworkRailProps) {
             mutationBarrier={props.provenance.mutationBarrier}
             selectionAction={props.provenance.selectionAction}
             inputProvenancePending={props.provenance.inputProvenancePending}
+            mutationBlockedReason={props.provenance.mutationBlockedReason}
             readOnly={props.readOnly}
           />
         )}

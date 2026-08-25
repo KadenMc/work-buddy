@@ -46,7 +46,11 @@ import type {
   CoworkMaterializationState,
   CoworkMaterializeReceipt,
 } from "../materialization/contracts";
-import { CoworkBridgeEditor, useCoworkBridge } from "../bridge";
+import {
+  CoworkBridgeEditor,
+  useCoworkBridge,
+  type CoworkProvenanceIdentityState,
+} from "../bridge";
 import {
   CoworkChatAnnotations,
   CoworkChatTargetingProvider,
@@ -669,6 +673,33 @@ export function CoworkLiveWorkspace({
   const [provenanceSelectionAction, setProvenanceSelectionAction] =
     useState<ProvenanceSelectionAction | null>(null);
   const [inputProvenancePending, setInputProvenancePending] = useState(false);
+  const provenanceIdentityKey = `${workspaceIdentity}\u0000${readOnly ? "read-only" : "writable"}`;
+  const [provenanceIdentity, setProvenanceIdentity] = useState<{
+    readonly key: string;
+    readonly state: CoworkProvenanceIdentityState;
+  }>(() => ({
+    key: provenanceIdentityKey,
+    state: readOnly ? "disabled" : "loading",
+  }));
+  const provenanceIdentityState =
+    provenanceIdentity.key === provenanceIdentityKey
+      ? provenanceIdentity.state
+      : readOnly
+        ? "disabled"
+        : "loading";
+  const handleProvenanceIdentityStateChange = useCallback(
+    (state: CoworkProvenanceIdentityState) => {
+      setProvenanceIdentity({ key: provenanceIdentityKey, state });
+    },
+    [provenanceIdentityKey],
+  );
+  const provenanceMutationBlockedReason = readOnly
+    ? undefined
+    : provenanceIdentityState === "ready"
+      ? undefined
+      : provenanceIdentityState === "loading"
+        ? "Provenance identity is reconnecting. Review actions will be available when it is ready."
+        : "Open Work Buddy from its launcher to reconnect provenance identity before recording review.";
   const truthStore = useMemo(
     () => createPersistedTruthStore(window.localStorage, storeId, documentId),
     [documentId, storeId],
@@ -1372,6 +1403,9 @@ export function CoworkLiveWorkspace({
           )}
           onProvenanceSelectionAction={handleProvenanceSelectionAction}
           onInputProvenancePendingChange={setInputProvenancePending}
+          onProvenanceIdentityStateChange={
+            handleProvenanceIdentityStateChange
+          }
         />
       }
       rail={
@@ -1397,6 +1431,7 @@ export function CoworkLiveWorkspace({
               mutationBarrier: bridge.provenanceMutationBarrier,
               selectionAction: provenanceSelectionAction,
               inputProvenancePending,
+              mutationBlockedReason: provenanceMutationBlockedReason,
             }}
             chat={chat}
             reviewAnchors={reviewAnchors}

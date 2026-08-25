@@ -43,6 +43,7 @@ import { CoworkHttpError } from "../providers/errors";
 import {
   CoworkBridgeEditor,
   coworkPasteProvenanceOutboxKey,
+  type CoworkProvenanceIdentityState,
 } from "./CoworkBridgeEditor";
 
 type CoworkPasteProvenanceRecorder = (
@@ -129,6 +130,9 @@ const mountPasteEditor = async (
     readonly activeLens?: CoworkEditorLens;
     readonly provenanceProvider?: ProvenanceProvider;
     readonly onInputProvenancePendingChange?: (pending: boolean) => void;
+    readonly onProvenanceIdentityStateChange?: (
+      state: CoworkProvenanceIdentityState,
+    ) => void;
     readonly document?: Y.Doc;
     readonly server?: InMemoryCoworkYdocTransport;
   } = {},
@@ -193,6 +197,9 @@ const mountPasteEditor = async (
       provenanceSelectionActionsActive
       onProvenanceSelectionAction={() => undefined}
       onInputProvenancePendingChange={options.onInputProvenancePendingChange}
+      onProvenanceIdentityStateChange={
+        options.onProvenanceIdentityStateChange
+      }
       provenanceActor={renderedActor}
       pasteProvenanceOutbox={options.outbox}
       onRecordPasteProvenance={async (request) => {
@@ -2052,6 +2059,59 @@ describe("CoworkBridgeEditor paste provenance", () => {
     reopened.unmount();
   }, 30_000);
 
+  it("keeps non-mutating selection inspection available when provenance identity is unavailable", async () => {
+    const identityStates: CoworkProvenanceIdentityState[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        expect(String(input)).toBe("/api/local-identity/session/csrf");
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            authenticated: false,
+            human_authority_available: false,
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      }),
+    );
+
+    let mounted: MountedPasteEditor | undefined;
+    try {
+      mounted = await mountPasteEditor(async () => undefined, {
+        resolveActorFromServer: true,
+        activeLens: "provenance",
+        provenanceProvider: provenanceProvider(),
+        onProvenanceIdentityStateChange: (state) =>
+          identityStates.push(state),
+      });
+
+      act(() => {
+        mounted!.editor.commands.setTextSelection({ from: 1, to: 7 });
+      });
+
+      expect(
+        await screen.findByRole("button", { name: "Inspect provenance" }),
+      ).toBeVisible();
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "Provenance identity is unavailable.",
+      );
+      expect(
+        screen.getByRole("button", { name: "Retry provenance identity" }),
+      ).toBeVisible();
+      expect(
+        screen.queryByRole("button", { name: "Record provenance" }),
+      ).toBeNull();
+      expect(
+        screen.queryByRole("button", { name: "Give feedback" }),
+      ).toBeNull();
+      expect(identityStates[identityStates.length - 1]).toBe("error");
+    } finally {
+      mounted?.unmount();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("reassociates an ownerless legacy actor-change row after reload", async () => {
     const requests: CoworkPasteProvenanceRequest[] = [];
     const outbox = new DurableCoworkPasteProvenanceOutbox(
@@ -2960,6 +3020,7 @@ describe("CoworkBridgeEditor paste provenance", () => {
 
   it("clears an expired actor and re-resolves it after trusted session recovery", async () => {
     const recorder = vi.fn<CoworkPasteProvenanceRecorder>().mockResolvedValue();
+    const identityStates: CoworkProvenanceIdentityState[] = [];
     const recoveredActor = {
       kind: "human",
       ref: "recovered-dashboard-user",
@@ -3012,8 +3073,13 @@ describe("CoworkBridgeEditor paste provenance", () => {
         resolveActorFromServer: true,
         activeLens: "provenance",
         provenanceProvider: provenanceProvider(),
+        onProvenanceIdentityStateChange: (state) =>
+          identityStates.push(state),
       });
       await waitFor(() => expect(actorAttempts).toBe(1));
+      await waitFor(() =>
+        expect(identityStates[identityStates.length - 1]).toBe("ready"),
+      );
       act(() => {
         mounted!.editor.commands.setTextSelection({ from: 1, to: 7 });
       });
@@ -3029,6 +3095,9 @@ describe("CoworkBridgeEditor paste provenance", () => {
           screen.queryByRole("button", { name: "Record provenance" }),
         ).toBeNull(),
       );
+      await waitFor(() =>
+        expect(identityStates[identityStates.length - 1]).toBe("error"),
+      );
 
       await act(async () => {
         await refreshLocalIdentity();
@@ -3037,6 +3106,8 @@ describe("CoworkBridgeEditor paste provenance", () => {
       expect(
         await screen.findByRole("button", { name: "Record provenance" }),
       ).toBeVisible();
+      expect(identityStates).toContain("loading");
+      expect(identityStates[identityStates.length - 1]).toBe("ready");
       expect(sessionAttempts).toBeGreaterThanOrEqual(4);
     } finally {
       mounted?.unmount();

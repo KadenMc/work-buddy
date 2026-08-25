@@ -37,6 +37,8 @@ export interface ProvenancePanelProps {
   readonly selectionAction?: ProvenanceSelectionAction | null;
   /** Browser-local direct entry is awaiting an authoritative ledger receipt. */
   readonly inputProvenancePending?: boolean;
+  /** Visible reason human review mutations are temporarily unavailable. */
+  readonly mutationBlockedReason?: string;
 }
 
 const sourceLabel = (attestation: ProvenanceAttestation): string => {
@@ -411,6 +413,7 @@ function ProvenanceContents({
   readOnly,
   selectionAction,
   inputProvenancePending = false,
+  mutationBlockedReason,
 }: {
   readonly load: ProvenanceLoad;
   readonly provider: ProvenanceProvider;
@@ -419,6 +422,7 @@ function ProvenanceContents({
   readonly mutationBarrier?: ProvenanceMutationBarrier;
   readonly selectionAction?: ProvenanceSelectionAction | null;
   readonly inputProvenancePending?: boolean;
+  readonly mutationBlockedReason?: string;
 }) {
   const view = load.state === "ready" ? load.data : undefined;
   const [filter, setFilter] = useState<ProvenanceFilter>("all");
@@ -470,7 +474,14 @@ function ProvenanceContents({
     if (row === null) return;
     row.focus({ preventScroll: true });
     row.scrollIntoView?.({ block: "nearest" });
-  }, [load, selectedId, selectionAction]);
+  }, [
+    load,
+    mutationBarrier,
+    mutationBlockedReason,
+    readOnly,
+    selectedId,
+    selectionAction,
+  ]);
   if (view === undefined) {
     return (
       <div className="wb-cowork-provenance-panel__unavailable" role="status">
@@ -604,6 +615,10 @@ function ProvenanceContents({
     allowPreviouslyReviewed = false,
   ): Promise<void> => {
     if (mutationLock.current) return;
+    if (mutationBlockedReason !== undefined) {
+      setError(mutationBlockedReason);
+      return;
+    }
     const records = requestedTargets.map(effective);
     if (requestedTargets.length === 0 || view.currentStructuredHeadSha256 === null) {
       return;
@@ -750,8 +765,34 @@ function ProvenanceContents({
     !locallyDirty &&
     view.currentStructuredHeadSha256 !== null &&
     readOnly !== true &&
+    mutationBlockedReason === undefined &&
     mutationBarrier !== undefined &&
     pendingIds.size === 0;
+  const selectionReviewDisabledReason = selectionReviewEnabled
+    ? null
+    : pendingIds.size > 0
+      ? "Human review is being recorded."
+      : !selectionReviewTargetsAreCurrent
+        ? "The selected provenance changed. Reselect the passage to review its current record."
+        : locallyDirty
+          ? "Synchronize local edits and refresh provenance before recording review."
+          : view.currentStructuredHeadSha256 === null
+            ? "No current structured document head is available, so review cannot be recorded."
+            : readOnly === true
+              ? "This document is read-only, so review cannot be recorded."
+              : mutationBlockedReason !== undefined
+                ? mutationBlockedReason
+                : mutationBarrier === undefined
+                  ? "The editor is not ready to record review safely."
+                  : "Review cannot be recorded for this selection.";
+  const selectionReviewReasonId = "wb-cowork-selection-review-disabled";
+  const mutationBlockedReasonId = "wb-cowork-provenance-mutation-blocked";
+  const selectionReviewDescriptionId = selectionReviewEnabled
+    ? undefined
+    : mutationBlockedReason !== undefined &&
+        selectionReviewDisabledReason === mutationBlockedReason
+      ? mutationBlockedReasonId
+      : selectionReviewReasonId;
   return (
     <>
       <dl
@@ -815,6 +856,15 @@ function ProvenanceContents({
           for synchronization.
         </p>
       ) : null}
+      {mutationBlockedReason === undefined ? null : (
+        <p
+          id={mutationBlockedReasonId}
+          className="wb-cowork-provenance-panel__reason"
+          role="status"
+        >
+          {mutationBlockedReason}
+        </p>
+      )}
       <p className="wb-cowork-provenance-panel__success" aria-live="polite">
         {success ?? ""}
       </p>
@@ -839,24 +889,20 @@ function ProvenanceContents({
             ref={routedSelectionReviewRef}
             type="button"
             disabled={!selectionReviewEnabled}
-            aria-describedby={
-              selectionReviewTargetsAreCurrent
-                ? undefined
-                : "wb-cowork-selection-review-stale"
-            }
+            aria-describedby={selectionReviewDescriptionId}
             onClick={() =>
               void markReviewed(selectionReviewTargets, true)
             }
           >
             {pendingIds.size > 0 ? "Recording…" : "Mark as reviewed"}
           </button>
-          {selectionReviewTargetsAreCurrent ? null : (
+          {selectionReviewDisabledReason === null ||
+          selectionReviewDescriptionId === mutationBlockedReasonId ? null : (
             <p
-              id="wb-cowork-selection-review-stale"
+              id={selectionReviewReasonId}
               className="wb-cowork-provenance-panel__reason"
             >
-              The selected provenance changed. Reselect the passage to review
-              its current record.
+              {selectionReviewDisabledReason}
             </p>
           )}
         </article>
@@ -1025,6 +1071,7 @@ function ProvenanceContents({
                               targetCanReview &&
                               view.currentStructuredHeadSha256 !== null &&
                               readOnly !== true &&
+                              mutationBlockedReason === undefined &&
                               mutationBarrier !== undefined &&
                               pendingIds.size === 0;
                             const reason =
@@ -1041,20 +1088,28 @@ function ProvenanceContents({
                                         ? "No current structured document head is available, so review cannot be recorded."
                                         : readOnly === true && targetCanReview
                                           ? "This document is read-only, so review cannot be recorded."
+                                          : mutationBlockedReason !== undefined &&
+                                              targetCanReview
+                                            ? mutationBlockedReason
                                           : mutationBarrier === undefined &&
                                               targetCanReview
                                             ? "The editor is not ready to record review safely."
                                             : reviewBlockedReason(target);
                             const reasonId = `wb-cowork-provenance-review-reason-${id}`;
+                            const descriptionId = reviewEnabled
+                              ? undefined
+                              : mutationBlockedReason !== undefined &&
+                                  targetCanReview &&
+                                  reason === mutationBlockedReason
+                                ? mutationBlockedReasonId
+                                : reasonId;
                             return (
                               <div className="wb-cowork-provenance-panel__actions">
                                 <h4>Actions</h4>
                                 <button
                                   type="button"
                                   disabled={!reviewEnabled}
-                                  aria-describedby={
-                                    reviewEnabled ? undefined : reasonId
-                                  }
+                                  aria-describedby={descriptionId}
                                   onClick={() => void markReviewed([target])}
                                 >
                                   {pendingIds.has(record.attestationId)
@@ -1067,14 +1122,14 @@ function ProvenanceContents({
                                     not change its authorship or assert that it
                                     is true.
                                   </p>
-                                ) : (
+                                ) : descriptionId === reasonId ? (
                                   <p
                                     id={reasonId}
                                     className="wb-cowork-provenance-panel__reason"
                                   >
                                     {reason}
                                   </p>
-                                )}
+                                ) : null}
                               </div>
                             );
                           })()
@@ -1206,6 +1261,7 @@ export function ProvenancePanel(props: ProvenancePanelProps) {
           mutationBarrier={props.mutationBarrier}
           selectionAction={props.selectionAction}
           inputProvenancePending={props.inputProvenancePending}
+          mutationBlockedReason={props.mutationBlockedReason}
         />
       </>
     );
@@ -1217,6 +1273,7 @@ export function ProvenancePanel(props: ProvenancePanelProps) {
     props.mutationBarrier,
     props.provider,
     props.readOnly,
+    props.mutationBlockedReason,
     props.selectionAction,
   ]);
   return (

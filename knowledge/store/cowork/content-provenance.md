@@ -143,6 +143,16 @@ and receives focus with a reselect-and-inspect explanation. Recording
 pre-existing text uses an explicit determination and keeps its source labeled
 **Untracked / legacy**.
 
+Resolving the current human actor is required for **Record provenance** and
+**Mark as reviewed**, but never for non-mutating **View provenance** or
+**Inspect provenance**. If the dashboard's local identity session is missing or
+expires, the Provenance selection affordance remains available for inspection;
+the editor shows a reconnect action, and the stable panel keeps review controls
+visible but disabled with the same reconnect reason. If identity becomes
+unavailable while a routed review is focused, focus moves to that review's
+status card. The generic **Give feedback** action is not substituted because it
+also records a human-authority mutation.
+
 Provenance has a dedicated typed provider and panel projection. It can share the
 authoritative open-document snapshot source with other rails, but it does not
 enlarge Review's domain payload into a general provenance transport. Hover and
