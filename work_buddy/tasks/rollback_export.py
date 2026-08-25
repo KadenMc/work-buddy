@@ -78,9 +78,24 @@ _NOTE_UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
     re.IGNORECASE,
 )
-_LOCAL_FILE_TOKEN_RE = re.compile(r"wb-local-file:([A-Za-z0-9_.:-]+)")
+_LOCAL_FILE_TOKEN_RE = re.compile(
+    r"wb-local-file:((?:[A-Za-z0-9_.:-]|\\[_.:-])+)",
+)
+_LOCAL_FILE_ESCAPE_RE = re.compile(r"\\([_.:-])")
 _UNREPRESENTABLE_DESCRIPTION_RE = re.compile(r"[\r\n]|\[\[|#\S|[🆔📅✅🔽🔼⏫]")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _normalize_local_file_tokens(content: str) -> str:
+    """Undo Markdown escapes inside opaque local-file identifiers."""
+
+    return _LOCAL_FILE_TOKEN_RE.sub(
+        lambda match: (
+            "wb-local-file:" + _LOCAL_FILE_ESCAPE_RE.sub(r"\1", match.group(1))
+        ),
+        content,
+    )
+
 
 _LEGACY_TASK_COLUMNS = (
     "task_id",
@@ -2252,18 +2267,26 @@ class ReverseLegacyTaskExportOperator:
         for task_id, task in task_by_id.items():
             if _LEGACY_TASK_ID_RE.fullmatch(task_id) is None:
                 blockers.append({"task_id": task_id, "reason": "legacy_task_id_unrepresentable"})
-            description = str(task.get("description") or "").strip()
-            if not description or _UNREPRESENTABLE_DESCRIPTION_RE.search(description):
-                blockers.append(
-                    {"task_id": task_id, "reason": "legacy_description_unrepresentable"}
-                )
+            is_tombstone = task.get("deleted_at") is not None
+            # Deleted rows are retained as database-only tombstones.  Legacy v11
+            # permits their historical description to be NULL, and they are not
+            # rendered into a Markdown task line for the parser to consume.
+            if not is_tombstone:
+                description = str(task.get("description") or "").strip()
+                if not description or _UNREPRESENTABLE_DESCRIPTION_RE.search(description):
+                    blockers.append(
+                        {"task_id": task_id, "reason": "legacy_description_unrepresentable"}
+                    )
             note_uuid = task.get("note_uuid")
             link = links_by_task.get(task_id)
             if note_uuid:
                 if _NOTE_UUID_RE.fullmatch(str(note_uuid)) is None:
                     blockers.append({"task_id": task_id, "reason": "legacy_note_uuid_invalid"})
                 if link is None:
-                    blockers.append({"task_id": task_id, "reason": "task_document_link_missing"})
+                    if not is_tombstone:
+                        blockers.append(
+                            {"task_id": task_id, "reason": "task_document_link_missing"}
+                        )
                 elif str(link["note_uuid"]).casefold() != str(note_uuid).casefold():
                     blockers.append({"task_id": task_id, "reason": "task_note_link_mismatch"})
             elif link is not None:
@@ -2874,6 +2897,8 @@ class ReverseLegacyTaskExportOperator:
         documents: dict[str, str],
     ) -> list[dict[str, Any]]:
         links = list(snapshot.local_file_links)
+        for note_uuid, content in tuple(documents.items()):
+            documents[note_uuid] = _normalize_local_file_tokens(content)
         all_tokens = {
             token
             for content in documents.values()
