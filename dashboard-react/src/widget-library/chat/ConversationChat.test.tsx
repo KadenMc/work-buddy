@@ -31,6 +31,33 @@ function provider(
 }
 
 describe("ConversationChat", () => {
+  it("launches through the host without preparing or sending the preserved composer draft", async () => {
+    const chatProvider = provider("c1");
+    const sendMessage = vi.spyOn(chatProvider, "sendMessage");
+    const prepareSend = vi.fn(async (input: ChatSendInput) => input);
+    const onAction = vi.fn();
+    const onDraftChange = vi.fn();
+    const { rerender } = render(<ConversationChat provider={chatProvider} conversationId="c1" prepareSend={prepareSend} composerDisabled initialValue="Keep this for a later Send" onDraftChange={onDraftChange} composerPrimaryAction={{ label: "Launch", disabled: false, onAction }} />);
+    const input = await screen.findByRole("textbox", { name: "Message" });
+    await userEvent.click(screen.getByRole("button", { name: "Launch" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Launch" })).toBeEnabled());
+    expect(onAction).toHaveBeenCalledTimes(1);
+    expect(prepareSend).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(onDraftChange).not.toHaveBeenCalled();
+    expect(input).toHaveValue("Keep this for a later Send");
+
+    rerender(<ConversationChat provider={chatProvider} conversationId="c1" prepareSend={prepareSend} onDraftChange={onDraftChange} />);
+    expect(screen.getByRole("textbox", { name: "Message" })).toBe(input);
+    expect(input).toHaveValue("Keep this for a later Send");
+    expect(prepareSend).not.toHaveBeenCalled();
+    expect(sendMessage).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(input).toHaveValue(""));
+    expect(prepareSend).toHaveBeenCalledTimes(1);
+    expect(sendMessage).toHaveBeenCalledWith("c1", expect.objectContaining({ value: "Keep this for a later Send" }));
+  });
+
   it("owns provider loading and reports the canonical messages", async () => {
     const onMessagesChange = vi.fn();
     render(

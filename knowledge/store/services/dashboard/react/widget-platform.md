@@ -33,6 +33,20 @@ dev_notes: |-
   Use `HelpTarget` or a primitive's `help` prop for contextual explanations.
   Tooltip descriptions augment existing `aria-describedby` references, including
   validation errors; they must not replace them.
+
+  `dashboard/layout/WorkspaceSidePanel` wraps the installed resizable-panels
+  Group/Panel/Separator and keeps both subtrees mounted across split and
+  single-pane modes. Hosts supply a stable preference key and panel IDs, content
+  and responsive policy. Validate stored layouts and tolerate unavailable storage;
+  only settled split user interactions persist sizes. Bridge HelpTarget through
+  the library separator's element ref and focus capture without replacing its
+  keyboard handlers. Preserve Co-work's existing layout key and panel IDs.
+
+  `AssistedDraftWorkspace` is rendered around standard-grid content, not around
+  App or the view chrome. Its opaque outlet identity keeps root-owned assistance
+  bound to the originating view; rendering there, rather than portaling from the
+  root, preserves the existing Help context. Keep presentation retention separate
+  from `definition.durable` authority and from WidgetHost draft-scope re-keying.
 ---
 
 The widget platform is the standard composition model for React dashboard views. It preserves extensive personalization without turning every shareable App into an unrelated page implementation.
@@ -74,6 +88,22 @@ a sibling assistance dock, resizing a grid cell, or re-homing a durable widget
 updates presentation without remounting its renderer or changing draft identity.
 Responsive widgets must use this available width, not assume the whole browser
 viewport belongs to them.
+
+### Workspace side panels
+
+A contextual side panel belongs beside the normal content area, below the
+view's page chrome; it is not a grid widget and does not squeeze global
+navigation. The shared layout primitive owns the orange drag divider,
+keyboard resizing, reset-to-default gesture and width persistence. Co-work and
+form AI help use that same primitive while retaining their own responsive and
+content policies. Stored preferences contain only layout sizes.
+
+A responsive presentation change must not end a live form conversation or
+discard an unsent message. Assistable standard widgets share the keep-alive
+placement mechanism without becoming App-owned durable widgets: host draft
+persistence, Arrange inertness, Preview forks and effect fences still apply.
+Only real removal, replacement, identity or editing-lifetime changes detach the
+form. Contextual Hover Help uses the existing provider around the visible view.
 
 ## Operate, Arrange, and Preview
 

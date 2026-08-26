@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 
 import { Button, InlineAlert } from "../../ui";
-import { ChatComposer } from "./ChatComposer";
+import { ChatComposer, type ChatComposerPrimaryAction } from "./ChatComposer";
 import { ChatExecutionPicker } from "./ChatExecutionPicker";
 import { ChatMessageList } from "./ChatMessageList";
 import type {
@@ -123,6 +123,8 @@ export interface ChatPanelProps {
   readonly composerAccessory?: ReactNode;
   /** Compact additive context rendered in the shared composer footer. */
   readonly composerFooterAccessory?: ReactNode;
+  /** Explicit host action in place of Send, without submitting the composer draft. */
+  readonly composerPrimaryAction?: ChatComposerPrimaryAction;
   /** Seed the composer draft once on mount, e.g. from a retained unsent draft. */
   readonly initialValue?: string;
   /**
@@ -186,6 +188,7 @@ export function ChatPanel({
   composerPlaceholder,
   composerAccessory,
   composerFooterAccessory,
+  composerPrimaryAction,
   initialValue,
   onDraftChange,
   readOnlyReason,
@@ -202,9 +205,15 @@ export function ChatPanel({
   const label = title ?? "Conversation";
   const readOnly =
     status === "read-only" || execution?.snapshot?.readOnly === true;
-  const executionLocked = readOnly || (executionDisabled ?? composerDisabled) || sending || agentActivity === "thinking";
+  const executionLocked =
+    readOnly ||
+    (executionDisabled ?? composerDisabled) ||
+    sending ||
+    agentActivity === "thinking" ||
+    composerPrimaryAction?.pending === true;
   const structuredResponsesDisabled =
     responsesDisabled ||
+    composerPrimaryAction !== undefined ||
     readOnly ||
     agentActivity === "thinking" ||
     composerDisabled ||
@@ -284,6 +293,7 @@ export function ChatPanel({
             executionDisabled={executionDisabled}
             accessory={composerAccessory}
             footerAccessory={composerFooterAccessory}
+            primaryAction={composerPrimaryAction}
           />
         ) : execution === undefined ? null : (
           <ChatExecutionPicker control={execution} disabled={executionLocked} />

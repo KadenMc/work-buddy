@@ -845,45 +845,6 @@
   display: none;
 }
 
-/*
- * The separator between the editor and the rail. The library renders it as
- * `<div data-separator role="separator">` with the arrow-key and double-click behavior and the
- * WAI-ARIA value props. This styles it as a divider (a 1px line that matches the rail border at
- * rest) inside a comfortable grab strip, and thickens the line on hover, focus, and drag.
- */
-.wb-cowork__rail-separator {
-  position: relative;
-  inline-size: 11px;
-  align-self: stretch;
-  cursor: col-resize;
-}
-
-.wb-cowork__rail-separator::before {
-  content: "";
-  position: absolute;
-  inset-block: 0;
-  inset-inline-start: 50%;
-  transform: translateX(-50%);
-  inline-size: 1px;
-  background: var(--wb-color-border-default);
-  transition:
-    inline-size var(--wb-motion-duration-fast) var(--wb-motion-easing-standard),
-    background-color var(--wb-motion-duration-fast)
-      var(--wb-motion-easing-standard);
-}
-
-.wb-cowork__rail-separator:hover::before,
-.wb-cowork__rail-separator:active::before,
-.wb-cowork__rail-separator:focus-visible::before {
-  inline-size: 3px;
-  background: var(--wb-color-border-interactive);
-}
-
-.wb-cowork__rail-separator:focus-visible {
-  outline: none;
-  box-shadow: var(--wb-shadow-focus);
-}
-
 .wb-cowork__rail-tabs {
   display: flex;
   gap: var(--wb-space-1);
@@ -950,24 +911,6 @@
     box-shadow: var(--wb-shadow-focus);
   }
 
-  /*
-   * Panel forwards data attributes to its outer, inline-styled sizing element and puts
-   * className on an inner content element. Target the actual panel boundary and override
-   * the library's inline display/flex sizing so exactly one peer pane occupies the viewport.
-   */
-  .wb-cowork__body[data-narrow="true"]
-    > [data-panel][data-pane-active="false"] {
-    display: none !important;
-  }
-
-  .wb-cowork__body[data-narrow="true"] > [data-panel][data-pane-active="true"] {
-    flex: 1 1 100% !important;
-    inline-size: 100%;
-  }
-
-  .wb-cowork__body[data-narrow="true"] .wb-cowork__rail-separator {
-    display: none;
-  }
 }
 
 .wb-cowork__rail-tab:focus-visible {
@@ -1321,8 +1264,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .wb-cowork__rail-tab,
-  .wb-cowork__rail-separator::before {
+  .wb-cowork__rail-tab {
     transition: none;
   }
   .wb-cowork-anchor--flash,
@@ -1334,14 +1276,6 @@
 @media (forced-colors: active) {
   .wb-cowork__drift {
     border: 1px solid CanvasText;
-  }
-  .wb-cowork__rail-separator::before {
-    background: CanvasText;
-  }
-  .wb-cowork__rail-separator:hover::before,
-  .wb-cowork__rail-separator:active::before,
-  .wb-cowork__rail-separator:focus-visible::before {
-    background: Highlight;
   }
   .wb-cowork__rail-tab[aria-selected="true"] {
     border-color: Highlight;

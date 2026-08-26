@@ -18,6 +18,7 @@ import { SquaresFour } from "@phosphor-icons/react/SquaresFour";
 import { X } from "@phosphor-icons/react/X";
 
 import { useDashboardAnnouncer } from "../accessibility/DashboardAnnouncer";
+import { AssistedDraftWorkspace } from "../assistance";
 import { Button } from "../../ui";
 import type {
   ViewDefinition,
@@ -121,6 +122,12 @@ const sizeModeFor = (
   if (instance.layout.w >= Math.min(24, defaultWidth + 6)) return "expanded";
   return "standard";
 };
+
+// Presentation keep-alive is not durable-widget authority. Assistable forms must
+// retain their live draft binding across desktop/mobile cell remounts, but still
+// enter Arrange/Preview and remain removable just like other standard widgets.
+const keepsLiveWidget = (definition: WidgetDefinition): boolean =>
+  definition.durable === true || (definition.assistableDrafts?.length ?? 0) > 0;
 
 function StandardGridViewHost({
   registry,
@@ -618,21 +625,24 @@ function StandardGridViewHost({
     ],
   );
 
-  // The live nodes the keep-alive host owns: one per visible durable instance. The host
-  // portals each into a permanent wrapper and re-homes it across every grid remount, so
-  // these elements are never unmounted by a customize toggle or an interaction recovery.
-  const durableEntries = useMemo<readonly DurableEntry[]>(
+  // Keep live form bindings as well as explicitly durable widgets above the grid.
+  // Only the latter receive durable authority exemptions; an assistable form still
+  // uses the normal mode, stale/error, hide, and remove policy in widgetHostFor.
+  const liveEntries = useMemo<readonly DurableEntry[]>(
     () =>
       editState.present.instances
         .filter((instance) => instance.visibility === "shown")
-        .filter(
-          (instance) =>
-            registry.getWidget(instance.widgetTypeId)?.definition.durable === true,
-        )
-        .map((instance) => ({
-          instanceId: instance.instanceId,
-          node: widgetHostFor(instance, { durable: true }),
-        })),
+        .flatMap((instance) => {
+          const widget = registry.getWidget(instance.widgetTypeId)?.definition;
+          return widget !== undefined && keepsLiveWidget(widget)
+            ? [
+                {
+                  instanceId: instance.instanceId,
+                  node: widgetHostFor(instance, { durable: widget.durable === true }),
+                },
+              ]
+            : [];
+        }),
     [editState.present.instances, registry, widgetHostFor],
   );
 
@@ -670,7 +680,7 @@ function StandardGridViewHost({
   // blocking their outward effects. A durable widget owns its persistence and stays live in
   // every mode, so Preview has nothing to sandbox on it. A view whose every visible widget is
   // durable therefore offers Arrange only. This resolves definition.durable exactly as
-  // renderWidget and durableEntries do, so it stays a generic rule with no per-view branch.
+  // widgetHostFor does, independently of presentation-only keep-alive.
   const everyVisibleWidgetIsDurable = visibleInstances.every(
     (instance) =>
       registry.getWidget(instance.widgetTypeId)?.definition.durable === true,
@@ -710,10 +720,10 @@ function StandardGridViewHost({
         </WidgetFrame>
       );
     }
-    // A durable widget lives in the keep-alive host above the grid. Its grid cell is a
+    // A live widget lives in the keep-alive host above the grid. Its grid cell is a
     // light placeholder that re-homes the live element on mount and parks it on unmount,
     // so the cell may remount as often as the grid likes with no effect on the widget.
-    if (registered.definition.durable === true) {
+    if (keepsLiveWidget(registered.definition)) {
       return <DurableCell instanceId={instance.instanceId} />;
     }
     return widgetHostFor(instance, { durable: false });
@@ -880,41 +890,43 @@ function StandardGridViewHost({
       {personalizationError ? (
         <p className="wb-view-host__warning" role="alert">{personalizationError}</p>
       ) : null}
-      <DurableWidgetHost entries={durableEntries}>
-        {isMobile ? (
-          <div className="wb-dashboard-mobile-stack">
-            {orderedMobile.map((instance) => (
-              <div key={instance.instanceId}>{renderWidget(instance)}</div>
-            ))}
-          </div>
-        ) : (
-          <ReactGridLayoutAdapter
-            items={layoutFor(editState)}
-            editMode={customizing && customizeMode === "arrange"}
-            onDraftChange={(layout) =>
-              customizing && customizeMode === "arrange" && act({ type: "preview-layout", layout })
-            }
-            onInteractionStart={() => act({ type: "begin-interaction" })}
-            onKeyboardCommand={issueLayoutCommand}
-            onInteractionRejected={(kind, instanceId) =>
-              showDashboardNotice(layoutConstraintMessage(kind, instanceId))
-            }
-            onInteractionCancel={(kind, _instanceId, reason) => {
-              act({ type: "cancel-interaction" });
-              if (reason !== "edit-mode-ended") {
-                showDashboardNotice(
-                  `${kind === "resize" ? "Resize" : "Move"} canceled because the pointer interaction ended outside the dashboard.`,
-                );
+      <AssistedDraftWorkspace viewId={definition.viewId}>
+        <DurableWidgetHost entries={liveEntries}>
+          {isMobile ? (
+            <div className="wb-dashboard-mobile-stack">
+              {orderedMobile.map((instance) => (
+                <div key={instance.instanceId}>{renderWidget(instance)}</div>
+              ))}
+            </div>
+          ) : (
+            <ReactGridLayoutAdapter
+              items={layoutFor(editState)}
+              editMode={customizing && customizeMode === "arrange"}
+              onDraftChange={(layout) =>
+                customizing && customizeMode === "arrange" && act({ type: "preview-layout", layout })
               }
-            }}
-            onInteractionEnd={() => act({ type: "commit-interaction" })}
-            renderItem={(layoutItem) => {
-              const instance = byId.get(layoutItem.instanceId);
-              return instance === undefined ? null : renderWidget(instance);
-            }}
-          />
-        )}
-      </DurableWidgetHost>
+              onInteractionStart={() => act({ type: "begin-interaction" })}
+              onKeyboardCommand={issueLayoutCommand}
+              onInteractionRejected={(kind, instanceId) =>
+                showDashboardNotice(layoutConstraintMessage(kind, instanceId))
+              }
+              onInteractionCancel={(kind, _instanceId, reason) => {
+                act({ type: "cancel-interaction" });
+                if (reason !== "edit-mode-ended") {
+                  showDashboardNotice(
+                    `${kind === "resize" ? "Resize" : "Move"} canceled because the pointer interaction ended outside the dashboard.`,
+                  );
+                }
+              }}
+              onInteractionEnd={() => act({ type: "commit-interaction" })}
+              renderItem={(layoutItem) => {
+                const instance = byId.get(layoutItem.instanceId);
+                return instance === undefined ? null : renderWidget(instance);
+              }}
+            />
+          )}
+        </DurableWidgetHost>
+      </AssistedDraftWorkspace>
       {catalogOpen ? (
         <WidgetCatalogDrawer
           registry={registry}

@@ -55,6 +55,32 @@ const executionControl = (
 });
 
 describe("ChatPanel", () => {
+  it("forwards a host primary action without authorizing inline answers", async () => {
+    const onAction = vi.fn();
+    const onSend = vi.fn();
+    render(<ChatPanel messages={[pendingQuestion]} onSend={onSend} composerPrimaryAction={{ label: "Launch", disabled: false, onAction }} />);
+    expect(screen.queryByRole("button", { name: "Send" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Yes" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "No" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Launch" }));
+    expect(onAction).toHaveBeenCalledTimes(1);
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it("never exposes a host launch action in a read-only conversation", () => {
+    render(<ChatPanel status="read-only" messages={messages} onSend={vi.fn()} composerPrimaryAction={{ label: "Launch", disabled: false, onAction: vi.fn() }} />);
+    expect(screen.queryByRole("button", { name: "Launch" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(screen.getByText("Hi")).toBeVisible();
+  });
+
+  it.each(["loading", "empty", "error"] as const)("keeps a pending host action locked and absent from the %s fallback", (status) => {
+    render(<ChatPanel status={status} messages={[]} onSend={vi.fn()} execution={executionControl()} executionDisabled={false} composerPrimaryAction={{ label: "Launch", pendingLabel: "Launching…", pending: true, disabled: false, onAction: vi.fn() }} onRetry={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: /Launch/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Run with/ })).toBeDisabled();
+    if (status === "error") expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled();
+  });
+
   it.each(["loading", "empty", "error"] as const)("preserves host model locks in the %s fallback", (status) => {
     const { rerender } = render(<ChatPanel status={status} messages={[]} onSend={vi.fn()} composerDisabled execution={executionControl()} executionDisabled />);
     expect(screen.getByRole("button", { name: /Run with/ })).toBeDisabled();

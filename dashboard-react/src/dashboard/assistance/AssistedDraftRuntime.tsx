@@ -1,5 +1,5 @@
 import { Sparkle } from "@phosphor-icons/react/Sparkle";
-import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
 
 import type { JsonObject, JsonSchemaReference } from "../contributions/contracts";
 import { useWidgetAssistanceDeclaration, type WidgetDraftHandle } from "../drafts/WidgetDraftRuntime";
@@ -8,7 +8,8 @@ import { HttpChatConversationProvider } from "../conversations/HttpChatConversat
 import { HttpChatExecutionProfileProvider } from "../conversations/HttpChatExecutionProfileProvider";
 import { HelpTarget, type HelpContent } from "../help";
 import { ChatPanelState, ConversationChat, useChatExecutionProfile, type ChatConversationProvider, type ChatExecutionControl, type ChatSendInput } from "../../widget-library/chat";
-import { Button, InlineAlert, VisuallyHidden } from "../../ui";
+import { Button, InlineAlert, SegmentedControl, VisuallyHidden } from "../../ui";
+import { WorkspaceSidePanel } from "../layout/WorkspaceSidePanel";
 import type { AssistanceAvailability, AssistanceSession, AssistanceStartRequest, AssistanceStopRequest, AssistedDraftPatch, AssistedFormSchema, DraftPatchReceipt, PreparedDraftSnapshot } from "./contracts";
 import { assistedForms, discloseSnapshot, equalJson, fieldFor, isRecord, pathKey, readField, snapshotHash, validateFieldValue } from "./schema";
 import { planPatch, planUndo, validatePatch, type FieldChange, type PatchPlan } from "./patches";
@@ -19,6 +20,7 @@ import "./assistance.css";
 interface LiveDraft {
   readonly key: string;
   readonly paneId: string;
+  readonly outletId: string;
   readonly identity: WidgetDraftIdentity;
   readonly schema: JsonSchemaReference;
   readonly form: AssistedFormSchema;
@@ -49,6 +51,8 @@ interface AssistanceRuntime {
 }
 
 const RuntimeContext = createContext<AssistanceRuntime | null>(null);
+const WorkspaceOutletContext = createContext<string | null>(null);
+const DockContext = createContext<{ readonly outletId: string; readonly open: boolean; readonly opener: HTMLElement | null; readonly content: ReactNode } | null>(null);
 const newId = () => globalThis.crypto.randomUUID();
 const failure = (error: unknown) => error instanceof Error ? error.message : "Assistance is unavailable. Your form remains editable.";
 const DRAFT_ASSISTANCE_HELP: HelpContent = {
@@ -56,7 +60,7 @@ const DRAFT_ASSISTANCE_HELP: HelpContent = {
   details: "The assistant fills these fields. You can edit or undo its suggestions; only you can submit the form.",
 };
 const AVAILABILITY_LABELS: Readonly<Record<AssistanceAvailability["code"], string>> = {
-  ready: "Ready to start",
+  ready: "Ready to launch",
   not_configured: "Form assistance is not configured.",
   disabled: "Form assistance is off.",
   invalid_configuration: "Form assistance needs attention.",
@@ -88,6 +92,7 @@ export interface AssistedDraftControl {
 /** Widget-facing seam: no provider, URL, event stream, or model authority. */
 export function useAssistedDraft<Value>(draftName: string, draft: WidgetDraftHandle<Value>, options: UseAssistedDraftOptions): AssistedDraftControl {
   const runtime = useContext(RuntimeContext);
+  const outletId = useContext(WorkspaceOutletContext);
   const declaration = useWidgetAssistanceDeclaration(draftName);
   const form = declaration ? assistedForms[draftName] : undefined;
   const identityKey = widgetDraftStorageKey(draft.identity);
@@ -100,9 +105,9 @@ export function useAssistedDraft<Value>(draftName: string, draft: WidgetDraftHan
   draftRef.current = draft;
   optionsRef.current = options;
   const binding = useMemo<LiveDraft | null>(() => {
-    if (!declaration || !form || declaration.submitPolicy !== "user_only" || !equalJson(declaration.schema, draft.schema)) return null;
+    if (!outletId || !declaration || !form || declaration.submitPolicy !== "user_only" || !equalJson(declaration.schema, draft.schema)) return null;
     return {
-      key: identityKey, paneId, identity: draft.identity, schema: draft.schema, form,
+      key: identityKey, paneId, outletId, identity: draft.identity, schema: draft.schema, form,
       title: () => optionsRef.current.title ?? form.title,
       editable: () => optionsRef.current.interactionMode === "operate" && !optionsRef.current.readOnly,
       mounted: () => mountedRef.current && widgetDraftStorageKey(draftRef.current.identity) === identityKey,
@@ -112,7 +117,7 @@ export function useAssistedDraft<Value>(draftName: string, draft: WidgetDraftHan
       flush: () => draftRef.current.flush(),
       focused: () => focusedRef.current,
     };
-  }, [declaration, form, identityKey, paneId]);
+  }, [declaration, form, identityKey, outletId, paneId]);
   const register = runtime?.register;
   useEffect(() => {
     mountedRef.current = true;
@@ -166,6 +171,7 @@ export function AssistedDraftRuntimeProvider({ children, fetchImpl }: { readonly
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const [displayedKey, setDisplayedKey] = useState<string | null>(null);
   const returnFocus = useRef<HTMLElement | null>(null);
+  const closingFocus = useRef<HTMLElement | null>(null);
   const [receipts, setReceipts] = useState<ReadonlyMap<string, readonly ReceiptRecord[]>>(new Map());
   const [, rerender] = useState(0);
   const register = useCallback((binding: LiveDraft) => {
@@ -202,10 +208,16 @@ export function AssistedDraftRuntimeProvider({ children, fetchImpl }: { readonly
     }
   }, []);
   const close = useCallback(() => {
+    closingFocus.current = returnFocus.current;
     setActiveKey(null);
-    const trigger = returnFocus.current;
-    if (trigger?.isConnected) trigger.focus({ preventScroll: true });
   }, []);
+  useLayoutEffect(() => {
+    if (activeKey !== null) return;
+    const trigger = closingFocus.current;
+    closingFocus.current = null;
+    // The compact primary panel must be unhidden before it can accept focus.
+    if (trigger?.isConnected) trigger.focus({ preventScroll: true });
+  }, [activeKey]);
   useEffect(() => {
     const retry = () => { void revocations.retry(); void pauses.retry(); };
     retry();
@@ -222,14 +234,197 @@ export function AssistedDraftRuntimeProvider({ children, fetchImpl }: { readonly
   const onSession = useCallback((key: string, sessionId: string) => { sessionsByDraft.current.set(key, sessionId); }, []);
   const value = useMemo(() => ({ activeKey, receipts, register, changed, reset, open }), [activeKey, receipts, register, changed, reset, open]);
   const binding = displayedKey ? registry.current.get(displayedKey) : undefined;
+  // The root owns cancellation, but the workspace outlet must render the dock:
+  // its local Help/router context does not reach a sibling rendered above App.
+  const dock = binding ? {
+    outletId: binding.outletId,
+    open: activeKey === binding.key,
+    opener: returnFocus.current,
+    content: <AssistantDock key={binding.key} binding={binding} open={activeKey === binding.key} initialRecords={receipts.get(binding.key) ?? []} client={client} revocations={revocations} pauses={pauses} onClose={close} onRecords={onRecords} onSession={onSession} />,
+  } : null;
   return <RuntimeContext.Provider value={value}>
     {revocations.error && <InlineAlert tone="warning" role="status" className="wb-assistance-cancellation">{revocations.error}<Button type="button" size="small" onClick={() => { void revocations.retry(); }}>Retry cancellation</Button></InlineAlert>}
     {pauses.error && <InlineAlert tone="warning" role="status" className="wb-assistance-cancellation">{pauses.error}<Button type="button" size="small" onClick={() => { void pauses.retry(); }}>Retry pending Stop</Button></InlineAlert>}
-    <div className="wb-assistance-host" data-assistance-open={binding && activeKey ? "true" : undefined}>
-      <div className="wb-assistance-host__content">{children}</div>
-      {binding && <AssistantDock key={binding.key} binding={binding} open={activeKey === binding.key} initialRecords={receipts.get(binding.key) ?? []} client={client} revocations={revocations} pauses={pauses} onClose={close} onRecords={onRecords} onSession={onSession} />}
-    </div>
+    <DockContext.Provider value={dock}>{children}</DockContext.Provider>
   </RuntimeContext.Provider>;
+}
+
+const pixels = (value: string): number => Number.parseFloat(value) || 0;
+const blockEdges = (style: CSSStyleDeclaration): number =>
+  pixels(style.paddingTop) + pixels(style.paddingBottom) + pixels(style.borderTopWidth) + pixels(style.borderBottomWidth);
+
+/** Rendered, non-shrinking chrome around one flexible child; never its scroll content. */
+function fixedBlockSize(element: HTMLElement, flexible?: HTMLElement): number {
+  const style = getComputedStyle(element);
+  const children = Array.from(element.children).filter((child): child is HTMLElement => child instanceof HTMLElement)
+    .map((child) => ({ child, style: getComputedStyle(child) }))
+    .filter(({ style: childStyle }) => childStyle.display !== "none" && childStyle.position !== "absolute" && childStyle.position !== "fixed");
+  return blockEdges(style) + pixels(style.rowGap) * Math.max(0, children.length - 1)
+    + children.reduce((height, { child, style: childStyle }) => height + pixels(childStyle.marginTop) + pixels(childStyle.marginBottom)
+      + (child === flexible ? 0 : child.getBoundingClientRect().height), 0);
+}
+
+function assistanceContentMinimum(element: HTMLElement): number | null {
+  const dock = element.querySelector<HTMLElement>(".wb-assistance-dock");
+  if (!dock || dock.closest("[hidden]") || dock.getBoundingClientRect().height <= 0) return null;
+  const body = dock.querySelector<HTMLElement>(":scope > .wb-assistance-dock__body");
+  const chat = body?.querySelector<HTMLElement>(":scope > .wb-chat-panel");
+  if (!body || !chat) return null;
+  const dockMinimum = fixedBlockSize(dock, body) + fixedBlockSize(body, chat);
+  const state = chat.querySelector<HTMLElement>(":scope > .wb-chat-state");
+  if (state) {
+    // Loading, unavailable and recovery states have no transcript to shrink.
+    // Their actual copy, picker and Retry controls must remain page-reachable.
+    const stateMinimum = Math.max(pixels(getComputedStyle(state).minHeight), fixedBlockSize(state));
+    return Math.ceil(dockMinimum + fixedBlockSize(chat, state) + stateMinimum);
+  }
+  const transcript = chat?.querySelector<HTMLElement>(":scope > .wb-chat-list");
+  const scroll = transcript?.querySelector<HTMLElement>(":scope > .wb-chat-list__scroll");
+  if (!transcript || !scroll) return null;
+  const textStyle = getComputedStyle(scroll);
+  // A short, font-scaled transcript viewport remains scrollable. Only chrome
+  // and controls contribute to the rest of the minimum, not message history.
+  const lineHeight = pixels(textStyle.lineHeight) || pixels(textStyle.fontSize) * 1.5;
+  const transcriptMinimum = fixedBlockSize(transcript, scroll) + blockEdges(textStyle) + lineHeight * 3;
+  return Math.ceil(dockMinimum + fixedBlockSize(chat, transcript) + transcriptMinimum);
+}
+
+/** A view-local presentation outlet, below page chrome and the existing Help provider. */
+export function AssistedDraftWorkspace({ children, viewId }: { readonly children: ReactNode; readonly viewId: string }) {
+  const outletId = useId();
+  const dock = useContext(DockContext);
+  const matches = dock?.outletId === outletId;
+  const open = matches && dock.open;
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const [bounds, setBounds] = useState<{ width: number; height: number; contentMinimum: number } | null>(null);
+  const [pane, setPane] = useState<"form" | "assistance">("assistance");
+  const paneRef = useRef(pane);
+  paneRef.current = pane;
+  const wideningFocus = useRef<{ element: HTMLElement; pane: "form" | "assistance" } | null>(null);
+  const wasOpen = useRef(false);
+  const pendingOpenFocus = useRef<HTMLElement | null>(null);
+  const compact = bounds !== null && (bounds.width < 880 || bounds.height < 400);
+
+  useLayoutEffect(() => {
+    const element = bodyRef.current;
+    if (!element) return;
+    let frame = 0;
+    const measure = () => {
+      const rect = element.getBoundingClientRect();
+      if (rect.width <= 0) return;
+      // The viewport limit is measured from this view's actual content origin,
+      // not from the top of App or an assumed navbar height.
+      const viewport = window.visualViewport;
+      const viewportBottom = viewport ? viewport.offsetTop + viewport.height : window.innerHeight;
+      const next = { width: Math.round(rect.width), height: Math.round(viewportBottom - Math.max(0, rect.top) - 16) };
+      const nextCompact = next.width < 880 || next.height < 400;
+      if (nextCompact && element.querySelector(".wb-assistance-workspace__form")?.contains(document.activeElement)) setPane("form");
+      if (!nextCompact && document.activeElement instanceof HTMLElement && element.parentElement?.querySelector(".wb-segmented-field")?.contains(document.activeElement)) {
+        wideningFocus.current = { element: document.activeElement, pane: paneRef.current };
+      }
+      const measuredMinimum = assistanceContentMinimum(element);
+      setBounds((current) => {
+        // A compact hidden pane has no geometry. Keep its last valid minimum
+        // until it is shown and measured again, without remounting its state.
+        const contentMinimum = measuredMinimum ?? current?.contentMinimum ?? 0;
+        return current?.width === next.width && current.height === next.height && current.contentMinimum === contentMinimum
+          ? current : { ...next, contentMinimum };
+      });
+    };
+    const schedule = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(measure); };
+    const observer = new ResizeObserver(schedule);
+    observer.observe(element);
+    if (element.parentElement) observer.observe(element.parentElement);
+    const view = element.closest(".wb-view-host");
+    if (view) observer.observe(view);
+    const contentRoot = element.querySelector<HTMLElement>(".wb-assistance-workspace__panel");
+    if (contentRoot) observer.observe(contentRoot);
+    const observedContent = new Set<HTMLElement>();
+    const observeContent = () => {
+      const current = new Set(contentRoot?.querySelectorAll<HTMLElement>(
+        ".wb-assistance-dock, .wb-assistance-dock > *, .wb-assistance-dock__body > .wb-chat-panel, .wb-assistance-dock__body > .wb-chat-panel > *, .wb-assistance-dock__body > .wb-chat-panel > .wb-chat-list > :not(.wb-chat-list__scroll), .wb-assistance-dock__body > .wb-chat-panel > .wb-chat-state > *",
+      ) ?? []);
+      for (const node of observedContent) {
+        if (!current.has(node)) { observer.unobserve?.(node); observedContent.delete(node); }
+      }
+      for (const node of current) {
+        if (!observedContent.has(node)) { observer.observe(node); observedContent.add(node); }
+      }
+    };
+    // Loading the canonical chat, expanding details, or changing the composer
+    // can change its minimum without resizing the currently clipped host.
+    const mutations = new MutationObserver((records) => {
+      if (records.every((record) => (record.target instanceof Element ? record.target : record.target.parentElement)?.closest(".wb-chat-list__scroll"))) return;
+      observeContent();
+      schedule();
+    });
+    if (contentRoot) mutations.observe(contentRoot, { childList: true, subtree: true, attributes: true, attributeFilter: ["open", "hidden"] });
+    observeContent();
+    window.addEventListener("resize", schedule);
+    window.addEventListener("scroll", schedule, true);
+    window.visualViewport?.addEventListener("resize", schedule);
+    window.visualViewport?.addEventListener("scroll", schedule);
+    measure();
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+      mutations.disconnect();
+      window.removeEventListener("resize", schedule);
+      window.removeEventListener("scroll", schedule, true);
+      window.visualViewport?.removeEventListener("resize", schedule);
+      window.visualViewport?.removeEventListener("scroll", schedule);
+    };
+  }, []);
+
+  // Explicitly reopening brings AI help into view. A responsive transition
+  // keeps the form visible if that is where the user is currently typing.
+  useLayoutEffect(() => {
+    if (open && !wasOpen.current) {
+      setPane("assistance");
+      pendingOpenFocus.current = compact && matches ? dock.opener : null;
+    }
+    wasOpen.current = open;
+    if (!open) pendingOpenFocus.current = null;
+  }, [compact, dock, matches, open]);
+  useLayoutEffect(() => {
+    if (!open || !compact || pane !== "assistance") return;
+    const opener = pendingOpenFocus.current;
+    pendingOpenFocus.current = null;
+    if (opener && (document.activeElement === opener || document.activeElement === document.body)) {
+      bodyRef.current?.querySelector<HTMLHeadingElement>(".wb-assistance-dock h2")?.focus({ preventScroll: true });
+    }
+  }, [compact, open, pane]);
+  useLayoutEffect(() => {
+    if (compact) return;
+    const pending = wideningFocus.current;
+    wideningFocus.current = null;
+    if (!pending || (document.activeElement !== pending.element && document.activeElement !== document.body)) return;
+    const target = pending.pane === "assistance"
+      ? bodyRef.current?.querySelector<HTMLElement>(".wb-assistance-dock h2")
+      : bodyRef.current?.querySelector<HTMLElement>(".wb-assistance-workspace__form input:not(:disabled), .wb-assistance-workspace__form textarea:not(:disabled), .wb-assistance-workspace__form button:not(:disabled)");
+    target?.focus({ preventScroll: true });
+  }, [compact]);
+  const mode = !open ? "primary-only" : compact ? pane === "form" ? "primary-only" : "side-only" : "split";
+  const style = open && bounds ? {
+    "--wb-assistance-workspace-height": `${Math.max(384, bounds.height)}px`,
+    "--wb-assistance-workspace-content-minimum": `${bounds.contentMinimum}px`,
+  } as CSSProperties : undefined;
+
+  return <WorkspaceOutletContext.Provider value={outletId}>
+    <div className="wb-assistance-workspace" data-assistance-open={open ? "true" : undefined} data-compact={compact ? "true" : undefined}>
+      {open && compact && <SegmentedControl<"form" | "assistance"> label="Workspace pane" value={pane} onChange={setPane} options={[{ value: "form", label: "Form" }, { value: "assistance", label: "AI help" }]} />}
+      <div ref={bodyRef} className="wb-assistance-workspace__body" style={style}>
+        <WorkspaceSidePanel
+          layoutId={`wb.workspace-side-panel:${viewId}`}
+          primaryId={`${viewId}:content`} sideId={`${viewId}:side-panel`}
+          mode={mode} primary={children} side={matches ? dock.content : null}
+          resizeLabel="Resize the AI help side panel"
+          sideMinSize="18rem" primaryMinSize="30%"
+          primaryClassName="wb-assistance-workspace__form" sideClassName="wb-assistance-workspace__panel"
+        />
+      </div>
+    </div>
+  </WorkspaceOutletContext.Provider>;
 }
 
 function AssistantDock({ binding, open, onClose, onRecords, onSession, client, revocations, pauses, initialRecords }: {
@@ -471,7 +666,7 @@ function AssistantDock({ binding, open, onClose, onRecords, onSession, client, r
     ...executionState,
     confirmSelection: ({ providerLabel, modelLabel }) => sessionRef.current?.phase === "active" || startAttempt.current !== null ? {
       title: `Switch to ${providerLabel} · ${modelLabel}?`,
-      description: "This stops the current assistant. Your messages, draft and Undo stay here. Review the disclosure and choose Start before the new model receives any content.",
+      description: "This stops the current assistant. Your messages, draft and Undo stay here. Review the disclosure and choose Launch before the new model receives any content.",
       confirmLabel: "Switch model",
     } : null,
     select: async (providerId, modelId) => {
@@ -557,7 +752,7 @@ function AssistantDock({ binding, open, onClose, onRecords, onSession, client, r
       }
       const attempted = startAttempt.current;
       if (attempted.provider_id !== selection.providerId || attempted.model_id !== selection.modelId || attempted.expected_revision !== selection.revision || !equalJson(discloseSnapshot(binding.form, attempted.initialSnapshot.snapshot), attempted.initialSnapshot.snapshot)) {
-        throw new Error("The prepared Start no longer matches this model or form. Choose Start with current fields to authorize a new attempt.");
+        throw new Error("The prepared launch no longer matches this model or form. Choose Launch with current fields to authorize a new attempt.");
       }
       startInFlight.current = true;
       setBusy(true);
@@ -569,7 +764,7 @@ function AssistantDock({ binding, open, onClose, onRecords, onSession, client, r
         startAttempt.current = request;
         writeSessionValue(startStorageKey(currentSession.assistantSessionId), JSON.stringify(request));
         await binding.flush();
-        if (!canMutate() || expectedEpoch !== authorityEpoch.current || revocations.isEnded(currentSession.assistantSessionId)) throw new Error("Start was cancelled because this draft or its model changed. Your form is preserved.");
+        if (!canMutate() || expectedEpoch !== authorityEpoch.current || revocations.isEnded(currentSession.assistantSessionId)) throw new Error("Launch was cancelled because this draft or its model changed. Your form is preserved.");
         const result = normalizeAssistanceSession(await post("start", `assistance:${currentSession.assistantSessionId}`, `/api/assistance/sessions/${encodeURIComponent(currentSession.assistantSessionId)}/start`, request as unknown as Record<string, unknown>, stillCurrent));
         if (expectedEpoch !== authorityEpoch.current || !canMutate()) return;
         await acceptSession(result);
@@ -728,7 +923,7 @@ function AssistantDock({ binding, open, onClose, onRecords, onSession, client, r
     basePath: `/api/assistance/${encodeURIComponent(sessionId)}/conversations`,
     authorizeSend: async (body) => {
       const epoch = authorityEpoch.current;
-      if (!canSend()) throw new Error("Choose Start before sending content to this assistant.");
+      if (!canSend()) throw new Error("Choose Launch before sending content to this assistant.");
       const authorized = await client.authorize("respond", `assistance:${sessionId}`, `/api/assistance/${encodeURIComponent(sessionId)}/conversations/${encodeURIComponent(conversationId)}/respond`, body);
       if (!canSend() || epoch !== authorityEpoch.current) throw new Error("This assistant was paused before the message could be sent.");
       return authorized;
@@ -827,34 +1022,33 @@ function AssistantDock({ binding, open, onClose, onRecords, onSession, client, r
   const selected = execution?.snapshot?.selection;
   const modelLabel = selected ? `${selected.providerLabel} · ${selected.modelLabel}` : "the selected model";
   const startDisabled = !editable || busy || stopPending || !Number.isSafeInteger(session?.controlRevision) || !availability?.available || execution?.status !== "ready" || execution.selecting || !execution.currentAvailable || execution.snapshot?.readOnly === true;
-  const context = <HelpTarget content={{ summary: "AI help is bound to this form.", details: "Start shares its current allowlisted fields and bounded conversation history with the selected provider. Later edits stay private until you send or Start again. Only you can submit the form." }} focusable placement="top start"><span className="wb-chat-composer__footer-accessory wb-assistance-context">About: {binding.form.title}</span></HelpTarget>;
+  const context = <HelpTarget content={{ summary: "AI help is bound to this form.", details: startAttempt.current ? "This launch keeps the fields and recent chat approved for its first attempt. Later edits stay private; choose Launch with current fields to authorize them. Only you can submit the form." : "Launch shares its current allowlisted fields and bounded conversation history with the selected provider. Later edits stay private until you send or launch again. Only you can submit the form." }} focusable placement="top start"><span className="wb-chat-composer__footer-accessory wb-assistance-context">About: {binding.form.title}</span></HelpTarget>;
+  const launchRequired = !terminal && (!active || busy);
+  const launchDisclosure = launchRequired && availability?.available ? <div className="wb-assistance-disclosure" role="group" aria-label="Launch disclosure">
+    <HelpTarget content={{ summary: "Review what Launch shares.", details: availability.disclosure }} focusable placement="top start"><p>{startAttempt.current ? "Uses the fields and recent chat approved for this launch with " : "Launch shares this form's allowed fields and recent chat with "}<strong>{modelLabel}</strong>. Only you submit.</p></HelpTarget>
+    {startAttempt.current && !busy && <HelpTarget content={{ summary: "Authorize the fields you see now.", details: "This creates a new launch attempt using the current fields, instead of retrying the previously authorized snapshot." }} reactAriaComposite><Button ref={freshStartButton} type="button" size="small" disabled={startDisabled} onClick={() => start(true)}>Launch with current fields</Button></HelpTarget>}
+  </div> : undefined;
   const lifecycle = <div className="wb-assistance-lifecycle">
     {!editable && <InlineAlert tone="info" role="status">AI help is paused outside editable Operate mode. Your form is preserved.</InlineAlert>}
     {availability && !availability.available && <InlineAlert tone="info" role="status">{AVAILABILITY_LABELS[availability.code] ?? availability.message} <a href="/app/settings/system/dashboard-ai?setting=wb.dashboard.assistance">Dashboard AI settings</a></InlineAlert>}
     {error && <InlineAlert tone="danger" role="alert">{error}</InlineAlert>}
     {session?.agent?.error && session.agent.error !== error && <InlineAlert tone="danger" role="alert">{session.agent.error}</InlineAlert>}
     {terminal ? <div className="wb-assistance-start" role="status">
-      <p>{session?.phase === "restart_required" ? "This conversation used the previous assistant. Its history and Undo remain available; a new AI help session needs a fresh disclosure and Start." : "This AI help session has ended. Your form, conversation and Undo are preserved."}</p>
-      <Button type="button" disabled={!editable || !availability?.available} onClick={newSession}>New AI help session</Button>
-    </div> : !active || busy ? <><div className="wb-assistance-start" role="group" aria-label="Start disclosure">
-      <p role="status">{busy ? "Starting AI help…" : stopPending ? "Stop has not been confirmed. Retry before starting again." : execution?.status === "ready" && !execution.currentAvailable ? "Choose an available model to start." : session?.phase === "stopped" ? "Assistant stopped. Review the disclosure before starting again." : "Ready for your Start."}</p>
-      {availability?.available && <HelpTarget content={{ summary: "Review what Start shares.", details: availability.disclosure }} focusable><p>Shares this form's allowed fields and recent chat with <strong>{modelLabel}</strong>. You review and submit.</p></HelpTarget>}
-    </div>{availability?.available && <div className="wb-assistance-actions">
-          <Button ref={startButton} type="button" variant="primary" disabled={startDisabled} onClick={() => start()}>{busy ? "Starting…" : startAttempt.current ? "Retry Start" : "Start AI help"}</Button>
-          {startAttempt.current && !busy && <Button ref={freshStartButton} type="button" disabled={startDisabled} onClick={() => start(true)}>Start with current fields</Button>}
-        </div>}</> : <span className="wb-assistance-state" role="status">AI help active · Draft shaping only</span>}
+      <p>{session?.phase === "restart_required" ? "This conversation used the previous assistant. Its history and Undo remain available; a new AI help session needs a fresh disclosure and Launch." : "This AI help session has ended. Your form, conversation and Undo are preserved."}</p>
+      <HelpTarget content={{ summary: "Prepare a new AI help conversation.", details: "The previous conversation stays in history. Review the selected model and disclosure, then choose Launch to share this form." }} reactAriaComposite><Button type="button" disabled={!editable || !availability?.available} onClick={newSession}>New AI help session</Button></HelpTarget>
+    </div> : stopPending ? <p role="status">Stop has not been confirmed. Retry Stop before launching again.</p> : execution?.status === "ready" && !execution.currentAvailable ? <p role="status">Choose an available model to launch.</p> : session?.phase === "stopped" && !busy ? <span className="wb-assistance-state" role="status">Assistant stopped</span> : active && !busy ? <span className="wb-assistance-state" role="status">AI help active · Draft shaping only</span> : null}
     {session && session.phase !== "ended" && session.phase !== "expired" && <div className="wb-assistance-session-actions">
-      {(active || busy || stopPending || startAttempt.current) && <HelpTarget content={{ summary: "Stop the assistant's current work.", details: "Stopping preserves the draft and conversation. A fresh explicit Start is required before the assistant receives more content." }} reactAriaComposite><Button type="button" size="small" onClick={() => { void stop(); }}>{stopPending ? "Retry Stop" : "Stop assistant"}</Button></HelpTarget>}
+      {(active || busy || stopPending || startAttempt.current) && <HelpTarget content={{ summary: "Stop the assistant's current work.", details: "Stopping preserves the draft and conversation. A fresh explicit Launch is required before the assistant receives more content." }} reactAriaComposite><Button type="button" size="small" onClick={() => { void stop(); }}>{stopPending ? "Retry Stop" : "Stop assistant"}</Button></HelpTarget>}
       <details>
         <summary>Session actions</summary>
-        <HelpTarget content={{ summary: "Permanently end this AI help session.", details: "Your form, conversation and conditional Undo stay here. This session cannot restart; a new session requires a new disclosure and Start." }} reactAriaComposite><Button type="button" size="small" onClick={endSession}>End session and keep draft</Button></HelpTarget>
+        <HelpTarget content={{ summary: "Permanently end this AI help session.", details: "Your form, conversation and conditional Undo stay here. This session cannot restart; a new session requires a new disclosure and Launch." }} reactAriaComposite><Button type="button" size="small" onClick={endSession}>End session and keep draft</Button></HelpTarget>
       </details>
     </div>}
   </div>;
 
-  return <aside ref={paneRef} id={binding.paneId} className="wb-assistance-dock" aria-label="Draft assistance" hidden={!open}>
+  return <aside ref={paneRef} id={binding.paneId} className="wb-assistance-dock" aria-label="Draft assistance" hidden={!open} inert={!open ? true : undefined}>
     <header>
-      <HelpTarget content={DRAFT_ASSISTANCE_HELP} focusable><h2>{binding.title()}</h2></HelpTarget>
+      <HelpTarget content={DRAFT_ASSISTANCE_HELP} focusable><h2 tabIndex={-1}>{binding.title()}</h2></HelpTarget>
       <HelpTarget content={{ summary: "Close the panel and keep your work.", details: "Closing this panel keeps your draft and conversation. Reopen AI help to continue." }} reactAriaComposite><Button type="button" size="small" onClick={onClose}>Close assistance</Button></HelpTarget>
     </header>
     <div className="wb-assistance-dock__body">
@@ -865,15 +1059,20 @@ function AssistantDock({ binding, open, onClose, onRecords, onSession, client, r
         composerDisabled={!editable || !active || busy} responsesDisabled={!editable || !active || busy}
         showStoppedNotice={false}
         execution={execution} executionDisabled={!editable || busy || terminal || !availability?.available}
-        header={lifecycle} composerFooterAccessory={context}
-        noMessagesLabel={active ? "The assistant is using the fields you shared at Start. You can keep editing your form." : "Choose a model, then Start to share this form's current fields with your assistant."}
-        composerPlaceholder="Ask about this form…"
+        header={lifecycle} composerAccessory={launchDisclosure} composerFooterAccessory={context}
+        composerPrimaryAction={launchRequired ? {
+          label: startAttempt.current ? "Retry Launch" : "Launch", onAction: () => start(),
+          disabled: startDisabled, pending: busy, pendingLabel: "Launching…", buttonRef: startButton,
+          help: { summary: "Launch AI help for this form.", details: "Shares the disclosed fields and recent chat with the selected model. The assistant can suggest field edits, but only you can submit. Launch does not send any unsent message." },
+        } : undefined}
+        noMessagesLabel="Your conversation will appear here."
+        composerPlaceholder={active ? "Ask about this form…" : "Launch to chat about this form…"}
         readOnlyReason="This AI help conversation is read-only. Your form remains editable."
         initialValue={retainedComposer()} onDraftChange={(value) => { if (composerStorageKey) writeSessionValue(composerStorageKey, value); }}
       /> : <ChatPanelState
         label="Draft conversation" kind={preparing ? "loading" : error ? "error" : "empty"}
         title={preparing ? "Preparing AI help…" : error ? "AI help could not load" : availability ? AVAILABILITY_LABELS[availability.code] : "AI help is unavailable"}
-        detail={error ?? <>{availability?.message} {!availability?.available && <a href="/app/settings/system/dashboard-ai?setting=wb.dashboard.assistance">Set up form assistance</a>}</>}
+        detail={preparing ? undefined : error ?? <>{availability?.message} {!availability?.available && <a href="/app/settings/system/dashboard-ai?setting=wb.dashboard.assistance">Set up form assistance</a>}</>}
         action={preparing ? undefined : { label: "Retry availability", onAction: () => { void load(); } }}
       />}
     </div>

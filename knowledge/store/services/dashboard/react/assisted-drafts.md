@@ -23,6 +23,24 @@ entry_points:
 children:
 - "services/dashboard/react/assisted-draft-context-get"
 - "services/dashboard/react/assisted-draft-propose-patch"
+dev_notes: |-
+  `AssistedDraftRuntimeProvider` keeps session/cancellation authority at the root;
+  `AssistedDraftWorkspace` renders the matching dock inside ViewHost's content
+  boundary under the existing Help provider. A root-owned React portal would not
+  inherit that destination context. An opaque outlet token supplements (never
+  replaces) the full draft identity, so another view or preview cannot claim it.
+
+  Workspace layout uses `WorkspaceSidePanel`, not Chat-owned resize code. Closed
+  or compact-inactive panes remain mounted and inert. True view/instance removal,
+  draft reset, and scope changes still fence or revoke assistance. The view host
+  keeps assistable form renderers alive across grid/mobile presentation changes
+  without granting durable-widget persistence or bypassing Arrange/Preview safety.
+
+  `composerPrimaryAction` maps the existing start protocol to the visible Launch
+  action. HTTP Start payloads, control revisions, frozen retry identities, scoped
+  Stop, and human-only submission authority are unchanged. Browser regression
+  must cross the actual ViewHost media breakpoint, not only a mocked panel width,
+  and exercise multiline drafts plus expanded recovery controls in short windows.
 ---
 
 ## Authority and opt-in
@@ -50,12 +68,20 @@ parameter JSON refuses credential-shaped keys before disclosure.
 
 ## Conversation and disclosure
 
-The entry action is the shared duotone sparkle icon and **AI help**.
-`AssistedDraftRuntimeProvider` attaches a non-modal dock to the form. Its
-layout reserves a sibling desktop column; on narrow screens, separate
-scrollable form and conversation rows keep the real submit controls reachable.
-Closing returns focus to the originating action; asynchronous replies do not
-steal focus from the form.
+The entry action is the shared duotone sparkle icon and **AI help**. Its
+non-modal side panel sits beside the view's grid content, below page headings
+and navigation. Drag the shared orange divider, use its Left/Right arrow keys,
+or double-click to restore default widths. The view remembers the chosen width.
+Narrow or short workspaces switch between **Form** and **AI help** while keeping
+both mounted. Resizing or closing preserves the form, conversation and unsent
+message. Closing returns focus to the originating action; asynchronous replies
+do not steal focus from the form.
+
+The existing Dashboard Hover Help mode also covers the panel heading, close
+action, model/context controls, Launch and resize divider. Optional explanations
+stay in help; required disclosure, errors and recovery remain visible. The panel
+keeps its controls reachable when a long draft or recovery message needs more
+space than the viewport.
 
 The dock composes the same `ConversationChat`, `ChatPanelState`, composer,
 message/choice rendering, execution hook and picker used by Co-work. It is not
@@ -72,12 +98,19 @@ Codex are registered interactive providers; a local inference profile is not a
 local agent driver, and there is no hidden provider fallback.
 
 Opening AI help prepares metadata and the canonical conversation, but sends no
-form context and starts no model. Explicit **Start** authorizes the displayed
+form context and starts no model. Explicit **Launch** authorizes the displayed
 provider/model revision and freezes the allowlisted initial fields, draft
 revision and hash before any asynchronous work. The agent consumes the canonical
 form purpose, schema and frozen values through `assisted_draft_context_get`,
 then sends a useful initial greeting through the ordinary conversation tool.
 No user-authored message is fabricated and the user need not retype form context.
+
+**Launch** occupies the composer's normal Send position until authorization
+succeeds; there is no separate startup button or idle readiness paragraph.
+**Launching…** prevents duplicate activation. An uncertain attempt offers
+**Retry Launch** against its frozen disclosure, with **Launch with current
+fields** as a separate explicit authorization. Launch never sends or clears an
+unsent message. The same composer returns to ordinary **Send** after launch.
 
 Subsequent authored turns keep the house message ID. Before transport, the host
 stages one immutable snapshot under that ID; an uncertain acknowledgement
@@ -102,14 +135,14 @@ identities; errors are sanitized. Unbound generic conversation routes/tools
 cannot bypass the form session.
 
 The protected HTTP flow is metadata-only `POST /api/assistance/sessions`,
-GET/PATCH execution selection, explicit Start with `initialSnapshot`, and
+GET/PATCH execution selection, explicit Launch with `initialSnapshot`, and
 snapshot preparation followed by canonical conversation response. Responses to
 inline questions include their exact `in_reply_to`. Stop and permanent End are
 separate authority-reducing actions.
 
 Model changes fence the old driver and return to a prepared state. Explicit
-Start is required before the new recipient receives current fields or history.
-A fresh Start supersedes unfinished prior work and old pending questions while
+Launch is required before the new recipient receives current fields or history.
+A fresh Launch supersedes unfinished prior work and old pending questions while
 preserving the transcript; its frozen current snapshot is the new working base.
 Start and scoped Stop compare the server-owned integer `controlRevision`.
 Start checks it before and after provider validation; an exact durable Start
@@ -117,7 +150,7 @@ retry never probes or launches again. Scoped Stop carries its request identity,
 expected revision and, when applicable, exact pending Start request. A delayed
 Start or stale Stop retry cannot restart or cancel a successor generation.
 
-Stop requires a fresh explicit Start, while End permanently revokes that
+Stop requires a fresh explicit Launch, while End permanently revokes that
 binding. Cleanup remains available after opt-out, expiration, read-only or a
 Source Foundation restore fence. Older session protocols require an explicit
 new session; their transcript and receipts remain inspectable. Ended and expired sessions
@@ -153,7 +186,7 @@ assistant binding on the server.
 
 Leaving an active form host durably queues a scoped Stop, including a pending
 Start, while preserving the conversation binding and unsent composer draft.
-Reopening requires fresh explicit Start. Simply closing the still-mounted dock
+Reopening requires fresh explicit Launch. Simply closing the still-mounted dock
 preserves its session. Cleanup acknowledges only a typed missing-session
 response as already absent; authentication, network and other failures remain
 visible and retryable.

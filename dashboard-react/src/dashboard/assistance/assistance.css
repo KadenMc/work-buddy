@@ -1,25 +1,42 @@
 @layer wb.widgets {
-  .wb-assistance-host,
-  .wb-assistance-host__content {
+  .wb-assistance-workspace,
+  .wb-assistance-workspace__body {
     min-inline-size: 0;
     min-block-size: 0;
   }
-  .wb-assistance-host[data-assistance-open="true"] {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) clamp(22rem, 32vw, 28rem);
-    align-items: start;
+  .wb-assistance-workspace {
+    display: flex;
+    flex-direction: column;
+    gap: var(--wb-space-3);
+  }
+  .wb-assistance-workspace[data-assistance-open="true"] > .wb-assistance-workspace__body {
+    block-size: var(--wb-assistance-workspace-height, 32rem);
+    /* On a short viewport, let the page reach the measured controls instead
+       of clipping them. History still scrolls inside the canonical transcript. */
+    min-block-size: max(24rem, var(--wb-assistance-workspace-content-minimum, 0px));
+  }
+  .wb-assistance-workspace__body > .wb-workspace-side-panel { block-size: 100%; }
+  .wb-assistance-workspace__form {
+    min-inline-size: 0;
+    min-block-size: 0;
+  }
+  .wb-assistance-workspace[data-assistance-open="true"] .wb-assistance-workspace__form {
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
+  .wb-assistance-workspace__panel {
+    min-inline-size: 0;
+    min-block-size: 0;
+    overflow: clip !important;
   }
   .wb-assistance-dock {
-    position: sticky;
-    inset-block-start: var(--wb-space-6);
     display: flex;
     flex-direction: column;
     gap: var(--wb-space-4);
     min-inline-size: 0;
     min-block-size: 0;
-    block-size: calc(100dvh - 2 * var(--wb-space-6));
+    block-size: 100%;
     overflow: clip;
-    margin: var(--wb-space-6);
     padding: var(--wb-space-5);
     border: var(--wb-border-width) solid var(--wb-color-border-default);
     border-radius: var(--wb-radius-surface);
@@ -44,17 +61,19 @@
     min-inline-size: 0;
     min-block-size: 0;
     /* Unlike hidden, clip cannot be scrolled by focus/scrollIntoView. A
-       dropdown must not move Start or the composer outside the visible dock. */
+       dropdown must not move Launch or the composer outside the visible dock. */
     overflow: clip;
   }
   .wb-assistance-dock__body > * { flex: 1 1 auto; min-inline-size: 0; }
   .wb-assistance-dock__body > .wb-chat-panel { overflow: clip; }
   .wb-assistance-lifecycle { display: grid; gap: var(--wb-space-3); min-inline-size: 0; inline-size: 100%; }
-  .wb-assistance-start {
+  .wb-assistance-start,
+  .wb-assistance-disclosure {
     display: grid;
     gap: var(--wb-space-3);
     font-size: var(--wb-font-size-sm);
   }
+  .wb-assistance-disclosure { font-size: var(--wb-font-size-xs); }
   .wb-assistance-start:focus-visible,
   .wb-assistance-session-actions summary:focus-visible,
   .wb-assistance-history summary:focus-visible {
@@ -74,40 +93,7 @@
   .wb-assistance-cancellation { margin: var(--wb-space-4); }
   [data-assisted-state="applied"] { outline: var(--wb-focus-width) dashed var(--wb-color-border-interactive); outline-offset: var(--wb-space-2); }
   [data-assisted-state="pending"] { outline: var(--wb-focus-width) dotted var(--wb-color-border-interactive); outline-offset: var(--wb-space-2); }
-  @media (max-width: 64rem) {
-    .wb-assistance-host[data-assistance-open="true"] {
-      /* The sheet gets its own row. The actual form remains visible and
-         independently scrollable, including its normal primary action. */
-      block-size: 100dvh;
-      grid-template-columns: minmax(0, 1fr);
-      grid-template-rows: minmax(0, 1fr) minmax(0, 54dvh);
-      align-items: stretch;
-      overflow: hidden;
-    }
-    .wb-assistance-host[data-assistance-open="true"] > .wb-assistance-host__content {
-      min-block-size: 0;
-      overflow: auto;
-      overscroll-behavior: contain;
-    }
-    .wb-assistance-dock {
-      position: relative;
-      inset-block-start: auto;
-      block-size: auto;
-      min-block-size: 0;
-      margin: var(--wb-space-3);
-      padding: var(--wb-space-4);
-    }
-  }
-  @media (max-height: 32rem) {
-    .wb-assistance-host[data-assistance-open="true"] {
-      /* Keyboard-height/zoom cannot fit two useful fixed panes. Keep normal
-         document scrolling and a bounded Chat instead of hiding controls. */
-      block-size: auto;
-      overflow: visible;
-      grid-template-rows: auto auto;
-    }
-    .wb-assistance-dock { position: relative; block-size: max(24rem, 88dvh); }
-  }
+  .wb-assistance-workspace[data-compact="true"] .wb-assistance-dock { padding: var(--wb-space-4); }
   @media (forced-colors: active) {
     .wb-assistance-dock { background: Canvas; color: CanvasText; border-color: CanvasText; box-shadow: none; }
     [data-assisted-state] { outline-color: Highlight; }

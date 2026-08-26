@@ -7,12 +7,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CAPTURE_APP_CONTRIBUTION } from "../../widget-library/capture/contribution";
 import { asViewId, asWidgetInstanceId, type WidgetDefinition } from "../contributions/contracts";
 import { InMemoryWidgetDraftRepository, WidgetDraftRuntimeProvider, WidgetDraftScopeProvider, useWidgetDraft } from "../drafts";
-import { DashboardHelpProvider } from "../help";
+import { DashboardHelpProvider, HelpModeProvider } from "../help";
+import { HelpModeToggle } from "../help/HelpModeToggle";
+import { DashboardAnnouncer } from "../accessibility/DashboardAnnouncer";
 import { HttpChatConversationProvider } from "../conversations/HttpChatConversationProvider";
 import { exactHumanAuthorityHeaders } from "../../security/humanAuthority";
 import type { ChatExecutionSnapshot } from "../../widget-library/chat";
 import type { AssistanceSession, AssistedDraftPatch, DraftPatchReceipt, PreparedDraftSnapshot } from "./contracts";
-import { AssistDraftButton, AssistedDraftRuntimeProvider, useAssistedDraft } from "./AssistedDraftRuntime";
+import { AssistDraftButton, AssistedDraftRuntimeProvider, AssistedDraftWorkspace, useAssistedDraft } from "./AssistedDraftRuntime";
 import { assistedDraftDeclaration, assistedForms } from "./schema";
 import * as assistanceSchema from "./schema";
 
@@ -23,6 +25,8 @@ vi.mock("../../security/humanAuthority", async (original) => ({
 
 const initial = { title: "Original title", summary: "", next_action: "", batch_lines: [], proposal_ref: { threadId: "th-test" }, proposal_pending: { clientMutationId: "never-disclose" } };
 const declaration = assistedDraftDeclaration("task-create");
+const nativeRect = HTMLElement.prototype.getBoundingClientRect;
+let workspaceWidth = 1200;
 const definition: WidgetDefinition = {
   ...CAPTURE_APP_CONTRIBUTION.widgetDefinitions[0],
   drafts: [{ draftName: "task-create", schema: declaration.schema, scope: { kind: "view" }, persistence: "device", sensitivity: "private", clearPolicy: "widget-managed", maxBytes: 32768 }],
@@ -184,26 +188,278 @@ function Form({ initialMode = "operate", readOnly = false }: { initialMode?: "op
 
 function mount(broker: ReturnType<typeof fakeBroker>, options: { initialMode?: "operate" | "arrange" | "preview"; readOnly?: boolean; help?: boolean } = {}, repository = new InMemoryWidgetDraftRepository()) {
   const { help = false, ...formOptions } = options;
-  return render(<DashboardHelpProvider enabled={help}><WidgetDraftRuntimeProvider repository={repository}>
+  return render(<WidgetDraftRuntimeProvider repository={repository}>
     <AssistedDraftRuntimeProvider fetchImpl={broker.fetchImpl}>
-      <WidgetDraftScopeProvider definition={definition} viewId={asViewId("wb.tasks.main")} instanceId={asWidgetInstanceId("task-create")} input={{}}><Form {...formOptions} /></WidgetDraftScopeProvider>
+      <DashboardHelpProvider enabled={help}>
+        <header aria-label="Page chrome">Tasks</header>
+        <AssistedDraftWorkspace viewId="wb.tasks.main">
+          <WidgetDraftScopeProvider definition={definition} viewId={asViewId("wb.tasks.main")} instanceId={asWidgetInstanceId("task-create")} input={{}}><Form {...formOptions} /></WidgetDraftScopeProvider>
+        </AssistedDraftWorkspace>
+      </DashboardHelpProvider>
     </AssistedDraftRuntimeProvider>
-  </WidgetDraftRuntimeProvider></DashboardHelpProvider>);
+  </WidgetDraftRuntimeProvider>);
 }
 
 async function openAndStart() {
   await waitFor(() => expect(screen.getByRole("button", { name: "AI help" })).toBeEnabled());
   await userEvent.click(screen.getByRole("button", { name: "AI help" }));
-  await screen.findByLabelText("Start disclosure");
-  await waitFor(() => expect(screen.getByRole("button", { name: "Start AI help" })).toBeEnabled());
-  await userEvent.click(screen.getByRole("button", { name: "Start AI help" }));
+  await screen.findByLabelText("Launch disclosure");
+  await waitFor(() => expect(screen.getByRole("button", { name: "Launch" })).toBeEnabled());
+  await userEvent.click(screen.getByRole("button", { name: "Launch" }));
   await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).toBeEnabled());
 }
 
-beforeEach(() => { vi.stubGlobal("crypto", webcrypto); sessionStorage.clear(); localStorage.clear(); });
+beforeEach(() => {
+  vi.stubGlobal("crypto", webcrypto);
+  sessionStorage.clear(); localStorage.clear();
+  workspaceWidth = 1200;
+  // The real resize library uses document-level pointer hit testing. jsdom's
+  // all-zero rectangles would put every simulated click on the separator.
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.hasAttribute("data-separator")) return new DOMRect(workspaceWidth * 0.67, 150, 11, 550);
+    if (this.hasAttribute("data-group") || this.classList.contains("wb-assistance-workspace__body")) return new DOMRect(0, 150, workspaceWidth, 550);
+    return nativeRect.call(this);
+  });
+});
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("Dashboard assisted draft host", () => {
+  it("uses the actual shell Hover Help toggle for a dock rendered below the root runtime", async () => {
+    const broker = fakeBroker();
+    render(<WidgetDraftRuntimeProvider repository={new InMemoryWidgetDraftRepository()}>
+      <AssistedDraftRuntimeProvider fetchImpl={broker.fetchImpl}>
+        <HelpModeProvider><DashboardAnnouncer>
+          <header aria-label="Page chrome"><HelpModeToggle /></header>
+          <AssistedDraftWorkspace viewId="wb.tasks.main">
+            <WidgetDraftScopeProvider definition={definition} viewId={asViewId("wb.tasks.main")} instanceId={asWidgetInstanceId("task-create")} input={{}}><Form /></WidgetDraftScopeProvider>
+          </AssistedDraftWorkspace>
+        </DashboardAnnouncer></HelpModeProvider>
+      </AssistedDraftRuntimeProvider>
+    </WidgetDraftRuntimeProvider>);
+    await waitFor(() => expect(screen.getByRole("button", { name: "AI help" })).toBeEnabled());
+    await userEvent.click(screen.getByRole("button", { name: "AI help" }));
+    await screen.findByRole("button", { name: "Launch" });
+    const heading = screen.getByRole("heading", { name: "Shape test draft" });
+    expect(heading).not.toHaveAttribute("data-help-target");
+    await userEvent.click(screen.getByRole("button", { name: "Hover help" }));
+    expect(screen.getByRole("heading", { name: "Shape test draft" })).toHaveAttribute("data-help-target", "true");
+    act(() => screen.getByRole("button", { name: "Launch" }).focus());
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Launch does not send any unsent message.");
+    await userEvent.keyboard("{Escape}");
+    const separator = screen.getByRole("separator", { name: "Resize the AI help side panel" });
+    act(() => separator.focus());
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Left and Right arrow keys");
+    await userEvent.keyboard("{Escape}");
+    expect(screen.getByRole("complementary", { name: "Draft assistance" })).toBeVisible();
+    expect(broker.calls.filter((call) => /\/(start|snapshots|respond)$/.test(call.path))).toHaveLength(0);
+    await userEvent.click(screen.getByRole("button", { name: "Hover help" }));
+    expect(screen.getByRole("heading", { name: "Shape test draft" })).not.toHaveAttribute("data-help-target");
+  });
+
+  it("puts Launch in the retained composer instead of a separate Start button or disabled Send", async () => {
+    const broker = fakeBroker();
+    mount(broker);
+    await waitFor(() => expect(screen.getByRole("button", { name: "AI help" })).toBeEnabled());
+    await userEvent.click(screen.getByRole("button", { name: "AI help" }));
+    const launch = await screen.findByRole("button", { name: "Launch" });
+    const composer = screen.getByRole("textbox", { name: "Message" });
+    expect(launch.closest("form")).toBe(composer.closest("form"));
+    expect(launch).toHaveAttribute("type", "button");
+    expect(screen.queryByRole("button", { name: "Send" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Start AI help" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Ready for your Start.")).not.toBeInTheDocument();
+    expect(within(launch.closest("form")!).getByRole("group", { name: "Launch disclosure" })).toHaveTextContent("Only you submit.");
+    await userEvent.click(launch);
+    await waitFor(() => expect(composer).toBeEnabled());
+    expect(screen.getByRole("textbox", { name: "Message" })).toBe(composer);
+    expect(screen.getByRole("button", { name: "Send" }).closest("form")).toBe(composer.closest("form"));
+    expect(composer).toHaveFocus();
+    expect(broker.calls.filter((call) => call.path.endsWith("/start"))).toHaveLength(1);
+    expect(broker.calls.filter((call) => /\/(snapshots|respond)$/.test(call.path))).toHaveLength(0);
+  });
+
+  it("keeps compact panes mounted and restores focus only after the form is visible", async () => {
+    workspaceWidth = 600;
+    const broker = fakeBroker();
+    mount(broker);
+    const trigger = screen.getByRole("button", { name: "AI help" });
+    const form = screen.getByRole("region", { name: "Task form" });
+    await waitFor(() => expect(trigger).toBeEnabled());
+    await userEvent.click(trigger);
+    const heading = await screen.findByRole("heading", { name: "Shape test draft" });
+    expect(heading).toHaveFocus();
+    const composer = await screen.findByRole("textbox", { name: "Message" });
+    expect(form).not.toBeVisible();
+    await userEvent.click(screen.getByRole("radio", { name: "Form" }));
+    expect(screen.getByRole("region", { name: "Task form" })).toBe(form);
+    await userEvent.type(screen.getByRole("textbox", { name: "Task title" }), " retained");
+    expect(screen.getByRole("button", { name: "Normal human submit" })).toBeEnabled();
+    await userEvent.click(screen.getByRole("radio", { name: "AI help" }));
+    expect(screen.getByRole("textbox", { name: "Message" })).toBe(composer);
+    await userEvent.click(screen.getByRole("button", { name: "Close assistance" }));
+    expect(form).toBeVisible();
+    expect(trigger).toHaveFocus();
+    expect(screen.getByRole("textbox", { name: "Task title" })).toHaveValue("Original title retained");
+    expect(broker.calls.filter((call) => /\/(start|stop|respond)$/.test(call.path))).toHaveLength(0);
+  });
+
+  it("preserves form focus and the live conversation through compact and wide resizing", async () => {
+    const broker = fakeBroker();
+    mount(broker);
+    await openAndStart();
+    const title = screen.getByRole("textbox", { name: "Task title" });
+    const composer = screen.getByRole("textbox", { name: "Message" });
+    await userEvent.type(composer, "Retained unsent question");
+    await userEvent.click(title);
+    workspaceWidth = 600;
+    act(() => window.dispatchEvent(new Event("resize")));
+    await waitFor(() => expect(screen.getByRole("radio", { name: "Form" })).toBeChecked());
+    expect(title).toHaveFocus();
+    expect(title).toBeVisible();
+    expect(composer).not.toBeVisible();
+    await userEvent.click(screen.getByRole("radio", { name: "AI help" }));
+    expect(screen.getByRole("textbox", { name: "Message" })).toBe(composer);
+    expect(composer).toHaveValue("Retained unsent question");
+    workspaceWidth = 1200;
+    act(() => window.dispatchEvent(new Event("resize")));
+    await waitFor(() => expect(screen.queryByRole("radio", { name: "AI help" })).not.toBeInTheDocument());
+    expect(screen.getByRole("heading", { name: "Shape test draft" })).toHaveFocus();
+    expect(screen.getByRole("textbox", { name: "Task title" })).toBe(title);
+    expect(screen.getByRole("textbox", { name: "Message" })).toBe(composer);
+    expect(broker.calls.filter((call) => call.path.endsWith("/start"))).toHaveLength(1);
+    expect(broker.calls.filter((call) => /\/(stop|respond)$/.test(call.path))).toHaveLength(0);
+  });
+
+  it("grows the workspace minimum for retained composer and expanded controls, not transcript length", async () => {
+    workspaceWidth = 390;
+    vi.stubGlobal("innerHeight", 420);
+    let composerHeight = 200;
+    let headerHeight = 40;
+    let transcriptHeight = 80;
+    const originalMeasurement = vi.mocked(HTMLElement.prototype.getBoundingClientRect).getMockImplementation()!;
+    vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockImplementation(function (this: HTMLElement) {
+      if (this.classList.contains("wb-assistance-dock")) return new DOMRect(0, 169, 390, 384);
+      if (this.parentElement?.classList.contains("wb-assistance-dock") && this.tagName === "HEADER") return new DOMRect(0, 0, 366, 40);
+      if (this.classList.contains("wb-chat-panel__header")) return new DOMRect(0, 0, 366, headerHeight);
+      if (this.classList.contains("wb-chat-composer")) return new DOMRect(0, 0, 366, composerHeight);
+      if (this.classList.contains("wb-chat-list")) return new DOMRect(0, 0, 366, transcriptHeight);
+      return originalMeasurement.call(this);
+    });
+    const originalStyle = globalThis.getComputedStyle.bind(globalThis);
+    vi.spyOn(globalThis, "getComputedStyle").mockImplementation((element, pseudo) => {
+      const style = originalStyle(element, pseudo);
+      return new Proxy(style, {
+        get(target, property) {
+          const dock = element.classList.contains("wb-assistance-dock");
+          const scroll = element.classList.contains("wb-chat-list__scroll");
+          if (property === "paddingTop" || property === "paddingBottom") return dock ? "12px" : scroll ? "8px" : "0px";
+          if (property === "borderTopWidth" || property === "borderBottomWidth") return dock || scroll ? "1px" : "0px";
+          if (property === "marginTop" || property === "marginBottom") return "0px";
+          if (property === "rowGap") return dock || element.classList.contains("wb-chat-panel") ? "12px" : "0px";
+          if (property === "fontSize") return "16px";
+          if (property === "lineHeight") return "20px";
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    });
+    const broker = fakeBroker();
+    mount(broker);
+    await openAndStart();
+    const composer = screen.getByRole("textbox", { name: "Message" });
+    const workspace = composer.closest(".wb-assistance-workspace__body") as HTMLElement;
+    await waitFor(() => expect(workspace.style.getPropertyValue("--wb-assistance-workspace-content-minimum")).toBe("420px"));
+    await userEvent.type(composer, "one{Shift>}{Enter}{/Shift}two{Shift>}{Enter}{/Shift}three{Shift>}{Enter}{/Shift}four{Shift>}{Enter}{/Shift}five{Shift>}{Enter}{/Shift}six");
+    composerHeight = 320;
+    await userEvent.click(screen.getByRole("button", { name: "Stop assistant" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Launch" })).toBeEnabled());
+    headerHeight = 80;
+    await userEvent.click(screen.getByText("Session actions"));
+    await waitFor(() => expect(workspace.style.getPropertyValue("--wb-assistance-workspace-content-minimum")).toBe("580px"));
+    expect(screen.getByRole("textbox", { name: "Message" })).toBe(composer);
+    expect(composer).toHaveValue("one\ntwo\nthree\nfour\nfive\nsix");
+
+    transcriptHeight = 4000;
+    act(() => window.dispatchEvent(new Event("resize")));
+    await waitFor(() => expect(workspace.style.getPropertyValue("--wb-assistance-workspace-content-minimum")).toBe("580px"));
+    headerHeight = 40;
+    composerHeight = 200;
+    vi.stubGlobal("innerHeight", 900);
+    act(() => window.dispatchEvent(new Event("resize")));
+    await waitFor(() => expect(workspace.style.getPropertyValue("--wb-assistance-workspace-content-minimum")).toBe("420px"));
+    expect(workspace.style.getPropertyValue("--wb-assistance-workspace-height")).toBe("734px");
+    expect(broker.calls.filter((call) => call.path.endsWith("/start"))).toHaveLength(1);
+    expect(broker.calls.filter((call) => call.path.endsWith("/respond"))).toHaveLength(0);
+  });
+
+  it("includes natural loading and error recovery content in the workspace minimum", async () => {
+    workspaceWidth = 390;
+    vi.stubGlobal("innerHeight", 420);
+    let copyHeight = 420;
+    const originalMeasurement = vi.mocked(HTMLElement.prototype.getBoundingClientRect).getMockImplementation()!;
+    vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockImplementation(function (this: HTMLElement) {
+      if (this.classList.contains("wb-assistance-dock")) return new DOMRect(0, 169, 390, 384);
+      if (this.parentElement?.classList.contains("wb-assistance-dock") && this.tagName === "HEADER") return new DOMRect(0, 0, 366, 40);
+      if (this.classList.contains("wb-chat-state")) return new DOMRect(0, 0, 366, 100);
+      if (this.classList.contains("wb-chat-state__copy")) return new DOMRect(0, 0, 366, copyHeight);
+      if (this.classList.contains("wb-chat-state__action")) return new DOMRect(0, 0, 200, 40);
+      return originalMeasurement.call(this);
+    });
+    const originalStyle = globalThis.getComputedStyle.bind(globalThis);
+    vi.spyOn(globalThis, "getComputedStyle").mockImplementation((element, pseudo) => {
+      const style = originalStyle(element, pseudo);
+      return new Proxy(style, {
+        get(target, property) {
+          const dock = element.classList.contains("wb-assistance-dock");
+          const state = element.classList.contains("wb-chat-state");
+          if (property === "paddingTop" || property === "paddingBottom") return dock ? "12px" : state ? "16px" : "0px";
+          if (property === "borderTopWidth" || property === "borderBottomWidth") return dock ? "1px" : "0px";
+          if (property === "marginTop" || property === "marginBottom") return "0px";
+          if (property === "rowGap") return dock || state ? "12px" : "0px";
+          if (property === "minHeight" && state) return "128px";
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    });
+    let rejectAvailability: ((error: Error) => void) | undefined;
+    const pending = new Promise<Response>((_resolve, reject) => { rejectAvailability = reject; });
+    const broker = fakeBroker();
+    vi.mocked(broker.fetchImpl).mockImplementation(() => pending);
+    mount(broker);
+    await waitFor(() => expect(screen.getByRole("button", { name: "AI help" })).toBeEnabled());
+    await userEvent.click(screen.getByRole("button", { name: "AI help" }));
+    expect(await screen.findByText("Preparing AI help…")).toBeVisible();
+    const workspace = screen.getByRole("complementary", { name: "Draft assistance" }).closest(".wb-assistance-workspace__body") as HTMLElement;
+    await waitFor(() => expect(workspace.style.getPropertyValue("--wb-assistance-workspace-content-minimum")).toBe("530px"));
+
+    copyHeight = 580;
+    act(() => rejectAvailability?.(new Error("Assistance is temporarily unavailable. ".repeat(20))));
+    expect(await screen.findByRole("button", { name: "Retry availability" })).toBeEnabled();
+    await waitFor(() => expect(workspace.style.getPropertyValue("--wb-assistance-workspace-content-minimum")).toBe("742px"));
+    expect(screen.queryByRole("button", { name: "Launch" })).not.toBeInTheDocument();
+  });
+
+  it("renders a dock only in the workspace outlet that registered the full draft binding", async () => {
+    const broker = fakeBroker();
+    render(<WidgetDraftRuntimeProvider repository={new InMemoryWidgetDraftRepository()}>
+      <AssistedDraftRuntimeProvider fetchImpl={broker.fetchImpl}>
+        {["wb.tasks.main", "wb.jobs.authoring"].map((viewId) => <section key={viewId} aria-label={viewId}>
+          <AssistedDraftWorkspace viewId={viewId}>
+            <WidgetDraftScopeProvider definition={definition} viewId={asViewId(viewId)} instanceId={asWidgetInstanceId("task-create")} input={{}}><Form /></WidgetDraftScopeProvider>
+          </AssistedDraftWorkspace>
+        </section>)}
+      </AssistedDraftRuntimeProvider>
+    </WidgetDraftRuntimeProvider>);
+    const first = within(screen.getByRole("region", { name: "wb.tasks.main" }));
+    const other = within(screen.getByRole("region", { name: "wb.jobs.authoring" }));
+    await waitFor(() => expect(first.getByRole("button", { name: "AI help" })).toBeEnabled());
+    await userEvent.click(first.getByRole("button", { name: "AI help" }));
+    expect(await first.findByRole("button", { name: "Launch" })).toBeEnabled();
+    expect(other.queryByRole("complementary", { name: "Draft assistance" })).not.toBeInTheDocument();
+    expect(broker.calls.find((call) => call.path.endsWith("/sessions"))?.body?.identity).toMatchObject({ viewId: "wb.tasks.main", draftName: "task-create" });
+  });
+
   it("puts drafting guidance on the shared button without starting assistance on focus", async () => {
     const broker = fakeBroker();
     mount(broker, { help: true });
@@ -215,9 +471,9 @@ describe("Dashboard assisted draft host", () => {
     expect(await screen.findByRole("tooltip")).toHaveTextContent("The assistant fills these fields. You can edit or undo its suggestions; only you can submit the form.");
     expect(broker.calls).toHaveLength(0);
     await userEvent.click(assist);
-    await waitFor(() => expect(screen.getByText(/Shares this form's allowed fields and recent chat with/)).toBeVisible());
-    await waitFor(() => expect(screen.getByRole("button", { name: "Start AI help" })).toBeEnabled());
-    const disclosure = screen.getByText(/Shares this form's allowed fields and recent chat with/);
+    await waitFor(() => expect(screen.getByText(/Launch shares this form's allowed fields and recent chat with/)).toBeVisible());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Launch" })).toBeEnabled());
+    const disclosure = screen.getByText(/Launch shares this form's allowed fields and recent chat with/);
     await userEvent.hover(disclosure);
     await waitFor(() => expect(screen.getByRole("tooltip")).toHaveTextContent(availability.disclosure));
     await userEvent.unhover(disclosure);
@@ -245,7 +501,7 @@ describe("Dashboard assisted draft host", () => {
     expect(screen.queryByText("Send another message to resume. Closing this panel keeps your draft and conversation.")).not.toBeInTheDocument();
     const stop = screen.getByRole("button", { name: "Stop assistant" });
     act(() => stop.focus());
-    expect(await screen.findByRole("tooltip")).toHaveTextContent("Stopping preserves the draft and conversation. A fresh explicit Start is required before the assistant receives more content.");
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Stopping preserves the draft and conversation. A fresh explicit Launch is required before the assistant receives more content.");
     expect(broker.calls.some((call) => call.path.endsWith("/stop"))).toBe(false);
     await userEvent.click(stop);
     await waitFor(() => expect(broker.calls.some((call) => call.path.endsWith("/stop"))).toBe(true));
@@ -256,14 +512,16 @@ describe("Dashboard assisted draft host", () => {
   it("reserves a sibling layout region without remounting or hiding the form", async () => {
     mount(fakeBroker());
     const form = screen.getByRole("region", { name: "Task form" });
-    const hostContent = form.closest(".wb-assistance-host__content");
-    const host = hostContent?.parentElement;
+    const hostContent = form.closest(".wb-assistance-workspace__form");
+    const host = form.closest(".wb-assistance-workspace");
     expect(host).not.toHaveAttribute("data-assistance-open");
     await openAndStart();
     const dock = screen.getByRole("complementary", { name: "Draft assistance" });
     expect(host).toHaveAttribute("data-assistance-open", "true");
-    expect(dock.parentElement).toBe(host);
+    expect(host?.contains(dock)).toBe(true);
     expect(hostContent?.contains(dock)).toBe(false);
+    expect(host?.contains(screen.getByRole("banner", { name: "Page chrome" }))).toBe(false);
+    expect(screen.getByRole("separator", { name: "Resize the AI help side panel" })).toBeVisible();
     expect(screen.getByRole("region", { name: "Task form" })).toBe(form);
     expect(screen.getByRole("button", { name: "Normal human submit" })).toBeEnabled();
     await userEvent.click(screen.getByRole("textbox", { name: "Task title" }));
@@ -340,18 +598,18 @@ describe("Dashboard assisted draft host", () => {
     await userEvent.click(screen.getByRole("button", { name: "AI help" }));
     const picker = await screen.findByRole("button", { name: "Run with Fixture Claude · Model one" });
     await waitFor(() => expect(picker).toBeEnabled());
-    expect(screen.getByText("Choose an available model to start.")).toBeVisible();
-    expect(screen.getByRole("button", { name: "Start AI help" })).toBeDisabled();
+    expect(screen.getByText("Choose an available model to launch.")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Launch" })).toBeDisabled();
     expect(screen.getByRole("textbox", { name: "Message" })).toBeDisabled();
     await userEvent.click(picker);
     expect(screen.getByRole("option", { name: /Fixture Claude, Model one/ })).toHaveAttribute("aria-disabled", "true");
     await userEvent.click(screen.getByRole("option", { name: "Fixture Codex, Model two" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Start AI help" })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Launch" })).toBeEnabled());
     expect(broker.calls.find((call) => call.method === "PATCH")).toEqual({ path: "/api/assistance/sessions/as-test/execution", method: "PATCH", body: { provider_id: "fixture-codex", model_id: "fixture-model-two", expected_revision: "execution:1" } });
     expect(vi.mocked(exactHumanAuthorityHeaders)).toHaveBeenCalledWith(expect.objectContaining({ action: "dashboard.assistance.execution_select", context: expect.objectContaining({ method: "PATCH" }) }), broker.fetchImpl);
     expect(broker.calls.filter((call) => call.path.endsWith("/start"))).toHaveLength(0);
     expect(broker.calls.some((call) => /settings|config/.test(call.path))).toBe(false);
-    await userEvent.click(screen.getByRole("button", { name: "Start AI help" }));
+    await userEvent.click(screen.getByRole("button", { name: "Launch" }));
     await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).toBeEnabled());
     expect(broker.calls.find((call) => call.path.endsWith("/start"))?.body).toMatchObject({ provider_id: "fixture-codex", model_id: "fixture-model-two", expected_revision: "execution:2" });
   });
@@ -368,9 +626,9 @@ describe("Dashboard assisted draft host", () => {
     await userEvent.type(composer, "Unsent question for later");
     await userEvent.click(screen.getByRole("button", { name: "Run with Fixture Claude · Model one" }));
     await userEvent.click(screen.getByRole("option", { name: "Fixture Codex, Model two" }));
-    expect(screen.getByRole("dialog", { name: "Switch to Fixture Codex · Model two?" })).toHaveTextContent("choose Start before the new model receives any content");
+    expect(screen.getByRole("dialog", { name: "Switch to Fixture Codex · Model two?" })).toHaveTextContent("choose Launch before the new model receives any content");
     await userEvent.click(screen.getByRole("button", { name: "Switch model" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Start AI help" })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Launch" })).toBeEnabled());
     expect(screen.getByRole("textbox", { name: "Message" })).toBe(composer);
     expect(composer).toHaveValue("Unsent question for later");
     expect(composer).toBeDisabled();
@@ -382,7 +640,7 @@ describe("Dashboard assisted draft host", () => {
     await userEvent.click(screen.getByRole("button", { name: "AI help" }));
     expect(broker.calls.filter((call) => call.path.endsWith("/start"))).toHaveLength(1);
     await userEvent.type(screen.getByRole("textbox", { name: "Task title" }), " after switch");
-    await userEvent.click(screen.getByRole("button", { name: "Start AI help" }));
+    await userEvent.click(screen.getByRole("button", { name: "Launch" }));
     await waitFor(() => expect(composer).toBeEnabled());
     const attempts = broker.calls.filter((call) => call.path.endsWith("/start"));
     expect(attempts).toHaveLength(2);
@@ -398,11 +656,11 @@ describe("Dashboard assisted draft host", () => {
     mount(broker);
     await waitFor(() => expect(screen.getByRole("button", { name: "AI help" })).toBeEnabled());
     await userEvent.click(screen.getByRole("button", { name: "AI help" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Start AI help" })).toBeEnabled());
-    await userEvent.click(screen.getByRole("button", { name: "Start AI help" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Launch" })).toBeEnabled());
+    await userEvent.click(screen.getByRole("button", { name: "Launch" }));
     await screen.findByText("Uncertain Start acknowledgement");
     await userEvent.type(screen.getByRole("textbox", { name: "Task title" }), " later private edit");
-    await userEvent.click(screen.getByRole("button", { name: "Retry Start" }));
+    await userEvent.click(screen.getByRole("button", { name: "Retry Launch" }));
     await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).toBeEnabled());
     const attempts = broker.calls.filter((call) => call.path.endsWith("/start"));
     expect(attempts).toHaveLength(2);
@@ -418,22 +676,44 @@ describe("Dashboard assisted draft host", () => {
     mount(broker);
     await waitFor(() => expect(screen.getByRole("button", { name: "AI help" })).toBeEnabled());
     await userEvent.click(screen.getByRole("button", { name: "AI help" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Start AI help" })).toBeEnabled());
-    await userEvent.click(screen.getByRole("button", { name: "Start AI help" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Launch" })).toBeEnabled());
+    await userEvent.click(screen.getByRole("button", { name: "Launch" }));
     await screen.findByText("Provider startup unavailable");
     await userEvent.type(screen.getByRole("textbox", { name: "Task title" }), " later private edit");
     const reads = broker.calls.filter((call) => call.path === "/api/assistance/as-test").length;
     await act(async () => { (subscribe.mock.contexts[0] as HttpChatConversationProvider).invalidate(); });
     await waitFor(() => expect(broker.calls.filter((call) => call.path === "/api/assistance/as-test").length).toBeGreaterThan(reads));
     expect(broker.session()).toMatchObject({ phase: "prepared", controlRevision: 0 });
-    expect(screen.getByRole("button", { name: "Retry Start" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Retry Launch" })).toBeEnabled();
     options.startFails = false;
-    await userEvent.click(screen.getByRole("button", { name: "Retry Start" }));
+    await userEvent.click(screen.getByRole("button", { name: "Retry Launch" }));
     await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).toBeEnabled());
     const attempts = broker.calls.filter((call) => call.path.endsWith("/start"));
     expect(attempts).toHaveLength(2);
     expect(attempts[1].body).toEqual(attempts[0].body);
     expect(broker.snapshot().snapshot.title).toBe("Original title");
+  });
+
+  it("keeps the frozen launch disclosure truthful while a retry acknowledgement is pending", async () => {
+    const options = { startFails: true, delayedStartAcknowledgement: true };
+    const broker = fakeBroker(options);
+    mount(broker);
+    await waitFor(() => expect(screen.getByRole("button", { name: "AI help" })).toBeEnabled());
+    await userEvent.click(screen.getByRole("button", { name: "AI help" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Launch" }));
+    await screen.findByText("Provider startup unavailable");
+    await userEvent.type(screen.getByRole("textbox", { name: "Task title" }), " private later edit");
+    options.startFails = false;
+    await userEvent.click(screen.getByRole("button", { name: "Retry Launch" }));
+    await waitFor(() => expect(broker.calls.filter((call) => call.path.endsWith("/start"))).toHaveLength(2));
+    expect(screen.getByRole("group", { name: "Launch disclosure" })).toHaveTextContent("Uses the fields and recent chat approved for this launch with");
+    expect(screen.queryByText(/Launch shares this form's allowed fields/)).not.toBeInTheDocument();
+    const attempts = broker.calls.filter((call) => call.path.endsWith("/start"));
+    expect(attempts[1].body).toEqual(attempts[0].body);
+    expect(broker.snapshot().snapshot.title).toBe("Original title");
+    await act(async () => { broker.finishStart(); });
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).toBeEnabled());
+    expect(screen.getByRole("textbox", { name: "Task title" })).toHaveValue("Original title private later edit");
   });
 
   it("routes a canonical structured answer through the same snapshot and in_reply_to protocol", async () => {
@@ -460,7 +740,7 @@ describe("Dashboard assisted draft host", () => {
     expect(Object.keys(sessionStorage).filter((key) => key.startsWith("wb.assistance.binding:"))).toHaveLength(0);
     expect(localStorage.getItem("wb.assistance.revocation/v1:as-test")).not.toBeNull();
     await userEvent.click(screen.getByRole("button", { name: "AI help" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Start AI help" })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Launch" })).toBeEnabled());
     expect(broker.session().assistantSessionId).toBe("as-test-2");
     expect(broker.calls.filter((call) => call.path.endsWith("/start"))).toHaveLength(1);
     options.endFails = false;
@@ -492,7 +772,7 @@ describe("Dashboard assisted draft host", () => {
     expect(screen.getByRole("button", { name: "Undo assistant changes" })).toBeEnabled();
     expect(broker.calls.filter((call) => call.path === "/api/assistance/sessions")).toHaveLength(1);
     await userEvent.click(screen.getByRole("button", { name: "New AI help session" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Start AI help" })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Launch" })).toBeEnabled());
     expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("Not sent before migration");
     expect(screen.getByRole("textbox", { name: "Task title" })).toHaveValue("Assistant title");
     expect(broker.calls.filter((call) => call.path.endsWith("/start"))).toHaveLength(1);
@@ -518,11 +798,11 @@ describe("Dashboard assisted draft host", () => {
     mount(broker);
     await waitFor(() => expect(screen.getByRole("button", { name: "AI help" })).toBeEnabled());
     await userEvent.click(screen.getByRole("button", { name: "AI help" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Start AI help" })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Launch" })).toBeEnabled());
     const hash = assistanceSchema.snapshotHash;
     let releaseHash: (() => void) | undefined;
     vi.spyOn(assistanceSchema, "snapshotHash").mockImplementationOnce((snapshot) => new Promise((resolve) => { releaseHash = () => { void hash(snapshot).then(resolve); }; }));
-    await userEvent.click(screen.getByRole("button", { name: "Start AI help" }));
+    await userEvent.click(screen.getByRole("button", { name: "Launch" }));
     const title = screen.getByRole("textbox", { name: "Task title" });
     await userEvent.type(title, " still private");
     await act(async () => { releaseHash?.(); });
@@ -584,9 +864,9 @@ describe("Dashboard assisted draft host", () => {
     await userEvent.click(screen.getByRole("button", { name: "Run with Fixture Claude · Model one" }));
     await userEvent.click(screen.getByRole("option", { name: "Fixture Codex, Model two" }));
     await userEvent.click(screen.getByRole("button", { name: "Switch model" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Start AI help" })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Launch" })).toBeEnabled());
     await userEvent.type(screen.getByRole("textbox", { name: "Task title" }), " new context");
-    await userEvent.click(screen.getByRole("button", { name: "Start AI help" }));
+    await userEvent.click(screen.getByRole("button", { name: "Launch" }));
     await waitFor(() => expect(composer).toBeEnabled());
     expect(composer).toHaveValue("Retry this authored text");
     await userEvent.click(screen.getByRole("button", { name: "Send" }));
@@ -604,8 +884,8 @@ describe("Dashboard assisted draft host", () => {
     const first = mount(broker, {}, repository);
     await waitFor(() => expect(screen.getByRole("button", { name: "AI help" })).toBeEnabled());
     await userEvent.click(screen.getByRole("button", { name: "AI help" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Start AI help" })).toBeEnabled());
-    await userEvent.click(screen.getByRole("button", { name: "Start AI help" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Launch" })).toBeEnabled());
+    await userEvent.click(screen.getByRole("button", { name: "Launch" }));
     await waitFor(() => expect(broker.calls.filter((call) => call.path.endsWith("/start"))).toHaveLength(1));
     const pendingStartId = broker.calls.find((call) => call.path.endsWith("/start"))?.body?.requestId;
     first.unmount();
@@ -615,16 +895,16 @@ describe("Dashboard assisted draft host", () => {
     mount(broker, {}, repository);
     await waitFor(() => expect(screen.getByRole("button", { name: "AI help" })).toBeEnabled());
     await userEvent.click(screen.getByRole("button", { name: "AI help" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Start AI help" })).toBeEnabled());
-    expect(screen.queryByRole("button", { name: "Retry Start" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Start with current fields" })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Launch" })).toBeEnabled());
+    expect(screen.queryByRole("button", { name: "Retry Launch" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Launch with current fields" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Stop assistant" })).not.toBeInTheDocument();
     expect(Object.keys(sessionStorage).filter((key) => key.startsWith("wb.assistance.start:"))).toHaveLength(0);
     expect(await screen.findByText("Let's shape your task: Original title. What is the next useful step?")).toBeVisible();
     expect(screen.getByRole("textbox", { name: "Message" })).toBeDisabled();
     expect(broker.calls.filter((call) => call.path.endsWith("/start"))).toHaveLength(1);
     options.delayedStartAcknowledgement = false;
-    await userEvent.click(screen.getByRole("button", { name: "Start AI help" }));
+    await userEvent.click(screen.getByRole("button", { name: "Launch" }));
     await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).toBeEnabled());
     const attempts = broker.calls.filter((call) => call.path.endsWith("/start"));
     expect(attempts).toHaveLength(2);
@@ -642,7 +922,7 @@ describe("Dashboard assisted draft host", () => {
     expect(screen.queryByText(/Stop is not confirmed|Stopping is not confirmed|cancellation is not confirmed/)).not.toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Task title" })).toHaveValue("Original title");
     await userEvent.click(screen.getByRole("button", { name: "New AI help session" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Start AI help" })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Launch" })).toBeEnabled());
     expect(broker.session().assistantSessionId).toBe("as-test-2");
     expect(broker.calls.filter((call) => call.path.endsWith("/start"))).toHaveLength(1);
   });
@@ -679,8 +959,8 @@ describe("Dashboard assisted draft host", () => {
     mount(fakeBroker({ startFails: true }));
     await waitFor(() => expect(screen.getByRole("button", { name: "AI help" })).toBeEnabled());
     await userEvent.click(screen.getByRole("button", { name: "AI help" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Start AI help" })).toBeEnabled());
-    await userEvent.click(screen.getByRole("button", { name: "Start AI help" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Launch" })).toBeEnabled());
+    await userEvent.click(screen.getByRole("button", { name: "Launch" }));
     await screen.findByRole("alert");
     await userEvent.type(screen.getByRole("textbox", { name: "Task title" }), " still editable");
     expect(screen.getByRole("textbox", { name: "Task title" })).toHaveValue("Original title still editable");
@@ -822,7 +1102,7 @@ describe("Dashboard assisted draft host", () => {
     expect(broker.receipt()).toBeNull();
     expect(Object.keys(sessionStorage).filter((key) => key.startsWith("wb.assistance.binding:"))).toHaveLength(0);
     await userEvent.click(screen.getByRole("button", { name: "AI help" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Start AI help" })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Launch" })).toBeEnabled());
   });
 
   it("revokes old assistance before atomically resetting to retained fields", async () => {
@@ -844,7 +1124,7 @@ describe("Dashboard assisted draft host", () => {
     expect(broker.receipt()).toBeNull();
     expect(Object.keys(sessionStorage).filter((key) => key.startsWith("wb.assistance.binding:"))).toHaveLength(0);
     await userEvent.click(screen.getByRole("button", { name: "AI help" }));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Start AI help" })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Launch" })).toBeEnabled());
   });
 
   it("does not apply a late reply while the mounted form switches to Arrange", async () => {

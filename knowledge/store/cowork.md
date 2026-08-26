@@ -61,6 +61,13 @@ dev_notes: |
   while the sitting's expected-head and snapshot checks still hold.
 
   Paste persistence and paste provenance are related but cannot be committed in one browser transaction: Yjs state, the synchronous local-storage intent journal, the document-scoped IndexedDB provenance outbox, and the server Truth store are separate authorities. The journal is the smallest recovery barrier across that gap, not an atomicity claim. Never delete a frozen provenance request before a confirmed server receipt, and never retarget one implicitly after an absent, ambiguous, or changed target. An actor-binding rejection is the exception that requires explicit recovery: refetch the current actor, invalidate every stale frozen request, rotate its idempotency key, reset its determination to unknown, and require a fresh user attestation before sending.
+
+  Co-work's editor/rail split uses Dashboard Core's `WorkspaceSidePanel`, shared
+  with contextual form assistance. Preserve `wb.cowork.workspace-layout`, the
+  editor/rail panel IDs, minimum widths, keyboard/reset behavior, narrow tabs and
+  full-workspace bottom dock. The shared primitive owns resizing and safe
+  presentation persistence only; Co-work continues to own rail selection and its
+  ordinary auto-waking Chat adapter.
 ---
 
 # Co-work

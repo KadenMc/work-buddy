@@ -1120,6 +1120,14 @@ describe("CoworkWorkspaceWidget dev-only demo fixture entry (?cowork_fixture=dem
   it("composes the fixture scene behind the dev-only entry", async () => {
     const { container } = renderWorkspace(demoInput);
 
+    const split = container.querySelector(".wb-workspace-side-panel");
+    expect(split).toHaveClass("wb-cowork__body");
+    expect(split).toHaveAttribute("data-workspace-panel-mode", "split");
+    expect(screen.getByTestId("editor").parentElement).toBe(split);
+    expect(screen.getByTestId("rail").parentElement).toBe(split);
+    expect(screen.getByRole("separator", { name: "Resize the Co-work side panel" }))
+      .toHaveClass("wb-workspace-side-panel__separator");
+
     // Health strip reflects the demo document session.
     await waitFor(
       () => expect(screen.getByText("Co-work demo document")).toBeVisible(),
@@ -2830,6 +2838,14 @@ describe("CoworkWorkspaceWidget live mode", () => {
     renderLive();
 
     const paneTabs = await screen.findByRole("tablist", { name: "Co-work panes" });
+    const editorPanel = screen.getByTestId("editor");
+    const railPanel = screen.getByTestId("rail");
+    const split = editorPanel.parentElement;
+    expect(split).toHaveClass("wb-workspace-side-panel");
+    expect(split).toHaveAttribute("data-workspace-panel-mode", "primary-only");
+    expect(railPanel).toHaveAttribute("hidden");
+    expect(railPanel).toHaveAttribute("inert");
+    expect(screen.queryByRole("separator")).not.toBeInTheDocument();
     const editorTab = within(paneTabs).getByRole("tab", { name: "Editor" });
     const reviewTab = within(paneTabs).getByRole("tab", { name: "Review" });
     const provenanceTab = within(paneTabs).getByRole("tab", { name: "Provenance" });
@@ -2850,6 +2866,12 @@ describe("CoworkWorkspaceWidget live mode", () => {
     expect(reviewTab).toHaveAttribute("aria-selected", "true");
     expect(reviewTab).toHaveAttribute("tabindex", "0");
     expect(editorTab).toHaveAttribute("tabindex", "-1");
+    expect(screen.getByTestId("editor")).toBe(editorPanel);
+    expect(screen.getByTestId("rail")).toBe(railPanel);
+    expect(split).toHaveAttribute("data-workspace-panel-mode", "side-only");
+    expect(editorPanel).toHaveAttribute("hidden");
+    expect(editorPanel).toHaveAttribute("inert");
+    expect(railPanel).not.toHaveAttribute("hidden");
     expect(document.getElementById("wb-cowork-mobile-panel-editor")).toHaveAttribute(
       "inert",
     );

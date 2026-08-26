@@ -47,6 +47,13 @@ dev_notes: |-
   Selection mutations outrank subscription reloads in `useChatExecutionProfile`. A reload issued while selection is pending must not apply its stale snapshot or error; successful/authoritative mutation results clear it, while a non-authoritative mutation failure triggers one fresh post-mutation reconciliation. Execution-required host actions are unavailable whenever the snapshot is read-only, not merely when the provider/model is unavailable.
 
   The optional executionDisabled prop lets an explicitly prepared host permit model selection while composition awaits authorization. Omission preserves composerDisabled coupling. It never overrides read-only, sending, thinking or selection-in-progress protections. Keep the same provider/panel instance through lifecycle changes.
+
+  The primary-action callback runs synchronously behind a ref guard, allowing a
+  host to freeze an authorization payload before its first await. Keep the action
+  and Send keyed separately without remounting the textarea. Retain draft/error
+  state on action failure; disabling message composition must not implicitly
+  disable an explicitly supplied launch action. Structured response controls stay
+  disabled while the primary action is present.
 ---
 
 Reusable React chat components for conversational surfaces in the React dashboard, at `dashboard-react/src/widget-library/chat/`. They render the same backend conversations the root dashboard's chat sidebar shows, behind a typed, transport-agnostic provider seam. The root dashboard's own surface remains `services/dashboard/chat-sidebar` and is unchanged by these primitives.
@@ -86,6 +93,21 @@ Co-work's About/Working on labels or internal action-snapshot metadata.
 itself, a separately placeable Dashboard Core widget. A cohesive durable App
 such as Co-work may embed it while retaining one durable widget boundary.
 
+### Composer primary action
+
+A host may supply `composerPrimaryAction` through `ChatPanel` or
+`ConversationChat` (`primaryAction` on `ChatComposer`) to replace Send with one
+explicit action such as **Launch**. The host owns its label, callback, disabled
+and pending state, optional pending label, focus ref and contextual help. The
+shared composer owns placement and duplicate-action protection.
+
+This action is not a message or form submit: it does not call send preparation,
+consume an inline question, clear the draft, or launch when Enter is typed in
+the textarea. Activating the focused action with Enter or Space remains normal
+button behavior. Read-only, thinking, in-flight and model-selection locks still
+apply. Omitting the action preserves ordinary Co-work Send behavior. Layout and
+resizing belong to the containing workspace, not the Chat component.
+
 ## Optional execution profile
 
 Model selection is reusable without becoming part of transcript transport.
@@ -122,8 +144,8 @@ driver as waiting for a reply, an explicit stopped driver as terminal, and a
 latest assistant turn as idle even when its long-lived driver remains active.
 The terminal presentation is informational; there is no shared Start or Restart
 policy. Ordinary Co-work composition may resume its driver. An explicitly
-disclosed form host instead keeps Start in a host accessory and disables
-submission until that authorization succeeds.
+disclosed form host supplies **Launch** through the optional composer primary
+action and disables message submission until that authorization succeeds.
 
 Outbound message identity is caller-stable. The shared surface generates
 `message_id` once per logical authored turn before host preparation and reuses

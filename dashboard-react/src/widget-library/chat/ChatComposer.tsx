@@ -6,13 +6,30 @@ import {
   type FormEvent,
   type KeyboardEvent,
   type ReactNode,
+  type Ref,
 } from "react";
 import { TextArea, TextField } from "react-aria-components";
 
+import { HelpTarget, type HelpContent } from "../../dashboard/help";
 import { Button, InlineAlert, Spinner } from "../../ui";
 import { ChatExecutionPicker } from "./ChatExecutionPicker";
 import type { ChatExecutionControl } from "./useChatExecutionProfile";
 import "./styles.css";
+
+export interface ChatComposerPrimaryAction {
+  readonly label: string;
+  /** Host-owned lock, independent of the textbox's disabled state. */
+  readonly disabled: boolean;
+  readonly pending?: boolean;
+  readonly pendingLabel?: string;
+  readonly buttonRef?: Ref<HTMLButtonElement>;
+  readonly help?: HelpContent;
+  /**
+   * Called synchronously on explicit activation, without consuming the draft
+   * or sending a message. The host owns errors, retries, and lifecycle focus.
+   */
+  onAction(): void | Promise<void>;
+}
 
 export interface ChatComposerProps {
   /**
@@ -50,6 +67,8 @@ export interface ChatComposerProps {
   readonly accessory?: ReactNode;
   /** Compact host context rendered in the composer footer. */
   readonly footerAccessory?: ReactNode;
+  /** Replace Send with an explicit host action; Enter in the textbox only edits. */
+  readonly primaryAction?: ChatComposerPrimaryAction;
 }
 
 export function ChatComposer({
@@ -66,24 +85,42 @@ export function ChatComposer({
   executionDisabled,
   accessory,
   footerAccessory,
+  primaryAction,
 }: ChatComposerProps) {
   const [draft, setDraft] = useState(initialValue);
   const [busy, setBusy] = useState(false);
+  const [actionBusy, setActionBusy] = useState(false);
   const submittingRef = useRef(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const isSending = sending || busy;
+  const isActionPending = actionBusy || primaryAction?.pending === true;
   const executionReadOnly = execution?.snapshot?.readOnly === true;
   const effectiveDisabled =
     disabled || executionReadOnly;
-  const pickerDisabled = executionReadOnly || (executionDisabled ?? disabled) || isSending || submissionDisabled;
+  const pickerDisabled =
+    executionReadOnly ||
+    (executionDisabled ?? disabled) ||
+    isSending ||
+    isActionPending ||
+    submissionDisabled;
   const executionBlocksSend =
     execution?.selecting === true;
   const canSend =
+    primaryAction === undefined &&
+    !isActionPending &&
     !effectiveDisabled &&
     !isSending &&
     !submissionDisabled &&
     !executionBlocksSend &&
     draft.trim().length > 0;
+  const canRunPrimaryAction =
+    primaryAction !== undefined &&
+    !primaryAction.disabled &&
+    !isActionPending &&
+    !executionReadOnly &&
+    !isSending &&
+    !submissionDisabled &&
+    !executionBlocksSend;
 
   const grow = useCallback((element: HTMLTextAreaElement | null) => {
     if (element === null) return;
@@ -125,6 +162,8 @@ export function ChatComposer({
   const submit = async () => {
     const value = draft.trim();
     if (
+      primaryAction !== undefined ||
+      isActionPending ||
       value.length === 0 ||
       effectiveDisabled ||
       isSending ||
@@ -157,12 +196,38 @@ export function ChatComposer({
     }
   };
 
+  const runPrimaryAction = async () => {
+    if (
+      primaryAction === undefined ||
+      !canRunPrimaryAction ||
+      submittingRef.current
+    ) {
+      return;
+    }
+    submittingRef.current = true;
+    setActionBusy(true);
+    try {
+      // Invoke before the first await: hosts can freeze the context authorized
+      // by this activation. This path never enters the message-send protocol.
+      await primaryAction.onAction();
+    } catch {
+      // The host surfaces its error and decides whether to retry the exact
+      // action. Success and failure both leave the unsent draft untouched.
+    } finally {
+      submittingRef.current = false;
+      setActionBusy(false);
+    }
+  };
+
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
     void submit();
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    // A launch/host action is authorized only by activating its own button.
+    // Keep normal textarea editing, including Enter, while it replaces Send.
+    if (primaryAction !== undefined) return;
     if (
       event.key === "Enter" &&
       !event.shiftKey &&
@@ -210,14 +275,40 @@ export function ChatComposer({
               disabled={pickerDisabled}
             />
           )}
-          <Button
-            type="submit"
-            variant="primary"
-            className="wb-chat-composer__send"
-            disabled={!canSend}
-          >
-            {isSending ? <Spinner label="Sending message" /> : "Send"}
-          </Button>
+          {primaryAction === undefined ? (
+            <Button
+              key="send"
+              type="submit"
+              variant="primary"
+              className="wb-chat-composer__send"
+              disabled={!canSend}
+            >
+              {isSending ? <Spinner label="Sending message" /> : "Send"}
+            </Button>
+          ) : (
+            <HelpTarget
+              key="host-action"
+              content={primaryAction.help}
+              reactAriaComposite
+            >
+              <Button
+                ref={primaryAction.buttonRef}
+                type="button"
+                variant="primary"
+                className="wb-chat-composer__send"
+                disabled={!canRunPrimaryAction}
+                onClick={() => {
+                  void runPrimaryAction();
+                }}
+              >
+                {isActionPending ? (
+                  <Spinner
+                    label={primaryAction.pendingLabel ?? `${primaryAction.label}…`}
+                  />
+                ) : primaryAction.label}
+              </Button>
+            </HelpTarget>
+          )}
         </div>
       </div>
     </form>
