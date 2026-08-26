@@ -4,6 +4,7 @@ import { Button, InlineAlert } from "../../ui";
 import { ChatComposer, type ChatComposerPrimaryAction } from "./ChatComposer";
 import { ChatExecutionPicker } from "./ChatExecutionPicker";
 import { ChatMessageList } from "./ChatMessageList";
+import { ChatCopyAction } from "./ChatTranscriptCopy";
 import type {
   ChatAgentActivity,
   ChatMessage,
@@ -110,6 +111,8 @@ export interface ChatPanelProps {
   readonly responsesDisabled?: boolean;
   /** Whether the shared passive stopped-agent notice should be rendered. */
   readonly showStoppedNotice?: boolean;
+  /** Render the canonical transcript copy action in this panel's own header. */
+  readonly showTranscriptCopyAction?: boolean;
   /**
    * Send intent for freeform messages and inline question answers. Inline
    * answers pass the answered question's message id as inReplyTo.
@@ -181,6 +184,7 @@ export function ChatPanel({
   transcriptAppendix,
   responsesDisabled = false,
   showStoppedNotice = true,
+  showTranscriptCopyAction = true,
   onSend,
   sending = false,
   sendErrorMessage,
@@ -221,17 +225,29 @@ export function ChatPanel({
     sending;
 
   const renderHeader = () => {
-    if (header !== undefined) {
-      return <header className="wb-chat-panel__header">{header}</header>;
-    }
-    if (title !== undefined) {
-      return (
-        <header className="wb-chat-panel__header">
-          <h2 className="wb-chat-panel__title">{title}</h2>
-        </header>
-      );
-    }
-    return null;
+    const content =
+      header !== undefined ? (
+        header
+      ) : title !== undefined ? (
+        <h2 className="wb-chat-panel__title">{title}</h2>
+      ) : null;
+    const copyAction =
+      showTranscriptCopyAction &&
+      (status === "ready" || status === "read-only") &&
+      messages.length > 0 ? (
+        <ChatCopyAction messages={messages} />
+      ) : null;
+    if (content === null && copyAction === null) return null;
+    return (
+      <header className="wb-chat-panel__header">
+        {content === null ? null : (
+          <div className="wb-chat-panel__header-content">{content}</div>
+        )}
+        {copyAction === null ? null : (
+          <div className="wb-chat-panel__actions">{copyAction}</div>
+        )}
+      </header>
+    );
   };
 
   const renderTranscript = () => (

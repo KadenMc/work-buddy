@@ -9,6 +9,7 @@ import {
 
 import { Button, InlineAlert } from "../../ui";
 import { formatTime } from "../shared";
+import { chatMessageAuthorLabel } from "./ChatTranscriptCopy";
 import type { ChatAgentActivity, ChatMessage } from "./contracts";
 import "./styles.css";
 
@@ -46,12 +47,6 @@ export interface ChatMessageListProps {
   readonly revealLatestMessageToken?: number;
   /** Shown when the conversation has no messages yet. */
   readonly emptyLabel?: string;
-}
-
-function authorName(message: ChatMessage): string {
-  if (message.author === "user") return "You";
-  if (message.author === "system") return message.authorLabel ?? "System";
-  return message.authorLabel ?? "Assistant";
 }
 
 function seedReadCount(
@@ -252,7 +247,7 @@ export function ChatMessageList({
               >
                 <div className="wb-chat-msg__bubble">
                   <span className="wb-visually-hidden">
-                    {authorName(message)}:
+                    {chatMessageAuthorLabel(message)}:{" "}
                   </span>
                   <span className="wb-chat-msg__content">{message.content}</span>
                   {renderMessageAccessory?.(message)}
@@ -286,7 +281,7 @@ export function ChatMessageList({
         {transcriptAppendix}
       </div>
 
-      {agentActivity === "thinking" ? (
+      {agentActivity === "starting" || agentActivity === "thinking" ? (
         <div className="wb-chat-typing" role="status">
           <span className="wb-chat-typing__dots" aria-hidden="true">
             <span className="wb-chat-typing__dot" />

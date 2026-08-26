@@ -44,6 +44,12 @@ export {
 } from "./useChatConversation";
 export { ChatMessageList, type ChatMessageListProps } from "./ChatMessageList";
 export {
+  ChatCopyAction,
+  chatMessageAuthorLabel,
+  formatChatTranscript,
+  type ChatCopyActionProps,
+} from "./ChatTranscriptCopy";
+export {
   ChatComposer,
   type ChatComposerPrimaryAction,
   type ChatComposerProps,

@@ -31,6 +31,56 @@ function provider(
 }
 
 describe("ConversationChat", () => {
+  it("keeps an ordinary live empty conversation idle", async () => {
+    const chatProvider = provider("c-idle", {
+      messages: [],
+      agentLiveness: "alive",
+    });
+    render(
+      <ConversationChat
+        provider={chatProvider}
+        conversationId="c-idle"
+        title="Project chat"
+      />,
+    );
+
+    expect(await screen.findByText("No messages yet.")).toBeVisible();
+    expect(screen.queryByText("Assistant is typing")).not.toBeInTheDocument();
+  });
+
+  it("shows opt-in first-turn feedback until the first assistant message arrives", async () => {
+    const chatProvider = provider("c-waiting", {
+      messages: [],
+      agentLiveness: "alive",
+    });
+    render(
+      <ConversationChat
+        provider={chatProvider}
+        conversationId="c-waiting"
+        title="Project chat"
+        expectsInitialAssistantTurn
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "Assistant is typing",
+      ),
+    );
+    expect(screen.getByText("No messages yet.")).toBeVisible();
+    act(() => {
+      chatProvider.pushMessage({
+        id: "assistant-first",
+        author: "assistant",
+        content: "How can I help?",
+      });
+    });
+    expect(await screen.findByText("How can I help?")).toBeVisible();
+    await waitFor(() =>
+      expect(screen.queryByText("Assistant is typing")).not.toBeInTheDocument(),
+    );
+  });
+
   it("launches through the host without preparing or sending the preserved composer draft", async () => {
     const chatProvider = provider("c1");
     const sendMessage = vi.spyOn(chatProvider, "sendMessage");

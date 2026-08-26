@@ -531,35 +531,9 @@ def api_registry_list():
     instead of typing one from memory. Each entry carries a short
     description used as the dropdown's secondary text.
     """
-    from work_buddy.mcp_server.registry import (
-        Capability, WorkflowDefinition, get_registry,
-    )
+    from work_buddy.dashboard.job_registry import job_registry_projection
 
-    reg = get_registry()
-
-    capabilities = []
-    workflows = []
-    for name, entry in sorted(reg.items()):
-        desc = (getattr(entry, "description", "") or "").split("\n", 1)[0]
-        # ``slash_command`` is the user-facing name many users actually
-        # remember (e.g. ``wb-morning`` for the ``morning-routine``
-        # workflow). Surface it so the typeahead can match either name.
-        slash = getattr(entry, "slash_command", None) or ""
-        if isinstance(entry, WorkflowDefinition):
-            workflows.append({
-                "name": name,
-                "description": desc,
-                "parameters": _project_param_schema(entry.params_schema),
-                "slash_command": slash,
-            })
-        elif isinstance(entry, Capability):
-            capabilities.append({
-                "name": name,
-                "description": desc,
-                "parameters": _project_param_schema(entry.parameters),
-                "slash_command": slash,
-            })
-    return jsonify({"capabilities": capabilities, "workflows": workflows})
+    return jsonify(job_registry_projection())
 
 
 @app.get("/api/cron/describe")
@@ -4531,17 +4505,9 @@ def _project_param_schema(raw) -> list[dict[str, Any]]:
     """Flatten a ``{name: {type, description, required}}`` params schema
     into an ordered ``[{name, type, description, required}]`` list for the
     frontend."""
-    out: list[dict[str, Any]] = []
-    for pname, pinfo in (raw or {}).items():
-        if not isinstance(pinfo, dict):
-            continue
-        out.append({
-            "name": pname,
-            "type": pinfo.get("type", ""),
-            "description": pinfo.get("description", ""),
-            "required": bool(pinfo.get("required", False)),
-        })
-    return out
+    from work_buddy.dashboard.job_registry import project_param_schema
+
+    return project_param_schema(raw)
 
 
 def _attach_param_schemas(descriptors: list[dict]) -> list[dict]:

@@ -37,6 +37,8 @@ from .runner import AssistanceRunner, HostedAssistanceRunner
 
 CONSUMER = "dashboard.assisted-draft"
 MAX_TURNS = 40
+MAX_REFERENCE_QUERY_CHARS = 240
+MAX_REFERENCE_PAYLOAD_BYTES = 32 * 1024
 _SAFE_DRIVER_ERROR = (
     "AI help could not launch. Your form is unchanged. "
     "Choose Launch to try again or continue manually."
@@ -139,6 +141,13 @@ class AssistanceBroker:
                       disclosed INTEGER NOT NULL DEFAULT 0, reply_message_id TEXT,
                       PRIMARY KEY(session_id,start_id,generation,message_id)
                     );
+                    CREATE TABLE IF NOT EXISTS assisted_draft_reference_receipts (
+                      session_id TEXT NOT NULL, start_id TEXT NOT NULL,
+                      generation TEXT NOT NULL, request_id TEXT NOT NULL,
+                      request_hash TEXT NOT NULL, payload_json TEXT NOT NULL,
+                      disclosed INTEGER NOT NULL DEFAULT 0,
+                      PRIMARY KEY(session_id,start_id,generation,request_id)
+                    );
                     CREATE TABLE IF NOT EXISTS assisted_draft_supersessions (
                       session_id TEXT NOT NULL, start_id TEXT NOT NULL,
                       previous_start_id TEXT, through_message_id TEXT,
@@ -214,7 +223,7 @@ class AssistanceBroker:
             "message": "Choose a chat model, then Launch."
             if enabled
             else "Enable Dashboard AI in Settings, or continue editing manually.",
-            "disclosure": "Launch sends up to 32 KiB of allowlisted form fields plus bounded recent conversation context to your selected chat provider (at most 64 KiB per context disclosure). The assistant can ask questions and suggest allowlisted edits, but cannot submit, create or schedule anything. Do not include secrets.",
+            "disclosure": "Launch sends up to 32 KiB of allowlisted form fields plus bounded recent conversation context to your selected chat provider (at most 64 KiB per context disclosure). For Jobs, the assistant may also look up the same registered capability and workflow metadata shown in the form. It can ask questions and suggest allowlisted edits, but cannot execute, submit, create or schedule anything. Do not include secrets.",
             "localProviderNotice": "Local inference profiles do not currently provide an interactive chat driver. Only registered chat providers can be selected; there is no cloud fallback.",
         }
 
@@ -1670,13 +1679,14 @@ class AssistanceBroker:
                         }
                     )[:32],
                     "form": {
-                        key: form[key]
+                        key: form.get(key, [])
                         for key in (
                             "title",
                             "purpose",
                             "instructions",
                             "fields",
                             "submitPolicy",
+                            "referenceScopes",
                         )
                     },
                     "snapshot": json.loads(turn["snapshot_json"]),
@@ -1731,6 +1741,180 @@ class AssistanceBroker:
             conn.execute(
                 "UPDATE assisted_draft_context_receipts SET disclosed=1 WHERE receipt_id=?",
                 (payload["consumption_receipt_id"],),
+            )
+        return payload
+
+    def reference_search(
+        self,
+        *,
+        assistant_session_id: str,
+        message_id: str,
+        consumption_receipt_id: str,
+        request_id: str,
+        reference_kind: str,
+        query: str,
+        **scope,
+    ) -> dict[str, Any]:
+        """Return immutable form-authorized metadata without dispatching it."""
+
+        text_id(request_id, "reference_request_id")
+        if (
+            not isinstance(query, str)
+            or not query.strip()
+            or len(query) > MAX_REFERENCE_QUERY_CHARS
+            or any(ord(character) < 32 for character in query)
+        ):
+            raise AssistanceError("invalid_reference_query")
+        normalized_query = " ".join(query.split())
+        request_hash = digest(
+            {
+                "message_id": message_id,
+                "consumption_receipt_id": consumption_receipt_id,
+                "reference_kind": reference_kind,
+                "query": normalized_query,
+            }
+        )
+
+        with self._transaction() as conn:
+            session = self._worker_scope(**scope, conn=conn, require_initial=False)
+            if session["assistantSessionId"] != assistant_session_id:
+                raise conversations.ConversationLeaseLost("lease_lost")
+            receipt = self._consumed(
+                conn, session, scope["generation"], message_id
+            )
+            if receipt["receipt_id"] != consumption_receipt_id:
+                raise AssistanceError("assistance_receipt_mismatch", status=409)
+            form = form_schema(session["identity"]["draftName"], session["schema"])
+            if reference_kind not in form.get("referenceScopes", ()):
+                raise AssistanceError("assistance_reference_not_allowed", status=403)
+            existing = conn.execute(
+                "SELECT * FROM assisted_draft_reference_receipts WHERE session_id=? AND start_id=? AND generation=? AND request_id=?",
+                (
+                    assistant_session_id,
+                    session["activeStartId"],
+                    scope["generation"],
+                    request_id,
+                ),
+            ).fetchone()
+            if existing is not None:
+                if existing["request_hash"] != request_hash:
+                    raise AssistanceError(
+                        "assistance_reference_request_conflict", status=409
+                    )
+                payload = json.loads(existing["payload_json"])
+            start_id = session["activeStartId"]
+
+        if existing is None:
+            from work_buddy.dashboard.job_registry import search_job_registry
+
+            try:
+                results = search_job_registry(
+                    reference_kind=reference_kind, query=normalized_query
+                )
+            except ValueError as exc:
+                raise AssistanceError(
+                    "assistance_reference_not_allowed", status=403
+                ) from exc
+            payload = {
+                "protocol": "wb.assisted-draft.reference/v1",
+                "assistant_session_id": assistant_session_id,
+                "conversation_id": scope["conversation_id"],
+                "message_id": message_id,
+                "request_id": request_id,
+                "reference_kind": reference_kind,
+                "query": normalized_query,
+                "results": results,
+                "reference_receipt_id": "arr-"
+                + digest(
+                    {
+                        "session": assistant_session_id,
+                        "start": start_id,
+                        "generation": scope["generation"],
+                        "message": message_id,
+                        "context_receipt": consumption_receipt_id,
+                        "request": request_id,
+                    }
+                )[:32],
+            }
+            if len(canonical(payload).encode("utf-8")) > MAX_REFERENCE_PAYLOAD_BYTES:
+                raise AssistanceError("assistance_reference_too_large")
+            with self._transaction() as conn:
+                current = self._worker_scope(
+                    **scope, conn=conn, require_initial=False
+                )
+                if (
+                    current["assistantSessionId"] != assistant_session_id
+                    or current["activeStartId"] != start_id
+                ):
+                    raise conversations.ConversationLeaseLost("lease_lost")
+                receipt = self._consumed(
+                    conn, current, scope["generation"], message_id
+                )
+                if receipt["receipt_id"] != consumption_receipt_id:
+                    raise AssistanceError(
+                        "assistance_receipt_mismatch", status=409
+                    )
+                raced = conn.execute(
+                    "SELECT * FROM assisted_draft_reference_receipts WHERE session_id=? AND start_id=? AND generation=? AND request_id=?",
+                    (
+                        assistant_session_id,
+                        start_id,
+                        scope["generation"],
+                        request_id,
+                    ),
+                ).fetchone()
+                if raced is None:
+                    conn.execute(
+                        "INSERT INTO assisted_draft_reference_receipts(session_id,start_id,generation,request_id,request_hash,payload_json) VALUES (?,?,?,?,?,?)",
+                        (
+                            assistant_session_id,
+                            start_id,
+                            scope["generation"],
+                            request_id,
+                            request_hash,
+                            canonical(payload),
+                        ),
+                    )
+                elif raced["request_hash"] != request_hash:
+                    raise AssistanceError(
+                        "assistance_reference_request_conflict", status=409
+                    )
+                else:
+                    payload = json.loads(raced["payload_json"])
+
+        entry = self._account(
+            session, payload, "assisted_draft_reference_search"
+        )
+        with self._transaction() as conn:
+            current = self._worker_scope(
+                **scope, conn=conn, require_initial=False
+            )
+            if current["activeStartId"] != start_id:
+                raise conversations.ConversationLeaseLost("lease_lost")
+            stored = conn.execute(
+                "SELECT * FROM assisted_draft_reference_receipts WHERE session_id=? AND start_id=? AND generation=? AND request_id=?",
+                (
+                    assistant_session_id,
+                    start_id,
+                    scope["generation"],
+                    request_id,
+                ),
+            ).fetchone()
+            if (
+                stored is None
+                or stored["request_hash"] != request_hash
+                or stored["payload_json"] != canonical(payload)
+            ):
+                raise AssistanceError("assistance_reference_changed", status=409)
+            self._validate_accounted_input(entry)
+            conn.execute(
+                "UPDATE assisted_draft_reference_receipts SET disclosed=1 WHERE session_id=? AND start_id=? AND generation=? AND request_id=?",
+                (
+                    assistant_session_id,
+                    start_id,
+                    scope["generation"],
+                    request_id,
+                ),
             )
         return payload
 

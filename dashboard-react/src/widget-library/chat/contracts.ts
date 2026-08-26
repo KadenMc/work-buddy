@@ -227,10 +227,16 @@ export interface ChatExecutionProfileProvider {
 }
 
 /**
- * Derived activity signal for the transcript. "thinking" shows the typing
- * indicator, "stopped" shows the agent-stopped notice, "idle" shows neither.
+ * Derived activity signal for the transcript. "starting" shows passive
+ * first-turn feedback without locking interaction, "thinking" shows the same
+ * feedback while a user turn is being processed, "stopped" shows the
+ * agent-stopped notice, and "idle" shows neither.
  */
-export type ChatAgentActivity = "thinking" | "stopped" | "idle";
+export type ChatAgentActivity =
+  | "starting"
+  | "thinking"
+  | "stopped"
+  | "idle";
 
 /**
  * Host presentation state for the whole panel, mirroring the dashboard

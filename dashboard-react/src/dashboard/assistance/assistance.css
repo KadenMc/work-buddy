@@ -52,6 +52,12 @@
     justify-content: space-between;
     gap: var(--wb-space-4);
   }
+  .wb-assistance-dock__header-actions {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: var(--wb-space-2);
+  }
   .wb-assistance-dock h2 { font-size: var(--wb-font-size-md); margin: 0; }
   .wb-assistance-dock p { margin: 0; }
   .wb-assistance-dock__body {

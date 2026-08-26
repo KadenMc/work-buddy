@@ -217,7 +217,7 @@ export function normalizeConversationPayload(
  * _computeAgentTyping and agent-dead logic:
  *  - stopped: conversation open and the driver process exited
  *  - thinking: open, no pending question, and the agent still appears to be
- *    working (last turn is the human, or the agent is mid-stream sending
+ *    working (the last turn is the human, or the agent is mid-stream sending
  *    text rather than a question)
  *  - idle: everything else
  */
@@ -231,7 +231,12 @@ export function deriveAgentActivity(
   if (hasPending) return "idle";
 
   const last = messages.length > 0 ? messages[messages.length - 1] : undefined;
-  if (last === undefined) return "idle";
+  if (last === undefined) {
+    // Liveness does not imply that an empty conversation owes a first turn.
+    // Hosts with that stronger contract opt into passive starting feedback at
+    // the ConversationChat boundary.
+    return "idle";
+  }
 
   // An assistant or system turn has handed control back. A long-lived worker
   // remains alive while it waits for another message, so process liveness alone

@@ -61,6 +61,11 @@ type SharedConversationPanelProps = Omit<
 export type ConversationChatProps = SharedConversationPanelProps & {
   readonly provider: ChatConversationProvider;
   readonly conversationId: string;
+  /**
+   * Show passive first-turn feedback while an open, live conversation is
+   * empty. This is an explicit host promise and never locks chat interaction.
+   */
+  readonly expectsInitialAssistantTurn?: boolean;
   /** Observe the canonical message list without mounting another chat hook. */
   readonly onMessagesChange?: (messages: readonly ChatMessage[]) => void;
   /** Prepare an outbound turn before the provider sees it. */
@@ -86,6 +91,7 @@ function panelStatus(
 export function ConversationChat({
   provider,
   conversationId,
+  expectsInitialAssistantTurn = false,
   onMessagesChange,
   prepareSend,
   sendScopeKey,
@@ -100,7 +106,15 @@ export function ConversationChat({
   const [revealLatestMessageToken, setRevealLatestMessageToken] = useState(0);
   const messages = chat.snapshot?.messages ?? EMPTY_MESSAGES;
   const activity =
-    chat.snapshot === null ? "idle" : deriveAgentActivity(chat.snapshot);
+    chat.snapshot !== null &&
+    expectsInitialAssistantTurn &&
+    chat.snapshot.status === "open" &&
+    chat.snapshot.agentLiveness === "alive" &&
+    chat.snapshot.messages.length === 0
+      ? "starting"
+      : chat.snapshot === null
+        ? "idle"
+        : deriveAgentActivity(chat.snapshot);
   useEffect(() => {
     onMessagesChange?.(messages);
   }, [messages, onMessagesChange]);

@@ -82,10 +82,11 @@ def test_cowork_execution_session_has_non_overridable_builtin_acl():
     )
 
 
-def test_form_execution_has_only_bound_form_and_conversation_tools():
+def test_form_execution_has_only_bound_form_reference_and_conversation_tools():
     sid = "generation-abc-assisted-draft"
     expected = frozenset({
         "assisted_draft_context_get", "assisted_draft_propose_patch",
+        "assisted_draft_reference_search",
         "conversation_send", "conversation_ask", "conversation_poll",
         "conversation_receive", "conversation_ack",
     })
@@ -93,6 +94,7 @@ def test_form_execution_has_only_bound_form_and_conversation_tools():
     for forbidden in (
         "task_create", "task_toggle", "conversation_create", "conversation_list",
         "conversation_close", "cowork_doc_get", "wb_init", "agent_docs",
+        "web_search", "web_fetch", "user_job_create",
     ):
         assert not session_acl.is_capability_allowed(sid, forbidden)
     filtered = session_acl.filter_search_results(

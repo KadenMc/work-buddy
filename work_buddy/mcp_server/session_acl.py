@@ -39,6 +39,7 @@ _ASSISTED_DRAFT_CAPABILITIES = frozenset(
     {
         "assisted_draft_context_get",
         "assisted_draft_propose_patch",
+        "assisted_draft_reference_search",
         "conversation_send",
         "conversation_ask",
         "conversation_poll",

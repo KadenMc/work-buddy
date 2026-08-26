@@ -23,6 +23,7 @@ entry_points:
 children:
 - "services/dashboard/react/assisted-draft-context-get"
 - "services/dashboard/react/assisted-draft-propose-patch"
+- "services/dashboard/react/assisted-draft-reference-search"
 dev_notes: |-
   `AssistedDraftRuntimeProvider` keeps session/cancellation authority at the root;
   `AssistedDraftWorkspace` renders the matching dock inside ViewHost's content
@@ -35,6 +36,17 @@ dev_notes: |-
   draft reset, and scope changes still fence or revoke assistance. The view host
   keeps assistable form renderers alive across grid/mobile presentation changes
   without granting durable-widget persistence or bypassing Arrange/Preview safety.
+
+  Jobs registry discovery reuses the canonical, non-dispatching projection in
+  `work_buddy/dashboard/job_registry.py`; `/api/registry/list` and assisted
+  reference search must not grow separate name or parameter-schema maps. Each
+  reference request is bound to the exact consumed message and context receipt,
+  persists immutable result bytes, and re-enters Sources accounting on replay.
+
+  Empty-plus-live does not globally mean an agent owes a message: Co-work starts
+  a live worker that waits silently for the user. Assistance alone passes
+  `expectsInitialAssistantTurn` because its runner promises a greeting. Keep
+  `starting` non-locking and explicit rather than deriving it from liveness.
 
   `composerPrimaryAction` maps the existing start protocol to the visible Launch
   action. HTTP Start payloads, control revisions, frozen retry identities, scoped
@@ -87,7 +99,11 @@ The existing Dashboard Hover Help mode also covers the panel heading, close
 action, model/context controls, Launch and resize divider. Optional explanations
 stay in help; required disclosure, errors and recovery remain visible. The panel
 keeps its controls reachable when a long draft or recovery message needs more
-space than the viewport.
+space than the viewport. Copy and Close are icon actions in the panel's top
+header with their explanations in Hover Help. Copy uses the shared Chat action
+and exports plain `Speaker: message` text without timestamps, model details or
+controls. The composer paints its complete focus indicator inside the control
+so a clipped side panel cannot cut it off.
 
 The dock composes the same `ConversationChat`, `ChatPanelState`, composer,
 message/choice rendering, execution hook and picker used by Co-work. It is not
@@ -110,6 +126,9 @@ revision and hash before any asynchronous work. The agent consumes the canonical
 form purpose, schema and frozen values through `assisted_draft_context_get`,
 then sends a useful initial greeting through the ordinary conversation tool.
 No user-authored message is fabricated and the user need not retype form context.
+While that promised first message is pending, the shared transcript shows an
+accessible animated ellipsis without disabling the composer or model picker;
+reduced-motion mode renders the same status without animation.
 
 **Launch** occupies the composer's normal Send position until authorization
 succeeds; there is no separate startup button or idle readiness paragraph.
@@ -134,8 +153,14 @@ turn's disclosure and remain protected by normal patch conflicts.
 
 A hosted agent receives only source-free binding identifiers at launch. Its
 non-overridable tool set contains `assisted_draft_context_get`,
-`assisted_draft_propose_patch`, and the existing send, ask, poll, receive and
-acknowledge conversation tools. Every call checks the exact session,
+`assisted_draft_reference_search`, `assisted_draft_propose_patch`, and the
+existing send, ask, poll, receive and acknowledge conversation tools. A form
+manifest decides which reference scopes exist. Jobs may search the same
+registered capability/workflow names, slash aliases, one-line descriptions and
+reduced parameter schemas shown by its picker; Tasks exposes no such scope.
+Reference results are untrusted data, never instructions, and grant no authority
+to execute a capability, start a workflow, browse, read generic documentation,
+submit the form, or create/schedule a job. Every call checks the exact session,
 conversation, consumer, generation, pinned model and applicable policy gates.
 Initial context consumption precedes conversation access; each user turn must
 be received and its exact snapshot consumed before edits or acknowledgement.
@@ -145,9 +170,11 @@ messages do not answer a pending question.
 Exact content releases are Sources-backed and recorded in the shared worker
 disclosure manifest before return. Output binds the ordered input manifest and
 durable producer identity. A possibly-sent release is never automatically
-replayed or retried under a new generation. Replies and patches have stable
-identities; errors are sanitized. Unbound generic conversation routes/tools
-cannot bypass the form session.
+replayed or retried under a new generation. Reference receipts additionally bind
+the active Start, generation, exact consumed turn, consumption receipt, stable
+request ID, reference kind and normalized query; a cross-turn reuse conflicts.
+Replies and patches have stable identities; errors are sanitized. Unbound
+generic conversation routes/tools cannot bypass the form session.
 
 The protected HTTP flow is metadata-only `POST /api/assistance/sessions`,
 GET/PATCH execution selection, explicit Launch with `initialSnapshot`, and

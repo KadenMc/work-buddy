@@ -99,9 +99,29 @@ describe("ChatPanel", () => {
     expect(screen.getByRole("textbox", { name: "Message" })).toBeDisabled();
     expect(screen.getByRole("button", { name: /Run with/ })).toBeEnabled();
   });
+
+  it("keeps the composer and model picker interactive during passive first-turn feedback", async () => {
+    render(
+      <ChatPanel
+        messages={[]}
+        onSend={vi.fn()}
+        agentActivity="starting"
+        execution={executionControl()}
+      />,
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent("Assistant is typing");
+    expect(screen.getByRole("button", { name: /Run with/ })).toBeEnabled();
+    await userEvent.type(
+      screen.getByRole("textbox", { name: "Message" }),
+      "Add another detail",
+    );
+    expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+  });
   it("renders the title header, transcript, and composer when ready", () => {
     render(<ChatPanel title="Doc chat" messages={messages} onSend={vi.fn()} />);
     expect(screen.getByRole("heading", { name: "Doc chat" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy chat" })).toBeInTheDocument();
     expect(screen.getByRole("log", { name: "Doc chat" })).toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Message" })).toBeInTheDocument();
   });
@@ -116,8 +136,30 @@ describe("ChatPanel", () => {
       />,
     );
     expect(screen.getByText("Custom header content")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy chat" })).toBeInTheDocument();
     expect(
       screen.queryByRole("heading", { name: "Doc chat" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not offer a transcript copy action before there are messages", () => {
+    render(<ChatPanel title="Doc chat" messages={[]} onSend={vi.fn()} />);
+    expect(
+      screen.queryByRole("button", { name: "Copy chat" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("lets a composed host place the same transcript action in its outer header", () => {
+    render(
+      <ChatPanel
+        title="Doc chat"
+        messages={messages}
+        onSend={vi.fn()}
+        showTranscriptCopyAction={false}
+      />,
+    );
+    expect(
+      screen.queryByRole("button", { name: "Copy chat" }),
     ).not.toBeInTheDocument();
   });
 

@@ -531,6 +531,27 @@ describe("CoworkChatPanel", () => {
     expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
   });
 
+  it("keeps an empty live Co-work conversation idle and sendable", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(conversation([], { agent_alive: true })),
+    ) as unknown as typeof fetch;
+
+    render(
+      <CoworkChatPanel
+        provider={provider(fetchImpl)}
+        conversationId="c1"
+      />,
+    );
+
+    expect(await screen.findByText(/No messages yet/)).toBeVisible();
+    expect(screen.queryByText("Assistant is typing")).not.toBeInTheDocument();
+    await userEvent.type(
+      screen.getByRole("textbox", { name: "Message" }),
+      "Begin from this note",
+    );
+    expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+  });
+
   it("disables submission while the latest acknowledged turn awaits a reply", async () => {
     const fetchImpl = vi.fn(async () =>
       jsonResponse(

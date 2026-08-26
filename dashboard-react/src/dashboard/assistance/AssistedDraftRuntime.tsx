@@ -1,4 +1,5 @@
 import { Sparkle } from "@phosphor-icons/react/Sparkle";
+import { X } from "@phosphor-icons/react/X";
 import { createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
 
 import type { JsonObject, JsonSchemaReference } from "../contributions/contracts";
@@ -7,8 +8,8 @@ import { widgetDraftStorageKey, type WidgetDraftIdentity } from "../drafts/contr
 import { HttpChatConversationProvider } from "../conversations/HttpChatConversationProvider";
 import { HttpChatExecutionProfileProvider } from "../conversations/HttpChatExecutionProfileProvider";
 import { HelpTarget, type HelpContent } from "../help";
-import { ChatPanelState, ConversationChat, useChatExecutionProfile, type ChatConversationProvider, type ChatExecutionControl, type ChatSendInput } from "../../widget-library/chat";
-import { Button, InlineAlert, SegmentedControl, VisuallyHidden } from "../../ui";
+import { ChatCopyAction, ChatPanelState, ConversationChat, useChatExecutionProfile, type ChatConversationProvider, type ChatExecutionControl, type ChatMessage, type ChatSendInput } from "../../widget-library/chat";
+import { Button, IconButton, InlineAlert, SegmentedControl, VisuallyHidden } from "../../ui";
 import { WorkspaceSidePanel } from "../layout/WorkspaceSidePanel";
 import type { AssistanceAvailability, AssistanceSession, AssistanceStartRequest, AssistanceStopRequest, AssistedDraftPatch, AssistedFormSchema, DraftPatchReceipt, PreparedDraftSnapshot } from "./contracts";
 import { assistedForms, discloseSnapshot, equalJson, fieldFor, isRecord, pathKey, readField, snapshotHash, validateFieldValue } from "./schema";
@@ -455,6 +456,10 @@ function AssistantDock({ binding, open, onClose, onRecords, onSession, client, r
   const [historicalSessions, setHistoricalSessions] = useState<readonly AssistanceSession[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [records, setRecords] = useState<readonly ReceiptRecord[]>([]);
+  const [chatTranscript, setChatTranscript] = useState<{
+    readonly conversationId: string;
+    readonly messages: readonly ChatMessage[];
+  } | null>(null);
   const recordsRef = useRef(new Map<string, ReceiptRecord>());
   const initialRecordsRef = useRef(initialRecords);
   const preparedRef = useRef(new Map<string, PreparedDraftSnapshot>());
@@ -623,6 +628,9 @@ function AssistantDock({ binding, open, onClose, onRecords, onSession, client, r
 
   const sessionId = session?.assistantSessionId ?? null;
   const conversationId = session?.conversationId ?? null;
+  const chatMessages = chatTranscript?.conversationId === conversationId
+    ? chatTranscript.messages
+    : [];
   const executionProvider = useMemo(() => {
     if (sessionId === null || sessionRef.current?.protocol !== "wb.assisted-draft.session/v2" || sessionRef.current.phase === "ended" || sessionRef.current.phase === "expired") return null;
     const path = `/api/assistance/sessions/${encodeURIComponent(sessionId)}/execution`;
@@ -911,6 +919,12 @@ function AssistantDock({ binding, open, onClose, onRecords, onSession, client, r
     finally { polling.current = false; }
   };
   const poll = useCallback(() => { void pollRef.current(); }, []);
+  const observeMessages = useCallback((messages: readonly ChatMessage[]) => {
+    if (conversationId !== null) {
+      setChatTranscript({ conversationId, messages });
+    }
+    poll();
+  }, [conversationId, poll]);
   useEffect(() => {
     if (!session || !editable) return;
     poll();
@@ -1022,10 +1036,10 @@ function AssistantDock({ binding, open, onClose, onRecords, onSession, client, r
   const selected = execution?.snapshot?.selection;
   const modelLabel = selected ? `${selected.providerLabel} · ${selected.modelLabel}` : "the selected model";
   const startDisabled = !editable || busy || stopPending || !Number.isSafeInteger(session?.controlRevision) || !availability?.available || execution?.status !== "ready" || execution.selecting || !execution.currentAvailable || execution.snapshot?.readOnly === true;
-  const context = <HelpTarget content={{ summary: "AI help is bound to this form.", details: startAttempt.current ? "This launch keeps the fields and recent chat approved for its first attempt. Later edits stay private; choose Launch with current fields to authorize them. Only you can submit the form." : "Launch shares its current allowlisted fields and bounded conversation history with the selected provider. Later edits stay private until you send or launch again. Only you can submit the form." }} focusable placement="top start"><span className="wb-chat-composer__footer-accessory wb-assistance-context">About: {binding.form.title}</span></HelpTarget>;
+  const context = <HelpTarget content={{ summary: "AI help is bound to this form.", details: startAttempt.current ? "This launch keeps the fields and recent chat approved for its first attempt. In Jobs, it may also inspect the registered capability and workflow metadata already shown by the form. Later edits stay private; choose Launch with current fields to authorize them. Only you can submit the form." : "Launch shares its current allowlisted fields and bounded conversation history with the selected provider. In Jobs, it may also inspect the registered capability and workflow metadata already shown by the form. Later edits stay private until you send or launch again. Only you can submit the form." }} focusable placement="top start"><span className="wb-chat-composer__footer-accessory wb-assistance-context">About: {binding.form.title}</span></HelpTarget>;
   const launchRequired = !terminal && (!active || busy);
   const launchDisclosure = launchRequired && availability?.available ? <div className="wb-assistance-disclosure" role="group" aria-label="Launch disclosure">
-    <HelpTarget content={{ summary: "Review what Launch shares.", details: availability.disclosure }} focusable placement="top start"><p>{startAttempt.current ? "Uses the fields and recent chat approved for this launch with " : "Launch shares this form's allowed fields and recent chat with "}<strong>{modelLabel}</strong>. Only you submit.</p></HelpTarget>
+    <HelpTarget content={{ summary: "Review what Launch shares.", details: availability.disclosure }} focusable placement="top start"><p>{startAttempt.current ? "Uses the context approved for this launch with " : "Launch shares this form's allowed context with "}<strong>{modelLabel}</strong>. Only you submit.</p></HelpTarget>
     {startAttempt.current && !busy && <HelpTarget content={{ summary: "Authorize the fields you see now.", details: "This creates a new launch attempt using the current fields, instead of retrying the previously authorized snapshot." }} reactAriaComposite><Button ref={freshStartButton} type="button" size="small" disabled={startDisabled} onClick={() => start(true)}>Launch with current fields</Button></HelpTarget>}
   </div> : undefined;
   const lifecycle = <div className="wb-assistance-lifecycle">
@@ -1049,21 +1063,25 @@ function AssistantDock({ binding, open, onClose, onRecords, onSession, client, r
   return <aside ref={paneRef} id={binding.paneId} className="wb-assistance-dock" aria-label="Draft assistance" hidden={!open} inert={!open ? true : undefined}>
     <header>
       <HelpTarget content={DRAFT_ASSISTANCE_HELP} focusable><h2 tabIndex={-1}>{binding.title()}</h2></HelpTarget>
-      <HelpTarget content={{ summary: "Close the panel and keep your work.", details: "Closing this panel keeps your draft and conversation. Reopen AI help to continue." }} reactAriaComposite><Button type="button" size="small" onClick={onClose}>Close assistance</Button></HelpTarget>
+      <div className="wb-assistance-dock__header-actions">
+        {chatMessages.length > 0 && <ChatCopyAction messages={chatMessages} />}
+        <HelpTarget content={{ summary: "Close the panel and keep your work.", details: "Closing this panel keeps your draft and conversation. Reopen AI help to continue." }} reactAriaComposite><IconButton label="Close assistance" title="" icon={<X weight="bold" />} variant="ghost" size="small" onClick={onClose} /></HelpTarget>
+      </div>
     </header>
     <div className="wb-assistance-dock__body">
       {session && provider ? <ConversationChat
         provider={provider} conversationId={session.conversationId} title="Draft conversation"
+        expectsInitialAssistantTurn={session.phase === "active" && session.activeStartId !== null && !stopPending}
         sendScopeKey={`${session.assistantSessionId}:${session.activeStartId ?? "unstarted"}:${session.controlRevision}:${session.execution?.selection.revision ?? "none"}:${session.phase}`}
-        prepareSend={prepareSend} onMessagesChange={poll} transcriptAppendix={appendix}
+        prepareSend={prepareSend} onMessagesChange={observeMessages} transcriptAppendix={appendix}
         composerDisabled={!editable || !active || busy} responsesDisabled={!editable || !active || busy}
-        showStoppedNotice={false}
+        showStoppedNotice={false} showTranscriptCopyAction={false}
         execution={execution} executionDisabled={!editable || busy || terminal || !availability?.available}
         header={lifecycle} composerAccessory={launchDisclosure} composerFooterAccessory={context}
         composerPrimaryAction={launchRequired ? {
           label: startAttempt.current ? "Retry Launch" : "Launch", onAction: () => start(),
           disabled: startDisabled, pending: busy, pendingLabel: "Launching…", buttonRef: startButton,
-          help: { summary: "Launch AI help for this form.", details: "Shares the disclosed fields and recent chat with the selected model. The assistant can suggest field edits, but only you can submit. Launch does not send any unsent message." },
+          help: { summary: "Launch AI help for this form.", details: "Shares the disclosed fields and recent chat with the selected model. In Jobs, the assistant may also inspect the registered capability and workflow metadata already shown in the form. It can suggest field edits, but only you can submit. Launch does not send any unsent message." },
         } : undefined}
         noMessagesLabel="Your conversation will appear here."
         composerPlaceholder={active ? "Ask about this form…" : "Launch to chat about this form…"}

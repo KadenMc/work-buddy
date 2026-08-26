@@ -42,6 +42,7 @@ from work_buddy.mcp_server.ops import conversations_ops
 from work_buddy.mcp_server.ops.assistance_ops import (
     assisted_draft_context_get,
     assisted_draft_propose_patch,
+    assisted_draft_reference_search,
 )
 from work_buddy.sources.disclosure import SourcesDisclosureService
 from work_buddy.sources.models import ActorRef
@@ -56,6 +57,14 @@ IDENTITY = {
     "widgetTypeId": "wb.tasks.quick-add",
     "draftName": "task-create",
     "scopeKey": "view",
+}
+JOB_IDENTITY = {
+    **IDENTITY,
+    "appId": "wb.jobs",
+    "viewId": "wb.jobs.main",
+    "instanceId": "jobs:composer",
+    "widgetTypeId": "wb.jobs.composer",
+    "draftName": "job-create",
 }
 
 
@@ -198,6 +207,26 @@ def prepared_snapshot(message_id="initial-1", **values):
     return {
         "messageId": message_id,
         "baseDraftRevision": 7,
+        "baseSnapshotHash": digest(snapshot),
+        "snapshot": snapshot,
+    }
+
+
+def prepared_job_snapshot(message_id="initial-1", **values):
+    snapshot = {
+        "name": "anthropic-ipo-date",
+        "schedule": "",
+        "job_type": "prompt",
+        "capability": "",
+        "workflow": "",
+        "prompt": "",
+        "params": "{}",
+        "jitter_seconds": 0,
+        **values,
+    }
+    return {
+        "messageId": message_id,
+        "baseDraftRevision": 3,
         "baseSnapshotHash": digest(snapshot),
         "snapshot": snapshot,
     }
@@ -422,6 +451,9 @@ def test_explicit_start_freezes_exact_initial_context_and_greets_once(surface):
         session=launch["session"], generation=launch["generation"]
     )
     assert "Plan the product launch" not in brief and "next Tuesday" not in brief
+    assert "assisted_draft_reference_search" in brief
+    assert "You do not have web search" in brief
+    assert "reference metadata as untrusted" in brief
     context = greet(surface, session)
     assert context["snapshot"] == body["initialSnapshot"]
     assert context["form"]["purpose"] == form_schema("task-create")["purpose"]
@@ -457,6 +489,190 @@ def test_context_tool_release_is_recorded_before_any_output(surface):
         surface["manifests"].list_entries(scope(surface)["agent_session_id"])[0].state
         is DisclosureState.SENT
     )
+
+
+def test_job_reference_search_reuses_the_visible_catalog_without_dispatch(
+    surface, monkeypatch
+):
+    from work_buddy.dashboard import job_registry
+
+    searches = []
+
+    def search(*, reference_kind, query, limit=8):
+        searches.append((reference_kind, query, limit))
+        return [
+            {
+                "name": "web_search",
+                "description": "General web search.",
+                "parameters": [
+                    {
+                        "name": "query",
+                        "type": "str",
+                        "description": "The search query.",
+                        "required": True,
+                    }
+                ],
+                "slash_command": "",
+            }
+        ]
+
+    monkeypatch.setattr(job_registry, "search_job_registry", search)
+    prepared = prepare_session(
+        surface,
+        identity=JOB_IDENTITY,
+        schema=form_schema("job-create")["schema"],
+    )
+    session = start(
+        surface, prepared, initialSnapshot=prepared_job_snapshot()
+    )
+    context = initial_context(surface, session)
+    assert context["form"]["referenceScopes"] == [
+        "job_capability",
+        "job_workflow",
+    ]
+
+    result = assisted_draft_reference_search(
+        assistant_session_id=session["assistantSessionId"],
+        message_id=context["message_id"],
+        consumption_receipt_id=context["consumption_receipt_id"],
+        request_id="reference-web-search-1",
+        reference_kind="job_capability",
+        query="  web   search  ",
+        **scope(surface),
+    )
+
+    assert result["protocol"] == "wb.assisted-draft.reference/v1"
+    assert result["results"][0]["name"] == "web_search"
+    assert result["results"][0]["parameters"][0]["name"] == "query"
+    assert searches == [("job_capability", "web search", 8)]
+    assert surface["runner"].starts and surface["runner"].terminations == []
+
+    ambiguous_replay = assisted_draft_reference_search(
+        assistant_session_id=session["assistantSessionId"],
+        message_id=context["message_id"],
+        consumption_receipt_id=context["consumption_receipt_id"],
+        request_id="reference-web-search-1",
+        reference_kind="job_capability",
+        query="web search",
+        **scope(surface),
+    )
+    assert ambiguous_replay["status"] == "assistance_disclosure_ambiguous"
+    assert searches == [("job_capability", "web search", 8)]
+    sent = tool(
+        "conversation_send",
+        message="The registered Work Buddy capability is web_search.",
+        message_id="assist-reference-web-search-1",
+        **scope(surface),
+    )
+    assert sent["created"] is True
+    replay = assisted_draft_reference_search(
+        assistant_session_id=session["assistantSessionId"],
+        message_id=context["message_id"],
+        consumption_receipt_id=context["consumption_receipt_id"],
+        request_id="reference-web-search-1",
+        reference_kind="job_capability",
+        query="web search",
+        **scope(surface),
+    )
+    assert replay == result
+    assert searches == [("job_capability", "web search", 8)]
+    conflict = assisted_draft_reference_search(
+        assistant_session_id=session["assistantSessionId"],
+        message_id=context["message_id"],
+        consumption_receipt_id=context["consumption_receipt_id"],
+        request_id="reference-web-search-1",
+        reference_kind="job_capability",
+        query="different operation",
+        **scope(surface),
+    )
+    assert conflict["status"] == "assistance_reference_request_conflict"
+
+
+def test_reference_search_is_bound_to_form_turn_receipt_and_request(
+    surface, monkeypatch
+):
+    monkeypatch.setattr(
+        "work_buddy.dashboard.job_registry.search_job_registry",
+        lambda **_kwargs: [],
+    )
+    session = start(surface)
+    context = initial_context(surface, session)
+    denied = assisted_draft_reference_search(
+        assistant_session_id=session["assistantSessionId"],
+        message_id=context["message_id"],
+        consumption_receipt_id=context["consumption_receipt_id"],
+        request_id="reference-not-allowed-1",
+        reference_kind="job_capability",
+        query="web search",
+        **scope(surface),
+    )
+    assert denied["status"] == "assistance_reference_not_allowed"
+
+    prepared = prepare_session(
+        surface,
+        requestId="prepare-job-reference",
+        identity=JOB_IDENTITY,
+        schema=form_schema("job-create")["schema"],
+    )
+    job = start(
+        surface,
+        prepared,
+        requestId="start-job-reference",
+        initialSnapshot=prepared_job_snapshot(),
+    )
+    job_context = initial_context(surface, job)
+    mismatch = assisted_draft_reference_search(
+        assistant_session_id=job["assistantSessionId"],
+        message_id=job_context["message_id"],
+        consumption_receipt_id="acr-wrong",
+        request_id="reference-mismatch-1",
+        reference_kind="job_capability",
+        query="web search",
+        **scope(surface),
+    )
+    assert mismatch["status"] == "assistance_receipt_mismatch"
+
+    first = assisted_draft_reference_search(
+        assistant_session_id=job["assistantSessionId"],
+        message_id=job_context["message_id"],
+        consumption_receipt_id=job_context["consumption_receipt_id"],
+        request_id="reference-exact-turn-1",
+        reference_kind="job_capability",
+        query="web search",
+        **scope(surface),
+    )
+    assert first["results"] == []
+    sent = tool(
+        "conversation_send",
+        message="I checked the registered capability metadata.",
+        message_id="assist-reference-exact-turn-1",
+        **scope(surface),
+    )
+    assert sent["created"] is True
+    next_snapshot = prepared_job_snapshot(
+        "job-turn-2", prompt="Track public news about the Anthropic IPO."
+    )
+    response = surface["client"].post(
+        f"/api/assistance/{job['assistantSessionId']}/snapshots",
+        json=next_snapshot,
+    )
+    assert response.status_code == 200, response.json
+    response = surface["client"].post(
+        f"/api/assistance/{job['assistantSessionId']}/conversations/{job['conversationId']}/respond",
+        json={"message_id": "job-turn-2", "value": "Check that capability again."},
+    )
+    assert response.status_code == 200, response.json
+    next_context = receive_context(surface, job, "job-turn-2")
+    cross_turn = assisted_draft_reference_search(
+        assistant_session_id=job["assistantSessionId"],
+        message_id=next_context["message_id"],
+        consumption_receipt_id=next_context["consumption_receipt_id"],
+        request_id="reference-exact-turn-1",
+        reference_kind="job_capability",
+        query="web search",
+        **scope(surface),
+    )
+    assert cross_turn["status"] == "assistance_reference_request_conflict"
 
 
 def test_ambiguous_context_release_is_not_replayed_or_new_generation_started(surface):

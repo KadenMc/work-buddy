@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { DashboardHelpProvider } from "../../dashboard/help";
 import { expectNoAccessibilityViolations } from "../../test/setup";
 import { ChatComposer } from "./ChatComposer";
+import chatStyles from "./styles.css?raw";
 import type { ChatExecutionControl } from "./useChatExecutionProfile";
 
 const changingExecution = (): ChatExecutionControl => ({
@@ -58,6 +59,18 @@ afterEach(() => {
 });
 
 describe("ChatComposer", () => {
+  it("keeps the complete textarea focus ring inside clipped chat hosts and freezes waiting dots for reduced motion", () => {
+    const focusRule = chatStyles.match(
+      /\.wb-chat-composer__input:focus-visible\s*\{([^}]*)\}/,
+    )?.[1];
+    expect(focusRule).toContain(
+      "outline-offset: calc(-1 * var(--wb-focus-width))",
+    );
+    expect(chatStyles).toMatch(
+      /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.wb-chat-typing__dot\s*\{[\s\S]*?animation: none;[\s\S]*?opacity: 0\.65;/,
+    );
+  });
+
   it("offers an explicit host action without enabling or sending an empty draft", async () => {
     const onSend = vi.fn();
     const onAction = vi.fn();

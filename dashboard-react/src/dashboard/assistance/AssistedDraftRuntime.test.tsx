@@ -281,7 +281,12 @@ describe("Dashboard assisted draft host", () => {
     await userEvent.click(launch);
     await waitFor(() => expect(composer).toBeEnabled());
     expect(screen.getByRole("textbox", { name: "Message" })).toBe(composer);
-    expect(screen.getByRole("button", { name: "Send" }).closest("form")).toBe(composer.closest("form"));
+    expect(await screen.findByText("Assistant is typing")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Run with/ })).toBeEnabled();
+    await userEvent.type(composer, "Add another detail");
+    const send = screen.getByRole("button", { name: "Send" });
+    expect(send).toBeEnabled();
+    expect(send.closest("form")).toBe(composer.closest("form"));
     expect(composer).toHaveFocus();
     expect(broker.calls.filter((call) => call.path.endsWith("/start"))).toHaveLength(1);
     expect(broker.calls.filter((call) => /\/(snapshots|respond)$/.test(call.path))).toHaveLength(0);
@@ -480,9 +485,9 @@ describe("Dashboard assisted draft host", () => {
     expect(await screen.findByRole("tooltip")).toHaveTextContent("The assistant fills these fields. You can edit or undo its suggestions; only you can submit the form.");
     expect(broker.calls).toHaveLength(0);
     await userEvent.click(assist);
-    await waitFor(() => expect(screen.getByText(/Launch shares this form's allowed fields and recent chat with/)).toBeVisible());
+    await waitFor(() => expect(screen.getByText(/Launch shares this form's allowed context with/)).toBeVisible());
     await waitFor(() => expect(screen.getByRole("button", { name: "Launch" })).toBeEnabled());
-    const disclosure = screen.getByText(/Launch shares this form's allowed fields and recent chat with/);
+    const disclosure = screen.getByText(/Launch shares this form's allowed context with/);
     await userEvent.hover(disclosure);
     await waitFor(() => expect(screen.getByRole("tooltip")).toHaveTextContent(availability.disclosure));
     await userEvent.unhover(disclosure);
@@ -492,6 +497,8 @@ describe("Dashboard assisted draft host", () => {
     const heading = screen.getByRole("heading", { name: "Shape test draft" });
     expect(heading).toHaveAttribute("data-help-target", "true");
     const close = screen.getByRole("button", { name: "Close assistance" });
+    expect(close.querySelector("svg")).not.toBeNull();
+    expect(close).not.toHaveAttribute("title");
     act(() => close.focus());
     expect(await screen.findByRole("tooltip")).toHaveTextContent("Closing this panel keeps your draft and conversation. Reopen AI help to continue.");
     await userEvent.keyboard("{Escape}");
@@ -585,10 +592,17 @@ describe("Dashboard assisted draft host", () => {
 
   it("starts contextually from allowlisted form fields without inventing a human turn", async () => {
     const broker = fakeBroker({ initialGreeting: true });
-    mount(broker);
+    mount(broker, { help: true });
     await openAndStart();
     expect(await screen.findByText("Let's shape your task: Original title. What is the next useful step?")).toBeVisible();
     expect(screen.getByRole("textbox", { name: "Message" })).toHaveFocus();
+    const dockHeader = screen.getByRole("heading", { name: "Shape test draft" }).closest("header")!;
+    const copy = within(dockHeader).getByRole("button", { name: "Copy chat" });
+    expect(within(dockHeader).getByRole("button", { name: "Close assistance" })).toBeVisible();
+    expect(screen.getAllByRole("button", { name: "Copy chat" })).toHaveLength(1);
+    act(() => copy.focus());
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Copies each speaker label and message as plain text");
+    await userEvent.keyboard("{Escape}");
     const start = broker.calls.find((call) => call.path.endsWith("/start"))!.body!;
     expect(start).toEqual({
       requestId: expect.any(String), disclosureAccepted: true,
@@ -798,7 +812,7 @@ describe("Dashboard assisted draft host", () => {
     options.startFails = false;
     await userEvent.click(screen.getByRole("button", { name: "Retry Launch" }));
     await waitFor(() => expect(broker.calls.filter((call) => call.path.endsWith("/start"))).toHaveLength(2));
-    expect(screen.getByRole("group", { name: "Launch disclosure" })).toHaveTextContent("Uses the fields and recent chat approved for this launch with");
+    expect(screen.getByRole("group", { name: "Launch disclosure" })).toHaveTextContent("Uses the context approved for this launch with");
     expect(screen.queryByText(/Launch shares this form's allowed fields/)).not.toBeInTheDocument();
     const attempts = broker.calls.filter((call) => call.path.endsWith("/start"));
     expect(attempts[1].body).toEqual(attempts[0].body);
