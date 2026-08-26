@@ -29,7 +29,12 @@ dev_notes: |-
   suppress ChatPanel's default header placement and compose that same action in
   an outer panel header; do not mirror the formatter or clipboard behavior.
 
-  The autoscroll effect keys on message COUNT, so a last message whose content grows in place will not re-stick a pinned view (the house store appends discrete messages). An unread boundary seeded at the first message is legitimate, the separator renders above index 0.
+  The normal autoscroll effect keys on message COUNT because the house store
+  appends discrete messages. A host whose accessory or appendix changes after a
+  message is present must advance `transcriptExtensionRevision`; this re-sticks
+  only a reader already pinned at latest and never overrides scroll lock. An
+  unread boundary seeded at the first message is legitimate, the separator
+  renders above index 0.
 
   The shared package must never import an App domain. `renderMessageAccessory` is deliberately additive rather than a whole-message renderer: canonical message content stays under house ownership, the accessory follows it, and built-in question controls remain last. `transcriptAppendix` stays inside the transcript scroller. Labels such as Working on, About, and action-snapshot identity belong to a host adapter; the generic surface must not render them by default.
 
@@ -88,6 +93,9 @@ than forking it:
   canonical message's content and before any built-in answer controls;
 - `transcriptAppendix` adds auxiliary content at the end of the scrollable
   transcript;
+- `transcriptExtensionRevision` tells the transcript that late accessory or
+  appendix content changed its layout. A reader already at latest stays pinned,
+  while a reader who scrolled upward keeps that position;
 - `onMessagesChange` lets a host observe canonical messages for surrounding UI
   such as an unread tab marker;
 - `showTranscriptCopyAction={false}` suppresses only ChatPanel's default header

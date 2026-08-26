@@ -181,6 +181,39 @@ describe("ChatPanel", () => {
     expect(screen.getByText("One delivery notice")).toBeVisible();
   });
 
+  it("forwards transcript extension revisions to pinned scroll behavior", () => {
+    let top = 0;
+    let height = 500;
+    const { rerender } = render(
+      <ChatPanel
+        messages={messages}
+        transcriptExtensionRevision={0}
+        transcriptAppendix={<div>One delivery notice</div>}
+      />,
+    );
+    const log = screen.getByRole("log");
+    Object.defineProperties(log, {
+      scrollTop: {
+        configurable: true,
+        get: () => top,
+        set: (value: number) => { top = value; },
+      },
+      scrollHeight: { configurable: true, get: () => height },
+      clientHeight: { configurable: true, get: () => 100 },
+    });
+    height = 650;
+
+    rerender(
+      <ChatPanel
+        messages={messages}
+        transcriptExtensionRevision={1}
+        transcriptAppendix={<div>Two delivery notices</div>}
+      />,
+    );
+
+    expect(log.scrollTop).toBe(650);
+  });
+
   it("shows the loading host state", () => {
     render(<ChatPanel status="loading" messages={[]} />);
     expect(screen.getByRole("status")).toHaveTextContent("Loading chat");

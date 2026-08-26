@@ -59,6 +59,12 @@ dev_notes: |-
   completion outranks numeric-PID liveness. Stop, End, execution changes, and
   successor generations remain authority-reducing fences and must win races
   with a late failed spawn.
+
+  `sourceMessageId` and `replyMessageId` are server-authored projection metadata
+  outside the strict patch and receipt envelopes. Retain them in the local
+  receipt journal, filter records by conversation, and accept a later reply
+  anchor upgrade without applying the patch again. Never infer placement from
+  array order, patch IDs, or message text.
 ---
 
 ## Authority and opt-in
@@ -212,7 +218,18 @@ snapshot. A stale patch is evaluated field-by-field: unchanged and unfocused
 fields apply in one local revision; changed or focused fields become visible
 suggestions. The normal draft repository CAS fences another tab's saves. Applied
 and pending fields appear in a durable acknowledgement, visual non-color marks,
-and a polite announcement. Applying suggestions is an explicit user review.
+and a polite announcement. Each receipt is interleaved with its exact durable
+assistant reply; until that reply is visible it stays beside the source turn,
+while genuinely unanchored legacy evidence remains in compact field-change
+history. Receipt accessories are not conversation messages and are omitted from
+Copy chat. Applying suggestions is an explicit user review.
+
+Only fields changed by the latest successful assistant mutation receive the
+applied highlight. A newer mutation replaces the emphasized set and the mark
+clears after about four seconds; a human edit clears that field's emphasis
+immediately. The highlight is presentation state and never returns after reload,
+remount, or reset. Pending-review outlines remain until Apply or Dismiss because
+they communicate durable work still awaiting a decision.
 Undo restores a field only while it still contains the assistant's applied
 value and is not focused.
 

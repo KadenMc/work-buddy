@@ -1249,17 +1249,49 @@ class AssistanceBroker:
 
     def patches(self, session_id: str, actor: str) -> list[dict[str, Any]]:
         with self._transaction() as conn:
-            self._row(conn, session_id, actor, cleanup=True)
+            session = self._row(conn, session_id, actor, cleanup=True)
             return [
                 {
                     "patch": json.loads(row["patch_json"]),
                     "receipt": json.loads(row["receipt_json"])
                     if row["receipt_json"]
                     else None,
+                    # Timeline placement is server-authored transport metadata,
+                    # not part of either strict patch or receipt envelope.  A
+                    # patch can become visible before its reply is durable, so
+                    # the exact reply anchor is intentionally nullable and may
+                    # be filled by a later projection of the same patch.
+                    "sourceMessageId": row["source_message_id"],
+                    "replyMessageId": row["reply_message_id"],
                 }
                 for row in conn.execute(
-                    "SELECT patch_json,receipt_json FROM assisted_draft_turns WHERE session_id=? AND patch_json IS NOT NULL ORDER BY rowid",
-                    (session_id,),
+                    """
+                    SELECT turn.patch_json,
+                           turn.receipt_json,
+                           turn.message_id AS source_message_id,
+                           (
+                             SELECT context.reply_message_id
+                               FROM assisted_draft_context_receipts AS context
+                              WHERE context.session_id = turn.session_id
+                                AND context.start_id = turn.start_id
+                                AND context.message_id = turn.message_id
+                                AND context.reply_message_id IS NOT NULL
+                                AND EXISTS (
+                                  SELECT 1
+                                    FROM messages AS reply
+                                   WHERE reply.conversation_id = ?
+                                     AND reply.message_id = context.reply_message_id
+                                     AND reply.role = 'agent'
+                                )
+                              ORDER BY context.rowid DESC
+                              LIMIT 1
+                           ) AS reply_message_id
+                      FROM assisted_draft_turns AS turn
+                     WHERE turn.session_id = ?
+                       AND turn.patch_json IS NOT NULL
+                     ORDER BY turn.rowid
+                    """,
+                    (session["conversationId"], session_id),
                 )
             ]
 

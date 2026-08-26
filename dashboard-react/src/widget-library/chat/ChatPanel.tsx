@@ -107,6 +107,8 @@ export interface ChatPanelProps {
   readonly renderMessageAccessory?: (message: ChatMessage) => ReactNode;
   /** Additive content rendered after all canonical messages in the scroller. */
   readonly transcriptAppendix?: ReactNode;
+  /** Opaque revision for accessory/appendix layout changes. */
+  readonly transcriptExtensionRevision?: string | number;
   /** Extra host-level reason to disable structured question responses. */
   readonly responsesDisabled?: boolean;
   /** Whether the shared passive stopped-agent notice should be rendered. */
@@ -182,6 +184,7 @@ export function ChatPanel({
   agentActivity = "idle",
   renderMessageAccessory,
   transcriptAppendix,
+  transcriptExtensionRevision,
   responsesDisabled = false,
   showStoppedNotice = true,
   showTranscriptCopyAction = true,
@@ -257,6 +260,7 @@ export function ChatPanel({
       agentActivity={agentActivity}
       renderMessageAccessory={renderMessageAccessory}
       transcriptAppendix={transcriptAppendix}
+      transcriptExtensionRevision={transcriptExtensionRevision}
       onRespond={
         onSend === undefined
           ? undefined

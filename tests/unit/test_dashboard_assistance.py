@@ -734,6 +734,69 @@ def test_real_tools_publish_frozen_advisory_patch_and_host_receipt(surface):
     assert "tasks" not in tables and "jobs" not in tables
 
 
+def test_patch_projection_adds_exact_reply_anchor_after_durable_reply(surface):
+    session = start(surface)
+    context = initial_context(surface, session)
+    assert propose(surface, session, context)["created"] is True
+
+    before = surface["client"].get(
+        f"/api/assistance/{session['assistantSessionId']}/patches"
+    )
+    assert before.status_code == 200, before.json
+    [entry] = before.json["patches"]
+    assert entry["sourceMessageId"] == "initial-1"
+    assert entry["replyMessageId"] is None
+    assert "sourceMessageId" not in entry["patch"]
+    assert "replyMessageId" not in entry["patch"]
+    assert entry["receipt"] is None
+
+    reply = tool(
+        "conversation_send",
+        message="I filled the next action. You decide whether to keep it.",
+        message_id=session["greetingMessageId"],
+        **scope(surface),
+    )
+    assert reply["created"] is True, reply
+
+    after = surface["client"].get(
+        f"/api/assistance/{session['assistantSessionId']}/patches"
+    )
+    assert after.status_code == 200, after.json
+    [anchored] = after.json["patches"]
+    assert anchored["patch"] == entry["patch"]
+    assert anchored["sourceMessageId"] == "initial-1"
+    assert anchored["replyMessageId"] == session["greetingMessageId"]
+
+
+def test_patch_reply_anchor_cannot_cross_assistance_sessions(surface):
+    first = start(surface)
+    first_context = initial_context(surface, first)
+    assert propose(surface, first, first_context)["created"] is True
+
+    second = prepare_session(surface, requestId="prepare-2")
+    second = start(surface, second)
+    second_context = initial_context(surface, second)
+    assert propose(surface, second, second_context)["created"] is True
+    reply = tool(
+        "conversation_send",
+        message="I filled the second draft's next action.",
+        message_id=second["greetingMessageId"],
+        **scope(surface),
+    )
+    assert reply["created"] is True, reply
+
+    [first_entry] = surface["broker"].patches(
+        first["assistantSessionId"], "human:test"
+    )
+    [second_entry] = surface["broker"].patches(
+        second["assistantSessionId"], "human:test"
+    )
+    assert first_entry["sourceMessageId"] == "initial-1"
+    assert first_entry["replyMessageId"] is None
+    assert second_entry["sourceMessageId"] == "initial-1"
+    assert second_entry["replyMessageId"] == second["greetingMessageId"]
+
+
 def test_native_question_answer_preserves_question_identity_and_normal_composer(
     surface,
 ):

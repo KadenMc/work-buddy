@@ -93,6 +93,24 @@
   .wb-assistance-history summary { cursor: pointer; padding-block: var(--wb-space-2); font-size: var(--wb-font-size-xs); }
   .wb-assistance-receipts { display: grid; gap: var(--wb-space-5); }
   .wb-assistance-receipt { border-block-start: var(--wb-border-width) dashed currentColor; padding-block-start: var(--wb-space-5); overflow-wrap: anywhere; }
+  .wb-chat-msg__bubble > .wb-assistance-receipts {
+    gap: var(--wb-space-3);
+    margin-block-start: var(--wb-space-3);
+    color: var(--wb-color-text-muted);
+    font-size: var(--wb-font-size-xs);
+  }
+  .wb-chat-msg__bubble > .wb-assistance-receipts .wb-assistance-receipt {
+    display: grid;
+    gap: var(--wb-space-2);
+    padding-block-start: var(--wb-space-3);
+  }
+  .wb-assistance-receipts-fallback {
+    margin-block-start: var(--wb-space-3);
+    color: var(--wb-color-text-muted);
+    font-size: var(--wb-font-size-xs);
+  }
+  .wb-assistance-receipts-fallback > summary { cursor: pointer; padding-block: var(--wb-space-2); }
+  .wb-assistance-receipts-fallback > .wb-assistance-receipts { margin-block-start: var(--wb-space-3); }
   .wb-assistance-actions { display: flex; flex-wrap: wrap; gap: var(--wb-space-3); }
   .wb-assistance-history { flex: 0 0 auto; max-block-size: 40%; overflow: auto; }
   .wb-assistance-history__conversation { block-size: 18rem; min-block-size: 0; margin-block: var(--wb-space-3); }

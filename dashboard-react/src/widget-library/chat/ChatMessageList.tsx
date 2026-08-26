@@ -30,6 +30,12 @@ export interface ChatMessageListProps {
   readonly renderMessageAccessory?: (message: ChatMessage) => ReactNode;
   /** Additive feature-owned content rendered after all canonical messages. */
   readonly transcriptAppendix?: ReactNode;
+  /**
+   * Opaque host revision for message accessories or the transcript appendix.
+   * Increment it when an extension changes rendered height without changing the
+   * canonical message list, so a reader already at latest remains at latest.
+   */
+  readonly transcriptExtensionRevision?: string | number;
   /** Inline answer handler for pending boolean and choice questions. */
   readonly onRespond?: (value: string, inReplyTo?: string) => void;
   /** Disable every built-in boolean and choice response control. */
@@ -68,6 +74,7 @@ export function ChatMessageList({
   agentActivity = "idle",
   renderMessageAccessory,
   transcriptAppendix,
+  transcriptExtensionRevision,
   onRespond,
   responsesDisabled = false,
   showStoppedNotice = true,
@@ -108,6 +115,21 @@ export function ChatMessageList({
     if (element !== null) element.scrollTop = element.scrollHeight;
     setReadCount(messageCount);
   }, [messageCount]);
+
+  // Feature-owned transcript content can grow or move while the canonical
+  // message count stays fixed. An explicit host revision keeps an already
+  // pinned reader at latest without breaking scroll lock for a reader above it.
+  const previousExtensionRevision = useRef(transcriptExtensionRevision);
+  useLayoutEffect(() => {
+    if (Object.is(previousExtensionRevision.current, transcriptExtensionRevision)) {
+      return;
+    }
+    previousExtensionRevision.current = transcriptExtensionRevision;
+    if (!pinnedRef.current) return;
+    const element = scrollRef.current;
+    if (element !== null) element.scrollTop = element.scrollHeight;
+    setReadCount(messageCount);
+  }, [messageCount, transcriptExtensionRevision]);
 
   // A locally-authored send is never hidden behind scroll lock. Other incoming
   // messages still respect the reader's position and accumulate as unread.

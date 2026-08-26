@@ -49,6 +49,7 @@ function fakeBroker(options: { delayed?: boolean; unavailable?: boolean; startFa
   let snapshot: PreparedDraftSnapshot;
   let patch: AssistedDraftPatch | null = null;
   let receipt: DraftPatchReceipt | null = null;
+  let sourceMessageId: string | null = null;
   const messagesBySession = new Map<string, Record<string, unknown>[]>();
   let release: (() => void) | undefined;
   let failedPreparation = false;
@@ -128,6 +129,7 @@ function fakeBroker(options: { delayed?: boolean; unavailable?: boolean; startFa
         const question = messages.find((message) => message.message_id === body.in_reply_to);
         if (question) question.status = "answered";
       }
+      sourceMessageId = body.message_id;
       messages.push({ message_id: body.message_id, role: "user", content: body.value, created_at: "2026-08-25T12:00:00Z" });
       messages.push({ message_id: "assistant-1", role: "agent", content: "I suggested a title and a summary. You decide when to submit.", created_at: "2026-08-25T12:00:01Z" });
       patch = { protocol: "wb.assisted-draft.patch/v1", assistantSessionId: authorizedSession.assistantSessionId, conversationId: authorizedSession.conversationId, identity: authorizedSession.identity, schema: authorizedSession.schema, baseDraftRevision: authorizedSnapshot.baseDraftRevision, baseSnapshotHash: authorizedSnapshot.baseSnapshotHash, baseSnapshot: authorizedSnapshot.snapshot, patchId: "ap-test", operations: [{ op: "set", path: ["title"], value: "Assistant title" }, { op: "set", path: ["summary"], value: "Assistant summary" }] };
@@ -138,7 +140,7 @@ function fakeBroker(options: { delayed?: boolean; unavailable?: boolean; startFa
       if (!boundSession) return respond({ code: "assistance_session_not_found", error: "Session no longer exists" }, 404);
       return respond({ conversation: { conversation_id: path.split("/").pop(), status: "open", agent_alive: boundSession.phase === "active" }, messages: [...messagesBySession.get(boundSession.assistantSessionId)!] });
     }
-    if (path.endsWith("/patches")) return respond({ patches: patch && path.includes(`/${patch.assistantSessionId}/`) ? [{ patch, receipt }] : [] });
+    if (path.endsWith("/patches")) return respond({ patches: patch && path.includes(`/${patch.assistantSessionId}/`) ? [{ patch, receipt, sourceMessageId, replyMessageId: "assistant-1" }] : [] });
     if (path.endsWith("/receipts")) {
       if (options.receiptFailsOnce && !failedReceipt) { failedReceipt = true; throw new Error("Receipt acknowledgement unavailable"); }
       receipt = body; return respond(receipt);
@@ -549,6 +551,15 @@ describe("Dashboard assisted draft host", () => {
 
   it("starts only on explicit gesture, fills actual controls, and conditionally undoes", async () => {
     const broker = fakeBroker();
+    const nativeSetTimeout = globalThis.setTimeout;
+    let expireHighlight: (() => void) | undefined;
+    const timeout = vi.spyOn(globalThis, "setTimeout").mockImplementation(((handler: TimerHandler, delay?: number, ...args: unknown[]) => {
+      if (delay === 4000) {
+        expireHighlight = () => { if (typeof handler === "function") handler(...args); };
+        return 4242;
+      }
+      return nativeSetTimeout(handler, delay, ...args);
+    }) as typeof setTimeout);
     mount(broker);
     expect(broker.calls).toHaveLength(0);
     await openAndStart();
@@ -559,9 +570,16 @@ describe("Dashboard assisted draft host", () => {
     await waitFor(() => expect(screen.getByRole("textbox", { name: "Task title" })).toHaveValue("Assistant title"));
     expect(screen.getByRole("textbox", { name: "Task summary" })).toHaveValue("Assistant summary");
     expect(screen.getByRole("textbox", { name: "Task title" })).toHaveAttribute("data-assisted-state", "applied");
+    const assistantTurn = screen.getByText("I suggested a title and a summary. You decide when to submit.").closest(".wb-chat-msg__bubble");
+    expect(assistantTurn).not.toBeNull();
+    expect(within(assistantTurn as HTMLElement).getByLabelText("Assistant patch receipt")).toHaveTextContent("2 fields filled by assistant");
     expect(broker.snapshot().snapshot).toEqual({ title: "Original title", summary: "", next_action: "" });
     await waitFor(() => expect(broker.receipt()?.status).toBe("applied"));
     const title = screen.getByRole("textbox", { name: "Task title" });
+    act(() => expireHighlight?.());
+    expect(title).not.toHaveAttribute("data-assisted-state");
+    expect(within(assistantTurn as HTMLElement).getByRole("button", { name: "Undo assistant changes" })).toBeEnabled();
+    timeout.mockRestore();
     await userEvent.clear(title);
     await userEvent.type(title, "My final title");
     await userEvent.click(screen.getByRole("button", { name: "Undo assistant changes" }));
@@ -1159,7 +1177,9 @@ describe("Dashboard assisted draft host", () => {
     mount(broker, {}, repository);
     await waitFor(() => expect(screen.getByRole("button", { name: "AI help" })).toBeEnabled());
     await userEvent.click(screen.getByRole("button", { name: "AI help" }));
-    await userEvent.click(await screen.findByRole("button", { name: "Undo assistant changes" }));
+    const recoveredUndo = await screen.findByRole("button", { name: "Undo assistant changes" });
+    expect(screen.getByRole("textbox", { name: "Task title" })).not.toHaveAttribute("data-assisted-state");
+    await userEvent.click(recoveredUndo);
     await waitFor(() => expect(screen.getByRole("textbox", { name: "Task title" })).toHaveValue("Original title"));
     expect(screen.getByRole("textbox", { name: "Task summary" })).toHaveValue("");
     expect(broker.calls.filter((call) => call.path.endsWith("/respond"))).toHaveLength(1);
