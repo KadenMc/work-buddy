@@ -41,6 +41,12 @@ dev_notes: |-
   Stop, and human-only submission authority are unchanged. Browser regression
   must cross the actual ViewHost media breakpoint, not only a mocked panel width,
   and exercise multiline drafts plus expanded recovery controls in short windows.
+
+  Failure projection is a typed category, never stored provider text. Immediate
+  and later exits share the exact `(pid, generation)` outcome channel, and that
+  completion outranks numeric-PID liveness. Stop, End, execution changes, and
+  successor generations remain authority-reducing fences and must win races
+  with a late failed spawn.
 ---
 
 ## Authority and opt-in
@@ -111,6 +117,15 @@ succeeds; there is no separate startup button or idle readiness paragraph.
 **Retry Launch** against its frozen disclosure, with **Launch with current
 fields** as a separate explicit authorization. Launch never sends or clears an
 unsent message. The same composer returns to ordinary **Send** after launch.
+
+If the hosted driver exits during or after Launch, the broker stops exactly
+that generation and advances the lifecycle revision once. Current fields,
+transcript, unsent composer text, receipts, conditional Undo, and normal human
+submit remain available. A known Claude Code authentication failure gives a
+sign-in instruction; unknown or legacy diagnostics map to fixed safe copy.
+Passive polling, reopen, and exact-request replay never launch a replacement.
+After correcting the provider, the user must choose Launch explicitly; that
+creates fresh request and snapshot identities from the then-current fields.
 
 Subsequent authored turns keep the house message ID. Before transport, the host
 stages one immutable snapshot under that ID; an uncertain acknowledgement

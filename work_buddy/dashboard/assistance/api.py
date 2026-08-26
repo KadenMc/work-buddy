@@ -97,7 +97,7 @@ def create_assistance_blueprint(
                 return jsonify({"error": str(exc), "code": exc.code}), exc.status
             except ConversationExecutionConflict:
                 payload = {
-                    "error": "The chat model changed. Review the current selection and Start again.",
+                    "error": "The chat model changed. Review the current selection and choose Launch again.",
                     "code": "execution_selection_changed",
                 }
                 session_id = kwargs.get("session_id")
@@ -108,7 +108,7 @@ def create_assistance_blueprint(
             except ConversationExecutionCorrupt:
                 return jsonify(
                     {
-                        "error": "This session's saved chat model could not be read. Start a new AI help session.",
+                        "error": "This session's saved chat model could not be read. Open a new AI help session.",
                         "code": "execution_selection_corrupt",
                     }
                 ), 409

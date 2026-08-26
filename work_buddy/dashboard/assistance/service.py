@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from work_buddy.agent_execution.presentation import project_selection_labels
+from work_buddy.agent_execution.worker_outcome import WorkerExitCode
 from work_buddy.conversations import execution as executions
 from work_buddy.conversations import store as conversations
 
@@ -37,9 +38,29 @@ from .runner import AssistanceRunner, HostedAssistanceRunner
 CONSUMER = "dashboard.assisted-draft"
 MAX_TURNS = 40
 _SAFE_DRIVER_ERROR = (
-    "AI help could not start. Your form is unchanged. Retry Start or continue manually."
+    "AI help could not launch. Your form is unchanged. "
+    "Choose Launch to try again or continue manually."
 )
+_AUTH_REQUIRED = "authentication_required"
+_DRIVER_FAILED = "driver_failed"
 logger = logging.getLogger(__name__)
+
+
+def _driver_error_message(error: object, provider_id: str) -> str | None:
+    """Project only known failure categories, never process diagnostics."""
+    if not error:
+        return None
+    if error == _AUTH_REQUIRED:
+        if provider_id == "claude-code":
+            return (
+                "Sign in to Claude Code again with claude auth login, then choose "
+                "Launch. Your form is unchanged."
+            )
+        return (
+            "Sign in to your selected chat provider again, then choose Launch. "
+            "Your form is unchanged."
+        )
+    return _SAFE_DRIVER_ERROR
 
 
 def _enabled() -> bool:
@@ -190,10 +211,10 @@ class AssistanceBroker:
             "available": enabled,
             "code": "ready" if enabled else "disabled",
             "purpose": PURPOSE,
-            "message": "Choose a chat model, then Start AI help."
+            "message": "Choose a chat model, then Launch."
             if enabled
             else "Enable Dashboard AI in Settings, or continue editing manually.",
-            "disclosure": "Start sends up to 32 KiB of allowlisted form fields plus bounded recent conversation context to your selected chat provider (at most 64 KiB per context disclosure). The assistant can ask questions and suggest allowlisted edits, but cannot submit, create or schedule anything. Do not include secrets.",
+            "disclosure": "Launch sends up to 32 KiB of allowlisted form fields plus bounded recent conversation context to your selected chat provider (at most 64 KiB per context disclosure). The assistant can ask questions and suggest allowlisted edits, but cannot submit, create or schedule anything. Do not include secrets.",
             "localProviderNotice": "Local inference profiles do not currently provide an interactive chat driver. Only registered chat providers can be selected; there is no cloud fallback.",
         }
 
@@ -210,7 +231,7 @@ class AssistanceBroker:
             if value.get("protocol") != SESSION_PROTOCOL:
                 raise AssistanceError(
                     "assistance_restart_required",
-                    "This older AI help session needs a new explicit Start. Your form and previous receipts remain unchanged.",
+                    "This older AI help session needs a new explicit Launch. Your form and previous receipts remain unchanged.",
                     409,
                 )
             if datetime.fromisoformat(row["expires_at"]) <= datetime.now(UTC):
@@ -459,13 +480,13 @@ class AssistanceBroker:
                 and lease
                 and lease["status"] == "running"
                 and type(lease.get("pid")) is int
-                and not self.runner.is_alive(lease["pid"])
+                and self._driver_exited(lease["pid"], lease["generation"])
             ):
                 dead_lease = self._fence_locked(conn, value["conversationId"])
                 conn.execute(
                     "UPDATE conversation_agent_leases SET status='failed',error=? WHERE conversation_id=? AND consumer=? AND generation=?",
                     (
-                        _SAFE_DRIVER_ERROR,
+                        self._driver_error(lease["pid"], lease["generation"]),
                         value["conversationId"],
                         CONSUMER,
                         lease["generation"],
@@ -525,7 +546,7 @@ class AssistanceBroker:
             agent.update(
                 status=lease["status"],
                 alive=lease["status"] in {"starting", "running"},
-                error=_SAFE_DRIVER_ERROR if lease.get("error") else None,
+                error=_driver_error_message(lease.get("error"), state.provider_id),
             )
         return {
             "execution": {
@@ -616,7 +637,7 @@ class AssistanceBroker:
                 current_selection(conn, value)
                 raise AssistanceError(
                     "assistance_start_superseded",
-                    "This Start was superseded. Review the current context and start again.",
+                    "This launch was superseded. Review the current context and choose Launch again.",
                     409,
                 )
             return True
@@ -838,7 +859,7 @@ class AssistanceBroker:
         ).fetchone()[0]
         if count >= MAX_TURNS:
             raise AssistanceError(
-                "assistance_turn_limit", "Start a new AI help session to continue.", 429
+                "assistance_turn_limit", "Open a new AI help session to continue.", 429
             )
         conn.execute(
             "INSERT INTO assisted_draft_turns(session_id,message_id,snapshot_hash,snapshot_json,state,start_id) VALUES (?,?,?,?,?,?)",
@@ -961,7 +982,7 @@ class AssistanceBroker:
             )
         # This is a persistent interactive driver. A failed/stopped process is
         # never automatically replaced by a new disclosure generation just
-        # because a send was retried; the human must explicitly Start again.
+        # because a send was retried; the human must explicitly Launch again.
         return {
             "message_id": message_id,
             **({"in_reply_to": in_reply_to} if in_reply_to is not None else {}),
@@ -993,6 +1014,23 @@ class AssistanceBroker:
                     "AI help process cleanup is unconfirmed; its lease remains revoked."
                 )
 
+    def _driver_exited(self, pid: int, generation: str) -> bool:
+        # An exact-owned completion wins over an unrelated process reusing the
+        # same numeric PID. A cache miss still permits the normal liveness check.
+        return (
+            self.runner.exit_code(pid, generation) is not None
+            or not self.runner.is_alive(pid)
+        )
+
+    def _driver_error(self, pid: int | None, generation: str) -> str:
+        if (
+            type(pid) is int
+            and pid > 0
+            and self.runner.exit_code(pid, generation) == WorkerExitCode.AUTH_REQUIRED
+        ):
+            return _AUTH_REQUIRED
+        return _DRIVER_FAILED
+
     def _wake(self, session_id: str, *, start_id: str, control_revision: int) -> None:
         self._require_work()
         stale = None
@@ -1013,7 +1051,7 @@ class AssistanceBroker:
                 existing
                 and existing["status"] == "running"
                 and type(existing.get("pid")) is int
-                and not self.runner.is_alive(existing["pid"])
+                and self._driver_exited(existing["pid"], existing["generation"])
             ):
                 stale = self._fence_locked(conn, conversation_id)
             generation = uuid.uuid4().hex
@@ -1075,11 +1113,14 @@ class AssistanceBroker:
             from work_buddy.conversations.agents import register
 
             register(conversation_id, pid)
-            if not self.runner.is_alive(pid):
+            if self._driver_exited(pid, generation):
                 raise AssistanceError("assistance_driver_exited")
-        except Exception:  # noqa: BLE001 - sanitize provider failures and revoke authority
-            conversations.fail_agent_lease(
-                conversation_id, CONSUMER, generation, error=_SAFE_DRIVER_ERROR
+        except Exception as exc:  # noqa: BLE001 - sanitize failures and revoke authority
+            failure = self._driver_error(pid, generation)
+            logger.warning(
+                "AI help driver failed: reason=%s, error_type=%s",
+                failure,
+                type(exc).__name__,
             )
             if type(pid) is int and pid > 0:
                 self._terminate({"pid": pid, "generation": generation})
@@ -1093,7 +1134,19 @@ class AssistanceBroker:
                     and current["generation"] == generation
                     and value.get("activeStartId") == session["activeStartId"]
                     and value.get("phase") == "active"
+                    and value.get("controlRevision", 0) == control_revision
+                    and current["status"] in {"starting", "running"}
                 ):
+                    conn.execute(
+                        "UPDATE conversation_agent_leases SET status='spawn_failed',pid=NULL,error=?,updated_at=? WHERE conversation_id=? AND consumer=? AND generation=?",
+                        (
+                            failure,
+                            datetime.now(UTC).isoformat(),
+                            conversation_id,
+                            CONSUMER,
+                            generation,
+                        ),
+                    )
                     value["phase"] = "stopped"
                     self._advance_control(value)
                     self._save(conn, value)
@@ -1410,7 +1463,7 @@ class AssistanceBroker:
         except DisclosureReplayBlocked as exc:
             raise AssistanceError(
                 "assistance_disclosure_ambiguous",
-                "The previous context delivery cannot be replayed safely. Explicitly Start again with a fresh form snapshot.",
+                "The previous context delivery cannot be replayed safely. Choose Launch again with the current form fields.",
                 409,
             ) from exc
         except (DisclosureError, SourceError) as exc:
@@ -1638,7 +1691,7 @@ class AssistanceBroker:
                     if existing_patch
                     else None,
                     "superseded_pending_turns": session.get("supersededTurnCount", 0),
-                    "history_notice": "Earlier pending work was superseded by this explicit Start, not completed. Historical requests are context only; this snapshot is the sole working base.",
+                    "history_notice": "Earlier pending work was superseded by this explicit Launch, not completed. Historical requests are context only; this snapshot is the sole working base.",
                 }
                 while len(canonical(payload).encode("utf-8")) > 64 * 1024 and (
                     history or receipts

@@ -548,8 +548,11 @@ def test_claude_worker_uses_empty_neutral_cwd_and_no_session_persistence(
     }
     assert calls["input"] == "private brief"
     assert calls["shell"] is False
-    assert calls["stdout"] is subprocess.DEVNULL
+    assert isinstance(calls["stdout"], int)
+    assert calls["stdout"] >= 0
     assert calls["stderr"] is subprocess.DEVNULL
+    assert calls["encoding"] == "utf-8"
+    assert calls["errors"] == "strict"
     assert not Path(calls["cwd"]).exists()
     assert len(isolated_config_paths) == 1
     assert not isolated_config_paths[0].exists()

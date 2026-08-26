@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
@@ -24,8 +25,14 @@ from .claude_code import (
     claude_account_environment,
 )
 from .models import is_safe_session_id
+from .worker_outcome import (
+    MAX_WORKER_RESULT_BYTES,
+    classify_claude_worker_exit,
+)
 
-logger = get_logger(__name__)
+# ``python -m`` executes this module as __main__, outside the work_buddy logger
+# hierarchy. Keep detached-worker diagnostics in the configured session log.
+logger = get_logger("work_buddy.agent_execution.claude_worker")
 
 _MAX_PROMPT_CHARS = 1_000_000
 _SUPPORTED_MODELS = frozenset({"sonnet", "opus"})
@@ -33,6 +40,69 @@ _SESSION_NAME = "daemon:work-buddy-cowork"
 _CLAUDE_CREDENTIALS_FILENAME = ".credentials.json"
 _CLAUDE_USES_KEYCHAIN = sys.platform == "darwin"
 _CLEANUP_RETRY_DELAYS = (0.05, 0.15, 0.3)
+_STDOUT_READ_CHUNK_BYTES = 8192
+_STDOUT_JOIN_TIMEOUT_SECONDS = 1.0
+
+
+def _run_with_bounded_stdout(
+    command_runner: Callable[..., Any],
+    argv: list[str],
+    **kwargs: Any,
+) -> tuple[Any, bytes | None]:
+    """Drain CLI output in memory without changing the process-runner seam.
+
+    Output beyond the cap is discarded, never partially classified. A child
+    descendant may retain stdout after the CLI exits; a bounded join then
+    returns no diagnostic. The daemon reader owns its read descriptor until
+    EOF or this short-lived worker exits, avoiding unsafe cross-thread closes.
+    """
+
+    read_fd, write_fd = os.pipe()
+    captured = bytearray()
+    complete = False
+    oversized = False
+
+    def drain() -> None:
+        nonlocal complete, oversized
+        try:
+            while chunk := os.read(read_fd, _STDOUT_READ_CHUNK_BYTES):
+                if not oversized:
+                    if len(captured) + len(chunk) > MAX_WORKER_RESULT_BYTES:
+                        oversized = True
+                        captured.clear()
+                    else:
+                        captured.extend(chunk)
+            complete = True
+        except OSError:
+            captured.clear()
+        finally:
+            try:
+                os.close(read_fd)
+            except OSError:
+                complete = False
+                captured.clear()
+
+    reader = threading.Thread(
+        target=drain,
+        name="claude-worker-result",
+        daemon=True,
+    )
+    try:
+        reader.start()
+    except BaseException:
+        os.close(read_fd)
+        os.close(write_fd)
+        raise
+    try:
+        result = command_runner(argv, stdout=write_fd, **kwargs)
+    finally:
+        try:
+            os.close(write_fd)
+        finally:
+            reader.join(timeout=_STDOUT_JOIN_TIMEOUT_SECONDS)
+    if reader.is_alive() or not complete or oversized:
+        return result, None
+    return result, bytes(captured)
 
 
 def _claude_config_source(environment: Mapping[str, str]) -> Path:
@@ -188,51 +258,89 @@ def run_worker(
         or not is_safe_session_id(session_id)
         or max_budget_usd <= 0
     ):
+        logger.error(
+            "Claude hosted worker rejected request: stage=validate_request exit_code=2"
+        )
         return 2
 
-    argv = _build_headless_agent_argv(
-        prompt=None,
-        session_name=_SESSION_NAME,
-        model=model,
-        max_budget_usd=max_budget_usd,
-        persistent=False,
-        extra_args=(
-            *_isolated_worker_setting_args(),
-            "--mcp-config",
-            _work_buddy_mcp_config(session_id),
-            "--strict-mcp-config",
-            "--tools",
-            "ToolSearch",
-            "--disable-slash-commands",
-            "--no-chrome",
-        ),
-    )
-
+    stage = "build_command"
     try:
+        argv = _build_headless_agent_argv(
+            prompt=None,
+            session_name=_SESSION_NAME,
+            model=model,
+            max_budget_usd=max_budget_usd,
+            persistent=False,
+            extra_args=(
+                *_isolated_worker_setting_args(),
+                "--mcp-config",
+                _work_buddy_mcp_config(session_id),
+                "--strict-mcp-config",
+                "--tools",
+                "ToolSearch",
+                "--disable-slash-commands",
+                "--no-chrome",
+            ),
+        )
+        stage = "isolate_account"
         with _isolated_claude_config(os.environ) as isolated_config:
+            stage = "configure_runtime"
             child_env = claude_account_environment(os.environ)
             child_env["CLAUDE_CONFIG_DIR"] = str(isolated_config)
             child_env["WORK_BUDDY_SESSION_ID"] = session_id
+            stage = "create_workspace"
             with TemporaryDirectory(
                 prefix="work-buddy-claude-host-",
                 ignore_cleanup_errors=True,
             ) as host_directory:
-                result = command_runner(
+                stage = "run_runtime"
+                logger.info("Claude hosted worker starting: stage=%s", stage)
+                result, stdout = _run_with_bounded_stdout(
+                    command_runner,
                     argv,
                     cwd=str(Path(host_directory).resolve()),
                     env=child_env,
                     input=prompt,
-                    stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     text=True,
+                    encoding="utf-8",
+                    errors="strict",
                     check=False,
                     shell=False,
                     creationflags=subprocess_creation_flags(),
                 )
-        return 0 if int(getattr(result, "returncode", 1)) == 0 else 1
-    except (FileNotFoundError, PermissionError, OSError):
-        logger.error("Claude document worker could not open the runtime")
+                stage = "cleanup_workspace"
+            stage = "cleanup_account"
+        stage = "runtime_result"
+        exit_code = int(getattr(result, "returncode", 1))
+        outcome = classify_claude_worker_exit(returncode=exit_code, stdout=stdout)
+        if exit_code != 0:
+            logger.error(
+                "Claude hosted worker failed: stage=runtime_exit "
+                "exit_code=%d worker_exit_code=%d",
+                exit_code,
+                outcome,
+            )
+            return int(outcome)
+        logger.info("Claude hosted worker completed: stage=completed exit_code=0")
+        return 0
+    except (FileNotFoundError, PermissionError, OSError) as exc:
+        logger.error(
+            "Claude hosted worker failed: stage=%s error_type=%s",
+            stage,
+            type(exc).__name__,
+        )
+        # Preserve command-construction exceptions for direct Python callers.
+        if stage == "build_command":
+            raise
         return 1
+    except Exception as exc:
+        logger.error(
+            "Claude hosted worker failed: stage=%s error_type=%s",
+            stage,
+            type(exc).__name__,
+        )
+        raise
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -244,9 +352,31 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
-    prompt = sys.stdin.read(_MAX_PROMPT_CHARS + 1)
+    stage = "parse_arguments"
+    try:
+        args = _parser().parse_args(argv)
+        stage = "read_brief"
+        if hasattr(sys.stdin, "reconfigure"):
+            sys.stdin.reconfigure(encoding="utf-8", errors="strict")
+        prompt = sys.stdin.read(_MAX_PROMPT_CHARS + 1)
+    except SystemExit as exc:
+        logger.error(
+            "Claude hosted worker entry failed: stage=%s exit_code=%d",
+            stage,
+            exc.code if isinstance(exc.code, int) else 1,
+        )
+        raise
+    except Exception as exc:
+        logger.error(
+            "Claude hosted worker entry failed: stage=%s error_type=%s",
+            stage,
+            type(exc).__name__,
+        )
+        raise
     if len(prompt) > _MAX_PROMPT_CHARS:
+        logger.error(
+            "Claude hosted worker rejected request: stage=read_brief exit_code=2"
+        )
         return 2
     return run_worker(
         model=args.model,

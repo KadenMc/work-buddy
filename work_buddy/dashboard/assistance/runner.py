@@ -25,6 +25,7 @@ class AssistanceRunner(Protocol):
         self, *, session: Mapping[str, Any], generation: str
     ) -> Mapping[str, Any]: ...
     def is_alive(self, pid: int) -> bool: ...
+    def exit_code(self, pid: int, generation: str) -> int | None: ...
     def terminate(self, pid: int, generation: str) -> None: ...
 
 
@@ -151,6 +152,15 @@ class HostedAssistanceRunner:
         from work_buddy.sidecar.pid import _is_process_alive
 
         return _is_process_alive(pid)
+
+    def exit_code(self, pid: int, generation: str) -> int | None:
+        from work_buddy.sidecar.dispatch.executor import (
+            owned_detached_process_exit_code,
+        )
+
+        return owned_detached_process_exit_code(
+            pid, owner_token=assistance_execution_session_id(generation)
+        )
 
     def terminate(self, pid: int, generation: str) -> None:
         from work_buddy.sidecar.dispatch.executor import terminate_detached_process

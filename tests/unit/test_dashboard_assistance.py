@@ -17,6 +17,7 @@ from work_buddy.agent_execution.disclosure import (
     DisclosureState,
 )
 from work_buddy.agent_execution.models import AgentExecutionSelection, UnknownModelError
+from work_buddy.agent_execution.worker_outcome import WorkerExitCode
 from work_buddy.agent_execution.worker_disclosure import WorkerDisclosureBoundary
 from work_buddy.conversations import store as conversations
 from work_buddy.dashboard.assistance import service as assistance_service
@@ -64,18 +65,20 @@ class HostedDriverDouble:
     def __init__(self):
         self.starts = []
         self.terminations = []
+        self.completions = {}
+        self.provider_id = "test-account"
         self.alive = True
         self.fail = False
         self.default_available = True
 
     def default_selection(self):
-        return AgentExecutionSelection("test-account", "first", "Test account", "First")
+        return AgentExecutionSelection(self.provider_id, "first", "Test account", "First")
 
     def catalog(self, *, refresh=False):
         return {
             "providers": [
                 {
-                    "id": "test-account",
+                    "id": self.provider_id,
                     "label": "Test account",
                     "available": True,
                     "availability": "ready",
@@ -94,7 +97,7 @@ class HostedDriverDouble:
 
     def validate_selection(self, provider_id, model_id):
         if (
-            provider_id != "test-account"
+            provider_id != self.provider_id
             or model_id not in {"first", "second"}
             or (model_id == "first" and not self.default_available)
         ):
@@ -113,6 +116,9 @@ class HostedDriverDouble:
 
     def is_alive(self, pid):
         return self.alive
+
+    def exit_code(self, pid, generation):
+        return self.completions.get((pid, generation))
 
     def terminate(self, pid, generation):
         self.terminations.append((pid, generation))
@@ -687,9 +693,48 @@ def test_failed_start_retry_never_spawns_a_new_generation(surface):
     session = start(surface)
     assert session["phase"] == "stopped"
     assert session["agent"]["status"] == "spawn_failed"
-    assert session["agent"]["error"]
+    assert session["controlRevision"] == 2
+    assert session["agent"]["error"] == (
+        "AI help could not launch. Your form is unchanged. "
+        "Choose Launch to try again or continue manually."
+    )
+    assert "Retry Start" not in session["agent"]["error"]
     assert session["agent"]["alive"] is False
     assert start(surface, session, expected_control_revision=0)["phase"] == "stopped"
+    assert len(surface["runner"].starts) == 1
+
+
+def test_availability_uses_the_visible_launch_action_name(surface):
+    availability = surface["broker"].availability()
+    assert availability["message"] == "Choose a chat model, then Launch."
+    assert availability["disclosure"].startswith("Launch sends up to 32 KiB")
+    assert "Start" not in availability["message"]
+
+
+def test_immediate_claude_auth_failure_is_actionable_and_never_relaunched(surface):
+    surface["runner"].provider_id = "claude-code"
+    original = surface["runner"].start
+
+    def expired_auth(*, session, generation):
+        result = original(session=session, generation=generation)
+        surface["runner"].completions[(result["pid"], generation)] = (
+            WorkerExitCode.AUTH_REQUIRED
+        )
+        return result
+
+    surface["runner"].start = expired_auth
+    session = start(surface)
+    assert session["phase"] == "stopped"
+    assert session["controlRevision"] == 2
+    assert session["agent"]["status"] == "spawn_failed"
+    assert session["agent"]["error"] == (
+        "Sign in to Claude Code again with claude auth login, then choose "
+        "Launch. Your form is unchanged."
+    )
+    assert session["agent"]["alive"] is False
+    replay = start(surface, session, expected_control_revision=0)
+    assert replay["phase"] == "stopped"
+    assert replay["controlRevision"] == 2
     assert len(surface["runner"].starts) == 1
 
 
@@ -1020,6 +1065,33 @@ def test_revocation_during_slow_spawn_fences_and_terminates_exact_owner(surface,
     assert lease["status"] not in {"starting", "running"}
 
 
+def test_stop_wins_when_a_slow_driver_returns_an_auth_failure(surface):
+    surface["runner"].provider_id = "claude-code"
+    prepared = prepare_session(surface)
+    original = surface["runner"].start
+
+    def expired_after_stop(*, session, generation):
+        result = original(session=session, generation=generation)
+        surface["runner"].completions[(result["pid"], generation)] = (
+            WorkerExitCode.AUTH_REQUIRED
+        )
+        surface["broker"].stop(
+            session["assistantSessionId"], "human:test", end=False
+        )
+        return result
+
+    surface["runner"].start = expired_after_stop
+    session = start(surface, prepared)
+    assert session["phase"] == "stopped"
+    assert session["controlRevision"] == 2
+    assert session["agent"]["status"] == "stopped"
+    assert "error" not in session["agent"]
+    lease = conversations.get_agent_lease(session["conversationId"], CONSUMER)
+    assert lease["status"] == "stopped"
+    assert lease["error"] is None
+    assert surface["runner"].terminations == [(9001, scope(surface)["generation"])]
+
+
 def test_unexpected_driver_death_is_projected_without_a_replacement(surface):
     session = start(surface)
     surface["runner"].alive = False
@@ -1034,6 +1106,121 @@ def test_unexpected_driver_death_is_projected_without_a_replacement(surface):
     assert len(surface["runner"].starts) == 1
     assert start(surface, session, expected_control_revision=0)["phase"] == "stopped"
     assert len(surface["runner"].starts) == 1
+
+
+def test_late_claude_auth_failure_is_projected_once_even_if_pid_looks_alive(surface):
+    surface["runner"].provider_id = "claude-code"
+    session = start(surface)
+    started = scope(surface)
+    lease = conversations.get_agent_lease(session["conversationId"], CONSUMER)
+    assert lease["pid"] == 9001
+    assert surface["runner"].alive is True
+    surface["runner"].completions[(lease["pid"], started["generation"])] = (
+        WorkerExitCode.AUTH_REQUIRED
+    )
+
+    path = f"/api/assistance/{session['assistantSessionId']}/execution"
+    failed = surface["client"].get(path)
+    assert failed.status_code == 200
+    assert failed.json["agent"]["phase"] == "stopped"
+    assert failed.json["agent"]["status"] == "failed"
+    assert failed.json["agent"]["controlRevision"] == 2
+    assert failed.json["agent"]["error"] == (
+        "Sign in to Claude Code again with claude auth login, then choose "
+        "Launch. Your form is unchanged."
+    )
+    repeated = surface["client"].get(path)
+    assert repeated.json["agent"]["controlRevision"] == 2
+    assert repeated.json["agent"]["error"] == failed.json["agent"]["error"]
+    replay = start(surface, session, expected_control_revision=0)
+    assert replay["phase"] == "stopped"
+    assert len(surface["runner"].starts) == 1
+
+
+@pytest.mark.parametrize("unknown_exit", [WorkerExitCode.FAILED, 99])
+def test_unknown_driver_exit_never_leaks_diagnostics(surface, unknown_exit):
+    session = start(surface)
+    started = scope(surface)
+    lease = conversations.get_agent_lease(session["conversationId"], CONSUMER)
+    surface["runner"].completions[(lease["pid"], started["generation"])] = unknown_exit
+    response = surface["client"].get(
+        f"/api/assistance/{session['assistantSessionId']}/execution"
+    )
+    assert response.status_code == 200
+    assert response.json["agent"]["phase"] == "stopped"
+    assert response.json["agent"]["error"] == (
+        "AI help could not launch. Your form is unchanged. "
+        "Choose Launch to try again or continue manually."
+    )
+    assert str(unknown_exit) not in response.json["agent"]["error"]
+
+
+def test_unknown_stored_driver_error_is_always_projected_as_safe_copy(surface):
+    session = start(surface)
+    with surface["broker"]._transaction() as conn:
+        value = surface["broker"]._row(
+            conn, session["assistantSessionId"], "human:test"
+        )
+        lease = conversations.get_agent_lease(
+            session["conversationId"], CONSUMER, conn=conn
+        )
+        conn.execute(
+            "UPDATE conversation_agent_leases SET status='spawn_failed',pid=NULL,error=? "
+            "WHERE conversation_id=? AND consumer=? AND generation=?",
+            (
+                "private provider failure from a legacy row",
+                session["conversationId"],
+                CONSUMER,
+                lease["generation"],
+            ),
+        )
+        value["phase"] = "stopped"
+        surface["broker"]._advance_control(value)
+        surface["broker"]._save(conn, value)
+
+    response = surface["client"].get(
+        f"/api/assistance/{session['assistantSessionId']}/execution"
+    )
+    assert response.status_code == 200
+    assert response.json["agent"]["error"] == (
+        "AI help could not launch. Your form is unchanged. "
+        "Choose Launch to try again or continue manually."
+    )
+    assert "private provider" not in json.dumps(response.json)
+
+
+def test_old_owned_completion_cannot_fail_a_new_generation_with_reused_pid(surface):
+    surface["runner"].provider_id = "claude-code"
+    first = start(surface)
+    first_scope = scope(surface)
+    first_lease = conversations.get_agent_lease(first["conversationId"], CONSUMER)
+    stopped = surface["client"].post(
+        f"/api/assistance/{first['assistantSessionId']}/stop", json={}
+    ).json
+    surface["runner"].completions[(first_lease["pid"], first_scope["generation"])] = (
+        WorkerExitCode.AUTH_REQUIRED
+    )
+    original = surface["runner"].start
+
+    def reuse_numeric_pid(*, session, generation):
+        result = original(session=session, generation=generation)
+        return {**result, "pid": first_lease["pid"]}
+
+    surface["runner"].start = reuse_numeric_pid
+    current = surface["broker"].session(first["assistantSessionId"], "human:test")
+    assert current["controlRevision"] == stopped["controlRevision"]
+    successor = start(
+        surface,
+        current,
+        requestId="start-successor",
+        initialSnapshot=prepared_snapshot("initial-successor"),
+    )
+    assert successor["phase"] == "active"
+    assert successor["agent"]["status"] == "running"
+    assert successor["agent"]["alive"] is True
+    assert successor["agent"]["error"] is None
+    assert scope(surface)["generation"] != first_scope["generation"]
+    assert len(surface["runner"].starts) == 2
 
 
 def test_stop_during_deferred_provider_validation_prevents_start_commit(surface):

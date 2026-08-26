@@ -33,6 +33,7 @@ const definition: WidgetDefinition = {
   assistableDrafts: [declaration],
 };
 const availability = { available: true, code: "ready", providerId: "fixture-provider", modelId: "fixture-model", purpose: "dashboard.assisted_draft", message: "Ready to start", disclosure: "Explicit test disclosure: allowlisted fields and messages only." };
+const spawnFailureMessage = "AI help could not launch. Your form is unchanged. Choose Launch to try again or continue manually.";
 
 const initialExecution = (): ChatExecutionSnapshot => ({
   selection: { providerId: "fixture-provider", modelId: "fixture-model", providerLabel: "Fixture Claude", modelLabel: "Model one", revision: "execution:1" },
@@ -42,7 +43,7 @@ const initialExecution = (): ChatExecutionSnapshot => ({
   ],
 });
 
-function fakeBroker(options: { delayed?: boolean; unavailable?: boolean; startFails?: boolean; startFailsOnce?: boolean; delayedStartAcknowledgement?: boolean; respondFailsOnce?: boolean; stopFails?: boolean; stopMissing?: boolean; prepareFailsOnce?: boolean; receiptFailsOnce?: boolean; endFails?: boolean; initialGreeting?: boolean; question?: boolean; selectedUnavailable?: boolean; switchConflict?: boolean; legacyRecovery?: boolean } = {}) {
+function fakeBroker(options: { delayed?: boolean; unavailable?: boolean; startFails?: boolean; startFailsOnce?: boolean; spawnFails?: boolean; delayedStartAcknowledgement?: boolean; respondFailsOnce?: boolean; stopFails?: boolean; stopMissing?: boolean; prepareFailsOnce?: boolean; receiptFailsOnce?: boolean; endFails?: boolean; initialGreeting?: boolean; question?: boolean; selectedUnavailable?: boolean; switchConflict?: boolean; legacyRecovery?: boolean } = {}) {
   const calls: { path: string; method: string; body?: Record<string, unknown> }[] = [];
   let session: AssistanceSession;
   let snapshot: PreparedDraftSnapshot;
@@ -95,9 +96,17 @@ function fakeBroker(options: { delayed?: boolean; unavailable?: boolean; startFa
       if (!startedRequests.has(body.requestId)) {
         if (body.expected_control_revision !== session.controlRevision) return respond({ code: "assistance_control_changed", error: "Assistant lifecycle changed before Start" }, 409);
         startedRequests.add(body.requestId);
-        if (options.initialGreeting) messages.push({ message_id: `greeting-${body.requestId}`, role: "agent", content: `Let's shape your task: ${snapshot.snapshot.title}. What is the next useful step?`, created_at: "2026-08-25T11:59:00Z" });
-        if (options.question) messages.push({ message_id: "question-1", role: "agent", content: "Which task size?", message_type: "question", status: "pending", response_type: "choice", choices: [{ key: "small", label: "Small step" }, { key: "large", label: "Larger task" }] });
         saveSession({ ...session, phase: "active", activeStartId: body.requestId, controlRevision: session.controlRevision! + 1, agent: { status: "running", alive: true, phase: "active", activeStartId: body.requestId } });
+        if (options.spawnFails) {
+          // Production admits the launch before attempting the provider spawn.
+          // A failed spawn returns a successful session response, advances the
+          // control revision again, and leaves the admitted attempt fenced.
+          const controlRevision = session.controlRevision! + 1;
+          saveSession({ ...session, phase: "stopped", controlRevision, agent: { status: "spawn_failed", phase: "stopped", alive: false, started: false, activeStartId: body.requestId, controlRevision, error: spawnFailureMessage } });
+        } else {
+          if (options.initialGreeting) messages.push({ message_id: `greeting-${body.requestId}`, role: "agent", content: `Let's shape your task: ${snapshot.snapshot.title}. What is the next useful step?`, created_at: "2026-08-25T11:59:00Z" });
+          if (options.question) messages.push({ message_id: "question-1", role: "agent", content: "Which task size?", message_type: "question", status: "pending", response_type: "choice", choices: [{ key: "small", label: "Small step" }, { key: "large", label: "Larger task" }] });
+        }
       }
       if (options.startFailsOnce && !failedStart) { failedStart = true; throw new Error("Uncertain Start acknowledgement"); }
       const result = session;
@@ -649,6 +658,89 @@ describe("Dashboard assisted draft host", () => {
     expect(broker.calls.filter((call) => call.path.endsWith("/respond"))).toHaveLength(1);
     expect(composer).toHaveValue("Unsent question for later");
     expect(subscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves the form, unsent text and Undo after an admitted spawn failure and requires a fresh Launch", async () => {
+    const subscribe = vi.spyOn(HttpChatConversationProvider.prototype, "subscribe");
+    const options = { spawnFails: false };
+    const broker = fakeBroker(options);
+    mount(broker);
+    await openAndStart();
+    const title = screen.getByRole("textbox", { name: "Task title" });
+    const summary = screen.getByRole("textbox", { name: "Task summary" });
+    const composer = screen.getByRole("textbox", { name: "Message" });
+    await userEvent.type(composer, "Suggest fields before this launch fails");
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(broker.receipt()?.status).toBe("applied"));
+    await waitFor(() => expect(composer).toHaveValue(""));
+    await userEvent.type(composer, "Keep this unsent clarification");
+    await userEvent.click(screen.getByRole("button", { name: "Stop assistant" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Launch" })).toBeEnabled());
+    const previousControlRevision = broker.session().controlRevision!;
+
+    options.spawnFails = true;
+    await userEvent.click(screen.getByRole("button", { name: "Launch" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(spawnFailureMessage);
+    expect(alert).not.toHaveTextContent("Start");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Launch" })).toBeEnabled());
+    const failedAttempt = broker.calls.filter((call) => call.path.endsWith("/start"))[1].body!;
+    const failedCallIndex = broker.calls.findIndex((call) => call.path.endsWith("/start") && call.body?.requestId === failedAttempt.requestId);
+    const response = await vi.mocked(broker.fetchImpl).mock.results[failedCallIndex].value as Response;
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      phase: "stopped", activeStartId: failedAttempt.requestId, controlRevision: previousControlRevision + 2,
+      agent: { status: "spawn_failed", phase: "stopped", alive: false, started: false, controlRevision: previousControlRevision + 2, error: spawnFailureMessage },
+    });
+    expect(failedAttempt.expected_control_revision).toBe(previousControlRevision);
+    expect(title).toHaveValue("Assistant title");
+    expect(summary).toHaveValue("Assistant summary");
+    expect(composer).toBeDisabled();
+    expect(composer).toHaveValue("Keep this unsent clarification");
+    expect(screen.getByRole("button", { name: "Normal human submit" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Undo assistant changes" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Retry Launch" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Launch with current fields" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Stop assistant" })).not.toBeInTheDocument();
+    expect(Object.keys(sessionStorage).filter((key) => key.startsWith("wb.assistance.start:"))).toHaveLength(0);
+
+    // Reopening and authoritative transcript/session refresh are passive:
+    // neither may replay the failed attempt or create a new provider launch.
+    await userEvent.click(screen.getByRole("button", { name: "Close assistance" }));
+    await userEvent.click(screen.getByRole("button", { name: "AI help" }));
+    const reads = broker.calls.filter((call) => call.path === "/api/assistance/as-test").length;
+    await act(async () => { (subscribe.mock.contexts[0] as HttpChatConversationProvider).invalidate(); });
+    await waitFor(() => expect(broker.calls.filter((call) => call.path === "/api/assistance/as-test").length).toBeGreaterThan(reads));
+    expect(screen.getByRole("button", { name: "Launch" })).toBeEnabled();
+    expect(screen.getByRole("textbox", { name: "Task title" })).toBe(title);
+    expect(screen.getByRole("textbox", { name: "Message" })).toBe(composer);
+    expect(composer).toHaveValue("Keep this unsent clarification");
+    expect(screen.getByText("Suggest fields before this launch fails")).toBeVisible();
+    expect(broker.calls.filter((call) => call.path.endsWith("/start"))).toHaveLength(2);
+    expect(subscribe).toHaveBeenCalledTimes(1);
+    await userEvent.click(screen.getByRole("button", { name: "Undo assistant changes" }));
+    await waitFor(() => expect(broker.receipt()?.status).toBe("undone"));
+    expect(title).toHaveValue("Original title");
+    expect(summary).toHaveValue("");
+    expect(composer).toHaveValue("Keep this unsent clarification");
+
+    await userEvent.type(title, " after the failed launch");
+    options.spawnFails = false;
+    await userEvent.click(screen.getByRole("button", { name: "Launch" }));
+    await waitFor(() => expect(composer).toBeEnabled());
+    const attempts = broker.calls.filter((call) => call.path.endsWith("/start"));
+    expect(attempts).toHaveLength(3);
+    expect(attempts[2].body?.requestId).not.toBe(failedAttempt.requestId);
+    expect(attempts[2].body).toMatchObject({
+      expected_control_revision: previousControlRevision + 2,
+      initialSnapshot: { messageId: expect.any(String), snapshot: { title: "Original title after the failed launch", summary: "" } },
+    });
+    expect((attempts[2].body?.initialSnapshot as PreparedDraftSnapshot).messageId).not.toBe((failedAttempt.initialSnapshot as PreparedDraftSnapshot).messageId);
+    expect(composer).toHaveValue("Keep this unsent clarification");
+    expect(screen.queryByText(spawnFailureMessage)).not.toBeInTheDocument();
+    expect(broker.calls.filter((call) => call.path.endsWith("/respond"))).toHaveLength(1);
+    expect(broker.calls.filter((call) => call.path === "/api/assistance/sessions")).toHaveLength(1);
+    expect(broker.calls.some((call) => /\/api\/(tasks|jobs)(?:\/|$)/.test(call.path))).toBe(false);
   });
 
   it("retries an uncertain Start with the exact frozen identity and fields", async () => {

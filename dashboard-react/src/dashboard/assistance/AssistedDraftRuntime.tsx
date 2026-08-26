@@ -1096,5 +1096,5 @@ function HistoricalConversation({ session, client }: { readonly session: Assista
       subscribe: (id, invalidate) => transport.subscribe(id, invalidate),
     };
   }, [client, session.assistantSessionId, session.conversationId]);
-  return <div className="wb-assistance-history__conversation"><ConversationChat provider={provider} conversationId={session.conversationId} title="Previous AI help conversation" readOnlyReason="This history is preserved. Start a new session to continue with the form." /></div>;
+  return <div className="wb-assistance-history__conversation"><ConversationChat provider={provider} conversationId={session.conversationId} title="Previous AI help conversation" readOnlyReason="This history is preserved. Launch a new session to continue with the form." /></div>;
 }
