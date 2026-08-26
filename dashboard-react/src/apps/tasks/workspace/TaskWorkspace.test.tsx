@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { DashboardAnnouncer } from "../../../dashboard/accessibility/DashboardAnnouncer";
+import { DashboardHelpProvider } from "../../../dashboard/help";
 import type {
   IntentResult,
   WidgetIntent,
@@ -110,6 +111,34 @@ const proposal: TaskProposal = { thread_id: "th-1234abcd", proposal_event_id: 7,
 const proposalInput = (value = proposal): TaskWorkspaceInput => ({ ...input(), selectedProposal: { kind: "loaded", proposal: value }, query: { ...input().query, proposal: value.thread_id } });
 
 describe("Task proposal review", () => {
+  it("reveals proposal mechanics on existing headings while retaining the proposed values", async () => {
+    const user = userEvent.setup();
+    const emit = vi.fn(async (intent: WidgetIntent): Promise<IntentResult> => ({ intent_id: intent.intent_id, status: "accepted" }));
+    const value = proposalInput({ ...proposal, parameters: { ...proposal.parameters, contract: "Reviewed commitment" } });
+    render(<DashboardHelpProvider enabled>{workspaceElement(value, emit)}</DashboardHelpProvider>);
+    const heading = await screen.findByRole("heading", { name: "Review before creating" });
+    expect(screen.queryByText(/This is a proposal, not a task/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Saving the fields above keeps/)).not.toBeInTheDocument();
+    expect(screen.getByText("Reviewed commitment")).toBeVisible();
+    await user.hover(document.body);
+    await user.hover(heading);
+    expect(await screen.findByRole("tooltip", {}, { timeout: 3000 })).toHaveTextContent("A saved proposal is not a task");
+    await user.keyboard("{Escape}");
+    await user.hover(document.body);
+    await user.hover(screen.getByRole("heading", { name: "Additional proposed settings" }));
+    expect(await screen.findByRole("tooltip", {}, { timeout: 3000 })).toHaveTextContent("Create task accepts all the proposed settings");
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it("keeps actual proposal outcomes and unavailable reasons visible without help mode", async () => {
+    const emit = vi.fn(async (intent: WidgetIntent): Promise<IntentResult> => ({ intent_id: intent.intent_id, status: "accepted" }));
+    const rendered = renderWorkspace(proposalInput({ ...proposal, status: "rejected" }), emit);
+    expect(await screen.findByText(/This proposal was dismissed. No task was created/)).toBeVisible();
+    rendered.rerender(workspaceElement({ ...proposalInput(), selectedProposal: { kind: "unavailable", threadId: proposal.thread_id, code: "not_found", message: "This proposal could not be found." } }, emit));
+    expect(await screen.findByText("This proposal could not be found.")).toBeVisible();
+    expect(screen.queryByText("No task was created by opening this link.")).not.toBeInTheDocument();
+  });
+
   it("shows additional task settings and preserves them when common fields are revised", async () => {
     const user = userEvent.setup();
     const additional = { contract: "Additional commitment", automation_tier_achievable: 3, agent_required_contexts: ["repository", "browser"] };

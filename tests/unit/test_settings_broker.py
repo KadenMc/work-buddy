@@ -47,7 +47,7 @@ def _value(at: datetime):
 
 def test_registry_defines_app_owned_settings_with_canonical_placements() -> None:
     payload = broker.get_registry()
-    assert payload["registry_revision"] == "settings-registry:4"
+    assert payload["registry_revision"] == "settings-registry:5"
     assert [item["setting_id"] for item in payload["definitions"]] == [
         JOURNAL_DAY_BOUNDARY_ID,
         COWORK_REVIEW_NAV_BINDING_ID,
@@ -89,6 +89,22 @@ def test_registry_defines_app_owned_settings_with_canonical_placements() -> None
         if page["page_id"] == "wb.settings.app.cowork"
     )
     assert cowork_page["fallback_return_path"] == "/app/cowork"
+
+
+def test_assistance_settings_keep_privacy_disclosure_without_repeating_it() -> None:
+    definitions = {
+        item["setting_id"]: item for item in broker.get_registry()["definitions"]
+    }
+    opt_in = definitions[DASHBOARD_ASSISTANCE_ID]
+    tier = definitions[DASHBOARD_ASSISTANCE_TIER_ID]
+    assert "Only the disclosed form snapshot is sent" in opt_in["long_description"]
+    assert "submission stays under your control" in opt_in["long_description"]
+    assert "does not start a session or send data" in opt_in["long_description"]
+    assert tier["long_description"] == (
+        "The resolved provider and model are shown before you start a session."
+    )
+    assert opt_in["default_value"] == "disabled"
+    assert tier["default_value"] == "frontier_fast"
 
 
 def test_model_features_are_off_until_explicit_settings_opt_in(monkeypatch):

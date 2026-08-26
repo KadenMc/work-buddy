@@ -29,6 +29,10 @@ dev_notes: |-
   The placeholder cell's callback ref must keep the same identity across ordinary parent renders. React cleans up a changed callback ref before invoking its replacement; on the durable path that unnecessary release/adopt cycle reparents the permanent wrapper through the offstage stash, and Chromium resets descendant scroll positions during the move. Memoize the ref on the host operations and widget-instance identity so real unmounts, instance changes, and host changes still release and adopt normally. Regression coverage must prove that a data-only parent rerender performs no wrapper append/reparent and preserves nested `scrollTop`.
 
   Draft repositories use schema-versioned records, compare-and-swap revisions, retention metadata, and cross-tab signaling. Production uses IndexedDB; tests inject in-memory repositories. Arrange and Preview safety is enforced by the host from declared intent effects, not by inspecting DOM elements or HTTP methods.
+
+  Use `HelpTarget` or a primitive's `help` prop for contextual explanations.
+  Tooltip descriptions augment existing `aria-describedby` references, including
+  validation errors; they must not replace them.
 ---
 
 The widget platform is the standard composition model for React dashboard views. It preserves extensive personalization without turning every shareable App into an unrelated page implementation.
@@ -92,5 +96,10 @@ Widgets declare meaningful drafts; the host owns persistence, schema versions, r
 An eligible widget may additionally declare `assistableDrafts`, referencing the shared machine-readable form schema. Dashboard Core binds a contextual assistance dock to that exact host-owned draft; it is not a separate placeable chat widget or a Co-work editor adapter. Typed allowlisted patches update visible fields, preserve concurrent user edits, and expose conditional Undo. Submission remains the App's explicit human action. See `services/dashboard/react/assisted-drafts`.
 
 Short-lived notices and confirmation requests are reusable dashboard infrastructure. They are distinct from the durable notification/request system. Contextual Hover Help is another host mode with layered ownership: Dashboard, view placement, widget, and primitive. Help and Customize are mutually exclusive.
+
+Optional explanations belong on existing controls or headings through shared
+Hover Help. Current state, validation, required disclosures, confirmations, and
+recovery actions remain visible without Help; they must also work on narrow
+layouts where Hover Help is unavailable.
 
 See `services/dashboard/react` for contribution hosting and migration boundaries, and `services/dashboard/react/appearance` for the visual contract every widget must honor.

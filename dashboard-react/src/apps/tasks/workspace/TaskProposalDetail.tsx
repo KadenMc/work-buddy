@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import type { IntentResult, JsonValue, WidgetIntent, WidgetPresentationContext } from "../../../dashboard/contributions/contracts";
 import { useDashboardAnnouncer } from "../../../dashboard/accessibility/DashboardAnnouncer";
 import { useWidgetDraft } from "../../../dashboard/drafts";
+import { HelpTarget } from "../../../dashboard/help";
 import { Button, InlineAlert } from "../../../ui";
 import { createCorrelationId, createWidgetIntent } from "../../../widget-library/shared";
 import { TASK_INTENTS, type TaskOptions, type TaskProposal, type TaskProposalSelection } from "../contracts";
@@ -21,9 +22,13 @@ export interface TaskProposalDetailProps {
 
 export function TaskProposalDetail(props: TaskProposalDetailProps) {
   if (props.selection.kind === "unavailable") return <section className="wb-task-detail" aria-label="Task proposal unavailable">
-    <div className="wb-task-detail__header"><h2>Task proposal unavailable</h2><Button size="small" onClick={props.onClose}>Close</Button></div>
+    <div className="wb-task-detail__header">
+      <HelpTarget content={{ summary: "This proposal could not be opened.", details: "Opening a proposal link only reads its saved state. No task is created by opening this link." }} focusable>
+        <h2>Task proposal unavailable</h2>
+      </HelpTarget>
+      <Button size="small" onClick={props.onClose}>Close</Button>
+    </div>
     <InlineAlert tone="warning">{props.selection.message}</InlineAlert>
-    <p className="wb-task-muted">No task was created by opening this link.</p>
   </section>;
   return <ProposalEditor {...props} proposal={props.selection.proposal} />;
 }
@@ -99,10 +104,14 @@ function ProposalEditor({ proposal, options, readOnly: accessReadOnly, presentat
   if (!draft.ready) return <p aria-busy="true">Restoring proposal edits…</p>;
   return <section className="wb-task-detail wb-task-proposal" aria-label="Task proposal">
     <div className="wb-task-detail__header">
-      <div><p className="wb-task-detail__kicker">Task proposal · {originLabel}</p><h2>Review before creating</h2></div>
+      <div><p className="wb-task-detail__kicker">Task proposal · {originLabel}</p>
+        <HelpTarget content={{ summary: "Review a proposal before creating a task.", details: "A saved proposal is not a task. Review its fields and choose Create task to add it to your task list; opening or editing the proposal does not create one." }} focusable>
+          <h2>Review before creating</h2>
+        </HelpTarget>
+      </div>
       <Button size="small" onClick={onClose}>Close</Button>
     </div>
-    <p className="wb-task-muted">{proposal.status === "rejected" ? "This proposal was dismissed. No task was created; its original capture is preserved." : "This is a proposal, not a task. Only Create task below adds it to your task list."}</p>
+    {proposal.status === "rejected" ? <p className="wb-task-muted">This proposal was dismissed. No task was created; its original capture is preserved.</p> : null}
     <a href={proposal.href}>Link to this proposal</a>
     {draft.error ? <InlineAlert tone="danger">{draft.error} Your edits remain here.</InlineAlert> : null}
     {notice ? <InlineAlert tone={notice.tone}>{notice.text}</InlineAlert> : null}
@@ -116,8 +125,9 @@ function ProposalEditor({ proposal, options, readOnly: accessReadOnly, presentat
       <label className="wb-task-field"><span>Proposed task title</span><input value={draft.value.title} disabled={disabled} onChange={(event) => update("title", event.target.value)} aria-invalid={errors.task_text || errors.title ? "true" : undefined} /></label>
       <TaskDraftFields value={draft.value} options={options} disabled={disabled} idPrefix="wb-task-proposal" errors={errors} update={update} />
       {additionalParameters.length > 0 ? <section aria-label="Additional proposed task settings">
-        <h3>Additional proposed settings</h3>
-        <p className="wb-task-muted">These settings are also part of this proposal. Saving the fields above keeps them; creating the task accepts them too.</p>
+        <HelpTarget content={{ summary: "These settings are included in task creation.", details: "Saving the fields above keeps these additional settings. Create task accepts all the proposed settings shown here." }} focusable>
+          <h3>Additional proposed settings</h3>
+        </HelpTarget>
         <dl>{additionalParameters.map(([key, setting]) => <div key={key}>
           <dt>{key.replace(/_/g, " ").replace(/^./, (letter) => letter.toUpperCase())}</dt>
           <dd>{setting === null ? "Not set" : Array.isArray(setting) ? setting.map((item) => typeof item === "object" ? JSON.stringify(item) : String(item)).join(", ") || "None" : typeof setting === "boolean" ? setting ? "Yes" : "No" : typeof setting === "object" ? JSON.stringify(setting) : String(setting)}</dd>
@@ -125,7 +135,9 @@ function ProposalEditor({ proposal, options, readOnly: accessReadOnly, presentat
       </section> : null}
       {editable ? <div className="wb-task-actions">
         <Button type="submit" disabled={decisionDisabled || stale || !changed || !draft.value.title.trim()}>Save proposal changes</Button>
-        <Button variant="primary" disabled={decisionDisabled || stale || changed || !draft.value.title.trim()} onClick={() => void act(TASK_INTENTS.proposalAccept)}>{busy ? "Saving…" : "Create task"}</Button>
+        <HelpTarget content={{ summary: "Create the task from this reviewed proposal.", details: "Accept the saved fields and any additional proposed settings shown here. Retrying this same proposal resolves to the same task, not a second copy." }} reactAriaComposite>
+          <Button variant="primary" disabled={decisionDisabled || stale || changed || !draft.value.title.trim()} onClick={() => void act(TASK_INTENTS.proposalAccept)}>{busy ? "Saving…" : "Create task"}</Button>
+        </HelpTarget>
         <Button variant="ghost" disabled={decisionDisabled || stale} onClick={() => setDismissConfirm(true)}>Dismiss proposal</Button>
       </div> : null}
     </form>

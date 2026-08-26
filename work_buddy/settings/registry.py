@@ -14,7 +14,7 @@ from work_buddy.journal_day import DEFAULT_DAY_BOUNDARY, parse_local_time
 
 
 SCHEMA_VERSION = 1
-REGISTRY_REVISION = "settings-registry:4"
+REGISTRY_REVISION = "settings-registry:5"
 JOURNAL_DAY_BOUNDARY_ID = "wb.journal.day-boundary"
 JOURNAL_SMART_PROCESSING_ID = "wb.journal.smart-processing"
 DASHBOARD_ASSISTANCE_ID = "wb.dashboard.assistance"
@@ -60,6 +60,8 @@ _ADDITIONAL_DEFINITIONS: tuple[dict[str, Any], ...] = (
             "gesture and provider/model disclosure. Only the disclosed form snapshot is sent "
             "to the model. Assistant edits remain visible in the form, and submission stays "
             "under your control. Changing this setting does not start a session or send data."
+        ) if setting_id == DASHBOARD_ASSISTANCE_ID else (
+            "The resolved provider and model are shown before you start a session."
         ),
         "keywords": ["assistant", "draft", "model", "privacy", "form"], "tags": ["assistance", "privacy"],
         "value_schema": {"type": "string", "enum": [item[0] for item in options]},

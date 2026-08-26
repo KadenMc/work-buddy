@@ -98,7 +98,7 @@ The ceiling applies to both the React form and its API. `create_user_job_file` s
 
 ### Tick-quantization caveat
 
-The scheduler ticks every ``health_check_interval`` (default 30 s), so values < 30 are quantized away in practice. The form's Jitter input shows an amber `⚠ Too small to take effect` warning for sub-30s values, distinct from the green `✓ Randomly delays firing…` for values that actually shift fire time. ``jitter_seconds: 0`` (the default) bypasses the pending-fire queue and fires inline on cron match.
+The scheduler ticks every ``health_check_interval`` (default 30 s), so values < 30 are quantized away in practice. React authoring keeps a visible warning for nonzero jitter below 30 seconds; optional-delay and schedule-ceiling guidance lives in the field's Hover Help. Legacy editing retains its amber `⚠ Too small to take effect` warning and green `✓ Randomly delays firing…` hint. ``jitter_seconds: 0`` (the default) bypasses the pending-fire queue and fires inline on cron match.
 
 ### Dashboard surfacing
 

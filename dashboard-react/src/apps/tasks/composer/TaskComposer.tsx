@@ -15,6 +15,7 @@ import type {
 } from "../../../dashboard/contributions/contracts";
 import { useDashboardAnnouncer } from "../../../dashboard/accessibility/DashboardAnnouncer";
 import { useWidgetDraft } from "../../../dashboard/drafts";
+import { HelpTarget } from "../../../dashboard/help";
 import { AssistDraftButton, useAssistedDraft } from "../../../dashboard/assistance";
 import { Button, InlineAlert } from "../../../ui";
 import { createCorrelationId, createWidgetIntent } from "../../../widget-library/shared";
@@ -505,25 +506,33 @@ export default function TaskComposer({
           <div className="wb-task-composer__fast-path">
             <label className="wb-task-field wb-task-field--grow">
               <span>New task</span>
-              <input
-                {...assistance.fieldProps(["title"])}
-                ref={titleRef}
-                autoComplete="off"
-                value={value.title}
-                disabled={readOnly || submitting}
-                aria-invalid={fieldError("title", "description") ? "true" : undefined}
-                aria-describedby={fieldError("title", "description") ? "wb-task-create-title-error" : "wb-task-create-title-help"}
-                placeholder="What needs doing?"
-                onChange={(event) => update("title", event.target.value)}
-                onKeyDown={enterFastPath}
-                onPaste={capturePaste}
-              />
+              <HelpTarget content={{
+                summary: resolution ? "Retained fields from a closed proposal." : value.proposal_ref ? "Edit the draft linked to this proposal." : "Capture a task, or paste a batch.",
+                details: resolution
+                  ? "This proposal is closed. Your retained fields have not been submitted again. Choose Use retained fields for a new draft to start a separate task."
+                  : value.proposal_ref
+                    ? "Creating the task accepts this saved proposal without making a second copy. Save changed fields to the proposal before accepting it."
+                    : "Press Enter to add the task. New tasks default to Inbox; Add details lets you choose another state. Paste several lines to preview a batch before creating anything.",
+              }} placement="bottom start">
+                <input
+                  {...assistance.fieldProps(["title"])}
+                  ref={titleRef}
+                  autoComplete="off"
+                  value={value.title}
+                  disabled={readOnly || submitting}
+                  aria-invalid={fieldError("title", "description") ? "true" : undefined}
+                  aria-describedby={fieldError("title", "description") ? "wb-task-create-title-error" : undefined}
+                  placeholder="What needs doing?"
+                  onChange={(event) => update("title", event.target.value)}
+                  onKeyDown={enterFastPath}
+                  onPaste={capturePaste}
+                />
+              </HelpTarget>
             </label>
             <Button type="submit" variant="primary" disabled={readOnly || submitting || value.title.trim().length === 0 || requiresDetailedReview || !!resolution || proposalNeedsReview || (value.proposal_ref !== undefined && proposalReadOnly)}>
               {submitting ? "Saving…" : resolution?.status === "realized" ? "Task already created" : resolution?.status === "rejected" ? "Proposal dismissed" : value.proposal_ref ? "Create task from proposal" : "Add task"}
             </Button>
           </div>
-          <p id="wb-task-create-title-help" className="wb-task-field-help">{resolution ? "This proposal is closed. Retained fields have not been submitted again." : value.proposal_ref ? "This draft is linked to a proposal. Creating the task accepts that proposal, without making a second copy." : "Press Enter to add to Inbox. Paste several lines to preview a batch."}</p>
           {fieldError("title", "description") ? <p id="wb-task-create-title-error" className="wb-task-field-error">{fieldError("title", "description")}</p> : null}
 
           <div className="wb-task-field__inline">
@@ -531,9 +540,11 @@ export default function TaskComposer({
               {detailsOpen ? "Hide details" : "Add details"}
             </Button>
             <AssistDraftButton assistance={assistance} />
-            <Button size="small" disabled={proposalReadOnly || submitting || !!resolution || !value.title.trim() || (!value.proposal_pending && (proposalNeedsReview || requiresDetailedReview || (value.proposal_ref !== undefined && !proposalChanged)))} onClick={() => void saveProposal()}>
-              {value.proposal_pending ? "Retry proposal save" : value.proposal_ref ? "Save proposal changes" : "Save proposal"}
-            </Button>
+            <HelpTarget content={{ summary: "Save a proposal for review.", details: "Keep these fields as a proposal in Tasks without creating a task. You can return through its proposal link, revise it, then choose Create task." }} reactAriaComposite>
+              <Button size="small" disabled={proposalReadOnly || submitting || !!resolution || !value.title.trim() || (!value.proposal_pending && (proposalNeedsReview || requiresDetailedReview || (value.proposal_ref !== undefined && !proposalChanged)))} onClick={() => void saveProposal()}>
+                {value.proposal_pending ? "Retry proposal save" : value.proposal_ref ? "Save proposal changes" : "Save proposal"}
+              </Button>
+            </HelpTarget>
             {value.proposal_ref && resolution?.status !== "realized" ? <a href={`/app/tasks?proposal=${encodeURIComponent(value.proposal_ref.threadId)}`}>Review saved proposal</a> : null}
           </div>
           {resolution ? <InlineAlert tone={resolution.status === "realized" ? "success" : "warning"}>

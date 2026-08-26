@@ -1,8 +1,9 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
 import { DashboardAnnouncer } from "../../dashboard/accessibility/DashboardAnnouncer";
+import { DashboardHelpProvider } from "../../dashboard/help";
 import type { IntentResult, WidgetIntent, WidgetPresentationContext } from "../../dashboard/contributions/contracts";
 import { WidgetDraftTestScope } from "../../test/DashboardTestRuntime";
 import { JOB_AUTHORING_WIDGET, JOBS_INSTANCE_ID, JOBS_VIEW_ID } from "./contribution";
@@ -21,16 +22,65 @@ const input: JobAuthoringInput = {
   access: { mode: "read_write" }, timeZone: "America/New_York",
   capabilities: [{ name: "journal_state", description: "Read Journal state", parameters: {} }], workflows: [],
 };
-const renderForm = (emit: (intent: WidgetIntent) => Promise<IntentResult>, overrides: Partial<JobAuthoringInput> = {}, mode: WidgetPresentationContext["interactionMode"] = "operate") => {
+const renderForm = (emit: (intent: WidgetIntent) => Promise<IntentResult>, overrides: Partial<JobAuthoringInput> = {}, mode: WidgetPresentationContext["interactionMode"] = "operate", help = false) => {
   const widgetInput = { ...input, ...overrides };
   const context = { ...presentation, interactionMode: mode };
-  return render(<DashboardAnnouncer><WidgetDraftTestScope definition={JOB_AUTHORING_WIDGET} presentation={context} input={widgetInput}>
+  return render(<DashboardHelpProvider enabled={help}><DashboardAnnouncer><WidgetDraftTestScope definition={JOB_AUTHORING_WIDGET} presentation={context} input={widgetInput}>
     <JobComposer input={widgetInput} emit={emit} presentation={context} />
-  </WidgetDraftTestScope></DashboardAnnouncer>);
+  </WidgetDraftTestScope></DashboardAnnouncer></DashboardHelpProvider>);
 };
 const accepted = (intent: WidgetIntent): IntentResult => ({ intent_id: intent.intent_id, status: "accepted", value: intent.intent_type === JOB_INTENTS.describeSchedule ? { valid: true, description: "Every Monday at 9:00 AM", max_jitter_seconds: 300 } : undefined });
 
 describe("JobComposer", () => {
+  it("keeps idle instruction text out of the form while retaining scheduling consent", async () => {
+    const user = userEvent.setup();
+    renderForm(vi.fn(async (intent: WidgetIntent) => accepted(intent)));
+    const schedule = await screen.findByRole("textbox", { name: "Schedule" });
+    const jitter = screen.getByRole("spinbutton", { name: "Jitter (seconds)" });
+    expect(screen.queryByText(/The assistant fills these fields/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Ask Assist to turn a plain-English schedule/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Optional delay; maximum/)).not.toBeInTheDocument();
+    expect(schedule).not.toHaveAttribute("aria-describedby");
+    expect(jitter).not.toHaveAttribute("aria-describedby");
+    await user.hover(schedule);
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    await user.selectOptions(screen.getByRole("combobox", { name: "Job type" }), "capability");
+    expect(screen.queryByText(/Choose a registered name; creation validates it/)).not.toBeInTheDocument();
+    expect(screen.getByText("Creates an enabled, recurring job in America/New_York.")).toBeVisible();
+  });
+
+  it("reveals schedule guidance on hover through the shared help mode", async () => {
+    const user = userEvent.setup();
+    renderForm(vi.fn(async (intent: WidgetIntent) => accepted(intent)), {}, "operate", true);
+    const schedule = await screen.findByRole("textbox", { name: "Schedule" });
+    expect(schedule).toHaveAttribute("data-help-target", "true");
+    expect(screen.queryByText(/Use a five-field schedule in/)).not.toBeInTheDocument();
+    await user.hover(schedule);
+    expect(await screen.findByRole("tooltip", {}, { timeout: 3000 })).toHaveTextContent("Use a five-field schedule in America/New_York, or ask the assistant to turn a plain-English schedule into these fields.");
+    await user.click(schedule);
+    await user.type(schedule, "0 9 * * 1");
+    expect(schedule).toHaveValue("0 9 * * 1");
+    expect(await screen.findByText("Every Monday at 9:00 AM · America/New_York")).toBeVisible();
+  });
+
+  it("supports keyboard focus help without hiding an active jitter warning", async () => {
+    const user = userEvent.setup();
+    renderForm(vi.fn(async (intent: WidgetIntent) => accepted(intent)), {}, "operate", true);
+    const jitter = await screen.findByRole("spinbutton", { name: "Jitter (seconds)" });
+    act(() => jitter.focus());
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Use up to 300 seconds for this schedule.");
+    await user.keyboard("{Escape}");
+    await user.clear(jitter);
+    await user.type(jitter, "10");
+    expect(screen.getByText("Below 30 seconds may be too small to affect the scheduler tick.")).toBeVisible();
+    for (const id of (jitter.getAttribute("aria-describedby") ?? "").split(" ").filter(Boolean)) {
+      expect(document.getElementById(id)).not.toBeNull();
+    }
+    await user.clear(jitter);
+    await user.type(jitter, "45");
+    expect(screen.queryByText("Below 30 seconds may be too small to affect the scheduler tick.")).not.toBeInTheDocument();
+  });
+
   it("clears stale field errors as the host draft changes while retaining unchanged errors", async () => {
     const user = userEvent.setup();
     const emit = vi.fn(async (intent: WidgetIntent) => accepted(intent));

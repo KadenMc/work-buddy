@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CAPTURE_APP_CONTRIBUTION } from "../../widget-library/capture/contribution";
 import { asViewId, asWidgetInstanceId, type WidgetDefinition } from "../contributions/contracts";
 import { InMemoryWidgetDraftRepository, WidgetDraftRuntimeProvider, WidgetDraftScopeProvider, useWidgetDraft } from "../drafts";
+import { DashboardHelpProvider } from "../help";
 import type { AssistanceSession, AssistedDraftPatch, DraftPatchReceipt, PreparedDraftSnapshot } from "./contracts";
 import { AssistDraftButton, AssistedDraftRuntimeProvider, useAssistedDraft } from "./AssistedDraftRuntime";
 import { assistedDraftDeclaration, assistedForms } from "./schema";
@@ -88,12 +89,13 @@ function Form({ initialMode = "operate", readOnly = false }: { initialMode?: "op
   </section>;
 }
 
-function mount(broker: ReturnType<typeof fakeBroker>, options: { initialMode?: "operate" | "arrange" | "preview"; readOnly?: boolean } = {}, repository = new InMemoryWidgetDraftRepository()) {
-  return render(<WidgetDraftRuntimeProvider repository={repository}>
+function mount(broker: ReturnType<typeof fakeBroker>, options: { initialMode?: "operate" | "arrange" | "preview"; readOnly?: boolean; help?: boolean } = {}, repository = new InMemoryWidgetDraftRepository()) {
+  const { help = false, ...formOptions } = options;
+  return render(<DashboardHelpProvider enabled={help}><WidgetDraftRuntimeProvider repository={repository}>
     <AssistedDraftRuntimeProvider fetchImpl={broker.fetchImpl}>
-      <WidgetDraftScopeProvider definition={definition} viewId={asViewId("wb.tasks.main")} instanceId={asWidgetInstanceId("task-create")} input={{}}><Form {...options} /></WidgetDraftScopeProvider>
+      <WidgetDraftScopeProvider definition={definition} viewId={asViewId("wb.tasks.main")} instanceId={asWidgetInstanceId("task-create")} input={{}}><Form {...formOptions} /></WidgetDraftScopeProvider>
     </AssistedDraftRuntimeProvider>
-  </WidgetDraftRuntimeProvider>);
+  </WidgetDraftRuntimeProvider></DashboardHelpProvider>);
 }
 
 async function openAndStart() {
@@ -108,6 +110,46 @@ beforeEach(() => { vi.stubGlobal("crypto", webcrypto); sessionStorage.clear(); }
 afterEach(() => { vi.unstubAllGlobals(); });
 
 describe("Dashboard assisted draft host", () => {
+  it("puts drafting guidance on the shared button without starting assistance on focus", async () => {
+    const broker = fakeBroker();
+    mount(broker, { help: true });
+    const assist = screen.getByRole("button", { name: "Help me shape this" });
+    await waitFor(() => expect(assist).toBeEnabled());
+    expect(screen.queryByText(/The assistant fills these fields/)).not.toBeInTheDocument();
+    act(() => assist.focus());
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("The assistant fills these fields. You can edit or undo its suggestions; only you can submit the form.");
+    expect(broker.calls).toHaveLength(0);
+    await userEvent.click(assist);
+    expect(await screen.findByText(availability.disclosure)).toBeVisible();
+    expect(broker.calls.every((call) => call.method === "GET")).toBe(true);
+    const heading = screen.getByRole("heading", { name: "Shape test draft" });
+    expect(heading).toHaveAttribute("data-help-target", "true");
+    const close = screen.getByRole("button", { name: "Close assistance" });
+    act(() => close.focus());
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Closing this panel keeps your draft and conversation. Reopen form assistance to continue.");
+    await userEvent.keyboard("{Escape}");
+    expect(screen.getByRole("complementary", { name: "Draft assistance" })).toBeVisible();
+    await userEvent.click(close);
+    expect(screen.queryByRole("complementary", { name: "Draft assistance" })).not.toBeInTheDocument();
+  });
+
+  it("keeps disclosure visible at Start but puts session mechanics on the relevant controls", async () => {
+    const broker = fakeBroker();
+    mount(broker, { help: true });
+    await openAndStart();
+    expect(broker.calls.find((call) => call.path === "/api/assistance/sessions")?.body).toMatchObject({ disclosureAccepted: true, providerId: availability.providerId, modelId: availability.modelId });
+    expect(screen.queryByText("Bound to this form. Only you can submit it.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Send another message to resume. Closing this panel keeps your draft and conversation.")).not.toBeInTheDocument();
+    const stop = screen.getByRole("button", { name: "Stop assistant" });
+    act(() => stop.focus());
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Send another message to resume. Stopping does not submit or discard your draft.");
+    expect(broker.calls.some((call) => call.path.endsWith("/stop"))).toBe(false);
+    await userEvent.click(stop);
+    await waitFor(() => expect(broker.calls.some((call) => call.path.endsWith("/stop"))).toBe(true));
+    expect(screen.getByRole("textbox", { name: "Task title" })).toHaveValue("Original title");
+    expect(screen.getByRole("button", { name: "Normal human submit" })).toBeEnabled();
+  });
+
   it("reserves a sibling layout region without remounting or hiding the form", async () => {
     mount(fakeBroker());
     const form = screen.getByRole("region", { name: "Task form" });
@@ -185,6 +227,8 @@ describe("Dashboard assisted draft host", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Help me shape this" })).toBeEnabled());
     await userEvent.click(screen.getByRole("button", { name: "Help me shape this" }));
     expect(await screen.findByRole("link", { name: "Set up form assistance" })).toHaveAttribute("href", "/app/settings/apps/dashboard?setting=wb.dashboard.assistance");
+    expect(screen.getByText("Form assistance is off.")).toBeVisible();
+    expect(screen.queryByText(availability.disclosure)).not.toBeInTheDocument();
     expect(disabled.calls.every((call) => call.method === "GET")).toBe(true);
     first.unmount();
     mount(fakeBroker({ startFails: true }));

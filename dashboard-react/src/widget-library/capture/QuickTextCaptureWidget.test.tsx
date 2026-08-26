@@ -397,30 +397,85 @@ describe("QuickTextCaptureWidget", () => {
     expect(emit.mock.calls[1]![0].client_mutation_id).not.toBe(firstId);
   });
 
-  it("shows opt-in setup even when Auto cannot be selected", async () => {
+  it("keeps opt-in setup compact and reveals its explanation through hover and keyboard help", async () => {
     const input: QuickTextCaptureInput = { ...baseInput,
       targets: baseInput.targets.map((target) => ({ ...target, supportedModes: ["dumb"] })),
       smartAvailability: { state: "disabled_by_policy", code: "smart_not_enabled", reason: "Smart is off. Enable it in Journal settings.",
         disclosure: { provider: null, model: null, maxInputBytes: 32768, tools: false, web: false },
         action: { kind: "app_link", label: "Set up Smart", href: "/app/settings/apps/journal?setting=wb.journal.smart-processing" } },
     };
-    render(renderCapture(input, vi.fn()));
-    expect(await screen.findByRole("link", { name: "Set up Smart" })).toHaveAttribute("href", "/app/settings/apps/journal?setting=wb.journal.smart-processing");
-    expect(screen.getByText(/Smart is off/)).toBeVisible();
-    expect(screen.getByText(/32 KiB of exact saved text/)).toBeVisible();
+    const emit = vi.fn();
+    const user = userEvent.setup();
+    const view = (help: boolean) => <DashboardHelpProvider enabled={help}>{renderCapture(input, emit)}</DashboardHelpProvider>;
+    const rendered = render(view(false));
+    let setup = await screen.findByRole("link", { name: "Set up Smart" });
+    expect(setup).toHaveAttribute("href", "/app/settings/apps/journal?setting=wb.journal.smart-processing");
+    expect(setup.closest(".wb-capture__controls")).not.toBeNull();
+    expect(screen.queryByText(/Smart is off/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/32 KiB of exact saved text/)).not.toBeInTheDocument();
     expect(screen.queryByRole("switch", { name: "Smart" })).not.toBeInTheDocument();
+    await user.hover(setup);
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+
+    rendered.rerender(view(true));
+    setup = screen.getByRole("link", { name: "Set up Smart" });
+    await user.hover(document.body);
+    await user.hover(setup);
+    expect(await screen.findByRole("tooltip", {}, { timeout: 3000 })).toHaveTextContent("Smart is off");
+    expect(screen.getByRole("tooltip")).toHaveTextContent("32 KiB of exact saved text");
+    expect(screen.getByRole("tooltip")).toHaveTextContent("No tools or web access");
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument());
+    await user.click(screen.getByRole("textbox", { name: "Capture text" }));
+    await user.tab();
+    expect(setup).toHaveFocus();
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Direct capture does not send text to a model");
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it("keeps the active processing boundary visible without hover help", async () => {
+    const user = userEvent.setup();
+    const emit = vi.fn();
+    render(renderCapture(smartInput(), emit));
+    const boundary = await screen.findByRole("status", { name: "Smart processing" });
+    expect(boundary).toHaveTextContent("reviewed-provider · reviewed-model · Saved text, up to 32 KiB");
+    expect(screen.queryByText(/No tools or web access/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("switch", { name: "Smart" }));
+    expect(screen.queryByRole("status", { name: "Smart processing" })).not.toBeInTheDocument();
+    expect(emit).not.toHaveBeenCalled();
   });
 
   it("offers a visible provider retry without sending capture text", async () => {
     const emit = vi.fn();
-    render(renderCapture({ ...baseInput,
+    render(<DashboardHelpProvider enabled>{renderCapture({ ...baseInput,
       smartAvailability: { state: "provider_unavailable", code: "provider_not_preflightable", reason: "Provider unavailable; direct capture still works.",
         disclosure: { provider: "test", model: "test-model", maxInputBytes: 32768, tools: false, web: false },
         action: { kind: "retry", label: "Retry Smart setup" } },
-    }, emit));
-    await userEvent.click(await screen.findByRole("button", { name: "Retry Smart setup" }));
+    }, emit)}</DashboardHelpProvider>);
+    const retry = await screen.findByRole("button", { name: "Retry Smart setup" });
+    expect(screen.queryByText(/test · test-model/)).not.toBeInTheDocument();
+    await userEvent.hover(retry);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("test · test-model");
+    await userEvent.click(retry);
     expect(emit).toHaveBeenCalledWith(expect.objectContaining({ intent_type: "wb.capture.availability-refresh", payload: {} }));
-    expect(screen.getByText(/test · test-model/)).toBeVisible();
+    await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument());
+  });
+
+  it("moves the model-free proposal explanation onto its existing action", async () => {
+    const emit = vi.fn();
+    render(<DashboardHelpProvider enabled>{renderCapture(proposalInput, emit)}</DashboardHelpProvider>);
+    const text = await screen.findByRole("textbox", { name: "Capture text" });
+    expect(screen.queryByText("No model runs and no task is created.")).not.toBeInTheDocument();
+    await userEvent.type(text, "  exact task thought  ");
+    const propose = screen.getByRole("button", { name: "Save and propose task" });
+    expect(propose).toHaveAttribute("data-help-target", "true");
+    await userEvent.hover(propose);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("No model runs and no task is created.");
+    await userEvent.click(propose);
+    await waitFor(() => expect(emit).toHaveBeenCalledWith(expect.objectContaining({ payload: {
+      day_id: "day-1", target_id: "running_notes", mode: "dumb", exact_text: "  exact task thought  ", follow_up_action: "task_proposal",
+    } })));
   });
 
   it("saves an explicit proposal without Smart and preserves the exact source", async () => {

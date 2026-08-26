@@ -25,6 +25,18 @@
 
   .wb-capture__target { min-width: 0; }
   .wb-capture__smart { min-width: 0; }
+  .wb-capture__smart-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--wb-space-2);
+  }
+  .wb-capture__smart-setup { font-size: var(--wb-font-size-xs); }
+  .wb-capture__smart-boundary {
+    color: var(--wb-color-text-secondary);
+    font-size: var(--wb-font-size-xs);
+    overflow-wrap: anywhere;
+  }
 
   .wb-capture__destination-note,
   .wb-capture__count {
@@ -77,15 +89,12 @@
   .wb-capture--compact { gap: var(--wb-space-5); }
   .wb-capture--compact .wb-capture__field .wb-textarea { min-height: 4.5rem; }
 }
-.wb-capture__smart-disclosure,
 .wb-capture__secondary,
 .wb-capture__follow-ups {
   font-size: var(--wb-font-size-sm);
   overflow-wrap: anywhere;
 }
 
-.wb-capture__smart-disclosure p,
-.wb-capture__secondary p,
 .wb-capture__follow-ups p {
   margin: 0.25rem 0;
 }

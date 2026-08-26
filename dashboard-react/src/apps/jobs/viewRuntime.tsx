@@ -12,7 +12,7 @@ export function createRuntime(context: StandardViewRuntimeContext) {
     personalizationRepository: new LocalStoragePersonalizationRepository(context.storage),
     renderChrome: (snapshot: import("../../dashboard/contributions/contracts").ViewSnapshot) => {
       const input = snapshot.model as JobAuthoringInput | null;
-      return <header className="wb-jobs-chrome"><h1>Jobs</h1><p>Create a scheduled job, with as much help as you need.</p><a href="/#tab=jobs">Manage existing jobs</a>{input?.access.mode === "read_only" ? <InlineAlert tone="warning">{input.access.reason}</InlineAlert> : null}</header>;
+      return <header className="wb-jobs-chrome"><h1>Jobs</h1><a href="/#tab=jobs">Manage existing jobs</a>{input?.access.mode === "read_only" ? <InlineAlert tone="warning">{input.access.reason}</InlineAlert> : null}</header>;
     },
   };
 }

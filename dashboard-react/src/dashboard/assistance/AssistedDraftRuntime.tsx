@@ -4,9 +4,10 @@ import type { JsonObject, JsonSchemaReference } from "../contributions/contracts
 import { useWidgetAssistanceDeclaration, type WidgetDraftHandle } from "../drafts/WidgetDraftRuntime";
 import { widgetDraftStorageKey, type WidgetDraftIdentity } from "../drafts/contracts";
 import { HttpChatConversationProvider } from "../conversations/HttpChatConversationProvider";
+import { HelpTarget, type HelpContent } from "../help";
 import { exactHumanAuthorityHeaders } from "../../security/humanAuthority";
 import { ConversationChat, type ChatSendInput } from "../../widget-library/chat";
-import { Button } from "../../ui";
+import { Button, VisuallyHidden } from "../../ui";
 import type { AssistanceAvailability, AssistanceSession, AssistedDraftPatch, AssistedFormSchema, DraftPatchReceipt, PreparedDraftSnapshot } from "./contracts";
 import { assistedForms, discloseSnapshot, equalJson, fieldFor, pathKey, readField, snapshotHash, validateFieldValue } from "./schema";
 import { planPatch, planUndo, validatePatch, type FieldChange, type PatchPlan } from "./patches";
@@ -46,6 +47,18 @@ interface AssistanceRuntime {
 const RuntimeContext = createContext<AssistanceRuntime | null>(null);
 const newId = () => globalThis.crypto.randomUUID();
 const failure = (error: unknown) => error instanceof Error ? error.message : "Assistance is unavailable. Your form remains editable.";
+const DRAFT_ASSISTANCE_HELP: HelpContent = {
+  summary: "Shape this form with an assistant.",
+  details: "The assistant fills these fields. You can edit or undo its suggestions; only you can submit the form.",
+};
+const AVAILABILITY_LABELS: Readonly<Record<AssistanceAvailability["code"], string>> = {
+  ready: "Ready to start",
+  not_configured: "Form assistance is not configured.",
+  disabled: "Form assistance is off.",
+  invalid_configuration: "Form assistance needs attention.",
+  unsupported_provider: "This model does not support form assistance.",
+  provider_unavailable: "Assistance availability could not be checked.",
+};
 
 export interface UseAssistedDraftOptions {
   readonly title?: string;
@@ -131,7 +144,7 @@ export function useAssistedDraft<Value>(draftName: string, draft: WidgetDraftHan
 
 export function AssistDraftButton({ assistance, children = "Help me shape this" }: { readonly assistance: AssistedDraftControl; readonly children?: ReactNode }) {
   if (!assistance.declared) return null;
-  return <Button type="button" disabled={!assistance.available} onClick={assistance.open} aria-expanded={assistance.active}>{children}</Button>;
+  return <HelpTarget content={DRAFT_ASSISTANCE_HELP} reactAriaComposite><Button type="button" disabled={!assistance.available} onClick={assistance.open} aria-expanded={assistance.active}>{children}</Button></HelpTarget>;
 }
 
 export function AssistedDraftRuntimeProvider({ children, fetchImpl }: { readonly children: ReactNode; readonly fetchImpl?: typeof fetch }) {
@@ -401,7 +414,7 @@ function AssistantDock({ binding, onClose, onEndSession, onRecords, fetchImpl, i
   };
 
   const appendix = <div className="wb-assistance-receipts" aria-label="Assistant field changes">
-    <p role="status" aria-live="polite">{records[records.length - 1]?.receipt.message}</p>
+    <VisuallyHidden role="status" aria-live="polite">{records[records.length - 1]?.receipt.message}</VisuallyHidden>
     {records.map((record) => <section key={record.patch.patchId} className="wb-assistance-receipt" aria-label="Assistant patch receipt">
       <p>{record.receipt.message}</p>
       {record.receipt.appliedFields.length > 0 && <p>Assistant-filled: {record.receipt.appliedFields.map((path) => path.join(" / ")).join(", ")}</p>}
@@ -420,13 +433,15 @@ function AssistantDock({ binding, onClose, onEndSession, onRecords, fetchImpl, i
   </div>;
 
   return <aside className="wb-assistance-dock" aria-label="Draft assistance">
-    <header><h2>{binding.title()}</h2><Button type="button" onClick={onClose}>Close assistance</Button></header>
-    <p>Bound to this form. Only you can submit it.</p>
+    <header>
+      <HelpTarget content={DRAFT_ASSISTANCE_HELP} focusable><h2>{binding.title()}</h2></HelpTarget>
+      <HelpTarget content={{ summary: "Close the panel and keep your work.", details: "Closing this panel keeps your draft and conversation. Reopen form assistance to continue." }} reactAriaComposite><Button type="button" onClick={onClose}>Close assistance</Button></HelpTarget>
+    </header>
     {!editable && <p role="status">Assistance is paused in read-only, Arrange, or Preview mode. Your draft is unchanged.</p>}
     {error && <p role="alert">{error}</p>}
     {!session && <>
-      <p>{availability?.message ?? "Checking assistance availability…"}</p>
-      {availability?.disclosure && <p>{availability.disclosure}</p>}
+      {!availability ? <p role="status">Checking assistance availability…</p> : !availability.available ? <HelpTarget content={{ summary: AVAILABILITY_LABELS[availability.code] ?? availability.message, details: availability.message }} focusable><p role="status">{AVAILABILITY_LABELS[availability.code] ?? availability.message}</p></HelpTarget> : null}
+      {availability?.available && availability.disclosure && <p>{availability.disclosure}</p>}
       {availability?.available ? <Button type="button" disabled={busy || !editable} onClick={() => {
         if (!canMutate()) return;
         setBusy(true); setError(null);
@@ -439,15 +454,14 @@ function AssistantDock({ binding, onClose, onEndSession, onRecords, fetchImpl, i
       <ConversationChat provider={provider} conversationId={session.conversationId} title="Draft conversation" prepareSend={prepareSend} onMessagesChange={poll} transcriptAppendix={appendix} composerDisabled={!editable} responsesDisabled={!editable} readOnlyReason="Assistance is paused outside editable Operate mode." initialValue={retainedComposer()} onDraftChange={(value) => {
         try { if (composerStorageKey) sessionStorage.setItem(composerStorageKey, value); } catch { /* shared composer still owns the live draft */ }
       }} />
-      <Button type="button" disabled={!editable} onClick={() => { void post("stop", `assistance:${session.assistantSessionId}`, `/api/assistance/${encodeURIComponent(session.assistantSessionId)}/stop`, {}).catch((reason) => setError(failure(reason))); }}>Stop assistant</Button>
-      <Button type="button" disabled={!editable} onClick={() => {
+      <HelpTarget content={{ summary: "Stop the assistant's current work.", details: "Send another message to resume. Stopping does not submit or discard your draft." }} reactAriaComposite><Button type="button" disabled={!editable} onClick={() => { void post("stop", `assistance:${session.assistantSessionId}`, `/api/assistance/${encodeURIComponent(session.assistantSessionId)}/stop`, {}).catch((reason) => setError(failure(reason))); }}>Stop assistant</Button></HelpTarget>
+      <HelpTarget content={{ summary: "End assistance without clearing the form.", details: "Your draft is preserved. Reopening assistance will offer a new session and ask you to review its disclosure again." }} reactAriaComposite><Button type="button" disabled={!editable} onClick={() => {
         // Detach synchronously even when a stop acknowledgement is uncertain.
         // Reopening Help will offer a new, explicitly disclosed session.
         alive.current = false;
         void post("stop", `assistance:${session.assistantSessionId}`, `/api/assistance/${encodeURIComponent(session.assistantSessionId)}/stop`, {}).catch(() => undefined);
         onEndSession();
-      }}>End session and keep draft</Button>
-      <p>Send another message to resume. Closing this panel keeps your draft and conversation.</p>
+      }}>End session and keep draft</Button></HelpTarget>
     </>}
   </aside>;
 }

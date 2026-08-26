@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { webcrypto } from "node:crypto";
 
 import { DashboardAnnouncer } from "../../../dashboard/accessibility/DashboardAnnouncer";
+import { DashboardHelpProvider } from "../../../dashboard/help";
 import type {
   IntentResult,
   WidgetIntent,
@@ -62,6 +63,43 @@ const renderComposer = (
 ) => render(composerElement(emit, widgetInput));
 
 describe("TaskComposer", () => {
+  it("keeps keyboard and batch instructions in contextual help without changing Enter submission", async () => {
+    const emit = vi.fn(async (intent: WidgetIntent): Promise<IntentResult> => ({ intent_id: intent.intent_id, status: "accepted" }));
+    const user = userEvent.setup();
+    const view = (help: boolean) => <DashboardHelpProvider enabled={help}>{composerElement(emit)}</DashboardHelpProvider>;
+    const rendered = render(view(false));
+    let title = await screen.findByRole("textbox", { name: "New task" });
+    expect(screen.queryByText(/Press Enter to add/)).not.toBeInTheDocument();
+    expect(title).not.toHaveAttribute("aria-describedby");
+    await user.hover(title);
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    rendered.rerender(view(true));
+    title = screen.getByRole("textbox", { name: "New task" });
+    await user.hover(document.body);
+    await user.hover(title);
+    expect(await screen.findByRole("tooltip", {}, { timeout: 3000 })).toHaveTextContent("Paste several lines to preview a batch");
+    expect(screen.getByRole("tooltip")).toHaveTextContent("New tasks default to Inbox");
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("tooltip")).not.toBeInTheDocument());
+    await user.tab();
+    expect(title).toHaveFocus();
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Press Enter to add the task");
+    await user.type(title, "Read the short draft");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(emit).toHaveBeenCalledWith(expect.objectContaining({ intent_type: TASK_INTENTS.create })));
+  });
+
+  it("keeps save-proposal guidance on the existing action without submitting on hover", async () => {
+    const emit = vi.fn(async (intent: WidgetIntent): Promise<IntentResult> => ({ intent_id: intent.intent_id, status: "accepted" }));
+    render(<DashboardHelpProvider enabled>{composerElement(emit)}</DashboardHelpProvider>);
+    await userEvent.type(await screen.findByRole("textbox", { name: "New task" }), "Review this idea");
+    const save = screen.getByRole("button", { name: "Save proposal" });
+    expect(screen.queryByText("Save a proposal for review.")).not.toBeInTheDocument();
+    await userEvent.hover(save);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("without creating a task");
+    expect(emit).not.toHaveBeenCalled();
+  });
+
   it("requires full review when replayed proposal settings are not shown by Quick Add", async () => {
     vi.stubGlobal("crypto", webcrypto);
     const user = userEvent.setup();

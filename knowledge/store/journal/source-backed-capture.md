@@ -66,7 +66,9 @@ tools or web access, never rewrites the saved text, disables
 model-response caching, and binds its structured result back to the Journal
 capture. A settled result is never automatically sent again. Typed availability
 distinguishes `disabled_by_policy`, `provider_unavailable`, and `ready`, with a
-visible Settings link or setup retry and persistent provider/model/32-KiB copy.
+visible Settings link or setup retry. Idle explanations use shared hover/focus
+help. While Smart is on and ready, a compact provider/model/input-limit line
+remains visible before capture.
 
 A Smart result retains a Log or Running Notes placement and may attach one
 `TaskProposalFollowUp`. Task-like Auto captures become open Running Notes.

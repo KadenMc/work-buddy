@@ -8,6 +8,7 @@ import {
 } from "react";
 
 import { useWidgetDraft } from "../../dashboard/drafts";
+import { HelpTarget } from "../../dashboard/help";
 import type { IntentResult } from "../../dashboard/contributions/contracts";
 import { sha256Hex } from "../../security/localIdentity";
 import {
@@ -91,6 +92,23 @@ export function CaptureComposer({ input, density, onSubmit, onRetry, onRefreshAv
   const smartAvailable = input.targets.some(
     (candidate) => candidate.enabled && candidate.supportedModes.includes("smart"),
   );
+  const smartAvailability = input.smartAvailability;
+  const smartHelp = smartAvailability ? {
+    summary: smartAvailability.reason,
+    details: [
+      smartAvailability.disclosure.provider && smartAvailability.disclosure.model
+        ? `${smartAvailability.disclosure.provider} · ${smartAvailability.disclosure.model}.`
+        : "No model is currently ready.",
+      `When Smart is on, up to ${Math.round(smartAvailability.disclosure.maxInputBytes / 1024)} KiB of exact saved text is sent for processing.`,
+      "No tools or web access. Direct capture does not send text to a model.",
+      "Smart may propose a task for your review; it cannot create one.",
+    ].join(" "),
+  } : input.smartHelp ?? {
+    summary: "Run a smart follow-up after capturing.",
+    details: "After preserving your exact text, Smart asks the owning App to interpret its context and run the configured follow-up processing. That may classify or enrich the capture and propose further actions; governed operations still follow Work Buddy's permission and confirmation rules.",
+  };
+  const smartAction = smartAvailability?.action;
+  const smartSetupHref = smartAction?.kind === "app_link" ? safeCaptureAppHref(smartAction.href) : undefined;
 
   useEffect(() => {
     if (target?.enabled) return;
@@ -263,28 +281,40 @@ export function CaptureComposer({ input, density, onSubmit, onRetry, onRefreshAv
       />
 
       <div className="wb-capture__controls">
-        {(smartAvailable || mode === "smart") && (
-          <SwitchField
-            className="wb-capture__smart"
-            label="Smart"
-            help={
-              input.smartHelp ?? {
-                summary: "Run a smart follow-up after capturing.",
-                details:
-                  "After preserving your exact text, Smart asks the owning App to interpret its context and run the configured follow-up processing. That may classify or enrich the capture and propose further actions; governed operations still follow Work Buddy's permission and confirmation rules.",
+        <div className="wb-capture__smart-controls">
+          {(smartAvailable || mode === "smart") && (
+            <SwitchField
+              className="wb-capture__smart"
+              label="Smart"
+              help={smartHelp}
+              selected={mode === "smart"}
+              disabled={readOnly}
+              onChange={(selected) =>
+                setDraftValue((current) => ({
+                  ...current,
+                  mode: selected ? "smart" : "dumb",
+                  pendingSubmission: undefined,
+                }))
               }
-            }
-            selected={mode === "smart"}
-            disabled={readOnly}
-            onChange={(selected) =>
-              setDraftValue((current) => ({
-                ...current,
-                mode: selected ? "smart" : "dumb",
-                pendingSubmission: undefined,
-              }))
-            }
-          />
-        )}
+            />
+          )}
+          {smartSetupHref && smartAction ? (
+            <HelpTarget content={smartHelp} placement="bottom start">
+              <a className="wb-capture__smart-setup" href={smartSetupHref}>{smartAction.label}</a>
+            </HelpTarget>
+          ) : smartAction?.kind === "retry" && onRefreshAvailability ? (
+            <HelpTarget content={smartHelp} placement="bottom start" reactAriaComposite>
+              <Button type="button" size="small" variant="ghost" disabled={retrying === "availability"}
+                onClick={() => { setRetrying("availability"); void Promise.resolve(onRefreshAvailability()).finally(() => setRetrying(undefined)); }}>
+                {retrying === "availability" ? "Checking Smart setup…" : smartAction.label}
+              </Button>
+            </HelpTarget>
+          ) : !smartAvailable && mode !== "smart" && smartAvailability ? (
+            <HelpTarget content={smartHelp} focusable ariaLabel="About Smart availability">
+              <span className="wb-capture__smart-setup">Smart unavailable</span>
+            </HelpTarget>
+          ) : null}
+        </div>
 
         <SelectField
           className="wb-capture__target"
@@ -316,34 +346,18 @@ export function CaptureComposer({ input, density, onSubmit, onRetry, onRefreshAv
           {saving ? "Saving…" : "Capture"}
         </Button>
       </div>
-      {saving ? <p role="status">Saving your exact capture…</p> : null}
-
-      {input.smartAvailability ? (
-        <div className="wb-capture__smart-disclosure" role="status">
-          <p>{input.smartAvailability.reason}</p>
-          <p>
-            {input.smartAvailability.disclosure.provider && input.smartAvailability.disclosure.model
-              ? `${input.smartAvailability.disclosure.provider} · ${input.smartAvailability.disclosure.model}. `
-              : "No model is currently ready. "}
-            When Smart is on, up to {Math.round(input.smartAvailability.disclosure.maxInputBytes / 1024)} KiB of exact saved text is sent for processing.
-            No tools or web access. Direct capture does not send text to a model.
-            {input.smartAvailability.state === "ready" ? " Smart may propose a task for your review; it cannot create one." : ""}
-          </p>
-          {input.smartAvailability.action?.kind === "app_link" && safeCaptureAppHref(input.smartAvailability.action.href) ? (
-            <a href={safeCaptureAppHref(input.smartAvailability.action.href)}>{input.smartAvailability.action.label}</a>
-          ) : input.smartAvailability.action?.kind === "retry" && onRefreshAvailability ? (
-            <Button type="button" variant="ghost" disabled={retrying === "availability"}
-              onClick={() => { setRetrying("availability"); void Promise.resolve(onRefreshAvailability()).finally(() => setRetrying(undefined)); }}>
-              {retrying === "availability" ? "Checking Smart setup…" : input.smartAvailability.action.label}
-            </Button>
-          ) : null}
-        </div>
+      {mode === "smart" && smartAvailability?.state === "ready" ? (
+        <small className="wb-capture__smart-boundary" role="status" aria-label="Smart processing">
+          {smartAvailability.disclosure.provider} · {smartAvailability.disclosure.model} · Saved text, up to {Math.round(smartAvailability.disclosure.maxInputBytes / 1024)} KiB
+        </small>
       ) : null}
+      {saving ? <p role="status">Saving your exact capture…</p> : null}
 
       {input.secondaryActions?.map((action) => (
         <div key={action.actionId} className="wb-capture__secondary">
-          <Button type="button" variant="ghost" disabled={saving || readOnly || draft.length === 0} onClick={() => { void save(action); }}>{action.label}</Button>
-          <p>{action.description}</p>
+          <HelpTarget content={{ summary: action.label, details: action.description }} reactAriaComposite>
+            <Button type="button" variant="ghost" disabled={saving || readOnly || draft.length === 0} onClick={() => { void save(action); }}>{action.label}</Button>
+          </HelpTarget>
         </div>
       ))}
 

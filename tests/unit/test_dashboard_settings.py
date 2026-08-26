@@ -58,7 +58,7 @@ def test_cowork_context_and_immediate_shortcut_map_contract(client) -> None:
     )
     assert values.status_code == 200
     snapshot = values.get_json()
-    assert snapshot["registry_revision"] == "settings-registry:4"
+    assert snapshot["registry_revision"] == "settings-registry:5"
     assert snapshot["values"] == [
         {
             "apply_status": "effective",
