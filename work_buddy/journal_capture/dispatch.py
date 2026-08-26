@@ -14,7 +14,7 @@ from work_buddy.document_kernel.causality import DocumentCausalityStore
 from work_buddy.journal_capture.models import CaptureMode, CaptureTarget, JournalCaptureError
 from work_buddy.journal_capture.service import CommittedIngress, JournalCaptureService
 from work_buddy.sources.dispatch import SourceOutbox
-from work_buddy.sources.errors import SourceError
+from work_buddy.sources.errors import SourceError, SourceLeaseConflict
 from work_buddy.sources.models import ActorRef, OutboxEffect, SourceRef
 from work_buddy.sources.resolve import resolve_and_reserve_source
 from work_buddy.sources.store import SourceStore
@@ -96,13 +96,14 @@ class JournalSourceDispatcher:
                     result_ref = f"journal-capture:{capture_id}"
                 else:
                     result_ref = self._deliver_redaction(effect)
-                self.outbox.complete(
-                    effect.effect_id,
-                    self.worker_id,
-                    result_ref=result_ref,
-                    result_sha256=hashlib.sha256(result_ref.encode("utf-8")).hexdigest(),
-                )
-                delivered += 1
+                if self._acknowledge_result(effect.effect_id, result_ref):
+                    delivered += 1
+                else:
+                    deferred += 1
+            except SourceLeaseConflict:
+                # Another worker owns the effect now. Never fail or overwrite
+                # its live lease merely because this worker ran for longer.
+                deferred += 1
             except (
                 JournalCaptureError,
                 SourceError,
@@ -116,12 +117,15 @@ class JournalSourceDispatcher:
                     effect.effect_id,
                     getattr(exc, "code", "journal_source_command_invalid"),
                 )
-                self.outbox.fail(
-                    effect.effect_id,
-                    self.worker_id,
-                    error_code=getattr(exc, "code", "journal_source_command_invalid"),
-                    retryable=retryable,
-                )
+                try:
+                    self.outbox.fail(
+                        effect.effect_id, self.worker_id,
+                        error_code=getattr(exc, "code", "journal_source_command_invalid"),
+                        retryable=retryable,
+                    )
+                except SourceLeaseConflict:
+                    deferred += 1
+                    continue
                 if retryable:
                     deferred += 1
                 else:
@@ -130,12 +134,11 @@ class JournalSourceDispatcher:
                 # Operational failures remain retryable.  Never include source
                 # bytes or provider text in logs or the durable error code.
                 logger.exception("Journal source effect delivery failed")
-                self.outbox.fail(
-                    effect.effect_id,
-                    self.worker_id,
-                    error_code="journal_dispatch_failed",
-                    retryable=True,
-                )
+                try:
+                    self.outbox.fail(effect.effect_id, self.worker_id,
+                                     error_code="journal_dispatch_failed", retryable=True)
+                except SourceLeaseConflict:
+                    pass
                 deferred += 1
         return DispatchSummary(delivered=delivered, failed=failed, deferred=deferred)
 
@@ -161,12 +164,9 @@ class JournalSourceDispatcher:
         try:
             capture_id = self._deliver_capture(effect)
             result_ref = f"journal-capture:{capture_id}"
-            self.outbox.complete(
-                effect.effect_id,
-                self.worker_id,
-                result_ref=result_ref,
-                result_sha256=hashlib.sha256(result_ref.encode("utf-8")).hexdigest(),
-            )
+            self._acknowledge_result(effect.effect_id, result_ref)
+            # Persistence is already acknowledged by the domain. A deferred
+            # outbox receipt cannot turn that successful save into an error.
             return capture_id
         except Exception as exc:
             retryable = not isinstance(exc, (ValueError, UnicodeDecodeError, KeyError))
@@ -174,13 +174,43 @@ class JournalSourceDispatcher:
                 retryable = exc.retryable
             if isinstance(exc, SourceError):
                 retryable = False
-            self.outbox.fail(
-                effect.effect_id,
-                self.worker_id,
-                error_code=getattr(exc, "code", "journal_dispatch_failed"),
-                retryable=retryable,
-            )
+            try:
+                self.outbox.fail(effect.effect_id, self.worker_id,
+                                 error_code=getattr(exc, "code", "journal_dispatch_failed"),
+                                 retryable=retryable)
+            except SourceLeaseConflict:
+                pass
             raise
+
+    def _acknowledge_result(self, effect_id: str, result_ref: str) -> bool:
+        """Re-lease only to acknowledge a completed result, never rerun work.
+
+        Long inference can outlive the original lease. Sources still enforces
+        authorization expiry and ownership; a live competing lease is never
+        stolen, and a restore fence still blocks any acknowledgement write.
+        """
+
+        require_source_foundation_writable("journal_capture.acknowledge")
+        result_sha = hashlib.sha256(result_ref.encode("utf-8")).hexdigest()
+
+        def complete():
+            self.outbox.complete(effect_id, self.worker_id,
+                                 result_ref=result_ref, result_sha256=result_sha)
+
+        try:
+            complete()
+            return True
+        except SourceLeaseConflict:
+            try:
+                leased = self.outbox.lease_exact(effect_id, self.worker_id, lease_seconds=60)
+                if leased is None:
+                    current = self.outbox.get(effect_id)
+                    if current is None or current.status != "succeeded":
+                        return False
+                complete()
+                return True
+            except SourceLeaseConflict:
+                return False
 
     def _deliver_capture(self, effect: OutboxEffect) -> str:
         payload = _mapping(effect.payload)
@@ -240,6 +270,8 @@ class JournalSourceDispatcher:
             stated_at=_optional_text(parameters, "stated_at"),
             submitted_at=item.committed_at,
             run_smart=mode is CaptureMode.SMART,
+            follow_up_action=_optional_text(parameters, "follow_up_action"),
+            smart_disclosure_sha256=_optional_text(parameters, "smart_disclosure_sha256"),
         )
         # The reservation was committed before the readable domain copy.
         # A source redaction racing after this point therefore has a durable
@@ -273,6 +305,7 @@ class JournalSourceDispatcher:
             raise _RedactionWaiting()
 
         capture = self.journal.store.get_capture_by_source_effect(source_effect_id)
+        self.journal.store.pause_source_proposals(source_effect_id=source_effect_id, source_ref=source_ref.uri)
         result_sha = hashlib.sha256(
             f"journal-source-redaction:{redaction_event_id}:no-readable-copy".encode()
         ).hexdigest()

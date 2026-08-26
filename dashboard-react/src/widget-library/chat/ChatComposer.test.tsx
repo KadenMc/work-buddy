@@ -56,6 +56,20 @@ afterEach(() => {
 });
 
 describe("ChatComposer", () => {
+  it("does not reclaim focus from a host field after a delayed send acknowledgement", async () => {
+    let finish: (() => void) | undefined;
+    const pending = new Promise<void>((resolve) => { finish = resolve; });
+    render(<><label>Host field<input /></label><ChatComposer onSend={() => pending} initialValue="One turn" /></>);
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    const field = screen.getByRole("textbox", { name: "Host field" });
+    await userEvent.click(field);
+    await userEvent.type(field, "human typing");
+    await act(async () => { finish?.(); await pending; });
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue(""));
+    expect(field).toHaveFocus();
+    expect(field).toHaveValue("human typing");
+  });
+
   it("enables Send only with content and submits the trimmed value", async () => {
     const onSend = vi.fn().mockResolvedValue(undefined);
     render(<ChatComposer onSend={onSend} />);

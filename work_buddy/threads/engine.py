@@ -241,6 +241,15 @@ def transition(
         if thread is None:
             raise ThreadNotFound(f"No Thread {thread_id!r}")
 
+        # These Threads require a reviewed-action fence, durable intent, and a
+        # human-only final gesture. Generic cards/agent triggers must not bypass
+        # that application boundary (all older Thread kinds remain unchanged).
+        from work_buddy.threads.action_proposals import is_managed_proposal
+        if is_managed_proposal(thread):
+            raise InvalidTransition(
+                "Use the version-fenced action proposal API for this Thread.",
+            )
+
         outcome = fsm.lookup(thread.fsm_state, trigger)
         if outcome.unspecified:
             raise InvalidTransition(

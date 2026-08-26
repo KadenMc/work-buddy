@@ -38,7 +38,7 @@ def test_registry_and_context_value_snapshot(client) -> None:
     assert registry.headers["Cache-Control"] == "no-store"
     body = registry.get_json()
     assert body["definitions"][0]["setting_id"] == SETTING_ID
-    assert len(body["placements"]) == 2
+    assert len(body["placements"]) == 5
     assert body["pages"][0]["navigation_category"] == "built-in"
 
     values = client.get(
@@ -58,7 +58,7 @@ def test_cowork_context_and_immediate_shortcut_map_contract(client) -> None:
     )
     assert values.status_code == 200
     snapshot = values.get_json()
-    assert snapshot["registry_revision"] == "settings-registry:3"
+    assert snapshot["registry_revision"] == "settings-registry:4"
     assert snapshot["values"] == [
         {
             "apply_status": "effective",

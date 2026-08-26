@@ -23,6 +23,7 @@ import {
   type WidgetThemeSupport,
 } from "./themeContract";
 import type { HelpContent } from "../help/contracts";
+import { assistedForms, equalJson } from "../assistance/schema";
 
 export const DASHBOARD_GRID_COLUMNS = 24;
 
@@ -515,6 +516,15 @@ const validateWidgetDefinition = (
         `${draftPath}.scope.path`,
         "input-field scope requires a non-empty path",
       );
+    }
+  });
+  const assistedNames = widget.assistableDrafts?.map((draft) => draft.draftName) ?? [];
+  if (findDuplicates(assistedNames).length > 0) addIssue(issues, "duplicate_assisted_draft", `${path}.assistableDrafts`, "must not contain duplicate draft names");
+  widget.assistableDrafts?.forEach((declaration, index) => {
+    const draft = widget.drafts?.find((candidate) => candidate.draftName === declaration.draftName);
+    const form = assistedForms[declaration.draftName];
+    if (!draft || !form || draft.sensitivity === "secret" || declaration.submitPolicy !== "user_only" || !equalJson(declaration.schema, form.schema) || !equalJson(declaration.schema, draft.schema)) {
+      addIssue(issues, "invalid_assisted_draft", `${path}.assistableDrafts[${index}]`, "must opt a non-secret declared host draft into its canonical schema with user-only submission");
     }
   });
   if (widget.libraryPath.length === 0 || widget.libraryPath.some((part) => part.trim() === "")) {

@@ -11,6 +11,9 @@ from work_buddy.settings import broker, store
 from work_buddy.settings.registry import (
     COWORK_REVIEW_NAV_BINDING_ID,
     JOURNAL_DAY_BOUNDARY_ID,
+    JOURNAL_SMART_PROCESSING_ID,
+    DASHBOARD_ASSISTANCE_ID,
+    DASHBOARD_ASSISTANCE_TIER_ID,
 )
 
 
@@ -44,10 +47,13 @@ def _value(at: datetime):
 
 def test_registry_defines_app_owned_settings_with_canonical_placements() -> None:
     payload = broker.get_registry()
-    assert payload["registry_revision"] == "settings-registry:3"
+    assert payload["registry_revision"] == "settings-registry:4"
     assert [item["setting_id"] for item in payload["definitions"]] == [
         JOURNAL_DAY_BOUNDARY_ID,
         COWORK_REVIEW_NAV_BINDING_ID,
+        DASHBOARD_ASSISTANCE_ID,
+        DASHBOARD_ASSISTANCE_TIER_ID,
+        JOURNAL_SMART_PROCESSING_ID,
     ]
     definition = payload["definitions"][0]
     assert definition["owner"] == {
@@ -60,6 +66,9 @@ def test_registry_defines_app_owned_settings_with_canonical_placements() -> None
     assert definition["default_value"] == "05:00"
     assert definition["allowed_scopes"] == ["profile"]
     assert [item["context_id"] for item in payload["placements"]] == [
+        "wb.settings.app.dashboard",
+        "wb.settings.app.dashboard",
+        "wb.settings.app.journal",
         "wb.settings.app.journal",
         "wb.settings.app.cowork",
     ]
@@ -80,6 +89,19 @@ def test_registry_defines_app_owned_settings_with_canonical_placements() -> None
         if page["page_id"] == "wb.settings.app.cowork"
     )
     assert cowork_page["fallback_return_path"] == "/app/cowork"
+
+
+def test_model_features_are_off_until_explicit_settings_opt_in(monkeypatch):
+    monkeypatch.setattr(wb_config, "load_config", lambda: {})
+    assert broker.get_journal_smart_processing_enabled() is False
+    assert broker.get_dashboard_assistance_settings() == {"enabled": False, "tier": "frontier_fast"}
+    broker.update_value(JOURNAL_SMART_PROCESSING_ID, scope="profile", value="enabled", expected_revision="value:0")
+    broker.update_value(DASHBOARD_ASSISTANCE_ID, scope="profile", value="enabled", expected_revision="value:0")
+    broker.update_value(DASHBOARD_ASSISTANCE_TIER_ID, scope="profile", value="frontier_balanced", expected_revision="value:0")
+    assert broker.get_journal_smart_processing_enabled() is True
+    assert broker.get_dashboard_assistance_settings() == {"enabled": True, "tier": "frontier_balanced"}
+    with pytest.raises(broker.SettingsError):
+        broker.update_value(DASHBOARD_ASSISTANCE_ID, scope="profile", value=True, expected_revision="value:1")
 
 
 def test_cowork_review_navigation_values_apply_immediately_and_reset() -> None:

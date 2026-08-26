@@ -138,7 +138,10 @@ export function ChatComposer({
       await onSend(value);
       setDraft("");
       onDraftChange?.("");
-      if (inputRef.current !== null) {
+      // A host may remain editable while a turn is in flight. Restore the
+      // composer only while focus is still inside its own form; a delayed
+      // acknowledgement must never take focus back from a user's next action.
+      if (inputRef.current?.form?.contains(document.activeElement)) {
         inputRef.current.focus();
       }
     } catch {

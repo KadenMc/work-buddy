@@ -35,7 +35,7 @@ from work_buddy.journal_capture.models import (
 from work_buddy.paths import resolve
 
 
-_SCHEMA_VERSION = 6
+_SCHEMA_VERSION = 7
 
 
 def _utc_now() -> str:
@@ -193,6 +193,8 @@ class JournalCaptureStore:
                     lease_owner TEXT,
                     lease_expires_at TEXT,
                     error_code TEXT,
+                    payload_json TEXT,
+                    result_json TEXT,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     UNIQUE(capture_id, effect_type),
@@ -436,6 +438,15 @@ class JournalCaptureStore:
                         "ADD COLUMN structural_parity INTEGER"
                     )
                 version = 6
+            if row is not None and version < 7:
+                columns = {
+                    str(item[1])
+                    for item in conn.execute("PRAGMA table_info(journal_effects)").fetchall()
+                }
+                for name in ("payload_json", "result_json"):
+                    if name not in columns:
+                        conn.execute(f"ALTER TABLE journal_effects ADD COLUMN {name} TEXT")
+                version = 7
             if row is not None and version < _SCHEMA_VERSION:
                 raise RuntimeError("unsupported_journal_capture_schema")
             if row is not None:
@@ -1484,6 +1495,8 @@ class JournalCaptureStore:
             ).fetchone()
             if row is None or row["state"] == EffectState.SUCCEEDED.value:
                 return None
+            if row["error_code"] == "journal_proposal_source_withdrawn":
+                return None
             if (
                 row["authorization_expires_at"] is not None
                 and row["authorization_expires_at"] <= now_s
@@ -1540,6 +1553,8 @@ class JournalCaptureStore:
             ).fetchone()
             if row is None:
                 raise KeyError("journal_effect_not_found")
+            if row["error_code"] == "journal_proposal_source_withdrawn":
+                raise JournalCaptureConflict("This source was removed; its pending proposal cannot be resumed.")
             if row["state"] == EffectState.SUCCEEDED.value:
                 return self._effect(row)
             if (
@@ -1568,6 +1583,25 @@ class JournalCaptureStore:
             assert updated is not None
             return self._effect(updated)
 
+    def bind_smart_disclosure(self, capture_id: str, disclosure_sha256: str, *, retry: bool = False) -> None:
+        """Pin the human-reviewed boundary before a source reaches the model."""
+
+        encoded = _json({"smart_disclosure_sha256": disclosure_sha256})
+        with self.transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM journal_effects WHERE capture_id=? AND effect_type IN ('auto_route','smart_annotate')",
+                (capture_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError("journal_effect_not_found")
+            if row["state"] == "succeeded":
+                return
+            if row["state"] == "running" and row["lease_expires_at"] and row["lease_expires_at"] > _utc_now():
+                raise JournalCaptureConflict("That Journal action is already running.")
+            if not retry and row["payload_json"] is not None and row["payload_json"] != encoded:
+                raise JournalCaptureConflict("The Smart disclosure changed; review it before retrying.")
+            conn.execute("UPDATE journal_effects SET payload_json=? WHERE effect_id=?", (encoded, row["effect_id"]))
+
     def effects_for_capture(self, capture_id: str) -> list[JournalEffect]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -1576,15 +1610,16 @@ class JournalCaptureStore:
             ).fetchall()
         return [self._effect(row) for row in rows]
 
-    def pending_effects(self, *, limit: int = 20) -> list[JournalEffect]:
+    def pending_effects(self, *, limit: int = 20, effect_type: str | None = None) -> list[JournalEffect]:
         now = _utc_now()
         with self._connect() as conn:
             rows = conn.execute(
                 """SELECT * FROM journal_effects
-                   WHERE state IN ('pending','failed')
-                      OR (state='running' AND lease_expires_at <= ?)
+                   WHERE (? IS NULL OR effect_type=?) AND (
+                      state IN ('pending','failed')
+                      OR (state='running' AND lease_expires_at <= ?))
                    ORDER BY updated_at LIMIT ?""",
-                (now, max(1, min(limit, 100))),
+                (effect_type, effect_type, now, max(1, min(limit, 100))),
             ).fetchall()
         return [self._effect(row) for row in rows]
 
@@ -1595,21 +1630,187 @@ class JournalCaptureStore:
         *,
         succeeded: bool,
         error_code: str | None = None,
+        result: Mapping[str, Any] | None = None,
+        lease_owner: str | None = None,
     ) -> None:
         now = _utc_now()
         with self.transaction() as conn:
             conn.execute(
-                """UPDATE journal_effects SET state=?,error_code=?,
+                """UPDATE journal_effects SET state=?,error_code=?,result_json=COALESCE(?,result_json),
                    lease_owner=NULL,lease_expires_at=NULL,updated_at=?
-                   WHERE capture_id=? AND effect_type=?""",
+                   WHERE capture_id=? AND effect_type=?
+                   AND (error_code IS NULL OR error_code!='journal_proposal_source_withdrawn')
+                   AND (? IS NULL OR lease_owner=?)""",
                 (
                     EffectState.SUCCEEDED.value if succeeded else EffectState.FAILED.value,
                     error_code,
+                    _json(result),
                     now,
                     capture_id,
                     effect_type,
+                    lease_owner,
+                    lease_owner,
                 ),
             )
+
+    def proposal_effect_for_delivery(self, effect_id: str, *, owner: str) -> JournalEffect | None:
+        """Read the current owned proposal immediately before cross-store ingress.
+
+        A lease returned earlier is not authorization to revive a proposal that
+        source maintenance has since canceled, or another worker now owns.
+        """
+
+        now = _utc_now()
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT * FROM journal_effects WHERE effect_id=? AND effect_type='task_proposal'
+                   AND state='running' AND lease_owner=? AND lease_expires_at>?
+                   AND (authorization_expires_at IS NULL OR authorization_expires_at>?)
+                   AND (error_code IS NULL OR error_code!='journal_proposal_source_withdrawn')""",
+                (effect_id, owner, now, now),
+            ).fetchone()
+        return None if row is None else self._effect(row)
+
+    def enqueue_proposal(
+        self,
+        capture_id: str,
+        payload: Mapping[str, Any],
+        *,
+        authorization_fingerprint: str,
+        authorization_expires_at: str | None,
+        conn: sqlite3.Connection | None = None,
+    ) -> None:
+        """A delivery command, not a second proposal authority."""
+
+        if conn is None:
+            with self.transaction() as transaction:
+                self.enqueue_proposal(
+                    capture_id, payload,
+                    authorization_fingerprint=authorization_fingerprint,
+                    authorization_expires_at=authorization_expires_at,
+                    conn=transaction,
+                )
+            return
+        encoded = _json(payload)
+        prior = conn.execute(
+            "SELECT payload_json FROM journal_effects WHERE capture_id=? AND effect_type='task_proposal'",
+            (capture_id,),
+        ).fetchone()
+        if prior is not None:
+            if prior["payload_json"] != encoded:
+                raise JournalCaptureConflict("That capture already has a different proposal follow-up.")
+            return
+        now = _utc_now()
+        conn.execute(
+            """INSERT INTO journal_effects(
+                effect_id,capture_id,effect_type,state,payload_json,
+                authorization_fingerprint,authorization_expires_at,created_at,updated_at
+            ) VALUES(?,?,'task_proposal','pending',?,?,?,?,?)""",
+            (hashlib.sha256(f"{capture_id}:task_proposal:v1".encode()).hexdigest()[:32],
+             capture_id, encoded, authorization_fingerprint, authorization_expires_at, now, now),
+        )
+        conn.execute(
+            "UPDATE journal_captures SET revision=revision+1,updated_at=? WHERE capture_id=?",
+            (now, capture_id),
+        )
+
+    def settle_smart(
+        self,
+        capture_id: str,
+        *,
+        effect_type: str,
+        annotation: Mapping[str, Any],
+        resolved_target: CaptureTarget,
+        proposal_payload: Mapping[str, Any] | None = None,
+    ) -> JournalCapture:
+        """Commit the model result and optional delivery command atomically.
+
+        Once this commits, a retry cannot redisclose the source to reconstruct a
+        proposal, even if materialization or cross-store delivery subsequently fails.
+        """
+
+        now = _utc_now()
+        with self.transaction() as conn:
+            effect = conn.execute(
+                "SELECT * FROM journal_effects WHERE capture_id=? AND effect_type=?",
+                (capture_id, effect_type),
+            ).fetchone()
+            if effect is None:
+                raise KeyError("journal_effect_not_found")
+            if proposal_payload is not None:
+                self.enqueue_proposal(
+                    capture_id, proposal_payload,
+                    authorization_fingerprint=effect["authorization_fingerprint"],
+                    authorization_expires_at=effect["authorization_expires_at"], conn=conn,
+                )
+            conn.execute(
+                """UPDATE journal_effects SET state='succeeded',error_code=NULL,
+                   lease_owner=NULL,lease_expires_at=NULL,updated_at=?
+                   WHERE capture_id=? AND effect_type=?""", (now, capture_id, effect_type),
+            )
+            conn.execute(
+                """UPDATE journal_captures SET processing_status='succeeded',annotation_json=?,
+                   processing_error_code=NULL,resolved_target=?,revision=revision+1,updated_at=?
+                   WHERE capture_id=?""", (_json(annotation), resolved_target.value, now, capture_id),
+            )
+            conn.execute(
+                """UPDATE journal_entries SET processing_status='succeeded',annotation_json=?,
+                   processing_error_code=NULL,updated_at=? WHERE capture_id=?""",
+                (_json(annotation), now, capture_id),
+            )
+            row = conn.execute("SELECT * FROM journal_captures WHERE capture_id=?", (capture_id,)).fetchone()
+            assert row is not None
+            return self._capture(row)
+
+    def proposal_resolution_effects(self, *, limit: int = 100) -> list[JournalEffect]:
+        """A bounded, oldest-checked-first batch of delivered proposal receipts."""
+
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT * FROM journal_effects WHERE effect_type='task_proposal'
+                   AND state='succeeded' AND json_extract(result_json,'$.resolution_synced') IS NULL
+                   ORDER BY updated_at,effect_id LIMIT ?""",
+                (max(1, min(limit, 100)),),
+            ).fetchall()
+        return [self._effect(row) for row in rows]
+
+    def record_proposal_resolution(
+        self, capture_id: str, *, thread_id: str,
+        terminal_status: str | None = None, realization: Mapping[str, Any] | None = None,
+    ) -> None:
+        """Checkpoint delivery reconciliation, never author proposal lifecycle.
+
+        Only a verified Threads realization may close an open intention. The
+        terminal receipt and note resolution commit together so replay is safe.
+        """
+
+        with self.transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM journal_effects WHERE capture_id=? AND effect_type='task_proposal' AND state='succeeded'",
+                (capture_id,),
+            ).fetchone()
+            if row is None:
+                return
+            result = json.loads(row["result_json"] or "{}")
+            if result.get("thread_id") != thread_id or result.get("resolution_synced"):
+                return
+            now = _utc_now()
+            if terminal_status in {"realized", "rejected"}:
+                result["resolution_synced"] = terminal_status
+            if terminal_status == "realized" and realization is not None:
+                result["realization"] = dict(realization)
+                changed = conn.execute(
+                    """UPDATE journal_entries SET resolution_state='routed_to_task',
+                       version=version+1,updated_at=? WHERE capture_id=? AND resolution_state='open'
+                       AND entry_kind='running_notes'""", (now, capture_id),
+                ).rowcount
+                if changed:
+                    conn.execute(
+                        "UPDATE journal_captures SET revision=revision+1,updated_at=? WHERE capture_id=?",
+                        (now, capture_id),
+                    )
+            conn.execute("UPDATE journal_effects SET result_json=?,updated_at=? WHERE effect_id=?",
+                         (_json(result), now, row["effect_id"]))
 
     def set_processing(
         self,
@@ -1647,6 +1848,35 @@ class JournalCaptureStore:
             if row is None:
                 raise KeyError("journal_capture_not_found")
             return self._capture(row)
+
+    def pause_source_proposals(self, *, source_effect_id: str, source_ref: str) -> None:
+        """Cancel undelivered derivatives before a redaction projection can stall.
+
+        A delivered Thread is an independently retained derivative. This narrow
+        guard only erases Journal's unsent parameters and prevents a later drain
+        or retry gesture from authoring a new Thread from removed source text.
+        """
+
+        with self.transaction() as conn:
+            capture = conn.execute(
+                "SELECT capture_id,source_ref FROM journal_captures WHERE source_effect_id=?",
+                (source_effect_id,),
+            ).fetchone()
+            if capture is None:
+                return
+            if capture["source_ref"] != source_ref:
+                raise JournalCaptureConflict("The source removal does not match the Journal capture.")
+            now = _utc_now()
+            changed = conn.execute(
+                """UPDATE journal_effects SET state='paused',payload_json=NULL,
+                   error_code='journal_proposal_source_withdrawn',lease_owner=NULL,lease_expires_at=NULL,updated_at=?
+                   WHERE capture_id=? AND effect_type='task_proposal' AND state!='succeeded'
+                   AND (error_code IS NULL OR error_code!='journal_proposal_source_withdrawn')""",
+                (now, capture["capture_id"]),
+            ).rowcount
+            if changed:
+                conn.execute("UPDATE journal_captures SET revision=revision+1,updated_at=? WHERE capture_id=?",
+                             (now, capture["capture_id"]))
 
     def mark_source_redacted(
         self,
@@ -1852,6 +2082,8 @@ class JournalCaptureStore:
             error_code=row["error_code"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            payload=_decode_json(row["payload_json"]),
+            result=_decode_json(row["result_json"]),
         )
 
     @staticmethod

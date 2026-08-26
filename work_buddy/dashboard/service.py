@@ -73,6 +73,54 @@ def _reject_read_only():
     return None
 
 
+@app.before_request
+def _guard_managed_proposal_legacy_mutations():
+    """Old Thread cards may not append unfenced edits before their FSM call.
+
+    Managed proposals have a dedicated reviewed-event protocol. Gate legacy
+    entry points before *any* event, grouping, or resolution mutation runs.
+    """
+    if request.method in {"GET", "HEAD", "OPTIONS"} or not request.path.startswith("/api/threads/") or request.blueprint == "action_proposals":
+        return None
+    from work_buddy.threads import store
+    from work_buddy.threads.action_proposals import is_managed_proposal
+
+    candidates = [value for key, value in (request.view_args or {}).items() if key in {"thread_id", "src_id", "umbrella_id"}]
+    body = request.get_json(silent=True)
+    if isinstance(body, dict):
+        candidates.extend(body.get(key) for key in ("to_thread_id", "target_thread_id"))
+    for thread_id in candidates:
+        if not isinstance(thread_id, str):
+            continue
+        thread = store.get_thread(thread_id)
+        if thread is not None and is_managed_proposal(thread):
+            return jsonify({
+                "ok": False, "code": "proposal_api_required",
+                "error": "Review this task proposal in Tasks before changing or accepting it.",
+                "href": f"/app/tasks?proposal={thread_id}",
+            }), 409
+    return None
+
+
+@app.before_request
+def _guard_assistance_conversations():
+    """Assisted transcripts are reachable only through their bound session API."""
+    if not request.path.startswith("/api/conversations/"):
+        return None
+    conversation_id = (request.view_args or {}).get("conversation_id")
+    if not isinstance(conversation_id, str):
+        return None
+    from work_buddy.conversations.store import get_conversation
+
+    conversation = get_conversation(conversation_id)
+    if conversation is not None and conversation.source.startswith("assisted-draft:"):
+        return jsonify({
+            "error": "This conversation is attached to a form. Open its assistance panel.",
+            "code": "assistance_session_required",
+        }), 403
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Hybrid task search helper
 # ---------------------------------------------------------------------------
@@ -551,26 +599,10 @@ def api_user_job_create():
         return blocked
 
     payload = request.get_json(silent=True) or {}
-    from work_buddy.mcp_server.registry import get_registry
+    from work_buddy.dashboard.jobs_authoring_api import create_user_job
 
-    reg = get_registry()
-    cap = reg.get("user_job_create")
-    if cap is None:
-        return jsonify({"success": False, "error": "user_job_create capability not registered."}), 500
-    try:
-        result = cap.callable(**payload)
-    except TypeError as exc:
-        return jsonify({"success": False, "error": f"Invalid arguments: {exc}"}), 400
+    result = create_user_job(payload)
     status = 200 if result.get("success") else 400
-    if result.get("success"):
-        # Tell the dashboard event bus immediately so the Jobs tab can show
-        # the pending banner without waiting for the sidecar's hot-reload
-        # to publish cron.hot_reload (~30s later).
-        from work_buddy.dashboard.events import publish_auto
-        publish_auto("user_job.created", {
-            "name": result.get("name"),
-            "file_path": result.get("file_path"),
-        })
     return jsonify(result), status
 
 
@@ -655,68 +687,17 @@ def _user_job_name_safe(name: str) -> bool:
 
 @app.post("/api/user_jobs/help")
 def api_user_jobs_help():
-    """Open a chat-driven walkthrough for authoring a user job.
-
-    Pairs with the dashboard's chat sidebar. Creates a conversation
-    silently (calling the store layer directly so no CHAT toast or
-    workflow-view tab spawns), seeds it with an opening agent message,
-    then fire-and-forgets a headless Claude session bound to that
-    conversation_id. The frontend opens its sidebar with the returned
-    conversation_id.
-    """
+    """Migration response for cached legacy Jobs help clients."""
     blocked = _reject_read_only()
     if blocked is not None:
         return blocked
 
-    from work_buddy.conversations.store import (
-        add_message,
-        close_conversation,
-        create_conversation,
-    )
-    from work_buddy.dashboard.jobs_help import spawn_job_author_session
-
-    conv = create_conversation(
-        title="Help me create a job",
-        source="dashboard:user_jobs_help",
-    )
-    # Seed as a *question* (response_type=freeform) — not a plain text
-    # message. This binds the user's first reply as the answer to a
-    # pending question, which the spawned agent retrieves via
-    # conversation_poll. With a plain text seed, conversation_poll
-    # returns 'no_pending_question' and the agent falls back to its
-    # own greeting (the duplicate-greeting bug from the first run).
-    add_message(
-        conv.conversation_id,
-        "agent",
-        "Hi! I'll help you set up a scheduled job. What do you want it to do?",
-        message_type="question",
-        response_type="freeform",
-    )
-
-    result = spawn_job_author_session(conv.conversation_id)
-    if result.get("status") != "ok":
-        # Conversation exists but no driver — close it so it doesn't dangle.
-        close_conversation(conv.conversation_id)
-        return jsonify({
-            "ok": False,
-            "error": result.get("error", "Failed to spawn job-author agent."),
-        }), 500
-
-    # Register the driving pid so /api/conversations/<id> can report
-    # whether the agent process is still alive — the chat sidebar uses
-    # that signal to know when to stop the typing indicator and tell
-    # the user the agent stopped (budget cap, crash, kill).
-    pid = result.get("pid")
-    if pid:
-        from work_buddy.conversations.agents import register as register_agent
-        register_agent(conv.conversation_id, pid)
-
+    # Keep the old endpoint intelligible for cached clients, but never launch
+    # an unfenced DOM-driving author now that Jobs uses host-owned drafts.
     return jsonify({
-        "ok": True,
-        "conversation_id": conv.conversation_id,
-        "title": "Help me create a job",
-        "pid": result.get("pid"),
-    })
+        "ok": False, "code": "job_authoring_moved", "href": "/app/jobs",
+        "error": "Job assistance now lives in Jobs. Open /app/jobs and choose Assist.",
+    }), 410
 
 
 @app.post("/api/dashboard/interact")
@@ -4666,7 +4647,10 @@ def api_conversations_list():
     status = request.args.get("status")
     try:
         from work_buddy.conversations.store import list_conversations
-        conversations = list_conversations(status=status)
+        conversations = [
+            item for item in list_conversations(status=status)
+            if not str(item.get("source", "")).startswith("assisted-draft:")
+        ]
         return jsonify({"conversations": conversations})
     except Exception as exc:
         logger.error("Conversation list failed: %s", exc)
@@ -5798,10 +5782,16 @@ from work_buddy.dashboard.local_identity_api import (
 )
 from work_buddy.journal_capture.api import register_routes as _register_journal_capture_routes
 from work_buddy.dashboard.tasks_api import register_routes as _register_tasks_routes
+from work_buddy.dashboard.action_proposals_api import create_blueprint as _create_action_proposals_blueprint
+from work_buddy.dashboard.assistance.api import create_assistance_blueprint
+from work_buddy.dashboard.jobs_authoring_api import create_jobs_authoring_blueprint
 
 _register_local_identity_routes(app)
 _register_journal_capture_routes(app)
 _register_tasks_routes(app)
+app.register_blueprint(_create_action_proposals_blueprint(dashboard_read_only=_is_read_only))
+app.register_blueprint(create_assistance_blueprint(dashboard_read_only=_is_read_only))
+app.register_blueprint(create_jobs_authoring_blueprint())
 _register_cowork_routes(app)
 
 

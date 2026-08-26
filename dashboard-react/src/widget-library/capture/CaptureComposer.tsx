@@ -4,9 +4,12 @@ import {
   useEffect,
   useMemo,
   useRef,
+  useState,
 } from "react";
 
 import { useWidgetDraft } from "../../dashboard/drafts";
+import type { IntentResult } from "../../dashboard/contributions/contracts";
+import { sha256Hex } from "../../security/localIdentity";
 import {
   Button,
   InlineAlert,
@@ -18,14 +21,33 @@ import { createCorrelationId, StatusBadge } from "../shared";
 import type {
   CaptureDraftRequest,
   CaptureSubmitMode,
+  CaptureSecondaryAction,
+  CaptureSubmissionRecord,
   QuickTextCaptureInput,
 } from "./contracts";
+import { FollowUpLinks, safeCaptureAppHref } from "./FollowUpLinks";
+import { captureSmartDisclosureSha256 } from "./smartDisclosure";
 import "./styles.css";
 
 export interface CaptureComposerProps {
   readonly input: QuickTextCaptureInput;
   readonly density: "compact" | "standard" | "expanded";
-  onSubmit(request: CaptureDraftRequest): void;
+  onSubmit(request: CaptureDraftRequest): IntentResult | Promise<IntentResult> | void;
+  onRetry?(capture: CaptureSubmissionRecord): Promise<unknown> | void;
+  onRefreshAvailability?(): Promise<unknown> | void;
+}
+
+interface CaptureComposerDraft {
+  readonly text: string;
+  readonly targetId: string;
+  readonly mode: CaptureSubmitMode;
+  /** Additive recovery metadata in the existing host draft, never a second source copy. */
+  readonly pendingSubmission?: {
+    readonly envelopeVersion?: 2;
+    readonly clientMutationId: string;
+    readonly requestSha256: string;
+    readonly smartDisclosureSha256?: string;
+  };
 }
 
 const statusTone = (status: string) => {
@@ -37,9 +59,13 @@ const statusTone = (status: string) => {
   return "neutral" as const;
 };
 
-export function CaptureComposer({ input, density, onSubmit }: CaptureComposerProps) {
+export function CaptureComposer({ input, density, onSubmit, onRetry, onRefreshAvailability }: CaptureComposerProps) {
+  const [retrying, setRetrying] = useState<string>();
+  const [saving, setSaving] = useState(false);
+  const [submitError, setSubmitError] = useState<string>();
+  const savingRef = useRef(false);
   const firstTarget = input.targets.find((target) => target.enabled) ?? input.targets[0];
-  const initialDraft = useMemo(
+  const initialDraft = useMemo<CaptureComposerDraft>(
     () => ({
       text: "",
       targetId: firstTarget?.targetId ?? "",
@@ -53,12 +79,8 @@ export function CaptureComposer({ input, density, onSubmit }: CaptureComposerPro
   const setDraftValue = draftState.setValue;
   const clearDraft = draftState.clear;
   const flushDraft = draftState.flush;
+  const getDraftSnapshot = draftState.getSnapshot;
   const { text: draft, targetId, mode } = draftState.value;
-  const pendingRef = useRef<{
-    readonly id: string;
-    readonly exactText: string;
-    readonly draftRevision: number;
-  } | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const target = useMemo(
     () => input.targets.find((candidate) => candidate.targetId === targetId),
@@ -72,29 +94,34 @@ export function CaptureComposer({ input, density, onSubmit }: CaptureComposerPro
 
   useEffect(() => {
     if (target?.enabled) return;
+    // Availability changes are not an explicit choice of another request.
+    // Keep an uncertain capture's identity until the user edits its draft.
+    if (getDraftSnapshot().value.pendingSubmission !== undefined) return;
     const replacement = input.targets.find((candidate) => candidate.enabled);
     if (replacement !== undefined) {
       setDraftValue((current) => ({
         ...current,
         targetId: replacement.targetId,
         mode: replacement.defaultMode,
+        pendingSubmission: undefined,
       }));
     }
-  }, [input.targets, setDraftValue, target]);
+  }, [draftState.value.pendingSubmission, getDraftSnapshot, input.targets, setDraftValue, target]);
 
   useEffect(() => {
-    const pending = pendingRef.current;
-    if (pending === null) return;
+    const current = getDraftSnapshot();
+    const pending = current.value.pendingSubmission;
+    if (!current.ready || pending === undefined) return;
     const result = input.recentSubmissions.find(
-      (submission) => submission.clientMutationId === pending.id,
+      (submission) => submission.clientMutationId === pending.clientMutationId,
     );
     if (result?.persistenceStatus === "persisted") {
-      pendingRef.current = null;
-      void clearDraft({ ifRevision: pending.draftRevision }).then((cleared) => {
+      setSubmitError(undefined);
+      void clearDraft({ ifRevision: current.revision }).then((cleared) => {
         if (cleared) textareaRef.current?.focus({ preventScroll: true });
       });
     }
-  }, [clearDraft, input.recentSubmissions]);
+  }, [clearDraft, draftState.value.pendingSubmission, getDraftSnapshot, input.recentSubmissions]);
 
   const selectTarget = (nextTargetId: string) => {
     const nextTarget = input.targets.find(
@@ -103,6 +130,7 @@ export function CaptureComposer({ input, density, onSubmit }: CaptureComposerPro
     setDraftValue((current) => ({
       ...current,
       targetId: nextTargetId,
+      pendingSubmission: undefined,
       mode:
         nextTarget?.supportedModes.includes(current.mode) === true
           ? current.mode
@@ -110,33 +138,88 @@ export function CaptureComposer({ input, density, onSubmit }: CaptureComposerPro
     }));
   };
 
-  const submit = (event: FormEvent) => {
-    event.preventDefault();
+  const save = async (secondary?: CaptureSecondaryAction) => {
+    // React's disabled paint may arrive after another click or keyboard submit.
+    // Lock synchronously before hashing, draft flush, or provider work can yield.
+    if (savingRef.current) return;
+    const snapshot = getDraftSnapshot();
+    const selectedTarget = input.targets.find((item) => item.targetId === (secondary?.targetId ?? snapshot.value.targetId));
+    const selectedMode = secondary?.mode ?? snapshot.value.mode;
     if (
-      draft.length === 0 ||
-      target === undefined ||
-      !target.enabled ||
-      !targetSupportsMode ||
+      !snapshot.ready || snapshot.value.text.length === 0 ||
+      selectedTarget === undefined ||
+      !selectedTarget.enabled ||
+      !selectedTarget.supportedModes.includes(selectedMode) ||
       readOnly
     ) return;
-    const clientMutationId = createCorrelationId("capture");
-    const draftRevision = draftState.revision;
-    void flushDraft()
-      .then(() => {
-        pendingRef.current = { id: clientMutationId, exactText: draft, draftRevision };
-        onSubmit({
-          clientMutationId,
-          dayId: input.dayId,
-          targetId: target.targetId,
-          mode,
-          exactText: draft,
-        });
-      })
-      .catch(() => {
-        // The hook exposes a persistent inline error; do not dispatch an intent whose
-        // exact source material was not safely written first.
+    savingRef.current = true;
+    setSaving(true);
+    setSubmitError(undefined);
+    let dispatched = false;
+    try {
+      const request = {
+        dayId: input.dayId,
+        targetId: selectedTarget.targetId,
+        mode: selectedMode,
+        exactText: snapshot.value.text,
+        ...(secondary ? { followUpActionId: secondary.actionId } : {}),
+      };
+      const disclosure = selectedMode === "smart" ? input.smartAvailability?.disclosure : undefined;
+      const legacyFingerprint = JSON.stringify({
+        request,
+        smartDisclosure: disclosure ? { provider: disclosure.provider, model: disclosure.model,
+          maxInputBytes: disclosure.maxInputBytes, tools: disclosure.tools, web: disclosure.web } : null,
       });
+      const [requestSha256, smartDisclosureSha256] = await Promise.all([
+        sha256Hex(JSON.stringify(request)),
+        captureSmartDisclosureSha256(disclosure),
+      ]);
+      if (getDraftSnapshot().revision !== snapshot.revision) {
+        setSubmitError("Your draft changed before saving. Review it and capture again.");
+        return;
+      }
+      const pending = snapshot.value.pendingSubmission;
+      if (pending !== undefined) {
+        const sameRequest = pending.envelopeVersion === 2
+          ? pending.requestSha256 === requestSha256 && pending.smartDisclosureSha256 === smartDisclosureSha256
+          : pending.requestSha256 === await sha256Hex(legacyFingerprint);
+        if (!sameRequest || typeof pending.clientMutationId !== "string" || pending.clientMutationId.length === 0) {
+          setSubmitError("This unconfirmed capture's destination, action, or Smart setup changed. Restore the previous choices to retry the same save, or edit the draft to start a new capture.");
+          return;
+        }
+      }
+      if (getDraftSnapshot().revision !== snapshot.revision) {
+        setSubmitError("Your draft changed before saving. Review it and capture again.");
+        return;
+      }
+      const clientMutationId = pending?.clientMutationId ?? createCorrelationId("capture");
+      const draftRevision = setDraftValue({ ...snapshot.value,
+        pendingSubmission: { envelopeVersion: 2, clientMutationId, requestSha256,
+          ...(smartDisclosureSha256 ? { smartDisclosureSha256 } : {}) } });
+      // The exact draft and its retry identity must both survive before dispatch.
+      await flushDraft();
+      dispatched = true;
+      const result = await onSubmit({ clientMutationId, ...request,
+        ...(smartDisclosureSha256 ? { smartDisclosureSha256 } : {}) });
+      if (result?.status === "accepted") {
+        if (getDraftSnapshot().value.pendingSubmission?.clientMutationId === clientMutationId) {
+          const cleared = await clearDraft({ ifRevision: draftRevision });
+          if (cleared) textareaRef.current?.focus({ preventScroll: true });
+        }
+      } else if (result !== undefined) {
+        setSubmitError(`${result.message ?? "The capture could not finish."} Your draft remains here; retrying it unchanged checks the same save.`);
+      }
+    } catch {
+      setSubmitError(dispatched
+        ? "Could not confirm the save. Your draft remains here; retrying it unchanged checks the same capture."
+        : "The draft could not be prepared for capture. Your text remains here; no capture was sent.");
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
   };
+
+  const submit = (event: FormEvent) => { event.preventDefault(); void save(); };
 
   const handleShortcut = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
@@ -154,13 +237,14 @@ export function CaptureComposer({ input, density, onSubmit }: CaptureComposerPro
   }
 
   return (
-    <form className={`wb-capture wb-capture--${density}`} onSubmit={submit}>
+    <form className={`wb-capture wb-capture--${density}`} onSubmit={submit} aria-busy={saving}>
       {readOnly && input.accessNotice !== "view" ? (
         <InlineAlert tone="warning">{input.access.reason}</InlineAlert>
       ) : null}
       {draftState.error ? (
         <InlineAlert tone="danger">{draftState.error} Your current text remains open.</InlineAlert>
       ) : null}
+      {submitError ? <InlineAlert tone="danger">{submitError}</InlineAlert> : null}
       <TextAreaField
         ref={textareaRef}
         className="wb-capture__field"
@@ -174,12 +258,12 @@ export function CaptureComposer({ input, density, onSubmit }: CaptureComposerPro
           details:
             "This is recoverable draft text until you capture it. Press Ctrl + Enter to capture from the keyboard; changing the destination or Smart setting does not alter the text itself.",
         }}
-        onChange={(text) => setDraftValue((current) => ({ ...current, text }))}
+        onChange={(text) => setDraftValue((current) => ({ ...current, text, pendingSubmission: undefined }))}
         onKeyDown={handleShortcut}
       />
 
       <div className="wb-capture__controls">
-        {smartAvailable && (
+        {(smartAvailable || mode === "smart") && (
           <SwitchField
             className="wb-capture__smart"
             label="Smart"
@@ -196,6 +280,7 @@ export function CaptureComposer({ input, density, onSubmit }: CaptureComposerPro
               setDraftValue((current) => ({
                 ...current,
                 mode: selected ? "smart" : "dumb",
+                pendingSubmission: undefined,
               }))
             }
           />
@@ -225,12 +310,42 @@ export function CaptureComposer({ input, density, onSubmit }: CaptureComposerPro
           variant="primary"
           type="submit"
           disabled={
-            readOnly || draft.length === 0 || !target?.enabled || !targetSupportsMode
+            saving || readOnly || draft.length === 0 || !target?.enabled || !targetSupportsMode
           }
         >
-          Capture
+          {saving ? "Saving…" : "Capture"}
         </Button>
       </div>
+      {saving ? <p role="status">Saving your exact capture…</p> : null}
+
+      {input.smartAvailability ? (
+        <div className="wb-capture__smart-disclosure" role="status">
+          <p>{input.smartAvailability.reason}</p>
+          <p>
+            {input.smartAvailability.disclosure.provider && input.smartAvailability.disclosure.model
+              ? `${input.smartAvailability.disclosure.provider} · ${input.smartAvailability.disclosure.model}. `
+              : "No model is currently ready. "}
+            When Smart is on, up to {Math.round(input.smartAvailability.disclosure.maxInputBytes / 1024)} KiB of exact saved text is sent for processing.
+            No tools or web access. Direct capture does not send text to a model.
+            {input.smartAvailability.state === "ready" ? " Smart may propose a task for your review; it cannot create one." : ""}
+          </p>
+          {input.smartAvailability.action?.kind === "app_link" && safeCaptureAppHref(input.smartAvailability.action.href) ? (
+            <a href={safeCaptureAppHref(input.smartAvailability.action.href)}>{input.smartAvailability.action.label}</a>
+          ) : input.smartAvailability.action?.kind === "retry" && onRefreshAvailability ? (
+            <Button type="button" variant="ghost" disabled={retrying === "availability"}
+              onClick={() => { setRetrying("availability"); void Promise.resolve(onRefreshAvailability()).finally(() => setRetrying(undefined)); }}>
+              {retrying === "availability" ? "Checking Smart setup…" : input.smartAvailability.action.label}
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+
+      {input.secondaryActions?.map((action) => (
+        <div key={action.actionId} className="wb-capture__secondary">
+          <Button type="button" variant="ghost" disabled={saving || readOnly || draft.length === 0} onClick={() => { void save(action); }}>{action.label}</Button>
+          <p>{action.description}</p>
+        </div>
+      ))}
 
       {target !== undefined && !target.enabled ? (
         <InlineAlert tone="warning">
@@ -274,6 +389,13 @@ export function CaptureComposer({ input, density, onSubmit }: CaptureComposerPro
                 {submission.errorMessage && (
                   <InlineAlert tone="danger">{submission.errorMessage}</InlineAlert>
                 )}
+                {submission.followUps ? <FollowUpLinks items={submission.followUps} /> : null}
+                {submission.retryable && submission.captureId && submission.revision !== undefined && onRetry ? (
+                  <Button type="button" variant="ghost" disabled={readOnly || retrying === submission.captureId}
+                    onClick={() => { setRetrying(submission.captureId); void Promise.resolve(onRetry(submission)).finally(() => setRetrying(undefined)); }}>
+                    {retrying === submission.captureId ? "Retrying…" : "Retry follow-up"}
+                  </Button>
+                ) : null}
               </li>
             ))}
           </ul>

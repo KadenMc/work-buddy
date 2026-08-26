@@ -41,7 +41,28 @@ export interface TaskQueryState {
   readonly state: string;
   readonly note: string;
   readonly task: string | null;
+  readonly proposal?: string | null;
 }
+
+/** Threads owns these pending actions. They are not TaskStore task records. */
+export interface TaskProposal {
+  readonly thread_id: string;
+  readonly proposal_event_id: number;
+  readonly status: "ready" | "executing" | "realized" | "rejected" | "needs_attention" | "unavailable";
+  readonly parameters: Readonly<Record<string, unknown>>;
+  readonly origin: Readonly<Record<string, unknown>>;
+  readonly realization: {
+    readonly task_id: string;
+    readonly receipt_id: string;
+    readonly task_revision: number;
+    readonly href: string;
+  } | null;
+  readonly href: string;
+}
+
+export type TaskProposalSelection =
+  | { readonly kind: "loaded"; readonly proposal: TaskProposal }
+  | { readonly kind: "unavailable"; readonly threadId: string; readonly code: string; readonly message: string };
 
 export interface TaskFacets {
   readonly counts: Readonly<Record<TaskLens, number>>;
@@ -155,6 +176,10 @@ export interface TaskQuickAddInput {
   readonly revision: number;
   readonly access: TaskAccess;
   readonly options: TaskOptions;
+  /** Current selected Thread projection, for explicit recovery of a linked draft. */
+  readonly selectedProposal?: TaskProposal | null;
+  /** Last validated Thread projection observed by this provider, independent of URL selection. */
+  readonly observedProposal?: TaskProposal | null;
 }
 
 export interface TaskWorkspaceInput {
@@ -165,6 +190,7 @@ export interface TaskWorkspaceInput {
   readonly facets: TaskFacets;
   readonly tasks: readonly TaskSummary[];
   readonly selectedTask: TaskDetail | null;
+  readonly selectedProposal?: TaskProposalSelection | null;
   readonly options: TaskOptions;
 }
 
@@ -177,11 +203,16 @@ export interface TasksViewModel {
   readonly facets: TaskFacets;
   readonly tasks: readonly TaskSummary[];
   readonly selectedTask: TaskDetail | null;
+  readonly selectedProposal?: TaskProposalSelection | null;
   readonly options: TaskOptions;
 }
 
 export const TASK_INTENTS = {
   create: "wb.tasks.task.create",
+  proposalCreate: "wb.tasks.proposal.create",
+  proposalRevise: "wb.tasks.proposal.revise",
+  proposalAccept: "wb.tasks.proposal.accept",
+  proposalReject: "wb.tasks.proposal.reject",
   batchPreview: "wb.tasks.task.batch-preview",
   batchCreate: "wb.tasks.task.batch-create",
   update: "wb.tasks.task.update",

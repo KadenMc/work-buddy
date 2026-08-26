@@ -1,7 +1,7 @@
 ---
 name: Dashboard Chat Sidebar
 kind: concept
-description: Reusable right-rail chat surface that slides in beside the main view; mounts the conversation_chat renderer and squishes content via body padding.
+description: "Retained root-dashboard right-rail conversation surface; React authoring uses shared chat primitives and widget-native assisted drafts."
 tags:
 - dashboard
 - chat
@@ -18,9 +18,9 @@ parents:
 - services/dashboard
 ---
 
-Right-rail conversational surface. Any dashboard feature can open a chat bound to a backend conversation by calling ``window.wbChatSidebar.open(...)`` after its endpoint creates a conversation and spawns the agent that drives it.
+Retained right-rail conversation surface for the Python-generated root dashboard. Its `window.wbChatSidebar` API and `conversation_chat` renderer are compatibility infrastructure, not the extension path for new React forms.
 
-This subsystem owns the **conversation surface** half of an agent-driven feature. Its sibling, the **form bridge** (see ``services/dashboard/form-bridge``), owns the *interaction* half — the typed agent ↔ form action protocol. A typical agent-driven feature uses both: the sidebar to show the chat, the bridge to drive the form.
+React authoring reuses `services/dashboard/react/chat-primitives` and `services/dashboard/react/assisted-drafts`: the host owns the draft, the assistant proposes typed field changes, and only the user can submit. Jobs authoring uses `/app/jobs`. The old `/api/user_jobs/help` endpoint returns a migration response without creating a conversation or spawning an agent, and `dashboard_interact` cannot drive the Jobs form.
 
 ## API
 
@@ -62,11 +62,11 @@ The chat surface relies on a real OS-level process check, not a time-based guess
 
 ``unregister`` is called on ``/api/conversations/<id>/close`` and on conversation_close failure so the registry doesn't leak.
 
-## Budget
+## Retained spawn helper
 
-The chat-walkthrough is more conversational than a typical fire-and-forget cron job (re-reads the brief on every ``conversation_ask``, registry searches, retry-on-validation-error loops). ``spawn_job_author_session`` overrides the global ``sidecar.agent_spawn.max_budget_usd`` default (1.00 in config.py; 1.00 in executor.py's hardcoded fallback) with **2.00** so a legitimately-conversational session has 4× the room a cron-fired agent gets. Future chat-driven features should pass an explicit ``max_budget_usd`` to ``spawn_headless_agent_detached`` in the same way.
+The Jobs-specific helper in `jobs_help.py` remains as compatibility code but is not invoked by `/api/user_jobs/help`. Its process and budget settings are not the policy for React authoring, which uses the shared assistance runtime and explicit model opt-in.
 
-## How a feature consumes the sidebar
+## Retained legacy mounting protocol
 
 1. Dashboard endpoint POSTs through ``_reject_read_only()``, calls ``conversations.store.create_conversation(...)`` directly (NOT the ``conversation_create`` capability — that fires a CHAT toast and a workflow-view tab via ``_notify_conversation_created``, double-mounting the conversation). The seed message is added with ``message_type='question'`` and ``response_type='freeform'`` so the spawned agent's ``conversation_poll`` returns the user's first reply directly — without this, ``conversation_poll`` returns ``no_pending_question`` and the agent sends a duplicate greeting.
 2. Endpoint fire-and-forgets a Claude session via ``sidecar.dispatch.executor.spawn_headless_agent_detached`` with a brief that primes the agent to drive the conversation_id to its goal. The brief is composed of (a) a short static-prose preamble describing the consumer's role and (b) a generated structural section from ``interact_brief.render_form_section(schema)`` describing the form the agent will drive (see ``services/dashboard/form-bridge``).
@@ -76,8 +76,8 @@ The chat-walkthrough is more conversational than a typical fire-and-forget cron 
 
 ## Live updates while chatting
 
-When the agent eventually calls a capability that publishes a dashboard event (e.g. the form-bridge's ``form_submit`` ultimately POSTs to ``/api/user_jobs`` which publishes ``user_job.created`` → ``jobsSurface.refresh()`` via the existing event bus), the affected tab updates surgically through morphdom while the chat continues in the sidebar. The user sees their answers materialize in the underlying view without leaving the conversation.
+The root dashboard's conversation surface and domain views share the existing event bus. A domain event can refresh the relevant view without replacing the conversation. This does not confer submission authority on a React draft assistant.
 
-## First consumer
+## Jobs authoring boundary
 
-The Jobs tab's '💬 Help me fill this out' button — see ``work_buddy/dashboard/jobs_help.py`` for the consumer-specific prose preamble and the spawn orchestrator, and ``POST /api/user_jobs/help`` in ``service.py`` for the endpoint pattern. The agent uses the form bridge (``dashboard_interact``) to drive the visible Add-job form, not direct file writes.
+Legacy Jobs launch links lead to `/app/jobs`. The visible-field assistance mechanism there uses the shared React widget and chat contracts, not `wbChatSidebar`, `jobs_help.py`, or `dashboard_interact`. Existing job management and editing remain in the root Jobs tab.

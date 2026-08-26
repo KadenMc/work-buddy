@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from work_buddy.agent_execution.disclosure import (
     DisclosureGateway,
     DisclosureManifestStore,
@@ -13,6 +15,8 @@ from work_buddy.journal_capture.smart import (
     JournalSmartProcessorSpec,
     JournalSourceBoundSmartProcessor,
     configured_journal_smart_processor,
+    configured_journal_smart_processing,
+    JournalSmartProcessingError,
 )
 from work_buddy.journal_capture.store import JournalCaptureStore
 from work_buddy.journal_capture.content_adapter import JournalContentAdapter
@@ -253,3 +257,32 @@ def test_expired_smart_authorization_pauses_without_model_egress_and_can_be_reau
     )
     assert completed.processing_status.value == "succeeded"
     assert runner.inputs == ["Keep this exact text"]
+
+
+def test_availability_distinguishes_opt_in_and_provider_failure(tmp_path, monkeypatch):
+    sources = SourceStore.create(tmp_path / "sources")
+    journal = JournalCaptureStore(tmp_path / "journal.db")
+    monkeypatch.setattr("work_buddy.config.load_config", lambda: {})
+    processor, availability = configured_journal_smart_processing(sources, journal)
+    assert processor is None and availability.state == "disabled_by_policy"
+    assert availability.code == "smart_not_enabled"
+    monkeypatch.setattr("work_buddy.config.load_config", lambda: {
+        "journal": {"smart_processing": {"enabled": True, "tier": "invalid-tier"}}
+    })
+    processor, availability = configured_journal_smart_processing(sources, journal)
+    assert processor is None and availability.state == "provider_unavailable"
+    assert availability.code == "provider_not_preflightable"
+    assert availability.as_dict()["disclosure"]["maxInputBytes"] == 32768
+
+
+@pytest.mark.parametrize("follow_up", [
+    [{"kind": "task_proposal", "task_text": "one", "rationale": "why"}],
+    {"kind": "task_create", "task_text": "one", "rationale": "why"},
+    {"kind": "task_proposal", "task_text": "one", "rationale": "why", "href": "https://example.com"},
+    {"kind": "task_proposal", "task_text": "", "rationale": "why"},
+])
+def test_model_cannot_supply_multiple_actions_direct_tasks_or_links(follow_up):
+    with pytest.raises(JournalSmartProcessingError):
+        JournalSourceBoundSmartProcessor._validated_result(LLMResponse(structured_output={
+            "target": "running_notes", "summary": "Intention", "effects": [], "follow_up": follow_up,
+        }))

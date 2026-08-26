@@ -12,6 +12,8 @@ import type {
   WidgetTypeId,
 } from "../../../dashboard/contributions/contracts";
 import type { ViewProvider } from "../../../dashboard/providers/ViewProvider";
+import type { CaptureFollowUp, CaptureSmartAvailability } from "../../../widget-library/capture/contracts";
+import { safeCaptureAppHref } from "../../../widget-library/capture/FollowUpLinks";
 import {
   initializeLocalIdentity,
   issueHumanGesture,
@@ -137,6 +139,53 @@ function annotation(value: unknown): CaptureAnnotation | undefined {
   return { summary: string(value.summary, "annotation summary"), effects };
 }
 
+function followUps(value: unknown): readonly CaptureFollowUp[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length > 1) throw new Error("Journal response has invalid follow-ups");
+  return value.map((item): CaptureFollowUp => {
+    if (!isRecord(item)) throw new Error("Journal response has invalid follow-up");
+    if (item.kind === "status" && (item.status === "pending" || item.status === "failed")) {
+      return { kind: "status", status: item.status, label: string(item.label, "follow-up label") };
+    }
+    const href = string(item.href, "follow-up link");
+    const referenceId = string(item.referenceId, "follow-up reference");
+    if (item.kind !== "app_link" || !/^th-[0-9a-f]{8}$/.test(referenceId)
+        || !safeCaptureAppHref(href)) throw new Error("Journal response has unsafe follow-up link");
+    const parsed = new URL(href, "https://work-buddy.invalid");
+    const pairs = [...parsed.searchParams.entries()];
+    if (parsed.pathname !== "/app/tasks" || pairs.length !== 1
+        || !((pairs[0][0] === "proposal" && pairs[0][1] === referenceId)
+          || (pairs[0][0] === "task" && /^t-[0-9a-f]{8}$/.test(pairs[0][1])))) {
+      throw new Error("Journal response has unsafe follow-up link");
+    }
+    return { kind: "app_link", referenceId, href, label: string(item.label, "follow-up label"),
+      ...(typeof item.description === "string" ? { description: item.description } : {}) };
+  });
+}
+
+function smartAvailability(value: unknown): CaptureSmartAvailability | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!isRecord(value) || !isRecord(value.disclosure)
+      || !["disabled_by_policy", "provider_unavailable", "ready"].includes(String(value.state))
+      || value.disclosure.tools !== false || value.disclosure.web !== false
+      || value.disclosure.maxInputBytes !== 32768) throw new Error("Journal response has invalid Smart availability");
+  const provider = optionalString(value.disclosure.provider) ?? null;
+  const model = optionalString(value.disclosure.model) ?? null;
+  if (value.state === "ready" && (!provider || !model)) throw new Error("Smart is missing provider/model disclosure");
+  let action: CaptureSmartAvailability["action"];
+  if (isRecord(value.action)) {
+    if (value.action.kind === "retry") action = { kind: "retry", label: string(value.action.label, "Smart action") };
+    else if (value.action.kind === "app_link"
+        && value.action.href === "/app/settings/apps/journal?setting=wb.journal.smart-processing") {
+      action = { kind: "app_link", label: string(value.action.label, "Smart action"), href: value.action.href };
+    } else throw new Error("Journal response has invalid Smart action");
+  }
+  return { state: value.state as CaptureSmartAvailability["state"], code: string(value.code, "Smart availability code"),
+    reason: string(value.reason, "Smart availability reason"),
+    disclosure: { provider, model, maxInputBytes: 32768, tools: false, web: false },
+    ...(action ? { action } : {}) };
+}
+
 function captureTarget(value: unknown): JournalCaptureTarget {
   if (!isRecord(value) || !Array.isArray(value.supportedModes)) {
     throw new Error("Journal response has invalid capture target");
@@ -202,6 +251,10 @@ function captureSubmission(value: unknown): JournalCaptureSubmission {
     persistenceStatus: persistence,
     placementStatus: placement as CapturePlacementStatus,
     processingStatus: processing as CaptureProcessingStatus,
+    followUps: followUps(value.followUps),
+    retryable: value.retryable === true,
+    ...(typeof value.revision === "number" && Number.isInteger(value.revision) && value.revision >= 1
+      ? { revision: value.revision } : {}),
     ...(annotation(value.annotation) === undefined
       ? {}
       : { annotation: annotation(value.annotation) }),
@@ -219,6 +272,14 @@ function captureInput(value: unknown): JournalCaptureInput {
     throw new Error("Journal response has invalid capture input");
   }
   const smartHelp = value.smartHelp;
+  const availability = smartAvailability(value.smartAvailability);
+  const secondaryActions = value.secondaryActions;
+  if (secondaryActions !== undefined && (!Array.isArray(secondaryActions)
+      || secondaryActions.length > 1 || secondaryActions.some((item) => !isRecord(item)
+        || item.actionId !== "task_proposal" || item.targetId !== "running_notes" || item.mode !== "dumb"
+        || typeof item.label !== "string" || typeof item.description !== "string"))) {
+    throw new Error("Journal response has invalid secondary capture action");
+  }
   if (
     smartHelp !== null &&
     smartHelp !== undefined &&
@@ -233,6 +294,11 @@ function captureInput(value: unknown): JournalCaptureInput {
     revision: string(value.revision, "capture revision"),
     dayId: string(value.dayId, "capture day"),
     access: access(value.access),
+    ...(availability ? { smartAvailability: availability } : {}),
+    ...(Array.isArray(secondaryActions) ? { secondaryActions: secondaryActions.map((item) => ({
+      actionId: "task_proposal", targetId: "running_notes", mode: "dumb" as const,
+      label: String(item.label), description: String(item.description),
+    })) } : {}),
     ...(isRecord(smartHelp)
       ? {
           smartHelp: {
@@ -243,7 +309,10 @@ function captureInput(value: unknown): JournalCaptureInput {
       : {}),
     targets: value.targets.map(captureTarget),
     capturesToday: typeof value.capturesToday === "number" ? value.capturesToday : 0,
-    recentSubmissions: value.recentSubmissions.map(captureSubmission),
+    // The shared composer consumes chronological records (newest at the end),
+    // while the native API returns its bounded newest-first database window.
+    recentSubmissions: value.recentSubmissions.map(captureSubmission)
+      .sort((left, right) => Date.parse(left.submittedAt) - Date.parse(right.submittedAt)),
   };
 }
 
@@ -332,6 +401,7 @@ function runningNote(value: unknown): JournalRunningNoteItem {
         : { errorMessage: optionalString(value.processing.errorMessage) }),
     },
     resolutionState: resolution,
+    followUps: followUps(value.followUps),
     version: typeof value.version === "number" ? value.version : 1,
     ...(document === undefined ? {} : { document }),
   };
@@ -450,15 +520,19 @@ export async function journalCaptureGestureContext(payload: {
   readonly exact_text: string;
   readonly input_mode: string;
   readonly stated_at?: string;
+  readonly follow_up_action?: string;
+  readonly smart_disclosure_sha256?: string;
 }): Promise<string> {
   const exactTextSha256 = await sha256Hex(payload.exact_text);
   const canonical = JSON.stringify({
     client_mutation_id: payload.client_mutation_id,
     day_id: payload.day_id,
     exact_text_sha256: exactTextSha256,
+    ...(payload.follow_up_action ? { follow_up_action: payload.follow_up_action } : {}),
     input_mode: payload.input_mode,
     mode: payload.mode,
     schema: "wb.journal-capture-gesture/v1",
+    ...(payload.smart_disclosure_sha256 ? { smart_disclosure_sha256: payload.smart_disclosure_sha256 } : {}),
     stated_at: payload.stated_at ?? null,
     target_id: payload.target_id,
   });
@@ -594,6 +668,18 @@ export class HttpJournalProvider implements ViewProvider {
     if (intent.view_id !== JOURNAL_VIEW_DEFINITION_ID) {
       return this.#result(intent, "rejected", "Intent targets a different view.");
     }
+    if (intent.instance_id === JOURNAL_INSTANCE_IDS.capture) {
+      if (intent.intent_type === "wb.capture.availability-refresh") {
+        try {
+          this.#last = undefined;
+          await this.loadView(JOURNAL_VIEW_DEFINITION_ID, { reason: "refresh" });
+          return this.#result(intent, "accepted", "Smart availability checked. No text was sent to a model.");
+        } catch {
+          return this.#result(intent, "unavailable", "Smart setup could not be checked. Direct capture is still available.");
+        }
+      }
+      if (intent.intent_type === "wb.capture.retry-requested") return this.#retryCapture(intent);
+    }
     if (
       intent.intent_type === "wb.notes.open-document-requested" &&
       intent.instance_id === JOURNAL_INSTANCE_IDS.runningNotes &&
@@ -619,13 +705,20 @@ export class HttpJournalProvider implements ViewProvider {
     if (typeof exactText !== "string") {
       return this.#result(intent, "rejected", "Capture text is required.");
     }
+    const disclosureSha256 = intent.payload.smart_disclosure_sha256;
+    if ((intent.payload.mode === "smart" && disclosureSha256 === undefined)
+        || (disclosureSha256 !== undefined && (typeof disclosureSha256 !== "string" || !/^[0-9a-f]{64}$/.test(disclosureSha256)))) {
+      return this.#result(intent, "rejected", "Review the current Smart disclosure before capturing.");
+    }
     const body = {
       client_mutation_id: intent.client_mutation_id,
       day_id: string(intent.payload.day_id, "capture day"),
       target_id: string(intent.payload.target_id, "capture destination"),
       mode: string(intent.payload.mode, "capture mode"),
+      ...(typeof disclosureSha256 === "string" ? { smart_disclosure_sha256: disclosureSha256 } : {}),
       exact_text: exactText,
       input_mode: "unknown",
+      ...(typeof intent.payload.follow_up_action === "string" ? { follow_up_action: intent.payload.follow_up_action } : {}),
       ...(typeof intent.payload.stated_at === "string"
         ? { stated_at: intent.payload.stated_at }
         : {}),
@@ -677,6 +770,41 @@ export class HttpJournalProvider implements ViewProvider {
         "unavailable",
         error instanceof Error ? error.message : "Journal capture is unavailable.",
       );
+    }
+  }
+
+  async #retryCapture(intent: DashboardIntent): Promise<IntentResult> {
+    if (!isRecord(intent.payload) || typeof intent.payload.capture_id !== "string"
+        || !/^[0-9a-f]{32}$/.test(intent.payload.capture_id)
+        || typeof intent.payload.expected_revision !== "number" || !Number.isInteger(intent.payload.expected_revision)) {
+      return this.#result(intent, "rejected", "The capture retry is invalid.");
+    }
+    const captureId = intent.payload.capture_id;
+    const capture = this.#last?.model?.widgetInputs[JOURNAL_WIDGET_INSTANCE_IDS.capture].recentSubmissions.find((item) => item.captureId === captureId);
+    if (capture === undefined) return this.#result(intent, "rejected", "Refresh Journal before retrying this capture.");
+    const disclosureSha256 = intent.payload.smart_disclosure_sha256;
+    if ((capture.mode === "smart" && disclosureSha256 === undefined)
+        || (disclosureSha256 !== undefined && (typeof disclosureSha256 !== "string" || !/^[0-9a-f]{64}$/.test(disclosureSha256)))) {
+      return this.#result(intent, "rejected", "Review the current Smart disclosure before retrying.");
+    }
+    const expectedRevision = intent.payload.expected_revision;
+    try {
+      const identity = await initializeLocalIdentity({ fetchImpl: this.#fetch });
+      if (!identity.authenticated) return this.#result(intent, "unavailable", "Reconnect to retry this capture.");
+      const contextSha256 = await sha256Hex(`wb.journal-capture-retry/v1:${captureId}:${expectedRevision}${disclosureSha256 ? `:${disclosureSha256}` : ""}`);
+      const gesture = await issueHumanGesture({ action: "journal.capture.retry", subject: `journal-capture:${captureId}`, contextSha256 }, this.#fetch);
+      const response = await this.#fetch(`${JOURNAL_CAPTURE_ENDPOINT}/${captureId}/retry`, {
+        method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json", ...localIdentityHeaders(gesture.token) },
+        body: JSON.stringify(disclosureSha256 ? { smart_disclosure_sha256: disclosureSha256 } : {}),
+      });
+      const payload = await response.json() as unknown;
+      if (!response.ok || !isRecord(payload) || payload.ok !== true) {
+        return this.#result(intent, response.status === 409 ? "conflict" : "rejected", "The follow-up could not finish. Your saved capture is safe.");
+      }
+      captureSubmission(payload.capture);
+      return this.#result(intent, "accepted", "Capture follow-up retried.");
+    } catch {
+      return this.#result(intent, "unavailable", "The follow-up is unavailable. Your saved capture is safe.");
     }
   }
 

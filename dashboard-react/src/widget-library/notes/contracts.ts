@@ -1,5 +1,6 @@
 import type { WidgetIntent } from "../../dashboard/contributions/contracts";
 import type { AsyncAnnotation, WidgetAccess, WidgetProvenance } from "../shared";
+import type { CaptureFollowUp } from "../capture/contracts";
 
 export type NoteProcessingState =
   | "not_requested"
@@ -49,6 +50,7 @@ export interface MarkdownNoteItem {
   readonly threadId?: string;
   readonly version: number;
   readonly document?: NoteDocumentState;
+  readonly followUps?: readonly CaptureFollowUp[];
 }
 
 export interface RunningNotesInput {

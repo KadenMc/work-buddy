@@ -24,6 +24,8 @@ import {
   TASK_INTENTS,
   TASK_LENSES,
   type TaskQuickAddInput,
+  type TaskProposal,
+  type TaskProposalSelection,
   type TasksViewModel,
   type TaskWorkspaceInput,
 } from "../contracts";
@@ -34,6 +36,7 @@ import {
   parseTaskViewPayload,
   type TasksApiError,
 } from "./taskApiContract";
+import { isProposalId, parseTaskProposalEnvelope } from "./proposalApiContract";
 
 export interface HttpTasksProviderOptions {
   readonly fetchImpl?: typeof fetch;
@@ -43,6 +46,9 @@ export interface HttpTasksProviderOptions {
 }
 
 type TasksSnapshot = ViewSnapshot<TasksViewModel, unknown, TaskQuickAddInput | TaskWorkspaceInput>;
+
+const proposalProjectionRevision = (proposal: TaskProposal): string =>
+  `${proposal.thread_id}:${proposal.proposal_event_id}:${proposal.status}${proposal.realization === null ? "" : `:${proposal.realization.receipt_id}:${proposal.realization.task_id}`}`;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -64,6 +70,7 @@ interface MutationSpec {
   readonly operation: string;
   readonly subject: string;
   readonly preview?: boolean;
+  readonly proposal?: boolean;
 }
 
 const itemIdFrom = (payload: Record<string, unknown>): string | null =>
@@ -84,6 +91,18 @@ function mutationSpec(intent: DashboardIntent, body: Record<string, unknown>): M
           subject: `task:${taskId}`,
         } satisfies MutationSpec;
   switch (intent.intent_type) {
+    case TASK_INTENTS.proposalCreate:
+      return { method: "POST", path: "/api/threads/action-proposals", operation: "create", subject: `proposal:new:${mutationId(intent)}`, proposal: true };
+    case TASK_INTENTS.proposalRevise:
+    case TASK_INTENTS.proposalAccept:
+    case TASK_INTENTS.proposalReject: {
+      const threadId = body.thread_id;
+      if (typeof threadId !== "string" || !isProposalId(threadId)) return null;
+      const parts = intent.intent_type.split(".");
+      const operation = parts[parts.length - 1]!;
+      delete body.thread_id;
+      return { method: "POST", path: `/api/threads/${encodeURIComponent(threadId)}/proposal/${operation}`, operation, subject: `proposal:${threadId}`, proposal: true };
+    }
     case TASK_INTENTS.create:
       return {
         method: "POST",
@@ -170,12 +189,15 @@ function mutationSpec(intent: DashboardIntent, body: Record<string, unknown>): M
 const canonicalSearch = (current: string, payload: Record<string, unknown>): string => {
   const params = new URLSearchParams(current.startsWith("?") ? current.slice(1) : current);
   const next = isRecord(payload.patch) ? payload.patch : payload;
-  const keys = ["lens", "q", "project", "namespace", "urgency", "due", "state", "note", "task"];
+  const keys = ["lens", "q", "project", "namespace", "urgency", "due", "state", "note", "task", "proposal"];
   for (const key of keys) {
+    if (!(key in next)) continue;
     const value = next[key];
     if (value === null || value === undefined || value === "") params.delete(key);
     else if (typeof value === "string") params.set(key, value);
   }
+  if (typeof next.proposal === "string" && next.proposal) params.delete("task");
+  else if (typeof next.task === "string" && next.task) params.delete("proposal");
   const lens = params.get("lens");
   if (lens !== null && !TASK_LENSES.includes(lens as (typeof TASK_LENSES)[number])) {
     params.set("lens", "inbox");
@@ -223,6 +245,11 @@ export class HttpTasksProvider implements ViewProvider {
   readonly #navigate: (href: string) => void;
   readonly #clock: () => string;
   #last: TasksSnapshot | undefined;
+  // A single validated read projection, not a proposal authority or history.
+  // Canonical task navigation must not discard the outcome the widgets observed.
+  #observedProposal: TaskProposal | null = null;
+  #loadGeneration = 0;
+  #proposalPublicationVersion = 0;
 
   constructor(options: HttpTasksProviderOptions) {
     this.#fetch = options.fetchImpl ?? globalThis.fetch.bind(globalThis);
@@ -233,19 +260,63 @@ export class HttpTasksProvider implements ViewProvider {
 
   async loadView(viewId: ViewId, _request: ViewLoadRequest): Promise<TasksSnapshot> {
     if (viewId !== TASKS_VIEW_ID) throw new Error(`HttpTasksProvider cannot load view ${viewId}`);
-    const response = await this.#fetch(`/api/tasks/view${this.#location.getSearch()}`, {
+    const loadGeneration = ++this.#loadGeneration;
+    const proposalPublicationVersion = this.#proposalPublicationVersion;
+    const search = this.#location.getSearch();
+    // useViewSession fences stale returned snapshots. The provider must also
+    // fence its own cache, observation, and navigation while reads are in flight.
+    const canPublish = () => loadGeneration === this.#loadGeneration
+      && proposalPublicationVersion === this.#proposalPublicationVersion
+      && search === this.#location.getSearch();
+    const query = new URLSearchParams(search);
+    const proposalId = query.get("proposal");
+    const taskQuery = new URLSearchParams(query);
+    taskQuery.delete("proposal");
+    if (proposalId !== null) taskQuery.delete("task");
+    const taskSearch = proposalId === null ? search : taskQuery.size ? `?${taskQuery.toString()}` : "";
+    const response = await this.#fetch(`/api/tasks/view${taskSearch}`, {
       method: "GET",
       credentials: "same-origin",
       headers: { Accept: "application/json" },
     });
     const payload = await readJsonResponse(response);
     if (!response.ok) throw parseTaskApiError(response.status, payload);
-    const model = parseTaskViewPayload(payload);
+    let model = parseTaskViewPayload(payload);
+    let selection: TaskProposalSelection | null = null;
+    if (proposalId !== null) {
+      if (query.has("task")) {
+        selection = { kind: "unavailable", threadId: proposalId, code: "ambiguous_selection", message: "This link selects both a task and a proposal. Open one at a time." };
+      } else if (!isProposalId(proposalId)) {
+        selection = { kind: "unavailable", threadId: proposalId, code: "invalid_id", message: "This task proposal link is malformed." };
+      } else {
+        try {
+          const proposalResponse = await this.#fetch(`/api/threads/${encodeURIComponent(proposalId)}/proposal`, {
+            method: "GET", credentials: "same-origin", headers: { Accept: "application/json" },
+          });
+          const proposalPayload = await readJsonResponse(proposalResponse);
+          if (!proposalResponse.ok) throw parseTaskApiError(proposalResponse.status, proposalPayload);
+          const candidate = parseTaskProposalEnvelope(proposalPayload);
+          if (candidate.thread_id !== proposalId) throw new Error("The task proposal response targets a different proposal.");
+          const proposal = this.#effectiveProposalObservation(candidate);
+          if (canPublish()) this.#observedProposal = proposal;
+          if (canPublish() && proposal.status === "realized" && proposal.realization !== null) {
+            this.#location.replaceSearch(canonicalSearch(search, { task: proposal.realization.task_id, proposal: null }));
+            return this.loadView(viewId, { reason: "refresh" });
+          }
+          selection = { kind: "loaded", proposal };
+        } catch (error) {
+          selection = { kind: "unavailable", threadId: proposalId, code: (error as Partial<TasksApiError>).code ?? "unavailable", message: error instanceof Error ? error.message : "This task proposal is unavailable." };
+        }
+      }
+      model = { ...model, query: { ...model.query, task: null, proposal: proposalId }, selectedTask: null, selectedProposal: selection };
+    }
     const quickAdd: TaskQuickAddInput = {
       instanceId: TASKS_INSTANCE_IDS.quickAdd,
       revision: model.revision,
       access: model.access,
       options: model.options,
+      selectedProposal: selection?.kind === "loaded" ? selection.proposal : null,
+      observedProposal: this.#observedProposal,
     };
     const workspace: TaskWorkspaceInput = {
       instanceId: TASKS_INSTANCE_IDS.workspace,
@@ -255,11 +326,16 @@ export class HttpTasksProvider implements ViewProvider {
       facets: model.facets,
       tasks: model.tasks,
       selectedTask: model.selectedTask,
+      selectedProposal: selection,
       options: model.options,
     };
+    const proposalRevisions = new Set([
+      ...(selection === null ? [] : [selection.kind === "loaded" ? proposalProjectionRevision(selection.proposal) : `${selection.threadId}:${selection.code}`]),
+      ...(this.#observedProposal === null ? [] : [proposalProjectionRevision(this.#observedProposal)]),
+    ]);
     const snapshot: TasksSnapshot = {
       viewId: TASKS_VIEW_ID,
-      revision: model.revision,
+      revision: proposalRevisions.size === 0 ? model.revision : `${model.revision}:${Array.from(proposalRevisions).join(":")}`,
       observedAt: model.observedAt,
       status: model.access.mode === "read_only" ? "read-only" : "ready",
       quality: { kind: "complete" },
@@ -270,8 +346,18 @@ export class HttpTasksProvider implements ViewProvider {
         [TASKS_INSTANCE_IDS.workspace]: workspace,
       },
     };
-    this.#last = snapshot;
+    if (canPublish()) this.#last = snapshot;
     return snapshot;
+  }
+
+  #effectiveProposalObservation(candidate: TaskProposal): TaskProposal {
+    const previous = this.#observedProposal;
+    if (previous === null || previous.thread_id !== candidate.thread_id) return candidate;
+    if (candidate.proposal_event_id < previous.proposal_event_id) return previous;
+    if (candidate.proposal_event_id === previous.proposal_event_id
+      && (previous.status === "realized" || previous.status === "rejected")
+      && candidate.status !== previous.status) return previous;
+    return candidate;
   }
 
   async loadWidget(
@@ -335,7 +421,7 @@ export class HttpTasksProvider implements ViewProvider {
         ? {}
         : await exactHumanAuthorityHeaders(
             {
-              action: `dashboard.tasks.${spec.operation}`,
+              action: spec.proposal === true ? `dashboard.action_proposals.${spec.operation}` : `dashboard.tasks.${spec.operation}`,
               subject: spec.subject,
               context: { method: spec.method, path: spec.path, body },
             },
@@ -361,6 +447,20 @@ export class HttpTasksProvider implements ViewProvider {
       });
       const payload = await readJsonResponse(response);
       if (!response.ok) throw parseTaskApiError(response.status, payload);
+      if (spec.proposal === true) {
+        const candidate = parseTaskProposalEnvelope(payload);
+        if (spec.operation !== "create" && spec.subject !== `proposal:${candidate.thread_id}`) {
+          throw new Error("The task proposal response targets a different proposal.");
+        }
+        const proposal = this.#effectiveProposalObservation(candidate);
+        this.#proposalPublicationVersion += 1;
+        this.#observedProposal = proposal;
+        this.#last = undefined;
+        if (proposal.realization !== null && proposal.status === "realized") {
+          this.#location.replaceSearch(canonicalSearch(this.#location.getSearch(), { task: proposal.realization.task_id, proposal: null }));
+        }
+        return { ...this.#result(intent, "accepted", proposal.status === "realized" ? "Task created from proposal." : proposal.status === "rejected" ? "Proposal dismissed. No task was created." : "Task proposal saved. No task has been created."), value: { proposal } as unknown as JsonValue };
+      }
       if (spec.preview === true) {
         const preview = parseBatchPreview(payload);
         return {

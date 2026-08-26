@@ -14,8 +14,11 @@ from work_buddy.journal_day import DEFAULT_DAY_BOUNDARY, parse_local_time
 
 
 SCHEMA_VERSION = 1
-REGISTRY_REVISION = "settings-registry:3"
+REGISTRY_REVISION = "settings-registry:4"
 JOURNAL_DAY_BOUNDARY_ID = "wb.journal.day-boundary"
+JOURNAL_SMART_PROCESSING_ID = "wb.journal.smart-processing"
+DASHBOARD_ASSISTANCE_ID = "wb.dashboard.assistance"
+DASHBOARD_ASSISTANCE_TIER_ID = "wb.dashboard.assistance-tier"
 COWORK_REVIEW_NAV_BINDING_ID = "wb.cowork.review.nav-binding"
 PROFILE_SCOPE_ID = "default"
 
@@ -43,6 +46,63 @@ COWORK_REVIEW_SHORTCUT_COMMANDS = (
         "Choose the direct negative decision for the current item.",
     ),
     ("defer", "Defer", "Leave the current suggestion for later."),
+)
+
+
+_ADDITIONAL_DEFINITIONS: tuple[dict[str, Any], ...] = (
+    *tuple({
+        "setting_id": setting_id, "definition_version": 1, "value_version": 1,
+        "owner": {"kind": "app", "id": "wb.dashboard", "label": "Dashboard"},
+        "provenance": {"complement_id": "wb.dashboard", "label": "Dashboard", "trust_tier": "native"},
+        "title": title, "short_description": description,
+        "long_description": (
+            "Assistance is off by default. Starting an assistant requires a separate visible "
+            "gesture and provider/model disclosure. Only the disclosed form snapshot is sent "
+            "to the model. Assistant edits remain visible in the form, and submission stays "
+            "under your control. Changing this setting does not start a session or send data."
+        ),
+        "keywords": ["assistant", "draft", "model", "privacy", "form"], "tags": ["assistance", "privacy"],
+        "value_schema": {"type": "string", "enum": [item[0] for item in options]},
+        "default_value": default, "allowed_scopes": ["profile"], "default_scope": "profile",
+        "applies_to": [{"kind": "app", "id": "wb.dashboard", "label": "Dashboard"}],
+        "affects": [{"ref": {"kind": "app", "id": "wb.dashboard", "label": "Dashboard"},
+                     "note": "Controls opt-in conversational assistance on supported widget drafts."}],
+        "presentation": {"control": "select", "apply_behavior": "immediate", "options": [
+            {"value": value, "label": label} for value, label in options
+        ]}, "visibility": "frontend", "sensitivity": "ordinary",
+    } for setting_id, title, description, default, options in (
+        (DASHBOARD_ASSISTANCE_ID, "Form assistance", "Allow an assistant to help shape supported forms.", "disabled",
+         (("disabled", "Off — no model assistance"), ("enabled", "Allow form assistance"))),
+        (DASHBOARD_ASSISTANCE_TIER_ID, "Assistant model tier", "Choose the configured frontier tier used for new assistant sessions.", "frontier_fast",
+         (("frontier_fast", "Frontier fast"), ("frontier_balanced", "Frontier balanced"), ("frontier_best", "Frontier best"))),
+    )),
+    {
+        "setting_id": JOURNAL_SMART_PROCESSING_ID,
+        "definition_version": 1, "value_version": 1,
+        "owner": {"kind": "app", "id": "wb.journal", "label": "Journal"},
+        "provenance": {"complement_id": "wb.journal", "label": "Journal", "trust_tier": "native"},
+        "title": "Smart capture",
+        "short_description": "Allow optional model processing after your exact capture is saved.",
+        "long_description": (
+            "Off by default. Enabling Smart allows up to 32 KiB of the exact saved capture "
+            "to reach the configured model when you choose Smart. Quick Capture displays "
+            "the concrete provider and model before submission. No tools or web access; "
+            "task proposals still require review and acceptance. Direct capture and Save "
+            "and propose task do not use a model. Provider selection follows journal.smart_processing.tier."
+        ),
+        "keywords": ["smart", "capture", "model", "privacy", "automatic routing"],
+        "tags": ["journal", "privacy"],
+        "value_schema": {"type": "string", "enum": ["disabled", "enabled"]},
+        "default_value": "disabled", "allowed_scopes": ["profile"], "default_scope": "profile",
+        "applies_to": [{"kind": "app", "id": "wb.journal", "label": "Journal"}],
+        "affects": [{"ref": {"kind": "view", "id": "wb.journal.main", "label": "Journal view"},
+                     "note": "Controls whether Smart processing is available; does not submit any capture."}],
+        "presentation": {"control": "select", "apply_behavior": "immediate", "options": [
+            {"value": "disabled", "label": "Off — no model processing"},
+            {"value": "enabled", "label": "Allow Smart capture"},
+        ]},
+        "visibility": "frontend", "sensitivity": "ordinary",
+    },
 )
 
 
@@ -191,7 +251,19 @@ _DEFINITIONS: tuple[dict[str, Any], ...] = (
 )
 
 
+_DEFINITIONS += _ADDITIONAL_DEFINITIONS
+
+
 _PAGES: tuple[dict[str, Any], ...] = (
+    {
+        "page_id": "wb.settings.app.dashboard", "context_id": "wb.settings.app.dashboard",
+        "context": {"kind": "app", "id": "wb.dashboard", "label": "Dashboard"},
+        "owner": {"kind": "app", "id": "wb.dashboard", "label": "Dashboard"},
+        "route": "/app/settings/apps/dashboard", "label": "Dashboard",
+        "description": "Shared form assistance and privacy across Dashboard Apps.",
+        "navigation_group": "apps", "navigation_category": "built-in", "order": 5,
+        "sections": [{"section_id": "assistance", "label": "Form assistance and privacy", "order": 10}],
+    },
     {
         "page_id": "wb.settings.app.journal",
         "context_id": "wb.settings.app.journal",
@@ -208,7 +280,8 @@ _PAGES: tuple[dict[str, Any], ...] = (
                 "section_id": "day-behavior",
                 "label": "Day behavior",
                 "order": 10,
-            }
+            },
+            {"section_id": "capture", "label": "Capture and privacy", "order": 20},
         ],
     },
     {
@@ -235,6 +308,20 @@ _PAGES: tuple[dict[str, Any], ...] = (
 
 
 _PLACEMENTS: tuple[dict[str, Any], ...] = (
+    *tuple({
+        "placement_id": f"wb.settings.placement.app.dashboard.{suffix}",
+        "setting_id": setting_id, "page_id": "wb.settings.app.dashboard",
+        "context_id": "wb.settings.app.dashboard", "section_id": "assistance", "order": order,
+    } for suffix, setting_id, order in (
+        ("assistance", DASHBOARD_ASSISTANCE_ID, 10),
+        ("assistance-tier", DASHBOARD_ASSISTANCE_TIER_ID, 20),
+    )),
+    {
+        "placement_id": "wb.settings.placement.app.journal.smart-processing",
+        "setting_id": JOURNAL_SMART_PROCESSING_ID,
+        "page_id": "wb.settings.app.journal", "context_id": "wb.settings.app.journal",
+        "section_id": "capture", "order": 20,
+    },
     {
         "placement_id": "wb.settings.placement.app.journal.day-boundary",
         "setting_id": JOURNAL_DAY_BOUNDARY_ID,

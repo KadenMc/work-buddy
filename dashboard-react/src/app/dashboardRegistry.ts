@@ -6,6 +6,7 @@ import { JOURNAL_VIEW_MODULE } from "../apps/journal/viewModule";
 import { TASKS_APP_CONTRIBUTION } from "../apps/tasks/contribution";
 import { TASKS_VIEW_MODULE } from "../apps/tasks/viewModule";
 import { TASKS_WIDGET_MODULES } from "../apps/tasks/widgetModule";
+import { JOBS_APP_CONTRIBUTION, JOBS_VIEW_MODULE, JOBS_WIDGET_MODULE } from "../apps/jobs/contribution";
 import { createContributionRegistry } from "../dashboard/contributions/registry";
 import {
   WIDGET_LIBRARY_CONTRIBUTIONS,
@@ -38,6 +39,8 @@ dashboardRegistry.registerApp(
   [TASKS_VIEW_MODULE],
   { trust: "native" },
 );
+
+dashboardRegistry.registerApp(JOBS_APP_CONTRIBUTION, [JOBS_WIDGET_MODULE], [JOBS_VIEW_MODULE], { trust: "native" });
 
 // Co-work owns a standard-grid ViewDefinition that places one composite durable widget,
 // plus that widget's lazy renderer module and its lazy view module. Routing /app/cowork

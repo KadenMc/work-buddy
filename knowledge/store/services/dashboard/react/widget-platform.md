@@ -63,6 +63,14 @@ Dashboard Core owns layout editing, constraint enforcement, collision feedback, 
 
 Desktop customization uses the grid. Mobile uses document flow and drag-reordering of a canonical sequence. Responsive changes may reflow or scroll content, but they must not silently remove primary controls or hide that a capability exists.
 
+`WidgetHost` supplies the renderer's measured content-box width in
+`presentation.width`; the grid estimate is only a fallback before a positive
+measurement. The frame reuses the shared container-measurement hook, so opening
+a sibling assistance dock, resizing a grid cell, or re-homing a durable widget
+updates presentation without remounting its renderer or changing draft identity.
+Responsive widgets must use this available width, not assume the whole browser
+viewport belongs to them.
+
 ## Operate, Arrange, and Preview
 
 - **Operate** enables normal widget interaction and outward effects.
@@ -80,6 +88,8 @@ A widget definition may declare itself durable. Dashboard Core then keeps its re
 ## Host-owned working state and interaction surfaces
 
 Widgets declare meaningful drafts; the host owns persistence, schema versions, revisions, clearing, and cross-tab behavior. Draft identity includes profile/workspace, publisher App, view, widget instance, widget type, draft name, and scope. Widgets do not persist arbitrary DOM inputs or create incompatible storage formats.
+
+An eligible widget may additionally declare `assistableDrafts`, referencing the shared machine-readable form schema. Dashboard Core binds a contextual assistance dock to that exact host-owned draft; it is not a separate placeable chat widget or a Co-work editor adapter. Typed allowlisted patches update visible fields, preserve concurrent user edits, and expose conditional Undo. Submission remains the App's explicit human action. See `services/dashboard/react/assisted-drafts`.
 
 Short-lived notices and confirmation requests are reusable dashboard infrastructure. They are distinct from the durable notification/request system. Contextual Hover Help is another host mode with layered ownership: Dashboard, view placement, widget, and primitive. Help and Customize are mutually exclusive.
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping
 
 
 class CaptureTarget(StrEnum):
@@ -209,6 +209,34 @@ class JournalEffect:
     error_code: str | None
     created_at: str
     updated_at: str
+    payload: Mapping[str, Any] | None = None
+    result: Mapping[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class JournalSmartAvailability:
+    """Content-free explanation of the optional model boundary."""
+
+    state: Literal["disabled_by_policy", "provider_unavailable", "ready"] = "disabled_by_policy"
+    code: Literal["smart_not_enabled", "provider_not_preflightable", "ready"] = "smart_not_enabled"
+    reason: str = "Smart is off. Enable it in Journal settings to allow model processing."
+    provider: str | None = None
+    model: str | None = None
+    max_input_bytes: int = 32 * 1024
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "state": self.state,
+            "code": self.code,
+            "reason": self.reason,
+            "disclosure": {
+                "provider": self.provider,
+                "model": self.model,
+                "maxInputBytes": self.max_input_bytes,
+                "tools": False,
+                "web": False,
+            },
+        }
 
 
 class JournalCaptureError(RuntimeError):

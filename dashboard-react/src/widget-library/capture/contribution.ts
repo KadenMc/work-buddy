@@ -27,7 +27,11 @@ export const CAPTURE_APP_CONTRIBUTION = {
       displayName: "Capture",
       description: "Preserve exact user-supplied material at a visible destination.",
       inputSchema: { schemaId: "wb.capture.quick-text.input", version: 1 },
-      outputIntentSchemas: [{ schemaId: "wb.capture.submit", version: 1 }],
+      outputIntentSchemas: [
+        { schemaId: "wb.capture.submit", version: 1 },
+        { schemaId: "wb.capture.retry-requested", version: 1 },
+        { schemaId: "wb.capture.availability-refresh", version: 1 },
+      ],
     },
   ],
   widgetDefinitions: [
@@ -41,8 +45,14 @@ export const CAPTURE_APP_CONTRIBUTION = {
       providesRoles: [CAPTURE_ROLE_ID],
       settingsSchema: { schemaId: "wb.capture.quick-text.settings", version: 1 },
       inputSchema: { schemaId: "wb.capture.quick-text.input", version: 1 },
-      outputIntentSchemas: [{ schemaId: "wb.capture.submit", version: 1 }],
+      outputIntentSchemas: [
+        { schemaId: "wb.capture.submit", version: 1 },
+        { schemaId: "wb.capture.retry-requested", version: 1 },
+        { schemaId: "wb.capture.availability-refresh", version: 1 },
+      ],
       outputIntentEffects: [
+        { schema: { schemaId: "wb.capture.retry-requested", version: 1 }, effect: "mutation", preview: "block" },
+        { schema: { schemaId: "wb.capture.availability-refresh", version: 1 }, effect: "navigation", preview: "block" },
         {
           schema: { schemaId: "wb.capture.submit", version: 1 },
           effect: "mutation",

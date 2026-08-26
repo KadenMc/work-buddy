@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import threading
 from datetime import UTC, datetime
 from typing import Any, Mapping
@@ -45,7 +46,7 @@ from work_buddy.journal_capture.projection import (
     view_snapshot,
 )
 from work_buddy.journal_capture.service import JournalCaptureService
-from work_buddy.journal_capture.smart import configured_journal_smart_processor
+from work_buddy.journal_capture.smart import configured_journal_smart_processing
 from work_buddy.journal_capture.store import JournalCaptureStore
 from work_buddy.paths import resolve
 from work_buddy.security.local_identity import LocalIdentityError
@@ -102,13 +103,22 @@ def _services() -> tuple[SourceStore, JournalCaptureStore, JournalCaptureService
                             stated_at=stated_at,
                         )
 
+                from work_buddy.settings.broker import get_journal_smart_processing_enabled
+                from work_buddy.threads.action_proposals import get_action_proposal_service
+
+                def smart_configuration():
+                    return configured_journal_smart_processing(
+                        sources, journals, enabled=get_journal_smart_processing_enabled(),
+                    )
+
+                processor, availability = smart_configuration()
                 service = JournalCaptureService(
                     journals,
                     JournalContentAdapter(),
-                    smart_processor=configured_journal_smart_processor(
-                        sources,
-                        journals,
-                    ),
+                    smart_processor=processor,
+                    smart_availability=availability,
+                    smart_configuration=smart_configuration,
+                    proposal_service=get_action_proposal_service(),
                     authoritative_log_writer=authoritative_log_writer,
                 )
                 _runtime = (sources, journals, service)
@@ -203,6 +213,8 @@ def _canonical_gesture_context(body: Mapping[str, Any]) -> str:
         "schema": "wb.journal-capture-gesture/v1",
         "stated_at": body.get("stated_at"),
         "target_id": body.get("target_id"),
+        **({"follow_up_action": body["follow_up_action"]} if body.get("follow_up_action") is not None else {}),
+        **({"smart_disclosure_sha256": body["smart_disclosure_sha256"]} if body.get("smart_disclosure_sha256") is not None else {}),
     }
     return hashlib.sha256(
         json.dumps(
@@ -295,6 +307,7 @@ def _kernel() -> DocumentKernelClient:
 @journal_capture_blueprint.get("/api/journal/view")
 def journal_view():
     sources, store, service = _services()
+    service.refresh_smart_availability()
     enrolled = local_identity_api._authority().enrolled_actor()
     principal = ActorRef(
         issuer_authority_id=enrolled.issuer_authority_id,
@@ -321,6 +334,8 @@ def journal_view():
                 store,
                 smart_processing_available=service.smart_processing_available,
                 smart_processing_disclosure=service.smart_processing_disclosure,
+                smart_availability=service.smart_availability,
+                proposal_follow_ups=service.proposal_follow_ups,
             ),
         }
     )
@@ -328,11 +343,11 @@ def journal_view():
 
 @journal_capture_blueprint.get("/api/journal/captures/<capture_id>")
 def journal_capture(capture_id: str):
-    _sources, store, _service = _services()
+    _sources, store, service = _services()
     capture = store.get_capture(capture_id)
     if capture is None:
         return _error("journal_capture_not_found", "That capture is unavailable.", 404)
-    return jsonify({"ok": True, "capture": capture_view(store, capture)})
+    return jsonify({"ok": True, "capture": capture_view(store, capture, follow_ups=service.proposal_follow_ups(capture_id))})
 
 
 @journal_capture_blueprint.post("/api/journal/captures")
@@ -353,11 +368,21 @@ def create_journal_capture():
         client_mutation_id = str(body.get("client_mutation_id") or "")
         day_id = str(body.get("day_id") or "")
         input_mode = str(body.get("input_mode") or "unknown")
+        disclosure_sha = body.get("smart_disclosure_sha256")
+        if disclosure_sha is not None and (not isinstance(disclosure_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", disclosure_sha)):
+            raise JournalCaptureValidationError("The Smart disclosure is invalid.")
         stated_at = body.get("stated_at")
         if stated_at is not None and not isinstance(stated_at, str):
             raise JournalCaptureValidationError("The capture time is invalid.")
         trusted = _trusted_context(authority, mode=mode, context_sha256=context_sha)
         sources, store, service = _services()
+        follow_up_action = body.get("follow_up_action")
+        if follow_up_action is not None and (
+            follow_up_action != "task_proposal" or mode is not CaptureMode.DUMB
+            or target is not CaptureTarget.RUNNING_NOTES
+        ):
+            raise JournalCaptureValidationError("Save and propose task uses Running Notes without a model.")
+        service.refresh_smart_availability()
         command = DomainCommand(
             schema="wb.journal-capture/v1",
             target_domain="journal",
@@ -369,6 +394,8 @@ def create_journal_capture():
                 "mode": mode.value,
                 "input_mode": input_mode,
                 "stated_at": stated_at,
+                **({"follow_up_action": follow_up_action} if follow_up_action else {}),
+                **({"smart_disclosure_sha256": body["smart_disclosure_sha256"]} if body.get("smart_disclosure_sha256") else {}),
             },
             authorization_fingerprint=trusted.authorization_fingerprint,
             authorization_expires_at=_authorization_expires_at(authority),
@@ -410,7 +437,7 @@ def create_journal_capture():
                 "ok": True,
                 "persisted": True,
                 "deduplicated": commit.deduplicated,
-                "capture": capture_view(store, capture),
+                "capture": capture_view(store, capture, follow_ups=service.proposal_follow_ups(capture_id)),
             }
         )
         response.status_code = 200 if commit.deduplicated else 201
@@ -437,13 +464,18 @@ def create_journal_capture():
 @journal_capture_blueprint.post("/api/journal/captures/<capture_id>/retry")
 def retry_journal_capture(capture_id: str):
     try:
+        body = _body()
         sources, store, service = _services()
         capture = store.get_capture(capture_id)
         if capture is None:
             return _error("journal_capture_not_found", "That capture is unavailable.", 404)
-        context_sha = hashlib.sha256(
-            f"wb.journal-capture-retry/v1:{capture_id}:{capture.revision}".encode()
-        ).hexdigest()
+        disclosure_sha = body.get("smart_disclosure_sha256")
+        context = f"wb.journal-capture-retry/v1:{capture_id}:{capture.revision}"
+        if disclosure_sha is not None:
+            if not isinstance(disclosure_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", disclosure_sha):
+                raise JournalCaptureValidationError("The Smart disclosure is invalid.")
+            context += ":" + disclosure_sha
+        context_sha = hashlib.sha256(context.encode()).hexdigest()
         authority = require_human_authority_request(
             action="journal.capture.retry",
             subject=f"journal-capture:{capture_id}",
@@ -463,6 +495,9 @@ def retry_journal_capture(capture_id: str):
         )
         exact = resolved.content.decode("utf-8")
         if capture.mode is CaptureMode.SMART:
+            service.refresh_smart_availability()
+            if disclosure_sha is not None:
+                store.bind_smart_disclosure(capture_id, disclosure_sha, retry=True)
             retry_context = _trusted_context(
                 authority,
                 mode=capture.mode,
@@ -482,7 +517,14 @@ def retry_journal_capture(capture_id: str):
             updated = service.process_smart(capture_id, exact_text=exact)
         else:
             updated = service.retry_materialization(capture_id, exact_text=exact)
-        return jsonify({"ok": True, "capture": capture_view(store, updated)})
+        for effect in store.effects_for_capture(capture_id):
+            if effect.effect_type == "task_proposal" and effect.state.value != "succeeded":
+                retry_context = _trusted_context(authority, mode=capture.mode, context_sha256=context_sha)
+                store.reauthorize_effect(capture_id, "task_proposal",
+                    authorization_fingerprint=retry_context.authorization_fingerprint,
+                    authorization_expires_at=_authorization_expires_at(authority))
+                service.deliver_proposal(capture_id)
+        return jsonify({"ok": True, "capture": capture_view(store, updated, follow_ups=service.proposal_follow_ups(capture_id))})
     except UnicodeDecodeError:
         return _error("journal_source_invalid", "The saved capture is not readable text.", 409)
     except (JournalCaptureError, SourceError, LocalIdentityError) as exc:

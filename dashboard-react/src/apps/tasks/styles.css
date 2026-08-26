@@ -572,82 +572,87 @@
     box-shadow: var(--wb-shadow-overlay);
   }
 
-  @media (max-width: 1100px) {
-    .wb-task-workspace__body {
-      grid-template-columns: minmax(18rem, .9fr) minmax(22rem, 1.2fr);
-    }
+  .wb-task-workspace:is([data-layout="compact"], [data-layout="stacked"]) .wb-task-workspace__body {
+    grid-template-columns: minmax(18rem, .9fr) minmax(22rem, 1.2fr);
+  }
 
-    .wb-task-filters {
-      display: none;
-    }
+  .wb-task-workspace:is([data-layout="compact"], [data-layout="stacked"]) .wb-task-filters {
+    display: none;
+  }
 
-    .wb-task-filter-trigger {
-      display: inline-flex;
-    }
+  .wb-task-workspace:is([data-layout="compact"], [data-layout="stacked"]) .wb-task-filter-trigger {
+    display: inline-flex;
+  }
+
+  .wb-task-workspace[data-layout="stacked"] :is(.wb-task-workspace__toolbar, .wb-task-section-heading, .wb-task-detail__header) {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .wb-task-workspace[data-layout="stacked"] .wb-task-workspace__body {
+    display: block;
+    min-height: 24rem;
+  }
+
+  .wb-task-workspace[data-layout="stacked"] .wb-task-workspace__mobile-tabs {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    padding: var(--wb-space-1);
+    border: var(--wb-border-width) solid var(--wb-color-border-default);
+    border-radius: var(--wb-radius-control);
+    background: var(--wb-color-surface-inset);
+  }
+
+  .wb-task-workspace[data-layout="stacked"] .wb-task-workspace__mobile-tabs button {
+    min-height: 44px;
+    border: 0;
+    border-radius: var(--wb-radius-control);
+    background: transparent;
+    color: var(--wb-color-text-secondary);
+    font-weight: var(--wb-font-weight-semibold);
+  }
+
+  .wb-task-workspace[data-layout="stacked"] .wb-task-workspace__mobile-tabs button[aria-selected="true"] {
+    background: var(--wb-color-action-secondary);
+    color: var(--wb-color-text-strong);
+    box-shadow: var(--wb-shadow-raised);
+  }
+
+  .wb-task-workspace[data-layout="stacked"] :is(.wb-task-list-pane, .wb-task-detail-pane) {
+    max-height: none;
+  }
+
+  .wb-task-workspace[data-layout="stacked"] .wb-task-detail__form {
+    grid-template-columns: 1fr;
+  }
+
+  .wb-task-workspace[data-layout="stacked"] .wb-task-detail__form > * {
+    grid-column: 1;
+  }
+
+  .wb-task-workspace[data-layout="stacked"] .wb-task-detail {
+    padding: var(--wb-space-4);
+  }
+
+  .wb-task-workspace[data-layout="stacked"] :is(.wb-task-action-items li, .wb-task-files li) {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   @media (max-width: 767px) {
     .wb-tasks-chrome,
-    .wb-task-workspace__toolbar,
     .wb-task-composer__fast-path,
-    .wb-task-section-heading,
-    .wb-task-detail__header {
+    .wb-task-section-heading {
       align-items: stretch;
       flex-direction: column;
     }
 
-    .wb-task-workspace__body {
-      display: block;
-      min-height: 24rem;
-    }
-
-    .wb-task-workspace__mobile-tabs {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      padding: var(--wb-space-1);
-      border: var(--wb-border-width) solid var(--wb-color-border-default);
-      border-radius: var(--wb-radius-control);
-      background: var(--wb-color-surface-inset);
-    }
-
-    .wb-task-workspace__mobile-tabs button {
-      min-height: 44px;
-      border: 0;
-      border-radius: var(--wb-radius-control);
-      background: transparent;
-      color: var(--wb-color-text-secondary);
-      font-weight: var(--wb-font-weight-semibold);
-    }
-
-    .wb-task-workspace__mobile-tabs button[aria-selected="true"] {
-      background: var(--wb-color-action-secondary);
-      color: var(--wb-color-text-strong);
-      box-shadow: var(--wb-shadow-raised);
-    }
-
-    .wb-task-list-pane,
-    .wb-task-detail-pane {
-      max-height: none;
-    }
-
-    .wb-task-composer__details,
-    .wb-task-detail__form {
+    .wb-task-composer__details {
       grid-template-columns: 1fr;
     }
 
-    .wb-task-composer__details > *,
-    .wb-task-detail__form > * {
+    .wb-task-composer__details > * {
       grid-column: 1;
-    }
-
-    .wb-task-detail {
-      padding: var(--wb-space-4);
-    }
-
-    .wb-task-action-items li,
-    .wb-task-files li {
-      align-items: stretch;
-      flex-direction: column;
     }
   }
 

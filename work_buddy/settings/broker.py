@@ -103,6 +103,17 @@ def _configured_default(setting_id: str) -> Any:
             status_code=404,
         )
     value = definition["default_value"]
+    if setting_id == registry.JOURNAL_SMART_PROCESSING_ID:
+        smart = (wb_config.load_config().get("journal") or {}).get("smart_processing") or {}
+        return "enabled" if isinstance(smart, dict) and smart.get("enabled") is True else "disabled"
+    if setting_id in {registry.DASHBOARD_ASSISTANCE_ID, registry.DASHBOARD_ASSISTANCE_TIER_ID}:
+        assistance = (wb_config.load_config().get("dashboard") or {}).get("assistance") or {}
+        if not isinstance(assistance, dict):
+            assistance = {}
+        if setting_id == registry.DASHBOARD_ASSISTANCE_ID:
+            return "enabled" if assistance.get("enabled") is True else "disabled"
+        candidate = assistance.get("tier")
+        return candidate if candidate in {"frontier_fast", "frontier_balanced", "frontier_best"} else "frontier_fast"
     if setting_id == registry.JOURNAL_DAY_BOUNDARY_ID:
         candidate = (
             (wb_config.load_config().get("journal") or {}).get("day_boundary")
@@ -688,6 +699,21 @@ def get_values(
         },
         events,
     )
+
+
+def get_journal_smart_processing_enabled() -> bool:
+    """Persisted explicit opt-in, bootstrapped from the legacy config once."""
+
+    value, _event = _read_value(registry.JOURNAL_SMART_PROCESSING_ID, _observed_at())
+    return value["effective_value"] == "enabled"
+
+
+def get_dashboard_assistance_settings() -> dict[str, Any]:
+    """One Settings authority for new, explicitly started assistant sessions."""
+
+    enabled, _ = _read_value(registry.DASHBOARD_ASSISTANCE_ID, _observed_at())
+    tier, _ = _read_value(registry.DASHBOARD_ASSISTANCE_TIER_ID, _observed_at())
+    return {"enabled": enabled["effective_value"] == "enabled", "tier": tier["effective_value"]}
 
 
 def _validate_request(

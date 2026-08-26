@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
+import { formatActorLabel } from "../../../widget-library/shared/format";
+
 type UnknownRecord = Record<string, unknown>;
 
 interface ChangeSource {
@@ -128,29 +130,6 @@ export const parseCoworkDocumentChangeInspection = (
   };
 };
 
-const actorKind = (value: unknown): string | null => {
-  if (typeof value !== "string") return null;
-  try {
-    return text(record(JSON.parse(value))?.kind);
-  } catch {
-    return null;
-  }
-};
-
-const actorLabel = (value: unknown): string => {
-  switch (actorKind(value)) {
-    case "human":
-      return "Human";
-    case "agent_run":
-      return "AI run";
-    case "service":
-    case "system":
-      return "Work Buddy";
-    default:
-      return "Recorded actor";
-  }
-};
-
 const sourceTitle = (inspection: CoworkDocumentChangeInspection): string => {
   if (
     inspection.binding?.domainNamespace === "journal" &&
@@ -242,11 +221,11 @@ export function CoworkDocumentOriginNotice({
         </div>
         <div>
           <dt>Selected by</dt>
-          <dd>{actorLabel(selectedBy)}</dd>
+          <dd>{formatActorLabel(selectedBy)}</dd>
         </div>
         <div>
           <dt>Applied by</dt>
-          <dd>{actorLabel(appliedBy)}</dd>
+          <dd>{formatActorLabel(appliedBy)}</dd>
         </div>
         <div>
           <dt>Persistence</dt>

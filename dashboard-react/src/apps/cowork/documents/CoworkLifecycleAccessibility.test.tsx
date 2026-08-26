@@ -11,6 +11,12 @@ import { CoworkDocumentPicker } from "./CoworkDocumentPicker";
 import { CoworkReimportDialog } from "./CoworkReimportDialog";
 import { CoworkRetirementDialog } from "./CoworkRetirementDialog";
 
+// These tests cover dialog accessibility/focus, not the local-authority
+// handshake (covered by the security and HTTP-client suites).
+vi.mock("../../../security/humanAuthority", () => ({
+  coworkHumanAuthorityHeaders: vi.fn(async () => ({})),
+}));
+
 const folder: CoworkFolderSummary = {
   storeId: "store-1",
   folderName: "work-buddy",

@@ -22,9 +22,37 @@ Design rules this module honours:
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Iterator
 import uuid
+
+
+_creation_attribution: ContextVar[tuple[str, str | None] | None] = ContextVar(
+    "task_creation_attribution", default=None,
+)
+
+
+@contextmanager
+def task_creation_attribution(
+    *, actor: str, session_id: str | None = None,
+) -> Iterator[None]:
+    """Bind a trusted durable create command's original actor across retries.
+
+    TaskStore receipts bind both mutation key and actor. A recovered Thread
+    command must therefore retain the recorded human approver rather than use
+    the current sidecar/gateway session. This is attribution only: native epoch,
+    mutation fencing, and the caller's approval boundary remain in force. The
+    context is not exposed as a capability parameter and affects create only.
+    """
+    if not isinstance(actor, str) or not actor.strip():
+        raise ValueError("A recorded task creation actor is required")
+    token = _creation_attribution.set((actor, session_id))
+    try:
+        yield
+    finally:
+        _creation_attribution.reset(token)
 
 
 def _native_active() -> bool:
@@ -40,9 +68,10 @@ def _native_authority(operation: str, supplied: str | None = None) -> dict[str, 
         originating_session,
     )
 
+    attribution = _creation_attribution.get() if operation == "create" else None
     return {
-        "actor": mutation_actor(),
-        "session_id": originating_session(),
+        "actor": attribution[0] if attribution is not None else mutation_actor(),
+        "session_id": attribution[1] if attribution is not None else originating_session(),
         "client_mutation_id": new_client_mutation_id(operation, supplied),
     }
 
@@ -123,6 +152,7 @@ def create(
                 "user_involvement",
                 "creation_provenance",
                 "has_dependency",
+                "dependencies",
                 "dependency_hint",
                 "risk_profile_json",
                 "automation_tier_achievable",
@@ -132,6 +162,8 @@ def create(
             )
             if key in kwargs
         }
+        if "dependencies" in accepted and "has_dependency" not in accepted:
+            accepted["has_dependency"] = bool(accepted["dependencies"])
         result = service.create(
             description=task_text,
             urgency=urgency,
@@ -152,7 +184,10 @@ def create(
                 created_by=str(authority["actor"]),
                 initial_markdown=f"# {result.task.description}\n\n{summary.strip()}\n",
             )
-            now = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+            # The attachment belongs to the same create command. A replay must
+            # hash the identical link payload, including timestamps, instead of
+            # conflicting after the task/document have already committed.
+            now = result.task.created_at
             note_uuid = str(
                 uuid.uuid5(
                     uuid.NAMESPACE_URL,

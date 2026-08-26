@@ -125,6 +125,39 @@ def test_current_versioned_marker_skips_rebuild(tmp_path, monkeypatch):
     assert (root / "dist" / freshness._BUILD_MARKER_NAME).is_file()
 
 
+def test_shared_assisted_form_manifest_alone_invalidates_build_marker(tmp_path, monkeypatch):
+    root = _make_dev_checkout(tmp_path, monkeypatch)
+    manifest = tmp_path / "work_buddy" / "dashboard" / "assistance" / "form_schemas.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text('{"maxLength":64}\n', encoding="utf-8")
+    builds: list[Path] = []
+
+    def build(command, dashboard_root, *_args, **_kwargs):
+        # Exercise only the isolated freshness flow, never npm or repo workers.
+        assert dashboard_root == root
+        builds.append(dashboard_root)
+        return _fake_successful_build(command)
+
+    monkeypatch.setattr(freshness, "_npm_executable", lambda: "test-only-npm")
+    monkeypatch.setattr(freshness, "_run_build_with_heartbeats", build)
+    first = freshness.ensure_dashboard_react_build()
+    assert first.status is freshness.DashboardBuildStatus.BUILT
+    assert freshness._input_relative_path(manifest, root) == "../work_buddy/dashboard/assistance/form_schemas.json"
+    assert freshness.ensure_dashboard_react_build().status is freshness.DashboardBuildStatus.CURRENT_MARKER
+
+    manifest.write_text('{"maxLength":65}\n', encoding="utf-8")
+    second = freshness.ensure_dashboard_react_build()
+    assert second.status is freshness.DashboardBuildStatus.BUILT
+    assert second.input_fingerprint != first.input_fingerprint
+    assert builds == [root, root]
+
+    # This exact manifest is shared authority; neighboring Python files are not
+    # broadened into frontend inputs by the sibling-path support.
+    (manifest.parent / "unrelated.py").write_text("changed = True\n")
+    assert freshness.ensure_dashboard_react_build().status is freshness.DashboardBuildStatus.CURRENT_MARKER
+    assert builds == [root, root]
+
+
 def test_corrupted_emitted_asset_invalidates_otherwise_current_marker(
     tmp_path, monkeypatch,
 ):

@@ -1,0 +1,49 @@
+{
+  "manifestVersion": 1,
+  "forms": {
+    "task-create": {
+      "schema": { "schemaId": "wb.tasks.create.draft", "version": 1 },
+      "title": "Shape this task",
+      "submitPolicy": "user_only",
+      "patchBehavior": "apply_when_uncontested",
+      "allowedOperations": ["set", "remove"],
+      "maxOperations": 16,
+      "maxPatchBytes": 32768,
+      "maxSnapshotBytes": 32768,
+      "fields": [
+        { "path": ["title"], "type": "string", "maxLength": 1000, "required": true, "description": "A specific, actionable task title", "sensitivity": "private", "disclosure": "explicit_start", "default": "" },
+        { "path": ["attention_state"], "type": "string", "enum": ["inbox", "mit", "active", "focused", "waiting"], "required": true, "description": "The task's attention state", "sensitivity": "ordinary", "disclosure": "explicit_start", "default": "inbox" },
+        { "path": ["urgency"], "type": "string", "enum": ["low", "medium", "high"], "required": true, "description": "How urgent the task is", "sensitivity": "ordinary", "disclosure": "explicit_start", "default": "medium" },
+        { "path": ["due_date"], "type": "string", "maxLength": 10, "pattern": "^$|^\\d{4}-\\d{2}-\\d{2}$", "required": false, "description": "Planned date in YYYY-MM-DD, or empty", "sensitivity": "private", "disclosure": "explicit_start", "default": "" },
+        { "path": ["deadline_date"], "type": "string", "maxLength": 10, "pattern": "^$|^\\d{4}-\\d{2}-\\d{2}$", "required": false, "description": "Hard deadline in YYYY-MM-DD, or empty", "sensitivity": "private", "disclosure": "explicit_start", "default": "" },
+        { "path": ["project"], "type": "string", "maxLength": 240, "required": false, "description": "Existing project name supplied by the user; never invent a project", "sensitivity": "private", "disclosure": "explicit_start", "default": "" },
+        { "path": ["namespaces"], "type": "string", "maxLength": 2000, "required": false, "description": "Comma-separated existing namespaces supplied by the user", "sensitivity": "private", "disclosure": "explicit_start", "default": "" },
+        { "path": ["summary"], "type": "string", "maxLength": 8000, "required": false, "description": "Brief task context", "sensitivity": "private", "disclosure": "explicit_start", "default": "" },
+        { "path": ["desired_outcome"], "type": "string", "maxLength": 4000, "required": false, "description": "The concrete result the user wants", "sensitivity": "private", "disclosure": "explicit_start", "default": "" },
+        { "path": ["next_action"], "type": "string", "maxLength": 4000, "required": false, "description": "The smallest actionable next step", "sensitivity": "private", "disclosure": "explicit_start", "default": "" },
+        { "path": ["definition_of_done"], "type": "string", "maxLength": 4000, "required": false, "description": "An observable completion criterion", "sensitivity": "private", "disclosure": "explicit_start", "default": "" },
+        { "path": ["dependencies"], "type": "string", "maxLength": 4000, "required": false, "description": "Dependencies explicitly supplied by the user", "sensitivity": "private", "disclosure": "explicit_start", "default": "" }
+      ]
+    },
+    "job-create": {
+      "schema": { "schemaId": "wb.jobs.create.draft", "version": 1 },
+      "title": "Shape this scheduled job",
+      "submitPolicy": "user_only",
+      "patchBehavior": "apply_when_uncontested",
+      "allowedOperations": ["set", "remove"],
+      "maxOperations": 12,
+      "maxPatchBytes": 32768,
+      "maxSnapshotBytes": 32768,
+      "fields": [
+        { "path": ["name"], "type": "string", "maxLength": 64, "required": true, "description": "A concise job identifier, at most 64 characters; start with an ASCII letter or digit and use only letters, digits, hyphens, or underscores", "sensitivity": "private", "disclosure": "explicit_start", "default": "" },
+        { "path": ["schedule"], "type": "string", "maxLength": 120, "required": true, "description": "Five-field cron schedule: minute hour day month weekday", "sensitivity": "private", "disclosure": "explicit_start", "default": "" },
+        { "path": ["job_type"], "type": "string", "enum": ["capability", "workflow", "prompt"], "required": true, "description": "What the job runs; no job is run by this assistant", "sensitivity": "ordinary", "disclosure": "explicit_start", "default": "prompt" },
+        { "path": ["capability"], "type": "string", "maxLength": 240, "required": false, "description": "Exact registered capability name supplied by the user; never invent one", "sensitivity": "private", "disclosure": "explicit_start", "default": "" },
+        { "path": ["workflow"], "type": "string", "maxLength": 240, "required": false, "description": "Exact registered workflow name supplied by the user; never invent one", "sensitivity": "private", "disclosure": "explicit_start", "default": "" },
+        { "path": ["prompt"], "type": "string", "maxLength": 12000, "required": false, "description": "Bounded instructions for the scheduled job, not instructions to execute now", "sensitivity": "private", "disclosure": "explicit_start", "default": "" },
+        { "path": ["params"], "type": "string", "maxLength": 8000, "required": false, "description": "JSON source for non-secret parameters; never include tokens, passwords, or credentials", "sensitivity": "private", "disclosure": "explicit_start", "contentPolicy": "non_secret_json", "default": "{}" },
+        { "path": ["jitter_seconds"], "type": "number", "minimum": 0, "maximum": 86400, "required": false, "description": "Nonnegative maximum randomized delay in seconds", "sensitivity": "ordinary", "disclosure": "explicit_start", "default": 0 }
+      ]
+    }
+  }
+}

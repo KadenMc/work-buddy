@@ -532,7 +532,17 @@ def create_user_job_file(
     fm_lines.append("---")
 
     body = prompt if job_type == "prompt" else ""
-    target.write_text("\n".join(fm_lines) + "\n\n" + body.strip() + "\n", encoding="utf-8")
+    # The earlier existence check is only a fast-path diagnostic. Another
+    # request can create this name between that check and publication, so use
+    # exclusive creation unless the caller explicitly requested legacy edit.
+    try:
+        with target.open("w" if overwrite else "x", encoding="utf-8") as stream:
+            stream.write("\n".join(fm_lines) + "\n\n" + body.strip() + "\n")
+    except FileExistsError:
+        return {
+            "success": False,
+            "error": f"User job {name!r} already exists at {target}.",
+        }
 
     return {
         "success": True,

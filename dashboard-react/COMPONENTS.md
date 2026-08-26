@@ -7,6 +7,7 @@ Reusable components and component families in the React dashboard, one entry per
 | Component | Location | Contract |
 |---|---|---|
 | Quick Capture | `src/widget-library/capture/` | `wb.capture.quick-text` widget type, `wb.widget-role.capture@1` |
+| Capture follow-ups | `src/widget-library/capture/FollowUpLinks.tsx` | Generic same-origin App links and pending/failed status shared by Quick Capture and Running Notes; domain providers validate reference/query identity. See `journal/source-backed-capture` |
 | Day Timeline | `src/widget-library/timeline/` | `wb.timeline.day` widget type, `wb.widget-role.day-timeline@1` |
 | Running Notes | `src/widget-library/notes/` | `wb.notes.running` widget type, `wb.widget-role.running-notes@1` |
 | Shared widget primitives | `src/widget-library/shared/` | Cross-publisher presentation helpers consumed by the library widgets |
@@ -23,6 +24,13 @@ Reusable conversational surface for any view that mounts a house conversation. K
 | useChatConversation | `src/widget-library/chat/useChatConversation.ts` | Binds a ChatConversationProvider to load, silent-refresh, and send lifecycles. Provider must be referentially stable |
 | ChatConversationProvider | `src/widget-library/chat/contracts.ts` | The transport seam: loadConversation, sendMessage, subscribe. `InMemoryChatProvider` is the test and development fixture |
 | normalizeConversationPayload, deriveAgentActivity | `src/widget-library/chat/mapping.ts` | Raw `GET /api/conversations/<id>` payload to canonical types, message identity via `message_id`, legacy typing and stopped derivation |
+
+## Host-owned form assistance
+
+| Component | Location | Contract |
+|---|---|---|
+| AssistedDraftRuntimeProvider, useAssistedDraft, AssistDraftButton | `src/dashboard/assistance/` | Opt-in assistance for declared widget drafts, using the existing `ConversationChat` surface; typed field patches, focused-field suggestions, revision fencing, persisted receipts, conditional Undo, and reset-generation cancellation. Not a placeable widget. See `services/dashboard/react/assisted-drafts` |
+| TaskDraftFields | `src/apps/tasks/composer/TaskDraftFields.tsx` | One App-owned field renderer shared by Quick Add and durable proposal review; supports focus/assistance markers without owning submission |
 
 ## Adding an entry
 

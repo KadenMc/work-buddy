@@ -166,6 +166,9 @@ export interface JournalCaptureSubmission {
   readonly annotation?: CaptureAnnotation;
   readonly errorMessage?: string;
   readonly sourceRef?: string;
+  readonly revision?: number;
+  readonly retryable?: boolean;
+  readonly followUps?: readonly CaptureFollowUp[];
 }
 
 export interface JournalCaptureInput {
@@ -174,6 +177,8 @@ export interface JournalCaptureInput {
   readonly dayId: string;
   readonly access: JournalAccess;
   readonly accessNotice?: "widget" | "view";
+  readonly smartAvailability?: CaptureSmartAvailability;
+  readonly secondaryActions?: readonly CaptureSecondaryAction[];
   readonly smartHelp?: {
     readonly summary: string;
     readonly details: string;
@@ -215,6 +220,7 @@ export interface JournalRunningNoteItem {
   readonly groupId?: string;
   readonly threadId?: string;
   readonly version: number;
+  readonly followUps?: readonly CaptureFollowUp[];
   readonly document?:
     | {
         readonly state: "available";
@@ -292,6 +298,8 @@ export interface JournalCaptureSubmitIntent
     readonly mode: JournalCaptureMode;
     readonly exact_text: string;
     readonly stated_at?: IsoDateTime;
+    readonly follow_up_action?: string;
+    readonly smart_disclosure_sha256?: string;
   };
 }
 
@@ -434,3 +442,4 @@ export interface JournalExpectedProviderTransition {
   readonly intent: JournalIntent;
   readonly phases: readonly JournalExpectedTransitionPhase[];
 }
+import type { CaptureFollowUp, CaptureSecondaryAction, CaptureSmartAvailability } from "../../widget-library/capture/contracts";

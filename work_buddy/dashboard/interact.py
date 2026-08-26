@@ -338,6 +338,11 @@ def dashboard_interact(
         validation failure. ``form_submit`` and ``form_get_state``
         will additionally return typed payloads once step 4 lands.
     """
+    if form_id == "jobs-add-job":
+        return {
+            "ok": False, "code": "form_migrated", "href": "/app/jobs",
+            "error": "Jobs authoring uses the shared assisted-draft surface at /app/jobs. The legacy form bridge cannot edit or submit it.",
+        }
     schema = get_schema(form_id)
     if schema is None:
         return _err(

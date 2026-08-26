@@ -31,6 +31,7 @@ TASK_MUTATION_CAPABILITIES = frozenset(
         "task_change_state",
         "task_create",
         "task_delete",
+        "task_proposals_reconcile",
         "task_set_tags",
         "task_sync",
         "task_toggle",

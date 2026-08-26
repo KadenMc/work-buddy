@@ -1,7 +1,7 @@
 ---
 name: Dashboard Form Bridge
 kind: concept
-description: 'Schema-driven agent ↔ form interaction subsystem: one MCP capability, one frontend bridge, one contract test asserting schema↔DOM stay in sync.'
+description: 'Frozen legacy schema-driven agent/form bridge; new React forms use host-owned assisted drafts and human-only submission.'
 tags:
 - dashboard
 - forms
@@ -22,7 +22,9 @@ parents:
 - services/dashboard
 ---
 
-Schema-driven layer between chat-walkthrough agents and the dashboard's forms. Agents call **one** typed MCP capability — ``dashboard_interact`` — and the bridge routes each action to per-form handlers registered on the frontend.
+This is retained compatibility documentation, not the extension path for new forms. React forms use `services/dashboard/react/assisted-drafts`: declared host drafts, one shared conversation surface, typed patches to visible fields, and human-only final submission.
+
+Jobs authoring uses `/app/jobs`. `dashboard_interact` rejects every `jobs-add-job` action with `form_migrated` and a safe navigation link; `/api/user_jobs/help` is retired. Existing job management/editing stays on the legacy Jobs tab. No new bridge consumers may be added. The mechanism below describes the retained legacy implementation only.
 
 ## Three load-bearing pieces
 
@@ -80,7 +82,7 @@ Agent briefs are split into two halves:
 
 No input ids in the brief. No hand-written JSON shapes. Adding a field to the schema automatically updates every spawned agent's prompt on the next session start.
 
-## Adding a new consumer
+## Historical consumer registration (frozen)
 
 1. Declare the schema in ``work_buddy/dashboard/forms_<name>.py`` and call ``register_schema``.
 2. Add the import line to ``work_buddy/dashboard/__init__.py``.
@@ -101,7 +103,7 @@ Approx. 30-50 lines per consumer total, almost all of it the schema declaration 
 
 ## First consumer
 
-The Jobs tab's ``💬 Help me fill this out`` button + the Add-job form. See ``work_buddy/dashboard/jobs_help.py`` for the consumer-specific prose preamble and the spawn orchestrator. Adding ``💬 Help me create a contract`` (or any other agent-driven form) follows the same pattern.
+The retained consumer declaration is the Jobs Add-job form. Its launch links lead to the React authoring view. `jobs_help.py` and legacy DOM declarations remain for compatibility/rollback, but cannot launch or submit this authoring flow. New views must use the assisted-draft contract instead.
 
 ## What this subsystem is NOT
 

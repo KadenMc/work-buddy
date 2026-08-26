@@ -21,6 +21,12 @@ from work_buddy.work_item import task_adapter
 
 @pytest.fixture
 def isolated_store(tmp_path: Path, monkeypatch) -> Path:
+    from work_buddy.tasks import runtime
+
+    # These tests explicitly exercise the pre-cutover compatibility facade.
+    # Do not let an installation's native authority redirect their reads away
+    # from the isolated legacy rows (native facade behavior has its own suite).
+    monkeypatch.setattr(runtime, "authority_epoch", lambda: "legacy:task-facade-test")
     db_dir = tmp_path / "db"
     db_dir.mkdir()
     db_path = db_dir / "tasks.sqlite"

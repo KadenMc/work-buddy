@@ -5,6 +5,7 @@ import {
   Suspense,
   useMemo,
   useRef,
+  useState,
 } from "react";
 import { ClockCounterClockwise } from "@phosphor-icons/react/ClockCounterClockwise";
 import { Eraser } from "@phosphor-icons/react/Eraser";
@@ -78,6 +79,7 @@ export interface WidgetHostProps<Input = unknown> {
   readonly input?: Input;
   readonly status: WidgetHostStatus;
   readonly statusMessage?: string;
+  /** Fallback until the frame's renderer content box has been measured. */
   readonly width: number;
   readonly height: number;
   readonly sizeMode: WidgetSizeMode;
@@ -178,6 +180,8 @@ export function WidgetHost<Input>({
   const themeRuntime = useTheme();
   const { notify } = useInteractionSurfaces();
   const frameRef = useRef<HTMLElement>(null);
+  const [contentWidth, setContentWidth] = useState(0);
+  const rendererWidth = contentWidth > 0 ? contentWidth : width;
   const Renderer = useMemo(
     () =>
       lazy(async () => {
@@ -200,7 +204,7 @@ export function WidgetHost<Input>({
     () => ({
       instanceId,
       viewId,
-      width,
+      width: rendererWidth,
       height,
       sizeMode,
       interactionMode,
@@ -215,7 +219,7 @@ export function WidgetHost<Input>({
       sizeMode,
       themeRuntime,
       viewId,
-      width,
+      rendererWidth,
     ],
   );
 
@@ -308,6 +312,7 @@ export function WidgetHost<Input>({
   const frame = (
     <WidgetFrame
       ref={frameRef}
+      onContentWidthChange={setContentWidth}
       title={definition.displayName}
       help={help}
       interactionMode={interactionMode}
