@@ -12,6 +12,7 @@ from work_buddy.agent_execution.disclosure import (
     DisclosureState,
     SourceAcknowledgementState,
 )
+from work_buddy.agent_execution.worker_disclosure import WorkerDisclosureBoundary
 from work_buddy.cowork.worker_disclosure import (
     CoworkWorkerDisclosureBoundary,
     CoworkWorkerRun,
@@ -21,8 +22,8 @@ from work_buddy.sources.disclosure import SourcesDisclosureService
 from work_buddy.sources.models import SourceRef
 
 
-@pytest.fixture
-def boundary(tmp_path: Path):
+@pytest.fixture(params=[WorkerDisclosureBoundary, CoworkWorkerDisclosureBoundary])
+def boundary(tmp_path: Path, request):
     source_store = SourceStore.create(tmp_path / "sources")
     tenant_id = "tenant-cowork-tests"
     issuer = ActorRef(
@@ -39,7 +40,7 @@ def boundary(tmp_path: Path):
     manifests = DisclosureManifestStore(tmp_path / "agent-execution.db")
     gateway = DisclosureGateway(manifests, sources)
     return (
-        CoworkWorkerDisclosureBoundary(gateway, sources),
+        request.param(gateway, sources),
         source_store,
         gateway,
     )

@@ -32,6 +32,7 @@ interface PendingSendEnvelope {
   readonly value: string;
   readonly inReplyTo?: string;
   readonly messageId: string;
+  readonly sendScopeKey?: string;
   prepared?: ChatSendInput;
 }
 
@@ -64,6 +65,8 @@ export type ConversationChatProps = SharedConversationPanelProps & {
   readonly onMessagesChange?: (messages: readonly ChatMessage[]) => void;
   /** Prepare an outbound turn before the provider sees it. */
   readonly prepareSend?: ChatSendPreparer;
+  /** Host authority generation. A change resets only logical-send retry context, never the chat or composer. */
+  readonly sendScopeKey?: string;
 };
 
 function panelStatus(
@@ -85,12 +88,13 @@ export function ConversationChat({
   conversationId,
   onMessagesChange,
   prepareSend,
+  sendScopeKey,
   readOnlyReason = "This conversation is closed.",
   ...panelProps
 }: ConversationChatProps) {
   const chat = useChatConversation(provider, conversationId);
-  const activeBinding = useRef({ provider, conversationId });
-  activeBinding.current = { provider, conversationId };
+  const activeBinding = useRef({ provider, conversationId, sendScopeKey });
+  activeBinding.current = { provider, conversationId, sendScopeKey };
   const pendingSendRef = useRef<PendingSendEnvelope | null>(null);
   const [prepareError, setPrepareError] = useState<string | null>(null);
   const [revealLatestMessageToken, setRevealLatestMessageToken] = useState(0);
@@ -106,6 +110,10 @@ export function ConversationChat({
     setRevealLatestMessageToken(0);
     pendingSendRef.current = null;
   }, [conversationId, provider]);
+  useEffect(() => {
+    setPrepareError(null);
+    pendingSendRef.current = null;
+  }, [sendScopeKey]);
 
   return (
     <ChatPanel
@@ -125,6 +133,7 @@ export function ConversationChat({
           pending === null ||
           pending.provider !== expectedProvider ||
           pending.conversationId !== expectedConversationId ||
+          pending.sendScopeKey !== sendScopeKey ||
           pending.value !== value ||
           pending.inReplyTo !== inReplyTo
         ) {
@@ -134,6 +143,7 @@ export function ConversationChat({
             value,
             inReplyTo,
             messageId: newUserMessageId(),
+            sendScopeKey,
           };
           pendingSendRef.current = pending;
         }
@@ -147,6 +157,9 @@ export function ConversationChat({
             };
             const candidate =
               prepareSend === undefined ? input : await prepareSend(input);
+            if (activeBinding.current.provider !== expectedProvider || activeBinding.current.conversationId !== expectedConversationId || activeBinding.current.sendScopeKey !== sendScopeKey) {
+              throw new Error("This message's context changed before it could be sent. Please send it again.");
+            }
             // The shared surface owns retry identity. A host may enrich the
             // send but cannot accidentally drop or replace that identity.
             pending.prepared = {
@@ -158,7 +171,8 @@ export function ConversationChat({
         } catch (error) {
           if (
             activeBinding.current.provider === expectedProvider &&
-            activeBinding.current.conversationId === expectedConversationId
+            activeBinding.current.conversationId === expectedConversationId &&
+            activeBinding.current.sendScopeKey === sendScopeKey
           ) {
             setPrepareError(errorMessage(error));
           }
@@ -175,7 +189,8 @@ export function ConversationChat({
         }
         if (
           activeBinding.current.provider === expectedProvider &&
-          activeBinding.current.conversationId === expectedConversationId
+          activeBinding.current.conversationId === expectedConversationId &&
+          activeBinding.current.sendScopeKey === sendScopeKey
         ) {
           setRevealLatestMessageToken((token) => token + 1);
         }

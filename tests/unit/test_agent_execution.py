@@ -1162,7 +1162,11 @@ def test_registry_default_is_deterministic_without_probe_and_dispatches_validate
 
 def test_global_registry_preserves_configured_supported_claude_default(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
+    from work_buddy.settings import store as settings_store
+
+    monkeypatch.setattr(settings_store, "_db_path", lambda: tmp_path / "settings.db")
     monkeypatch.setattr(
         execution_registry,
         "load_config",

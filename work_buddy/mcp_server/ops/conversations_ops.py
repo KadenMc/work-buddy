@@ -24,11 +24,12 @@ def _register() -> None:
     import os
     import time
     import urllib.request
-    from contextlib import nullcontext
+    from contextlib import contextmanager
     from work_buddy.conversations.store import (
         ConversationLeaseLost,
         create_conversation as _create_conversation,
         get_conversation as _get_conversation,
+        get_message as _get_message,
         get_conversation_with_messages as _get_conv_msgs,
         add_message as _add_msg,
         send_agent_message_idempotent as _send_agent_idempotent,
@@ -46,12 +47,55 @@ def _register() -> None:
         producer_for_lease as _producer_for_lease,
     )
 
+    def _is_assistance_worker(agent_session_id):
+        from work_buddy.dashboard.assistance.execution_identity import (
+            assistance_generation_from_session,
+        )
+
+        return assistance_generation_from_session(agent_session_id) is not None
+
+    def _request_failure(exc):
+        from work_buddy.dashboard.assistance.contracts import AssistanceError
+
+        return {
+            "status": exc.code if isinstance(exc, AssistanceError) else "invalid_request",
+            "error": str(exc),
+        }
+
+    def _reject_foreign_assistance(conversation_id, agent_session_id, conn=None):
+        if _is_assistance_worker(agent_session_id):
+            return
+        conversation = _get_conversation(conversation_id, conn=conn)
+        if conversation is not None and (
+            conversation.source.startswith("assisted-draft:")
+            or "assistedDraft" in (conversation.metadata or {})
+        ):
+            raise ConversationLeaseLost("lease_lost")
+
+    @contextmanager
     def _write_fence(
         conversation_id,
         consumer,
         generation,
         agent_session_id,
     ):
+        if _is_assistance_worker(agent_session_id):
+            from work_buddy.dashboard.assistance.service import assert_worker_scope
+
+            if consumer is None or generation is None:
+                raise ValueError("Form assistance requires consumer and generation")
+            with _agent_write_guard(conversation_id, consumer, generation) as conn:
+                assert_worker_scope(
+                    agent_session_id=agent_session_id,
+                    conversation_id=conversation_id,
+                    consumer=consumer,
+                    generation=generation,
+                    conn=conn,
+                )
+                yield conn
+            return
+
+        _reject_foreign_assistance(conversation_id, agent_session_id)
         from work_buddy.cowork.execution_identity import (
             cowork_generation_from_session,
         )
@@ -67,10 +111,12 @@ def _register() -> None:
             if generation != session_generation:
                 raise ConversationLeaseLost("lease_lost")
         if consumer is None and generation is None:
-            return nullcontext(None)
+            yield None
+            return
         if consumer is None or generation is None:
             raise ValueError("consumer and generation must be provided together")
-        return _agent_write_guard(conversation_id, consumer, generation)
+        with _agent_write_guard(conversation_id, consumer, generation) as conn:
+            yield conn
 
     def _trusted_producer(
         conversation_id,
@@ -92,11 +138,32 @@ def _register() -> None:
         )
 
         if (
-            cowork_generation_from_session(agent_session_id) is not None
+            (
+                cowork_generation_from_session(agent_session_id) is not None
+                or _is_assistance_worker(agent_session_id)
+            )
             and producer is None
         ):
             raise ConversationLeaseLost("lease_lost")
         return producer
+
+    def _assistance_output_producer(
+        *, conversation_id, consumer, generation, agent_session_id,
+        message_id, content, producer, conn,
+    ):
+        if not _is_assistance_worker(agent_session_id):
+            return producer
+        from work_buddy.dashboard.assistance.service import bind_worker_output
+
+        return bind_worker_output(
+            agent_session_id=agent_session_id,
+            conversation_id=conversation_id,
+            consumer=consumer,
+            generation=generation,
+            message_id=message_id,
+            content=content,
+            conn=conn,
+        )
 
     def _cowork_output_authority(
         *,
@@ -226,13 +293,21 @@ def _register() -> None:
             input_manifest_sha256=manifest_sha256,
         )
 
-    def _verify_cowork_read_scope(
+    def _verify_scoped_read_scope(
         conversation_id,
         consumer,
         generation,
         agent_session_id,
     ) -> None:
-        """Bind hosted Co-work reads to their exact active lease."""
+        """Bind hosted conversation reads to their exact active lease."""
+
+        if _is_assistance_worker(agent_session_id):
+            with _write_fence(
+                conversation_id, consumer, generation, agent_session_id,
+            ):
+                pass
+            return
+        _reject_foreign_assistance(conversation_id, agent_session_id)
 
         from work_buddy.cowork.execution_identity import (
             cowork_generation_from_session,
@@ -256,7 +331,7 @@ def _register() -> None:
         ):
             pass
 
-    def _account_cowork_read_payload(
+    def _account_scoped_read_payload(
         *,
         conversation_id,
         consumer,
@@ -265,7 +340,20 @@ def _register() -> None:
         payload,
         tool_call_id,
     ) -> None:
-        """Account exact conversation bytes released to a Co-work worker."""
+        """Account exact conversation bytes before a scoped worker sees them."""
+
+        if _is_assistance_worker(agent_session_id):
+            from work_buddy.dashboard.assistance.service import account_worker_payload
+
+            account_worker_payload(
+                agent_session_id=agent_session_id,
+                conversation_id=conversation_id,
+                consumer=consumer,
+                generation=generation,
+                payload=payload,
+                tool_call_id=tool_call_id,
+            )
+            return
 
         from work_buddy.cowork.conversations import (
             document_binding_for_conversation,
@@ -323,17 +411,62 @@ def _register() -> None:
             model_id = str(producer.get("model_id") or "").strip()
             if not provider_id or not model_id:
                 raise ConversationLeaseLost("lease_lost")
+            # Resolve exact native occurrences while the conversation binding
+            # is fenced. Sources capture opens its own connection and must
+            # remain outside this destination write transaction.
+            native_messages: dict[str, str] = {}
+            message = payload.get("message")
+            if isinstance(message, dict):
+                native = _get_message(
+                    conversation_id, message.get("message_id"), conn=lease_conn,
+                )
+                if native is None or native.content != message.get("content"):
+                    raise ValueError(
+                        "The exact native conversation message is unavailable"
+                    )
+                native_messages[native.message_id] = native.content
+            elif "question" in payload or "response" in payload:
+                question_id = payload.get("message_id")
+                question = _get_message(
+                    conversation_id, question_id, conn=lease_conn,
+                )
+                if question is None or question.message_type != "question":
+                    raise ValueError(
+                        "The exact native conversation question is unavailable"
+                    )
+                native_messages[question.message_id] = question.content
+                if "question" in payload and payload["question"] != question.content:
+                    raise ValueError(
+                        "The exact native conversation question is unavailable"
+                    )
+                if "response" in payload:
+                    # Answers are separate immutable user messages. Never
+                    # infer historical linkage from matching text or order.
+                    answers = lease_conn.execute(
+                        """SELECT message_id, content FROM messages
+                           WHERE conversation_id = ? AND role = 'user'
+                             AND CASE WHEN json_valid(context_json)
+                                 THEN json_extract(context_json, '$.in_reply_to')
+                                 END = ?""",
+                        (conversation_id, question_id),
+                    ).fetchall()
+                    if (
+                        question.status != "answered"
+                        or question.response != payload["response"]
+                        or len(answers) != 1
+                        or answers[0]["content"] != payload["response"]
+                    ):
+                        raise ValueError(
+                            "The exact native conversation answer is unavailable"
+                        )
+                    answer = answers[0]
+                    native_messages[answer["message_id"]] = answer["content"]
         exact = canonical_json(dict(payload)).encode("utf-8")
         disclosure = get_cowork_worker_disclosure()
         derivation_refs: list[str] = []
-        # conversation_receive releases one immutable native message. Capture
-        # that occurrence first, then make the exact JSON run-source an
-        # explicit quoted derivative so native-source redaction can reach it.
-        message = payload.get("message")
-        message_id = (
-            message.get("message_id") if isinstance(message, dict) else None
-        )
-        if isinstance(message_id, str) and message_id:
+        # Both received turns and question results quote native occurrences.
+        # Retain their exact lineage so redaction reaches the released JSON.
+        for message_id, content in native_messages.items():
             registry = ProviderRegistry()
             registry.register(
                 ConversationMessageProvider(
@@ -360,6 +493,7 @@ def _register() -> None:
                 tenant_scope_id=disclosure.sources.tenant_scope_id,
                 originating_surface="cowork_document_chat",
                 namespace=conversation_id,
+                expected_digest=sha256_bytes(content.encode("utf-8")),
             )
             derivation_refs.append(source_ref.uri)
         disclosure.account_payload(
@@ -381,6 +515,21 @@ def _register() -> None:
             ),
             derivation_refs=derivation_refs,
         )
+        # Accounting is write-ahead, not permission to return to a worker that
+        # was stopped or rebound while Sources work ran outside the lock.
+        # Failure leaves the disclosure conservatively possibly_sent.
+        with _agent_write_guard(
+            conversation_id, consumer, generation,
+        ) as lease_conn:
+            current_producer = _trusted_producer(
+                conversation_id, consumer, generation, lease_conn,
+                agent_session_id,
+            )
+            current_binding = document_binding_for_conversation(
+                conversation_id, conn=lease_conn,
+            )
+            if current_producer != producer or current_binding != binding:
+                raise ConversationLeaseLost("lease_lost")
 
     def _notify_conversation_created(
         conversation_id: str, title: str, body: str = "",
@@ -455,6 +604,16 @@ def _register() -> None:
                     generation,
                     lease_conn,
                     agent_session_id,
+                )
+                producer = _assistance_output_producer(
+                    conversation_id=conversation_id,
+                    consumer=consumer,
+                    generation=generation,
+                    agent_session_id=agent_session_id,
+                    message_id=message_id,
+                    content=message,
+                    producer=producer,
+                    conn=lease_conn,
                 )
                 if (
                     consumption_receipt_id is not None
@@ -550,7 +709,7 @@ def _register() -> None:
                 "conversation_id": conversation_id,
             }
         except ValueError as exc:
-            return {"status": "invalid_request", "error": str(exc)}
+            return _request_failure(exc)
         if msg is None:
             return {
                 "error": f"Conversation not found or closed: {conversation_id}",
@@ -574,6 +733,11 @@ def _register() -> None:
         agent_session_id: str | None = None,
         message_id: str | None = None,
     ) -> dict:
+        if _is_assistance_worker(agent_session_id) and choices is not None and (
+            not isinstance(choices, list)
+            or any(not isinstance(choice, (str, dict)) for choice in choices)
+        ):
+            return {"status": "invalid_request", "error": "Invalid conversation choices"}
         choice_dicts = None
         if choices:
             choice_dicts = []
@@ -590,102 +754,219 @@ def _register() -> None:
                 generation,
                 agent_session_id,
             ) as lease_conn:
-                producer = _trusted_producer(
-                    conversation_id,
-                    consumer,
-                    generation,
-                    lease_conn,
-                    agent_session_id,
-                )
-                output_authority = _cowork_output_authority(
-                    conversation_id=conversation_id,
-                    consumer=consumer,
-                    generation=generation,
-                    agent_session_id=agent_session_id,
-                    producer=producer,
-                    lease_conn=lease_conn,
-                    message_id=message_id,
-                    content=question,
-                    reply_context=None,
-                )
-                msg = _add_msg(
-                    conversation_id,
-                    "agent",
-                    question,
-                    message_type="question",
-                    response_type=response_type,
-                    choices=choice_dicts,
-                    conn=lease_conn,
-                    message_id=message_id,
-                    producer=producer,
-                )
-                if msg is not None:
-                    _record_cowork_output_dependency(
-                        output_authority,
-                        conversation_id=conversation_id,
-                        message_id=msg.message_id,
-                        content=msg.content,
+                existing_question = None
+                if _is_assistance_worker(agent_session_id):
+                    if response_type not in {"boolean", "choice"}:
+                        raise ValueError("Use conversation_send for an open-ended question")
+                    if response_type == "choice":
+                        if not choice_dicts or not 2 <= len(choice_dicts) <= 16:
+                            raise ValueError("A choice question needs two to sixteen choices")
+                        keys = []
+                        for choice in choice_dicts:
+                            if (
+                                set(choice) - {"key", "label", "description"}
+                                or not isinstance(choice.get("key"), str)
+                                or not choice["key"].strip()
+                                or len(choice["key"]) > 128
+                                or not isinstance(choice.get("label"), str)
+                                or not choice["label"].strip()
+                                or len(choice["label"]) > 500
+                                or (
+                                    "description" in choice
+                                    and (
+                                        not isinstance(choice["description"], str)
+                                        or len(choice["description"]) > 1000
+                                    )
+                                )
+                            ):
+                                raise ValueError("Invalid conversation choice")
+                            keys.append(choice["key"])
+                        if len(set(keys)) != len(keys):
+                            raise ValueError("Conversation choice keys must be unique")
+                    elif choice_dicts:
+                        raise ValueError("A boolean question does not accept choices")
+                    if message_id is not None:
+                        existing_question = _get_message(
+                            conversation_id, message_id, conn=lease_conn,
+                        )
+                    if existing_question is not None:
+                        if (
+                            existing_question.role != "agent"
+                            or existing_question.message_type != "question"
+                            or existing_question.content != question
+                            or existing_question.response_type != response_type
+                            or existing_question.choices != choice_dicts
+                        ):
+                            raise ValueError("message_id was reused for a different question")
+                    elif _get_pending(conversation_id, conn=lease_conn) is not None:
+                        raise ValueError("A structured question is already pending")
+                if existing_question is not None:
+                    # A replay reads the original question; it is not a new
+                    # publication against whichever user turn is current now.
+                    msg = existing_question
+                else:
+                    producer = _trusted_producer(
+                        conversation_id,
+                        consumer,
+                        generation,
+                        lease_conn,
+                        agent_session_id,
                     )
+                    producer = _assistance_output_producer(
+                        conversation_id=conversation_id,
+                        consumer=consumer,
+                        generation=generation,
+                        agent_session_id=agent_session_id,
+                        message_id=message_id,
+                        content=question,
+                        producer=producer,
+                        conn=lease_conn,
+                    )
+                    output_authority = _cowork_output_authority(
+                        conversation_id=conversation_id,
+                        consumer=consumer,
+                        generation=generation,
+                        agent_session_id=agent_session_id,
+                        producer=producer,
+                        lease_conn=lease_conn,
+                        message_id=message_id,
+                        content=question,
+                        reply_context=None,
+                    )
+                    msg = _add_msg(
+                        conversation_id,
+                        "agent",
+                        question,
+                        message_type="question",
+                        response_type=response_type,
+                        choices=choice_dicts,
+                        conn=lease_conn,
+                        message_id=message_id,
+                        producer=producer,
+                    )
+                    if msg is not None:
+                        _record_cowork_output_dependency(
+                            output_authority,
+                            conversation_id=conversation_id,
+                            message_id=msg.message_id,
+                            content=msg.content,
+                        )
         except ConversationLeaseLost:
             return {
                 "status": "lease_lost",
                 "conversation_id": conversation_id,
             }
         except ValueError as exc:
-            return {"status": "invalid_request", "error": str(exc)}
+            return _request_failure(exc)
         if msg is None:
             return {
                 "error": f"Conversation not found or closed: {conversation_id}",
             }
-        result = {
+        if msg.status == "answered" or timeout_seconds is not None:
+            result = _poll_question(
+                conversation_id=conversation_id,
+                message_id=msg.message_id,
+                timeout_seconds=timeout_seconds,
+                consumer=consumer,
+                generation=generation,
+                agent_session_id=agent_session_id,
+                tool_call_id="conversation_ask",
+            )
+            return {"conversation_id": conversation_id, **result}
+        return {
             "message_id": msg.message_id,
             "conversation_id": conversation_id,
             "status": "pending",
         }
 
-        # Optional blocking poll
-        if timeout_seconds is not None:
-            timeout_seconds = min(timeout_seconds, 110)
-            deadline = time.time() + timeout_seconds
-            while time.time() < deadline:
-                try:
-                    with _write_fence(
-                        conversation_id,
-                        consumer,
-                        generation,
-                        agent_session_id,
-                    ) as lease_conn:
-                        pending = _get_pending(
-                            conversation_id,
-                            conn=lease_conn,
-                        )
-                        data = (
-                            _get_conv_msgs(
-                                conversation_id,
-                                conn=lease_conn,
-                            )
-                            if pending is None
-                            or pending.status == "answered"
-                            else None
-                        )
-                except ConversationLeaseLost:
-                    return {
-                        "status": "lease_lost",
-                        "conversation_id": conversation_id,
-                    }
-                if pending is None or pending.status == "answered":
-                    if data:
-                        for m in reversed(data["messages"]):
-                            if m.get("message_id") == msg.message_id:
-                                result["status"] = "answered"
-                                result["response"] = m.get("response")
-                                return result
-                    result["status"] = "answered"
-                    return result
-                time.sleep(3)
-            result["status"] = "timeout"
+    def _poll_question(
+        *, conversation_id, message_id, timeout_seconds, consumer,
+        generation, agent_session_id, tool_call_id,
+    ):
+        def _scoped_question(exact_id):
+            with _write_fence(
+                conversation_id, consumer, generation, agent_session_id,
+            ) as lease_conn:
+                if exact_id is not None:
+                    question = _get_message(
+                        conversation_id, exact_id, conn=lease_conn,
+                    )
+                    if question is None or question.message_type != "question":
+                        raise ValueError("The exact conversation question is unavailable")
+                    return question
+                pending = _get_pending(conversation_id, conn=lease_conn)
+                if pending is not None:
+                    return pending
+                data = _get_conv_msgs(conversation_id, conn=lease_conn)
+                if data is None:
+                    raise ValueError("The conversation is unavailable")
+                answered = [
+                    item for item in data["messages"]
+                    if item.get("message_type") == "question"
+                    and item.get("status") == "answered"
+                ]
+                return (
+                    _get_message(
+                        conversation_id, answered[-1]["message_id"], conn=lease_conn,
+                    )
+                    if answered else None
+                )
 
-        return result
+        def _account_result(result):
+            if "question" in result or "response" in result:
+                _account_scoped_read_payload(
+                    conversation_id=conversation_id,
+                    consumer=consumer,
+                    generation=generation,
+                    agent_session_id=agent_session_id,
+                    payload=result,
+                    tool_call_id=tool_call_id,
+                )
+            return result
+
+        try:
+            question = _scoped_question(message_id)
+            if question is None:
+                return {"status": "no_pending_question"}
+            exact_id = question.message_id
+            if question.status == "answered":
+                return _account_result({
+                    "status": "answered",
+                    "message_id": exact_id,
+                    "response": question.response,
+                })
+            if timeout_seconds is None:
+                return _account_result({
+                    "status": "pending",
+                    "message_id": exact_id,
+                    "question": question.content,
+                })
+            if type(timeout_seconds) is not int or timeout_seconds < 0:
+                raise ValueError("timeout_seconds must be a nonnegative integer")
+            wait_seconds = min(timeout_seconds, 110)
+            deadline = time.monotonic() + wait_seconds
+            while time.monotonic() < deadline:
+                # Once chosen, only this question can complete the wait. A
+                # newer question neither blocks nor answers an older one.
+                question = _scoped_question(exact_id)
+                if question.status == "answered":
+                    return _account_result({
+                        "status": "answered",
+                        "message_id": exact_id,
+                        "response": question.response,
+                    })
+                remaining = deadline - time.monotonic()
+                if remaining > 0:
+                    time.sleep(min(3, remaining))
+            return {
+                "status": "timeout",
+                "message_id": exact_id,
+                "waited_seconds": wait_seconds,
+            }
+        except ConversationLeaseLost:
+            return {"status": "lease_lost", "conversation_id": conversation_id}
+        except ValueError as exc:
+            return _request_failure(exc)
 
     def conversation_poll(
         conversation_id: str,
@@ -693,94 +974,18 @@ def _register() -> None:
         consumer: str | None = None,
         generation: str | None = None,
         agent_session_id: str | None = None,
+        message_id: str | None = None,
     ) -> dict:
-        def _scoped_snapshot():
-            with _write_fence(
-                conversation_id,
-                consumer,
-                generation,
-                agent_session_id,
-            ) as lease_conn:
-                pending_question = _get_pending(
-                    conversation_id,
-                    conn=lease_conn,
-                )
-                conversation_data = (
-                    _get_conv_msgs(
-                        conversation_id,
-                        conn=lease_conn,
-                    )
-                    if pending_question is None
-                    else None
-                )
-                return pending_question, conversation_data
-
-        def _account_result(result):
-            if "question" in result or "response" in result:
-                _account_cowork_read_payload(
-                    conversation_id=conversation_id,
-                    consumer=consumer,
-                    generation=generation,
-                    agent_session_id=agent_session_id,
-                    payload=result,
-                    tool_call_id="conversation_poll",
-                )
-            return result
-
-        try:
-            pending, data = _scoped_snapshot()
-        except ConversationLeaseLost:
-            return {
-                "status": "lease_lost",
-                "conversation_id": conversation_id,
-            }
-        except ValueError as exc:
-            return {"status": "invalid_request", "error": str(exc)}
-        if pending is None:
-            if not data:
-                return {"error": f"Conversation not found: {conversation_id}"}
-            answered = [m for m in data["messages"]
-                        if m.get("status") == "answered"]
-            if answered:
-                last = answered[-1]
-                return _account_result({
-                    "status": "answered",
-                    "message_id": last["message_id"],
-                    "response": last.get("response"),
-                })
-            return {"status": "no_pending_question"}
-
-        if timeout_seconds is None:
-            return _account_result({
-                "status": "pending",
-                "message_id": pending.message_id,
-                "question": pending.content,
-            })
-
-        timeout_seconds = min(timeout_seconds, 110)
-        deadline = time.time() + timeout_seconds
-        while time.time() < deadline:
-            try:
-                p, data = _scoped_snapshot()
-            except ConversationLeaseLost:
-                return {
-                    "status": "lease_lost",
-                    "conversation_id": conversation_id,
-                }
-            if p is None:
-                if data:
-                    answered = [m for m in data["messages"]
-                                if m.get("message_id") == pending.message_id]
-                    if answered:
-                        return _account_result({
-                            "status": "answered",
-                            "message_id": pending.message_id,
-                            "response": answered[0].get("response"),
-                        })
-                return {"status": "answered", "message_id": pending.message_id}
-            time.sleep(3)
-
-        return {"status": "timeout", "waited_seconds": timeout_seconds}
+        """Inspect or await one exact question, defaulting to the current one."""
+        return _poll_question(
+            conversation_id=conversation_id,
+            message_id=message_id,
+            timeout_seconds=timeout_seconds,
+            consumer=consumer,
+            generation=generation,
+            agent_session_id=agent_session_id,
+            tool_call_id="conversation_poll",
+        )
 
     def conversation_receive(
         conversation_id: str,
@@ -791,35 +996,35 @@ def _register() -> None:
     ) -> dict:
         """Receive the oldest unacked user turn for one leased consumer."""
         try:
-            _verify_cowork_read_scope(
+            _verify_scoped_read_scope(
                 conversation_id,
                 consumer,
                 generation,
                 agent_session_id,
             )
+            result = _receive_user(
+                conversation_id,
+                consumer,
+                generation,
+                timeout_seconds=0 if timeout_seconds is None else timeout_seconds,
+            )
+            if result.get("status") == "message":
+                _account_scoped_read_payload(
+                    conversation_id=conversation_id,
+                    consumer=consumer,
+                    generation=generation,
+                    agent_session_id=agent_session_id,
+                    payload=result,
+                    tool_call_id="conversation_receive",
+                )
+            return result
         except ConversationLeaseLost:
             return {
                 "status": "lease_lost",
                 "conversation_id": conversation_id,
             }
         except ValueError as exc:
-            return {"status": "invalid_request", "error": str(exc)}
-        result = _receive_user(
-            conversation_id,
-            consumer,
-            generation,
-            timeout_seconds=0 if timeout_seconds is None else timeout_seconds,
-        )
-        if result.get("status") == "message":
-            _account_cowork_read_payload(
-                conversation_id=conversation_id,
-                consumer=consumer,
-                generation=generation,
-                agent_session_id=agent_session_id,
-                payload=result,
-                tool_call_id="conversation_receive",
-            )
-        return result
+            return _request_failure(exc)
 
     def conversation_ack(
         conversation_id: str,
@@ -832,27 +1037,41 @@ def _register() -> None:
     ) -> dict:
         """Acknowledge the exact turn and any attached action snapshot."""
         try:
-            _verify_cowork_read_scope(
+            with _write_fence(
                 conversation_id,
                 consumer,
                 generation,
                 agent_session_id,
-            )
+            ) as lease_conn:
+                if _is_assistance_worker(agent_session_id):
+                    from work_buddy.dashboard.assistance.service import (
+                        assert_worker_turn_consumed,
+                    )
+
+                    assert_worker_turn_consumed(
+                        agent_session_id=agent_session_id,
+                        conversation_id=conversation_id,
+                        consumer=consumer,
+                        generation=generation,
+                        message_id=message_id,
+                        conn=lease_conn,
+                    )
+                return _ack_user(
+                    conversation_id,
+                    consumer,
+                    generation,
+                    message_id,
+                    action_snapshot_id=action_snapshot_id,
+                    consumption_receipt_id=consumption_receipt_id,
+                    conn=lease_conn,
+                )
         except ConversationLeaseLost:
             return {
                 "status": "lease_lost",
                 "conversation_id": conversation_id,
             }
         except ValueError as exc:
-            return {"status": "invalid_request", "error": str(exc)}
-        return _ack_user(
-            conversation_id,
-            consumer,
-            generation,
-            message_id,
-            action_snapshot_id=action_snapshot_id,
-            consumption_receipt_id=consumption_receipt_id,
-        )
+            return _request_failure(exc)
 
     def conversation_close(conversation_id: str) -> dict:
         ok = _close_conversation(conversation_id)

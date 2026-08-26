@@ -623,6 +623,146 @@ def test_conversation_send_reports_created_then_replayed(
     assert matching[0]["content"] == "First durable wording"
 
 
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"response_type": "boolean"},
+        {"choices": [{"key": "b", "label": "Changed choice"}]},
+    ],
+)
+def test_keyed_question_retry_cannot_change_its_answer_schema(
+    isolated_conversations, changed,
+) -> None:
+    conversation = _conversation()
+    kwargs = {
+        "conversation_id": conversation.conversation_id,
+        "role": "agent",
+        "content": "Which one?",
+        "message_id": "exact-question-schema",
+        "message_type": "question",
+        "response_type": "choice",
+        "choices": [{"key": "a", "label": "Original choice"}],
+    }
+    original = store.add_message(**kwargs)
+    assert store.add_message(**kwargs).message_id == original.message_id
+    with pytest.raises(sqlite3.IntegrityError, match="different message content"):
+        store.add_message(**{**kwargs, **changed})
+    saved = store.get_message(conversation.conversation_id, original.message_id)
+    assert saved.response_type == "choice"
+    assert saved.choices == kwargs["choices"]
+    assert store.get_message(_conversation().conversation_id, original.message_id) is None
+
+
+@pytest.mark.parametrize(
+    "operation", ["create", "add", "post", "respond", "ack", "agent-send", "agent-replay"],
+)
+def test_composed_conversation_writes_preserve_the_callers_transaction(
+    isolated_conversations, operation,
+) -> None:
+    conversation = _conversation()
+    question = store.add_message(
+        conversation.conversation_id, "agent", "Proceed?",
+        message_type="question", response_type="boolean",
+    )
+    user = store.post_user_message(conversation.conversation_id, "Existing turn")
+    consumer, generation = "test-composition", "test-generation"
+    assert store.claim_agent_lease(conversation.conversation_id, consumer, generation)
+    assert store.activate_agent_lease(
+        conversation.conversation_id, consumer, generation, 991,
+    )
+    if operation == "agent-replay":
+        store.send_agent_message_idempotent(
+            conversation.conversation_id, "Original reply", "existing-agent-reply",
+        )
+    conn = store.get_connection()
+    created_id = None
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if operation == "create":
+            created_id = store.create_conversation("Rolled back", conn=conn).conversation_id
+        elif operation == "add":
+            store.add_message(
+                conversation.conversation_id, "agent", "Rolled back",
+                message_id="transaction-test-message", conn=conn,
+            )
+        elif operation == "post":
+            store.post_user_message(
+                conversation.conversation_id, "Rolled back",
+                message_id="transaction-test-message", conn=conn,
+            )
+        elif operation == "respond":
+            store.respond_to_message_with_user_message(
+                conversation.conversation_id, question.message_id, "true",
+                user_message_id="transaction-test-message", conn=conn,
+            )
+        elif operation in {"agent-send", "agent-replay"}:
+            # The sentinel also catches an accidental commit on an idempotent
+            # replay, where the message row itself already existed beforehand.
+            store.add_message(
+                conversation.conversation_id, "agent", "Rolled back",
+                message_id="transaction-test-message", conn=conn,
+            )
+            reply, created = store.send_agent_message_idempotent(
+                conversation.conversation_id, "Retry wording",
+                "existing-agent-reply" if operation == "agent-replay" else "new-agent-reply",
+                conn=conn,
+            )
+            assert created is (operation == "agent-send")
+            assert reply.content == ("Original reply" if operation == "agent-replay" else "Retry wording")
+        else:
+            assert store.ack_user_message(
+                conversation.conversation_id, consumer, generation,
+                user.message_id, conn=conn,
+            )["acked"]
+        assert conn.in_transaction
+        conn.rollback()
+    finally:
+        conn.close()
+
+    assert store.get_message(conversation.conversation_id, "transaction-test-message") is None
+    assert store.get_message(conversation.conversation_id, "new-agent-reply") is None
+    assert store.get_message(conversation.conversation_id, question.message_id).status == "pending"
+    if created_id is not None:
+        assert store.get_conversation(created_id) is None
+    assert store.receive_user_message(
+        conversation.conversation_id, consumer, generation,
+    )["message"]["message_id"] == user.message_id
+
+
+def test_question_answers_persist_exact_native_lineage_and_replay_identity(
+    isolated_conversations,
+) -> None:
+    conversation = _conversation()
+    question = store.add_message(
+        conversation.conversation_id, "agent", "Continue?",
+        message_type="question", response_type="boolean",
+    )
+    answer = store.respond_to_message_with_user_message(
+        conversation.conversation_id, question.message_id, "true",
+        user_message_id="linked-answer", context={"surface": "test"},
+    )
+    assert answer.context == {"surface": "test", "in_reply_to": question.message_id}
+    assert store.respond_to_message_with_user_message(
+        conversation.conversation_id, question.message_id, "true",
+        user_message_id="linked-answer", context={"surface": "test"},
+    ).message_id == answer.message_id
+    newer = store.add_message(
+        conversation.conversation_id, "agent", "Another question?",
+        message_type="question", response_type="boolean",
+    )
+    with pytest.raises(store.UserMessageIdConflictError):
+        store.respond_to_message_with_user_message(
+            conversation.conversation_id, newer.message_id, "true",
+            user_message_id="linked-answer", context={"surface": "test"},
+        )
+    with pytest.raises(ValueError, match="exact question"):
+        store.respond_to_message_with_user_message(
+            conversation.conversation_id, newer.message_id, "true",
+            context={"in_reply_to": question.message_id},
+        )
+    assert store.get_pending_question(conversation.conversation_id).message_id == newer.message_id
+
+
 def test_stale_generation_cannot_send_or_ask_after_rotation(
     isolated_conversations,
 ) -> None:

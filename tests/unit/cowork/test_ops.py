@@ -982,3 +982,249 @@ def test_ops_refuse_when_document_surface_disabled(
     store_id = str(ctx["store_id"])
     with pytest.raises(InvariantViolation, match="document_surface"):
         cowork_ops.cowork_doc_list(store_id)
+
+
+# --------------------------------------------------------------------------
+# Exact conversation reads through the shared worker disclosure boundary.
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def accounted_conversation(cowork, tmp_path, monkeypatch):
+    from work_buddy.agent_execution.disclosure import (
+        DisclosureGateway,
+        DisclosureManifestStore,
+    )
+    from work_buddy.cowork import conversation_source_dependencies, worker_disclosure
+    from work_buddy.sources import ActorRef, SourceStore
+    from work_buddy.sources.disclosure import SourcesDisclosureService
+
+    source_store = SourceStore.create(tmp_path / "conversation-sources")
+    issuer = ActorRef(source_store.authority_id, "conversation-test", "service", "tenant-test")
+    sources = SourcesDisclosureService(source_store, tenant_scope_id="tenant-test", issuer=issuer)
+    gateway = DisclosureGateway(DisclosureManifestStore(tmp_path / "disclosures.db"), sources)
+    boundary = worker_disclosure.CoworkWorkerDisclosureBoundary(gateway, sources)
+    monkeypatch.setattr(worker_disclosure, "get_cowork_worker_disclosure", lambda: boundary)
+    # Output dependency recording is not the read-accounting seam under test.
+    monkeypatch.setattr(
+        conversation_source_dependencies, "record_conversation_source_dependency",
+        lambda **kwargs: None,
+    )
+    document_id, _ = _register_doc(cowork["store"])
+    generation = "conversation-read-generation"
+    binding = cowork_conversations.ensure_document_conversation(
+        document_id=document_id, store_id=str(cowork["store_id"]),
+    )
+    consumer = f"cowork-document:{cowork['store_id']}:{document_id}"
+    execution = {
+        "schema_version": 1, "provider_id": "test-provider", "model_id": "test-model",
+        "provider_label": "Test provider", "model_label": "Test model",
+    }
+    assert conversation_store.claim_agent_lease(
+        binding.conversation_id, consumer, generation, execution=execution,
+    )["claimed"] is True
+    assert conversation_store.activate_agent_lease(binding.conversation_id, consumer, generation, 92001)
+    run = worker_disclosure.CoworkWorkerRun(
+        run_id=f"{generation}-cowork", worker_session_id=f"{generation}-cowork",
+        provider_id="test-provider", model_id="test-model",
+        authorization_ref=f"cowork-document-agent:{binding.conversation_id}:{generation}",
+        purpose="cowork_document_agent",
+    )
+    boundary.account_payload(
+        run, payload={"text": "Fixture initial context"}, source_role="human_input",
+        tool_call_id="fixture-context", idempotency_key="fixture-context",
+    )
+    question = conversation_store.add_message(
+        binding.conversation_id, "agent", "Continue with this document?",
+        message_id="exact-cowork-question", message_type="question", response_type="boolean",
+    )
+    answer = conversation_store.respond_to_message_with_user_message(
+        binding.conversation_id, question.message_id, "true",
+        user_message_id="exact-cowork-answer", context={"in_reply_to": question.message_id},
+    )
+    assert answer is not None
+    return SimpleNamespace(
+        boundary=boundary, source_store=source_store, gateway=gateway, run=run,
+        conversation_id=binding.conversation_id, consumer=consumer, generation=generation,
+        question=question, answer=answer, execution=execution,
+    )
+
+
+def _read_accounted_conversation(context, operation_name):
+    from work_buddy.mcp_server.op_registry import get_op
+
+    params = {
+        "conversation_id": context.conversation_id,
+        "consumer": context.consumer,
+        "generation": context.generation,
+        "agent_session_id": context.run.worker_session_id,
+        "timeout_seconds": 0,
+    }
+    if operation_name != "conversation_receive":
+        params["message_id"] = context.question.message_id
+    if operation_name == "conversation_ask":
+        params.update(question=context.question.content, response_type="boolean")
+    return get_op(f"op.wb.{operation_name}")(**params)
+
+
+@pytest.mark.parametrize("operation_name", ["conversation_ask", "conversation_poll", "conversation_receive"])
+@pytest.mark.parametrize("change", ["stop", "rotate", "producer", "binding"])
+def test_conversation_read_rechecks_exact_authority_after_accounting(
+    accounted_conversation, monkeypatch, operation_name, change,
+):
+    from work_buddy.agent_execution.disclosure import DisclosureState
+
+    context = accounted_conversation
+    original = context.boundary.account_payload
+
+    def account_then_change(run, **kwargs):
+        result = original(run, **kwargs)
+        # A separate writer must be possible while Sources work is running.
+        if change in {"stop", "rotate"}:
+            assert conversation_store.stop_agent_lease(
+                context.conversation_id, context.consumer, context.generation,
+            )
+            if change == "rotate":
+                claimed = conversation_store.claim_agent_lease(
+                    context.conversation_id, context.consumer, "replacement-generation",
+                    execution=context.execution,
+                )
+                assert claimed["claimed"] is True
+                assert conversation_store.activate_agent_lease(
+                    context.conversation_id, context.consumer, "replacement-generation", 92002,
+                )
+        else:
+            with conversation_store.get_connection() as conn:
+                if change == "producer":
+                    conn.execute(
+                        "UPDATE conversation_agent_leases SET execution_json = "
+                        "json_set(execution_json, '$.model_id', 'another-model') "
+                        "WHERE conversation_id = ? AND consumer = ?",
+                        (context.conversation_id, context.consumer),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE conversations SET metadata = "
+                        "json_set(metadata, '$.cowork_document_id', 'another-document') "
+                        "WHERE conversation_id = ?", (context.conversation_id,),
+                    )
+        return result
+
+    monkeypatch.setattr(context.boundary, "account_payload", account_then_change)
+    result = _read_accounted_conversation(context, operation_name)
+    assert result == {"status": "lease_lost", "conversation_id": context.conversation_id}
+    entry = next(
+        entry for entry in context.gateway.store.list_entries(context.run.run_id)
+        if entry.tool_call_id == operation_name
+    )
+    assert entry.state is DisclosureState.POSSIBLY_SENT
+
+
+@pytest.mark.parametrize("operation_name", ["conversation_ask", "conversation_poll"])
+def test_question_answer_lineage_redaction_blocks_replay_and_output(
+    accounted_conversation, operation_name,
+):
+    from work_buddy.agent_execution.disclosure import DisclosureSourceError
+    from work_buddy.sources.models import SourceRef
+    from work_buddy.sources.redact import redact_source
+
+    context = accounted_conversation
+    result = _read_accounted_conversation(context, operation_name)
+    assert result["status"] == "answered"
+    assert result["message_id"] == context.question.message_id
+    assert result["response"] == context.answer.content
+    entry = next(
+        entry for entry in context.gateway.store.list_entries(context.run.run_id)
+        if entry.tool_call_id == operation_name
+    )
+    derived = SourceRef.parse(entry.source_ref)
+    with context.source_store.connect() as conn:
+        refs = conn.execute(
+            "SELECT input_authority_id, input_item_id FROM source_derivations "
+            "WHERE derived_authority_id = ? AND derived_item_id = ?",
+            (derived.authority_id, derived.item_id),
+        ).fetchall()
+    native = {
+        context.source_store.get_item(ref).origin_ref.native_item_id: ref
+        for row in refs
+        for ref in [SourceRef(row["input_authority_id"], row["input_item_id"])]
+    }
+    assert set(native) == {context.question.message_id, context.answer.message_id}
+    # A causal output proves delivery; the exact read is replayable until one
+    # of its native inputs is redacted, rather than merely ambiguous.
+    context.boundary.bind_output(context.run, output_ref="before-redaction", idempotency_key="before-redaction")
+    assert _read_accounted_conversation(context, operation_name)["response"] == "true"
+    answer_ref = native[context.answer.message_id]
+    context.source_store.grant_access(
+        source_ref=answer_ref, principal=context.boundary.sources.issuer,
+        purpose="redaction", access_mode="metadata", authorization_fingerprint="f" * 64,
+    )
+    redact_source(
+        context.source_store, source_ref=answer_ref, actor=context.boundary.sources.issuer,
+        authorization_fingerprint="f" * 64, reason_code="user_requested",
+    )
+    assert context.source_store.get_item(derived).lifecycle_state == "redacted"
+    with pytest.raises(DisclosureSourceError):
+        context.boundary.bind_output(context.run, output_ref="after-redaction", idempotency_key="after-redaction")
+    with pytest.raises(DisclosureSourceError):
+        _read_accounted_conversation(context, operation_name)
+
+
+@pytest.mark.parametrize("operation_name", ["conversation_ask", "conversation_poll"])
+@pytest.mark.parametrize("invalid_link", ["legacy_unlinked", "mismatched_text", "duplicate_link"])
+def test_question_answer_requires_one_exact_native_answer(
+    accounted_conversation, operation_name, invalid_link,
+):
+    context = accounted_conversation
+    with conversation_store.get_connection() as conn:
+        if invalid_link == "legacy_unlinked":
+            conn.execute("UPDATE messages SET context_json = NULL WHERE message_id = ?", (context.answer.message_id,))
+        elif invalid_link == "mismatched_text":
+            conn.execute("UPDATE messages SET content = 'different answer' WHERE message_id = ?", (context.answer.message_id,))
+        else:
+            conversation_store.post_user_message(
+                context.conversation_id, context.answer.content,
+                message_id="duplicate-linked-answer", context={"in_reply_to": context.question.message_id}, conn=conn,
+            )
+    result = _read_accounted_conversation(context, operation_name)
+    assert result["status"] == "invalid_request"
+    assert result["error"] == "The exact native conversation answer is unavailable"
+    assert "response" not in result
+    assert "question" not in result
+    assert not any(
+        entry.tool_call_id == operation_name
+        for entry in context.gateway.store.list_entries(context.run.run_id)
+    )
+
+
+def test_pending_question_read_captures_its_exact_native_origin(
+    accounted_conversation, monkeypatch,
+):
+    from work_buddy.mcp_server.op_registry import get_op
+    from work_buddy.sources.models import SourceRef
+
+    context = accounted_conversation
+    pending = conversation_store.add_message(
+        context.conversation_id, "agent", "A different pending question?",
+        message_id="pending-native-question", message_type="question", response_type="boolean",
+    )
+    captured = []
+    original = context.boundary.account_payload
+
+    def account(run, **kwargs):
+        captured.extend(kwargs["derivation_refs"])
+        return original(run, **kwargs)
+
+    monkeypatch.setattr(context.boundary, "account_payload", account)
+    result = get_op("op.wb.conversation_poll")(
+        conversation_id=context.conversation_id, message_id=pending.message_id,
+        consumer=context.consumer, generation=context.generation,
+        agent_session_id=context.run.worker_session_id,
+    )
+    assert result == {
+        "status": "pending", "message_id": pending.message_id, "question": pending.content,
+    }
+    assert len(captured) == 1
+    native = context.source_store.get_item(SourceRef.parse(captured[0]))
+    assert native.origin_ref.container_id == context.conversation_id
+    assert native.origin_ref.native_item_id == pending.message_id

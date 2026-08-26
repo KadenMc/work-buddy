@@ -192,6 +192,27 @@ describe("ChatComposer", () => {
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
   });
 
+  it("can keep the shared model picker available before an explicit host Start", () => {
+    const execution = { ...changingExecution(), selecting: false };
+    const view = render(<ChatComposer onSend={vi.fn()} disabled execution={execution} />);
+    expect(screen.getByRole("button", { name: /Run with/ })).toBeDisabled();
+    view.rerender(<ChatComposer onSend={vi.fn()} disabled execution={execution} executionDisabled={false} />);
+    expect(screen.getByRole("textbox", { name: "Message" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Run with/ })).toBeEnabled();
+    view.rerender(<ChatComposer onSend={vi.fn()} disabled execution={execution} executionDisabled={false} submissionDisabled />);
+    expect(screen.getByRole("button", { name: /Run with/ })).toBeDisabled();
+  });
+
+  it("does not override server read-only or an in-flight selection with the picker lock", () => {
+    const execution = changingExecution();
+    const view = render(<ChatComposer onSend={vi.fn()} execution={execution} executionDisabled={false} />);
+    expect(screen.getByRole("button", { name: /Run with/ })).toBeDisabled();
+    view.rerender(<ChatComposer onSend={vi.fn()} execution={{ ...execution, selecting: false, snapshot: { ...execution.snapshot!, readOnly: true } }} executionDisabled={false} />);
+    expect(screen.queryByRole("button", { name: /Run with/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Message" })).toBeDisabled();
+  });
+
   it("shows a pending state while a send is in flight", () => {
     render(<ChatComposer onSend={vi.fn()} sending />);
     expect(screen.getByText("Sending message")).toBeInTheDocument();

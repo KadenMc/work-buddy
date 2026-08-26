@@ -55,6 +55,24 @@ const executionControl = (
 });
 
 describe("ChatPanel", () => {
+  it.each(["loading", "empty", "error"] as const)("preserves host model locks in the %s fallback", (status) => {
+    const { rerender } = render(<ChatPanel status={status} messages={[]} onSend={vi.fn()} composerDisabled execution={executionControl()} executionDisabled />);
+    expect(screen.getByRole("button", { name: /Run with/ })).toBeDisabled();
+    rerender(<ChatPanel status={status} messages={[]} onSend={vi.fn()} composerDisabled execution={executionControl()} executionDisabled={false} />);
+    expect(screen.getByRole("button", { name: /Run with/ })).toBeEnabled();
+    rerender(<ChatPanel status={status} messages={[]} onSend={vi.fn()} composerDisabled sending execution={executionControl()} executionDisabled={false} />);
+    expect(screen.getByRole("button", { name: /Run with/ })).toBeDisabled();
+  });
+
+  it("honors model locks in the standalone no-composer presentation", () => {
+    render(<ChatPanel messages={[]} execution={executionControl()} executionDisabled />);
+    expect(screen.getByRole("button", { name: /Run with/ })).toBeDisabled();
+  });
+  it("preserves host-disabled input while exposing the canonical pre-Start picker", () => {
+    render(<ChatPanel messages={[]} onSend={vi.fn()} composerDisabled execution={executionControl()} executionDisabled={false} />);
+    expect(screen.getByRole("textbox", { name: "Message" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Run with/ })).toBeEnabled();
+  });
   it("renders the title header, transcript, and composer when ready", () => {
     render(<ChatPanel title="Doc chat" messages={messages} onSend={vi.fn()} />);
     expect(screen.getByRole("heading", { name: "Doc chat" })).toBeInTheDocument();

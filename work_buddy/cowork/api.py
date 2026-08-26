@@ -851,7 +851,7 @@ def _project_execution(conversation_id: str | None):
 
     return conversation_execution.projected_execution(
         conversation_id,
-        default_selection().to_dict(),
+        lambda: default_selection().to_dict(),
     )
 
 
@@ -888,11 +888,11 @@ def _execution_snapshot(
     refresh_catalog: bool = False,
 ) -> dict[str, object]:
     """Project the picker catalog plus the conversation's durable selection."""
-    from work_buddy.agent_execution.registry import get_catalog
+    from work_buddy.agent_execution.presentation import project_selection_labels
+    from work_buddy.agent_execution.registry import get_providers
 
     state = _project_execution(conversation_id)
-    catalog = get_catalog(refresh=refresh_catalog)
-    providers = [provider.to_dict() for provider in catalog.providers]
+    providers = [provider.to_dict() for provider in get_providers(refresh=refresh_catalog)]
 
     selected_provider = next(
         (
@@ -949,7 +949,7 @@ def _execution_snapshot(
             )
             selected_provider["models"] = model_list
 
-    selection = state.to_dict()
+    selection = project_selection_labels(state.to_dict(), providers)
     selection["revision"] = state.revision or ""
     return {
         "selection": selection,

@@ -4,6 +4,7 @@ import { MagnifyingGlass } from "@phosphor-icons/react/MagnifyingGlass";
 import { Notebook } from "@phosphor-icons/react/Notebook";
 import { PlugsConnected } from "@phosphor-icons/react/PlugsConnected";
 import { TextAa } from "@phosphor-icons/react/TextAa";
+import { Sparkle } from "@phosphor-icons/react/Sparkle";
 import type { ReactNode } from "react";
 import { Link, NavLink, useLocation } from "react-router-dom";
 
@@ -43,7 +44,9 @@ const APP_CATEGORY_ORDER: readonly SettingsAppCategory[] = [
 
 function PageIcon({ page }: { readonly page: SettingsPageContribution }) {
   const icon: ReactNode =
-    page.navigationGroup === "system" ? (
+    page.context.id === "wb.dashboard" ? (
+      <Sparkle weight="duotone" />
+    ) : page.navigationGroup === "system" ? (
       <TextAa weight="duotone" />
     ) : page.navigationGroup === "apps" ? (
       <Notebook weight="duotone" />

@@ -1,20 +1,24 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Sparkle } from "@phosphor-icons/react/Sparkle";
+import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 
 import type { JsonObject, JsonSchemaReference } from "../contributions/contracts";
 import { useWidgetAssistanceDeclaration, type WidgetDraftHandle } from "../drafts/WidgetDraftRuntime";
 import { widgetDraftStorageKey, type WidgetDraftIdentity } from "../drafts/contracts";
 import { HttpChatConversationProvider } from "../conversations/HttpChatConversationProvider";
+import { HttpChatExecutionProfileProvider } from "../conversations/HttpChatExecutionProfileProvider";
 import { HelpTarget, type HelpContent } from "../help";
-import { exactHumanAuthorityHeaders } from "../../security/humanAuthority";
-import { ConversationChat, type ChatSendInput } from "../../widget-library/chat";
-import { Button, VisuallyHidden } from "../../ui";
-import type { AssistanceAvailability, AssistanceSession, AssistedDraftPatch, AssistedFormSchema, DraftPatchReceipt, PreparedDraftSnapshot } from "./contracts";
-import { assistedForms, discloseSnapshot, equalJson, fieldFor, pathKey, readField, snapshotHash, validateFieldValue } from "./schema";
+import { ChatPanelState, ConversationChat, useChatExecutionProfile, type ChatConversationProvider, type ChatExecutionControl, type ChatSendInput } from "../../widget-library/chat";
+import { Button, InlineAlert, VisuallyHidden } from "../../ui";
+import type { AssistanceAvailability, AssistanceSession, AssistanceStartRequest, AssistanceStopRequest, AssistedDraftPatch, AssistedFormSchema, DraftPatchReceipt, PreparedDraftSnapshot } from "./contracts";
+import { assistedForms, discloseSnapshot, equalJson, fieldFor, isRecord, pathKey, readField, snapshotHash, validateFieldValue } from "./schema";
 import { planPatch, planUndo, validatePatch, type FieldChange, type PatchPlan } from "./patches";
+import { AssistanceClient, AssistanceRequestError, assistanceAgent, normalizeAssistanceSession } from "./AssistanceClient";
+import { AssistancePauses, AssistanceRevocations, assistanceBindingKey, assistanceComposerKey, assistancePreparationKey, readSessionValue, removeSessionValue, writeSessionValue } from "./recovery";
 import "./assistance.css";
 
 interface LiveDraft {
   readonly key: string;
+  readonly paneId: string;
   readonly identity: WidgetDraftIdentity;
   readonly schema: JsonSchemaReference;
   readonly form: AssistedFormSchema;
@@ -41,7 +45,7 @@ interface AssistanceRuntime {
   register(binding: LiveDraft): () => void;
   changed(key: string): void;
   reset(key: string): void;
-  open(key: string): void;
+  open(key: string, trigger?: HTMLElement | null): void;
 }
 
 const RuntimeContext = createContext<AssistanceRuntime | null>(null);
@@ -71,7 +75,8 @@ export interface AssistedDraftControl {
   readonly active: boolean;
   readonly declared: boolean;
   readonly available: boolean;
-  open(): void;
+  readonly panelId: string;
+  open(trigger?: HTMLElement | null): void;
   fieldProps(path: readonly string[]): {
     readonly onFocus: () => void;
     readonly onBlur: () => void;
@@ -86,6 +91,7 @@ export function useAssistedDraft<Value>(draftName: string, draft: WidgetDraftHan
   const declaration = useWidgetAssistanceDeclaration(draftName);
   const form = declaration ? assistedForms[draftName] : undefined;
   const identityKey = widgetDraftStorageKey(draft.identity);
+  const paneId = `wb-assisted-draft-${useId()}`;
   const draftRef = useRef(draft);
   const optionsRef = useRef(options);
   const mountedRef = useRef(false);
@@ -96,7 +102,7 @@ export function useAssistedDraft<Value>(draftName: string, draft: WidgetDraftHan
   const binding = useMemo<LiveDraft | null>(() => {
     if (!declaration || !form || declaration.submitPolicy !== "user_only" || !equalJson(declaration.schema, draft.schema)) return null;
     return {
-      key: identityKey, identity: draft.identity, schema: draft.schema, form,
+      key: identityKey, paneId, identity: draft.identity, schema: draft.schema, form,
       title: () => optionsRef.current.title ?? form.title,
       editable: () => optionsRef.current.interactionMode === "operate" && !optionsRef.current.readOnly,
       mounted: () => mountedRef.current && widgetDraftStorageKey(draftRef.current.identity) === identityKey,
@@ -106,7 +112,7 @@ export function useAssistedDraft<Value>(draftName: string, draft: WidgetDraftHan
       flush: () => draftRef.current.flush(),
       focused: () => focusedRef.current,
     };
-  }, [declaration, form, identityKey]);
+  }, [declaration, form, identityKey, paneId]);
   const register = runtime?.register;
   useEffect(() => {
     mountedRef.current = true;
@@ -127,7 +133,8 @@ export function useAssistedDraft<Value>(draftName: string, draft: WidgetDraftHan
     active: runtime?.activeKey === identityKey,
     declared: !!declaration,
     available,
-    open: () => { if (available) { optionsRef.current.onOpen?.(); runtime.open(identityKey); } },
+    panelId: paneId,
+    open: (trigger) => { if (available) { optionsRef.current.onOpen?.(); runtime.open(identityKey, trigger); } },
     fieldProps: (path) => {
       const key = pathKey(path);
       const pending = records.some((record) => record.receipt.status !== "rejected" && record.receipt.status !== "undone" && record.receipt.pendingFields.some((field) => pathKey(field.path) === key));
@@ -142,14 +149,23 @@ export function useAssistedDraft<Value>(draftName: string, draft: WidgetDraftHan
   };
 }
 
-export function AssistDraftButton({ assistance, children = "Help me shape this" }: { readonly assistance: AssistedDraftControl; readonly children?: ReactNode }) {
+export function AssistDraftButton({ assistance, children = "AI help" }: { readonly assistance: AssistedDraftControl; readonly children?: ReactNode }) {
+  const trigger = useRef<HTMLButtonElement>(null);
   if (!assistance.declared) return null;
-  return <HelpTarget content={DRAFT_ASSISTANCE_HELP} reactAriaComposite><Button type="button" disabled={!assistance.available} onClick={assistance.open} aria-expanded={assistance.active}>{children}</Button></HelpTarget>;
+  return <HelpTarget content={DRAFT_ASSISTANCE_HELP} reactAriaComposite><Button ref={trigger} type="button" disabled={!assistance.available} onClick={() => assistance.open(trigger.current)} aria-expanded={assistance.active} aria-controls={assistance.panelId}><Sparkle weight="duotone" aria-hidden="true" />{children}</Button></HelpTarget>;
 }
 
 export function AssistedDraftRuntimeProvider({ children, fetchImpl }: { readonly children: ReactNode; readonly fetchImpl?: typeof fetch }) {
   const registry = useRef(new Map<string, LiveDraft>());
+  const sessionsByDraft = useRef(new Map<string, string>());
+  const client = useMemo(() => new AssistanceClient(fetchImpl), [fetchImpl]);
+  const revocations = useMemo(() => new AssistanceRevocations(client), [client]);
+  const pauses = useMemo(() => new AssistancePauses(client), [client]);
+  useSyncExternalStore(revocations.subscribe, revocations.getSnapshot);
+  useSyncExternalStore(pauses.subscribe, pauses.getSnapshot);
   const [activeKey, setActiveKey] = useState<string | null>(null);
+  const [displayedKey, setDisplayedKey] = useState<string | null>(null);
+  const returnFocus = useRef<HTMLElement | null>(null);
   const [receipts, setReceipts] = useState<ReadonlyMap<string, readonly ReceiptRecord[]>>(new Map());
   const [, rerender] = useState(0);
   const register = useCallback((binding: LiveDraft) => {
@@ -158,82 +174,163 @@ export function AssistedDraftRuntimeProvider({ children, fetchImpl }: { readonly
       if (registry.current.get(binding.key) === binding) {
         registry.current.delete(binding.key);
         setActiveKey((active) => active === binding.key ? null : active);
+        setDisplayedKey((current) => current === binding.key ? null : current);
       }
     };
   }, []);
   const changed = useCallback(() => rerender((version) => version + 1), []);
   const reset = useCallback((key: string) => {
-    try { sessionStorage.removeItem(`wb.assistance.binding:${key}`); } catch { /* optional recovery store */ }
+    const sessionId = sessionsByDraft.current.get(key) ?? readSessionValue(assistanceBindingKey(key));
+    // The host reset has already fenced its editing generation. Tombstone
+    // the old session before forgetting any identity or awaiting cancellation.
+    if (sessionId) revocations.revoke(key, sessionId);
+    sessionsByDraft.current.delete(key);
+    removeSessionValue(assistanceBindingKey(key));
+    removeSessionValue(assistancePreparationKey(key));
+    removeSessionValue(`wb.assistance.journal:${key}`);
+    removeSessionValue(`wb.assistance.history:${key}`);
     setActiveKey((current) => current === key ? null : current);
+    setDisplayedKey((current) => current === key ? null : current);
     setReceipts((current) => { const next = new Map(current); next.delete(key); return next; });
-  }, []);
-  const open = useCallback((key: string) => {
+  }, [revocations]);
+  const open = useCallback((key: string, trigger?: HTMLElement | null) => {
     const binding = registry.current.get(key);
-    if (binding?.editable() && binding.mounted()) setActiveKey(key);
+    if (binding?.editable() && binding.mounted()) {
+      returnFocus.current = trigger ?? (document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null);
+      setDisplayedKey(key);
+      setActiveKey(key);
+    }
   }, []);
+  const close = useCallback(() => {
+    setActiveKey(null);
+    const trigger = returnFocus.current;
+    if (trigger?.isConnected) trigger.focus({ preventScroll: true });
+  }, []);
+  useEffect(() => {
+    const retry = () => { void revocations.retry(); void pauses.retry(); };
+    retry();
+    window.addEventListener("online", retry);
+    window.addEventListener("focus", retry);
+    const timer = setInterval(retry, 10000);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("online", retry);
+      window.removeEventListener("focus", retry);
+    };
+  }, [pauses, revocations]);
   const onRecords = useCallback((key: string, records: readonly ReceiptRecord[]) => setReceipts((current) => new Map(current).set(key, records)), []);
+  const onSession = useCallback((key: string, sessionId: string) => { sessionsByDraft.current.set(key, sessionId); }, []);
   const value = useMemo(() => ({ activeKey, receipts, register, changed, reset, open }), [activeKey, receipts, register, changed, reset, open]);
-  const binding = activeKey ? registry.current.get(activeKey) : undefined;
+  const binding = displayedKey ? registry.current.get(displayedKey) : undefined;
   return <RuntimeContext.Provider value={value}>
-    <div className="wb-assistance-host" data-assistance-open={binding ? "true" : undefined}>
+    {revocations.error && <InlineAlert tone="warning" role="status" className="wb-assistance-cancellation">{revocations.error}<Button type="button" size="small" onClick={() => { void revocations.retry(); }}>Retry cancellation</Button></InlineAlert>}
+    {pauses.error && <InlineAlert tone="warning" role="status" className="wb-assistance-cancellation">{pauses.error}<Button type="button" size="small" onClick={() => { void pauses.retry(); }}>Retry pending Stop</Button></InlineAlert>}
+    <div className="wb-assistance-host" data-assistance-open={binding && activeKey ? "true" : undefined}>
       <div className="wb-assistance-host__content">{children}</div>
-      {binding && <AssistantDock key={binding.key} binding={binding} initialRecords={receipts.get(binding.key) ?? []} fetchImpl={fetchImpl} onClose={() => setActiveKey(null)} onEndSession={() => reset(binding.key)} onRecords={onRecords} />}
+      {binding && <AssistantDock key={binding.key} binding={binding} open={activeKey === binding.key} initialRecords={receipts.get(binding.key) ?? []} client={client} revocations={revocations} pauses={pauses} onClose={close} onRecords={onRecords} onSession={onSession} />}
     </div>
   </RuntimeContext.Provider>;
 }
 
-function AssistantDock({ binding, onClose, onEndSession, onRecords, fetchImpl, initialRecords }: {
+function AssistantDock({ binding, open, onClose, onRecords, onSession, client, revocations, pauses, initialRecords }: {
   readonly binding: LiveDraft;
+  readonly open: boolean;
   readonly onClose: () => void;
-  readonly onEndSession: () => void;
   readonly onRecords: (key: string, records: readonly ReceiptRecord[]) => void;
-  readonly fetchImpl?: typeof fetch;
+  readonly onSession: (key: string, sessionId: string) => void;
+  readonly client: AssistanceClient;
+  readonly revocations: AssistanceRevocations;
+  readonly pauses: AssistancePauses;
   readonly initialRecords: readonly ReceiptRecord[];
 }) {
-  const fetcher = useMemo(() => fetchImpl ?? globalThis.fetch.bind(globalThis), [fetchImpl]);
+  const fetcher = client.fetcher;
+  const pauseRevision = useSyncExternalStore(pauses.subscribe, pauses.getSnapshot);
   const [availability, setAvailability] = useState<AssistanceAvailability | null>(null);
   const [session, setSession] = useState<AssistanceSession | null>(null);
+  const sessionRef = useRef<AssistanceSession | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [preparing, setPreparing] = useState(true);
+  const paneRef = useRef<HTMLElement>(null);
+  const startButton = useRef<HTMLButtonElement>(null);
+  const freshStartButton = useRef<HTMLButtonElement>(null);
+  const startFocus = useRef<HTMLElement | null>(null);
+  const [stopPending, setStopPending] = useState(false);
+  const stopPendingRef = useRef(false);
+  const [historicalSessions, setHistoricalSessions] = useState<readonly AssistanceSession[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [records, setRecords] = useState<readonly ReceiptRecord[]>([]);
   const recordsRef = useRef(new Map<string, ReceiptRecord>());
   const initialRecordsRef = useRef(initialRecords);
   const preparedRef = useRef(new Map<string, PreparedDraftSnapshot>());
-  const requestId = useRef(newId());
+  const requestId = useRef(readSessionValue(assistancePreparationKey(binding.key)) ?? newId());
+  const startAttempt = useRef<AssistanceStartRequest | null>(null);
+  const startInFlight = useRef(false);
+  const composerTransfer = useRef<string | null>(null);
+  const authorityEpoch = useRef(0);
   const alive = useRef(true);
   const generation = useRef(binding.generation());
   const polling = useRef(false);
   const operationChain = useRef<Promise<void>>(Promise.resolve());
-  const storageKey = `wb.assistance.binding:${binding.key}`;
+  const storageKey = assistanceBindingKey(binding.key);
+  const journalKey = `wb.assistance.journal:${binding.key}`;
+  const historyKey = `wb.assistance.history:${binding.key}`;
   const receiptStorageKey = (sessionId: string) => `wb.assistance.receipts:${binding.key}:${sessionId}`;
+  const startStorageKey = (sessionId: string) => `wb.assistance.start:${binding.key}:${sessionId}`;
   const editable = binding.editable();
   const canMutate = () => alive.current && binding.mounted() && binding.editable() && generation.current === binding.generation();
+  const canSend = () => canMutate() && sessionRef.current?.phase === "active" && sessionRef.current.availability.available && !stopPendingRef.current && !pauses.hasPending(sessionRef.current.assistantSessionId) && !revocations.isEnded(sessionRef.current.assistantSessionId);
+  const scopedStop = (current: AssistanceSession): AssistanceStopRequest => pauses.requestFor(current.assistantSessionId) ?? {
+    requestId: newId(), expected_control_revision: current.controlRevision ?? 0,
+    ...(startAttempt.current ? { startRequestId: startAttempt.current.requestId } : {}),
+  };
 
-  const read = useCallback(async (path: string) => {
-    const response = await fetcher(path, { credentials: "same-origin", headers: { Accept: "application/json" } });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error || "Assistance could not load.");
-    return payload;
-  }, [fetcher]);
-  const headers = useCallback((operation: string, subject: string, path: string, body: Record<string, unknown>) => exactHumanAuthorityHeaders({ action: `dashboard.assistance.${operation}`, subject, context: { method: "POST", path, body } }, fetcher), [fetcher]);
-  const post = useCallback(async (operation: string, subject: string, path: string, body: Record<string, unknown>) => {
-    const authority = await headers(operation, subject, path, body);
-    const response = await fetcher(path, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json", Accept: "application/json", ...authority }, body: JSON.stringify(body) });
-    const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error || "Assistance could not complete this action.");
-    return payload;
-  }, [fetcher, headers]);
+  const read = useCallback((path: string) => client.read(path), [client]);
+  const post = useCallback((operation: string, subject: string, path: string, body: Record<string, unknown>, stillCurrent?: () => boolean) => client.post(operation, subject, path, body, stillCurrent), [client]);
+  const reconcileStartAttempt = useCallback((candidate: AssistanceSession, restore: boolean) => {
+    const key = `wb.assistance.start:${binding.key}:${candidate.assistantSessionId}`;
+    if (restore) {
+      const saved = readSessionValue(key);
+      try { startAttempt.current = saved ? JSON.parse(saved) as AssistanceStartRequest : null; } catch { startAttempt.current = null; }
+    }
+    const attempt = startAttempt.current;
+    // Use the authoritative phase, not our optimistic local Stop projection.
+    // A newer non-active control revision proves this frozen attempt cannot
+    // launch again. An unchanged revision still permits its exact retry.
+    if (attempt && (candidate.phase === "prepared" || candidate.phase === "stopped") && Number.isSafeInteger(candidate.controlRevision) && Number.isSafeInteger(attempt.expected_control_revision) && candidate.controlRevision! > attempt.expected_control_revision) {
+      startAttempt.current = null;
+      removeSessionValue(key);
+    }
+  }, [binding.key]);
   const acceptSession = useCallback(async (candidate: AssistanceSession) => {
     if (!equalJson(candidate.identity, binding.identity) || !equalJson(candidate.schema, binding.schema) || typeof candidate.assistantSessionId !== "string" || typeof candidate.conversationId !== "string") throw new Error("Assistance returned a different draft binding.");
-    let retained: readonly ReceiptRecord[] = initialRecordsRef.current.filter((record) => record.patch.assistantSessionId === candidate.assistantSessionId);
+    if (sessionRef.current?.assistantSessionId !== candidate.assistantSessionId) {
+      stopPendingRef.current = pauses.hasPending(candidate.assistantSessionId);
+      setStopPending(stopPendingRef.current);
+    }
+    const projected = revocations.isEnded(candidate.assistantSessionId) ? { ...candidate, phase: "ended" as const, activeStartId: null }
+      : stopPendingRef.current && candidate.phase === "active" ? { ...candidate, phase: "stopped" as const, activeStartId: null } : candidate;
+    if (!binding.mounted() || generation.current !== binding.generation()) return;
+    onSession(binding.key, candidate.assistantSessionId);
+    writeSessionValue(storageKey, candidate.assistantSessionId);
+    if (!alive.current) return;
+    if (sessionRef.current?.assistantSessionId === candidate.assistantSessionId) {
+      // Lifecycle/model refresh must not rebuild providers or erase the inverse journal.
+      reconcileStartAttempt(candidate, false);
+      sessionRef.current = projected;
+      setSession(projected);
+      setAvailability(candidate.availability);
+      return;
+    }
+    let retained: readonly ReceiptRecord[] = [...initialRecordsRef.current, ...recordsRef.current.values()];
     try {
-      const stored = sessionStorage.getItem(receiptStorageKey(candidate.assistantSessionId));
+      const stored = sessionStorage.getItem(journalKey) ?? sessionStorage.getItem(receiptStorageKey(candidate.assistantSessionId));
       if (stored) retained = JSON.parse(stored) as readonly ReceiptRecord[];
     } catch { /* the host's in-memory journal still survives panel close */ }
     const recovered: ReceiptRecord[] = [];
     for (const record of retained) {
       try {
-        const patch = await validatePatch(record.patch, { identity: binding.identity, assistantSessionId: candidate.assistantSessionId, conversationId: candidate.conversationId, form: binding.form });
+        const patch = await validatePatch(record.patch, { identity: binding.identity, assistantSessionId: record.patch.assistantSessionId, conversationId: record.patch.conversationId, form: binding.form });
         if (record.receipt.patchId !== patch.patchId || !Number.isSafeInteger(record.receipt.resultingRevision) || !["applied", "pending", "partial", "rejected", "undone"].includes(record.receipt.status)) continue;
         for (const change of record.changes) {
           const field = fieldFor(binding.form, change.path);
@@ -254,28 +351,279 @@ function AssistantDock({ binding, onClose, onEndSession, onRecords, fetchImpl, i
         recovered.push({ ...record, patch, receipt, stage: "committed" });
       } catch { /* corrupt or foreign receipt data never grants patch authority */ }
     }
-    if (!alive.current) return;
+    if (!alive.current || generation.current !== binding.generation()) return;
     recordsRef.current = new Map(recovered.map((record) => [record.patch.patchId, record]));
     setRecords(recovered);
     onRecords(binding.key, recovered);
-    setSession(candidate);
+    sessionRef.current = projected;
+    if (composerTransfer.current !== null) {
+      writeSessionValue(assistanceComposerKey(binding.key, candidate.assistantSessionId), composerTransfer.current);
+      composerTransfer.current = null;
+    }
+    setSession(projected);
     setAvailability(candidate.availability);
-    try { sessionStorage.setItem(storageKey, candidate.assistantSessionId); } catch { /* session recovery is optional */ }
-  }, [binding, onRecords, storageKey]);
+    reconcileStartAttempt(candidate, true);
+  }, [binding, journalKey, onRecords, onSession, pauses, reconcileStartAttempt, revocations, storageKey]);
+
+  const prepareSession = useCallback(async () => {
+    if (!canMutate()) return;
+    setPreparing(true);
+    setError(null);
+    const expectedRequestId = requestId.current;
+    writeSessionValue(assistancePreparationKey(binding.key), expectedRequestId);
+    try {
+      const candidate = normalizeAssistanceSession(await post("prepare_session", `assistance:new:${expectedRequestId}`, "/api/assistance/sessions", {
+        requestId: expectedRequestId, identity: binding.identity, schema: binding.schema, interactionMode: "operate", readOnly: false,
+      }));
+      const storedRequestId = readSessionValue(assistancePreparationKey(binding.key));
+      if (generation.current !== binding.generation() || (storedRequestId !== null && storedRequestId !== expectedRequestId)) {
+        revocations.revoke(binding.key, candidate.assistantSessionId);
+        return;
+      }
+      await acceptSession(candidate);
+    } catch (reason) { if (alive.current) setError(failure(reason)); }
+    finally { if (alive.current) setPreparing(false); }
+  }, [acceptSession, binding, post, revocations]);
+
+  const load = useCallback(async () => {
+    setPreparing(true);
+    setError(null);
+    try {
+      const available = await client.availability();
+      if (!alive.current) return;
+      setAvailability(available);
+      const saved = readSessionValue(storageKey);
+      if (saved) {
+        // A legacy/ended binding remains inspectable. It is never upgraded or
+        // forgotten just because the server requires a newly disclosed Start.
+        await acceptSession(await client.session(saved));
+      } else if (available.available && canMutate()) {
+        await prepareSession();
+      }
+    } catch (reason) { if (alive.current) setError(failure(reason)); }
+    finally { if (alive.current) setPreparing(false); }
+  }, [acceptSession, client, prepareSession, storageKey]);
 
   useEffect(() => {
     alive.current = true;
-    void read("/api/assistance/availability").then((value: AssistanceAvailability) => { if (alive.current) setAvailability(value); }).catch((reason) => { if (alive.current) setError(failure(reason)); });
-    let saved: string | null = null;
-    try { saved = sessionStorage.getItem(storageKey); } catch { /* private browsing */ }
-    if (saved) void read(`/api/assistance/${encodeURIComponent(saved)}`).then(acceptSession).catch(() => { try { sessionStorage.removeItem(storageKey); sessionStorage.removeItem(receiptStorageKey(saved!)); } catch { /* no storage */ } });
-    return () => { alive.current = false; };
-  }, [acceptSession, read, storageKey]);
+    try {
+      const saved: unknown = JSON.parse(readSessionValue(historyKey) ?? "[]");
+      if (Array.isArray(saved)) setHistoricalSessions(saved.map(normalizeAssistanceSession).filter((item) => equalJson(item.identity, binding.identity) && equalJson(item.schema, binding.schema)));
+    } catch { /* Historical metadata is not permission to run an assistant. */ }
+    void load();
+    return () => {
+      alive.current = false;
+      authorityEpoch.current += 1;
+      const current = sessionRef.current;
+      // Closing only hides this mounted pane. Actual host detachment fences
+      // the current driver; a later visit needs a new explicit Start.
+      if (current && !revocations.isEnded(current.assistantSessionId) && (current.phase === "active" || startInFlight.current || startAttempt.current)) {
+        // Persist an exact Stop before awaiting it, including a Start whose
+        // acknowledgement has not arrived. Server CAS prevents this retry
+        // from ever stopping a subsequently authorized generation.
+        void pauses.pause(binding.key, current.assistantSessionId, scopedStop(current)).catch(() => undefined);
+      }
+    };
+  }, [binding, client, historyKey, load, pauses, revocations]);
+
+  const sessionId = session?.assistantSessionId ?? null;
+  const conversationId = session?.conversationId ?? null;
+  const executionProvider = useMemo(() => {
+    if (sessionId === null || sessionRef.current?.protocol !== "wb.assisted-draft.session/v2" || sessionRef.current.phase === "ended" || sessionRef.current.phase === "expired") return null;
+    const path = `/api/assistance/sessions/${encodeURIComponent(sessionId)}/execution`;
+    return new HttpChatExecutionProfileProvider({
+      targetId: sessionId, loadUrl: path, selectUrl: path, fetchImpl: fetcher,
+      initialSnapshot: sessionRef.current.execution,
+      authorizeSelect: async (body) => {
+        const epoch = authorityEpoch.current;
+        if (!canMutate() || revocations.isEnded(sessionId)) throw new Error("Model selection is unavailable for this draft.");
+        const headers = await client.authorize("execution_select", `assistance:${sessionId}`, path, body, "PATCH");
+        if (!canMutate() || epoch !== authorityEpoch.current || revocations.isEnded(sessionId)) throw new Error("This assistant was paused before its model could change.");
+        return headers;
+      },
+      onEnvelope: (envelope) => {
+        const current = sessionRef.current;
+        if (!alive.current || current?.assistantSessionId !== sessionId) return;
+        const agent = assistanceAgent(envelope.agent);
+        const changed = current.execution?.selection.revision !== envelope.execution.selection.revision;
+        if (changed) {
+          authorityEpoch.current += 1;
+          startAttempt.current = null;
+          removeSessionValue(startStorageKey(sessionId));
+        }
+        const next: AssistanceSession = {
+          ...current, execution: envelope.execution, agent: agent ?? current.agent,
+          phase: revocations.isEnded(sessionId) ? "ended" : agent?.phase ?? current.phase,
+          activeStartId: agent?.activeStartId ?? null,
+          controlRevision: agent?.controlRevision ?? current.controlRevision,
+        };
+        sessionRef.current = next;
+        setSession(next);
+      },
+    });
+    // Only opaque binding identity owns the transport, never its lifecycle projection.
+  }, [binding, client, fetcher, revocations, sessionId]);
+  const executionState = useChatExecutionProfile(executionProvider, sessionId ?? "unbound");
+  useEffect(() => {
+    if (session?.execution) executionProvider?.replaceSnapshot(session.execution);
+  }, [executionProvider, session?.execution]);
+  const execution: ChatExecutionControl | undefined = executionState === undefined ? undefined : {
+    ...executionState,
+    confirmSelection: ({ providerLabel, modelLabel }) => sessionRef.current?.phase === "active" || startAttempt.current !== null ? {
+      title: `Switch to ${providerLabel} · ${modelLabel}?`,
+      description: "This stops the current assistant. Your messages, draft and Undo stay here. Review the disclosure and choose Start before the new model receives any content.",
+      confirmLabel: "Switch model",
+    } : null,
+    select: async (providerId, modelId) => {
+      authorityEpoch.current += 1;
+      await executionState.select(providerId, modelId);
+    },
+  };
+
+  const recoverAfterStop = useCallback(async (current: AssistanceSession, alreadyAbsent = false) => {
+    if (!alreadyAbsent) {
+      try { await acceptSession(await client.session(current.assistantSessionId)); return; }
+      catch (reason) {
+        if (!(reason instanceof AssistanceRequestError && reason.status === 404 && reason.code === "assistance_session_not_found")) throw reason;
+      }
+    }
+    if (!alive.current || sessionRef.current?.assistantSessionId !== current.assistantSessionId) return;
+    // Confirmed absence is terminal, not an unconfirmed cancellation. Retain
+    // the known binding as history and require an explicit new-session action.
+    revocations.revoke(binding.key, current.assistantSessionId);
+    startAttempt.current = null;
+    removeSessionValue(startStorageKey(current.assistantSessionId));
+    await acceptSession({ ...current, phase: "ended", activeStartId: null });
+    setError("The previous AI help session no longer exists. Your form and locally retained Undo are preserved.");
+  }, [acceptSession, binding, client, revocations]);
+
+  const stop = useCallback(async () => {
+    const current = sessionRef.current;
+    if (!current || current.phase === "ended" || current.phase === "restart_required") return;
+    authorityEpoch.current += 1;
+    stopPendingRef.current = true;
+    setStopPending(true);
+    const request = scopedStop(current);
+    startAttempt.current = null;
+    removeSessionValue(startStorageKey(current.assistantSessionId));
+    const paused = { ...current, phase: "stopped" as const, activeStartId: null };
+    sessionRef.current = paused;
+    setSession(paused);
+    setError(null);
+    try {
+      const result = await pauses.pause(binding.key, current.assistantSessionId, request);
+      if (!alive.current || sessionRef.current?.assistantSessionId !== current.assistantSessionId) return;
+      stopPendingRef.current = false;
+      setStopPending(false);
+      await recoverAfterStop(current, result.outcome === "already_absent");
+    } catch (reason) {
+      if (alive.current) setError(`Stopping is not confirmed yet. Retry Stop before starting again. ${failure(reason)}`);
+    }
+  }, [binding, pauses, recoverAfterStop]);
+  useEffect(() => {
+    const current = sessionRef.current;
+    if (!current || !stopPendingRef.current || pauses.hasPending(current.assistantSessionId)) return;
+    stopPendingRef.current = false;
+    setStopPending(false);
+    setError((currentError) => currentError?.startsWith("Stopping is not confirmed yet.") ? null : currentError);
+    // A reconnect may acknowledge a superseded Stop. Recover server state;
+    // never replace a newer active generation with the old local projection.
+    void recoverAfterStop(current).catch((reason) => { if (alive.current) setError(failure(reason)); });
+  }, [pauseRevision, pauses, recoverAfterStop, sessionId]);
+  useEffect(() => {
+    if ((!editable || availability?.available === false) && (sessionRef.current?.phase === "active" || startInFlight.current) && !stopPendingRef.current) void stop();
+  }, [availability?.available, editable, session?.phase, stop]);
+
+  const start = (fresh = false): void => {
+    const currentSession = sessionRef.current;
+    const selection = execution?.snapshot?.selection;
+    if (!currentSession || !selection || !Number.isSafeInteger(currentSession.controlRevision) || !canMutate() || startInFlight.current || stopPendingRef.current || pauses.hasPending(currentSession.assistantSessionId) || !availability?.available || !execution?.currentAvailable || execution.selecting || revocations.isEnded(currentSession.assistantSessionId) || currentSession.phase === "restart_required") return;
+    const expectedEpoch = authorityEpoch.current;
+    try {
+      const focused = document.activeElement;
+      startFocus.current = focused instanceof HTMLElement && (focused === startButton.current || focused === freshStartButton.current) ? focused : null;
+      if (fresh) startAttempt.current = null;
+      if (startAttempt.current === null) {
+        // This is the disclosure boundary: freeze all fields and identities
+        // synchronously, before hashing, persistence, authentication or launch.
+        const current = binding.snapshot();
+        startAttempt.current = {
+          requestId: newId(), disclosureAccepted: true,
+          provider_id: selection.providerId, model_id: selection.modelId, expected_revision: selection.revision,
+          expected_control_revision: currentSession.controlRevision!,
+          initialSnapshot: { messageId: newId(), baseDraftRevision: current.revision, baseSnapshotHash: "", snapshot: discloseSnapshot(binding.form, current.value) },
+        };
+        writeSessionValue(startStorageKey(currentSession.assistantSessionId), JSON.stringify(startAttempt.current));
+      }
+      const attempted = startAttempt.current;
+      if (attempted.provider_id !== selection.providerId || attempted.model_id !== selection.modelId || attempted.expected_revision !== selection.revision || !equalJson(discloseSnapshot(binding.form, attempted.initialSnapshot.snapshot), attempted.initialSnapshot.snapshot)) {
+        throw new Error("The prepared Start no longer matches this model or form. Choose Start with current fields to authorize a new attempt.");
+      }
+      startInFlight.current = true;
+      setBusy(true);
+      setError(null);
+      void (async () => {
+        const request: AssistanceStartRequest = { ...attempted, initialSnapshot: { ...attempted.initialSnapshot, baseSnapshotHash: await snapshotHash(attempted.initialSnapshot.snapshot) } };
+        const stillCurrent = () => canMutate() && expectedEpoch === authorityEpoch.current && !revocations.isEnded(currentSession.assistantSessionId);
+        if (!stillCurrent()) return;
+        startAttempt.current = request;
+        writeSessionValue(startStorageKey(currentSession.assistantSessionId), JSON.stringify(request));
+        await binding.flush();
+        if (!canMutate() || expectedEpoch !== authorityEpoch.current || revocations.isEnded(currentSession.assistantSessionId)) throw new Error("Start was cancelled because this draft or its model changed. Your form is preserved.");
+        const result = normalizeAssistanceSession(await post("start", `assistance:${currentSession.assistantSessionId}`, `/api/assistance/sessions/${encodeURIComponent(currentSession.assistantSessionId)}/start`, request as unknown as Record<string, unknown>, stillCurrent));
+        if (expectedEpoch !== authorityEpoch.current || !canMutate()) return;
+        await acceptSession(result);
+        if (result.phase === "active") {
+          startAttempt.current = null;
+          removeSessionValue(startStorageKey(currentSession.assistantSessionId));
+        }
+      })().catch((reason) => {
+        if (!alive.current) return;
+        setError(failure(reason));
+        if (reason instanceof AssistanceRequestError && (reason.code === "execution_selection_changed" || reason.code === "assistance_control_changed")) executionProvider?.invalidate();
+      }).finally(() => {
+        startInFlight.current = false;
+        if (alive.current) setBusy(false);
+      });
+    } catch (reason) { setError(failure(reason)); }
+  };
+
+  const endSession = (): void => {
+    const current = sessionRef.current;
+    if (!current) return;
+    authorityEpoch.current += 1;
+    revocations.revoke(binding.key, current.assistantSessionId);
+    startAttempt.current = null;
+    removeSessionValue(startStorageKey(current.assistantSessionId));
+    const ended = { ...current, phase: "ended" as const, activeStartId: null };
+    sessionRef.current = ended;
+    setSession(ended);
+  };
+
+  const newSession = (): void => {
+    const current = sessionRef.current;
+    if (!current || !canMutate()) return;
+    authorityEpoch.current += 1;
+    revocations.revoke(binding.key, current.assistantSessionId);
+    const history = [...historicalSessions.filter((item) => item.assistantSessionId !== current.assistantSessionId), current];
+    setHistoricalSessions(history);
+    writeSessionValue(historyKey, JSON.stringify(history));
+    composerTransfer.current = readSessionValue(assistanceComposerKey(binding.key, current.assistantSessionId));
+    removeSessionValue(storageKey);
+    startAttempt.current = null;
+    sessionRef.current = null;
+    setSession(null);
+    requestId.current = newId();
+    void prepareSession();
+  };
 
   const retain = (record: ReceiptRecord) => {
     recordsRef.current.set(record.patch.patchId, record);
     const next = [...recordsRef.current.values()];
-    try { sessionStorage.setItem(receiptStorageKey(record.patch.assistantSessionId), JSON.stringify(next)); }
+    try {
+      sessionStorage.setItem(receiptStorageKey(record.patch.assistantSessionId), JSON.stringify(next.filter((item) => item.patch.assistantSessionId === record.patch.assistantSessionId)));
+      sessionStorage.setItem(journalKey, JSON.stringify(next));
+    }
     catch { if (alive.current) setError("Local receipt recovery is unavailable after reload. Your form remains editable, and Undo remains available in this open panel."); }
     return next;
   };
@@ -284,10 +632,11 @@ function AssistantDock({ binding, onClose, onEndSession, onRecords, fetchImpl, i
     setRecords(next);
     onRecords(binding.key, next);
   };
-  const acknowledge = useCallback(async (receipt: DraftPatchReceipt) => {
-    if (!session) return;
-    await post("acknowledge", `assistance:${session.assistantSessionId}`, `/api/assistance/${encodeURIComponent(session.assistantSessionId)}/receipts`, receipt as unknown as Record<string, unknown>);
-  }, [post, session]);
+  const acknowledge = useCallback(async (receipt: DraftPatchReceipt, assistantSessionId?: string) => {
+    const id = assistantSessionId ?? sessionRef.current?.assistantSessionId;
+    if (!id) return;
+    await post("acknowledge", `assistance:${id}`, `/api/assistance/${encodeURIComponent(id)}/receipts`, receipt as unknown as Record<string, unknown>);
+  }, [post]);
 
   const commitPlan = async (patch: AssistedDraftPatch, plan: PatchPlan, priorChanges: readonly FieldChange[] = []) => {
     if (!canMutate()) return;
@@ -313,21 +662,21 @@ function AssistantDock({ binding, onClose, onEndSession, onRecords, fetchImpl, i
     // storage. Never resurrect receipts in the new editing lifetime either.
     if (generation.current !== binding.generation()) return;
     publish({ patch, receipt, changes });
-    try { await acknowledge(receipt); }
+    try { await acknowledge(receipt, patch.assistantSessionId); }
     catch (reason) { if (alive.current) setError(`Changes are visible in your form; their receipt will retry. ${failure(reason)}`); }
   };
 
-  const applyPatch = async (unknownPatch: unknown, serverReceipt: DraftPatchReceipt | null) => {
-    if (!session || !canMutate()) return;
+  const applyPatch = async (unknownPatch: unknown, serverReceipt: DraftPatchReceipt | null, expectedEpoch: number) => {
+    if (!session || !canMutate() || expectedEpoch !== authorityEpoch.current) return;
     const patch = await validatePatch(unknownPatch, { identity: binding.identity, assistantSessionId: session.assistantSessionId, conversationId: session.conversationId, form: binding.form });
-    if (!canMutate()) return;
+    if (!canMutate() || expectedEpoch !== authorityEpoch.current) return;
     const local = recordsRef.current.get(patch.patchId);
     if (local) {
       if (serverReceipt && (serverReceipt.resultingRevision > local.receipt.resultingRevision || serverReceipt.status === "undone" || serverReceipt.status === "rejected")) {
         if (!equalJson(local.receipt, serverReceipt)) publish({ ...local, receipt: serverReceipt, changes: [] });
         return;
       }
-      if (!serverReceipt || !equalJson(local.receipt, serverReceipt)) await acknowledge(local.receipt);
+      if (!serverReceipt || !equalJson(local.receipt, serverReceipt)) await acknowledge(local.receipt, patch.assistantSessionId);
       return;
     }
     if (serverReceipt) {
@@ -336,20 +685,31 @@ function AssistantDock({ binding, onClose, onEndSession, onRecords, fetchImpl, i
       return;
     }
     await binding.flush();
-    if (!canMutate()) return;
+    if (!canMutate() || expectedEpoch !== authorityEpoch.current) return;
     const current = binding.snapshot();
-    const plan = planPatch(patch, binding.form, current, binding.focused());
+    // Old published evidence remains reviewable after Stop/switch/End, but a
+    // fenced driver must not keep automatically editing the ordinary form.
+    const form = canSend() ? binding.form : { ...binding.form, patchBehavior: "suggest" as const };
+    const plan = planPatch(patch, form, current, binding.focused());
     await commitPlan(patch, plan);
   };
 
   const pollRef = useRef<() => Promise<void>>(async () => undefined);
   pollRef.current = async () => {
-    if (!session || !canMutate() || polling.current) return;
+    const expected = sessionRef.current;
+    const expectedEpoch = authorityEpoch.current;
+    if (!expected || !canMutate() || polling.current || startInFlight.current) return;
     polling.current = true;
     try {
-      const payload = await read(`/api/assistance/${encodeURIComponent(session.assistantSessionId)}/patches`);
-      for (const entry of payload.patches ?? []) {
-        operationChain.current = operationChain.current.catch(() => undefined).then(() => applyPatch(entry.patch, entry.receipt));
+      const current = await client.session(expected.assistantSessionId);
+      if (expectedEpoch !== authorityEpoch.current || sessionRef.current?.assistantSessionId !== expected.assistantSessionId) return;
+      await acceptSession(current);
+      const payload = await read(`/api/assistance/${encodeURIComponent(expected.assistantSessionId)}/patches`);
+      if (expectedEpoch !== authorityEpoch.current || sessionRef.current?.assistantSessionId !== expected.assistantSessionId) return;
+      const patches = isRecord(payload) && Array.isArray(payload.patches) ? payload.patches : [];
+      for (const entry of patches) {
+        if (!isRecord(entry) || expectedEpoch !== authorityEpoch.current) return;
+        operationChain.current = operationChain.current.catch(() => undefined).then(() => applyPatch(entry.patch, entry.receipt as DraftPatchReceipt | null, expectedEpoch));
         await operationChain.current;
       }
     } catch (reason) { if (alive.current) setError(failure(reason)); }
@@ -361,35 +721,65 @@ function AssistantDock({ binding, onClose, onEndSession, onRecords, fetchImpl, i
     poll();
     const timer = setInterval(poll, 3000);
     return () => clearInterval(timer);
-  }, [editable, poll, session]);
+  }, [editable, poll, sessionId]);
 
-  const provider = useMemo(() => session ? new HttpChatConversationProvider({
-    conversationId: session.conversationId, fetchImpl: fetcher,
-    basePath: `/api/assistance/${encodeURIComponent(session.assistantSessionId)}/conversations`,
-    authorizeSend: (body) => {
-      if (!binding.mounted() || !binding.editable()) throw new Error("Assistance is paused outside Operate mode.");
-      return headers("respond", `assistance:${session.assistantSessionId}`, `/api/assistance/${encodeURIComponent(session.assistantSessionId)}/conversations/${encodeURIComponent(session.conversationId)}/respond`, body);
+  const provider = useMemo(() => sessionId && conversationId ? new HttpChatConversationProvider({
+    conversationId, fetchImpl: fetcher,
+    basePath: `/api/assistance/${encodeURIComponent(sessionId)}/conversations`,
+    authorizeSend: async (body) => {
+      const epoch = authorityEpoch.current;
+      if (!canSend()) throw new Error("Choose Start before sending content to this assistant.");
+      const authorized = await client.authorize("respond", `assistance:${sessionId}`, `/api/assistance/${encodeURIComponent(sessionId)}/conversations/${encodeURIComponent(conversationId)}/respond`, body);
+      if (!canSend() || epoch !== authorityEpoch.current) throw new Error("This assistant was paused before the message could be sent.");
+      return authorized;
     },
-  }) : null, [binding, fetcher, headers, session]);
-  const composerStorageKey = session ? `wb.assistance.composer:${binding.key}:${session.assistantSessionId}` : null;
+  }) : null, [binding, client, conversationId, fetcher, pauses, revocations, sessionId]);
+  useEffect(() => {
+    // A Start/Stop/switch can publish assistant context without a human send.
+    // Refresh the canonical controller without replacing it or its composer.
+    provider?.invalidate();
+  }, [provider, session?.activeStartId, session?.phase]);
+  useEffect(() => {
+    if (!open) { startFocus.current = null; return; }
+    if (busy || session?.phase !== "active") return;
+    const trigger = startFocus.current;
+    startFocus.current = null;
+    if (trigger && (document.activeElement === trigger || (!trigger.isConnected && document.activeElement === document.body))) {
+      // The assistance surface contains one canonical composer. A narrow DOM
+      // ref hands off the disappearing Start action without custom chat input
+      // plumbing, and never takes focus back from a human-edited form field.
+      paneRef.current?.querySelector<HTMLTextAreaElement>("textarea:not(:disabled)")?.focus({ preventScroll: true });
+    }
+  }, [busy, open, session?.phase]);
+  const composerStorageKey = sessionId ? assistanceComposerKey(binding.key, sessionId) : null;
   const retainedComposer = (): string => {
     try { return composerStorageKey ? sessionStorage.getItem(composerStorageKey) ?? "" : ""; } catch { return ""; }
   };
 
   const prepareSend = async (input: ChatSendInput): Promise<ChatSendInput> => {
-    if (!session || !canMutate() || !input.messageId) throw new Error("Assistance is paused. Your form is unchanged.");
+    if (!session || !canSend() || !input.messageId) throw new Error("Assistance is paused. Your form is unchanged.");
+    const epoch = authorityEpoch.current;
     let prepared = preparedRef.current.get(input.messageId);
     if (!prepared) {
       // Send authorizes the fields visible now, not edits made while their
       // persistence is pending. Freeze values/revision before the first await.
       const current = binding.snapshot();
       const snapshot = discloseSnapshot(binding.form, current.value);
-      await binding.flush();
-      if (!canMutate()) throw new Error("This draft is no longer active.");
-      prepared = { messageId: input.messageId, baseDraftRevision: current.revision, baseSnapshotHash: await snapshotHash(snapshot), snapshot };
+      prepared = { messageId: input.messageId, baseDraftRevision: current.revision, baseSnapshotHash: "", snapshot };
       preparedRef.current.set(input.messageId, prepared);
     }
-    await post("prepare", `assistance:${session.assistantSessionId}`, `/api/assistance/${encodeURIComponent(session.assistantSessionId)}/snapshots`, prepared as unknown as Record<string, unknown>);
+    // Retain the disclosure even when persistence or hashing fails. The
+    // canonical composer's same-message retry must never recapture newer fields.
+    await binding.flush();
+    if (!canSend() || epoch !== authorityEpoch.current) throw new Error("This draft is no longer active.");
+    if (!prepared.baseSnapshotHash) {
+      const hash = await snapshotHash(prepared.snapshot);
+      if (!canSend() || epoch !== authorityEpoch.current) throw new Error("This assistant is no longer active.");
+      prepared = { ...prepared, baseSnapshotHash: hash };
+      preparedRef.current.set(input.messageId, prepared);
+    }
+    if (!canSend() || epoch !== authorityEpoch.current) throw new Error("This assistant is no longer active.");
+    await post("prepare", `assistance:${session.assistantSessionId}`, `/api/assistance/${encodeURIComponent(session.assistantSessionId)}/snapshots`, prepared as unknown as Record<string, unknown>, () => canSend() && epoch === authorityEpoch.current);
     return input;
   };
 
@@ -402,7 +792,7 @@ function AssistantDock({ binding, onClose, onEndSession, onRecords, fetchImpl, i
       if (action === "reject") {
         const receipt: DraftPatchReceipt = { ...record.receipt, status: record.receipt.appliedFields.length ? "applied" : "rejected", pendingFields: [], resultingRevision: current.revision, message: "Assistant suggestions dismissed. Your form was not changed." };
         publish({ ...record, receipt });
-        await acknowledge(receipt);
+        await acknowledge(receipt, record.patch.assistantSessionId);
       } else if (action === "undo") {
         await commitPlan(record.patch, planUndo(record.patch.patchId, record.changes, current, binding.focused()));
       } else {
@@ -432,36 +822,80 @@ function AssistantDock({ binding, onClose, onEndSession, onRecords, fetchImpl, i
     </section>)}
   </div>;
 
-  return <aside className="wb-assistance-dock" aria-label="Draft assistance">
+  const terminal = session?.phase === "ended" || session?.phase === "expired" || session?.phase === "restart_required";
+  const active = session?.phase === "active" && availability?.available === true && !stopPending;
+  const selected = execution?.snapshot?.selection;
+  const modelLabel = selected ? `${selected.providerLabel} · ${selected.modelLabel}` : "the selected model";
+  const startDisabled = !editable || busy || stopPending || !Number.isSafeInteger(session?.controlRevision) || !availability?.available || execution?.status !== "ready" || execution.selecting || !execution.currentAvailable || execution.snapshot?.readOnly === true;
+  const context = <HelpTarget content={{ summary: "AI help is bound to this form.", details: "Start shares its current allowlisted fields and bounded conversation history with the selected provider. Later edits stay private until you send or Start again. Only you can submit the form." }} focusable placement="top start"><span className="wb-chat-composer__footer-accessory wb-assistance-context">About: {binding.form.title}</span></HelpTarget>;
+  const lifecycle = <div className="wb-assistance-lifecycle">
+    {!editable && <InlineAlert tone="info" role="status">AI help is paused outside editable Operate mode. Your form is preserved.</InlineAlert>}
+    {availability && !availability.available && <InlineAlert tone="info" role="status">{AVAILABILITY_LABELS[availability.code] ?? availability.message} <a href="/app/settings/system/dashboard-ai?setting=wb.dashboard.assistance">Dashboard AI settings</a></InlineAlert>}
+    {error && <InlineAlert tone="danger" role="alert">{error}</InlineAlert>}
+    {session?.agent?.error && session.agent.error !== error && <InlineAlert tone="danger" role="alert">{session.agent.error}</InlineAlert>}
+    {terminal ? <div className="wb-assistance-start" role="status">
+      <p>{session?.phase === "restart_required" ? "This conversation used the previous assistant. Its history and Undo remain available; a new AI help session needs a fresh disclosure and Start." : "This AI help session has ended. Your form, conversation and Undo are preserved."}</p>
+      <Button type="button" disabled={!editable || !availability?.available} onClick={newSession}>New AI help session</Button>
+    </div> : !active || busy ? <><div className="wb-assistance-start" role="group" aria-label="Start disclosure">
+      <p role="status">{busy ? "Starting AI help…" : stopPending ? "Stop has not been confirmed. Retry before starting again." : execution?.status === "ready" && !execution.currentAvailable ? "Choose an available model to start." : session?.phase === "stopped" ? "Assistant stopped. Review the disclosure before starting again." : "Ready for your Start."}</p>
+      {availability?.available && <HelpTarget content={{ summary: "Review what Start shares.", details: availability.disclosure }} focusable><p>Shares this form's allowed fields and recent chat with <strong>{modelLabel}</strong>. You review and submit.</p></HelpTarget>}
+    </div>{availability?.available && <div className="wb-assistance-actions">
+          <Button ref={startButton} type="button" variant="primary" disabled={startDisabled} onClick={() => start()}>{busy ? "Starting…" : startAttempt.current ? "Retry Start" : "Start AI help"}</Button>
+          {startAttempt.current && !busy && <Button ref={freshStartButton} type="button" disabled={startDisabled} onClick={() => start(true)}>Start with current fields</Button>}
+        </div>}</> : <span className="wb-assistance-state" role="status">AI help active · Draft shaping only</span>}
+    {session && session.phase !== "ended" && session.phase !== "expired" && <div className="wb-assistance-session-actions">
+      {(active || busy || stopPending || startAttempt.current) && <HelpTarget content={{ summary: "Stop the assistant's current work.", details: "Stopping preserves the draft and conversation. A fresh explicit Start is required before the assistant receives more content." }} reactAriaComposite><Button type="button" size="small" onClick={() => { void stop(); }}>{stopPending ? "Retry Stop" : "Stop assistant"}</Button></HelpTarget>}
+      <details>
+        <summary>Session actions</summary>
+        <HelpTarget content={{ summary: "Permanently end this AI help session.", details: "Your form, conversation and conditional Undo stay here. This session cannot restart; a new session requires a new disclosure and Start." }} reactAriaComposite><Button type="button" size="small" onClick={endSession}>End session and keep draft</Button></HelpTarget>
+      </details>
+    </div>}
+  </div>;
+
+  return <aside ref={paneRef} id={binding.paneId} className="wb-assistance-dock" aria-label="Draft assistance" hidden={!open}>
     <header>
       <HelpTarget content={DRAFT_ASSISTANCE_HELP} focusable><h2>{binding.title()}</h2></HelpTarget>
-      <HelpTarget content={{ summary: "Close the panel and keep your work.", details: "Closing this panel keeps your draft and conversation. Reopen form assistance to continue." }} reactAriaComposite><Button type="button" onClick={onClose}>Close assistance</Button></HelpTarget>
+      <HelpTarget content={{ summary: "Close the panel and keep your work.", details: "Closing this panel keeps your draft and conversation. Reopen AI help to continue." }} reactAriaComposite><Button type="button" size="small" onClick={onClose}>Close assistance</Button></HelpTarget>
     </header>
-    {!editable && <p role="status">Assistance is paused in read-only, Arrange, or Preview mode. Your draft is unchanged.</p>}
-    {error && <p role="alert">{error}</p>}
-    {!session && <>
-      {!availability ? <p role="status">Checking assistance availability…</p> : !availability.available ? <HelpTarget content={{ summary: AVAILABILITY_LABELS[availability.code] ?? availability.message, details: availability.message }} focusable><p role="status">{AVAILABILITY_LABELS[availability.code] ?? availability.message}</p></HelpTarget> : null}
-      {availability?.available && availability.disclosure && <p>{availability.disclosure}</p>}
-      {availability?.available ? <Button type="button" disabled={busy || !editable} onClick={() => {
-        if (!canMutate()) return;
-        setBusy(true); setError(null);
-        void post("start", `assistance:new:${requestId.current}`, "/api/assistance/sessions", { requestId: requestId.current, identity: binding.identity, schema: binding.schema, interactionMode: "operate", readOnly: false, disclosureAccepted: true, providerId: availability.providerId, modelId: availability.modelId }).then(acceptSession).catch((reason) => { if (alive.current) setError(failure(reason)); }).finally(() => { if (alive.current) setBusy(false); });
-      }}>{busy ? "Starting…" : "Start assistance"}</Button> : <a href="/app/settings/apps/dashboard?setting=wb.dashboard.assistance">Set up form assistance</a>}
-      <Button type="button" onClick={() => { setError(null); void read("/api/assistance/availability").then(setAvailability).catch((reason) => setError(failure(reason))); }}>Retry availability</Button>
-    </>}
-    {session && provider && <>
-      <p>{session.availability.providerId} · {session.availability.modelId} · Draft shaping only</p>
-      <ConversationChat provider={provider} conversationId={session.conversationId} title="Draft conversation" prepareSend={prepareSend} onMessagesChange={poll} transcriptAppendix={appendix} composerDisabled={!editable} responsesDisabled={!editable} readOnlyReason="Assistance is paused outside editable Operate mode." initialValue={retainedComposer()} onDraftChange={(value) => {
-        try { if (composerStorageKey) sessionStorage.setItem(composerStorageKey, value); } catch { /* shared composer still owns the live draft */ }
-      }} />
-      <HelpTarget content={{ summary: "Stop the assistant's current work.", details: "Send another message to resume. Stopping does not submit or discard your draft." }} reactAriaComposite><Button type="button" disabled={!editable} onClick={() => { void post("stop", `assistance:${session.assistantSessionId}`, `/api/assistance/${encodeURIComponent(session.assistantSessionId)}/stop`, {}).catch((reason) => setError(failure(reason))); }}>Stop assistant</Button></HelpTarget>
-      <HelpTarget content={{ summary: "End assistance without clearing the form.", details: "Your draft is preserved. Reopening assistance will offer a new session and ask you to review its disclosure again." }} reactAriaComposite><Button type="button" disabled={!editable} onClick={() => {
-        // Detach synchronously even when a stop acknowledgement is uncertain.
-        // Reopening Help will offer a new, explicitly disclosed session.
-        alive.current = false;
-        void post("stop", `assistance:${session.assistantSessionId}`, `/api/assistance/${encodeURIComponent(session.assistantSessionId)}/stop`, {}).catch(() => undefined);
-        onEndSession();
-      }}>End session and keep draft</Button></HelpTarget>
-    </>}
+    <div className="wb-assistance-dock__body">
+      {session && provider ? <ConversationChat
+        provider={provider} conversationId={session.conversationId} title="Draft conversation"
+        sendScopeKey={`${session.assistantSessionId}:${session.activeStartId ?? "unstarted"}:${session.controlRevision}:${session.execution?.selection.revision ?? "none"}:${session.phase}`}
+        prepareSend={prepareSend} onMessagesChange={poll} transcriptAppendix={appendix}
+        composerDisabled={!editable || !active || busy} responsesDisabled={!editable || !active || busy}
+        showStoppedNotice={false}
+        execution={execution} executionDisabled={!editable || busy || terminal || !availability?.available}
+        header={lifecycle} composerFooterAccessory={context}
+        noMessagesLabel={active ? "The assistant is using the fields you shared at Start. You can keep editing your form." : "Choose a model, then Start to share this form's current fields with your assistant."}
+        composerPlaceholder="Ask about this form…"
+        readOnlyReason="This AI help conversation is read-only. Your form remains editable."
+        initialValue={retainedComposer()} onDraftChange={(value) => { if (composerStorageKey) writeSessionValue(composerStorageKey, value); }}
+      /> : <ChatPanelState
+        label="Draft conversation" kind={preparing ? "loading" : error ? "error" : "empty"}
+        title={preparing ? "Preparing AI help…" : error ? "AI help could not load" : availability ? AVAILABILITY_LABELS[availability.code] : "AI help is unavailable"}
+        detail={error ?? <>{availability?.message} {!availability?.available && <a href="/app/settings/system/dashboard-ai?setting=wb.dashboard.assistance">Set up form assistance</a>}</>}
+        action={preparing ? undefined : { label: "Retry availability", onAction: () => { void load(); } }}
+      />}
+    </div>
+    {historicalSessions.length > 0 && <details className="wb-assistance-history" open={historyOpen} onToggle={(event) => setHistoryOpen(event.currentTarget.open)}>
+      <summary>Previous AI help conversations</summary>
+      {historyOpen && historicalSessions.map((previous) => <HistoricalConversation key={previous.assistantSessionId} session={previous} client={client} />)}
+    </details>}
   </aside>;
+}
+
+/** Explicit historical inspection still uses the canonical, read-only Chat. */
+function HistoricalConversation({ session, client }: { readonly session: AssistanceSession; readonly client: AssistanceClient }) {
+  const provider = useMemo<ChatConversationProvider>(() => {
+    const transport = new HttpChatConversationProvider({
+      conversationId: session.conversationId, fetchImpl: client.fetcher,
+      basePath: `/api/assistance/${encodeURIComponent(session.assistantSessionId)}/conversations`,
+    });
+    return {
+      loadConversation: async (id) => ({ ...await transport.loadConversation(id), status: "closed" }),
+      sendMessage: async () => { throw new Error("Historical assistance is read-only."); },
+      subscribe: (id, invalidate) => transport.subscribe(id, invalidate),
+    };
+  }, [client, session.assistantSessionId, session.conversationId]);
+  return <div className="wb-assistance-history__conversation"><ConversationChat provider={provider} conversationId={session.conversationId} title="Previous AI help conversation" readOnlyReason="This history is preserved. Start a new session to continue with the form." /></div>;
 }

@@ -30,7 +30,11 @@ dev_notes: |-
   turn. It allocates the ID before host preparation, prevents `prepareSend`
   from replacing it, and retains the exact prepared envelope across an
   uncertain transport retry. Clear that envelope only after acknowledged
-  success or when the provider, conversation, or submitted draft changes.
+  success or when the provider, conversation, submitted draft, or opaque
+  `sendScopeKey` changes. Explicitly authorized hosts rotate that scope on
+  lifecycle/model changes without replacing the canonical provider or panel;
+  this preserves unsent text but prevents an old prepared envelope crossing a
+  new authorization boundary.
 
   Keep transport out of `widget-library/chat`. The generic same-origin HTTP implementation lives at `dashboard-react/src/dashboard/conversations/`; App adapters inject it through the provider seam.
 
@@ -41,6 +45,8 @@ dev_notes: |-
   The HTTP adapter also fences its internal cache and `onEnvelope` callback. A successful PATCH, conflict envelope, host `replaceSnapshot`, invalidation, or explicit refresh supersedes older GETs before they can adopt; hook-level sequencing alone is too late to protect feature-owned lifecycle state.
 
   Selection mutations outrank subscription reloads in `useChatExecutionProfile`. A reload issued while selection is pending must not apply its stale snapshot or error; successful/authoritative mutation results clear it, while a non-authoritative mutation failure triggers one fresh post-mutation reconciliation. Execution-required host actions are unavailable whenever the snapshot is read-only, not merely when the provider/model is unavailable.
+
+  The optional executionDisabled prop lets an explicitly prepared host permit model selection while composition awaits authorization. Omission preserves composerDisabled coupling. It never overrides read-only, sending, thinking or selection-in-progress protections. Keep the same provider/panel instance through lifecycle changes.
 ---
 
 Reusable React chat components for conversational surfaces in the React dashboard, at `dashboard-react/src/widget-library/chat/`. They render the same backend conversations the root dashboard's chat sidebar shows, behind a typed, transport-agnostic provider seam. The root dashboard's own surface remains `services/dashboard/chat-sidebar` and is unchanged by these primitives.
@@ -90,7 +96,10 @@ containing App passes that control to the shared Chat surface only when its
 conversation has a selectable agent runtime.
 
 The server supplies the provider/model catalog and the current validated pair.
-The browser does not persist a competing default in local storage or settings.
+Per-conversation selection does not persist a competing browser default.
+System Settings may own the default for new chats through a separate
+Settings-backed execution adapter; the shared picker is reused without moving
+that authority into transcript transport.
 Selection is atomic and revisioned; if another surface wins a race, the shared
 hook adopts the newer server snapshot and reports that the requested switch did
 not land.
@@ -111,8 +120,10 @@ same inline error surface and retains the draft; it must not fail only in the
 console. Activity mapping treats a latest user turn with a live or unknown
 driver as waiting for a reply, an explicit stopped driver as terminal, and a
 latest assistant turn as idle even when its long-lived driver remains active.
-The terminal presentation is informational and recoverable through ordinary
-composition; there is no shared Start or Restart control.
+The terminal presentation is informational; there is no shared Start or Restart
+policy. Ordinary Co-work composition may resume its driver. An explicitly
+disclosed form host instead keeps Start in a host accessory and disables
+submission until that authorization succeeds.
 
 Outbound message identity is caller-stable. The shared surface generates
 `message_id` once per logical authored turn before host preparation and reuses

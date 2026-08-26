@@ -1,5 +1,6 @@
 import type { JsonObject, JsonSchemaReference, JsonValue } from "../contributions/contracts";
 import type { WidgetDraftIdentity } from "../drafts/contracts";
+import type { ChatExecutionSnapshot } from "../../widget-library/chat";
 
 export interface AssistedField {
   readonly path: readonly string[];
@@ -66,12 +67,53 @@ export interface AssistanceAvailability {
 }
 
 export interface AssistanceSession {
+  readonly protocol?: string;
   readonly assistantSessionId: string;
   readonly conversationId: string;
   readonly identity: WidgetDraftIdentity;
   readonly schema: JsonSchemaReference;
   readonly expiresAt: string;
   readonly availability: AssistanceAvailability;
+  readonly phase?: AssistancePhase;
+  readonly activeStartId?: string | null;
+  readonly controlRevision?: number;
+  readonly execution?: ChatExecutionSnapshot;
+  readonly agent?: AssistanceAgent;
+}
+
+export type AssistancePhase = "prepared" | "starting" | "active" | "stopped" | "ended" | "expired" | "restart_required";
+
+export interface AssistanceAgent {
+  readonly status: string;
+  readonly alive?: boolean | null;
+  readonly started?: boolean;
+  readonly error?: string | null;
+  readonly phase?: AssistancePhase;
+  readonly activeStartId?: string | null;
+  readonly controlRevision?: number;
+}
+
+export interface AssistanceStartRequest {
+  readonly requestId: string;
+  readonly disclosureAccepted: true;
+  readonly provider_id: string;
+  readonly model_id: string;
+  readonly expected_revision: string;
+  readonly expected_control_revision: number;
+  readonly initialSnapshot: PreparedDraftSnapshot;
+}
+
+export interface AssistanceStopRequest {
+  readonly requestId: string;
+  readonly expected_control_revision: number;
+  readonly startRequestId?: string;
+}
+
+export interface AssistanceStopResult {
+  readonly stopped: true;
+  readonly controlRevision?: number;
+  /** already_absent is the client's typed-404 acknowledgement, not a fabricated server revision. */
+  readonly outcome: "stopped" | "superseded" | "already_absent";
 }
 
 export interface PreparedDraftSnapshot {

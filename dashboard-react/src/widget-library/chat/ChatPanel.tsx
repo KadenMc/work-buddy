@@ -147,6 +147,8 @@ export interface ChatPanelProps {
   readonly noMessagesLabel?: string;
   /** Server-authoritative provider/model selection for the next agent turn. */
   readonly execution?: ChatExecutionControl;
+  /** Override the composer's model lock without enabling input before a host's explicit Start. */
+  readonly executionDisabled?: boolean;
 }
 
 interface StateCopy {
@@ -195,10 +197,12 @@ export function ChatPanel({
   revealLatestMessageToken,
   noMessagesLabel,
   execution,
+  executionDisabled,
 }: ChatPanelProps) {
   const label = title ?? "Conversation";
   const readOnly =
     status === "read-only" || execution?.snapshot?.readOnly === true;
+  const executionLocked = readOnly || (executionDisabled ?? composerDisabled) || sending || agentActivity === "thinking";
   const structuredResponsesDisabled =
     responsesDisabled ||
     readOnly ||
@@ -277,11 +281,12 @@ export function ChatPanel({
             initialValue={initialValue}
             onDraftChange={onDraftChange}
             execution={execution}
+            executionDisabled={executionDisabled}
             accessory={composerAccessory}
             footerAccessory={composerFooterAccessory}
           />
         ) : execution === undefined ? null : (
-          <ChatExecutionPicker control={execution} />
+          <ChatExecutionPicker control={execution} disabled={executionLocked} />
         )}
       </>
     );
@@ -313,7 +318,7 @@ export function ChatPanel({
         }
         header={renderHeader()}
         execution={execution}
-        executionDisabled={sending || agentActivity === "thinking"}
+        executionDisabled={executionLocked}
       />
     );
   }

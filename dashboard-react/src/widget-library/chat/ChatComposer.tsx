@@ -44,6 +44,8 @@ export interface ChatComposerProps {
   onDraftChange?(value: string): void;
   /** Optional server-authoritative provider/model selection for this chat. */
   readonly execution?: ChatExecutionControl;
+  /** Separate model lock before a host's explicit Start; read-only and in-flight work still win. */
+  readonly executionDisabled?: boolean;
   /** Additive host context controls rendered above the shared input. */
   readonly accessory?: ReactNode;
   /** Compact host context rendered in the composer footer. */
@@ -61,6 +63,7 @@ export function ChatComposer({
   initialValue = "",
   onDraftChange,
   execution,
+  executionDisabled,
   accessory,
   footerAccessory,
 }: ChatComposerProps) {
@@ -69,8 +72,10 @@ export function ChatComposer({
   const submittingRef = useRef(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const isSending = sending || busy;
+  const executionReadOnly = execution?.snapshot?.readOnly === true;
   const effectiveDisabled =
-    disabled || execution?.snapshot?.readOnly === true;
+    disabled || executionReadOnly;
+  const pickerDisabled = executionReadOnly || (executionDisabled ?? disabled) || isSending || submissionDisabled;
   const executionBlocksSend =
     execution?.selecting === true;
   const canSend =
@@ -202,7 +207,7 @@ export function ChatComposer({
           ) : (
             <ChatExecutionPicker
               control={execution}
-              disabled={effectiveDisabled || isSending || submissionDisabled}
+              disabled={pickerDisabled}
             />
           )}
           <Button

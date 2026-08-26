@@ -4,6 +4,8 @@
     "task-create": {
       "schema": { "schemaId": "wb.tasks.create.draft", "version": 1 },
       "title": "Shape this task",
+      "purpose": "Help the user turn the task they are capturing into a clear, actionable draft using the supplied title and context.",
+      "instructions": "Acknowledge the supplied task and prefilled details. Clarify only missing information that matters, and suggest a specific next action, desired outcome or definition of done when useful. The user alone submits the task.",
       "submitPolicy": "user_only",
       "patchBehavior": "apply_when_uncontested",
       "allowedOperations": ["set", "remove"],
@@ -28,6 +30,8 @@
     "job-create": {
       "schema": { "schemaId": "wb.jobs.create.draft", "version": 1 },
       "title": "Shape this scheduled job",
+      "purpose": "Help the user draft a scheduled job from the supplied instructions, schedule and prefilled settings.",
+      "instructions": "Acknowledge the intended job and supplied timing. Help make instructions and timing precise. Never run or schedule it, invent registered capability or workflow names, or ask for credentials. The user alone reviews and creates the job.",
       "submitPolicy": "user_only",
       "patchBehavior": "apply_when_uncontested",
       "allowedOperations": ["set", "remove"],

@@ -103,6 +103,13 @@ def _configured_default(setting_id: str) -> Any:
             status_code=404,
         )
     value = definition["default_value"]
+    if setting_id == registry.DASHBOARD_CHAT_EXECUTION_DEFAULT_ID:
+        # This helper reads only legacy config, never the live Settings default.
+        # Calling default_selection() here would recurse through this bootstrap.
+        from work_buddy.agent_execution.registry import configured_default_selection
+
+        selected = configured_default_selection()
+        return {"provider_id": selected.provider_id, "model_id": selected.model_id}
     if setting_id == registry.JOURNAL_SMART_PROCESSING_ID:
         smart = (wb_config.load_config().get("journal") or {}).get("smart_processing") or {}
         return "enabled" if isinstance(smart, dict) and smart.get("enabled") is True else "disabled"
@@ -152,7 +159,7 @@ def _definition_value_version(setting_id: str) -> int:
 def _bootstrap_source(setting_id: str) -> str:
     return (
         "config-bootstrap"
-        if setting_id == registry.JOURNAL_DAY_BOUNDARY_ID
+        if setting_id in {registry.JOURNAL_DAY_BOUNDARY_ID, registry.DASHBOARD_CHAT_EXECUTION_DEFAULT_ID}
         else "registry-default"
     )
 
@@ -716,6 +723,73 @@ def get_dashboard_assistance_settings() -> dict[str, Any]:
     return {"enabled": enabled["effective_value"] == "enabled", "tier": tier["effective_value"]}
 
 
+def get_dashboard_chat_execution_default() -> dict[str, str]:
+    """Read the canonical chat default without probing or invoking a provider."""
+    record, _ = _read_value(registry.DASHBOARD_CHAT_EXECUTION_DEFAULT_ID, _observed_at())
+    value = record["effective_value"]
+    try:
+        _validate_execution_pair(value)
+    except SettingsError as exc:
+        raise SettingsError(
+            "execution_selection_corrupt",
+            "The saved default chat model needs attention.",
+            status_code=503,
+        ) from exc
+    return dict(value)
+
+
+def _validate_execution_pair(value: Any) -> None:
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"provider_id", "model_id"}
+        or any(
+            not isinstance(item, str)
+            or not item.strip()
+            or item != item.strip()
+            or len(item) > 256
+            for item in value.values()
+        )
+    ):
+        raise SettingsError(
+            "validation_error",
+            "Choose one provider and model using only provider_id and model_id.",
+            status_code=400,
+            field="value",
+        )
+
+
+def _validate_execution_provider(value: dict[str, str]) -> None:
+    from work_buddy.agent_execution.models import (
+        AgentExecutionError,
+        AgentExecutionSelection,
+    )
+    from work_buddy.agent_execution.registry import validate_selection
+
+    try:
+        trusted = validate_selection(AgentExecutionSelection(**value), refresh=True)
+    except AgentExecutionError as exc:
+        raise SettingsError(
+            exc.error_code,
+            "That provider and model are not available. Refresh the model choices and try again.",
+            status_code=400,
+            field="value",
+        ) from exc
+    except Exception as exc:
+        raise SettingsError(
+            "provider_unavailable",
+            "The selected provider could not be checked. Try again.",
+            status_code=503,
+            field="value",
+        ) from exc
+    if (trusted.provider_id, trusted.model_id) != (value["provider_id"], value["model_id"]):
+        raise SettingsError(
+            "provider_selection_changed",
+            "The provider returned a different model. Refresh the model choices and try again.",
+            status_code=409,
+            field="value",
+        )
+
+
 def _validate_request(
     setting_id: str,
     scope: str,
@@ -776,6 +850,8 @@ def _validate_request(
             ) from exc
     if definition.get("presentation", {}).get("control") == "keybinding-map":
         _validate_keybinding_map(value, definition)
+    if setting_id == registry.DASHBOARD_CHAT_EXECUTION_DEFAULT_ID:
+        _validate_execution_pair(value)
 
 
 _SHORTCUT_NAMED_KEYS = {
@@ -1071,6 +1147,13 @@ def update_value(
     read_only: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     _validate_request(setting_id, scope, value, validate_value=True)
+    if setting_id == registry.DASHBOARD_CHAT_EXECUTION_DEFAULT_ID:
+        if read_only:
+            raise SettingsError("read_only", "Dashboard settings are read-only.", status_code=403)
+        current, _ = _read_value(setting_id, _observed_at(observed_at))
+        _assert_revision(expected_revision, current)
+        # Probe outside the write transaction; _write_immediate repeats the CAS.
+        _validate_execution_provider(value)
     apply_behavior = _apply_behavior(setting_id)
     if apply_behavior == "immediate":
         return _write_immediate(
@@ -1143,6 +1226,8 @@ def preview_value(
     now = _observed_at(observed_at)
     record = _preview_record(setting_id, now)
     _assert_revision(expected_revision, record)
+    if setting_id == registry.DASHBOARD_CHAT_EXECUTION_DEFAULT_ID:
+        _validate_execution_provider(value)
     apply_behavior = _apply_behavior(setting_id)
     if apply_behavior == "immediate":
         return {
@@ -1243,6 +1328,13 @@ def reset_value(
     _assert_revision(expected_revision, current)
 
     default = current["default_value"]
+    if setting_id == registry.DASHBOARD_CHAT_EXECUTION_DEFAULT_ID:
+        if read_only:
+            raise SettingsError("read_only", "Dashboard settings are read-only.", status_code=403)
+        _validate_execution_pair(default)
+        # Reset means the stored bootstrap default, not today's config. It is
+        # still a model selection and must not bypass provider validation.
+        _validate_execution_provider(default)
     apply_behavior = _apply_behavior(setting_id)
     if apply_behavior == "immediate":
         return _write_immediate(

@@ -121,7 +121,7 @@ describe("Manual forms in real WidgetHost Preview", () => {
     expect(title).toBeEnabled();
     await userEvent.clear(title);
     await userEvent.type(title, "Disposable task draft");
-    expect(screen.getByRole("button", { name: "Help me shape this" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "AI help" })).toBeDisabled();
     const saveProposal = screen.getByRole("button", { name: "Save proposal" });
     expect(saveProposal).toBeDisabled();
     await userEvent.click(saveProposal);
@@ -170,7 +170,7 @@ describe("Manual forms in real WidgetHost Preview", () => {
     await userEvent.clear(name);
     await userEvent.type(name, "preview-job");
     fireEvent.change(screen.getByRole("textbox", { name: "Schedule" }), { target: { value: "0 10 * * 2" } });
-    expect(screen.getByRole("button", { name: "Help me shape this" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "AI help" })).toBeDisabled();
     await userEvent.click(screen.getByRole("button", { name: "Create job" }));
     await waitFor(() => expect(view.rendererIntents.map((intent) => intent.intent_type)).toEqual([JOB_INTENTS.create]));
     await waitFor(() => expect(screen.getByRole("button", { name: "Create job" })).toBeEnabled());
@@ -262,7 +262,7 @@ describe("Manual forms in real WidgetHost Preview", () => {
     const before = (field as HTMLInputElement).value;
     await userEvent.type(field, "Must not change");
     expect(field).toHaveValue(before);
-    const assistance = screen.queryByRole("button", { name: "Help me shape this", hidden: true });
+    const assistance = screen.queryByRole("button", { name: "AI help", hidden: true });
     if (assistance) expect(assistance).toBeDisabled();
     expect(view.rendererIntents).toEqual([]);
     expect(view.provider).not.toHaveBeenCalled();

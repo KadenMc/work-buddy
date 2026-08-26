@@ -1,7 +1,7 @@
 import { MagnifyingGlass } from "@phosphor-icons/react/MagnifyingGlass";
 import { X } from "@phosphor-icons/react/X";
 import type { CSSProperties, ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import {
@@ -11,6 +11,10 @@ import {
 } from "../theme/TypographyScaleProvider";
 import { ControlStatusPage } from "../system-status";
 import { Button, IconButton, InlineAlert } from "../ui";
+import { HelpTarget } from "../dashboard/help";
+import { ChatExecutionPicker, useChatExecutionProfile } from "../widget-library/chat";
+import { SettingsExecutionProfileProvider } from "./SettingsExecutionProfileProvider";
+import { DASHBOARD_ASSISTANCE_HELP, DASHBOARD_ASSISTANCE_SETTING_ID } from "./dashboardAiContributions";
 import type {
   EffectiveSettingValue,
   ProjectedSetting,
@@ -42,6 +46,10 @@ import {
 import "./styles.css";
 
 const LOCAL_TIME_PATTERN = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+const CHAT_MODEL_HELP = {
+  summary: "Choose the starting model for new dashboard chats.",
+  details: "Each chat keeps its own provider/model choice. Claude Code and Codex use their signed-in accounts. Local inference is a separate subsystem and does not yet provide an interactive chat driver; no cloud model is substituted for a local choice. Reset restores the default captured when this setting was first initialized.",
+};
 
 const scopeLabel = (scope: string): string => {
   switch (scope) {
@@ -113,6 +121,9 @@ function SettingCard({
   readonly children: ReactNode;
 }) {
   const { definition, placement } = projected;
+  const help = definition.settingId === DASHBOARD_ASSISTANCE_SETTING_ID
+    ? DASHBOARD_ASSISTANCE_HELP
+    : definition.control.kind === "execution-profile" ? CHAT_MODEL_HELP : undefined;
   return (
     <article
       id={settingElementId(definition.settingId)}
@@ -122,7 +133,9 @@ function SettingCard({
     >
       <div className="wb-settings-card__heading">
         <div>
-          <h3>{definition.title}</h3>
+          <HelpTarget content={help} focusable>
+            <h3>{definition.title}</h3>
+          </HelpTarget>
           <p>{placement.contextualSummary ?? definition.summary}</p>
         </div>
         <span className="wb-settings-card__value">
@@ -632,6 +645,40 @@ function SelectSetting({
   );
 }
 
+function ExecutionProfileSetting({ projected, values }: {
+  readonly projected: ProjectedSetting;
+  readonly values: SettingsValuesState;
+}) {
+  const { definition } = projected;
+  const latest = useRef(values);
+  latest.current = values;
+  const value = values.snapshot?.values.get(definition.settingId);
+  const provider = useMemo(() => new SettingsExecutionProfileProvider({
+    settingId: definition.settingId,
+    getValue: () => latest.current.snapshot?.values.get(definition.settingId),
+    getReadOnly: () => latest.current.snapshot?.readOnly !== false,
+    adoptValue: (next) => latest.current.adopt(next),
+  }), [definition.settingId]);
+  const control = useChatExecutionProfile(value ? provider : null, definition.settingId);
+  useEffect(() => provider.invalidate(), [provider, value?.revision, values.snapshot?.readOnly]);
+  const disabled = values.status !== "ready" || values.mutationSettingId === definition.settingId;
+
+  return <SettingCard projected={projected} value={value}>
+    {control ? <ChatExecutionPicker control={control} disabled={disabled} /> : (
+      <InlineAlert tone={values.status === "loading" ? "info" : "warning"}>
+        {values.status === "loading" ? "Loading the authoritative default…" : "The Settings service is unavailable. Model selection is disabled until it reconnects."}
+      </InlineAlert>
+    )}
+    <div className="wb-settings-control-actions">
+      <Button variant="secondary" size="small"
+        disabled={disabled || values.snapshot?.readOnly === true || control?.selecting === true || !value?.isModified}
+        onClick={() => void values.reset(definition.settingId)}>
+        Reset default chat model
+      </Button>
+    </div>
+  </SettingCard>;
+}
+
 function KeybindingMapSetting({
   projected,
   values,
@@ -786,6 +833,9 @@ function SettingControl({
   }
   if (projected.definition.control.kind === "select") {
     return <SelectSetting projected={projected} values={values} />;
+  }
+  if (projected.definition.control.kind === "execution-profile") {
+    return <ExecutionProfileSetting projected={projected} values={values} />;
   }
   if (projected.definition.control.kind === "keybinding-map") {
     return <KeybindingMapSetting projected={projected} values={values} />;

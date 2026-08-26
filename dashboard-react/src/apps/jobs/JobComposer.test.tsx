@@ -166,7 +166,7 @@ describe("JobComposer", () => {
     renderForm(emit, {}, "arrange");
     expect(await screen.findByRole("textbox", { name: "Job name" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Create job" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Help me shape this" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "AI help" })).toBeDisabled();
     expect(emit).not.toHaveBeenCalled();
   });
 

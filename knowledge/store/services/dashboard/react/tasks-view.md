@@ -32,7 +32,7 @@ dev_notes: |-
 
 Quick capture supports title-first entry, while the expanded composer exposes urgency, project, namespace tags, dates, outcome, next action, definition of done, dependencies, and initial knowledge. Multi-line paste creates a review table, detects duplicates, and lets the user edit or exclude rows before a batch create. Successful requests return native IDs, revisions, receipts, and document metadata—never task lines or note paths.
 
-**Help me shape this** opens Dashboard Core's shared assisted-draft dock. It uses the same conversation primitives as Co-work and fills the visible form; it never creates a task or submits a form. See `services/dashboard/react/assisted-drafts` for disclosure, field conflicts, conditional Undo, and host-owned draft identity.
+**AI help** opens Dashboard Core's shared assisted-draft dock. It uses the same conversation primitives as Co-work and fills the visible form; it never creates a task or submits a form. See `services/dashboard/react/assisted-drafts` for disclosure, field conflicts, conditional Undo, and host-owned draft identity.
 
 **Save proposal** creates a durable Thread, not a TaskStore row. `/app/tasks?proposal=th-…` opens its review pane; opening, refreshing, copying, or revisiting the link never accepts it. The exact reviewed numeric proposal event fences revision, dismissal, and creation. Realized proposals hand off to `/app/tasks?task=t-…` using the structured task receipt, not model-authored URLs. Journal Quick Capture uses this same Thread ingress and review UI.
 

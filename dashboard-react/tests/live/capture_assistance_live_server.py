@@ -69,22 +69,19 @@ socket.socket.connect_ex = _deny_outbound
 from flask import jsonify, request
 
 from work_buddy.dashboard import jobs_authoring_api
-from work_buddy.dashboard.assistance import runner as assistance_runner
 from work_buddy.journal_capture import smart as journal_smart
 from work_buddy.journal_capture.projection import current_day
 from work_buddy.llm.response import LLMResponse
 from work_buddy.llm.runner_v2 import LLMRunner
-from work_buddy.llm.tiers import ModelTier
 from work_buddy.obsidian import vault_writer
 from work_buddy.settings import get_journal_day_binding
-from work_buddy.settings.broker import get_dashboard_assistance_settings
 from work_buddy.sidecar.scheduler.jobs import create_user_job_file
 from work_buddy.tasks import events as task_events
 from work_buddy.tasks import runtime as task_runtime
 from work_buddy.tasks.store import TaskStore, default_task_db_path
 
 state_lock = threading.RLock()
-state = {"journal_provider_failed": False, "assistance_provider_failed": False,
+state = {"journal_provider_failed": False, "assistance_provider_failed": False, "pause_assistance": False,
          "journal_calls": 0, "task_assistance_calls": 0, "job_assistance_calls": 0}
 
 
@@ -111,24 +108,8 @@ def _journal_spec(cls, tier):
 journal_smart.JournalSmartProcessorSpec.from_tier = classmethod(_journal_spec)
 
 
-def _assistance_spec():
-    base = {"available": False, "purpose": "dashboard.assisted_draft", "disclosure": ""}
-    if not get_dashboard_assistance_settings()["enabled"]:
-        return {**base, "code": "disabled", "message": "Form assistance is disabled. You can still fill and submit this form."}, None
-    with state_lock:
-        if state["assistance_provider_failed"]:
-            return {**base, "code": "provider_unavailable", "message": "Fixture provider unavailable. Retry or continue editing manually."}, None
-    spec = assistance_runner.AssistanceModelSpec(ModelTier.FRONTIER_FAST, "fixture", "deterministic-test")
-    return {**base, "available": True, "code": "ready", "providerId": spec.provider_id,
-            "modelId": spec.model_id, "message": "Ready when you choose Start assistance.",
-            "disclosure": "Fixture only: up to 32 KiB of allowlisted fields and your messages (64 KiB per turn) go to fixture · deterministic-test. No network, tools, or submission authority."}, spec
-
-
-assistance_runner.configured_spec = _assistance_spec
-
-
 def _fixture_model(_self, **kwargs):
-    """Only replace inference; production Sources/disclosure/broker paths run."""
+    """Journal-only inference fixture; form agents use real scoped tools."""
 
     if kwargs.get("tools"):
         raise AssertionError("The fixture model must not receive tools")
@@ -141,31 +122,15 @@ def _fixture_model(_self, **kwargs):
                   "effects": [], "follow_up": {"kind": "task_proposal", "task_text": title,
                                                "rationale": "A concrete intention retained from this exact capture."}}
     else:
-        payload = json.loads(kwargs["user"])
-        fields = {field["path"][0] for field in payload["form"]["fields"]}
-        message = str(payload.get("userMessage") or "Review the work plan")
-        if "schedule" in fields:
-            with state_lock:
-                state["job_assistance_calls"] += 1
-            operations = [
-                {"op": "set", "path": ["name"], "value": "assisted-draft-live-job"},
-                {"op": "set", "path": ["schedule"], "value": "0 9 * * 1-5"},
-                {"op": "set", "path": ["job_type"], "value": "prompt"},
-                {"op": "set", "path": ["prompt"], "value": message[:12000]},
-            ]
-        else:
-            with state_lock:
-                state["task_assistance_calls"] += 1
-            operations = [
-                {"op": "set", "path": ["title"], "value": "Review the captured task"},
-                {"op": "set", "path": ["summary"], "value": message[:1000]},
-            ]
-        output = {"reply": "I suggested fields for your review. Nothing was submitted; use the form's normal submit button when ready.",
-                  "operations": operations}
+        raise AssertionError("Assisted forms must use the interactive driver, not one-shot inference")
     return LLMResponse(structured_output=output, model="deterministic-test", backend="fixture")
 
 
 LLMRunner.call = _fixture_model
+
+from assistance_driver_fixture import install_assistance_fixture
+
+install_assistance_fixture(state, state_lock)
 
 
 def _fixture_create_job(payload):
@@ -251,7 +216,7 @@ def _control():
     if not _control_allowed():
         return jsonify({"ok": False, "error": "harness control denied"}), 403
     payload = request.get_json(silent=True)
-    allowed = {"journal_provider_failed", "assistance_provider_failed", "reconcile"}
+    allowed = {"journal_provider_failed", "assistance_provider_failed", "pause_assistance", "reconcile"}
     if not isinstance(payload, dict) or set(payload) - allowed or any(not isinstance(value, bool) for value in payload.values()):
         return jsonify({"ok": False, "error": "boolean fixture flags required"}), 400
     with state_lock:

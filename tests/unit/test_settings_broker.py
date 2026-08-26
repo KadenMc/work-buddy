@@ -14,6 +14,7 @@ from work_buddy.settings.registry import (
     JOURNAL_SMART_PROCESSING_ID,
     DASHBOARD_ASSISTANCE_ID,
     DASHBOARD_ASSISTANCE_TIER_ID,
+    DASHBOARD_CHAT_EXECUTION_DEFAULT_ID,
 )
 
 
@@ -47,12 +48,13 @@ def _value(at: datetime):
 
 def test_registry_defines_app_owned_settings_with_canonical_placements() -> None:
     payload = broker.get_registry()
-    assert payload["registry_revision"] == "settings-registry:5"
+    assert payload["registry_revision"] == "settings-registry:6"
     assert [item["setting_id"] for item in payload["definitions"]] == [
         JOURNAL_DAY_BOUNDARY_ID,
         COWORK_REVIEW_NAV_BINDING_ID,
         DASHBOARD_ASSISTANCE_ID,
         DASHBOARD_ASSISTANCE_TIER_ID,
+        DASHBOARD_CHAT_EXECUTION_DEFAULT_ID,
         JOURNAL_SMART_PROCESSING_ID,
     ]
     definition = payload["definitions"][0]
@@ -66,8 +68,8 @@ def test_registry_defines_app_owned_settings_with_canonical_placements() -> None
     assert definition["default_value"] == "05:00"
     assert definition["allowed_scopes"] == ["profile"]
     assert [item["context_id"] for item in payload["placements"]] == [
-        "wb.settings.app.dashboard",
-        "wb.settings.app.dashboard",
+        "wb.settings.system.dashboard-ai",
+        "wb.settings.system.dashboard-ai",
         "wb.settings.app.journal",
         "wb.settings.app.journal",
         "wb.settings.app.cowork",
@@ -97,12 +99,13 @@ def test_assistance_settings_keep_privacy_disclosure_without_repeating_it() -> N
     }
     opt_in = definitions[DASHBOARD_ASSISTANCE_ID]
     tier = definitions[DASHBOARD_ASSISTANCE_TIER_ID]
-    assert "Only the disclosed form snapshot is sent" in opt_in["long_description"]
-    assert "submission stays under your control" in opt_in["long_description"]
-    assert "does not start a session or send data" in opt_in["long_description"]
-    assert tier["long_description"] == (
-        "The resolved provider and model are shown before you start a session."
+    assert opt_in["long_description"] == (
+        "Only Start authorizes sharing the disclosed form and chat with your selected model; "
+        "submission stays yours."
     )
+    assert "Assistance is off by default" not in opt_in["long_description"]
+    assert "does not start a session or send data" not in opt_in["long_description"]
+    assert "no longer selects interactive chat models" in tier["long_description"]
     assert opt_in["default_value"] == "disabled"
     assert tier["default_value"] == "frontier_fast"
 

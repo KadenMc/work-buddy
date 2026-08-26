@@ -64,20 +64,37 @@ mcp__work-buddy__wb_run("conversation_list")
 
 - conversation_create opens the chat sidebar on the dashboard automatically
 - conversation_ask with timeout_seconds blocks until response (max 110s)
-- conversation_poll checks the latest question without sending a new message
+- conversation_poll accepts an exact `message_id`; omission discovers the
+  current question. Once a wait starts, only that question can complete it,
+  even when a newer question appears. Content-bearing pending/answer results
+  are disclosure-accounted for scoped hosted workers before return
 - conversation_receive is for a leased long-running driver: it returns the
   oldest unacknowledged user turn without advancing the durable cursor
 - conversation_ack advances that cursor only over the exact delivered message;
   call it after the turn's reply and side effects succeed
 - a leased driver must pass the same `consumer` and `generation` to
-  conversation_send and conversation_ask; this fences late writes after a
+  send, ask, poll, receive and acknowledge tools; this fences late access after a
   restart or close
 - when the lease carries a validated execution snapshot, assistant messages
   receive their provider/model producer provenance from that exact lease; a
   caller cannot assert or override it
 - a `lease_lost` result from receive, acknowledge, send, or ask means a newer
   driver owns the conversation; stop immediately
+- canonical question answers carry an exact `in_reply_to`; scoped disclosure
+  stages the question and that canonical user answer, then checks the current
+  lease and binding again after accounting. Historical unlinked answers fail
+  closed rather than being guessed into an association
 - Sidebar auto-polls every 3s for new messages
+
+## Hosted form conversations
+
+Form agents receive a pre-bound conversation and may not create, list or close
+arbitrary conversations. Consume the bound initial context first, then receive
+each authored turn and consume its exact form snapshot. Only then propose
+allowlisted edits and send a durable reply/question before acknowledgement.
+Use plain messages for open-ended questions; finite choices use stable question
+IDs, and ordinary composer text does not consume them. Stop on scope, policy,
+expiry or disclosure failure. See `services/dashboard/react/assisted-drafts`.
 
 ## Naming note
 

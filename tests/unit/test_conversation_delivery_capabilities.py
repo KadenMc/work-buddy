@@ -28,6 +28,7 @@ def test_durable_delivery_ops_are_discoverable_with_their_runtime_schema(
         in {
             "conversations/conversation_send",
             "conversations/conversation_ask",
+            "conversations/conversation_poll",
             "conversations/conversation_receive",
             "conversations/conversation_ack",
             "cowork/cowork_doc_propose_edit",
@@ -60,6 +61,16 @@ def test_durable_delivery_ops_are_discoverable_with_their_runtime_schema(
     assert all(
         ask.parameters[name].get("required", False) is False
         for name in ("consumer", "generation", "message_id")
+    )
+
+    poll = capabilities["conversation_poll"]
+    assert set(poll.parameters) == {
+        "conversation_id", "timeout_seconds", "consumer", "generation",
+        "message_id",
+    }
+    assert all(
+        poll.parameters[name].get("required", False) is False
+        for name in ("timeout_seconds", "consumer", "generation", "message_id")
     )
 
     receive = capabilities["conversation_receive"]

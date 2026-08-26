@@ -9,6 +9,7 @@ import type {
   SettingsSearchResult,
 } from "./contracts";
 import { validateKeybindingMap } from "./keybindings";
+import { isChatExecutionSettingValue } from "./executionProfile";
 
 const ID_PATTERN = /^[a-z][a-z0-9]*(?:[._/-][a-z0-9][a-z0-9_-]*)+$/;
 const SECTION_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
@@ -30,6 +31,11 @@ function requireUnique(
 function validateDefault(definition: SettingDefinition): void {
   const value = definition.defaultValue;
   switch (definition.control.kind) {
+    case "execution-profile":
+      if (!isChatExecutionSettingValue(value)) {
+        throw new Error(`Invalid execution-profile default for ${definition.settingId}`);
+      }
+      break;
     case "typography-scale":
       if (typeof value !== "string" || !definition.control.options.includes(value)) {
         throw new Error(`Invalid default for ${definition.settingId}`);

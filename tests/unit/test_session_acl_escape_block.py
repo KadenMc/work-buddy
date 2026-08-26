@@ -82,6 +82,31 @@ def test_cowork_execution_session_has_non_overridable_builtin_acl():
     )
 
 
+def test_form_execution_has_only_bound_form_and_conversation_tools():
+    sid = "generation-abc-assisted-draft"
+    expected = frozenset({
+        "assisted_draft_context_get", "assisted_draft_propose_patch",
+        "conversation_send", "conversation_ask", "conversation_poll",
+        "conversation_receive", "conversation_ack",
+    })
+    assert session_acl.get_session_acl(sid) == expected
+    for forbidden in (
+        "task_create", "task_toggle", "conversation_create", "conversation_list",
+        "conversation_close", "cowork_doc_get", "wb_init", "agent_docs",
+    ):
+        assert not session_acl.is_capability_allowed(sid, forbidden)
+    filtered = session_acl.filter_search_results(
+        _fake_results("assisted_draft_context_get", "task_create"), sid,
+    )
+    assert [item["name"] for item in filtered["results"]] == [
+        "assisted_draft_context_get",
+    ]
+    session_acl.set_session_acl(sid, ["conversation_send", "task_create"])
+    assert session_acl.get_session_acl(sid) == frozenset({"conversation_send"})
+    session_acl.clear_session_acl(sid)
+    assert session_acl.get_session_acl(sid) == expected
+
+
 # ---------------------------------------------------------------------------
 # Fail-closed behavior when session cannot be resolved
 # ---------------------------------------------------------------------------

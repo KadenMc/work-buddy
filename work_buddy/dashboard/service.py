@@ -406,6 +406,17 @@ def api_settings_values():
     return response
 
 
+@app.get("/api/settings/execution-catalog")
+def api_settings_execution_catalog():
+    """Read redacted interactive-provider choices without launching a model."""
+    from work_buddy.agent_execution.registry import get_providers
+
+    providers = get_providers(refresh=request.args.get("refresh") == "1")
+    response = jsonify({"providers": [provider.to_dict() for provider in providers], "read_only": _is_read_only()})
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @app.patch("/api/settings/values/<path:setting_id>")
 def api_settings_update(setting_id: str):
     """Validate and schedule one optimistic profile-scoped settings write."""

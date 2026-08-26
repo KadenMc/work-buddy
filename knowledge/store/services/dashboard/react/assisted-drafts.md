@@ -10,15 +10,19 @@ tags:
 - conversations
 - security
 aliases:
-- assisted form
-- Help me shape this
-- form assistance
+- "assisted form"
+- "Help me shape this"
+- "form assistance"
+- "AI help"
 parents:
 - services/dashboard/react
 entry_points:
 - dashboard-react/src/dashboard/assistance/AssistedDraftRuntime.tsx
 - work_buddy/dashboard/assistance/api.py
 - work_buddy/dashboard/assistance/form_schemas.json
+children:
+- "services/dashboard/react/assisted-draft-context-get"
+- "services/dashboard/react/assisted-draft-propose-patch"
 ---
 
 ## Authority and opt-in
@@ -46,36 +50,79 @@ parameter JSON refuses credential-shaped keys before disclosure.
 
 ## Conversation and disclosure
 
-`AssistedDraftRuntimeProvider` owns a contextual, non-modal dock attached to the
-form. Its shared layout reserves a sibling desktop column; on narrow screens,
-separate scrollable form and conversation rows keep the real submit controls
-reachable. Opening/closing it never remounts the form or moves keyboard focus.
-It composes `ConversationChat`/`ChatPanel`, not the Co-work adapter and not
-a separately placeable chat widget. The existing `HttpChatConversationProvider`
-uses an assistance-scoped base path with the normal house conversation wire
-shape. Its shared message ID is allocated before `prepareSend`. The host stages
-one immutable, allowlisted revision/hash snapshot under that ID, preserving it
-even when preparation acknowledgement is uncertain. Field values and revision
-freeze synchronously at Send, before waiting for persistence; later edits do
-not expand that turn's disclosure and are protected by normal patch conflicts.
+The entry action is the shared duotone sparkle icon and **AI help**.
+`AssistedDraftRuntimeProvider` attaches a non-modal dock to the form. Its
+layout reserves a sibling desktop column; on narrow screens, separate
+scrollable form and conversation rows keep the real submit controls reachable.
+Closing returns focus to the originating action; asynchronous replies do not
+steal focus from the form.
 
-No model starts on form rendering or Help. The Settings registry defaults
-`wb.dashboard.assistance` to disabled; `wb.dashboard.assistance-tier` chooses a
-preflightable no-tools inference tier. The dock exposes provider, model,
-purpose, context bounds, and a visible Settings/retry action. The explicit Start
-gesture binds the provider/model displayed in that disclosure. An authored chat
-turn invokes one bounded structured `LLMRunner` call, with no tools or fallback
-provider. The source-bound execution gateway retains the exact dynamic context
-and writes its disclosure manifest before handoff. Current support is a concrete
-Anthropic inference tier, not an implicit account-backed or local-provider
-fallback.
+The dock composes the same `ConversationChat`, `ChatPanelState`, composer,
+message/choice rendering, execution hook and picker used by Co-work. It is not
+a separately placeable chat widget and does not import Co-work document state.
+Form context, explicit lifecycle actions and patch receipts use narrow host
+accessories. The conversation provider remains stable across lifecycle and
+model changes, preserving the transcript and unsent composer draft.
 
-The broker appends canonical Conversations user/agent messages and uses its
-existing lease claim, inbox, write guard, acknowledgement cursor, and stop
-operations. The same user-message replay returns the same durable reply and
-patch ID. Invalid model output produces a readable, sanitized recovery message
-and no patch. Generic legacy conversation routes reject these bound sessions;
-only the protected assistance routes can access them.
+**System → Dashboard AI** owns the `wb.dashboard.assistance` opt-in and
+`wb.dashboard.chat-execution-default` for new chats. A prepared conversation
+pins its own provider/model pair; its picker never changes the global default.
+Internal inference tiers are not interactive model choices. Claude Code and
+Codex are registered interactive providers; a local inference profile is not a
+local agent driver, and there is no hidden provider fallback.
+
+Opening AI help prepares metadata and the canonical conversation, but sends no
+form context and starts no model. Explicit **Start** authorizes the displayed
+provider/model revision and freezes the allowlisted initial fields, draft
+revision and hash before any asynchronous work. The agent consumes the canonical
+form purpose, schema and frozen values through `assisted_draft_context_get`,
+then sends a useful initial greeting through the ordinary conversation tool.
+No user-authored message is fabricated and the user need not retype form context.
+
+Subsequent authored turns keep the house message ID. Before transport, the host
+stages one immutable snapshot under that ID; an uncertain acknowledgement
+retains the same prepared envelope. Later manual edits cannot enlarge that
+turn's disclosure and remain protected by normal patch conflicts.
+
+A hosted agent receives only source-free binding identifiers at launch. Its
+non-overridable tool set contains `assisted_draft_context_get`,
+`assisted_draft_propose_patch`, and the existing send, ask, poll, receive and
+acknowledge conversation tools. Every call checks the exact session,
+conversation, consumer, generation, pinned model and applicable policy gates.
+Initial context consumption precedes conversation access; each user turn must
+be received and its exact snapshot consumed before edits or acknowledgement.
+Only finite-choice/boolean questions use inline answer tools; ordinary composer
+messages do not answer a pending question.
+
+Exact content releases are Sources-backed and recorded in the shared worker
+disclosure manifest before return. Output binds the ordered input manifest and
+durable producer identity. A possibly-sent release is never automatically
+replayed or retried under a new generation. Replies and patches have stable
+identities; errors are sanitized. Unbound generic conversation routes/tools
+cannot bypass the form session.
+
+The protected HTTP flow is metadata-only `POST /api/assistance/sessions`,
+GET/PATCH execution selection, explicit Start with `initialSnapshot`, and
+snapshot preparation followed by canonical conversation response. Responses to
+inline questions include their exact `in_reply_to`. Stop and permanent End are
+separate authority-reducing actions.
+
+Model changes fence the old driver and return to a prepared state. Explicit
+Start is required before the new recipient receives current fields or history.
+A fresh Start supersedes unfinished prior work and old pending questions while
+preserving the transcript; its frozen current snapshot is the new working base.
+Start and scoped Stop compare the server-owned integer `controlRevision`.
+Start checks it before and after provider validation; an exact durable Start
+retry never probes or launches again. Scoped Stop carries its request identity,
+expected revision and, when applicable, exact pending Start request. A delayed
+Start or stale Stop retry cannot restart or cancel a successor generation.
+
+Stop requires a fresh explicit Start, while End permanently revokes that
+binding. Cleanup remains available after opt-out, expiration, read-only or a
+Source Foundation restore fence. Older session protocols require an explicit
+new session; their transcript and receipts remain inspectable. Ended and expired sessions
+also return a read-only recovery projection without resolving defaults or
+probing providers, so a reload preserves history and conditional Undo.
 
 ## Patch and recovery laws
 
@@ -101,12 +148,21 @@ the journal before polling; an interrupted local write is inspected against
 current fields, never replayed blindly. A missing server acknowledgement is
 retried without applying the patch again. These receipts are evidence, not
 another current draft. A panel close preserves the conversation and Undo. Ending
-the session preserves the form but removes its active assistant binding.
+the session preserves the form and receipts but permanently revokes its active
+assistant binding on the server.
+
+Leaving an active form host durably queues a scoped Stop, including a pending
+Start, while preserving the conversation binding and unsent composer draft.
+Reopening requires fresh explicit Start. Simply closing the still-mounted dock
+preserves its session. Cleanup acknowledges only a typed missing-session
+response as already absent; authentication, network and other failures remain
+visible and retryable.
 
 An accepted host `draft.clear()` or `draft.reset(value, { ifRevision })`
 synchronously notifies reset subscribers. Assistance invalidates its editing
 generation, closes the dock, and removes the saved session binding before a
-late reply can cross into the next editing lifetime. Reset preserves explicitly
+late reply can cross into the next editing lifetime. A durable local revoke
+intent retries permanent server cleanup without resurrecting the old binding. Reset preserves explicitly
 chosen fields with one normal repository CAS replacement save; it never deletes
 the old durable draft before saving the replacement. Clear retains its existing
 delete behavior. A failed revision check does not revoke the session, and a
@@ -127,11 +183,11 @@ Arrange and read-only access continue to lock the form.
 
 ## Verification
 
-`tests/unit/test_dashboard_assistance.py` exercises isolated HTTP conversation →
-patch → acknowledgement flow, idempotency, cross-binding authorization, server
-read-only, malformed/secret fields, expiration, stop/resume, and actual
-source-bound disclosure ordering with an injected deterministic model runner.
-React assistance tests exercise live form fields, focused/stale conflicts,
-conditional Undo, retained receipts across remount, retry identity, mode gates,
-and clear-generation fencing. The shared ChatComposer additionally tests that a
-delayed acknowledgement never reclaims focus from another host control.
+Isolated HTTP and tool tests exercise contextual startup, model selection,
+exact questions, binding denial, source disclosure, idempotency, generation
+fences, policy gates, cleanup, malformed patches and host receipts. React tests
+exercise canonical Chat composition, preserved draft state, focus, conflicts,
+conditional Undo and reset/recovery. The disposable browser host uses the real
+registry, broker, Sources and conversation/form tools with deterministic
+interactive provider doubles; no production tasks, jobs or external model
+calls are required.

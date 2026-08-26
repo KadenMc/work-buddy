@@ -81,6 +81,9 @@ export type StandardSettingControl =
       readonly kind: "switch";
     }
   | {
+      readonly kind: "execution-profile";
+    }
+  | {
       readonly kind: "select";
       readonly options: readonly {
         readonly value: string;

@@ -31,7 +31,13 @@ from work_buddy.security.local_identity import (
 
 PROVIDER_ID = "work-buddy-conversation"
 _ALLOWED_PURPOSES = frozenset(
-    {"truth_evidence", "truth_analysis", "recheck", "cowork_document_agent"}
+    {
+        "truth_evidence",
+        "truth_analysis",
+        "recheck",
+        "cowork_document_agent",
+        "dashboard.assisted_draft",
+    }
 )
 
 
@@ -169,8 +175,7 @@ class ConversationMessageProvider:
                 ingress.get("schema") == HUMAN_INPUT_INGRESS_SCHEMA
                 and inputter is not None
                 and inputter.kind == "human"
-                and inputter.issuer_authority_id
-                == self.principal.issuer_authority_id
+                and inputter.issuer_authority_id == self.principal.issuer_authority_id
                 and inputter.tenant_scope_id == self.principal.tenant_scope_id
                 and ingress.get("assurance") == HUMAN_AUTHORITY_ASSURANCE
                 and ingress.get("basis") == HUMAN_AUTHORITY_BASIS

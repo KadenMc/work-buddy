@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -279,5 +279,46 @@ describe("ConversationChat", () => {
     );
     await screen.findByText("How can I help?");
     await expectNoAccessibilityViolations(container);
+  });
+
+  it("refreshes only retry identity when the host's send authority scope changes", async () => {
+    const chatProvider = provider("c1");
+    const originalSend = chatProvider.sendMessage.bind(chatProvider);
+    const send = vi.spyOn(chatProvider, "sendMessage").mockRejectedValueOnce(new Error("Uncertain delivery")).mockImplementation(originalSend);
+    const subscribe = vi.spyOn(chatProvider, "subscribe");
+    const prepareSend = vi.fn(async (input: ChatSendInput) => input);
+    const { rerender } = render(<ConversationChat provider={chatProvider} conversationId="c1" sendScopeKey="generation-one" prepareSend={prepareSend} />);
+    const composer = await screen.findByRole("textbox", { name: "Message" });
+    await userEvent.type(composer, "Retained authored text");
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    await screen.findByText("Uncertain delivery");
+    rerender(<ConversationChat provider={chatProvider} conversationId="c1" sendScopeKey="generation-two" prepareSend={prepareSend} />);
+    expect(screen.getByRole("textbox", { name: "Message" })).toBe(composer);
+    expect(composer).toHaveValue("Retained authored text");
+    expect(screen.getByText("How can I help?")).toBeVisible();
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(composer).toHaveValue(""));
+    expect(prepareSend).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[1][1].messageId).not.toBe(send.mock.calls[0][1].messageId);
+    expect(subscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not dispatch a pre-send result whose authority scope changed while awaiting it", async () => {
+    const chatProvider = provider("c1");
+    const send = vi.spyOn(chatProvider, "sendMessage");
+    let release: (() => void) | undefined;
+    const prepareSend = vi.fn(async (input: ChatSendInput) => input).mockImplementationOnce((input) => new Promise((resolve) => { release = () => resolve(input); }));
+    const { rerender } = render(<ConversationChat provider={chatProvider} conversationId="c1" sendScopeKey="one" prepareSend={prepareSend} />);
+    const composer = await screen.findByRole("textbox", { name: "Message" });
+    await userEvent.type(composer, "Keep for explicit retry");
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    rerender(<ConversationChat provider={chatProvider} conversationId="c1" sendScopeKey="two" prepareSend={prepareSend} />);
+    await act(async () => { release?.(); });
+    expect(send).not.toHaveBeenCalled();
+    expect(composer).toHaveValue("Keep for explicit retry");
+    expect(screen.queryByText(/context changed/)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(composer).toHaveValue(""));
+    expect(send).toHaveBeenCalledTimes(1);
   });
 });

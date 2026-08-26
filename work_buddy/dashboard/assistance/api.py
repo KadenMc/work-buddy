@@ -12,28 +12,41 @@ from typing import Any
 
 from flask import Blueprint, jsonify, request
 
+from work_buddy.agent_execution.models import AgentExecutionError
+from work_buddy.conversations.execution import (
+    ConversationExecutionConflict,
+    ConversationExecutionCorrupt,
+)
 from work_buddy.dashboard import local_identity_api
 from work_buddy.security.local_identity import LocalIdentityError
 
 from .contracts import AssistanceError, digest, manifest
-from .service import AssistanceBroker
+from .service import AssistanceBroker, get_assistance_broker
 
 AssistanceAuthorizer = Callable[[str, str, Mapping[str, Any]], str]
 
 
 def _authorize(operation: str, subject: str, body: Mapping[str, Any]) -> str:
-    if request.method == "GET":
+    if request.method == "GET" or operation in {"stop", "end"}:
         return local_identity_api.authenticate_request_session().actor.canonical_id
     authority = local_identity_api.require_human_authority_request(
-        action=f"dashboard.assistance.{operation}", subject=subject,
-        context_sha256=digest({"method": request.method, "path": request.path, "body": dict(body)}),
+        action=f"dashboard.assistance.{operation}",
+        subject=subject,
+        context_sha256=digest(
+            {"method": request.method, "path": request.path, "body": dict(body)}
+        ),
     )
     return authority.principal.actor.canonical_id
 
 
-def create_assistance_blueprint(*, broker: AssistanceBroker | None = None, authorizer: AssistanceAuthorizer | None = None, dashboard_read_only: Callable[[], bool] | None = None) -> Blueprint:
+def create_assistance_blueprint(
+    *,
+    broker: AssistanceBroker | None = None,
+    authorizer: AssistanceAuthorizer | None = None,
+    dashboard_read_only: Callable[[], bool] | None = None,
+) -> Blueprint:
     bp = Blueprint("dashboard_assistance", __name__, url_prefix="/api/assistance")
-    service = broker or AssistanceBroker()
+    service = broker or get_assistance_broker()
     if dashboard_read_only is not None:
         service.read_only = dashboard_read_only
     authorize = authorizer or _authorize
@@ -42,9 +55,20 @@ def create_assistance_blueprint(*, broker: AssistanceBroker | None = None, autho
         @wraps(function)
         def wrapped(*args, **kwargs):
             try:
-                if request.method != "GET" and service.read_only():
-                    raise AssistanceError("dashboard_read_only", "Form assistance is paused while the dashboard is read-only.", 403)
-                if request.content_length is not None and request.content_length > 128 * 1024:
+                if (
+                    request.method != "GET"
+                    and function.__name__ not in {"stop", "end"}
+                    and service.read_only()
+                ):
+                    raise AssistanceError(
+                        "dashboard_read_only",
+                        "Form assistance is paused while the dashboard is read-only.",
+                        403,
+                    )
+                if (
+                    request.content_length is not None
+                    and request.content_length > 128 * 1024
+                ):
                     raise AssistanceError("assistance_request_too_large", status=413)
                 response = function(*args, **kwargs)
                 if isinstance(response, tuple):
@@ -52,9 +76,50 @@ def create_assistance_blueprint(*, broker: AssistanceBroker | None = None, autho
                 response.headers["Cache-Control"] = "no-store"
                 return response
             except AssistanceError as exc:
-                return jsonify({"error": str(exc), "code": exc.code}), exc.status
+                payload = {"error": str(exc), "code": exc.code}
+                session_id = kwargs.get("session_id")
+                if (
+                    exc.code
+                    in {
+                        "assistance_restart_required",
+                        "assistance_session_ended",
+                        "assistance_session_expired",
+                    }
+                    and session_id
+                ):
+                    actor = authorize("read", f"assistance:{session_id}", {})
+                    payload["session"] = service.recovery(session_id, actor)
+                elif exc.code == "assistance_control_changed" and session_id:
+                    actor = authorize("read", f"assistance:{session_id}", {})
+                    payload.update(service.execution(session_id, actor))
+                return jsonify(payload), exc.status
             except LocalIdentityError as exc:
                 return jsonify({"error": str(exc), "code": exc.code}), exc.status
+            except ConversationExecutionConflict:
+                payload = {
+                    "error": "The chat model changed. Review the current selection and Start again.",
+                    "code": "execution_selection_changed",
+                }
+                session_id = kwargs.get("session_id")
+                if session_id:
+                    actor = authorize("read", f"assistance:{session_id}", {})
+                    payload.update(service.execution(session_id, actor))
+                return jsonify(payload), 409
+            except ConversationExecutionCorrupt:
+                return jsonify(
+                    {
+                        "error": "This session's saved chat model could not be read. Start a new AI help session.",
+                        "code": "execution_selection_corrupt",
+                    }
+                ), 409
+            except AgentExecutionError as exc:
+                return jsonify(
+                    {
+                        "error": "That chat provider or model is unavailable. Choose a ready provider; no fallback was used.",
+                        "code": exc.error_code,
+                    }
+                ), 503
+
         return wrapped
 
     def body() -> Mapping[str, Any]:
@@ -76,12 +141,42 @@ def create_assistance_blueprint(*, broker: AssistanceBroker | None = None, autho
 
     @bp.post("/sessions")
     @boundary
-    def start():
+    def prepare_session():
         value = body()
-        actor = authorize("start", f"assistance:new:{value.get('requestId', '')}", value)
-        return jsonify(service.start(value, actor))
+        actor = authorize(
+            "prepare_session", f"assistance:new:{value.get('requestId', '')}", value
+        )
+        return jsonify(service.prepare_session(value, actor))
+
+    @bp.get("/<session_id>/execution")
+    @bp.get("/sessions/<session_id>/execution")
+    @boundary
+    def execution(session_id: str):
+        actor = authorize("read", f"assistance:{session_id}", {})
+        return jsonify(
+            service.execution(
+                session_id, actor, refresh=request.args.get("refresh_execution") == "1"
+            )
+        )
+
+    @bp.patch("/<session_id>/execution")
+    @bp.patch("/sessions/<session_id>/execution")
+    @boundary
+    def select_execution(session_id: str):
+        value = body()
+        actor = authorize("execution_select", f"assistance:{session_id}", value)
+        return jsonify(service.select_execution(session_id, actor, value))
+
+    @bp.post("/<session_id>/start")
+    @bp.post("/sessions/<session_id>/start")
+    @boundary
+    def start(session_id: str):
+        value = body()
+        actor = authorize("start", f"assistance:{session_id}", value)
+        return jsonify(service.start(session_id, actor, value))
 
     @bp.get("/<session_id>")
+    @bp.get("/sessions/<session_id>")
     @boundary
     def session(session_id: str):
         actor = authorize("read", f"assistance:{session_id}", {})
@@ -125,6 +220,14 @@ def create_assistance_blueprint(*, broker: AssistanceBroker | None = None, autho
     def stop(session_id: str):
         value = body()
         actor = authorize("stop", f"assistance:{session_id}", value)
-        return jsonify(service.stop(session_id, actor))
+        return jsonify(service.stop(session_id, actor, body=value))
+
+    @bp.post("/<session_id>/end")
+    @bp.post("/sessions/<session_id>/end")
+    @boundary
+    def end(session_id: str):
+        value = body()
+        actor = authorize("end", f"assistance:{session_id}", value)
+        return jsonify(service.stop(session_id, actor, end=True))
 
     return bp
